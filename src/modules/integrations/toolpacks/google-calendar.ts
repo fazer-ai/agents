@@ -268,6 +268,18 @@ function toEventTime(value: string, timeZone: string): Record<string, string> {
   return { dateTime: v, timeZone };
 }
 
+// PATCH merges what we send, so a patch carrying only `dateTime` leaves the event's existing `date`
+// in place — and Google rejects an event holding both (HTTP 400), which makes every all-day ⇄ timed
+// conversion fail. Sending the opposite field as null clears it, so the patch replaces the time
+// representation instead of mixing the two.
+function toEventTimePatch(
+  value: string,
+  timeZone: string,
+): Record<string, string | null> {
+  const t = toEventTime(value, timeZone);
+  return "date" in t ? { ...t, dateTime: null } : { ...t, date: null };
+}
+
 // Flattens a Calendar start/end object to a single string for the model (dateTime or all-day date).
 function flattenTime(t: unknown): string | null {
   if (!t || typeof t !== "object") return null;
@@ -740,8 +752,9 @@ function buildUpdateEventTool(
       if (input.summary !== undefined) body.summary = input.summary;
       if (input.description !== undefined) body.description = input.description;
       if (input.start !== undefined)
-        body.start = toEventTime(input.start, timeZone);
-      if (input.end !== undefined) body.end = toEventTime(input.end, timeZone);
+        body.start = toEventTimePatch(input.start, timeZone);
+      if (input.end !== undefined)
+        body.end = toEventTimePatch(input.end, timeZone);
       if (Object.keys(body).length === 0) {
         return "No fields provided. Set at least one of summary, start, end or description.";
       }

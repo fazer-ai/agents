@@ -632,6 +632,59 @@ describe("google calendar toolpack — event date shaping + default timezone", (
       timeZone: "America/Sao_Paulo",
     });
   });
+
+  // A patch that sets only dateTime leaves the all-day `date` on the event, and Google rejects an
+  // event carrying both (HTTP 400). Both directions must null the field they replace.
+  test("update: all-day → timed nulls the date field", async () => {
+    const { impl, calls } = stubFetch(200, {
+      id: "ev_5",
+      extendedProperties: stampedExt,
+      start: { dateTime: "2026-06-20T00:00:00-03:00" },
+      end: { dateTime: "2026-06-20T23:59:00-03:00" },
+    });
+    await toolFor(
+      "calendar_update_event",
+      {},
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      eventId: "ev_5",
+      start: "2026-06-20T00:00:00-03:00",
+      end: "2026-06-20T23:59:00-03:00",
+    });
+    // calls[0] is the ownership re-fetch; calls[1] is the PATCH.
+    const body = bodyOf(calls[1] as { init: RequestInit });
+    expect(body.start).toEqual({
+      dateTime: "2026-06-20T00:00:00-03:00",
+      timeZone: "America/Sao_Paulo",
+      date: null,
+    });
+    expect(body.end).toEqual({
+      dateTime: "2026-06-20T23:59:00-03:00",
+      timeZone: "America/Sao_Paulo",
+      date: null,
+    });
+  });
+
+  test("update: timed → all-day nulls the dateTime field", async () => {
+    const { impl, calls } = stubFetch(200, {
+      id: "ev_6",
+      extendedProperties: stampedExt,
+      start: { date: "2026-06-20" },
+      end: { date: "2026-06-21" },
+    });
+    await toolFor(
+      "calendar_update_event",
+      {},
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      eventId: "ev_6",
+      start: "2026-06-20",
+      end: "2026-06-21",
+    });
+    const body = bodyOf(calls[1] as { init: RequestInit });
+    expect(body.start).toEqual({ date: "2026-06-20", dateTime: null });
+    expect(body.end).toEqual({ date: "2026-06-21", dateTime: null });
+  });
 });
 
 describe("google calendar toolpack — list + availability", () => {

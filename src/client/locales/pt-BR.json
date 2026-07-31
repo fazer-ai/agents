@@ -1044,6 +1044,7 @@
       "appointmentLength": "Duração do agendamento",
       "blockingCalendars": "Agendas de bloqueio",
       "blockingCalendarsHint": "Agendas que o agente respeita mas nunca agenda nelas: todo evento delas bloqueia a disponibilidade (feriados, fechamentos, folgas). O agente nunca vê os detalhes dos eventos.",
+      "blockingCalendarsLimitWarning": "Mais de {{max}} agendas de bloqueio selecionadas; a verificação de disponibilidade vai recusar até a lista ser reduzida.",
       "calendarManualAria": "ID de agenda manual {{index}}",
       "calendarPlaceholder": "ID da agenda (ex.: equipe@group.calendar.google.com)",
       "calendarPrimary": "(principal)",
@@ -1751,7 +1752,7 @@
       "label": "Criar evento"
     },
     "calendar_list_events": {
-      "desc": "Lista os agendamentos do próprio cliente em um intervalo de tempo (cada cliente vê só os seus).",
+      "desc": "Lista os agendamentos do próprio cliente em um intervalo de tempo (cada cliente vê só os seus; feriados e fechamentos nunca aparecem aqui).",
       "label": "Agendamentos do cliente"
     },
     "calendar_update_event": {

@@ -58,6 +58,10 @@ function serviceFor(catalogType: string): string {
   }
 }
 
+// Mirrors MAX_BLOCKING_CALENDARS in the google-calendar toolpack: past this, availability refuses
+// (fail-closed), so the picker warns before the operator saves a config the runtime will reject.
+const BLOCKING_CALENDARS_LIMIT = 10;
+
 // Appointment sizing options (minutes), mirroring the n8n v3 allowlist. Duration = the appointment
 // length; granularity = the spacing between candidate start times (15 ⇒ 09:00 and 09:15 both offered).
 const SLOT_DURATIONS = [15, 20, 30, 45, 60, 90, 120] as const;
@@ -1168,6 +1172,15 @@ export function IntegrationEditModal({
                         <Skeleton className="h-20 w-full" />
                       ) : (
                         <>
+                          {blockingIds.length > BLOCKING_CALENDARS_LIMIT && (
+                            <p className="text-warning text-xs">
+                              {t(
+                                "integrations.config.blockingCalendarsLimitWarning",
+                                "More than {{max}} blocking calendars are selected; availability checks will refuse until the list is reduced.",
+                                { max: BLOCKING_CALENDARS_LIMIT },
+                              )}
+                            </p>
+                          )}
                           {calError && (
                             <p className="text-error text-xs">
                               {t(

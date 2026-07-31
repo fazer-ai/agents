@@ -1042,6 +1042,7 @@
       "appointmentLength": "Appointment length",
       "blockingCalendars": "Blocking calendars",
       "blockingCalendarsHint": "Calendars the agent respects but never books into: every event on them blocks availability (holidays, closures, days off). The agent never sees their event details.",
+      "blockingCalendarsLimitWarning": "More than {{max}} blocking calendars are selected; availability checks will refuse until the list is reduced.",
       "calendarManualAria": "Manual calendar ID {{index}}",
       "calendarPlaceholder": "Calendar ID (e.g. team@group.calendar.google.com)",
       "calendarPrimary": "(primary)",

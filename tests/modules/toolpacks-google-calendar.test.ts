@@ -836,3 +836,140 @@ describe("google calendar toolpack — list + availability", () => {
     expect(out).not.toContain("SECRET_TOK");
   });
 });
+
+// A fetch stub that routes by URL substring (freeBusy vs each blocking calendar's events.list).
+function routedFetch(
+  routes: Array<{ match: string; status?: number; json: unknown }>,
+) {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    calls.push({ url: u, init: init ?? {} });
+    const r = routes.find((x) => u.includes(x.match));
+    return new Response(JSON.stringify(r?.json ?? {}), {
+      status: r?.status ?? 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return { impl, calls };
+}
+
+describe("google calendar toolpack — blocking calendars (issue #1)", () => {
+  const BLOQ = "bloqueios@group.calendar.google.com";
+  const RANGE = {
+    timeMin: "2099-06-22T09:00:00-03:00",
+    timeMax: "2099-06-22T12:00:00-03:00",
+  };
+  const HOURLY = {
+    slotDurationMinutes: 60,
+    slotGranularityMinutes: 60,
+    blockingCalendarIds: [BLOQ],
+  };
+  const FREE = { calendars: { primary: { busy: [] } } };
+
+  test("reads each blocking calendar via events.list (no contact fence, no titles requested)", async () => {
+    const { impl, calls } = routedFetch([
+      { match: "/freeBusy", json: FREE },
+      { match: "bloqueios%40group", json: { items: [] } },
+    ]);
+    const out = (await toolFor(
+      "calendar_check_availability",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(JSON.parse(out).slots).toHaveLength(3);
+    expect(calls).toHaveLength(2);
+    const evUrl = calls[1]?.url ?? "";
+    expect(evUrl).toContain(
+      "/calendars/bloqueios%40group.calendar.google.com/events",
+    );
+    expect(evUrl).toContain("singleEvents=true");
+    expect(evUrl).toContain("fields=items%28start%2Cend%29");
+    expect(evUrl).not.toContain("privateExtendedProperty");
+  });
+
+  test("a timed blocking event drops the overlapping slot", async () => {
+    const { impl } = routedFetch([
+      { match: "/freeBusy", json: FREE },
+      {
+        match: "bloqueios%40group",
+        json: {
+          items: [
+            {
+              start: { dateTime: "2099-06-22T10:00:00-03:00" },
+              end: { dateTime: "2099-06-22T11:00:00-03:00" },
+            },
+          ],
+        },
+      },
+    ]);
+    const out = (await toolFor(
+      "calendar_check_availability",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    const parsed = JSON.parse(out) as { slots: { start: string }[] };
+    expect(parsed.slots.map((s) => localHM(s.start))).toEqual([
+      "09:00",
+      "11:00",
+    ]);
+  });
+
+  test("an all-day event blocks the whole local day, even marked transparent (the freeBusy blind spot)", async () => {
+    // All-day events default to transparency "transparent" ("Free"), which freeBusy ignores; the
+    // holiday calendar from the issue is exactly this shape, so blocking reads events.list instead.
+    const { impl } = routedFetch([
+      { match: "/freeBusy", json: FREE },
+      {
+        match: "bloqueios%40group",
+        json: {
+          items: [
+            {
+              start: { date: "2099-06-22" },
+              end: { date: "2099-06-23" },
+              transparency: "transparent",
+            },
+          ],
+        },
+      },
+    ]);
+    const out = (await toolFor(
+      "calendar_check_availability",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(JSON.parse(out).slots).toEqual([]);
+  });
+
+  test("fail-closed: an unreadable blocking calendar refuses instead of offering slots", async () => {
+    const { impl } = routedFetch([
+      { match: "/freeBusy", json: FREE },
+      { match: "bloqueios%40group", status: 404, json: { error: "notFound" } },
+    ]);
+    const out = (await toolFor(
+      "calendar_check_availability",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(out).toContain("blocking calendar");
+    expect(out).toContain("404");
+    expect(out).not.toContain("slots");
+  });
+
+  test("a blocking id that equals the active booking calendar is ignored (no extra request)", async () => {
+    const { impl, calls } = routedFetch([{ match: "/freeBusy", json: FREE }]);
+    const out = (await toolFor(
+      "calendar_check_availability",
+      { ...HOURLY, blockingCalendarIds: ["primary"] },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(JSON.parse(out).slots).toHaveLength(3);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("list_events description warns that blocked/foreign events are never visible", () => {
+    const tool = toolFor("calendar_list_events", {}, baseCtx());
+    expect(tool?.description).toContain("does NOT mean the calendar is free");
+    expect(tool?.description).toContain("calendar_check_availability");
+  });
+});

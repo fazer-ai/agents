@@ -97,6 +97,7 @@ function defaultConfig(catalogType: string): Record<string, unknown> {
       return {
         calendarIds: [],
         calendarLabels: {},
+        blockingCalendarIds: [],
         timeZone: "America/Sao_Paulo",
         businessHoursId: "",
         slotDurationMinutes: 30,
@@ -337,6 +338,109 @@ function ReminderConfigEditor({
           />
         </>
       )}
+    </div>
+  );
+}
+
+// A multi-select over the credential's fetched calendars plus hand-typed ids (shared calendars the
+// list does not return). Shared by the allowed-calendars and blocking-calendars pickers; the parent
+// owns the selection semantics (which config key, whether labels are captured).
+function CalendarMultiPicker({
+  cals,
+  selectedIds,
+  onToggle,
+  manualIds,
+  onManualChange,
+}: {
+  cals: { id: string; summary: string; primary?: boolean }[];
+  selectedIds: string[];
+  onToggle: (cal: { id: string; summary: string }, on: boolean) => void;
+  manualIds: string[];
+  onManualChange: (next: string[]) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col gap-2">
+      {cals.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {cals.map((c) => {
+            const checked = selectedIds.includes(c.id);
+            return (
+              <button
+                key={c.id}
+                type="button"
+                aria-pressed={checked}
+                onClick={() => onToggle(c, !checked)}
+                className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${
+                  checked
+                    ? "border-accent bg-accent-soft"
+                    : "border-border hover:bg-bg-hover"
+                }`}
+              >
+                <span
+                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                    checked
+                      ? "border-accent bg-accent text-accent-foreground"
+                      : "border-border"
+                  }`}
+                >
+                  {checked && <Check className="h-3 w-3" aria-hidden="true" />}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium text-sm text-text-primary">
+                    {c.summary}
+                    {c.primary && (
+                      <span className="ml-1.5 text-text-muted text-xs">
+                        {t("integrations.config.calendarPrimary", "(primary)")}
+                      </span>
+                    )}
+                  </span>
+                  <span className="block truncate text-text-muted text-xs">
+                    {c.id}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {/* Advanced: shared calendars not returned by the list, typed by id. */}
+      {manualIds.map((id, i) => (
+        <div
+          // biome-ignore lint/suspicious/noArrayIndexKey: editable free-text rows; the index is the stable identity (the value changes as the operator types)
+          key={`cal-${i}`}
+          className="flex items-center gap-2"
+        >
+          <Input
+            value={id}
+            placeholder={t(
+              "integrations.config.calendarPlaceholder",
+              "Calendar ID (e.g. team@group.calendar.google.com)",
+            )}
+            onChange={(e) => {
+              const next = [...manualIds];
+              next[i] = e.target.value;
+              onManualChange(next);
+            }}
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => onManualChange(manualIds.filter((_, j) => j !== i))}
+            aria-label={t("common.remove", "Remove")}
+          >
+            <X className="h-4 w-4" aria-hidden="true" />
+          </Button>
+        </div>
+      ))}
+      <Button
+        variant="secondary"
+        size="sm"
+        onClick={() => onManualChange([...manualIds, ""])}
+      >
+        <Plus className="h-4 w-4" aria-hidden="true" />
+        {t("integrations.config.addCalendarById", "Add by ID")}
+      </Button>
     </div>
   );
 }
@@ -708,6 +812,11 @@ export function IntegrationEditModal({
   // Calendars in the allowlist that aren't in the fetched list (e.g. a shared calendar typed by hand)
   // stay editable via the advanced manual rows.
   const manualCalIds = calendarIds.filter((id) => !pickedCalIds.has(id));
+  // Blocking calendars: respected by availability (every event blocks slots) but never operated on.
+  const blockingIds = Array.isArray(cfg.blockingCalendarIds)
+    ? (cfg.blockingCalendarIds as string[])
+    : [];
+  const manualBlockingIds = blockingIds.filter((id) => !pickedCalIds.has(id));
   // Drive: the search-scope folder (a single optional id) + its captured friendly name.
   const folderId = typeof cfg.folderId === "string" ? cfg.folderId : "";
   const folderName = typeof cfg.folderName === "string" ? cfg.folderName : "";
@@ -749,6 +858,21 @@ export function IntegrationEditModal({
   function setManualCalIds(next: string[]) {
     const picked = calendarIds.filter((id) => pickedCalIds.has(id));
     setCfg({ calendarIds: [...picked, ...next] });
+  }
+
+  // Blocking-calendar selection: ids only (labels are never used at runtime for these).
+  function toggleBlockingCalendar(c: { id: string }, on: boolean) {
+    const ids = on
+      ? blockingIds.includes(c.id)
+        ? blockingIds
+        : [...blockingIds, c.id]
+      : blockingIds.filter((x) => x !== c.id);
+    setCfg({ blockingCalendarIds: ids });
+  }
+
+  function setManualBlockingIds(next: string[]) {
+    const picked = blockingIds.filter((id) => pickedCalIds.has(id));
+    setCfg({ blockingCalendarIds: [...picked, ...next] });
   }
 
   const isDirty =
@@ -942,7 +1066,7 @@ export function IntegrationEditModal({
                       <p className="mb-1.5 text-text-muted text-xs">
                         {t(
                           "integrations.config.calendarsHint",
-                          "The calendars the agent may read and write. Leave empty to use the connected account's primary calendar.",
+                          "The calendars the agent may read and write. The calendar tools stay disabled until at least one is picked.",
                         )}
                       </p>
                       <a
@@ -993,115 +1117,56 @@ export function IntegrationEditModal({
                           </div>
                           {calLoading ? (
                             <Skeleton className="h-20 w-full" />
-                          ) : calError ? (
-                            <p className="text-error text-xs">
-                              {t(
-                                "integrations.config.calendarsError",
-                                "Could not list calendars. Check the credential's Calendar scope and try again.",
-                              )}
-                            </p>
                           ) : (
-                            availableCals.length > 0 && (
-                              <div className="flex flex-col gap-1.5">
-                                {availableCals.map((c) => {
-                                  const checked = calendarIds.includes(c.id);
-                                  return (
-                                    <button
-                                      key={c.id}
-                                      type="button"
-                                      aria-pressed={checked}
-                                      onClick={() =>
-                                        toggleCalendar(c, !checked)
-                                      }
-                                      className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${
-                                        checked
-                                          ? "border-accent bg-accent-soft"
-                                          : "border-border hover:bg-bg-hover"
-                                      }`}
-                                    >
-                                      <span
-                                        className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-                                          checked
-                                            ? "border-accent bg-accent text-accent-foreground"
-                                            : "border-border"
-                                        }`}
-                                      >
-                                        {checked && (
-                                          <Check
-                                            className="h-3 w-3"
-                                            aria-hidden="true"
-                                          />
-                                        )}
-                                      </span>
-                                      <span className="min-w-0 flex-1">
-                                        <span className="block truncate font-medium text-sm text-text-primary">
-                                          {c.summary}
-                                          {c.primary && (
-                                            <span className="ml-1.5 text-text-muted text-xs">
-                                              {t(
-                                                "integrations.config.calendarPrimary",
-                                                "(primary)",
-                                              )}
-                                            </span>
-                                          )}
-                                        </span>
-                                        <span className="block truncate text-text-muted text-xs">
-                                          {c.id}
-                                        </span>
-                                      </span>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                            )
-                          )}
-                          {/* Advanced: shared calendars not returned by the list, typed by id. */}
-                          {manualCalIds.map((id, i) => (
-                            <div
-                              // biome-ignore lint/suspicious/noArrayIndexKey: editable free-text rows; the index is the stable identity (the value changes as the operator types)
-                              key={`cal-${i}`}
-                              className="flex items-center gap-2"
-                            >
-                              <Input
-                                value={id}
-                                placeholder={t(
-                                  "integrations.config.calendarPlaceholder",
-                                  "Calendar ID (e.g. team@group.calendar.google.com)",
-                                )}
-                                onChange={(e) => {
-                                  const next = [...manualCalIds];
-                                  next[i] = e.target.value;
-                                  setManualCalIds(next);
-                                }}
+                            <>
+                              {calError && (
+                                <p className="text-error text-xs">
+                                  {t(
+                                    "integrations.config.calendarsError",
+                                    "Could not list calendars. Check the credential's Calendar scope and try again.",
+                                  )}
+                                </p>
+                              )}
+                              <CalendarMultiPicker
+                                cals={calError ? [] : availableCals}
+                                selectedIds={calendarIds}
+                                onToggle={toggleCalendar}
+                                manualIds={manualCalIds}
+                                onManualChange={setManualCalIds}
                               />
-                              <Button
-                                variant="secondary"
-                                size="sm"
-                                onClick={() =>
-                                  setManualCalIds(
-                                    manualCalIds.filter((_, j) => j !== i),
-                                  )
-                                }
-                                aria-label={t("common.remove", "Remove")}
-                              >
-                                <X className="h-4 w-4" aria-hidden="true" />
-                              </Button>
-                            </div>
-                          ))}
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() =>
-                              setManualCalIds([...manualCalIds, ""])
-                            }
-                          >
-                            <Plus className="h-4 w-4" aria-hidden="true" />
-                            {t(
-                              "integrations.config.addCalendarById",
-                              "Add by ID",
-                            )}
-                          </Button>
+                            </>
+                          )}
                         </div>
+                      )}
+                    </FormField>
+                    <FormField
+                      label={t(
+                        "integrations.config.blockingCalendars",
+                        "Blocking calendars",
+                      )}
+                      group
+                    >
+                      <p className="mb-1.5 text-text-muted text-xs">
+                        {t(
+                          "integrations.config.blockingCalendarsHint",
+                          "Calendars the agent respects but never books into: every event on them blocks availability (holidays, closures, days off). The agent never sees their event details.",
+                        )}
+                      </p>
+                      {!form.credentialRef ? (
+                        <p className="rounded-lg border border-border border-dashed px-3 py-2 text-text-muted text-xs">
+                          {t(
+                            "integrations.config.calendarsPickCredential",
+                            "Choose a connected Google credential above to list its calendars.",
+                          )}
+                        </p>
+                      ) : (
+                        <CalendarMultiPicker
+                          cals={calError ? [] : availableCals}
+                          selectedIds={blockingIds}
+                          onToggle={toggleBlockingCalendar}
+                          manualIds={manualBlockingIds}
+                          onManualChange={setManualBlockingIds}
+                        />
                       )}
                     </FormField>
                     <FormField

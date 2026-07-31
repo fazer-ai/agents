@@ -1842,7 +1842,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "integration_update",
       {
         description:
-          'Update an integration instance (name, enabled, config, credentials, inbound auth). credential_ref/inbound_secret_ref are vault entry NAMES (null clears). Previews a diff and applies NOTHING unless dry_run is false. The `config` shape depends on catalogType. GOOGLE_CALENDAR: {calendarIds(allowlist of calendar ids the agent may operate on; empty ⇒ ["primary"]), calendarLabels(map of id→friendly name), timeZone(IANA, e.g. America/Sao_Paulo), slotDurationMinutes, slotGranularityMinutes, appointmentReminders:{enabled,offsetsHours(array of hours-before-start, e.g. [24,1]),askConfirmationOnLast}}. GOOGLE_DRIVE: {folderId, folderName}.',
+          "Update an integration instance (name, enabled, config, credentials, inbound auth). credential_ref/inbound_secret_ref are vault entry NAMES (null clears). Previews a diff and applies NOTHING unless dry_run is false. The `config` shape depends on catalogType. GOOGLE_CALENDAR: {calendarIds(allowlist of calendar ids the agent may operate on; empty ⇒ the tools refuse until one is picked), blockingCalendarIds(calendars only RESPECTED by availability, never operated on, e.g. holidays/closures; EVERY event on them blocks slots), calendarLabels(map of id→friendly name), timeZone(IANA, e.g. America/Sao_Paulo), slotDurationMinutes, slotGranularityMinutes, appointmentReminders:{enabled,offsetsHours(array of hours-before-start, e.g. [24,1]),askConfirmationOnLast}}. GOOGLE_DRIVE: {folderId, folderName}.",
         inputSchema: {
           integration_id: z.string(),
           name: z.string().optional(),

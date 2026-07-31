@@ -74,6 +74,21 @@ function resolveAllowedCalendarIds(config: Record<string, unknown>): string[] {
   return [];
 }
 
+// Calendars the agent must RESPECT but never operates on (holidays, closures, staff time off),
+// designated by the operator in the instance config. Availability treats EVERY event on them as
+// busy. De-duplicated; the active booking calendar is filtered out at the call site (its bookings
+// already count via freeBusy, and "blocking" semantics on the booking calendar would also turn its
+// transparent events into blocks).
+function resolveBlockingCalendarIds(config: Record<string, unknown>): string[] {
+  const raw = config.blockingCalendarIds;
+  if (!Array.isArray(raw)) return [];
+  const ids = raw
+    .filter((v): v is string => typeof v === "string")
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0);
+  return Array.from(new Set(ids));
+}
+
 // Friendly labels (calendar id → human name, e.g. "Dr. Ana"), captured when the operator picks
 // calendars from the connected account. Best-effort: lets the model target a calendar by name and the
 // tool description enumerate the allowed calendars. Missing labels fall back to the raw id.
@@ -278,6 +293,67 @@ function toEventTimePatch(
 ): Record<string, string | null> {
   const t = toEventTime(value, timeZone);
   return "date" in t ? { ...t, dateTime: null } : { ...t, date: null };
+}
+
+// The timezone's UTC offset (ms) at an instant, via Intl (Temporal is unavailable in Bun).
+function tzOffsetMs(at: number, tz: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(at));
+  const get = (type: string) =>
+    Number(parts.find((p) => p.type === type)?.value ?? "0");
+  const asUtc = Date.UTC(
+    get("year"),
+    get("month") - 1,
+    get("day"),
+    get("hour") % 24,
+    get("minute"),
+    get("second"),
+  );
+  return asUtc - at;
+}
+
+// The UTC instant of local midnight for a YYYY-MM-DD in an IANA timezone (DST-correct: one
+// refinement pass covers an offset shift between the UTC guess and the target instant).
+function zonedMidnightMs(date: string, tz: string): number {
+  const utcGuess = Date.parse(`${date}T00:00:00Z`);
+  const first = utcGuess - tzOffsetMs(utcGuess, tz);
+  return utcGuess - tzOffsetMs(first, tz);
+}
+
+// A blocking-calendar event as a busy window. Timed events parse as-is; an all-day `date` widens to
+// local midnight in the integration timezone (Google's all-day end.date is already exclusive).
+// Unparseable shapes → null (skipped defensively).
+function blockingBusyWindow(
+  ev: Record<string, unknown>,
+  timeZone: string,
+): { start: string; end: string } | null {
+  const point = (t: unknown): number | null => {
+    if (!t || typeof t !== "object") return null;
+    const o = t as Record<string, unknown>;
+    if (typeof o.dateTime === "string") {
+      const ms = Date.parse(o.dateTime);
+      return Number.isNaN(ms) ? null : ms;
+    }
+    if (typeof o.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(o.date)) {
+      return zonedMidnightMs(o.date, timeZone);
+    }
+    return null;
+  };
+  const start = point(ev.start);
+  const end = point(ev.end);
+  if (start === null || end === null || end <= start) return null;
+  return {
+    start: new Date(start).toISOString(),
+    end: new Date(end).toISOString(),
+  };
 }
 
 // Flattens a Calendar start/end object to a single string for the model (dateTime or all-day date).
@@ -545,7 +621,7 @@ function buildListEventsTool(
     {
       name: "calendar_list_events",
       description: withCalendarContext(
-        `List THIS customer's own appointments on the calendar in a time range (each customer only ever sees their own). Returns each appointment's id, summary, start and end. Use ISO 8601 timestamps (with offset) for the range.`,
+        `List THIS customer's own appointments on the calendar in a time range (each customer only ever sees their own). Holidays, closures, staff events and other customers' bookings are NEVER visible here, so an empty result does NOT mean the calendar is free; use calendar_check_availability to know what is actually bookable. Returns each appointment's id, summary, start and end. Use ISO 8601 timestamps (with offset) for the range.`,
         allowedCalendarsXml(allowed, labels),
       ),
       schema: LIST_EVENTS_SCHEMA,
@@ -562,6 +638,7 @@ function buildCheckAvailabilityTool(
   const timeZone = resolveTimeZone(sel.config);
   const businessHoursId = resolveBusinessHoursId(sel.config);
   const minLeadMinutes = resolveMinLead(sel.config);
+  const blockingIds = resolveBlockingCalendarIds(sel.config);
   return tool(
     async (input: {
       timeMin: string;
@@ -610,6 +687,51 @@ function buildCheckAvailabilityTool(
         .map((b) => (b ?? {}) as Record<string, unknown>)
         .filter((b) => typeof b.start === "string" && typeof b.end === "string")
         .map((b) => ({ start: b.start as string, end: b.end as string }));
+      // Blocking calendars (holidays, closures) count as busy too, read via events.list, NOT
+      // freeBusy: all-day events (the typical holiday shape) default to transparency "transparent"
+      // ("Free") and freeBusy silently ignores them, which is exactly the calendar the operator
+      // expects to block. Only start/end are requested (no titles or attendees reach the model).
+      // Fail-closed: a blocking calendar we cannot read could be hiding a closure, so refusing
+      // beats offering a slot the operator explicitly blocked.
+      const blocking = blockingIds.filter((id) => id !== calendarId);
+      if (blocking.length > 0) {
+        const evParams = new URLSearchParams({
+          singleEvents: "true",
+          timeMin: input.timeMin,
+          timeMax: input.timeMax,
+          maxResults: "50",
+          fields: "items(start,end)",
+        });
+        let blockingRes: GcalResponse[];
+        try {
+          blockingRes = await Promise.all(
+            blocking.map((id) =>
+              gcalFetch(
+                `/calendars/${encodeURIComponent(id)}/events?${evParams.toString()}`,
+                { method: "GET", token },
+                ctx,
+              ),
+            ),
+          );
+        } catch (err) {
+          logger.warn({ err }, "gcal: blocking calendars request failed");
+          return "Failed to read a blocking calendar (holidays/closures), so availability cannot be verified right now. Try again shortly.";
+        }
+        for (const r of blockingRes) {
+          if (r.status < 200 || r.status >= 300) {
+            return `Google Calendar returned HTTP ${r.status} for a blocking calendar, so availability cannot be verified right now.`;
+          }
+          const evData = (r.json ?? {}) as Record<string, unknown>;
+          const items = Array.isArray(evData.items) ? evData.items : [];
+          for (const ev of items) {
+            const w = blockingBusyWindow(
+              (ev ?? {}) as Record<string, unknown>,
+              timeZone,
+            );
+            if (w) busy.push(w);
+          }
+        }
+      }
       // The service hours bounding bookable slots: the integration's chosen BusinessHours (windows +
       // its own timezone). Unset/missing ⇒ no time-of-day filter ("always on"); we then fall back to
       // the integration's display timezone for the slot labels.
@@ -640,7 +762,7 @@ function buildCheckAvailabilityTool(
     {
       name: "calendar_check_availability",
       description: withCalendarContext(
-        `Return ALL bookable appointment start times within a range, already honoring the service hours and existing bookings (no appointment details are exposed). Each slot has start, end and a human-readable label. Offer these to the customer and confirm one before creating the appointment. Pass ISO 8601 timestamps for the range, and search AT MOST 24 hours per call (one day at a time — call again for other days). The configured appointment length is shown in \`<slot_duration>\` below — when preset="false", choose it yourself per request and pass slotDurationMinutes (e.g. 30 for a standard appointment, 60 for a longer one); when preset="true", pass slotDurationMinutes only to override it.`,
+        `Return ALL bookable appointment start times within a range, already honoring the service hours, existing bookings and any operator-designated blocking calendars such as holidays or closures (no appointment details are exposed). Each slot has start, end and a human-readable label. Offer these to the customer and confirm one before creating the appointment. Pass ISO 8601 timestamps for the range, and search AT MOST 24 hours per call (one day at a time — call again for other days). The configured appointment length is shown in \`<slot_duration>\` below — when preset="false", choose it yourself per request and pass slotDurationMinutes (e.g. 30 for a standard appointment, 60 for a longer one); when preset="true", pass slotDurationMinutes only to override it.`,
         slotDurationXml(sel.config),
         allowedCalendarsXml(allowed, labels),
       ),

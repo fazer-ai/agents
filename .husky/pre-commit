@@ -1,11 +1,4 @@
 set -e
 
+# Local quality gate: the same checks the PR CI runs (lint, type-check, i18n, tests).
 bun check
-
-# Skill safety gate (mirrors publish-skill.yml): build the skill trees and block the commit on ANY
-# Hermes CRITICAL finding (1 critical = "dangerous" verdict → the Hermes scanner refuses to install
-# the skill by every path, and --force does not cover it). Catch it here, not after the push in CI.
-# See tooling/skills/scan-criticals.mjs.
-cd tooling/skills
-npm run build >/dev/null
-node scan-criticals.mjs

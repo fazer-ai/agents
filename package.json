@@ -30,12 +30,6 @@
     "i18n:extract": "bun scripts/i18n-extract.ts",
     "openapi:generate": "bun scripts/build-openapi.ts --write",
     "openapi:check": "bun scripts/build-openapi.ts",
-    "derive:check": "bun tooling/derivation/check-markers.ts",
-    "derive:pro": "bun tooling/derivation/derive.ts pro",
-    "derive:free": "bun tooling/derivation/derive.ts free",
-    "build:pro": "bun tooling/derivation/derive.ts pro --out /tmp/derive-pro --validate",
-    "build:free": "bun tooling/derivation/derive.ts free --out /tmp/derive-free --validate",
-    "check:editions": "bash scripts/check-editions.sh",
     "check": "bun run lint && bun run build-check && bun run build-check:worker && bun run openapi:check && bun run i18n:extract && bun run test",
     "prepare": "husky"
   },

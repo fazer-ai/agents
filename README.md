@@ -10,6 +10,8 @@
 **Agentes de IA de atendimento sobre o Chatwoot.**
 WhatsApp em primeiro lugar. Multimodais, humanizados e self-hosted.
 
+**Português (Brasil)** · [English](README-en.md)
+
 ![Free: Apache 2.0](https://img.shields.io/badge/Free-Apache%202.0-3B82F6)
 ![Bun](https://img.shields.io/badge/Bun-000?logo=bun&logoColor=fff)
 ![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=fff)
@@ -145,6 +147,7 @@ bun dev                   # http://localhost:3000
 
 - 🌐 Site: [fazer.ai](https://fazer.ai)
 - 📚 Documentação: [`docs/`](docs/)
+- 🤝 Contribuições: [CONTRIBUTING.md](CONTRIBUTING.md)
 - 💬 Suporte: support@fazer.ai
 
 <div align="center">

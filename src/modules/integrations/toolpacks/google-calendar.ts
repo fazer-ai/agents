@@ -700,7 +700,7 @@ function buildCheckAvailabilityTool(
           timeMin: input.timeMin,
           timeMax: input.timeMax,
           maxResults: "50",
-          fields: "items(start,end)",
+          fields: "items(start,end),nextPageToken",
         });
         let blockingRes: GcalResponse[];
         try {
@@ -722,6 +722,11 @@ function buildCheckAvailabilityTool(
             return `Google Calendar returned HTTP ${r.status} for a blocking calendar, so availability cannot be verified right now.`;
           }
           const evData = (r.json ?? {}) as Record<string, unknown>;
+          // A nextPageToken means the window holds more events than the cap covers; treating the
+          // partial page as complete could offer a slot the operator explicitly blocked.
+          if (typeof evData.nextPageToken === "string") {
+            return "A blocking calendar has more events in this range than can be checked at once, so availability cannot be verified right now. Try a narrower range.";
+          }
           const items = Array.isArray(evData.items) ? evData.items : [];
           for (const ev of items) {
             const w = blockingBusyWindow(

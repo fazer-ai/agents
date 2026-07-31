@@ -884,8 +884,25 @@ describe("google calendar toolpack — blocking calendars (issue #1)", () => {
       "/calendars/bloqueios%40group.calendar.google.com/events",
     );
     expect(evUrl).toContain("singleEvents=true");
-    expect(evUrl).toContain("fields=items%28start%2Cend%29");
+    expect(evUrl).toContain("fields=items%28start%2Cend%29%2CnextPageToken");
     expect(evUrl).not.toContain("privateExtendedProperty");
+  });
+
+  test("fail-closed: a truncated blocking page (nextPageToken) refuses instead of trusting partial data", async () => {
+    const { impl } = routedFetch([
+      { match: "/freeBusy", json: FREE },
+      {
+        match: "bloqueios%40group",
+        json: { items: [], nextPageToken: "tok_more" },
+      },
+    ]);
+    const out = (await toolFor(
+      "calendar_check_availability",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(out).toContain("cannot be verified");
+    expect(out).not.toContain("slots");
   });
 
   test("a timed blocking event drops the overlapping slot", async () => {

@@ -1159,14 +1159,26 @@ export function IntegrationEditModal({
                             "Choose a connected Google credential above to list its calendars.",
                           )}
                         </p>
+                      ) : calLoading ? (
+                        <Skeleton className="h-20 w-full" />
                       ) : (
-                        <CalendarMultiPicker
-                          cals={calError ? [] : availableCals}
-                          selectedIds={blockingIds}
-                          onToggle={toggleBlockingCalendar}
-                          manualIds={manualBlockingIds}
-                          onManualChange={setManualBlockingIds}
-                        />
+                        <>
+                          {calError && (
+                            <p className="text-error text-xs">
+                              {t(
+                                "integrations.config.calendarsError",
+                                "Could not list calendars. Check the credential's Calendar scope and try again.",
+                              )}
+                            </p>
+                          )}
+                          <CalendarMultiPicker
+                            cals={calError ? [] : availableCals}
+                            selectedIds={blockingIds}
+                            onToggle={toggleBlockingCalendar}
+                            manualIds={manualBlockingIds}
+                            onManualChange={setManualBlockingIds}
+                          />
+                        </>
                       )}
                     </FormField>
                     <FormField

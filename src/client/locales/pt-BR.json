@@ -1044,6 +1044,7 @@
       "appointmentLength": "Duração do agendamento",
       "blockingCalendars": "Agendas de bloqueio",
       "blockingCalendarsHint": "Agendas que o agente respeita mas nunca agenda nelas: todo evento delas bloqueia a disponibilidade (feriados, fechamentos, folgas). O agente nunca vê os detalhes dos eventos.",
+      "calendarManualAria": "ID de agenda manual {{index}}",
       "calendarPlaceholder": "ID da agenda (ex.: equipe@group.calendar.google.com)",
       "calendarPrimary": "(principal)",
       "calendars": "Agendas permitidas",
@@ -1738,7 +1739,7 @@
       "label": "Cancelar evento"
     },
     "calendar_check_availability": {
-      "desc": "Lista horários livres para agendar num período, respeitando o horário de atendimento e a agenda.",
+      "desc": "Lista horários livres para agendar num período, respeitando o horário de atendimento, a agenda e as agendas de bloqueio (feriados, fechamentos).",
       "label": "Horários disponíveis"
     },
     "calendar_confirm_appointment": {

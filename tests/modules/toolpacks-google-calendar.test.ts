@@ -846,8 +846,9 @@ function routedFetch(
     const u = String(url);
     calls.push({ url: u, init: init ?? {} });
     const r = routes.find((x) => u.includes(x.match));
-    return new Response(JSON.stringify(r?.json ?? {}), {
-      status: r?.status ?? 200,
+    if (!r) throw new Error(`routedFetch: unrouted request ${u}`);
+    return new Response(JSON.stringify(r.json), {
+      status: r.status ?? 200,
       headers: { "Content-Type": "application/json" },
     });
   }) as unknown as typeof fetch;
@@ -981,6 +982,37 @@ describe("google calendar toolpack — blocking calendars (issue #1)", () => {
       baseCtx({ fetchImpl: impl }),
     )?.invoke(RANGE)) as string;
     expect(JSON.parse(out).slots).toHaveLength(3);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("fail-closed: a network failure reading a blocking calendar refuses", async () => {
+    const impl = (async (url: string | URL | Request) => {
+      if (String(url).includes("bloqueios%40group")) {
+        throw new Error("network down");
+      }
+      return new Response(JSON.stringify(FREE), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const out = (await toolFor(
+      "calendar_check_availability",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(out).toContain("Failed to read a blocking calendar");
+    expect(out).not.toContain("slots");
+  });
+
+  test("fail-closed: more blocking calendars than the cap refuses without fanning out", async () => {
+    const many = Array.from({ length: 11 }, (_, i) => `b${i}@demo.local`);
+    const { impl, calls } = routedFetch([{ match: "/freeBusy", json: FREE }]);
+    const out = (await toolFor(
+      "calendar_check_availability",
+      { ...HOURLY, blockingCalendarIds: many },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(out).toContain("Too many blocking calendars");
     expect(calls).toHaveLength(1);
   });
 

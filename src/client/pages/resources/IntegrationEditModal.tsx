@@ -417,6 +417,11 @@ function CalendarMultiPicker({
               "integrations.config.calendarPlaceholder",
               "Calendar ID (e.g. team@group.calendar.google.com)",
             )}
+            aria-label={t(
+              "integrations.config.calendarManualAria",
+              "Manual calendar ID {{index}}",
+              { index: i + 1 },
+            )}
             onChange={(e) => {
               const next = [...manualIds];
               next[i] = e.target.value;

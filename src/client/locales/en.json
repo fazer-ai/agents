@@ -1042,6 +1042,7 @@
       "appointmentLength": "Appointment length",
       "blockingCalendars": "Blocking calendars",
       "blockingCalendarsHint": "Calendars the agent respects but never books into: every event on them blocks availability (holidays, closures, days off). The agent never sees their event details.",
+      "calendarManualAria": "Manual calendar ID {{index}}",
       "calendarPlaceholder": "Calendar ID (e.g. team@group.calendar.google.com)",
       "calendarPrimary": "(primary)",
       "calendars": "Allowed calendars",
@@ -1733,7 +1734,7 @@
       "label": "Cancel event"
     },
     "calendar_check_availability": {
-      "desc": "List bookable appointment times within a range, honoring the service hours and existing bookings.",
+      "desc": "List bookable appointment times within a range, honoring the service hours, existing bookings and any blocking calendars (holidays, closures).",
       "label": "Available times"
     },
     "calendar_confirm_appointment": {
@@ -1745,7 +1746,7 @@
       "label": "Create event"
     },
     "calendar_list_events": {
-      "desc": "List this customer's own appointments within a time range (each customer only sees their own).",
+      "desc": "List this customer's own appointments within a time range (each customer only sees their own; holidays and closures never appear here).",
       "label": "Customer appointments"
     },
     "calendar_update_event": {

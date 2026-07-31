@@ -43,6 +43,10 @@ const TIMEOUT_MS = 12_000;
 // Generous bound: a list of 25 verbose event objects parses; a runaway response is still capped.
 const MAX_RESPONSE_CHARS = 100_000;
 const MAX_LIST_RESULTS = 25;
+// Blocking-calendar fan-out bound: each configured blocking calendar costs one events.list request
+// per availability call, so a runaway list would multiply latency + quota. Fail-closed above the
+// cap (refuse, never silently check a subset).
+const MAX_BLOCKING_CALENDARS = 10;
 
 // Brazilian clinics are the default audience; absent an explicit config timeZone, anchor every timed
 // event and freeBusy query to São Paulo so the agent's "14:00" is unambiguous.
@@ -694,6 +698,9 @@ function buildCheckAvailabilityTool(
       // Fail-closed: a blocking calendar we cannot read could be hiding a closure, so refusing
       // beats offering a slot the operator explicitly blocked.
       const blocking = blockingIds.filter((id) => id !== calendarId);
+      if (blocking.length > MAX_BLOCKING_CALENDARS) {
+        return `Too many blocking calendars are configured (${blocking.length}; the limit is ${MAX_BLOCKING_CALENDARS}), so availability cannot be verified. Reduce the blocking calendars in the integration settings.`;
+      }
       if (blocking.length > 0) {
         const evParams = new URLSearchParams({
           singleEvents: "true",

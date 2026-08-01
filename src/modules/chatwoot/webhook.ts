@@ -39,6 +39,7 @@ import {
   recordConversationError,
 } from "@/modules/conversations/error";
 import { armDebounce, resolveDebounceConfig } from "@/modules/debounce/service";
+import { advanceHandledWatermark } from "@/modules/debounce/watermark";
 import { cancelPendingJob } from "@/modules/scheduler/service";
 import {
   resolveSttConfig,
@@ -1179,6 +1180,7 @@ export async function processChatwootDelivery(
               threadId,
               agentBotId: params.agentBotId,
               cfg,
+              lastMessageId: n.message?.id ?? undefined,
               base,
             });
             armed = true;
@@ -1305,6 +1307,34 @@ export async function processChatwootDelivery(
       n.event,
       isNewIncoming,
     );
+  }
+
+  // A new inbound message the bot deliberately leaves unanswered — the conversation is human-owned
+  // (!act) or a command/test-mode gate consumed it — still advances the handled watermark: it is
+  // context, not a pending task. Left behind, these pile up below the watermark and the first flush
+  // after a human returns the conversation re-answers the whole human-era backlog, handoff reason
+  // included (issue #8). When a turn WILL run (act && !consumed), the turn/flush owns the advance.
+  // Best-effort: a miss only widens a later re-coalesce.
+  if (
+    isNewIncoming &&
+    (!act || consumed) &&
+    n.message?.id != null &&
+    mirror.conversationRowId !== null
+  ) {
+    try {
+      await advanceHandledWatermark({
+        tenantId: params.tenantId,
+        conversationDbId: mirror.conversationRowId,
+        toMessageId: n.message.id,
+        base,
+      });
+    } catch (err) {
+      logger.warn(
+        "chatwoot: advance handled watermark failed (conv=%s): %s",
+        convLabel,
+        errMsg(err),
+      );
+    }
   }
 
   // Continuous ingestion (production + enabled only): fold the messages no turn handled into the

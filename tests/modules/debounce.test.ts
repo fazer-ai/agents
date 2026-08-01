@@ -11,6 +11,7 @@ import {
   debounceDedupeKey,
   resolveDebounceConfig,
 } from "@/modules/debounce/service";
+import { advanceHandledWatermark } from "@/modules/debounce/watermark";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import {
   claimDueDebounceJobs,
@@ -116,12 +117,22 @@ async function seedConversation(
   });
 }
 
-function jobFor(convId: number): ClaimedJob {
+function jobFor(
+  convId: number,
+  extra: { lastMessageId?: number } = {},
+): ClaimedJob {
   return {
     id: 1n,
     tenantId,
     kind: "DEBOUNCE",
-    payload: { threadId: threadOf(convId), agentBotId: 9, burstStartedAt: 1 },
+    payload: {
+      threadId: threadOf(convId),
+      agentBotId: 9,
+      burstStartedAt: 1,
+      ...(extra.lastMessageId != null
+        ? { lastMessageId: extra.lastMessageId }
+        : {}),
+    },
     attempts: 0,
   };
 }
@@ -437,5 +448,174 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([]);
     expect(calls.getMessages).toBe(0);
+  });
+
+  // ── Issue #8: the watermark must advance on every deliberate skip, not only on a post ──
+
+  test("advanceHandledWatermark is a monotonic CAS (never moves backwards)", async () => {
+    await seedConversation(803);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 803 },
+      select: { id: true },
+    });
+    const advance = (to: number) =>
+      advanceHandledWatermark({
+        tenantId,
+        conversationDbId: conv.id,
+        toMessageId: to,
+        base: appDb,
+      });
+    expect(await advance(5)).toBe(true);
+    expect(await watermarkOf(803)).toBe(5);
+    expect(await advance(3)).toBe(false); // stale writer loses silently
+    expect(await watermarkOf(803)).toBe(5);
+    expect(await advance(8)).toBe(true);
+    expect(await watermarkOf(803)).toBe(8);
+  });
+
+  test("an empty reply still advances the watermark (the burst was consumed)", async () => {
+    await seedConversation(804);
+    const sent: Array<[number, string]> = [];
+    const calls = { getMessages: 0 };
+    const out = await flushDebounceJob({
+      job: jobFor(804),
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "oi" },
+              { id: 2, content: "tem horário amanhã?" },
+            ]),
+          ],
+          sent,
+          calls,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]);
+    expect(await watermarkOf(804)).toBe(2);
+  });
+
+  test("a human takeover mid-turn advances the watermark (no re-answer after the return)", async () => {
+    await seedConversation(805);
+    const sent: Array<[number, string]> = [];
+    let fetches = 0;
+    // The burst fetch runs after the job's own gate (still open) and before the turn; flipping the
+    // assignee there lands exactly in the window the post-LLM re-check inspects → "taken-over".
+    const client = {
+      getMessages: async () => {
+        fetches += 1;
+        if (fetches === 1) {
+          await suDb.conversation.updateMany({
+            where: { tenantId, chatwootConversationId: 805 },
+            data: { assigneeType: "User", status: "open" },
+          });
+        }
+        return page([{ id: 4, content: "quero falar com um humano AGORA" }]);
+      },
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const out = await flushDebounceJob({
+      job: jobFor(805),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]); // nothing posted — the human owns the reply
+    expect(await watermarkOf(805)).toBe(4); // …but the burst counts as handled
+  });
+
+  test("a gate-closed flush advances to the payload's lastMessageId without any fetch", async () => {
+    await seedConversation(806, { assigneeType: "User" });
+    const sent: Array<[number, string]> = [];
+    const calls = { getMessages: 0 };
+    const out = await flushDebounceJob({
+      job: jobFor(806, { lastMessageId: 12 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 12, content: "oi" }])],
+          sent,
+          calls,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]);
+    expect(calls.getMessages).toBe(0);
+    expect(await watermarkOf(806)).toBe(12);
+  });
+
+  test("armDebounce keeps the burst's highest lastMessageId across re-arms", async () => {
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`,
+    );
+    const thread = threadOf(702);
+    const cfg = {
+      enabled: true,
+      windowSeconds: 15,
+      maxMessagesPerBurst: 20,
+      maxWindowSeconds: 60,
+    };
+    for (const lastMessageId of [3, 5, 4]) {
+      await armDebounce({
+        tenantId,
+        threadId: thread,
+        agentBotId: 9,
+        cfg,
+        lastMessageId,
+        base: appDb,
+      });
+    }
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(thread),
+      },
+      select: { payload: true },
+    });
+    expect((row.payload as { lastMessageId?: number }).lastMessageId).toBe(5);
+  });
+
+  test("issue #8 regression: after a handoff-era backlog, the flush answers only the new message", async () => {
+    // Watermark at 8 = messages 5-8 arrived while a human owned the conversation (the webhook
+    // advance covered them); the human then returned it and the customer sent message 9.
+    await seedConversation(807, { lastHandledMessageId: 8 });
+    const sent: Array<[number, string]> = [];
+    const calls = { getMessages: 0 };
+    const fullHistory = page([
+      { id: 4, content: "quero remarcar" },
+      { id: 5, content: "isso está um absurdo!" },
+      { id: 6, content: "que atendimento péssimo" },
+      { id: 7, content: "obrigado pela ajuda" },
+      { id: 8, content: "até logo" },
+      { id: 9, content: "quero marcar um horário pra sexta" },
+    ]);
+    const out = await flushDebounceJob({
+      job: jobFor(807, { lastMessageId: 9 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({ pages: [fullHistory], sent, calls }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([[807, REPLY]]); // one reply, to the new request only
+    expect(await watermarkOf(807)).toBe(9);
   });
 });

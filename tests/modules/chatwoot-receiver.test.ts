@@ -344,6 +344,47 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     expect(r.outcome).toBe("ignored");
     expect(r.deliveryRowId).toBeUndefined();
   });
+
+  test("issue #8: an inbound message during a human-owned period advances the handled watermark", async () => {
+    // A customer message while a human owns the conversation (!act): the bot deliberately stays
+    // silent, but the message must count as handled — otherwise the first debounce flush after the
+    // human returns the conversation re-answers the whole human-era backlog.
+    const body = JSON.stringify({
+      event: "message_created",
+      id: 2001,
+      content: "isso está um absurdo!",
+      message_type: "incoming",
+      private: false,
+      conversation: {
+        id: 44,
+        inbox_id: 7,
+        status: "open",
+        meta: { assignee_type: "User", assignee: { id: 5 } },
+      },
+    });
+    const r = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, NOW, "uuid-hmn"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    expect(r.outcome).toBe("queued");
+    const proc = await processChatwootDelivery({
+      tenantId,
+      instanceId: r.instanceId as bigint,
+      deliveryRowId: r.deliveryRowId as bigint,
+      agentBotId: r.agentBotId ?? null,
+      normalized: r.normalized as NonNullable<typeof r.normalized>,
+      base: appDb,
+    });
+    expect(proc).toBe("processed");
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 44 },
+      select: { lastHandledMessageId: true },
+    });
+    expect(conv.lastHandledMessageId).toBe(2001);
+  });
 });
 
 // ── provisioning ↔ receiver round trip (real DB, stubbed Chatwoot client) ──

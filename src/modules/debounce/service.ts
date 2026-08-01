@@ -54,11 +54,22 @@ function readBurstStart(payload: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+// The burst's newest known Chatwoot message id, kept in the job payload so a flush abandoned by the
+// human-takeover gate can still advance the handled watermark without a network fetch (issue #8).
+export function readLastMessageId(payload: unknown): number | null {
+  if (!payload || typeof payload !== "object") return null;
+  const v = (payload as Record<string, unknown>).lastMessageId;
+  return typeof v === "number" && Number.isFinite(v) ? v : null;
+}
+
 export interface ArmDebounceParams {
   tenantId: bigint;
   threadId: string;
   agentBotId: number | null;
   cfg: DebounceConfig;
+  // Chatwoot id of the inbound message arming this flush (see readLastMessageId). Optional: an arm
+  // without it keeps the burst's previous high-water mark.
+  lastMessageId?: number;
   base?: PrismaClient;
   now?: Date;
 }
@@ -85,6 +96,13 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
           ? readBurstStart(existing.payload)
           : null;
       const burstStartedAt = prevBurst ?? nowMs;
+      // High-water message id across the burst's arms (a fresh burst starts over, like burstStartedAt).
+      const prevLast =
+        existing?.status === "PENDING"
+          ? readLastMessageId(existing.payload)
+          : null;
+      const lastMessageId =
+        Math.max(prevLast ?? 0, params.lastMessageId ?? 0) || null;
       const runAtMs = Math.min(
         nowMs + cfg.windowSeconds * 1000,
         burstStartedAt + cfg.maxWindowSeconds * 1000,
@@ -93,6 +111,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         threadId,
         agentBotId,
         burstStartedAt,
+        ...(lastMessageId !== null ? { lastMessageId } : {}),
       } satisfies Prisma.InputJsonObject;
       await db.schedulerJob.upsert({
         where: {

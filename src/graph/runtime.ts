@@ -18,6 +18,7 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { advanceHandledWatermark } from "@/modules/debounce/watermark";
 import {
   emitFlowEvent,
   type FlowContext,
@@ -576,7 +577,7 @@ export async function runAgentTurn(
   });
   if (!loaded) return "no-agent";
 
-  return runLoadedTurn({
+  const outcome = await runLoadedTurn({
     loaded,
     tenantId,
     instanceId,
@@ -589,4 +590,27 @@ export async function runAgentTurn(
     base,
     deps: params.deps,
   });
+  // The direct path never uses shouldPost (no supersede gate), so nothing else advances the handled
+  // watermark here — left alone it stays NULL forever, and the first flush after debounce is later
+  // enabled (or after an arm failure fell back here) re-answers the whole recent page (issue #8).
+  // Every completed outcome consumed this message: posted/empty/blocked, or taken over (the human
+  // owns it now). Best-effort — the reply is already delivered, a watermark miss must not fail the
+  // turn.
+  if (n.message?.id != null && loaded.conversationDbId !== null) {
+    try {
+      await advanceHandledWatermark({
+        tenantId,
+        conversationDbId: loaded.conversationDbId,
+        toMessageId: n.message.id,
+        base,
+      });
+    } catch (e) {
+      logger.warn(
+        "advance handled watermark failed (conv=%s): %s",
+        String(conversationId),
+        e instanceof Error ? e.message : String(e),
+      );
+    }
+  }
+  return outcome;
 }

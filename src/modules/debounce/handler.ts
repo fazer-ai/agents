@@ -26,7 +26,9 @@ import { emitFlowEvent } from "@/modules/flowlog/service";
 import type { FlowStage } from "@/modules/flowlog/stages";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import { readLastMessageId } from "./service";
 import { readDebounceConfig } from "./settings";
+import { advanceHandledWatermark } from "./watermark";
 
 // The DEBOUNCE flush: re-fetch the conversation from Chatwoot, coalesce the inbound messages past the
 // watermark into one turn, and answer once. Two re-fetches by design: the first builds the burst to
@@ -133,7 +135,17 @@ export async function coalesceAndRunTurn(
   const rendered = pending
     .map((m) => renderInboundMessage(toRenderable(m), { resolveQuoted }))
     .filter((s) => s.length > 0);
-  if (rendered.length === 0) return "empty";
+  if (rendered.length === 0) {
+    // Nothing in the burst renders to answerable text — it never will, so mark it handled or every
+    // future flush re-fetches and re-stops on the same messages.
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: convDbId,
+      toMessageId: targetWatermark,
+      base,
+    });
+    return "empty";
+  }
   const text = rendered.join("\n");
 
   // 2. Post gate: re-fetch to detect mid-turn arrivals (supersede), then advance the watermark
@@ -159,18 +171,11 @@ export async function coalesceAndRunTurn(
         err(e),
       );
     }
-    return runScopedOn(base, sysCtx(tenantId), async (db) => {
-      const cas = await db.conversation.updateMany({
-        where: {
-          id: convDbId,
-          OR: [
-            { lastHandledMessageId: null },
-            { lastHandledMessageId: { lt: targetWatermark } },
-          ],
-        },
-        data: { lastHandledMessageId: targetWatermark },
-      });
-      return cas.count > 0;
+    return advanceHandledWatermark({
+      tenantId,
+      conversationDbId: convDbId,
+      toMessageId: targetWatermark,
+      base,
     });
   };
 
@@ -213,6 +218,21 @@ export async function coalesceAndRunTurn(
     deps,
     shouldPost,
   });
+  // Every completed outcome except "superseded" consumed the burst: answered ("posted" — where
+  // shouldPost's CAS already advanced, making this a no-op), answered by the input-guardrail
+  // template (which never consults shouldPost), or deliberately dropped (taken over mid-turn, empty
+  // reply, guardrail "silent"). Advance so the next flush cannot re-answer the same burst (issue
+  // #8: the pre-handoff backlog was re-coalesced — and the bot re-transferred for the old reason —
+  // after a human returned the conversation). "superseded" stays put by design: the re-armed flush
+  // answers the FULL burst.
+  if (outcome !== "superseded") {
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: convDbId,
+      toMessageId: targetWatermark,
+      base,
+    });
+  }
   logger.info(
     "%s: conv=%s msgs=%d watermark→%d outcome=%s",
     ctx.label,
@@ -270,7 +290,7 @@ export async function flushDebounceJob(
         { ourAgentBotId: agentBotId },
       )
     ) {
-      return "gate-closed" as const;
+      return { gateClosed: true as const, convDbId: conv.id };
     }
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
@@ -296,8 +316,25 @@ export async function flushDebounceJob(
       settings: agentRow?.settings ?? {},
     };
   });
-  // No agent / unbound inbox / human took over → nothing to do (not a failure).
-  if (ctx === null || ctx === "gate-closed") return { outcome: "done" };
+  // No agent / unbound inbox → nothing to do (not a failure).
+  if (ctx === null) return { outcome: "done" };
+  // Human took over between the arm and this flush: the burst is the human's to answer now, so it
+  // still counts as handled. The arm path kept the burst's newest message id in the payload
+  // precisely so this advance needs no network fetch (issue #8) — without it, the burst would sit
+  // below the watermark and the first flush after the human returns the conversation would
+  // re-answer it.
+  if ("gateClosed" in ctx) {
+    const last = readLastMessageId(job.payload);
+    if (last !== null) {
+      await advanceHandledWatermark({
+        tenantId,
+        conversationDbId: ctx.convDbId,
+        toMessageId: last,
+        base,
+      });
+    }
+    return { outcome: "done" };
+  }
 
   // Coalesce the burst past the watermark and answer once. A thrown error (LLM/Chatwoot) bubbles to
   // the worker → retry with backoff (watermark not advanced, so the retry re-answers the same burst).

@@ -287,6 +287,42 @@ export function ChannelsPage() {
     void loadBotStatus();
   }, [loadBotStatus]);
 
+  // An inbox created in Chatwoot is invisible here until a sync pulls it into the local mirror, and
+  // nothing does that automatically after the account's first connect — so the screen revalidates on
+  // load: the mirror renders immediately, every connected account syncs in the background, then the
+  // list refreshes. Silent on failure (Chatwoot down / non-admin role just keeps the mirror as-is);
+  // the toast fires only when a NEW inbox actually appeared.
+  const autoSyncInboxes = useCallback(
+    async (accts: Account[]) => {
+      if (accts.length === 0) return;
+      const results = await Promise.allSettled(
+        accts.map((a) =>
+          api.api.v1.chatwoot.instances({ id: a.id })["sync-inboxes"].post(),
+        ),
+      );
+      let created = 0;
+      let synced = false;
+      for (const r of results) {
+        if (r.status !== "fulfilled" || r.value.error || !r.value.data)
+          continue;
+        synced = true;
+        created += r.value.data.result.created;
+      }
+      if (created > 0) {
+        showToast(
+          t(
+            "channels.autoSynced",
+            "{{count}} new inbox(es) synced from Chatwoot.",
+            { count: created },
+          ),
+          "success",
+        );
+      }
+      if (synced) await refreshInboxes();
+    },
+    [refreshInboxes, showToast, t],
+  );
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(false);
@@ -304,6 +340,7 @@ export function ChannelsPage() {
       setAccounts([...dep.data.accounts]);
       if (inb.data) setInboxes([...inb.data.inboxes]);
       if (ag.data) setAgents([...ag.data.agents]);
+      void autoSyncInboxes([...dep.data.accounts]);
     } catch {
       setError(true);
     } finally {
@@ -311,7 +348,7 @@ export function ChannelsPage() {
     }
     void loadBotStatus();
     void loadReachable();
-  }, [loadBotStatus, loadReachable]);
+  }, [autoSyncInboxes, loadBotStatus, loadReachable]);
 
   useEffect(() => {
     void load();

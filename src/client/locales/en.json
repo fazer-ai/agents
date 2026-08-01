@@ -225,6 +225,8 @@
     "accountsSaveError": "Could not update the accounts.",
     "adminToken": "Admin access token",
     "adminTokenHint": "Stored encrypted, never shown again.",
+    "autoSynced_one": "{{count}} new inbox synced from Chatwoot.",
+    "autoSynced_other": "{{count}} new inboxes synced from Chatwoot.",
     "baseUrl": "Base URL",
     "bindError": "Could not bind the inbox.",
     "bindLabel": "Answering agent",

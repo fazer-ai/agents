@@ -14,7 +14,7 @@ import {
   Trash2,
   Unplug,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 import {
@@ -287,6 +287,11 @@ export function ChannelsPage() {
     void loadBotStatus();
   }, [loadBotStatus]);
 
+  // Accounts with a sync request in flight, shared by the load-time auto-sync and the manual button
+  // so the same account is never synced twice concurrently (the server reconcile is race-hardened;
+  // skipping here just avoids redundant Chatwoot calls).
+  const syncInFlight = useRef<Set<string>>(new Set());
+
   // An inbox created in Chatwoot is invisible here until a sync pulls it into the local mirror, and
   // nothing does that automatically after the account's first connect — so the screen revalidates on
   // load: the mirror renders immediately, every connected account syncs in the background, then the
@@ -294,19 +299,25 @@ export function ChannelsPage() {
   // the toast fires only when a NEW inbox actually appeared.
   const autoSyncInboxes = useCallback(
     async (accts: Account[]) => {
-      if (accts.length === 0) return;
-      const results = await Promise.allSettled(
-        accts.map((a) =>
-          api.api.v1.chatwoot.instances({ id: a.id })["sync-inboxes"].post(),
-        ),
-      );
+      const targets = accts.filter((a) => !syncInFlight.current.has(a.id));
+      if (targets.length === 0) return;
+      for (const a of targets) syncInFlight.current.add(a.id);
       let created = 0;
       let synced = false;
-      for (const r of results) {
-        if (r.status !== "fulfilled" || r.value.error || !r.value.data)
-          continue;
-        synced = true;
-        created += r.value.data.result.created;
+      try {
+        const results = await Promise.allSettled(
+          targets.map((a) =>
+            api.api.v1.chatwoot.instances({ id: a.id })["sync-inboxes"].post(),
+          ),
+        );
+        for (const r of results) {
+          if (r.status !== "fulfilled" || r.value.error || !r.value.data)
+            continue;
+          synced = true;
+          created += r.value.data.result.created;
+        }
+      } finally {
+        for (const a of targets) syncInFlight.current.delete(a.id);
       }
       if (created > 0) {
         showToast(
@@ -340,7 +351,11 @@ export function ChannelsPage() {
       setAccounts([...dep.data.accounts]);
       if (inb.data) setInboxes([...inb.data.inboxes]);
       if (ag.data) setAgents([...ag.data.agents]);
-      void autoSyncInboxes([...dep.data.accounts]);
+      // Only active accounts: a soft-disconnected account must not be re-synced (its mirror is
+      // frozen until it is reconnected).
+      void autoSyncInboxes(
+        dep.data.accounts.filter((a) => a.disconnectedAt === null),
+      );
     } catch {
       setError(true);
     } finally {
@@ -641,6 +656,8 @@ export function ChannelsPage() {
   }
 
   async function syncInboxesFor(account: Account) {
+    if (syncInFlight.current.has(account.id)) return; // auto-sync already on it
+    syncInFlight.current.add(account.id);
     setBusy(true);
     try {
       const { data, error: err } = await api.api.v1.chatwoot
@@ -658,6 +675,7 @@ export function ChannelsPage() {
     } catch {
       showToast(t("channels.syncError", "Could not sync inboxes."), "error");
     } finally {
+      syncInFlight.current.delete(account.id);
       setBusy(false);
     }
   }

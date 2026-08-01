@@ -733,7 +733,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "inbox_list",
       {
         description:
-          "List the tenant's Chatwoot inboxes (id, chatwootInstanceId, chatwootInboxId, name, channelType, agentId). agentId is the bound agent (null = unbound). This lists the LOCAL MIRROR, which can lag behind Chatwoot; if an inbox you expect is missing, call instance_sync_inboxes for its instance and list again.",
+          "List the tenant's Chatwoot inboxes (id, chatwootInstanceId, chatwootInboxId, name, channelType, agentId). agentId is the bound agent (null = unbound). This lists the LOCAL MIRROR, which can lag behind Chatwoot; if an inbox you expect is missing and you have mcp:write, call instance_sync_inboxes with instance_id=chatwootInstanceId and dry_run:false, then list again.",
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await inboxList(eff)),

@@ -1332,17 +1332,44 @@ export async function syncInboxes(
         });
         updated++;
       } else {
-        await db.inbox.create({
-          data: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            chatwootInboxId: inbox.chatwootInboxId,
-            name: inbox.name,
-            channelType: inbox.channelType,
-            provider: inbox.provider,
-          },
-        });
-        created++;
+        try {
+          await db.inbox.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootInboxId: inbox.chatwootInboxId,
+              name: inbox.name,
+              channelType: inbox.channelType,
+              provider: inbox.provider,
+            },
+          });
+          created++;
+        } catch (err) {
+          if (
+            err instanceof Prisma.PrismaClientKnownRequestError &&
+            err.code === "P2002"
+          ) {
+            // Lost the create race to a concurrent sync (the load-time auto-sync and the manual
+            // button can overlap): the row exists now, so converge on the update path.
+            await db.inbox.update({
+              where: {
+                tenantId_chatwootInstanceId_chatwootInboxId: {
+                  tenantId,
+                  chatwootInstanceId: instanceId,
+                  chatwootInboxId: inbox.chatwootInboxId,
+                },
+              },
+              data: {
+                name: inbox.name,
+                channelType: inbox.channelType,
+                provider: inbox.provider,
+              },
+            });
+            updated++;
+          } else {
+            throw err;
+          }
+        }
       }
     }
     return { total: remote.length, created, updated };

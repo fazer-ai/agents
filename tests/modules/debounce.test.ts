@@ -560,9 +560,7 @@ describe.skipIf(!dbUp)("debounce", () => {
   });
 
   test("armDebounce keeps the burst's highest lastMessageId across re-arms", async () => {
-    await suDb.$executeRawUnsafe(
-      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`,
-    );
+    await suDb.schedulerJob.deleteMany({ where: { tenantId } });
     const thread = threadOf(702);
     const cfg = {
       enabled: true,

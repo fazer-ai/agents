@@ -101,8 +101,8 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         existing?.status === "PENDING"
           ? readLastMessageId(existing.payload)
           : null;
-      const lastMessageId =
-        Math.max(prevLast ?? 0, params.lastMessageId ?? 0) || null;
+      const lastCandidate = Math.max(prevLast ?? 0, params.lastMessageId ?? 0);
+      const lastMessageId = lastCandidate > 0 ? lastCandidate : null;
       const runAtMs = Math.min(
         nowMs + cfg.windowSeconds * 1000,
         burstStartedAt + cfg.maxWindowSeconds * 1000,

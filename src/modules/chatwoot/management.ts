@@ -1321,56 +1321,35 @@ export async function syncInboxes(
         },
         select: { id: true },
       });
-      if (existing) {
-        await db.inbox.update({
-          where: { id: existing.id },
-          data: {
-            name: inbox.name,
-            channelType: inbox.channelType,
-            provider: inbox.provider,
+      // Atomic INSERT … ON CONFLICT: concurrent syncs (the load-time auto-sync and the manual
+      // button) can race on the unique key, and a failed create inside this scoped $transaction
+      // would poison every later statement (P2002 aborts the whole tx — a catch-and-update here
+      // can never run). The pre-read only feeds the created/updated counters, so the worst a race
+      // can do is report a created row that a concurrent sync actually created first.
+      await db.inbox.upsert({
+        where: {
+          tenantId_chatwootInstanceId_chatwootInboxId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootInboxId: inbox.chatwootInboxId,
           },
-        });
-        updated++;
-      } else {
-        try {
-          await db.inbox.create({
-            data: {
-              tenantId,
-              chatwootInstanceId: instanceId,
-              chatwootInboxId: inbox.chatwootInboxId,
-              name: inbox.name,
-              channelType: inbox.channelType,
-              provider: inbox.provider,
-            },
-          });
-          created++;
-        } catch (err) {
-          if (
-            err instanceof Prisma.PrismaClientKnownRequestError &&
-            err.code === "P2002"
-          ) {
-            // Lost the create race to a concurrent sync (the load-time auto-sync and the manual
-            // button can overlap): the row exists now, so converge on the update path.
-            await db.inbox.update({
-              where: {
-                tenantId_chatwootInstanceId_chatwootInboxId: {
-                  tenantId,
-                  chatwootInstanceId: instanceId,
-                  chatwootInboxId: inbox.chatwootInboxId,
-                },
-              },
-              data: {
-                name: inbox.name,
-                channelType: inbox.channelType,
-                provider: inbox.provider,
-              },
-            });
-            updated++;
-          } else {
-            throw err;
-          }
-        }
-      }
+        },
+        create: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: inbox.chatwootInboxId,
+          name: inbox.name,
+          channelType: inbox.channelType,
+          provider: inbox.provider,
+        },
+        update: {
+          name: inbox.name,
+          channelType: inbox.channelType,
+          provider: inbox.provider,
+        },
+      });
+      if (existing) updated++;
+      else created++;
     }
     return { total: remote.length, created, updated };
   });

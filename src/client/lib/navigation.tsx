@@ -126,6 +126,9 @@ export function filterNavItems(
 }
 
 export interface FooterLink {
+  // Stable identity so the sidebar can white-label per entry (swap the website
+  // href/label from the branding config; hide the GitHub entry).
+  id: "website" | "github";
   href: string;
   labelKey: string;
   defaultLabel: string;
@@ -164,12 +167,14 @@ export const AGENTS_REPO_URL = "https://github.com/fazer-ai/agents";
 
 export const SECONDARY_LINKS: FooterLink[] = [
   {
+    id: "website",
     href: "https://fazer.ai",
     labelKey: "nav.website",
     defaultLabel: "fazer.ai",
     icon: Globe,
   },
   {
+    id: "github",
     href: AGENTS_REPO_URL,
     labelKey: "nav.github",
     defaultLabel: "GitHub",

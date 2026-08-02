@@ -2475,13 +2475,16 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "branding_set",
       {
         description:
-          "Set the GLOBAL app identity (SUPER_ADMIN token only). Previews a diff and applies NOTHING unless dry_run is false. brand_name is the white-label display name (title + auth footer; null = default). color_mode SIMPLE uses brand_color (a #rrggbb hex); ADVANCED uses the tokens_light/tokens_dark maps. Logo and favicon are uploaded via branding_asset_set (or cropped in the UI at /admin/branding).",
+          "Set the GLOBAL app identity (SUPER_ADMIN token only). Previews a diff and applies NOTHING unless dry_run is false. brand_name is the white-label display name (title + auth footer; null = default). color_mode SIMPLE uses brand_color (a #rrggbb hex); ADVANCED uses the tokens_light/tokens_dark maps. site_url (absolute http(s) URL) and support_email replace the sidebar-footer defaults; hide_github_link removes the footer GitHub entry (null/empty = default). Logo and favicon are uploaded via branding_asset_set (or cropped in the UI at /admin/branding).",
         inputSchema: {
           brand_name: z.string().nullable().optional(),
           color_mode: z.enum(["SIMPLE", "ADVANCED"]).optional(),
           brand_color: z.string().nullable().optional(),
           tokens_light: z.record(z.string(), z.unknown()).optional(),
           tokens_dark: z.record(z.string(), z.unknown()).optional(),
+          site_url: z.string().nullable().optional(),
+          support_email: z.string().nullable().optional(),
+          hide_github_link: z.boolean().optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -2491,6 +2494,9 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         brand_color?: string | null;
         tokens_light?: Record<string, unknown>;
         tokens_dark?: Record<string, unknown>;
+        site_url?: string | null;
+        support_email?: string | null;
+        hide_github_link?: boolean;
         dry_run?: boolean;
       }) => writeContent(await brandingSet(principal, args)),
     );

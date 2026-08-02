@@ -2138,6 +2138,34 @@
                     "patternProperties": {
                       "^(.*)$": {}
                     }
+                  },
+                  "siteUrl": {
+                    "description": "Sidebar-footer website link (absolute http(s) URL), or null to use the default.",
+                    "anyOf": [
+                      {
+                        "maxLength": 512,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "supportEmail": {
+                    "description": "Support e-mail shown in the sidebar support modal, or null to use the default.",
+                    "anyOf": [
+                      {
+                        "maxLength": 254,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "hideGithubLink": {
+                    "description": "When true, the GitHub entry is removed from the sidebar footer.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -2190,6 +2218,34 @@
                     "patternProperties": {
                       "^(.*)$": {}
                     }
+                  },
+                  "siteUrl": {
+                    "description": "Sidebar-footer website link (absolute http(s) URL), or null to use the default.",
+                    "anyOf": [
+                      {
+                        "maxLength": 512,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "supportEmail": {
+                    "description": "Support e-mail shown in the sidebar support modal, or null to use the default.",
+                    "anyOf": [
+                      {
+                        "maxLength": 254,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "hideGithubLink": {
+                    "description": "When true, the GitHub entry is removed from the sidebar footer.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -2242,6 +2298,34 @@
                     "patternProperties": {
                       "^(.*)$": {}
                     }
+                  },
+                  "siteUrl": {
+                    "description": "Sidebar-footer website link (absolute http(s) URL), or null to use the default.",
+                    "anyOf": [
+                      {
+                        "maxLength": 512,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "supportEmail": {
+                    "description": "Support e-mail shown in the sidebar support modal, or null to use the default.",
+                    "anyOf": [
+                      {
+                        "maxLength": 254,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "hideGithubLink": {
+                    "description": "When true, the GitHub entry is removed from the sidebar footer.",
+                    "type": "boolean"
                   }
                 }
               }

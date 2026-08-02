@@ -18,6 +18,8 @@ import { sanitizeBranding } from "@/lib/branding";
 // translate('errors.unsupportedImageType', 'Unsupported image type')
 // translate('errors.imageTooLarge', 'Image is too large')
 // translate('errors.noUpdatableFields', 'No updatable fields provided')
+// translate('errors.invalidSiteUrl', 'Invalid website URL')
+// translate('errors.invalidSupportEmail', 'Invalid support e-mail')
 
 export const SINGLETON_ID = 1;
 
@@ -59,6 +61,11 @@ export interface GlobalBrandingDto {
   tokensDark: Record<string, string>;
   logo: { dark: boolean; light: boolean };
   favicon: { dark: boolean; light: boolean };
+  // Sidebar-footer links (white-label): the operator's own site and support inbox, plus the
+  // option to drop the GitHub entry. null = use the built-in defaults.
+  siteUrl: string | null;
+  supportEmail: string | null;
+  hideGithubLink: boolean;
   // Epoch-ms string of the last write — the client appends it to asset URLs to bust caches
   // (the favicon especially is cached aggressively by browsers). "0" while still at defaults.
   version: string;
@@ -74,6 +81,9 @@ interface BrandingRow {
   logoLightKey: string | null;
   faviconDarkKey: string | null;
   faviconLightKey: string | null;
+  siteUrl: string | null;
+  supportEmail: string | null;
+  hideGithubLink: boolean;
   updatedAt: Date;
 }
 
@@ -85,6 +95,9 @@ export const DEFAULT_DTO: GlobalBrandingDto = {
   tokensDark: {},
   logo: { dark: false, light: false },
   favicon: { dark: false, light: false },
+  siteUrl: null,
+  supportEmail: null,
+  hideGithubLink: false,
   version: "0",
 };
 
@@ -102,6 +115,32 @@ export function sanitizeBrandName(value: unknown): string | null {
 }
 
 const MAX_BRAND_NAME_LEN = 64;
+const MAX_SITE_URL_LEN = 512;
+const MAX_SUPPORT_EMAIL_LEN = 254;
+// Deliberately loose (one @, no spaces, a dot in the domain): the goal is catching typos and
+// copy-paste accidents, not RFC 5322 — the value only feeds a mailto: link and the support modal.
+const SUPPORT_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// null unless the value parses as an absolute http(s) URL within bounds. The footer renders the
+// value inside an anchor href, so anything else (javascript:, data:, relative paths) must die here.
+export function sanitizeSiteUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_SITE_URL_LEN) return null;
+  try {
+    const { protocol } = new URL(trimmed);
+    return protocol === "http:" || protocol === "https:" ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function sanitizeSupportEmail(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MAX_SUPPORT_EMAIL_LEN) return null;
+  return SUPPORT_EMAIL_RE.test(trimmed) ? trimmed : null;
+}
 
 export function toDto(row: BrandingRow): GlobalBrandingDto {
   return {
@@ -116,6 +155,9 @@ export function toDto(row: BrandingRow): GlobalBrandingDto {
       dark: row.faviconDarkKey !== null,
       light: row.faviconLightKey !== null,
     },
+    siteUrl: sanitizeSiteUrl(row.siteUrl),
+    supportEmail: sanitizeSupportEmail(row.supportEmail),
+    hideGithubLink: row.hideGithubLink === true,
     version: row.updatedAt.getTime().toString(),
   };
 }
@@ -133,6 +175,9 @@ export interface ColorUpdate {
   brandColor?: string | null;
   tokensLight?: Record<string, unknown>;
   tokensDark?: Record<string, unknown>;
+  siteUrl?: string | null;
+  supportEmail?: string | null;
+  hideGithubLink?: boolean;
 }
 
 export function keyColumn(

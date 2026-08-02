@@ -168,6 +168,9 @@ model AppBranding {
   logoLightKey    String?  @map("logo_light_key")
   faviconDarkKey  String?  @map("favicon_dark_key")
   faviconLightKey String?  @map("favicon_light_key")
+  siteUrl         String?  @map("site_url")
+  supportEmail    String?  @map("support_email")
+  hideGithubLink  Boolean  @default(false) @map("hide_github_link")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
   @@map("app_branding")

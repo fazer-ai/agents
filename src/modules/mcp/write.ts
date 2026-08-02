@@ -646,6 +646,9 @@ export interface BrandingSetArgs {
   brand_color?: string | null;
   tokens_light?: Record<string, unknown>;
   tokens_dark?: Record<string, unknown>;
+  site_url?: string | null;
+  support_email?: string | null;
+  hide_github_link?: boolean;
   dry_run?: boolean;
 }
 
@@ -673,9 +676,16 @@ export async function brandingSet(
   if (args.brand_color !== undefined) update.brandColor = args.brand_color;
   if (args.tokens_light !== undefined) update.tokensLight = args.tokens_light;
   if (args.tokens_dark !== undefined) update.tokensDark = args.tokens_dark;
+  if (args.site_url !== undefined) update.siteUrl = args.site_url;
+  if (args.support_email !== undefined) {
+    update.supportEmail = args.support_email;
+  }
+  if (args.hide_github_link !== undefined) {
+    update.hideGithubLink = args.hide_github_link;
+  }
   if (Object.keys(update).length === 0) {
     return err(
-      "no updatable fields provided (brand_name, color_mode, brand_color, tokens_light and/or tokens_dark)",
+      "no updatable fields provided (brand_name, color_mode, brand_color, tokens_light, tokens_dark, site_url, support_email and/or hide_github_link)",
     );
   }
 
@@ -687,6 +697,9 @@ export async function brandingSet(
       brandColor: before.brandColor,
       tokensLight: before.tokensLight,
       tokensDark: before.tokensDark,
+      siteUrl: before.siteUrl,
+      supportEmail: before.supportEmail,
+      hideGithubLink: before.hideGithubLink,
     };
     const target = "branding:global";
 
@@ -711,6 +724,15 @@ export async function brandingSet(
           string,
           unknown
         >,
+        siteUrl:
+          update.siteUrl === undefined
+            ? before.siteUrl
+            : update.siteUrl || null,
+        supportEmail:
+          update.supportEmail === undefined
+            ? before.supportEmail
+            : update.supportEmail || null,
+        hideGithubLink: update.hideGithubLink ?? before.hideGithubLink,
       };
       return ok({
         dryRun: true,
@@ -726,6 +748,9 @@ export async function brandingSet(
       brandColor: after.brandColor,
       tokensLight: after.tokensLight,
       tokensDark: after.tokensDark,
+      siteUrl: after.siteUrl,
+      supportEmail: after.supportEmail,
+      hideGithubLink: after.hideGithubLink,
     };
     // Fleet-level audit (tenant_id NULL); the write tx runs asSuperAdmin.
     await recordMcpAudit(

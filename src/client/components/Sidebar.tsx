@@ -9,6 +9,7 @@ import { SupportModal } from "@/client/components/SupportModal";
 import { Tooltip } from "@/client/components/Tooltip";
 import { usePendingApprovals } from "@/client/contexts/ApprovalsContext";
 import { useAuth } from "@/client/contexts/AuthContext";
+import { useBranding } from "@/client/contexts/BrandingContext";
 import {
   SIDEBAR_COLLAPSED_WIDTH,
   useSidebar,
@@ -133,15 +134,38 @@ interface SidebarFooterProps {
   onNavigate?: () => void;
 }
 
+// Label for a white-labeled website link: the hostname reads like the default
+// entry ("fazer.ai") instead of dumping the full URL into the sidebar.
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
 function SidebarFooter({ collapsed = false, onNavigate }: SidebarFooterProps) {
   const { t } = useTranslation();
+  const { config: branding } = useBranding();
   const supportModal = useModalController();
 
   if (!SUPPORT_LINK && SECONDARY_LINKS.length === 0) return null;
 
+  // White-label overrides (issue #4): the operator's own site/support inbox replace the
+  // defaults, and the GitHub entry can be hidden. The server sanitizes what it stores, but
+  // the URL still only rides into an href after the same allowlist check we apply to any
+  // externally-sourced link (defense in depth against a tampered cache/response).
+  const customSiteUrl =
+    branding?.siteUrl && isSafeHttpUrl(branding.siteUrl)
+      ? branding.siteUrl
+      : null;
+  const customSupportEmail = branding?.supportEmail?.trim() || null;
+  const hideGithub = branding?.hideGithubLink === true;
+
   const supportEmail = SUPPORT_LINK
-    ? // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in src/client/lib/navigation.tsx
-      t(SUPPORT_LINK.emailKey, SUPPORT_LINK.defaultEmail)
+    ? (customSupportEmail ??
+      // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in src/client/lib/navigation.tsx
+      t(SUPPORT_LINK.emailKey, SUPPORT_LINK.defaultEmail))
     : null;
   const supportMailto = supportEmail ? `mailto:${supportEmail}` : null;
 
@@ -192,13 +216,19 @@ function SidebarFooter({ collapsed = false, onNavigate }: SidebarFooterProps) {
     supportItem = wrapLi("__support", trigger, label);
   }
 
-  const secondaryItems = SECONDARY_LINKS.map((link) => {
-    // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in src/client/lib/navigation.tsx
-    const label = t(link.labelKey, link.defaultLabel);
-    const isExternal = /^https?:\/\//.test(link.href);
+  const secondaryItems = SECONDARY_LINKS.filter(
+    (link) => !(link.id === "github" && hideGithub),
+  ).map((link) => {
+    const isCustomSite = link.id === "website" && customSiteUrl !== null;
+    const href = isCustomSite ? customSiteUrl : link.href;
+    const label = isCustomSite
+      ? hostnameOf(customSiteUrl)
+      : // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in src/client/lib/navigation.tsx
+        t(link.labelKey, link.defaultLabel);
+    const isExternal = /^https?:\/\//.test(href);
     const trigger = (
       <a
-        href={link.href}
+        href={href}
         onClick={onNavigate}
         {...(isExternal && { target: "_blank", rel: "noopener noreferrer" })}
         className={itemCls}
@@ -206,7 +236,7 @@ function SidebarFooter({ collapsed = false, onNavigate }: SidebarFooterProps) {
         {renderBody(link.icon, label)}
       </a>
     );
-    return wrapLi(link.href, trigger, label);
+    return wrapLi(link.id, trigger, label);
   });
 
   return (

@@ -111,6 +111,24 @@ export const brandingController = new Elysia({
           description: "Dark-theme CSS token overrides keyed by token name.",
         }),
       ),
+      siteUrl: t.Optional(
+        t.Union([t.String({ maxLength: 512 }), t.Null()], {
+          description:
+            "Sidebar-footer website link (absolute http(s) URL), or null to use the default.",
+        }),
+      ),
+      supportEmail: t.Optional(
+        t.Union([t.String({ maxLength: 254 }), t.Null()], {
+          description:
+            "Support e-mail shown in the sidebar support modal, or null to use the default.",
+        }),
+      ),
+      hideGithubLink: t.Optional(
+        t.Boolean({
+          description:
+            "When true, the GitHub entry is removed from the sidebar footer.",
+        }),
+      ),
     }),
     detail: doc(
       "Update branding colors",

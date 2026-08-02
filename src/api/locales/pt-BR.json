@@ -30,6 +30,8 @@
     "invalidCredentials": "Email ou senha inválidos",
     "invalidPassword": "Senha incorreta",
     "invalidSetupToken": "Token de configuração inválido ou ausente",
+    "invalidSiteUrl": "URL do site inválida",
+    "invalidSupportEmail": "E-mail de suporte inválido",
     "invalidVaultBaseUrl": "A URL base deve ser uma URL http(s) válida",
     "invalidVaultName": "O nome deve ter entre 1 e 128 caracteres",
     "invalidVaultParamName": "O nome do parâmetro contém caracteres inválidos",

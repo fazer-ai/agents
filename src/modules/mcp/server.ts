@@ -2475,7 +2475,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "branding_set",
       {
         description:
-          "Set the GLOBAL app identity (SUPER_ADMIN token only). Previews a diff and applies NOTHING unless dry_run is false. brand_name is the white-label display name (title + auth footer; null = default). color_mode SIMPLE uses brand_color (a #rrggbb hex); ADVANCED uses the tokens_light/tokens_dark maps. site_url (absolute http(s) URL) and support_email replace the sidebar-footer defaults; hide_github_link removes the footer GitHub entry (null/empty = default). Logo and favicon are uploaded via branding_asset_set (or cropped in the UI at /admin/branding).",
+          "Set the GLOBAL app identity (SUPER_ADMIN token only). Previews a diff and applies NOTHING unless dry_run is false. brand_name is the white-label display name (title + auth footer; null = default). color_mode SIMPLE uses brand_color (a #rrggbb hex); ADVANCED uses the tokens_light/tokens_dark maps. site_url (absolute http(s) URL) and support_email replace the sidebar-footer defaults (null/empty = back to the default); hide_github_link is a boolean — true removes the footer GitHub entry, false restores it. Logo and favicon are uploaded via branding_asset_set (or cropped in the UI at /admin/branding).",
         inputSchema: {
           brand_name: z.string().nullable().optional(),
           color_mode: z.enum(["SIMPLE", "ADVANCED"]).optional(),

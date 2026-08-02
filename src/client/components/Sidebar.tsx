@@ -225,7 +225,7 @@ function SidebarFooter({ collapsed = false, onNavigate }: SidebarFooterProps) {
       ? hostnameOf(customSiteUrl)
       : // biome-ignore lint/plugin/no-dynamic-i18n-key: extracted via magic comments in src/client/lib/navigation.tsx
         t(link.labelKey, link.defaultLabel);
-    const isExternal = /^https?:\/\//.test(href);
+    const isExternal = isSafeHttpUrl(href);
     const trigger = (
       <a
         href={href}

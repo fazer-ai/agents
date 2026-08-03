@@ -16,7 +16,10 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { verifyChatwootSignature } from "@/modules/chatwoot/signing";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
-import { runEagerMedia } from "@/modules/chatwoot/webhook";
+import {
+  hasPendingInboundMediaUpdate,
+  runEagerMedia,
+} from "@/modules/chatwoot/webhook";
 
 const sign = (secret: string, ts: number, body: string) =>
   `sha256=${createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex")}`;
@@ -328,6 +331,54 @@ describe("isNewIncomingMessage (voice-note infinite-loop guard)", () => {
       meta: {},
     });
     expect(conv && isNewIncomingMessage(conv)).toBe(false);
+  });
+});
+
+describe("hasPendingInboundMediaUpdate", () => {
+  const updatedAudio = (transcribedText?: string) =>
+    normalizeChatwootEvent({
+      event: "message_updated",
+      id: 1001,
+      content: "",
+      message_type: "incoming",
+      private: false,
+      attachments: [
+        {
+          id: 77,
+          file_type: "audio",
+          data_url: "https://chat.example.com/a.ogg",
+          ...(transcribedText === undefined
+            ? {}
+            : { transcribed_text: transcribedText }),
+        },
+      ],
+      conversation: {
+        id: 42,
+        inbox_id: 7,
+        status: "pending",
+        meta: { assignee_type: null, assignee: null },
+      },
+    });
+
+  test("accepts an incoming update when the attachment first appears without transcription", () => {
+    const event = updatedAudio();
+    expect(event && hasPendingInboundMediaUpdate(event)).toBe(true);
+  });
+
+  test("rejects the write-back update after transcription and never treats it as a new turn", () => {
+    const event = updatedAudio("áudio já transcrito");
+    expect(event && hasPendingInboundMediaUpdate(event)).toBe(false);
+    expect(event && isNewIncomingMessage(event)).toBe(false);
+  });
+
+  test("rejects outgoing and message_created events", () => {
+    const outgoing = updatedAudio();
+    if (outgoing?.message) outgoing.message.messageType = "outgoing";
+    expect(outgoing && hasPendingInboundMediaUpdate(outgoing)).toBe(false);
+
+    const created = updatedAudio();
+    if (created) created.event = "message_created";
+    expect(created && hasPendingInboundMediaUpdate(created)).toBe(false);
   });
 });
 

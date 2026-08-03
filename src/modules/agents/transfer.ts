@@ -1043,8 +1043,8 @@ async function createMissingComponents(
       });
       continue;
     }
-    // The import writes straight to the DB (not via the service), so canonicalize authoring shapes
-    // here too — a bundle exported from a pre-normalization instance may carry JSON-Schema
+    // NOTE: the import writes straight to the DB (not via the service), so canonicalize authoring
+    // shapes here too; a bundle exported from a pre-normalization instance may carry JSON-Schema
     // inputSchema / single-brace placeholders.
     const { shapes } = normalizeToolShapes({
       urlTemplate: tdef.urlTemplate,

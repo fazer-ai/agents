@@ -1,4 +1,4 @@
-// Normalization of programmatically-authored HTTP tool shapes. The canonical contract (what the
+// NOTE: normalization of programmatically-authored HTTP tool shapes. The canonical contract (what the
 // runtime executes and the UI produces) is a COMPACT input-schema map — {field: {type, required?,
 // description?, enumValues?, itemType?}} — and {{var}} placeholders in urlTemplate/query/headers/
 // body. API and MCP authors naturally write standard JSON Schema ({properties, required}) and
@@ -23,7 +23,7 @@ export interface NormalizedToolShapes {
   warnings: string[];
 }
 
-// Conversation/contact context variable names the runtime interpolates (mirror of the
+// NOTE: conversation/contact context variable names the runtime interpolates (mirror of the
 // httpToolContext built in graph/prepare.ts + the conversation_id/message_id merged at buildToolset
 // time). Used as the write-time allowlist for single-brace normalization.
 export const CONTEXT_VAR_NAMES = [
@@ -56,7 +56,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-// A valid compact map has ONLY plain-object values (one FieldSpec per field). Standard JSON Schema
+// NOTE: a valid compact map has ONLY plain-object values (one FieldSpec per field). Standard JSON Schema
 // is recognized by `properties` being a map of plain objects PLUS a structural marker no compact
 // map can produce: a string `type`, an array `required`, or every top-level key being a JSON Schema
 // keyword. Requiring every `properties` value to be an object protects the pathological compact
@@ -74,7 +74,7 @@ export function isJsonSchemaShape(raw: unknown): boolean {
   );
 }
 
-// JSON Schema → compact map. Flat scalar/enum/array-of-scalar properties convert faithfully;
+// NOTE: JSON Schema → compact map. Flat scalar/enum/array-of-scalar properties convert faithfully;
 // anything deeper (nested properties, anyOf/oneOf, explicit type "object") degrades to the generic
 // "object" field type. The top-level `required` array marks per-field required flags. `warnings`
 // (optional collector) receives notes about lossy conversions.
@@ -97,9 +97,9 @@ export function compactFromJsonSchema(
         field.type = "enum";
         field.enumValues = s.enum as string[];
       } else {
-        // The compact contract only expresses string enums. Degrade a numeric/boolean enum to its
-        // base scalar type (wider but never rejects a declared value) instead of silently dropping
-        // the values and validating as a free string.
+        // NOTE: the compact contract only expresses string enums. Degrade a numeric/boolean enum
+        // to its base scalar type (wider but never rejects a declared value) instead of silently
+        // dropping the values and validating as a free string.
         field.type = s.enum.every((v) => typeof v === "number")
           ? s.enum.every((v) => Number.isInteger(v))
             ? "integer"
@@ -156,8 +156,8 @@ export function compactFromJsonSchema(
   return out;
 }
 
-// A single-brace {name} that is not part of a {{name}} token. Lookarounds keep {{name}} (and the
-// ambiguous {name}} / {{name} halves) untouched, which also makes the rewrite idempotent.
+// NOTE: a single-brace {name} that is not part of a {{name}} token. Lookarounds keep {{name}} (and
+// the ambiguous {name}} / {{name} halves) untouched, which also makes the rewrite idempotent.
 const SINGLE_BRACE = /(?<!\{)\{\s*([a-zA-Z0-9_]+)\s*\}(?!\})/g;
 
 function rewriteSingleBraces(template: string, names: Set<string>): string {
@@ -181,7 +181,7 @@ function fieldNames(schema: unknown): string[] {
   return isPlainObject(schema) ? Object.keys(schema) : [];
 }
 
-// Normalizes the shapes present in `patch`. `current` supplies the rest of the row on partial
+// NOTE: normalizes the shapes present in `patch`. `current` supplies the rest of the row on partial
 // updates so the placeholder allowlist sees the effective field set; `extraNames` adds caller-known
 // interpolation names (e.g. the runtime's live context keys). Single-brace {name} is rewritten to
 // {{name}} ONLY when the name is a declared input field, a context variable or "secret" — an
@@ -271,7 +271,7 @@ export function normalizeToolShapes(
     }
   }
 
-  // Legacy compact fields may carry source:"fixed" values that are templates too.
+  // NOTE: legacy compact fields may carry source:"fixed" values that are templates too.
   if (shapes.inputSchema !== undefined && isPlainObject(shapes.inputSchema)) {
     const schema = shapes.inputSchema;
     let rewritten: Record<string, unknown> | null = null;
@@ -300,8 +300,8 @@ export function normalizeToolShapes(
   return { shapes, warnings };
 }
 
-// Read-side convenience for consumers that only care about the input schema (e.g. the editor):
-// returns the compact map, converting a JSON-Schema-shaped value when needed.
+// NOTE: read-side convenience for consumers that only care about the input schema (e.g. the
+// editor): returns the compact map, converting a JSON-Schema-shaped value when needed.
 export function normalizeInputSchemaShape(
   raw: unknown,
 ): Record<string, unknown> {

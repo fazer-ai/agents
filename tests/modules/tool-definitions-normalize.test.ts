@@ -42,8 +42,8 @@ describe("isJsonSchemaShape", () => {
   });
 
   test("pathological compact field literally named 'properties' stays compact", () => {
-    // {properties: {type: "object"}} — the value under `properties` is a FieldSpec whose values
-    // are strings, not a JSON Schema properties map of objects.
+    // NOTE: {properties: {type: "object"}} has a FieldSpec (string values) under `properties`,
+    // not a JSON Schema properties map of objects.
     expect(isJsonSchemaShape({ properties: { type: "object" } })).toBe(false);
   });
 
@@ -91,7 +91,7 @@ describe("compactFromJsonSchema", () => {
     expect(out.misto).toEqual({ type: "string" });
     expect(warnings).toHaveLength(4);
     expect(warnings[0]).toContain('"nivel"');
-    // The lossy-enum warnings surface through normalizeToolShapes alongside the conversion notice.
+    // NOTE: the lossy-enum warnings surface through normalizeToolShapes with the conversion notice.
     const { warnings: shapeWarnings } = normalizeToolShapes({
       inputSchema: { properties: { nivel: { enum: [1, 2] } } },
     });
@@ -139,7 +139,7 @@ describe("compactFromJsonSchema", () => {
     expect(joined).toContain('"docs"');
     expect(joined).toContain('"nested"');
     expect(joined).toContain('"either"');
-    // Faithful mappings never warn: a bare {type: "object"} and an untyped array.
+    // NOTE: faithful mappings never warn: a bare {type: "object"} and an untyped array.
     expect(joined).not.toContain('"plain_obj"');
     expect(joined).not.toContain('"bare_list"');
   });

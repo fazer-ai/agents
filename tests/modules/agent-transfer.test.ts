@@ -581,8 +581,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
     });
-    // Simulate a bundle exported from a pre-normalization instance: rename the tool so the import
-    // creates it fresh, and regress its shapes to the legacy authoring forms.
+    // NOTE: simulate a bundle exported from a pre-normalization instance: rename the tool so the
+    // import creates it fresh, and regress its shapes to the legacy authoring forms.
     const legacy = structuredClone(exp);
     const tool = legacy.components?.httpTools.find(
       (h) => h.name === "lookup_order",

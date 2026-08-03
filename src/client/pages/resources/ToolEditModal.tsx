@@ -209,8 +209,9 @@ function emptyForm() {
 // fixed values + body assembly inside inputSchema/body.mode==="fields"; we reconstruct them as explicit
 // rows so the operator sees what was previously assembled by magic. Saving then writes the new shape.
 function formFromTool(tool: Tool) {
-  // Legacy rows authored programmatically may still carry pre-normalization shapes (JSON-Schema
-  // inputSchema, single-brace {var}); render the canonical form so the real AI fields show up.
+  // NOTE: legacy rows authored programmatically may still carry pre-normalization shapes
+  // (JSON-Schema inputSchema, single-brace {var}); render the canonical form so the real AI
+  // fields show up.
   const { shapes } = normalizeToolShapes({
     urlTemplate: tool.urlTemplate,
     query: tool.query ?? {},

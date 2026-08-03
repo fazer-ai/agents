@@ -262,7 +262,7 @@ export function buildHttpTool(
   deps: HttpToolDeps,
 ): StructuredToolInterface {
   const context = deps.context ?? {};
-  // Self-heal shapes authored before write-time normalization existed (or written straight to the
+  // NOTE: self-heal shapes authored before write-time normalization existed (or written straight to the
   // DB): a JSON-Schema-shaped inputSchema becomes the compact map and known single-brace {var}
   // placeholders become {{var}}, so pre-fix rows work without re-creation.
   const { shapes } = normalizeToolShapes(
@@ -345,13 +345,20 @@ export function buildHttpTool(
       }
 
       // Precompute fixed-field values (interpolated with CONTEXT + {{secret}} — never model input).
+      // NOTE: unresolved dependencies interpolate to "" (headers/body semantics) but are tracked
+      // per field, so the URL guard below can refuse to fetch with an incomplete URL segment.
       const ctxLookup = (n: string) => (n in context ? context[n] : undefined);
       const fixedValues: Record<string, string> = {};
+      const fixedMissingDeps = new Map<string, Set<string>>();
       for (const f of fields) {
         if (f.source === "fixed") {
-          fixedValues[f.name] = interpolate(f.value, (n) =>
-            n === "secret" ? (secret ?? "") : ctxLookup(n),
-          );
+          const missing = new Set<string>();
+          fixedValues[f.name] = interpolate(f.value, (n) => {
+            const v = n === "secret" ? secret : ctxLookup(n);
+            if (v == null) missing.add(n);
+            return v ?? undefined;
+          });
+          if (missing.size > 0) fixedMissingDeps.set(f.name, missing);
         }
       }
 
@@ -375,7 +382,7 @@ export function buildHttpTool(
         throw new AppError(`tool ${def.name}: invalid urlTemplate`, 400);
       }
       const pathFields = placeholderNames(effectiveTemplate);
-      // A URL placeholder that resolves to nothing produces a request that cannot be right (an
+      // NOTE: a URL placeholder that resolves to nothing produces a request that cannot be right (an
       // empty path segment / dangling query value). Instead of silently sending it, tell the model
       // which value is missing so it can retry with the field (or explain what it needs).
       const missingUrlNames = new Set<string>();
@@ -385,15 +392,25 @@ export function buildHttpTool(
           missingUrlNames.add(n);
           return undefined;
         }
+        // NOTE: a fixed field whose own {{secret}}/context dependency was unavailable resolved to
+        // "" above; surface the missing dependency instead of fetching an incomplete URL. AI input
+        // never shadows a fixed name (the schema excludes fixed fields), so the map lookup is safe.
+        const deps = !(n in input && input[n] != null)
+          ? fixedMissingDeps.get(n)
+          : undefined;
+        if (deps) {
+          for (const d of deps) missingUrlNames.add(d);
+          return undefined;
+        }
         return encodeURIComponent(v);
       });
       if (missingUrlNames.size > 0) {
-        // An unresolved {{secret}} is an operator/config problem (missing or unresolvable
+        // NOTE: an unresolved {{secret}} is an operator/config problem (missing or unresolvable
         // credential): the model can never supply it, so a retry hint would just loop. Throw like
         // the other config errors in this file; keep the retry message for real input fields.
         if (missingUrlNames.has("secret")) {
           throw new AppError(
-            `tool ${def.name}: the URL references {{secret}} but no credential resolved`,
+            `tool ${def.name}: the URL requires {{secret}} (directly or via a fixed field) but no credential resolved`,
             400,
           );
         }

@@ -818,7 +818,7 @@ describe("buildHttpTool — query params (any method)", () => {
 });
 
 describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_schema + single-brace placeholders)", () => {
-  // The natural shapes an API/MCP author writes: standard JSON Schema for the input and
+  // NOTE: the natural shapes an API/MCP author writes: standard JSON Schema for the input and
   // OpenAPI-style single-brace path params. Both must work (converted/normalized), not fail silently.
   const JSON_SCHEMA_INPUT = {
     required: ["valor"],
@@ -966,8 +966,25 @@ describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_sch
       }),
       { resolveCredential: async () => null, fetchImpl: stubFetch(captured) },
     );
-    // A missing credential is operator config, not model input: the model must never be told to
+    // NOTE: a missing credential is operator config, not model input: the model must never be told to
     // retry with a "secret" field.
+    await expect(tool.invoke({})).rejects.toThrow(/credential/);
+    expect(captured.url).toBeUndefined();
+  });
+
+  test("a fixed URL field depending on an unavailable {{secret}} throws, no fetch", async () => {
+    const captured: Captured = {};
+    const tool = buildHttpTool(
+      def({
+        method: "GET",
+        urlTemplate: `https://${PUBLIC}/v1/x/{{token}}`,
+        inputSchema: { token: { source: "fixed", value: "{{secret}}" } },
+        credentialRef: "k",
+      }),
+      { resolveCredential: async () => null, fetchImpl: stubFetch(captured) },
+    );
+    // NOTE: the fixed value resolves to "" (headers/body semantics), but the URL guard must still refuse
+    // to fetch an incomplete URL and name the credential as the root cause.
     await expect(tool.invoke({})).rejects.toThrow(/credential/);
     expect(captured.url).toBeUndefined();
   });

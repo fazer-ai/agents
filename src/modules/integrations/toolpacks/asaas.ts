@@ -137,8 +137,22 @@ const PIX_CHARGE_SCHEMA = z.object({
     .describe("Due date as YYYY-MM-DD (optional; defaults to today)"),
 });
 
+// NOTE: field order is the arg order the UI projection renders (argsFromZod iterates the shape).
+// Exactly one id is required, enforced in code (not .refine) so the model gets a short
+// instructive message instead of a zod validation dump.
 const PAYMENT_STATUS_SCHEMA = z.object({
-  paymentLinkId: z.string().min(1).describe("The Asaas payment link id"),
+  paymentId: z
+    .string()
+    .optional()
+    .describe(
+      "Asaas payment id (starts with pay_...), returned by asaas_create_pix_charge. Use for PIX/direct charges.",
+    ),
+  paymentLinkId: z
+    .string()
+    .optional()
+    .describe(
+      "Asaas payment link id, returned by asaas_payment_link_create. NOT the slug from the invoice/payment URL.",
+    ),
 });
 
 const ASAAS_TOOL_SPECS: ToolSpec[] = [
@@ -424,12 +438,13 @@ function buildCreatePixChargeTool(
         lines.push(
           "The charge exists but no payment code was returned; check the Asaas dashboard.",
         );
+      lines.push(`(paymentId: ${paymentId})`);
       return lines.join("\n");
     },
     {
       name: "asaas_create_pix_charge",
       description:
-        "Create a PIX charge in Asaas for a customer and return the copy-and-paste PIX code plus the payment page to send them. Use when the customer wants to pay by PIX.",
+        "Create a PIX charge in Asaas for a customer and return the copy-and-paste PIX code plus the payment page to send them. Use when the customer wants to pay by PIX. Returns the paymentId — use it with asaas_payment_status to check whether it was paid.",
       schema: PIX_CHARGE_SCHEMA,
     },
   );
@@ -443,22 +458,30 @@ function buildStatusTool(
   const base = ASAAS_ORIGINS[env];
 
   return tool(
-    async (input: { paymentLinkId: string }) => {
+    async (input: { paymentId?: string; paymentLinkId?: string }) => {
       const token = sel.credentialRef
         ? await ctx.resolveCredential(sel.credentialRef)
         : null;
       if (!token)
         return "Asaas credential is not configured for this integration.";
-      // Path-interpolated id is URL-encoded; the origin stays the fixed constant above.
-      const id = encodeURIComponent(input.paymentLinkId);
+      let paymentId = input.paymentId?.trim() || undefined;
+      let linkId = input.paymentLinkId?.trim() || undefined;
+      // Defensive: a pay_... id in the link field is a payment id (models mix them up).
+      if (!paymentId && linkId?.startsWith("pay_")) {
+        paymentId = linkId;
+        linkId = undefined;
+      }
+      if (!paymentId && !linkId)
+        return "Provide paymentId (pay_..., returned by asaas_create_pix_charge) or paymentLinkId (returned by asaas_payment_link_create).";
+      // Path-interpolated ids are URL-encoded; the origin stays the fixed constant above.
+      // When both arrive, the payment wins: its status is the terminal fact (a link stays
+      // `active` even after it was paid).
+      const path = paymentId
+        ? `/payments/${encodeURIComponent(paymentId)}`
+        : `/paymentLinks/${encodeURIComponent(linkId as string)}`;
       let res: AsaasResponse;
       try {
-        res = await asaasFetch(
-          base,
-          `/paymentLinks/${id}`,
-          { method: "GET", token },
-          ctx,
-        );
+        res = await asaasFetch(base, path, { method: "GET", token }, ctx);
       } catch (err) {
         logger.warn({ err, env }, "asaas: payment status request failed");
         return "Failed to reach the payment provider.";
@@ -467,7 +490,19 @@ function buildStatusTool(
         return `The payment provider returned HTTP ${res.status}.`;
       }
       const d = (res.json ?? {}) as Record<string, unknown>;
-      // Bounded projection (no secrets; status-relevant fields only).
+      // Bounded projections (no secrets; status-relevant fields only). The payment path skips
+      // netValue (merchant-facing fee math), invoiceUrl (possibly stale page) and
+      // externalReference (internal correlation token).
+      if (paymentId) {
+        return JSON.stringify({
+          id: d.id,
+          status: d.status,
+          value: d.value,
+          billingType: d.billingType,
+          dueDate: d.dueDate,
+          paymentDate: d.paymentDate,
+        });
+      }
       return JSON.stringify({
         id: d.id,
         active: d.active,
@@ -479,7 +514,7 @@ function buildStatusTool(
     {
       name: "asaas_payment_status",
       description:
-        "Check the status of an Asaas payment link by its id (the paymentLinkId returned at creation).",
+        "Check the status of an Asaas payment. Pass paymentId (pay_..., returned by asaas_create_pix_charge) OR paymentLinkId (returned by asaas_payment_link_create); never the invoice URL or its slug. Payment status is PENDING/RECEIVED/CONFIRMED/OVERDUE/REFUNDED.",
       schema: PAYMENT_STATUS_SCHEMA,
     },
   );

@@ -25,6 +25,22 @@ describe("toolpack tool specs (UI projection)", () => {
     expect(mobile?.required).toBe(false);
   });
 
+  test("asaas_payment_status exposes paymentId + paymentLinkId, both optional", () => {
+    const views = getToolpackToolViews("ASAAS");
+    const status = views.find((v) => v.name === "asaas_payment_status");
+    expect(status?.args.map((a) => a.name)).toEqual([
+      "paymentId",
+      "paymentLinkId",
+    ]);
+    expect(status?.args.every((a) => a.required === false)).toBe(true);
+    expect(
+      status?.args.find((a) => a.name === "paymentId")?.description,
+    ).toContain("pay_");
+    expect(
+      status?.args.find((a) => a.name === "paymentLinkId")?.description,
+    ).toContain("link");
+  });
+
   test("getToolpackToolNames is the fail-closed allowlist; empty for unknown/native", () => {
     expect(getToolpackToolNames("ASAAS")).toContain("asaas_create_pix_charge");
     expect(getToolpackToolNames("GOOGLE_DRIVE")).toEqual([

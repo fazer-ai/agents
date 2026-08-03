@@ -1729,7 +1729,7 @@
       "label": "Payment link"
     },
     "asaas_payment_status": {
-      "desc": "Check the status of an Asaas payment link.",
+      "desc": "Check the status of an Asaas charge (PIX) or payment link.",
       "label": "Check payment"
     },
     "calendar_cancel_event": {

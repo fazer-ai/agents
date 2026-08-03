@@ -1735,7 +1735,7 @@
       "label": "Gerar link de pagamento"
     },
     "asaas_payment_status": {
-      "desc": "Consulta o status de um link de pagamento Asaas.",
+      "desc": "Consulta o status de uma cobrança (PIX) ou de um link de pagamento Asaas.",
       "label": "Consultar pagamento"
     },
     "calendar_cancel_event": {

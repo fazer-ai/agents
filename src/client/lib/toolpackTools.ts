@@ -71,7 +71,7 @@ export function toolpackToolMeta(name: string, t: TFunction): ToolpackToolMeta {
         label: t("toolpackTools.asaas_payment_status.label", "Check payment"),
         description: t(
           "toolpackTools.asaas_payment_status.desc",
-          "Check the status of an Asaas payment link.",
+          "Check the status of an Asaas charge (PIX) or payment link.",
         ),
       };
     case "calendar_list_events":

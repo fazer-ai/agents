@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -21,6 +20,7 @@ import {
   enqueueJob,
 } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { ResolveThenReplyModel } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -78,32 +78,6 @@ function makeStub(opts: {
     },
   } as unknown as ChatwootClient;
   return async () => client;
-}
-
-// A model that calls resolve_conversation once and then answers (possibly with empty text) —
-// exercises the deferred-resolve intent against the flush gates.
-class ResolveThenReplyModel {
-  constructor(private reply: string) {}
-  async invoke(): Promise<AIMessage> {
-    return new AIMessage(this.reply);
-  }
-  bindTools(_tools: unknown) {
-    const self = this;
-    let n = 0;
-    return {
-      async invoke(): Promise<AIMessage> {
-        n++;
-        return n === 1
-          ? new AIMessage({
-              content: "",
-              tool_calls: [
-                { name: "resolve_conversation", args: {}, id: "call_resolve" },
-              ],
-            })
-          : new AIMessage(self.reply);
-      },
-    };
-  }
 }
 
 // makeStub + a toggleStatus recorder, for the resolve-intent tests.

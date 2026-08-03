@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -13,6 +12,7 @@ import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { ResolveThenReplyModel } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -63,33 +63,6 @@ function makeStubClient(sent: Array<[number, string]>) {
     },
   } as unknown as ChatwootClient;
   return async () => client;
-}
-
-// A model that calls resolve_conversation once and then answers (possibly with empty text) —
-// the "resolve + final reply in the same turn" shape seen in production. The raw invoke covers
-// the hard-limit path.
-class ResolveThenReplyModel {
-  constructor(private reply: string) {}
-  async invoke(): Promise<AIMessage> {
-    return new AIMessage(this.reply);
-  }
-  bindTools(_tools: unknown) {
-    const self = this;
-    let n = 0;
-    return {
-      async invoke(): Promise<AIMessage> {
-        n++;
-        return n === 1
-          ? new AIMessage({
-              content: "",
-              tool_calls: [
-                { name: "resolve_conversation", args: {}, id: "call_resolve" },
-              ],
-            })
-          : new AIMessage(self.reply);
-      },
-    };
-  }
 }
 
 // Ordered recorder for sendMessage/toggleStatus. `mirrorOnToggle` simulates the Chatwoot webhook
@@ -435,6 +408,136 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("empty");
     expect(calls).toEqual([["toggleStatus", 912, "resolved"]]);
+  });
+
+  // The audio-delivery apply point: TTS on (mirror) + the customer sent audio. The stub carries a
+  // pre-transcribed voice note so no STT call happens; ttsFetch stubs the synthesis provider.
+  const audioIncoming = (convId: number) =>
+    incoming({
+      conversationId: convId,
+      message: {
+        id: 1,
+        content: "",
+        messageType: "incoming",
+        private: false,
+        attachments: [
+          {
+            id: 5,
+            fileType: "audio",
+            dataUrl: "https://chat.example.com/voice.ogg",
+            transcribedText: "pode encerrar, obrigado",
+          },
+        ],
+      },
+    });
+
+  async function withTtsMirror(fn: () => Promise<void>) {
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true },
+    });
+    const key = await suDb.vaultEntry.findFirstOrThrow({
+      where: { tenantId, name: "llm-key" },
+      select: { id: true },
+    });
+    await suDb.agent.update({
+      where: { id: agent.id },
+      data: {
+        settings: {
+          split: { enabled: false },
+          tts: {
+            mode: "mirror",
+            provider: "openai",
+            credentialRef: `vault:${key.id}`,
+          },
+        },
+      },
+    });
+    try {
+      await fn();
+    } finally {
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: { settings: { split: { enabled: false } } },
+      });
+    }
+  }
+
+  function audioClient(calls: Array<[string, number]>) {
+    return async () =>
+      ({
+        sendMessage: async (c: number) => {
+          calls.push(["sendMessage", c]);
+          return {};
+        },
+        sendAudioMessage: async (c: number) => {
+          calls.push(["sendAudioMessage", c]);
+          return {};
+        },
+        toggleStatus: async (c: number) => {
+          calls.push(["toggleStatus", c]);
+          return {};
+        },
+      }) as unknown as ChatwootClient;
+  }
+
+  test("deferred resolve applies after the audio reply is delivered", async () => {
+    await withTtsMirror(async () => {
+      await seedConversation(913, null);
+      const calls: Array<[string, number]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: audioIncoming(913),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new ResolveThenReplyModel("Fechado!") as unknown as BaseChatModel,
+          makeClient: audioClient(calls),
+          checkpointer: new MemorySaver(),
+          ttsFetch: (async () =>
+            new Response(new Uint8Array([1, 2, 3]), {
+              status: 200,
+              headers: { "Content-Type": "audio/mpeg" },
+            })) as unknown as typeof fetch,
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(calls).toEqual([
+        ["sendAudioMessage", 913],
+        ["toggleStatus", 913],
+      ]);
+    });
+  });
+
+  test("TTS failure falls back to text and still applies the deferred resolve", async () => {
+    await withTtsMirror(async () => {
+      await seedConversation(914, null);
+      const calls: Array<[string, number]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: audioIncoming(914),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new ResolveThenReplyModel("Fechado!") as unknown as BaseChatModel,
+          makeClient: audioClient(calls),
+          checkpointer: new MemorySaver(),
+          ttsFetch: (async () =>
+            new Response("boom", { status: 500 })) as unknown as typeof fetch,
+        },
+      });
+      // Audio is best-effort: synthesis failure downgrades to text, never drops the reply — and
+      // the deferred resolve still lands after the delivered (text) reply.
+      expect(outcome).toBe("posted");
+      expect(calls).toEqual([
+        ["sendMessage", 914],
+        ["toggleStatus", 914],
+      ]);
+    });
   });
 
   test("emits agent-activity (started + finished) on the tenant topic during a turn", async () => {

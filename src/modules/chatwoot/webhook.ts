@@ -58,6 +58,7 @@ import {
   firstAudioAttachment,
   firstVisualAttachment,
   isHumanAgentMessage,
+  isIncomingMessage,
   isNewIncomingMessage,
   normalizeChatwootEvent,
   shouldBotHandle,
@@ -304,6 +305,54 @@ export interface ProcessChatwootParams {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// A few Chatwoot transports persist the attachment immediately after creating the message. In that
+// shape, message_created arms the turn without media and message_updated is the first event that
+// carries the audio/image. Analyze that late attachment, but never let the update drive debounce or
+// a second turn. A write-back update is a no-op because it already carries the extracted content.
+export function hasPendingInboundMediaUpdate(
+  n: NormalizedChatwootEvent,
+): boolean {
+  if (n.event !== "message_updated" || !isIncomingMessage(n)) return false;
+  const audio = firstAudioAttachment(n);
+  if (
+    audio &&
+    !audio.transcribedText &&
+    !n.message?.transcribedText
+  ) {
+    return true;
+  }
+  return Boolean(
+    firstVisualAttachment(n) &&
+      !n.message?.imageDescription &&
+      !n.message?.extractedText,
+  );
+}
+
+async function isTestConversationActivated(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number | null;
+  base: PrismaClient;
+}): Promise<boolean> {
+  if (params.conversationId === null) return false;
+  const row = await runScopedOn(
+    params.base,
+    sysCtx(params.tenantId),
+    (db) =>
+      db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId: params.tenantId,
+            chatwootInstanceId: params.instanceId,
+            chatwootConversationId: params.conversationId as number,
+          },
+        },
+        select: { testActivatedAt: true },
+      }),
+  );
+  return row?.testActivatedAt != null;
 }
 
 // Eager media analysis: transcribe an incoming voice note (STT) and extract an incoming image/document
@@ -974,18 +1023,13 @@ export async function processChatwootDelivery(
 
   const n = params.normalized;
 
-  // ONLY a brand-new incoming message (message_created) drives anything below. A message_updated
-  // re-delivered to the bot — notably our own STT/vision write-back, which the fork re-dispatches
-  // (Message#dispatch_update_event) — must do nothing but mirror. Hoisted here because it gates the
-  // agent-runtime read, the command flag, and the eager-media decision.
+  // Only message_created drives commands, debounce and the agent turn. A message_updated can still
+  // carry an attachment that was absent at creation time; it is eligible for media analysis only.
   const isNewIncoming = isNewIncomingMessage(n);
+  const hasLateMedia = hasPendingInboundMediaUpdate(n);
 
-  // Resolve the bound agent's runtime knobs (enabled + mode) once on a new incoming message (cheap
-  // scoped read). It gates two things: (1) command activeness — control commands (/teste, /reset)
-  // only apply to a TEST-mode agent, otherwise they are ordinary customer text, and the mirror must
-  // NOT count an ACTIVE command as genuine engagement (no lastInboundAt advance / follow-up arm); and
-  // (2) eager media — STT/vision run on every incoming message only for an ENABLED + PRODUCTION agent.
-  const rt = isNewIncoming
+  // Resolve the bound agent for a new message or a late-media update. The latter never drives a turn.
+  const rt = isNewIncoming || hasLateMedia
     ? await inboxAgentRuntime(
         params.tenantId,
         params.instanceId,
@@ -1102,12 +1146,26 @@ export async function processChatwootDelivery(
     }
   }
 
-  // Eager media (STT/vision) for an ENABLED + PRODUCTION agent runs on EVERY new incoming message —
-  // even one the agent won't reply to (out of hours, a human is handling, a closed conversation) — so
-  // the content is captured for the agent's memory/ingestion. Test-mode agents analyze only
-  // on the answer path (below); a disabled/unbound inbox never analyzes (no STT/vision cost). The
-  // call is idempotent, so the answer-path call below is a no-op when this already ran. Best-effort.
-  if (isNewIncoming && rt?.enabled && rt.mode === "production") {
+  // Production analyzes every new incoming message. Some transports attach media just after
+  // message_created, so the first useful attachment arrives on message_updated; analyze that update
+  // without arming debounce or a second turn. Test mode keeps its cost fence and only analyzes a late
+  // attachment when this conversation was explicitly activated.
+  const activatedTestLateMedia =
+    hasLateMedia &&
+    rt?.enabled === true &&
+    rt.mode === "test" &&
+    act &&
+    (await isTestConversationActivated({
+      tenantId: params.tenantId,
+      instanceId: params.instanceId,
+      conversationId: n.conversationId,
+      base,
+    }));
+  if (
+    rt?.enabled &&
+    ((isNewIncoming && rt.mode === "production") ||
+      (hasLateMedia && (rt.mode === "production" || activatedTestLateMedia)))
+  ) {
     await runEagerMedia(params.tenantId, params.instanceId, n, base);
   }
 

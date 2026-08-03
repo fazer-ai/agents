@@ -56,6 +56,22 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+// NOTE: parsed JSON can carry an own "__proto__" key; plain assignment on a fresh {} would invoke
+// the inherited setter and silently drop it. Define an own property instead wherever a
+// caller-controlled key lands in an output map.
+function setOwn(
+  target: Record<string, unknown>,
+  key: string,
+  value: unknown,
+): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
 // NOTE: a valid compact map has ONLY plain-object values (one FieldSpec per field). Standard JSON Schema
 // is recognized by `properties` being a map of plain objects PLUS a structural marker no compact
 // map can produce: a string `type`, an array `required`, or every top-level key being a JSON Schema
@@ -151,7 +167,7 @@ export function compactFromJsonSchema(
       field.description = s.description;
     }
     if (required.has(name)) field.required = true;
-    out[name] = field;
+    setOwn(out, name, field);
   }
   return out;
 }
@@ -238,10 +254,10 @@ export function normalizeToolShapes(
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       if (typeof v === "string") {
-        out[k] = rewriteSingleBraces(v, names);
+        setOwn(out, k, rewriteSingleBraces(v, names));
         collectUnknownTokens(v, names, unknown);
       } else {
-        out[k] = v;
+        setOwn(out, k, v);
       }
     }
     shapes[key] = out;
@@ -281,7 +297,7 @@ export function normalizeToolShapes(
       const next = rewriteSingleBraces(spec.value, names);
       if (next !== spec.value) {
         rewritten = rewritten ?? { ...schema };
-        rewritten[name] = { ...spec, value: next };
+        setOwn(rewritten, name, { ...spec, value: next });
       }
     }
     if (rewritten) shapes.inputSchema = rewritten;

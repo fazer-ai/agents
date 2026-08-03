@@ -54,6 +54,34 @@ describe("isJsonSchemaShape", () => {
   });
 });
 
+describe("prototype-safe output maps", () => {
+  test('a field literally named "__proto__" survives conversion as an own key', () => {
+    // NOTE: JSON.parse creates "__proto__" as an OWN key; a plain out[name] assignment would
+    // invoke the inherited setter and silently drop it.
+    const raw = JSON.parse(
+      '{"properties":{"__proto__":{"type":"string"}},"required":["__proto__"]}',
+    );
+    const out = compactFromJsonSchema(raw);
+    expect(Object.hasOwn(out, "__proto__")).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(out, "__proto__")?.value).toEqual({
+      type: "string",
+      required: true,
+    });
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+  });
+
+  test('a query param named "__proto__" survives normalization as an own key', () => {
+    const { shapes } = normalizeToolShapes({
+      query: JSON.parse('{"__proto__":"static-value"}'),
+    });
+    const query = shapes.query as Record<string, unknown>;
+    expect(Object.hasOwn(query, "__proto__")).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(query, "__proto__")?.value).toBe(
+      "static-value",
+    );
+  });
+});
+
 describe("compactFromJsonSchema", () => {
   test("converts scalars, required flags and descriptions", () => {
     const out = compactFromJsonSchema({

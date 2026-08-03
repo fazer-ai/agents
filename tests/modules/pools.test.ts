@@ -167,7 +167,7 @@ describe.skipIf(!dbUp)("tier-1 pools CRUD", () => {
   });
 
   test("tool definitions: programmatic authoring shapes are stored canonical", async () => {
-    // JSON-Schema input + OpenAPI-style single-brace path param (what an API/MCP author writes).
+    // NOTE: JSON-Schema input + OpenAPI-style single-brace path param (what an API/MCP author writes).
     const td = await createToolDefinition(
       ctx(tenant),
       {
@@ -188,7 +188,7 @@ describe.skipIf(!dbUp)("tier-1 pools CRUD", () => {
     });
     expect(td.urlTemplate).toBe("https://api.example.com/v1/cnpj/{{cnpj}}");
 
-    // A partial update normalizes against the row's existing field set.
+    // NOTE: a partial update normalizes against the row's existing field set.
     const updated = await updateToolDefinition(
       ctx(tenant),
       BigInt(td.id),

@@ -186,8 +186,8 @@ export async function createToolDefinition(
   }
   const tenantId = ctx.tenantId;
   const data = toolDefinitionCreateSchema.parse(input);
-  // Canonicalize programmatic authoring shapes (JSON-Schema inputSchema, single-brace {var}) so
-  // storage always holds what the runtime executes.
+  // NOTE: canonicalize programmatic authoring shapes (JSON-Schema inputSchema, single-brace
+  // {var}) so storage always holds what the runtime executes.
   const { shapes } = normalizeToolShapes({
     urlTemplate: data.urlTemplate,
     query: data.query,
@@ -249,7 +249,7 @@ export async function updateToolDefinition(
       );
     }
     if (data.name) await assertNameFree(db, data.name, id);
-    // Canonicalize the patched shapes; the current row supplies the rest so the placeholder
+    // NOTE: canonicalize the patched shapes; the current row supplies the rest so the placeholder
     // allowlist sees the effective field set on partial updates.
     const { shapes } = normalizeToolShapes(
       {

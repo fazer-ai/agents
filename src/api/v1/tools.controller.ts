@@ -92,7 +92,7 @@ export const writeBody = t.Object({
   body: t.Optional(
     t.Record(t.String(), t.Unknown(), {
       description:
-        "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
+        "Request body template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
     }),
   ),
   credentialRef: t.Optional(

@@ -114,10 +114,16 @@ export function compactFromJsonSchema(
     } else if (s.type === "array") {
       field.type = "array";
       const items = isPlainObject(s.items) ? s.items : {};
-      field.itemType =
+      const scalarItem =
         typeof items.type === "string" && SCALAR_TYPES.has(items.type)
           ? items.type
-          : "string";
+          : null;
+      field.itemType = scalarItem ?? "string";
+      if (!scalarItem && items.type !== undefined) {
+        warnings?.push(
+          `field "${name}": array item type "${String(items.type)}" is not expressible in the compact schema; items validate as "string"`,
+        );
+      }
     } else if (
       s.type === "object" ||
       isPlainObject(s.properties) ||
@@ -125,6 +131,16 @@ export function compactFromJsonSchema(
       Array.isArray(s.oneOf)
     ) {
       field.type = "object";
+      // NOTE: a bare {type: "object"} maps faithfully; only a discarded sub-schema is lossy.
+      if (
+        isPlainObject(s.properties) ||
+        Array.isArray(s.anyOf) ||
+        Array.isArray(s.oneOf)
+      ) {
+        warnings?.push(
+          `field "${name}": nested/union sub-schema is not expressible in the compact schema; degraded to a generic "object" (structural validation lost)`,
+        );
+      }
     } else {
       field.type =
         typeof s.type === "string" && SCALAR_TYPES.has(s.type)

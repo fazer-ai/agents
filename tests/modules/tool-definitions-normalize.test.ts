@@ -118,6 +118,31 @@ describe("compactFromJsonSchema", () => {
     expect(out.anyof).toEqual({ type: "object" });
     expect(out.untyped).toEqual({ type: "string" });
   });
+
+  test("lossy structural conversions warn; faithful ones stay silent", () => {
+    const warnings: string[] = [];
+    const out = compactFromJsonSchema(
+      {
+        properties: {
+          docs: { type: "array", items: { type: "object" } },
+          bare_list: { type: "array" },
+          nested: { type: "object", properties: { x: { type: "string" } } },
+          plain_obj: { type: "object" },
+          either: { anyOf: [{ type: "string" }, { type: "integer" }] },
+        },
+      },
+      warnings,
+    );
+    expect(out.docs).toEqual({ type: "array", itemType: "string" });
+    expect(out.plain_obj).toEqual({ type: "object" });
+    const joined = warnings.join("\n");
+    expect(joined).toContain('"docs"');
+    expect(joined).toContain('"nested"');
+    expect(joined).toContain('"either"');
+    // Faithful mappings never warn: a bare {type: "object"} and an untyped array.
+    expect(joined).not.toContain('"plain_obj"');
+    expect(joined).not.toContain('"bare_list"');
+  });
 });
 
 describe("normalizeToolShapes — single-brace placeholders", () => {

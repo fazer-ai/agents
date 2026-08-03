@@ -9792,7 +9792,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
+                    "description": "Request body template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -9912,7 +9912,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
+                    "description": "Request body template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -10032,7 +10032,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
+                    "description": "Request body template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -10388,7 +10388,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
+                    "description": "Request body template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -10508,7 +10508,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
+                    "description": "Request body template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -10628,7 +10628,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
+                    "description": "Request body template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}

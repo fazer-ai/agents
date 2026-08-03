@@ -510,8 +510,8 @@ export async function toolCreate(
     urlTemplate: args.url_template,
     allowedHosts: args.allowed_hosts,
   } as ToolDefinitionCreate;
-  // Surface what the service will canonicalize (JSON-Schema input_schema, single-brace {var}) so
-  // the author sees the converted shape — and probable typos — in the preview, before applying.
+  // NOTE: surface what the service will canonicalize (JSON-Schema input_schema, single-brace
+  // {var}) so the author sees the converted shape and probable typos in the preview.
   const norm = normalizeToolShapes({
     urlTemplate: input.urlTemplate,
     query: input.query,
@@ -569,7 +569,7 @@ export async function toolUpdate(
   }
   try {
     const current = await getToolDefinition(ctx, id, base);
-    // Preview the canonical form the service will store (JSON-Schema input_schema converted,
+    // NOTE: preview the canonical form the service will store (JSON-Schema input_schema converted,
     // single-brace {var} normalized against the effective field set) plus probable-typo warnings.
     const norm = normalizeToolShapes(
       {

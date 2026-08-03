@@ -382,6 +382,8 @@ export function buildHttpTool(
         throw new AppError(`tool ${def.name}: invalid urlTemplate`, 400);
       }
       const pathFields = placeholderNames(effectiveTemplate);
+      const isAiFieldName = (n: string): boolean =>
+        fields.some((f) => f.name === n && f.source !== "fixed");
       // NOTE: a URL placeholder that resolves to nothing produces a request that cannot be right (an
       // empty path segment / dangling query value). Instead of silently sending it, tell the model
       // which value is missing so it can retry with the field (or explain what it needs).
@@ -407,10 +409,22 @@ export function buildHttpTool(
       if (missingUrlNames.size > 0) {
         // NOTE: an unresolved {{secret}} is an operator/config problem (missing or unresolvable
         // credential): the model can never supply it, so a retry hint would just loop. Throw like
-        // the other config errors in this file; keep the retry message for real input fields.
+        // the other config errors in this file.
         if (missingUrlNames.has("secret")) {
           throw new AppError(
             `tool ${def.name}: the URL requires {{secret}} (directly or via a fixed field) but no credential resolved`,
+            400,
+          );
+        }
+        // NOTE: context variables, fixed-field dependencies and unknown tokens are injected by the
+        // platform, never supplied by the model, so those also throw; the retry message is reserved
+        // for placeholders the model can actually provide (AI-source input fields).
+        const nonInput = [...missingUrlNames].filter((n) => !isAiFieldName(n));
+        if (nonInput.length > 0) {
+          throw new AppError(
+            `tool ${def.name}: no value available for URL placeholder(s) ${nonInput
+              .map((n) => `{{${n}}}`)
+              .join(", ")} (resolved from context/config, not model input)`,
             400,
           );
         }
@@ -467,8 +481,6 @@ export function buildHttpTool(
       // query values, fixed values and the raw body; {{aiField}} resolves from model input.
       const lookupWithSecret = (n: string): string | undefined =>
         n === "secret" ? (secret ?? "") : valueLookup(n);
-      const isAiFieldName = (n: string): boolean =>
-        fields.some((f) => f.name === n && f.source !== "fixed");
 
       // Query: explicit Record<string,string> templates, applied for ANY method. Interpolated but NOT
       // pre-encoded (searchParams.set encodes once — pre-encoding would double-encode). A param already

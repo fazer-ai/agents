@@ -989,6 +989,24 @@ describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_sch
     expect(captured.url).toBeUndefined();
   });
 
+  test("a missing context variable in the URL throws (a retry hint would loop), no fetch", async () => {
+    const captured: Captured = {};
+    const tool = buildHttpTool(
+      def({
+        method: "GET",
+        urlTemplate: `https://${PUBLIC}/v1/contacts/{{contact_email}}`,
+      }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch(captured),
+        context: {},
+      },
+    );
+    // NOTE: context vars are injected by the platform; the model can never supply them.
+    await expect(tool.invoke({})).rejects.toThrow(/contact_email/);
+    expect(captured.url).toBeUndefined();
+  });
+
   test("unresolved URL placeholder returns an instructive error to the model, no fetch", async () => {
     const captured: Captured = {};
     const tool = buildHttpTool(

@@ -397,11 +397,11 @@ export function buildHttpTool(
         // NOTE: a fixed field whose own {{secret}}/context dependency was unavailable resolved to
         // "" above; surface the missing dependency instead of fetching an incomplete URL. AI input
         // never shadows a fixed name (the schema excludes fixed fields), so the map lookup is safe.
-        const deps = !(n in input && input[n] != null)
+        const missingDeps = !(n in input && input[n] != null)
           ? fixedMissingDeps.get(n)
           : undefined;
-        if (deps) {
-          for (const d of deps) missingUrlNames.add(d);
+        if (missingDeps) {
+          for (const d of missingDeps) missingUrlNames.add(d);
           return undefined;
         }
         return encodeURIComponent(v);

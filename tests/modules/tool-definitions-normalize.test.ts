@@ -163,6 +163,15 @@ describe("compactFromJsonSchema", () => {
     );
     expect(out.docs).toEqual({ type: "array", itemType: "string" });
     expect(out.plain_obj).toEqual({ type: "object" });
+    // NOTE: allOf is a composition keyword like anyOf/oneOf; an allOf-only field must degrade to
+    // "object" with a warning, never to a silent "string".
+    const allOfWarnings: string[] = [];
+    const allOfOut = compactFromJsonSchema(
+      { properties: { combo: { allOf: [{ type: "string" }] } } },
+      allOfWarnings,
+    );
+    expect(allOfOut.combo).toEqual({ type: "object" });
+    expect(allOfWarnings.join("\n")).toContain('"combo"');
     const joined = warnings.join("\n");
     expect(joined).toContain('"docs"');
     expect(joined).toContain('"nested"');

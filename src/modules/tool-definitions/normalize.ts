@@ -144,14 +144,16 @@ export function compactFromJsonSchema(
       s.type === "object" ||
       isPlainObject(s.properties) ||
       Array.isArray(s.anyOf) ||
-      Array.isArray(s.oneOf)
+      Array.isArray(s.oneOf) ||
+      Array.isArray(s.allOf)
     ) {
       field.type = "object";
       // NOTE: a bare {type: "object"} maps faithfully; only a discarded sub-schema is lossy.
       if (
         isPlainObject(s.properties) ||
         Array.isArray(s.anyOf) ||
-        Array.isArray(s.oneOf)
+        Array.isArray(s.oneOf) ||
+        Array.isArray(s.allOf)
       ) {
         warnings?.push(
           `field "${name}": nested/union sub-schema is not expressible in the compact schema; degraded to a generic "object" (structural validation lost)`,

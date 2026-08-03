@@ -26,6 +26,7 @@ import {
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
 import { assertNoSecrets } from "@/modules/n8n-export/n8n";
+import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import {
   createPendingVaultEntry,
   formatVaultRef,
@@ -1042,6 +1043,16 @@ async function createMissingComponents(
       });
       continue;
     }
+    // The import writes straight to the DB (not via the service), so canonicalize authoring shapes
+    // here too — a bundle exported from a pre-normalization instance may carry JSON-Schema
+    // inputSchema / single-brace placeholders.
+    const { shapes } = normalizeToolShapes({
+      urlTemplate: tdef.urlTemplate,
+      query: tdef.query ?? {},
+      headers: tdef.headers,
+      body: tdef.body,
+      inputSchema: tdef.inputSchema,
+    });
     await db.toolDefinition.create({
       data: {
         tenantId,
@@ -1050,13 +1061,13 @@ async function createMissingComponents(
         label: tdef.label ?? tdef.name,
         description: tdef.description ?? null,
         method: tdef.method,
-        urlTemplate: tdef.urlTemplate,
+        urlTemplate: (shapes.urlTemplate ?? tdef.urlTemplate) as string,
         allowedHosts: tdef.allowedHosts,
-        headers: tdef.headers as Prisma.InputJsonValue,
-        inputSchema: tdef.inputSchema as Prisma.InputJsonValue,
+        headers: shapes.headers as Prisma.InputJsonValue,
+        inputSchema: shapes.inputSchema as Prisma.InputJsonValue,
         outputSchema: tdef.outputSchema as Prisma.InputJsonValue,
-        query: (tdef.query ?? {}) as Prisma.InputJsonValue,
-        body: tdef.body as Prisma.InputJsonValue,
+        query: shapes.query as Prisma.InputJsonValue,
+        body: shapes.body as Prisma.InputJsonValue,
         riskTier: tdef.riskTier,
         ackEnabled: tdef.ackEnabled,
         ackMessage: tdef.ackMessage ?? null,

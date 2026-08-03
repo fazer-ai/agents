@@ -9753,7 +9753,7 @@
                     ]
                   },
                   "urlTemplate": {
-                    "description": "Request URL template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "string"
                   },
                   "allowedHosts": {
@@ -9771,7 +9771,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "JSON Schema describing the parameters the agent must supply.",
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -9792,7 +9792,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -9873,7 +9873,7 @@
                     ]
                   },
                   "urlTemplate": {
-                    "description": "Request URL template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "string"
                   },
                   "allowedHosts": {
@@ -9891,7 +9891,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "JSON Schema describing the parameters the agent must supply.",
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -9912,7 +9912,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -9993,7 +9993,7 @@
                     ]
                   },
                   "urlTemplate": {
-                    "description": "Request URL template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "string"
                   },
                   "allowedHosts": {
@@ -10011,7 +10011,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "JSON Schema describing the parameters the agent must supply.",
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -10032,7 +10032,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -10349,7 +10349,7 @@
                     ]
                   },
                   "urlTemplate": {
-                    "description": "Request URL template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "string"
                   },
                   "allowedHosts": {
@@ -10367,7 +10367,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "JSON Schema describing the parameters the agent must supply.",
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -10388,7 +10388,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -10469,7 +10469,7 @@
                     ]
                   },
                   "urlTemplate": {
-                    "description": "Request URL template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "string"
                   },
                   "allowedHosts": {
@@ -10487,7 +10487,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "JSON Schema describing the parameters the agent must supply.",
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -10508,7 +10508,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -10589,7 +10589,7 @@
                     ]
                   },
                   "urlTemplate": {
-                    "description": "Request URL template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "string"
                   },
                   "allowedHosts": {
@@ -10607,7 +10607,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "JSON Schema describing the parameters the agent must supply.",
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -10628,7 +10628,7 @@
                     }
                   },
                   "body": {
-                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+                    "description": "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}

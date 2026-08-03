@@ -23,6 +23,7 @@ import { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
 import { normalizeToolName } from "@/graph/tools/toolName";
+import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 
 type ToolsData = Awaited<ReturnType<typeof api.api.v1.tools.get>>["data"];
 export type Tool = NonNullable<ToolsData>["tools"][number];
@@ -208,23 +209,32 @@ function emptyForm() {
 // fixed values + body assembly inside inputSchema/body.mode==="fields"; we reconstruct them as explicit
 // rows so the operator sees what was previously assembled by magic. Saving then writes the new shape.
 function formFromTool(tool: Tool) {
-  const schema = (tool.inputSchema ?? {}) as Record<string, unknown>;
-  const bodyCfg = (tool.body ?? {}) as {
+  // Legacy rows authored programmatically may still carry pre-normalization shapes (JSON-Schema
+  // inputSchema, single-brace {var}); render the canonical form so the real AI fields show up.
+  const { shapes } = normalizeToolShapes({
+    urlTemplate: tool.urlTemplate,
+    query: tool.query ?? {},
+    headers: tool.headers ?? {},
+    body: tool.body ?? {},
+    inputSchema: tool.inputSchema ?? {},
+  });
+  const urlTemplate = (shapes.urlTemplate ?? tool.urlTemplate) as string;
+  const schema = (shapes.inputSchema ?? {}) as Record<string, unknown>;
+  const bodyCfg = (shapes.body ?? {}) as {
     mode?: string;
     raw?: string;
     rows?: { key?: unknown; value?: unknown }[];
   };
   const aiFields = aiFieldsFromSchema(schema);
   const inUrl = new Set(
-    [...tool.urlTemplate.matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g)].map(
+    [...urlTemplate.matchAll(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g)].map(
       (m) => m[1],
     ),
   );
 
+  const query = (shapes.query ?? {}) as Record<string, unknown>;
   const queryRows: KvRow[] =
-    tool.query && Object.keys(tool.query).length > 0
-      ? objToKv(tool.query as Record<string, unknown>)
-      : [];
+    Object.keys(query).length > 0 ? objToKv(query) : [];
 
   let bodyMode: "kv" | "raw" = "kv";
   let bodyRaw = "";
@@ -263,11 +273,11 @@ function formFromTool(tool: Tool) {
     label: tool.label,
     description: tool.description ?? "",
     method: tool.method as (typeof METHODS)[number],
-    urlTemplate: tool.urlTemplate,
+    urlTemplate,
     allowedHosts: tool.allowedHosts.join(", "),
     aiFields,
     queryRows,
-    headerRows: objToKv(tool.headers),
+    headerRows: objToKv((shapes.headers ?? {}) as Record<string, unknown>),
     headersMode: "kv" as const,
     headersRaw: "",
     bodyRows,

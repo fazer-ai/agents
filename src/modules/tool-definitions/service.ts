@@ -3,6 +3,7 @@ import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { normalizeToolShapes } from "./normalize";
 
 // Custom HTTP tool definitions (per-tenant). A definition is the LLM-facing parameter schema +
 // the server-trusted wiring (urlTemplate, allowedHosts, headers, credentialRef). The credential is
@@ -185,6 +186,15 @@ export async function createToolDefinition(
   }
   const tenantId = ctx.tenantId;
   const data = toolDefinitionCreateSchema.parse(input);
+  // Canonicalize programmatic authoring shapes (JSON-Schema inputSchema, single-brace {var}) so
+  // storage always holds what the runtime executes.
+  const { shapes } = normalizeToolShapes({
+    urlTemplate: data.urlTemplate,
+    query: data.query,
+    headers: data.headers,
+    body: data.body,
+    inputSchema: data.inputSchema,
+  });
   return runScopedOn(base, ctx, async (db) => {
     await assertNameFree(db, data.name);
     const row = await db.toolDefinition.create({
@@ -194,13 +204,13 @@ export async function createToolDefinition(
         label: data.label,
         description: data.description ?? null,
         method: data.method ?? "POST",
-        urlTemplate: data.urlTemplate,
+        urlTemplate: (shapes.urlTemplate ?? data.urlTemplate) as string,
         allowedHosts: data.allowedHosts,
-        headers: (data.headers ?? {}) as Prisma.InputJsonValue,
-        inputSchema: (data.inputSchema ?? {}) as Prisma.InputJsonValue,
+        headers: (shapes.headers ?? {}) as Prisma.InputJsonValue,
+        inputSchema: (shapes.inputSchema ?? {}) as Prisma.InputJsonValue,
         outputSchema: (data.outputSchema ?? {}) as Prisma.InputJsonValue,
-        query: (data.query ?? {}) as Prisma.InputJsonValue,
-        body: (data.body ?? {}) as Prisma.InputJsonValue,
+        query: (shapes.query ?? {}) as Prisma.InputJsonValue,
+        body: (shapes.body ?? {}) as Prisma.InputJsonValue,
         credentialRef: data.credentialRef ?? null,
         enabled: data.enabled ?? true,
         riskTier: data.riskTier ?? "medium",
@@ -223,7 +233,14 @@ export async function updateToolDefinition(
   return runScopedOn(base, ctx, async (db) => {
     const current = await db.toolDefinition.findUnique({
       where: { id },
-      select: { id: true },
+      select: {
+        id: true,
+        urlTemplate: true,
+        query: true,
+        headers: true,
+        body: true,
+        inputSchema: true,
+      },
     });
     if (!current) {
       throw new NotFoundError(
@@ -232,6 +249,24 @@ export async function updateToolDefinition(
       );
     }
     if (data.name) await assertNameFree(db, data.name, id);
+    // Canonicalize the patched shapes; the current row supplies the rest so the placeholder
+    // allowlist sees the effective field set on partial updates.
+    const { shapes } = normalizeToolShapes(
+      {
+        urlTemplate: data.urlTemplate,
+        query: data.query,
+        headers: data.headers,
+        body: data.body,
+        inputSchema: data.inputSchema,
+      },
+      {
+        urlTemplate: current.urlTemplate,
+        query: current.query,
+        headers: current.headers,
+        body: current.body,
+        inputSchema: current.inputSchema,
+      },
+    );
     const patchData: Prisma.ToolDefinitionUpdateInput = {};
     if (data.name !== undefined) patchData.name = data.name;
     if (data.label !== undefined) patchData.label = data.label;
@@ -239,19 +274,20 @@ export async function updateToolDefinition(
       patchData.description = data.description ?? null;
     if (data.method !== undefined) patchData.method = data.method;
     if (data.urlTemplate !== undefined)
-      patchData.urlTemplate = data.urlTemplate;
+      patchData.urlTemplate = (shapes.urlTemplate ??
+        data.urlTemplate) as string;
     if (data.allowedHosts !== undefined)
       patchData.allowedHosts = data.allowedHosts;
     if (data.headers !== undefined)
-      patchData.headers = data.headers as Prisma.InputJsonValue;
+      patchData.headers = shapes.headers as Prisma.InputJsonValue;
     if (data.inputSchema !== undefined)
-      patchData.inputSchema = data.inputSchema as Prisma.InputJsonValue;
+      patchData.inputSchema = shapes.inputSchema as Prisma.InputJsonValue;
     if (data.outputSchema !== undefined)
       patchData.outputSchema = data.outputSchema as Prisma.InputJsonValue;
     if (data.query !== undefined)
-      patchData.query = data.query as Prisma.InputJsonValue;
+      patchData.query = shapes.query as Prisma.InputJsonValue;
     if (data.body !== undefined)
-      patchData.body = data.body as Prisma.InputJsonValue;
+      patchData.body = shapes.body as Prisma.InputJsonValue;
     if (data.credentialRef !== undefined)
       patchData.credentialRef = data.credentialRef ?? null;
     if (data.enabled !== undefined) patchData.enabled = data.enabled;

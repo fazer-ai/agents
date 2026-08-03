@@ -23,6 +23,7 @@ import {
   type McpConnectionUpdate,
   updateMcpConnection,
 } from "@/modules/mcp-connections/service";
+import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import {
   createToolDefinition,
   deleteToolDefinition,
@@ -509,13 +510,24 @@ export async function toolCreate(
     urlTemplate: args.url_template,
     allowedHosts: args.allowed_hosts,
   } as ToolDefinitionCreate;
+  // Surface what the service will canonicalize (JSON-Schema input_schema, single-brace {var}) so
+  // the author sees the converted shape — and probable typos — in the preview, before applying.
+  const norm = normalizeToolShapes({
+    urlTemplate: input.urlTemplate,
+    query: input.query,
+    headers: input.headers,
+    body: input.body,
+    inputSchema: input.inputSchema,
+  });
+  const warnings = norm.warnings.length > 0 ? { warnings: norm.warnings } : {};
   try {
     if (args.dry_run !== false) {
       return ok({
         dryRun: true,
         action: "create",
         resource: "tool",
-        preview: input,
+        preview: { ...input, ...norm.shapes },
+        ...warnings,
       });
     }
     const created = await createToolDefinition(ctx, input, base);
@@ -528,7 +540,13 @@ export async function toolCreate(
       before: null,
       after: truncForAudit({ id: created.id, name: created.name }),
     });
-    return ok({ dryRun: false, applied: true, target, tool: created });
+    return ok({
+      dryRun: false,
+      applied: true,
+      target,
+      tool: created,
+      ...warnings,
+    });
   } catch (e) {
     return failOf(e);
   }
@@ -551,12 +569,36 @@ export async function toolUpdate(
   }
   try {
     const current = await getToolDefinition(ctx, id, base);
+    // Preview the canonical form the service will store (JSON-Schema input_schema converted,
+    // single-brace {var} normalized against the effective field set) plus probable-typo warnings.
+    const norm = normalizeToolShapes(
+      {
+        urlTemplate: built.patch.urlTemplate,
+        query: built.patch.query,
+        headers: built.patch.headers,
+        body: built.patch.body,
+        inputSchema: built.patch.inputSchema,
+      },
+      {
+        urlTemplate: current.urlTemplate,
+        query: current.query,
+        headers: current.headers,
+        body: current.body,
+        inputSchema: current.inputSchema,
+      },
+    );
+    const normalizedPatch = {
+      ...built.patch,
+      ...norm.shapes,
+    } as ToolDefinitionUpdate;
+    const warnings =
+      norm.warnings.length > 0 ? { warnings: norm.warnings } : {};
     const keys = Object.keys(built.patch) as (keyof ToolDefinitionUpdate)[];
     const beforeProj: Record<string, unknown> = {};
     const afterProj: Record<string, unknown> = {};
     for (const k of keys) {
       beforeProj[k] = (current as unknown as Record<string, unknown>)[k];
-      afterProj[k] = built.patch[k];
+      afterProj[k] = normalizedPatch[k];
     }
     const target = `tool:${id}`;
     if (args.dry_run !== false) {
@@ -564,6 +606,7 @@ export async function toolUpdate(
         dryRun: true,
         target,
         diff: diffFields(beforeProj, afterProj),
+        ...warnings,
       });
     }
     const updated = await updateToolDefinition(ctx, id, built.patch, base);
@@ -583,6 +626,7 @@ export async function toolUpdate(
       applied: true,
       target,
       diff: diffFields(beforeProj, appliedProj),
+      ...warnings,
     });
   } catch (e) {
     return failOf(e);

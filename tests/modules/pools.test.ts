@@ -166,6 +166,41 @@ describe.skipIf(!dbUp)("tier-1 pools CRUD", () => {
     expect(await listToolDefinitions(ctx(tenant), appDb)).toHaveLength(0);
   });
 
+  test("tool definitions: programmatic authoring shapes are stored canonical", async () => {
+    // JSON-Schema input + OpenAPI-style single-brace path param (what an API/MCP author writes).
+    const td = await createToolDefinition(
+      ctx(tenant),
+      {
+        name: "consultar_cnpj",
+        label: "Consultar CNPJ",
+        urlTemplate: "https://api.example.com/v1/cnpj/{cnpj}",
+        allowedHosts: ["api.example.com"],
+        method: "GET",
+        inputSchema: {
+          required: ["cnpj"],
+          properties: { cnpj: { type: "string", description: "CNPJ digits" } },
+        },
+      },
+      appDb,
+    );
+    expect(td.inputSchema).toEqual({
+      cnpj: { type: "string", description: "CNPJ digits", required: true },
+    });
+    expect(td.urlTemplate).toBe("https://api.example.com/v1/cnpj/{{cnpj}}");
+
+    // A partial update normalizes against the row's existing field set.
+    const updated = await updateToolDefinition(
+      ctx(tenant),
+      BigInt(td.id),
+      { urlTemplate: "https://api.example.com/v2/cnpj/{cnpj}" },
+      appDb,
+    );
+    expect(updated.urlTemplate).toBe(
+      "https://api.example.com/v2/cnpj/{{cnpj}}",
+    );
+    await deleteToolDefinition(ctx(tenant), BigInt(td.id), appDb);
+  });
+
   test("vault: write-only secret, list names, references, delete", async () => {
     const { id: openaiId } = await createVaultEntry(
       ctx(tenant),

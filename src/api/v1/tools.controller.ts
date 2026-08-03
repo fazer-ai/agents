@@ -58,7 +58,7 @@ export const writeBody = t.Object({
   urlTemplate: t.Optional(
     t.String({
       description:
-        "Request URL template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+        "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
     }),
   ),
   allowedHosts: t.Optional(
@@ -75,7 +75,7 @@ export const writeBody = t.Object({
   inputSchema: t.Optional(
     t.Record(t.String(), t.Unknown(), {
       description:
-        "JSON Schema describing the parameters the agent must supply.",
+        'Input fields the agent supplies, as a compact map: {"field": {"type": "string"|"integer"|"number"|"boolean"|"enum"|"array"|"object", "required"?, "description"?, "enumValues"?, "itemType"?}}. Standard JSON Schema ({"properties", "required"}) is accepted and converted to this shape on write.',
     }),
   ),
   outputSchema: t.Optional(
@@ -92,7 +92,7 @@ export const writeBody = t.Object({
   body: t.Optional(
     t.Record(t.String(), t.Unknown(), {
       description:
-        "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time.",
+        "Request body template; {{param}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
     }),
   ),
   credentialRef: t.Optional(

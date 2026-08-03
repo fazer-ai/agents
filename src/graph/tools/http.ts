@@ -2,6 +2,7 @@ import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
 import { normalizeToolName } from "./toolName";
 
@@ -174,10 +175,12 @@ function zodFor(f: ParsedField): z.ZodTypeAny {
   return zt;
 }
 
-// Backward-compatible export (used by tests): the zod schema for the AI-filled fields only.
+// Backward-compatible export (used by tests): the zod schema for the AI-filled fields only. A
+// JSON-Schema-shaped value is converted to the compact map first, mirroring buildHttpTool.
 export function parseToolInputSchema(raw: unknown): z.ZodObject<z.ZodRawShape> {
+  const { shapes } = normalizeToolShapes({ inputSchema: raw });
   const shape: Record<string, z.ZodType> = {};
-  for (const f of parseFields(raw)) {
+  for (const f of parseFields(shapes.inputSchema)) {
     if (f.source === "ai") shape[f.name] = zodFor(f);
   }
   return z.object(shape);
@@ -258,15 +261,31 @@ export function buildHttpTool(
   def: HttpToolDef,
   deps: HttpToolDeps,
 ): StructuredToolInterface {
-  const fields = parseFields(def.inputSchema);
-  const bodyCfg = parseBody(def.body);
+  const context = deps.context ?? {};
+  // Self-heal shapes authored before write-time normalization existed (or written straight to the
+  // DB): a JSON-Schema-shaped inputSchema becomes the compact map and known single-brace {var}
+  // placeholders become {{var}}, so pre-fix rows work without re-creation.
+  const { shapes } = normalizeToolShapes(
+    {
+      urlTemplate: def.urlTemplate,
+      query: def.query,
+      headers: def.headers,
+      body: def.body,
+      inputSchema: def.inputSchema,
+    },
+    {},
+    Object.keys(context),
+  );
+  const urlTemplate = shapes.urlTemplate as string;
+  const headerTemplates = (shapes.headers ?? {}) as Record<string, string>;
+  const fields = parseFields(shapes.inputSchema);
+  const bodyCfg = parseBody(shapes.body);
   const method = def.method.toUpperCase();
   const isBodyMethod =
     method === "POST" || method === "PUT" || method === "PATCH";
   const doFetch = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? 10_000;
   const maxChars = deps.maxResponseChars ?? 4000;
-  const context = deps.context ?? {};
 
   // Schema = the AI-filled fields. When an ack is configured, the model MUST write the holding message
   // itself (__wait_message is required, not optional): the operator's ackMessage is only a TONE example,
@@ -288,7 +307,7 @@ export function buildHttpTool(
   const schema = z.object(shape);
 
   // Resolve relative template: if urlTemplate starts with /, credential must supply a baseUrl.
-  const isRelative = def.urlTemplate.startsWith("/");
+  const isRelative = urlTemplate.startsWith("/");
   if (isRelative && !def.credentialBaseUrl) {
     throw new AppError(
       `tool ${def.name}: relative urlTemplate requires a credential with a base URL`,
@@ -296,8 +315,8 @@ export function buildHttpTool(
     );
   }
   const effectiveTemplate = isRelative
-    ? `${def.credentialBaseUrl}${def.urlTemplate}`
-    : def.urlTemplate;
+    ? `${def.credentialBaseUrl}${urlTemplate}`
+    : urlTemplate;
 
   return tool(
     async (input: Record<string, unknown>) => {
@@ -356,10 +375,27 @@ export function buildHttpTool(
         throw new AppError(`tool ${def.name}: invalid urlTemplate`, 400);
       }
       const pathFields = placeholderNames(effectiveTemplate);
+      // A URL placeholder that resolves to nothing produces a request that cannot be right (an
+      // empty path segment / dangling query value). Instead of silently sending it, tell the model
+      // which value is missing so it can retry with the field (or explain what it needs).
+      const missingUrlNames = new Set<string>();
       const interpolated = interpolate(effectiveTemplate, (n) => {
         const v = n === "secret" ? secret : valueLookup(n);
-        return v == null ? undefined : encodeURIComponent(v);
+        if (v == null) {
+          missingUrlNames.add(n);
+          return undefined;
+        }
+        return encodeURIComponent(v);
       });
+      if (missingUrlNames.size > 0) {
+        return `Error: no value available for URL placeholder(s): ${[
+          ...missingUrlNames,
+        ]
+          .map((n) => `{{${n}}}`)
+          .join(
+            ", ",
+          )}. Call the tool again providing the missing input field(s).`;
+      }
       let url: URL;
       try {
         url = new URL(interpolated);
@@ -395,8 +431,8 @@ export function buildHttpTool(
       // 2. Headers: the credential is available here via {{secret}}, alongside context + field values
       // (e.g. an {{conversation_id}} header).
       const headers: Record<string, string> = {};
-      for (const [k, v] of Object.entries(def.headers ?? {})) {
-        headers[k] = interpolate(v, (n) =>
+      for (const [k, v] of Object.entries(headerTemplates)) {
+        headers[k] = interpolate(String(v), (n) =>
           n === "secret" ? (secret ?? "") : valueLookup(n),
         );
       }
@@ -411,7 +447,7 @@ export function buildHttpTool(
       // Query: explicit Record<string,string> templates, applied for ANY method. Interpolated but NOT
       // pre-encoded (searchParams.set encodes once — pre-encoding would double-encode). A param already
       // on the URL (hand-written) wins; an empty resolution is skipped.
-      const queryMap = parseQuery(def.query);
+      const queryMap = parseQuery(shapes.query);
       const hasExplicitQuery = Object.keys(queryMap).length > 0;
       for (const [k, tpl] of Object.entries(queryMap)) {
         const v = interpolate(tpl, lookupWithSecret);

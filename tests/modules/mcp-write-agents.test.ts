@@ -223,6 +223,52 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
     expect(row?.credentialRef).toBe(`vault:${credId}`);
   });
 
+  test("tool_create dry-run previews the canonical shapes + warnings; apply stores them", async () => {
+    const p = principal({ tenantId: tenantA });
+    const shapes = {
+      name: "consultar_cnpj",
+      url_template: "https://api.example.com/v1/cnpj/{cnpj}?x={typo_token}",
+      allowed_hosts: ["api.example.com"],
+      method: "GET" as const,
+      input_schema: {
+        required: ["cnpj"],
+        properties: { cnpj: { type: "string" } },
+      },
+    };
+    const dry = await toolCreate(p, shapes, { base: appDb });
+    expect(dry.ok).toBe(true);
+    if (dry.ok) {
+      const data = dry.data as {
+        preview: { urlTemplate: string; inputSchema: Record<string, unknown> };
+        warnings?: string[];
+      };
+      expect(data.preview.urlTemplate).toBe(
+        "https://api.example.com/v1/cnpj/{{cnpj}}?x={typo_token}",
+      );
+      expect(data.preview.inputSchema).toEqual({
+        cnpj: { type: "string", required: true },
+      });
+      expect(data.warnings?.join(" ")).toContain("JSON Schema");
+      expect(data.warnings?.join(" ")).toContain("{typo_token}");
+    }
+
+    const applied = await toolCreate(
+      p,
+      { ...shapes, dry_run: false },
+      { base: appDb },
+    );
+    expect(applied.ok).toBe(true);
+    const row = await suDb.toolDefinition.findFirst({
+      where: { tenantId: tenantA, name: "consultar_cnpj" },
+    });
+    expect(row?.urlTemplate).toBe(
+      "https://api.example.com/v1/cnpj/{{cnpj}}?x={typo_token}",
+    );
+    expect(row?.inputSchema).toEqual({
+      cnpj: { type: "string", required: true },
+    });
+  });
+
   test("tool_create with unknown credential → needsCredential + console URL (no write)", async () => {
     const p = principal({ tenantId: tenantA });
     const r = await toolCreate(

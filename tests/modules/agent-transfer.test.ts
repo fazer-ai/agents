@@ -577,6 +577,39 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     ]);
   });
 
+  test("import canonicalizes legacy authoring shapes (JSON-Schema inputSchema, single-brace {var})", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    // Simulate a bundle exported from a pre-normalization instance: rename the tool so the import
+    // creates it fresh, and regress its shapes to the legacy authoring forms.
+    const legacy = structuredClone(exp);
+    const tool = legacy.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "legacy_lookup";
+    tool.urlTemplate = "https://shop.example.com/orders/{order_id}";
+    tool.inputSchema = {
+      required: ["order_id"],
+      properties: { order_id: { type: "string" } },
+    };
+    const grant = legacy.agent.tools.find(
+      (g) => g.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "legacy_lookup";
+    await importAgent(dstCtx(), legacy, appDb);
+    const row = await suDb.toolDefinition.findFirst({
+      where: { tenantId: dstTenant, name: "legacy_lookup" },
+    });
+    expect(row?.urlTemplate).toBe(
+      "https://shop.example.com/orders/{{order_id}}",
+    );
+    expect(row?.inputSchema).toEqual({
+      order_id: { type: "string", required: true },
+    });
+  });
+
   test("re-import reuses same-name components (never overwrites) and warns", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,

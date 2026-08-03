@@ -471,8 +471,17 @@ function buildStatusTool(
         paymentId = linkId;
         linkId = undefined;
       }
-      if (!paymentId && !linkId)
-        return "Provide paymentId (pay_..., returned by asaas_create_pix_charge) or paymentLinkId (returned by asaas_payment_link_create).";
+      const guidance =
+        "Provide paymentId (pay_..., returned by asaas_create_pix_charge) or paymentLinkId (returned by asaas_payment_link_create). Do NOT use the invoice/payment page URL or its slug.";
+      // Reject pasted URLs outright — Asaas ids never contain slashes or colons; letting an
+      // invoice URL through would surface as a confusing 404 from the provider.
+      const looksLikeUrl = (v: string) => /[/:]/.test(v);
+      if (
+        (paymentId && looksLikeUrl(paymentId)) ||
+        (linkId && looksLikeUrl(linkId))
+      )
+        return guidance;
+      if (!paymentId && !linkId) return guidance;
       // Path-interpolated ids are URL-encoded; the origin stays the fixed constant above.
       // When both arrive, the payment wins: its status is the terminal fact (a link stays
       // `active` even after it was paid).
@@ -487,6 +496,10 @@ function buildStatusTool(
         return "Failed to reach the payment provider.";
       }
       if (res.status < 200 || res.status >= 300) {
+        // An invoice-URL SLUG is shape-indistinguishable from a real link id, so it can only be
+        // caught here: turn the provider's 404 into recoverable guidance instead of a dead end.
+        if (res.status === 404)
+          return "The payment provider returned HTTP 404 (id not found). If this value was extracted from an invoice/payment URL, that slug is not a valid id — use the paymentId returned by asaas_create_pix_charge or the paymentLinkId returned by asaas_payment_link_create.";
         return `The payment provider returned HTTP ${res.status}.`;
       }
       const d = (res.json ?? {}) as Record<string, unknown>;

@@ -178,4 +178,30 @@ describe("asaas payment status — direct (non-link) charges", () => {
     expect(out).toContain("paymentLinkId");
     expect(calls).toHaveLength(0);
   });
+
+  test("a pasted invoice URL is rejected with guidance before any fetch", async () => {
+    const { impl, calls } = stubFetch(200, PAYMENT_JSON);
+    const tool = statusTool(baseCtx({ fetchImpl: impl }));
+    const viaLink = (await tool?.invoke({
+      paymentLinkId: "https://sandbox.asaas.com/i/qwomgrsmq0xyxn86",
+    })) as string;
+    const viaPayment = (await tool?.invoke({
+      paymentId: "https://www.asaas.com/i/abc123",
+    })) as string;
+    expect(viaLink).toContain("asaas_create_pix_charge");
+    expect(viaPayment).toContain("asaas_create_pix_charge");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("a 404 on an unknown id explains the invoice-slug trap", async () => {
+    // A bare invoice-URL slug is shape-indistinguishable from a link id, so it reaches the
+    // provider and 404s — the message must route the model back to the real id sources.
+    const { impl } = stubFetch(404, {});
+    const tool = statusTool(baseCtx({ fetchImpl: impl }));
+    const out = (await tool?.invoke({
+      paymentLinkId: "qwomgrsmq0xyxn86",
+    })) as string;
+    expect(out).toContain("404");
+    expect(out).toContain("asaas_create_pix_charge");
+  });
 });

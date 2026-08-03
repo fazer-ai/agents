@@ -412,7 +412,8 @@ describe.skipIf(!dbUp)("asaas toolpack — correlation ref persistence", () => {
       event: "PAYMENT_RECEIVED",
       payment: { id: "pay_99", externalReference, status: "RECEIVED" },
     });
-    expect(mapped?.externalId).toBe(externalReference);
+    if (!mapped?.ok) throw new Error("expected a mapped inbound event");
+    expect(mapped.event.externalId).toBe(externalReference);
   });
 
   test("pix charge persists the correlation ref keyed by externalReference (metadata.paymentId)", async () => {

@@ -426,7 +426,67 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
     expect(ok.outcome).toBe("queued");
   });
 
-  test("ignores a payload the mapper cannot normalize", async () => {
+  test("queues and converts the real Asaas direct-charge payload (paymentLink null) end to end", async () => {
+    const { id: instanceId, routeToken } = await createIntegrationInstance(
+      tenantId,
+      {
+        catalogType: "ASAAS",
+        name: "asaas-direct",
+        inboundAuthStrategy: "NONE",
+        config: { notifyOnPayment: false },
+      },
+      appDb,
+    );
+    await suDb.integrationExternalRef.create({
+      data: {
+        tenantId,
+        integrationInstanceId: instanceId,
+        externalId: "9faca7601d502c54f1bd53ac26370bb1",
+        threadId: "1:1:97",
+        kind: "asaas_payment",
+      },
+    });
+    // The exact body Asaas sends for a paid DIRECT (non-link) PIX charge: `paymentLink` is
+    // present with value null. Regression for the schema-rejects-null bug that turned real
+    // payments into a silent `outcome: "ignored"`.
+    const body = JSON.stringify({
+      event: "PAYMENT_RECEIVED",
+      payment: {
+        id: "pay_yuq2ko5t8vaioizq",
+        value: 500.0,
+        status: "RECEIVED",
+        externalReference: "9faca7601d502c54f1bd53ac26370bb1",
+        checkoutSession: null,
+        paymentLink: null,
+      },
+    });
+    const r = await receiveInbound({
+      routeToken: routeToken as string,
+      rawBody: body,
+      getHeader: () => null,
+      base: appDb,
+    });
+    expect(r.outcome).toBe("queued");
+    const delivery = await suDb.inboundDelivery.findUniqueOrThrow({
+      where: { id: r.deliveryId as bigint },
+    });
+    expect(delivery.externalId).toBe("9faca7601d502c54f1bd53ac26370bb1");
+    expect(delivery.status).toBe("PENDING");
+
+    const proc = await processInboundDelivery({
+      deliveryId: r.deliveryId as bigint,
+      tenantId,
+      base: appDb,
+    });
+    expect(proc).toBe("processed");
+    const conv = await suDb.conversionEvent.findFirst({
+      where: { tenantId, threadId: "1:1:97", source: "ASAAS" },
+    });
+    expect(conv).not.toBeNull();
+    expect(conv?.value?.toString()).toBe("500");
+  });
+
+  test("records an unparseable payload as invalid (durable FAILED delivery)", async () => {
     const { routeToken } = await createIntegrationInstance(
       tenantId,
       { catalogType: "ASAAS", name: "asaas-bad", inboundAuthStrategy: "NONE" },
@@ -438,7 +498,68 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
       getHeader: () => null,
       base: appDb,
     });
+    expect(r.outcome).toBe("invalid");
+    expect(r.deliveryId).toBeDefined();
+    const delivery = await suDb.inboundDelivery.findUniqueOrThrow({
+      where: { id: r.deliveryId as bigint },
+    });
+    expect(delivery.status).toBe("FAILED");
+    expect(delivery.payload).toMatchObject({ reason: "invalid" });
+  });
+
+  test("invalid deliveries dedupe on the raw-body hash", async () => {
+    const { routeToken } = await createIntegrationInstance(
+      tenantId,
+      {
+        catalogType: "ASAAS",
+        name: "asaas-bad-idem",
+        inboundAuthStrategy: "NONE",
+      },
+      appDb,
+    );
+    const body = JSON.stringify({ not: "a known shape", n: 2 });
+    const first = await receiveInbound({
+      routeToken: routeToken as string,
+      rawBody: body,
+      getHeader: () => null,
+      base: appDb,
+    });
+    const second = await receiveInbound({
+      routeToken: routeToken as string,
+      rawBody: body,
+      getHeader: () => null,
+      base: appDb,
+    });
+    expect(first.outcome).toBe("invalid");
+    expect(second.outcome).toBe("invalid");
+    expect(second.deliveryId).toBe(first.deliveryId as bigint);
+  });
+
+  test("still ignores a parseable but unmapped lifecycle event (no delivery)", async () => {
+    const { id: instanceId, routeToken } = await createIntegrationInstance(
+      tenantId,
+      {
+        catalogType: "ASAAS",
+        name: "asaas-lifecycle",
+        inboundAuthStrategy: "NONE",
+      },
+      appDb,
+    );
+    const r = await receiveInbound({
+      routeToken: routeToken as string,
+      rawBody: JSON.stringify({
+        event: "PAYMENT_CREATED",
+        payment: { id: "pay_lc" },
+      }),
+      getHeader: () => null,
+      base: appDb,
+    });
     expect(r.outcome).toBe("ignored");
     expect(r.deliveryId).toBeUndefined();
+    expect(
+      await suDb.inboundDelivery.count({
+        where: { integrationInstanceId: instanceId },
+      }),
+    ).toBe(0);
   });
 });

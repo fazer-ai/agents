@@ -29,12 +29,20 @@ export interface NormalizedInboundEvent {
   metadata?: Record<string, unknown>;
 }
 
-// The deterministic translator for one integration: external payload → normalized event, or
-// null to ignore. Pure (no DB, no network, no LLM): correlation/idempotency/dispatch happen
-// in the receptor around it. Validate shape with zod inside map().
+// A mapper's discriminated verdict. "unhandled" = parsed fine but not an event we act on
+// (lifecycle noise, deliberately silent). "invalid" = the payload SHOULD have matched and did
+// not — schema drift or garbage; `detail` carries zod issue PATHS only, never values (the
+// receptor logs it; PII boundary).
+export type MapResult =
+  | { ok: true; event: NormalizedInboundEvent }
+  | { ok: false; reason: "unhandled" | "invalid"; detail?: string };
+
+// The deterministic translator for one integration: external payload → MapResult. Pure (no DB,
+// no network, no LLM): correlation/idempotency/dispatch happen in the receptor around it.
+// Validate shape with zod inside map().
 export interface InboundMapper {
   catalogType: string;
-  map(raw: unknown): NormalizedInboundEvent | null;
+  map(raw: unknown): MapResult;
 }
 
 export type CatalogKind = "TOOLPACK" | "MCP" | "NATIVE";

@@ -59,7 +59,7 @@ export interface ReceiveResult {
   ack: true;
   deliveryId?: bigint;
   tenantId?: bigint;
-  outcome: "queued" | "duplicate" | "ignored" | "no-mapper";
+  outcome: "queued" | "duplicate" | "ignored" | "no-mapper" | "invalid";
 }
 
 export interface ReceiveParams {
@@ -112,7 +112,9 @@ export async function receiveInbound(
       route.catalogType,
       String(route.id),
     );
-    const id = await persistNoMapper(base, route, params.rawBody);
+    const id = await persistFailed(base, route, params.rawBody, {
+      reason: "no-mapper",
+    });
     return {
       ack: true,
       deliveryId: id,
@@ -121,10 +123,31 @@ export async function receiveInbound(
     };
   }
 
-  const normalized = mapper.map(parsed);
-  if (!normalized) return { ack: true, outcome: "ignored" };
+  const result = mapper.map(parsed);
+  if (!result.ok) {
+    // Deliberately-unhandled lifecycle events stay silent; schema drift must never be —
+    // warn (ids/paths only, NEVER the body) + a durable FAILED record, the same fail-closed
+    // mold as no-mapper. Without this, a dropped real payment is indistinguishable from noise.
+    if (result.reason === "unhandled") return { ack: true, outcome: "ignored" };
+    logger.warn(
+      "inbound: %s payload failed the mapper schema (instance %s): %s",
+      route.catalogType,
+      String(route.id),
+      result.detail ?? "unknown",
+    );
+    const id = await persistFailed(base, route, params.rawBody, {
+      reason: "invalid",
+      ...(result.detail ? { issues: result.detail } : {}),
+    });
+    return {
+      ack: true,
+      deliveryId: id,
+      tenantId: route.tenantId,
+      outcome: "invalid",
+    };
+  }
 
-  const { id, duplicate } = await persistInbound(base, route, normalized);
+  const { id, duplicate } = await persistInbound(base, route, result.event);
   return {
     ack: true,
     deliveryId: id,
@@ -133,12 +156,15 @@ export async function receiveInbound(
   };
 }
 
-// A durable, fail-closed record when the integration has no mapper yet (catalog entry exists
-// but its mapper ships in a later phase). dedupeKey is a body digest so retries collapse.
-async function persistNoMapper(
+// A durable, fail-closed record for a payload we authenticated but cannot process (no mapper
+// registered, or the mapper's schema rejected it). `payload` is a small diagnostic object we
+// build ({ reason, issues? }) — NEVER the raw body, which is PII-bearing. dedupeKey is a body
+// digest so retries collapse; FAILED is terminal (the process claim never picks it up).
+async function persistFailed(
   base: PrismaClient,
   route: ResolvedInboundRoute,
   rawBody: string,
+  payload: Record<string, unknown>,
 ): Promise<bigint> {
   const dedupeKey = `raw:${createHash("sha256").update(rawBody).digest("hex")}`;
   const create = () =>
@@ -148,7 +174,7 @@ async function persistNoMapper(
           tenantId: route.tenantId,
           integrationInstanceId: route.id,
           dedupeKey,
-          payload: {},
+          payload: payload as Prisma.InputJsonValue,
           status: "FAILED",
         },
         select: { id: true },

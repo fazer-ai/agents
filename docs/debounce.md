@@ -25,7 +25,7 @@ incoming message (gate=act)                 fast worker tick (~2.5s)
 
 The re-fetch decision (not a durable buffer) keeps us aligned with the anti-PII rule (we never mirror message bodies). Correctness rests on two guards in `shouldPost`, evaluated AFTER the LLM call and BEFORE the post:
 
-1. **Post-response supersede** (n8n-faithful): re-fetch and if any incoming id `> targetWatermark`, a message arrived mid-turn → **drop this reply** (outcome `superseded`); the re-armed job answers the full burst. Re-fetch failure is non-fatal (reply rather than drop; the re-armed flush covers any miss).
+1. **Post-response supersede** (n8n-faithful): re-fetch and if any incoming id `> targetWatermark`, a message arrived mid-turn → **drop this reply** (outcome `superseded`); the re-armed job answers the full burst. Re-fetch failure is non-fatal (reply rather than drop; the re-armed flush covers any miss). This gate also runs for EMPTY replies (since the deferred-resolve change): an empty turn with a newer mid-turn message returns `superseded` (watermark untouched, re-armed flush answers the whole burst) instead of `empty`, and any deferred resolve intent is discarded with it.
 2. **Monotonic watermark CAS**: advance `lastHandledMessageId` to `targetWatermark` only if the stored value is `null`/`< target`. The loser of a (rare) concurrent claim sees 0 rows and suppresses, so a burst is answered **at most once**. The watermark advances on the success path (post), so an LLM/Chatwoot error retries against the same burst (idempotent).
 
 `runLoadedTurn` (`src/graph/runtime.ts`) is the shared tail of both the direct path and the flush: build → invoke → re-check the live assignee (human takeover aborts) → `shouldPost` → post.

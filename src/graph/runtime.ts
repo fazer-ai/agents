@@ -44,7 +44,7 @@ import {
 import { AgentStatusReporter } from "./status";
 import { ToolFlowLogger } from "./tool-flowlog";
 import type { McpLoadDeps } from "./tools/mcp";
-import { buildNativeTools } from "./tools/native";
+import { buildNativeTools, type TurnState } from "./tools/native";
 import type { UsagePersist } from "./usage";
 
 // The agent runtime: an incoming Chatwoot message (gate=act) → resolve the inbox's Agent config
@@ -112,6 +112,46 @@ export interface RunLoadedTurnParams {
   shouldPost?: () => Promise<boolean>;
 }
 
+// Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
+// records the intent (see tools/native.ts TurnState): toggling mid-turn makes the webhook mirror
+// flip Conversation.status before the recheck, which then reads our own resolve as a human
+// takeover and discards the generated reply — and posting into a resolved conversation reopens
+// it anyway (same invariant as nudge.ts applyPostActions). Invariant: called ONLY on the
+// "posted" and "empty" outcomes; the intent is discarded on taken-over / superseded / blocked /
+// throw. Best-effort, never throws: the reply is already out, so a failed toggle only leaves the
+// conversation pending (flow warn pages the operator).
+async function applyDeferredResolve(
+  client: ChatwootClient,
+  conversationId: number,
+  turnState: TurnState,
+  flow: FlowContext,
+): Promise<void> {
+  if (!turnState.resolveRequested) return;
+  turnState.resolveRequested = false;
+  try {
+    await client.toggleStatus(conversationId, "resolved");
+    emitFlowEvent(flow, {
+      stage: "handoff",
+      status: "ok",
+      detail: { outcome: "resolved" },
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.warn(
+      "deferred resolve failed (conv=%s): %s",
+      String(conversationId),
+      msg,
+    );
+    emitFlowEvent(flow, {
+      stage: "handoff",
+      level: "warn",
+      status: "error",
+      detail: { outcome: "resolved" },
+      errorMessage: msg,
+    });
+  }
+}
+
 // Builds the client + tools + graph from an already-loaded AgentConfig, invokes the thread, re-checks
 // the live assignee, optionally consults `shouldPost`, then posts via the bot token.
 export async function runLoadedTurn(
@@ -148,6 +188,8 @@ export async function runLoadedTurn(
     makeClient: params.deps?.makeClient,
     botToken: loaded.agentBotToken ?? undefined,
   });
+  // Per-turn mutable state shared with the native tools (deferred resolve intent).
+  const turnState: TurnState = { resolveRequested: false };
   const tools = await buildToolset(
     loaded,
     {
@@ -158,6 +200,7 @@ export async function runLoadedTurn(
       conversationId,
       threadId,
       messageId: params.messageId,
+      turnState,
     },
     { buildNativeTools, mcp: params.deps?.mcp, flow },
   );
@@ -352,7 +395,6 @@ export async function runLoadedTurn(
         ),
     );
     let reply = lastAssistantText(result.messages).trim();
-    if (!reply) return "empty";
 
     // Re-check the live assignee (mirror) before posting: a human may have taken over during
     // the LLM call. NOTE: small TOCTOU between this read and the POST (the post is network and
@@ -399,11 +441,24 @@ export async function runLoadedTurn(
       return "taken-over";
     }
 
-    // Last-moment supersede gate (debounce): a newer message arrived mid-turn → drop this reply.
+    // Last-moment supersede gate (debounce): a newer message arrived mid-turn → drop this reply
+    // AND any deferred resolve intent (the re-armed flush re-decides over the full burst).
     if (params.shouldPost && !(await params.shouldPost())) return "superseded";
 
+    // Empty reply: nothing to post, but a deferred resolve intent still applies (resolve with no
+    // final text is a legitimate shape). This runs AFTER the recheck and the supersede gate on
+    // purpose: resolving under a takeover belongs to the human, and resolving under a superseded
+    // turn would make the next flush's gate read "resolved" and swallow the customer's newest
+    // message via the watermark.
+    if (!reply) {
+      await applyDeferredResolve(client, conversationId, turnState, flow);
+      return "empty";
+    }
+
     // OUTPUT guardrail: screen the model's reply BEFORE delivery. On a violation, replace it with the
-    // template / a guardrails-generated safe reply, or suppress the send entirely ("silent").
+    // template / a guardrails-generated safe reply, or suppress the send entirely ("silent"). A
+    // suppressed send also discards the deferred resolve intent — resolving a conversation whose
+    // goodbye was blocked would strand the customer with no reply and no human.
     const outGuard = await runGuardrail("output", reply);
     if (outGuard) {
       if (outGuard.reply === null) return "blocked";
@@ -456,6 +511,7 @@ export async function runLoadedTurn(
             reply.length,
           );
           deliveredBalloons = 1;
+          await applyDeferredResolve(client, conversationId, turnState, flow);
           return "posted";
         }
       } catch (e) {
@@ -485,6 +541,7 @@ export async function runLoadedTurn(
       balloons,
     );
     deliveredBalloons = balloons;
+    await applyDeferredResolve(client, conversationId, turnState, flow);
     return "posted";
   } finally {
     clearTurnInFlight(threadId);

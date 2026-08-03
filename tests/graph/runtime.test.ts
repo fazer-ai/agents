@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -58,6 +59,63 @@ function makeStubClient(sent: Array<[number, string]>) {
   const client = {
     sendMessage: async (conversationId: number, content: string) => {
       sent.push([conversationId, content]);
+      return {};
+    },
+  } as unknown as ChatwootClient;
+  return async () => client;
+}
+
+// A model that calls resolve_conversation once and then answers (possibly with empty text) —
+// the "resolve + final reply in the same turn" shape seen in production. The raw invoke covers
+// the hard-limit path.
+class ResolveThenReplyModel {
+  constructor(private reply: string) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(this.reply);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: [
+                { name: "resolve_conversation", args: {}, id: "call_resolve" },
+              ],
+            })
+          : new AIMessage(self.reply);
+      },
+    };
+  }
+}
+
+// Ordered recorder for sendMessage/toggleStatus. `mirrorOnToggle` simulates the Chatwoot webhook
+// mirroring the status change into our Conversation row BEFORE the turn ends (worst case, zero
+// lag) — the production race behind the lost-final-reply bug.
+function makeResolveClient(
+  calls: Array<[string, number, string]>,
+  opts: { mirrorOnToggle?: number } = {},
+) {
+  const client = {
+    sendMessage: async (conversationId: number, content: string) => {
+      calls.push(["sendMessage", conversationId, content]);
+      return {};
+    },
+    toggleStatus: async (conversationId: number, status: string) => {
+      calls.push(["toggleStatus", conversationId, status]);
+      if (opts.mirrorOnToggle) {
+        await suDb.conversation.updateMany({
+          where: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: opts.mirrorOnToggle,
+          },
+          data: { status },
+        });
+      }
       return {};
     },
   } as unknown as ChatwootClient;
@@ -151,6 +209,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   afterAll(async () => {
     if (tenantId) {
       for (const table of [
+        "execution_logs",
         "llm_usage",
         "agent_threads",
         "conversations",
@@ -294,6 +353,88 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("taken-over");
     expect(sent).toEqual([]);
+  });
+
+  test("resolve tool defers the status toggle until after the reply is delivered", async () => {
+    await seedConversation(910, null);
+    const FINAL = "Fechado! Obrigado pelo contato.";
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 910 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new ResolveThenReplyModel(FINAL) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls, { mirrorOnToggle: 910 }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // The final reply must survive the agent's own resolve: post first, resolve after.
+    expect(outcome).toBe("posted");
+    expect(calls).toEqual([
+      ["sendMessage", 910, FINAL],
+      ["toggleStatus", 910, "resolved"],
+    ]);
+
+    // The deferred resolve is observable in the flow log (handoff stage, outcome "resolved").
+    // emitFlowEvent is fire-and-forget, so poll briefly.
+    let resolvedLogged = false;
+    for (let i = 0; i < 30 && !resolvedLogged; i++) {
+      const rows = await suDb.executionLog.findMany({
+        where: { tenantId, stage: "handoff" },
+        select: { detail: true },
+      });
+      resolvedLogged = rows.some(
+        (r) =>
+          (r.detail as Record<string, unknown> | null)?.outcome === "resolved",
+      );
+      if (!resolvedLogged) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(resolvedLogged).toBe(true);
+  });
+
+  test("taken over mid-turn discards the resolve intent", async () => {
+    await seedConversation(911, "User");
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 911 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new ResolveThenReplyModel("Resolvido!") as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("taken-over");
+    // A human owns the conversation: no reply AND no resolve may reach Chatwoot.
+    expect(calls).toEqual([]);
+  });
+
+  test("resolve with an empty final reply still resolves after the turn", async () => {
+    await seedConversation(912, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 912 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new ResolveThenReplyModel("") as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("empty");
+    expect(calls).toEqual([["toggleStatus", 912, "resolved"]]);
   });
 
   test("emits agent-activity (started + finished) on the tenant topic during a turn", async () => {
@@ -470,7 +611,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           : new FakeListChatModel({ responses: [REPLY] });
 
     const guardStub =
-      (sent: Array<[number, string]>, notes: Array<[number, string]>) =>
+      (
+        sent: Array<[number, string]>,
+        notes: Array<[number, string]>,
+        toggles: Array<[number, string]> = [],
+      ) =>
       async () =>
         ({
           sendMessage: async (c: number, content: string) => {
@@ -479,6 +624,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           },
           sendPrivateNote: async (c: number, content: string) => {
             notes.push([c, content]);
+            return {};
+          },
+          toggleStatus: async (c: number, status: string) => {
+            toggles.push([c, status]);
             return {};
           },
           toggleTyping: async () => ({}),
@@ -640,6 +789,64 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // suggestedReply was null → the runtime falls back to the configured templateMessage.
       expect(sent).toEqual([[942, "TEMPLATE-OUT"]]);
       expect(notes.length).toBe(1);
+    });
+
+    test("output 'silent' discards the resolve intent (no toggle, no reply)", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: false,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: true,
+          },
+        },
+      });
+      await seedConv(943);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["prompt_adherence"],
+        rationale: "off-scope",
+        suggestedReply: null,
+      });
+      // Agent branch resolves + replies; the output guardrail suppresses the reply. Resolving a
+      // conversation whose goodbye was suppressed would strand the customer, so the intent is
+      // discarded along with the reply.
+      const branchingResolveModel = (
+        cfg: ResolvedModelConfig,
+      ): BaseChatModel =>
+        cfg.model === GUARD_MODEL
+          ? ({
+              invoke: async () => ({ content: verdict }),
+            } as unknown as BaseChatModel)
+          : (new ResolveThenReplyModel(
+              "Fechado, obrigado!",
+            ) as unknown as BaseChatModel);
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 943, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: branchingResolveModel,
+          makeClient: guardStub(sent, notes, toggles),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("blocked");
+      expect(sent).toEqual([]);
+      expect(toggles).toEqual([]);
     });
   });
 });

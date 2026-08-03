@@ -295,6 +295,18 @@ describe("native tools", () => {
     ]);
   });
 
+  test("resolve_conversation with turnState defers (no client call, flags the state)", async () => {
+    const { client, calls } = recordingClient();
+    const turnState = { resolveRequested: false };
+    const tools = buildNativeTools({ client, conversationId: 7, turnState });
+    const out = String(await byName(tools, "resolve_conversation").invoke({}));
+    // Idempotent: a second call in the same turn is still a single intent.
+    await byName(tools, "resolve_conversation").invoke({});
+    expect(calls).toEqual([]);
+    expect(turnState.resolveRequested).toBe(true);
+    expect(out).toContain("after your final reply");
+  });
+
   test("assign_label appends to the existing labels (read-modify-write)", async () => {
     const setCalls: unknown[][] = [];
     const client = {

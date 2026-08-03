@@ -43,9 +43,21 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
+// Mutable per-turn state owned by runLoadedTurn and shared with the tools it builds. Presence
+// switches resolve_conversation to DEFERRED mode: the tool records the intent here and the
+// runtime applies the actual status toggle only AFTER the final reply is delivered (an
+// immediate toggle makes the post-generation recheck read the mirrored "resolved" as a human
+// takeover and discard the reply — and the reply would reopen the conversation anyway).
+export interface TurnState {
+  resolveRequested: boolean;
+}
+
 export interface ToolCtx {
   client: ChatwootClient;
   conversationId: number;
+  // Absent (nudge turns, playground, hand-built ctx) ⇒ resolve_conversation keeps the legacy
+  // immediate toggle. Only runLoadedTurn passes it.
+  turnState?: TurnState;
   // Per-agent toggle (default ON when undefined): when false, a handoff posts NO summary note even
   // if the model supplies a reason — the operator opted out of leaving internal summaries.
   transferWithSummary?: boolean;
@@ -525,15 +537,25 @@ function assignLabelTool(ctx: ToolCtx) {
 }
 
 function resolveConversationTool(ctx: ToolCtx) {
+  const deferred = ctx.turnState !== undefined;
   return tool(
     async () => {
+      const ts = ctx.turnState;
+      if (ts) {
+        // Deferred: the runtime toggles the status after the final reply is delivered. The
+        // wording stays conditional on purpose — the intent is discarded on takeover/supersede,
+        // and a flat "resolved" would be a false claim in the checkpointed thread history.
+        ts.resolveRequested = true;
+        return "Resolve scheduled: the conversation will be marked resolved after your final reply in this turn is delivered.";
+      }
       await ctx.client.toggleStatus(ctx.conversationId, "resolved");
       return "Conversation resolved.";
     },
     {
       name: "resolve_conversation",
-      description:
-        "Mark the conversation as resolved when the customer's request is fully handled.",
+      description: deferred
+        ? "Mark the conversation as resolved when the customer's request is fully handled. The status change is applied automatically after your final reply this turn is delivered — write any closing confirmation as your normal reply."
+        : "Mark the conversation as resolved when the customer's request is fully handled.",
       schema: z.object({}),
     },
   );

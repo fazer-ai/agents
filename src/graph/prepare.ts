@@ -482,6 +482,10 @@ export interface ToolsetCtx {
   // Direct path: the incoming message's id. Debounce flush: the burst's last incoming message id
   // (the watermark), since the coalesced turn answers up to that message. 0/absent ⇒ not exposed.
   messageId?: number;
+  // Mutable per-turn state shared between runLoadedTurn and the native tools (deferred resolve).
+  // Only runLoadedTurn passes it; nudge/playground omit it on purpose (structural mirror of
+  // TurnState in tools/native.ts — this module deliberately does not import that file).
+  turnState?: { resolveRequested: boolean };
 }
 
 export interface ToolBuildDeps {
@@ -489,6 +493,7 @@ export interface ToolBuildDeps {
     ctx: {
       client: ChatwootClient;
       conversationId: number;
+      turnState?: { resolveRequested: boolean };
       transferWithSummary?: boolean;
       handoff?: HandoffConfig;
       handoffTargets?: HandoffTargets;
@@ -745,6 +750,7 @@ export async function buildToolset(
       {
         client: ctx.client,
         conversationId: ctx.conversationId,
+        turnState: ctx.turnState,
         transferWithSummary: cfg.transferWithSummary,
         handoff: effectiveHandoff,
         handoffTargets,

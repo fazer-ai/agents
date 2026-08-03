@@ -957,6 +957,21 @@ describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_sch
     });
   });
 
+  test("{{secret}} in the URL with no resolvable credential throws a config error, no fetch", async () => {
+    const captured: Captured = {};
+    const tool = buildHttpTool(
+      def({
+        method: "GET",
+        urlTemplate: `https://${PUBLIC}/v1/x?token={{secret}}`,
+      }),
+      { resolveCredential: async () => null, fetchImpl: stubFetch(captured) },
+    );
+    // A missing credential is operator config, not model input: the model must never be told to
+    // retry with a "secret" field.
+    await expect(tool.invoke({})).rejects.toThrow(/credential/);
+    expect(captured.url).toBeUndefined();
+  });
+
   test("unresolved URL placeholder returns an instructive error to the model, no fetch", async () => {
     const captured: Captured = {};
     const tool = buildHttpTool(

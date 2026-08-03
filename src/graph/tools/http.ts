@@ -388,6 +388,15 @@ export function buildHttpTool(
         return encodeURIComponent(v);
       });
       if (missingUrlNames.size > 0) {
+        // An unresolved {{secret}} is an operator/config problem (missing or unresolvable
+        // credential): the model can never supply it, so a retry hint would just loop. Throw like
+        // the other config errors in this file; keep the retry message for real input fields.
+        if (missingUrlNames.has("secret")) {
+          throw new AppError(
+            `tool ${def.name}: the URL references {{secret}} but no credential resolved`,
+            400,
+          );
+        }
         return `Error: no value available for URL placeholder(s): ${[
           ...missingUrlNames,
         ]

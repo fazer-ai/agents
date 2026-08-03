@@ -76,9 +76,11 @@ export function isJsonSchemaShape(raw: unknown): boolean {
 
 // JSON Schema → compact map. Flat scalar/enum/array-of-scalar properties convert faithfully;
 // anything deeper (nested properties, anyOf/oneOf, explicit type "object") degrades to the generic
-// "object" field type. The top-level `required` array marks per-field required flags.
+// "object" field type. The top-level `required` array marks per-field required flags. `warnings`
+// (optional collector) receives notes about lossy conversions.
 export function compactFromJsonSchema(
   raw: Record<string, unknown>,
+  warnings?: string[],
 ): Record<string, unknown> {
   const props = raw.properties as Record<string, unknown>;
   const required = new Set(
@@ -90,11 +92,25 @@ export function compactFromJsonSchema(
   for (const [name, spec] of Object.entries(props)) {
     const s = isPlainObject(spec) ? spec : {};
     const field: Record<string, unknown> = {};
-    if (Array.isArray(s.enum)) {
-      field.type = "enum";
-      field.enumValues = s.enum.filter(
-        (v): v is string => typeof v === "string",
-      );
+    if (Array.isArray(s.enum) && s.enum.length > 0) {
+      if (s.enum.every((v) => typeof v === "string")) {
+        field.type = "enum";
+        field.enumValues = s.enum as string[];
+      } else {
+        // The compact contract only expresses string enums. Degrade a numeric/boolean enum to its
+        // base scalar type (wider but never rejects a declared value) instead of silently dropping
+        // the values and validating as a free string.
+        field.type = s.enum.every((v) => typeof v === "number")
+          ? s.enum.every((v) => Number.isInteger(v))
+            ? "integer"
+            : "number"
+          : s.enum.every((v) => typeof v === "boolean")
+            ? "boolean"
+            : "string";
+        warnings?.push(
+          `field "${name}": non-string enum values are not expressible in the compact schema; degraded to type "${field.type}" (allowed values are no longer enforced)`,
+        );
+      }
     } else if (s.type === "array") {
       field.type = "array";
       const items = isPlainObject(s.items) ? s.items : {};
@@ -167,12 +183,15 @@ export function normalizeToolShapes(
     patch.inputSchema !== undefined ? patch.inputSchema : current.inputSchema;
   let effectiveSchema = rawSchema;
   if (isJsonSchemaShape(rawSchema)) {
+    const conversionWarnings: string[] = [];
     effectiveSchema = compactFromJsonSchema(
       rawSchema as Record<string, unknown>,
+      conversionWarnings,
     );
     if (patch.inputSchema !== undefined) {
       warnings.push(
         "input_schema was interpreted as standard JSON Schema and converted to the compact field map",
+        ...conversionWarnings,
       );
     }
   }

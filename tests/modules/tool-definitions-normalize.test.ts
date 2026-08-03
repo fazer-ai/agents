@@ -72,6 +72,33 @@ describe("compactFromJsonSchema", () => {
     });
   });
 
+  test("non-string enums degrade to the base scalar type (never a free string that rejects them)", () => {
+    const warnings: string[] = [];
+    const out = compactFromJsonSchema(
+      {
+        properties: {
+          nivel: { enum: [1, 2, 3] },
+          fator: { enum: [1.5, 2.5] },
+          ativo: { enum: [true, false] },
+          misto: { enum: ["a", 1] },
+        },
+      },
+      warnings,
+    );
+    expect(out.nivel).toEqual({ type: "integer" });
+    expect(out.fator).toEqual({ type: "number" });
+    expect(out.ativo).toEqual({ type: "boolean" });
+    expect(out.misto).toEqual({ type: "string" });
+    expect(warnings).toHaveLength(4);
+    expect(warnings[0]).toContain('"nivel"');
+    // The lossy-enum warnings surface through normalizeToolShapes alongside the conversion notice.
+    const { warnings: shapeWarnings } = normalizeToolShapes({
+      inputSchema: { properties: { nivel: { enum: [1, 2] } } },
+    });
+    expect(shapeWarnings.some((w) => w.includes("JSON Schema"))).toBe(true);
+    expect(shapeWarnings.some((w) => w.includes('"nivel"'))).toBe(true);
+  });
+
   test("converts enum, array-of-scalars and degrades nested shapes to object", () => {
     const out = compactFromJsonSchema({
       properties: {

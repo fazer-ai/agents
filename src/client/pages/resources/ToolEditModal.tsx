@@ -23,7 +23,10 @@ import { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
 import { normalizeToolName } from "@/graph/tools/toolName";
-import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
+import {
+  CONTEXT_VAR_NAMES,
+  normalizeToolShapes,
+} from "@/modules/tool-definitions/normalize";
 
 type ToolsData = Awaited<ReturnType<typeof api.api.v1.tools.get>>["data"];
 export type Tool = NonNullable<ToolsData>["tools"][number];
@@ -88,21 +91,11 @@ function loneTokenName(value: string): string | null {
 // alphanumeric/underscore name. Drives the inline {{token}} highlighting in the URL/query/headers/body.
 const TOOL_TOKEN_SOURCE = "\\{\\{\\s*([a-zA-Z0-9_]+)\\s*\\}\\}";
 
-// Context variable names the runtime interpolates (keep in sync with nativeVarItems). A {{token}} is
-// "known" (highlighted as a valid var, not a typo) when it names a declared AI field, one of these, or
-// {{secret}} (only when a credential is selected).
-const NATIVE_VAR_NAMES = new Set([
-  "conversation_id",
-  "message_id",
-  "contact_id",
-  "contact_name",
-  "contact_email",
-  "contact_phone",
-  "inbox_id",
-  "inbox_name",
-  "agent_name",
-  "company_name",
-]);
+// Context variable names the runtime interpolates (shared with the normalization module so the
+// lists cannot drift; keep nativeVarItems in sync). A {{token}} is "known" (highlighted as a valid
+// var, not a typo) when it names a declared AI field, one of these, or {{secret}} (only when a
+// credential is selected).
+const NATIVE_VAR_NAMES = new Set<string>(CONTEXT_VAR_NAMES);
 function isKnownToolToken(
   name: string,
   params: string[],

@@ -290,6 +290,88 @@ describe("ChatwootClient", () => {
     expect(calls[0]?.url).toContain("/inboxes/8");
   });
 
+  // Chatwoot puts the attachment's data_url in the message_created payload BEFORE ActiveStorage has
+  // written the file, so the eager STT/vision download races it and gets a 404 on a fresh voice note.
+  // The retry is opt-in: the interactive media proxy must still fail fast on a genuinely missing file.
+  describe("downloadAttachment write race", () => {
+    // A public documentation IP (RFC 5737) keeps the real anti-SSRF guard happy without a DNS lookup —
+    // downloadAttachment always uses the real guard, never deps.assertSafe.
+    const HOST = "https://203.0.113.10";
+    const URL_ = `${HOST}/rails/active_storage/blobs/redirect/abc/audio.ogg`;
+
+    function downloadStub(statuses: number[]) {
+      const slept: number[] = [];
+      let calls = 0;
+      const fetchImpl = (async () => {
+        const status = statuses[calls++] ?? 200;
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          arrayBuffer: async () => new ArrayBuffer(3),
+          headers: { get: () => "audio/ogg" },
+        } as unknown as Response;
+      }) as unknown as typeof fetch;
+      return {
+        fetchImpl,
+        slept,
+        sleep: async (ms: number) => {
+          slept.push(ms);
+        },
+        count: () => calls,
+      };
+    }
+
+    const clientFor = (fetchImpl: typeof fetch) =>
+      createChatwootClient(
+        { ...baseConfig, baseUrl: HOST },
+        { fetchImpl, assertSafe: passthroughSafe },
+      );
+
+    test("retries a 404 on the backoff and returns the file once it lands", async () => {
+      const s = downloadStub([404, 404, 200]);
+      const client = await clientFor(s.fetchImpl);
+      const out = await client.downloadAttachment(URL_, {
+        retryOnMissing: true,
+        sleep: s.sleep,
+      });
+      expect(out.bytes.byteLength).toBe(3);
+      expect(out.contentType).toBe("audio/ogg");
+      expect(s.count()).toBe(3);
+      expect(s.slept).toEqual([250, 750]);
+    });
+
+    test("does not retry by default (interactive media proxy fails fast)", async () => {
+      const s = downloadStub([404, 200]);
+      const client = await clientFor(s.fetchImpl);
+      const err = await client.downloadAttachment(URL_).catch((e) => e);
+      expect(err).toBeInstanceOf(ChatwootApiError);
+      expect((err as ChatwootApiError).status).toBe(404);
+      expect(s.count()).toBe(1);
+    });
+
+    test("does not retry a non-404 even when opted in", async () => {
+      const s = downloadStub([403, 200]);
+      const client = await clientFor(s.fetchImpl);
+      const err = await client
+        .downloadAttachment(URL_, { retryOnMissing: true, sleep: s.sleep })
+        .catch((e) => e);
+      expect((err as ChatwootApiError).status).toBe(403);
+      expect(s.count()).toBe(1);
+      expect(s.slept).toEqual([]);
+    });
+
+    test("gives up after the bounded backoff", async () => {
+      const s = downloadStub([404, 404, 404, 404, 404]);
+      const client = await clientFor(s.fetchImpl);
+      const err = await client
+        .downloadAttachment(URL_, { retryOnMissing: true, sleep: s.sleep })
+        .catch((e) => e);
+      expect((err as ChatwootApiError).status).toBe(404);
+      expect(s.count()).toBe(4);
+      expect(s.slept).toEqual([250, 750, 1500]);
+    });
+  });
+
   test("throws ChatwootApiError (without body) on non-2xx", async () => {
     const { fetchImpl } = stub(403, { error: "nope" });
     const client = await createChatwootClient(baseConfig, {

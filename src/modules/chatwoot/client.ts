@@ -25,6 +25,17 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 // slow/unreachable — fail fast so the caller can degrade gracefully (serve metadata + a retry).
 const INTERACTIVE_TIMEOUT_MS = 10_000;
 
+// NOTE: Chatwoot fires `message_created` (with the attachment's data_url already in the payload)
+// BEFORE ActiveStorage finishes writing the file, so an immediate GET on a fresh voice note loses the
+// race and the storage service answers 404. Measured on a disk-backed instance: the blob row is
+// committed ~400ms before the file lands, and the eager-media download fires ~70ms after the webhook.
+// These delays cover that window with headroom while staying well inside a typical debounce window.
+// Only 404 is retried (missing file); every other status is a real error and fails immediately.
+const ATTACHMENT_RETRY_DELAYS_MS = [250, 750, 1500];
+
+const realSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
 export class ChatwootApiError extends Error {
   readonly status: number;
   readonly endpoint: string;
@@ -47,6 +58,15 @@ export interface ChatwootClientConfig {
 export interface ChatwootClientDeps {
   fetchImpl?: typeof fetch;
   assertSafe?: (url: string) => Promise<URL>;
+}
+
+export interface AttachmentDownloadOptions {
+  // Opt-in bounded retry for the write race described on ATTACHMENT_RETRY_DELAYS_MS. The eager media
+  // path (STT/vision, right off the webhook) sets it; the interactive media proxy does NOT — there a
+  // 404 means the attachment is really gone and the operator must not wait out the backoff.
+  retryOnMissing?: boolean;
+  // Injectable for tests (no real waiting).
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export type ChatwootMessageType = "outgoing" | "incoming";
@@ -620,8 +640,10 @@ export class ChatwootClient {
   // Storage-backend redirects (e.g. S3) are followed; a size cap bounds memory. NOTE: redirect
   // targets are not re-validated (TOCTOU) — the data_url comes from the HMAC-authenticated webhook
   // of the tenant's own Chatwoot, the same trust as every other call to this instance.
+  // `opts.retryOnMissing` retries a 404 on the backoff above (the file-not-written-yet race).
   async downloadAttachment(
     dataUrl: string,
+    opts: AttachmentDownloadOptions = {},
   ): Promise<{ bytes: ArrayBuffer; contentType: string | null }> {
     await assertSafeOutboundUrl(dataUrl);
     let sameHost = false;
@@ -630,20 +652,30 @@ export class ChatwootClient {
     } catch {
       throw new ChatwootApiError(400, "GET attachment");
     }
-    const res = await this.fetchImpl(dataUrl, {
-      method: "GET",
-      headers: sameHost
-        ? { [CHATWOOT_AUTH_HEADER]: this.config.adminToken }
-        : {},
-      redirect: "follow",
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!res.ok) throw new ChatwootApiError(res.status, "GET attachment");
-    const bytes = await res.arrayBuffer();
-    if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
-      throw new ChatwootApiError(413, "GET attachment");
+    const delays = opts.retryOnMissing ? ATTACHMENT_RETRY_DELAYS_MS : [];
+    const sleep = opts.sleep ?? realSleep;
+    for (let attempt = 0; ; attempt++) {
+      const res = await this.fetchImpl(dataUrl, {
+        method: "GET",
+        headers: sameHost
+          ? { [CHATWOOT_AUTH_HEADER]: this.config.adminToken }
+          : {},
+        redirect: "follow",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      if (res.ok) {
+        const bytes = await res.arrayBuffer();
+        if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+          throw new ChatwootApiError(413, "GET attachment");
+        }
+        return { bytes, contentType: res.headers.get("content-type") };
+      }
+      const delay = delays[attempt];
+      if (res.status !== 404 || delay === undefined) {
+        throw new ChatwootApiError(res.status, "GET attachment");
+      }
+      await sleep(delay);
     }
-    return { bytes, contentType: res.headers.get("content-type") };
   }
 
   // The account's display name (admin token). `GET /api/v1/accounts/:id` (the account-base root)

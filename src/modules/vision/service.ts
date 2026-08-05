@@ -138,9 +138,27 @@ export async function extractInboundFile(
     base,
     makeClient: params.deps?.makeClient,
   });
-  const { bytes, contentType } = await client.downloadAttachment(
-    params.dataUrl,
-  );
+  // Mirrors STT: the download is outside the span below, so surface its failure as a `vision` line
+  // instead of letting it vanish, and absorb Chatwoot's write race on a freshly-posted attachment.
+  let bytes: ArrayBuffer;
+  let contentType: string | null;
+  try {
+    ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
+      retryOnMissing: true,
+    }));
+  } catch (err) {
+    if (params.flow) {
+      emitFlowEvent(params.flow, {
+        stage: "vision",
+        level: "warn",
+        status: "error",
+        provider: cfg.provider,
+        detail: { step: "download" },
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+    }
+    throw err;
+  }
   const kind = visionKindForMime(contentType);
   if (!kind) return skip("unsupported_mime"); // unsupported mime → marker
   if (kind === "document" && !provider.supportsDocuments)

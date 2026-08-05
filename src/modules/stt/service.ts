@@ -130,9 +130,29 @@ export async function transcribeInboundAudio(
     base,
     makeClient: params.deps?.makeClient,
   });
-  const { bytes, contentType } = await client.downloadAttachment(
-    params.dataUrl,
-  );
+  // NOTE: the download sits OUTSIDE the withFlowStage span below, so a failure here used to leave NO
+  // `stt` line at all — the operator saw a turn that answered "não consegui ouvir" with nothing on the
+  // Logs page to explain it. Emit the stage line, then re-throw (the caller decides; see the contract
+  // above). `retryOnMissing` absorbs Chatwoot's write race on a fresh voice note.
+  let bytes: ArrayBuffer;
+  let contentType: string | null;
+  try {
+    ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
+      retryOnMissing: true,
+    }));
+  } catch (err) {
+    if (params.flow) {
+      emitFlowEvent(params.flow, {
+        stage: "stt",
+        level: "warn",
+        status: "error",
+        provider: cfg.provider,
+        detail: { step: "download" },
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+    }
+    throw err;
+  }
   const raw = await withFlowStage(
     params.flow,
     "stt",

@@ -12,7 +12,7 @@ incoming message with an audio attachment (gate=act)
         │ yes
         ▼
    transcribeInboundAudio:
-     download data_url (client.downloadAttachment, anti-SSRF) →
+     download data_url (client.downloadAttachment, anti-SSRF, 404-retry) →
      provider.transcribe (key from vault) →
      cleanTranscription (drop Whisper's Amara.org silence hallucination) →
      client.updateAttachmentMeta { transcribed_text }   ← write-back (no body mirrored in OUR DB)
@@ -22,6 +22,8 @@ incoming message with an audio attachment (gate=act)
 ```
 
 STT runs **before** arming/answering so the debounce re-fetch (and the direct path) get text instead of an empty audio message. The transcription lives only in Chatwoot (attachment meta), never in our DB — consistent with the anti-PII no-body-mirror rule. Best-effort: any STT failure leaves the audio to render as a "please send text" marker and never strands the delivery.
+
+**The download races Chatwoot's own storage write.** `message_created` carries the attachment's `data_url` but is dispatched *before* ActiveStorage finishes writing the file, so the eager download (it fires ~70ms after the webhook) can hit the storage service ahead of the bytes and get a **404** — the voice note then goes untranscribed and the customer is asked to "send text" for an audio that is perfectly fine. `downloadAttachment` therefore takes `retryOnMissing`, retrying **404 only** on a bounded backoff (250/750/1500ms, ~3 extra seconds worst case, inside a typical debounce window); every other status still fails immediately. The eager STT/vision path opts in; the interactive media proxy (`getConversationMedia`) does **not**, because there a 404 means the file is genuinely gone and the operator must not wait out the backoff. A download failure now also emits its own `stt`/`vision` line (warn + `status: error`, `detail.step = "download"`): it sits outside the `withFlowStage` span, so before this it left **no** trace on the Logs page at all.
 
 ## Generic provider abstraction (`src/modules/stt/providers.ts`)
 

@@ -27,11 +27,30 @@ export interface ResolvedModelConfig extends ModelConfig {
 // base URL instead of asking the operator for one (unlike the generic "openai-compatible" provider).
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
+// NOTE: OpenAI's reasoning families reject any `temperature` other than the default with a hard 400
+// ("Unsupported value: 'temperature' does not support 0.3 with this model"), which kills the whole
+// call — the agent's own turn, the guardrail pass and the TTS speech normalization all pin a
+// temperature and would 400 on every request. Drop the parameter for those models instead of clamping
+// it, and only for the OpenAI-shaped clients. Matches a bare id ("o4-mini", "gpt-5-mini") and a routed
+// one ("openai/o4-mini", OpenRouter); "gpt-4o" and "omni-…" deliberately do not match.
+const REASONING_MODEL_RE = /^(?:[\w.-]+\/)?(?:o\d+(?:-|$)|gpt-5)/i;
+
+function openaiTemperature(
+  model: string,
+  temperature: number | undefined,
+): number | undefined {
+  return REASONING_MODEL_RE.test(model.trim()) ? undefined : temperature;
+}
+
 export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
   const { model, apiKey, temperature } = cfg;
   switch (cfg.provider) {
     case "openai":
-      return new ChatOpenAI({ model, apiKey, temperature });
+      return new ChatOpenAI({
+        model,
+        apiKey,
+        temperature: openaiTemperature(model, temperature),
+      });
     case "openai-compatible":
       if (!cfg.baseURL) {
         throw new AppError("openai-compatible provider requires baseURL", 400);
@@ -41,14 +60,14 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
         // the request is well-formed; llama.cpp-style single-model servers ignore the name.
         model: model.trim() || "default",
         apiKey,
-        temperature,
+        temperature: openaiTemperature(model, temperature),
         configuration: { baseURL: cfg.baseURL },
       });
     case "openrouter":
       return new ChatOpenAI({
         model,
         apiKey,
-        temperature,
+        temperature: openaiTemperature(model, temperature),
         configuration: { baseURL: cfg.baseURL || OPENROUTER_BASE_URL },
       });
     case "anthropic":

@@ -32,8 +32,11 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 // call — the agent's own turn, the guardrail pass and the TTS speech normalization all pin a
 // temperature and would 400 on every request. Drop the parameter for those models instead of clamping
 // it, and only for the OpenAI-shaped clients. Matches a bare id ("o4-mini", "gpt-5-mini") and a routed
-// one ("openai/o4-mini", OpenRouter); "gpt-4o" and "omni-…" deliberately do not match.
-const REASONING_MODEL_RE = /^(?:[\w.-]+\/)?(?:o\d+(?:-|$)|gpt-5)/i;
+// one ("openai/o4-mini", OpenRouter); "gpt-4o" and "omni-…" deliberately do not match. gpt-5-chat* is
+// exempted: it is the non-reasoning chat family and accepts `temperature` (same carve-out as
+// @langchain/openai's isReasoningModel), so dropping it there would silently discard the operator's
+// preference.
+const REASONING_MODEL_RE = /^(?:[\w.-]+\/)?(?:o\d+(?:-|$)|gpt-5(?!-chat))/i;
 
 function openaiTemperature(
   model: string,

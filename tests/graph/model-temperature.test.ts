@@ -24,7 +24,23 @@ describe("createChatModel temperature on reasoning models", () => {
 
   test("dropped for the gpt-5 family", () => {
     expect(openai("gpt-5", 0.3).temperature).toBeUndefined();
+    expect(openai("gpt-5-mini", 0.3).temperature).toBeUndefined();
     expect(openai("gpt-5.4-mini", 0.7).temperature).toBeUndefined();
+  });
+
+  // NOTE: gpt-5-chat* is the non-reasoning chat family and accepts `temperature` (the
+  // @langchain/openai isReasoningModel predicate carries the same exemption); dropping it there
+  // silently discards the operator's preference instead of preventing a 400.
+  test("kept for gpt-5-chat (non-reasoning chat family)", () => {
+    expect(openai("gpt-5-chat-latest", 0.3).temperature).toBe(0.3);
+    expect(openai("gpt-5-chat", 0.7).temperature).toBe(0.7);
+    const routed = createChatModel({
+      provider: "openrouter",
+      model: "openai/gpt-5-chat",
+      apiKey: "test",
+      temperature: 0.3,
+    }) as ChatOpenAI;
+    expect(routed.temperature).toBe(0.3);
   });
 
   test("kept for models that accept it", () => {

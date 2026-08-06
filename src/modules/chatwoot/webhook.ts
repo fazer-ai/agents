@@ -307,26 +307,21 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// A few Chatwoot transports persist the attachment immediately after creating the message. In that
-// shape, message_created arms the turn without media and message_updated is the first event that
-// carries the audio/image. Analyze that late attachment, but never let the update drive debounce or
-// a second turn. A write-back update is a no-op because it already carries the extracted content.
+// A few Chatwoot transports persist the attachment only after creating the message. In that shape,
+// message_created arms the turn without media and message_updated is the first event that carries
+// the audio (the fork re-fires the update after a late audio attach). Analyze that late audio, but
+// never let the update drive debounce or a second turn. The STT write-back update is a no-op because
+// it carries `transcribed_text` in the payload. AUDIO ONLY on purpose: the vision write-back is not
+// serialized into webhook payloads (the fork's Attachment#push_event_data exposes no
+// image_description/extracted_text on any file type), so a visual leg here could not tell "never
+// analyzed" from "our own write-back" and would re-run vision on its own write-back event forever.
 export function hasPendingInboundMediaUpdate(
   n: NormalizedChatwootEvent,
 ): boolean {
   if (n.event !== "message_updated" || !isIncomingMessage(n)) return false;
   const audio = firstAudioAttachment(n);
-  if (
-    audio &&
-    !audio.transcribedText &&
-    !n.message?.transcribedText
-  ) {
-    return true;
-  }
   return Boolean(
-    firstVisualAttachment(n) &&
-      !n.message?.imageDescription &&
-      !n.message?.extractedText,
+    audio && !audio.transcribedText && !n.message?.transcribedText,
   );
 }
 
@@ -337,20 +332,17 @@ async function isTestConversationActivated(params: {
   base: PrismaClient;
 }): Promise<boolean> {
   if (params.conversationId === null) return false;
-  const row = await runScopedOn(
-    params.base,
-    sysCtx(params.tenantId),
-    (db) =>
-      db.conversation.findUnique({
-        where: {
-          tenantId_chatwootInstanceId_chatwootConversationId: {
-            tenantId: params.tenantId,
-            chatwootInstanceId: params.instanceId,
-            chatwootConversationId: params.conversationId as number,
-          },
+  const row = await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
+    db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId: params.tenantId,
+          chatwootInstanceId: params.instanceId,
+          chatwootConversationId: params.conversationId as number,
         },
-        select: { testActivatedAt: true },
-      }),
+      },
+      select: { testActivatedAt: true },
+    }),
   );
   return row?.testActivatedAt != null;
 }
@@ -1024,19 +1016,20 @@ export async function processChatwootDelivery(
   const n = params.normalized;
 
   // Only message_created drives commands, debounce and the agent turn. A message_updated can still
-  // carry an attachment that was absent at creation time; it is eligible for media analysis only.
+  // carry an audio attachment that was absent at creation time; it is eligible for STT only.
   const isNewIncoming = isNewIncomingMessage(n);
   const hasLateMedia = hasPendingInboundMediaUpdate(n);
 
   // Resolve the bound agent for a new message or a late-media update. The latter never drives a turn.
-  const rt = isNewIncoming || hasLateMedia
-    ? await inboxAgentRuntime(
-        params.tenantId,
-        params.instanceId,
-        n.inboxId,
-        base,
-      )
-    : null;
+  const rt =
+    isNewIncoming || hasLateMedia
+      ? await inboxAgentRuntime(
+          params.tenantId,
+          params.instanceId,
+          n.inboxId,
+          base,
+        )
+      : null;
   const command = isNewIncoming ? controlCommand(n) : null;
   const commandActive = command !== null && rt?.mode === "test";
 
@@ -1146,7 +1139,7 @@ export async function processChatwootDelivery(
     }
   }
 
-  // Production analyzes every new incoming message. Some transports attach media just after
+  // Production analyzes every new incoming message. Some transports attach the audio just after
   // message_created, so the first useful attachment arrives on message_updated; analyze that update
   // without arming debounce or a second turn. Test mode keeps its cost fence and only analyzes a late
   // attachment when this conversation was explicitly activated.

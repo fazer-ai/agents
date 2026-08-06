@@ -380,6 +380,34 @@ describe("hasPendingInboundMediaUpdate", () => {
     if (created) created.event = "message_created";
     expect(created && hasPendingInboundMediaUpdate(created)).toBe(false);
   });
+
+  test("rejects a visual attachment update (audio-only guard)", () => {
+    // The fork's webhook payload never serializes image_description/extracted_text (only audio
+    // carries transcribed_text), so an image update is indistinguishable from our own vision
+    // write-back re-dispatch (AttachmentsController#update -> send_update_event). Accepting it
+    // would re-run vision on every write-back: a paid call per cycle, forever.
+    const event = normalizeChatwootEvent({
+      event: "message_updated",
+      id: 1002,
+      content: "",
+      message_type: "incoming",
+      private: false,
+      attachments: [
+        {
+          id: 88,
+          file_type: "image",
+          data_url: "https://chat.example.com/img.jpg",
+        },
+      ],
+      conversation: {
+        id: 42,
+        inbox_id: 7,
+        status: "pending",
+        meta: { assignee_type: null, assignee: null },
+      },
+    });
+    expect(event && hasPendingInboundMediaUpdate(event)).toBe(false);
+  });
 });
 
 describe("audio attachment normalization (STT idempotency seam)", () => {

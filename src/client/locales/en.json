@@ -1055,6 +1055,8 @@
       "calendarsPickCredential": "Choose a connected Google credential above to list its calendars.",
       "calendarTabs": "Calendar settings",
       "createCalendarLink": "Need a new calendar? Create one in Google Calendar",
+      "createMeetLink": "Create a Google Meet room for each appointment",
+      "createMeetLinkHint": "The agent then shares the Meet link with the customer. Turn it off if this calendar is only used to block time slots.",
       "environment": "Environment",
       "filterFolders": "Filter folders by name",
       "folder": "Folder",

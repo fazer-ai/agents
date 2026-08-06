@@ -93,6 +93,14 @@ function resolveBlockingCalendarIds(config: Record<string, unknown>): string[] {
   return Array.from(new Set(ids));
 }
 
+// Whether calendar_create_event asks Google for a Meet room. ON by default: an agent that books a
+// "call" must hand the customer a real meeting room, not the calendar page (htmlLink). Operators who
+// use the calendar purely as a busy-block turn it off in the integration config. When the connected
+// account cannot create Meet rooms, Google keeps the event and just omits the conference (no error).
+function resolveCreateMeetLink(config: Record<string, unknown>): boolean {
+  return config.createMeetLink !== false;
+}
+
 // Friendly labels (calendar id → human name, e.g. "Dr. Ana"), captured when the operator picks
 // calendars from the connected account. Best-effort: lets the model target a calendar by name and the
 // tool description enumerate the allowed calendars. Missing labels fall back to the raw id.
@@ -440,6 +448,9 @@ function projectEvent(ev: Record<string, unknown>) {
     start: flattenTime(ev.start),
     end: flattenTime(ev.end),
     htmlLink: typeof ev.htmlLink === "string" ? ev.htmlLink : undefined,
+    // The Meet room (hangoutLink) — THE link to hand the customer; htmlLink is only the event's
+    // calendar page, useless to a lead without access to the calendar.
+    meetLink: typeof ev.hangoutLink === "string" ? ev.hangoutLink : undefined,
   };
 }
 
@@ -790,6 +801,7 @@ function buildCreateEventTool(
   const allowed = resolveAllowedCalendarIds(sel.config);
   const labels = resolveCalendarLabels(sel.config);
   const timeZone = resolveTimeZone(sel.config);
+  const meetEnabled = resolveCreateMeetLink(sel.config);
   return tool(
     async (input: {
       summary: string;
@@ -812,11 +824,25 @@ function buildCreateEventTool(
         ...(input.description ? { description: input.description } : {}),
         // Owner stamp injected from context, never from the model: locks this appointment to the contact.
         extendedProperties: { private: { [SECV4_CONTACT_KEY]: stamp } },
+        // A Meet room for the appointment. requestId MUST be unique per event: Google returns the
+        // SAME room for a reused id, which would put different leads in one meeting.
+        ...(meetEnabled
+          ? {
+              conferenceData: {
+                createRequest: {
+                  requestId: crypto.randomUUID(),
+                  conferenceSolutionKey: { type: "hangoutsMeet" },
+                },
+              },
+            }
+          : {}),
       };
       let res: GcalResponse;
       try {
         res = await gcalFetch(
-          `/calendars/${encodeURIComponent(calendarId)}/events`,
+          // Without conferenceDataVersion=1 the API IGNORES conferenceData in silence — no error,
+          // no room. Easy to lose in a refactor; pinned by tests.
+          `/calendars/${encodeURIComponent(calendarId)}/events${meetEnabled ? "?conferenceDataVersion=1" : ""}`,
           { method: "POST", token, body },
           ctx,
         );
@@ -827,9 +853,32 @@ function buildCreateEventTool(
       if (res.status < 200 || res.status >= 300) {
         return `Google Calendar rejected the event (HTTP ${res.status}).`;
       }
-      const data = (res.json ?? {}) as Record<string, unknown>;
+      let data = (res.json ?? {}) as Record<string, unknown>;
       if (typeof data.id !== "string") {
         return "Google Calendar returned an unexpected response.";
+      }
+      const eventId = data.id;
+      // Room creation is usually synchronous, but the API may answer with the createRequest still
+      // pending and no hangoutLink; one cheap re-read closes that gap (no polling — if it is STILL
+      // pending, the reply simply carries no meetLink and the event stands).
+      if (meetEnabled && typeof data.hangoutLink !== "string") {
+        try {
+          const re = await gcalFetch(
+            `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+            { method: "GET", token },
+            ctx,
+          );
+          const rec = (re.json ?? {}) as Record<string, unknown>;
+          if (
+            re.status >= 200 &&
+            re.status < 300 &&
+            typeof rec.hangoutLink === "string"
+          ) {
+            data = rec;
+          }
+        } catch (err) {
+          logger.warn({ err }, "gcal: meet-link re-read failed");
+        }
       }
       // Arm deterministic reminders for the new appointment (best-effort; no-op when the Calendar
       // integration has reminders disabled / on the playground). The policy (offsets/confirmation) is
@@ -838,7 +887,7 @@ function buildCreateEventTool(
       const apptCfg = readAppointmentReminderConfig(sel.config);
       if (apptCfg.enabled && ctx.scheduleAppointmentReminders && startISO) {
         await ctx.scheduleAppointmentReminders({
-          eventId: data.id,
+          eventId,
           calendarId,
           startISO,
           credentialRef: sel.credentialRef,
@@ -851,7 +900,7 @@ function buildCreateEventTool(
     {
       name: "calendar_create_event",
       description: withCalendarContext(
-        `Create an appointment for THIS customer on the calendar (it is automatically tagged to this customer, so only they can later see or change it). Provide a summary plus start and end. Use ISO 8601 with an offset for timed events (e.g. 2026-06-20T14:00:00-03:00) or a bare date (2026-06-20) for an all-day event. Returns the created appointment's id and link.`,
+        `Create an appointment for THIS customer on the calendar (it is automatically tagged to this customer, so only they can later see or change it). Provide a summary plus start and end. Use ISO 8601 with an offset for timed events (e.g. 2026-06-20T14:00:00-03:00) or a bare date (2026-06-20) for an all-day event. Returns the created appointment's id and links${meetEnabled ? "; share meetLink (the Google Meet room) with the customer — htmlLink is only the calendar page" : ""}.`,
         allowedCalendarsXml(allowed, labels),
       ),
       schema: CREATE_EVENT_SCHEMA,

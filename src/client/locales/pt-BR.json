@@ -1058,6 +1058,8 @@
       "calendarsPickCredential": "Escolha uma credencial do Google conectada acima para listar as agendas.",
       "calendarTabs": "Configurações do calendário",
       "createCalendarLink": "Precisa de uma agenda nova? Criar no Google Calendar",
+      "createMeetLink": "Criar uma sala do Google Meet para cada agendamento",
+      "createMeetLinkHint": "O agente compartilha o link do Meet com o cliente. Desligue se esta agenda serve apenas para bloquear horários.",
       "environment": "Ambiente",
       "filterFolders": "Filtrar pastas por nome",
       "folder": "Pasta",

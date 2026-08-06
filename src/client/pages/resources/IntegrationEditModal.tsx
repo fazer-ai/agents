@@ -106,6 +106,7 @@ function defaultConfig(catalogType: string): Record<string, unknown> {
         businessHoursId: "",
         slotDurationMinutes: 30,
         slotGranularityMinutes: 15,
+        createMeetLink: true,
         appointmentReminders: {
           enabled: false,
           offsetsHours: [24, 1],
@@ -1416,6 +1417,20 @@ export function IntegrationEditModal({
                       {t(
                         "integrations.config.slotSpacingHint",
                         "Spacing is the gap between offered start times: 15 min means 09:00 and 09:15 can both be offered.",
+                      )}
+                    </p>
+                    <SwitchField
+                      checked={cfg.createMeetLink !== false}
+                      onCheckedChange={(v) => setCfg({ createMeetLink: v })}
+                      label={t(
+                        "integrations.config.createMeetLink",
+                        "Create a Google Meet room for each appointment",
+                      )}
+                    />
+                    <p className="text-text-muted text-xs">
+                      {t(
+                        "integrations.config.createMeetLinkHint",
+                        "The agent then shares the Meet link with the customer. Turn it off if this calendar is only used to block time slots.",
                       )}
                     </p>
                   </div>

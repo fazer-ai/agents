@@ -142,7 +142,7 @@ export interface AgentConfig {
   // The DB Inbox.id this conversation belongs to (null in the playground / no mirror row). Feeds
   // the per-inbox usage attribution on LlmUsage.
   inboxDbId: bigint | null;
-  // The inbox's Chatwoot channel class ("Channel::Api", "Channel::Instagram", …; null when unknown
+  // NOTE: the inbox's Chatwoot channel class ("Channel::Api", "Channel::Instagram", …; null when unknown
   // or in the playground). Decides the TTS reply container (pickTtsFormat) — Meta's Instagram
   // messaging refuses WhatsApp's Ogg/Opus.
   channelType: string | null;

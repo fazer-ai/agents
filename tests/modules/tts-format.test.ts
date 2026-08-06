@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { getTtsProvider, pickTtsFormat } from "@/modules/tts/providers";
 import { pcmToWav } from "@/modules/tts/wav";
 
-// The reply container is decided per destination channel: WhatsApp renders a PTT voice note only for
+// NOTE: the reply container is decided per destination channel: WhatsApp renders a PTT voice note only for
 // Ogg/Opus, while Meta's Instagram messaging accepts audio only as aac/m4a/wav/mp4 (ogg and mp3 are
 // refused). pickTtsFormat maps (provider capabilities, channel) → container, or null when the
 // provider cannot emit anything the channel accepts (the caller then falls back to a text reply).

@@ -103,7 +103,7 @@ describe("TTS providers", () => {
     expect(getTtsProvider("bogus")).toBeNull();
   });
 
-  // Meta's Instagram messaging accepts audio only as aac/m4a/wav/mp4 (ogg AND mp3 are refused by the
+  // NOTE: Meta's Instagram messaging accepts audio only as aac/m4a/wav/mp4 (ogg AND mp3 are refused by the
   // send job AFTER Chatwoot already shows the message as sent), so the reply container must follow
   // the destination channel instead of being pinned to WhatsApp's Ogg/Opus.
   test("openai honors format 'aac' for an Instagram-bound reply", async () => {
@@ -138,7 +138,7 @@ describe("TTS providers", () => {
       fetchImpl,
       format: "wav",
     });
-    // ElevenLabs has no aac/wav output; pcm_24000 is raw 16-bit mono PCM, wrapped locally (44-byte
+    // NOTE: ElevenLabs has no aac/wav output; pcm_24000 is raw 16-bit mono PCM, wrapped locally (44-byte
     // RIFF header, no transcode).
     expect(calls[0]?.url).toContain("output_format=pcm_24000");
     expect(res?.mime).toBe("audio/wav");

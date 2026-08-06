@@ -1,4 +1,4 @@
-// Text-to-speech provider abstraction. Each provider has a different shape, so each gets a thin
+// NOTE: Text-to-speech provider abstraction. Each provider has a different shape, so each gets a thin
 // adapter behind one interface + registry. Adding a provider = one function + one registry entry, no
 // caller changes. The API key is a vault entry; provider/voice are per-agent. The OUTPUT CONTAINER
 // follows the destination channel (TtsRequest.format, chosen by pickTtsFormat): WhatsApp renders a
@@ -14,7 +14,7 @@ import { pcmToWav } from "./wav";
 
 const TTS_TIMEOUT_MS = 60_000;
 
-// The audio container the reply is delivered in, decided per destination channel by pickTtsFormat.
+// NOTE: the audio container the reply is delivered in, decided per destination channel by pickTtsFormat.
 export type TtsOutputFormat = "ogg_opus" | "aac" | "wav" | "mp3";
 
 export interface TtsRequest {
@@ -25,7 +25,7 @@ export interface TtsRequest {
   apiKey: string;
   baseURL: string | null;
   fetchImpl: typeof fetch;
-  // Delivery container for the destination channel (see pickTtsFormat). Adapters map it onto their
+  // NOTE: delivery container for the destination channel (see pickTtsFormat). Adapters map it onto their
   // provider parameter and return the matching mime/fileName.
   format: TtsOutputFormat;
 }
@@ -41,7 +41,7 @@ export interface TtsProvider {
   defaultVoice: string;
   requiresVoice?: boolean;
   requiresBaseURL?: boolean;
-  // Containers this provider can emit; pickTtsFormat picks from these per channel.
+  // NOTE: containers this provider can emit; pickTtsFormat picks from these per channel.
   formats: readonly TtsOutputFormat[];
   synthesize(req: TtsRequest): Promise<TtsResult>;
 }
@@ -57,7 +57,7 @@ export class TtsError extends Error {
   }
 }
 
-// Chatwoot infers file_type "audio" from the audio/* mime + the extension, and `is_recorded_audio`
+// NOTE: Chatwoot infers file_type "audio" from the audio/* mime + the extension, and `is_recorded_audio`
 // marks it as a recording; baileys then sends Ogg/Opus to WhatsApp as a PTT voice note.
 const RESULT_BY_FORMAT: Record<
   TtsOutputFormat,
@@ -69,7 +69,7 @@ const RESULT_BY_FORMAT: Record<
   mp3: { mime: "audio/mpeg", fileName: "reply.mp3" },
 };
 
-// Picks the container for the destination channel. Instagram (Meta messaging) accepts audio only as
+// NOTE: picks the container for the destination channel. Instagram (Meta messaging) accepts audio only as
 // aac/m4a/wav/mp4 — ogg and mp3 are refused by the send job AFTER Chatwoot already shows the message
 // as sent, so the customer silently never receives the reply. Every other channel keeps the
 // WhatsApp-first default: Ogg/Opus (native PTT voice note) when the provider can emit it, else the
@@ -87,7 +87,7 @@ export function pickTtsFormat(
   return provider.formats.includes("ogg_opus") ? "ogg_opus" : "mp3";
 }
 
-// OpenAI speech: POST /audio/speech; response_format maps 1:1 from the requested container ("opus"
+// NOTE: OpenAI speech: POST /audio/speech; response_format maps 1:1 from the requested container ("opus"
 // returns an Ogg-Opus stream, the WhatsApp voice-note format; "aac" serves Instagram natively).
 const OPENAI_FORMAT: Record<TtsOutputFormat, string> = {
   ogg_opus: "opus",
@@ -117,7 +117,7 @@ async function openaiSynthesize(req: TtsRequest): Promise<TtsResult> {
   return { audio: await res.arrayBuffer(), ...RESULT_BY_FORMAT[req.format] };
 }
 
-// ElevenLabs text-to-speech: POST /text-to-speech/{voice_id}?output_format=…. Opus output was added
+// NOTE: ElevenLabs text-to-speech: POST /text-to-speech/{voice_id}?output_format=…. Opus output was added
 // 2025-03; 48kHz/64kbps is ample for a voice note. There is no aac/wav output, so the "wav"
 // container is served as pcm_24000 (raw 16-bit mono PCM, available on every plan tier) wrapped in a
 // RIFF header locally — a 44-byte header write, no transcode.
@@ -159,7 +159,7 @@ async function elevenlabsSynthesize(req: TtsRequest): Promise<TtsResult> {
   return { audio: raw, ...RESULT_BY_FORMAT[req.format] };
 }
 
-// OpenRouter speech: dedicated audio API (launched 2026-05-01), POST /audio/speech. Unlike openai/
+// NOTE: OpenRouter speech: dedicated audio API (launched 2026-05-01), POST /audio/speech. Unlike openai/
 // elevenlabs it has NO Opus output option (only "mp3"/"pcm", and pcm's sample rate varies per routed
 // model, so it cannot be safely wrapped), so the reply arrives at WhatsApp as a plain file
 // attachment instead of a native voice note (PTT) — surfaced as a warning in the editor — and

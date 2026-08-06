@@ -187,7 +187,7 @@ describe.skipIf(!dbUp)("tts", () => {
         agentId: agent.id,
       },
     });
-    // A second inbox on a channel that refuses Ogg/Opus (Meta's Instagram messaging accepts audio
+    // NOTE: a second inbox on a channel that refuses Ogg/Opus (Meta's Instagram messaging accepts audio
     // only as aac/m4a/wav/mp4) — the reply container must follow the channel.
     const igInbox = await suDb.inbox.create({
       data: {
@@ -424,7 +424,7 @@ describe.skipIf(!dbUp)("tts", () => {
         ttsFetch: audioFetch(),
       },
     });
-    // Ogg would make Meta's send job fail AFTER Chatwoot shows the message as sent (the customer
+    // NOTE: ogg would make Meta's send job fail AFTER Chatwoot shows the message as sent (the customer
     // never receives it); on this channel the openai provider must emit aac.
     expect(outcome).toBe("posted");
     expect(rec.audio).toEqual([[933, "reply.aac"]]);

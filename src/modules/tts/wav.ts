@@ -1,4 +1,4 @@
-// Minimal RIFF/WAVE wrapper for raw 16-bit little-endian PCM. Some TTS providers (ElevenLabs) emit
+// NOTE: minimal RIFF/WAVE wrapper for raw 16-bit little-endian PCM. Some TTS providers (ElevenLabs) emit
 // raw PCM but no aac/wav container, while Meta's Instagram messaging refuses ogg and mp3 — wrapping
 // PCM is a 44-byte header write, not a transcode, so no ffmpeg dependency enters the image.
 export function pcmToWav(

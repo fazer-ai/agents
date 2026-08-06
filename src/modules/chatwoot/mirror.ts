@@ -93,7 +93,7 @@ export async function mirrorChatwootEvent(
       : null;
 
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const contactId = await upsertContact(db, tenantId, n);
+    const contactId = await upsertContact(db, tenantId, n, newLastEventAt);
     const inboxRowId = await upsertInbox(db, tenantId, instanceId, n);
 
     const threadId = `${tenantId}:${instanceId}:${convId}`;
@@ -154,6 +154,16 @@ export async function mirrorChatwootEvent(
             threadId,
             lastEventAt: createdLastEventAt,
             lastInboundAt: inboundAt,
+            ...(n.customAttributes
+              ? {
+                  customAttributes: n.customAttributes as Prisma.InputJsonValue,
+                }
+              : {}),
+            ...(n.kanbanAttributes
+              ? {
+                  kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue,
+                }
+              : {}),
           },
           select: { id: true },
         });
@@ -192,6 +202,16 @@ export async function mirrorChatwootEvent(
           assigneeName: n.assigneeName,
           lastEventAt: updatedLastEventAt,
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
+          // NOTE: Attribute bags are ASSIGNED (the payload always ships the whole jsonb), but only
+          // when the event carried one — a payload without them must not wipe the stored snapshot.
+          // No watermark needed here: this runs inside the per-conversation lock, past the stale
+          // check, so a late delivery never reaches it.
+          ...(n.customAttributes
+            ? { customAttributes: n.customAttributes as Prisma.InputJsonValue }
+            : {}),
+          ...(n.kanbanAttributes
+            ? { kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue }
+            : {}),
         },
       });
       const inboxIdStr = inboxRowId != null ? String(inboxRowId) : null;
@@ -231,6 +251,7 @@ async function upsertContact(
   db: ScopedDb,
   tenantId: bigint,
   n: NormalizedChatwootEvent,
+  eventAt: Date | null,
 ): Promise<bigint | null> {
   const c = n.contact;
   if (!c || c.id == null) return null;
@@ -256,6 +277,33 @@ async function upsertContact(
     },
     select: { id: true },
   });
+  // NOTE: Chatwoot ships the contact's whole custom_attributes hash on every event, so it is
+  // assigned wholesale — but only when this payload carried it (absent ⇒ keep the stored snapshot),
+  // and only when it is NEWER than what produced the stored one. This upsert runs before the
+  // conversation's stale check (the conversation row needs the contact id), and one contact is
+  // shared by all its conversations, so the conversation guard cannot cover it: the watermark is
+  // per-contact. Single statement ⇒ the compare-and-set is atomic under concurrent deliveries.
+  //
+  // `custom_attributes_at` is a SOURCE position, never a receipt time: stamping an undated payload
+  // with our own clock would make it beat every real Chatwoot timestamp and poison the ordering. An
+  // undated payload therefore only BOOTSTRAPS a contact nothing has positioned yet, and leaves the
+  // watermark null so the first dated event still takes over.
+  if (c.customAttributes) {
+    const bag = JSON.stringify(c.customAttributes);
+    await (eventAt
+      ? db.$executeRaw`
+          UPDATE contacts
+          SET custom_attributes = ${bag}::jsonb, custom_attributes_at = ${eventAt}
+          WHERE id = ${row.id} AND tenant_id = ${tenantId}
+            AND (custom_attributes_at IS NULL OR custom_attributes_at <= ${eventAt})
+        `
+      : db.$executeRaw`
+          UPDATE contacts
+          SET custom_attributes = ${bag}::jsonb
+          WHERE id = ${row.id} AND tenant_id = ${tenantId}
+            AND custom_attributes_at IS NULL
+        `);
+  }
   return row.id;
 }
 

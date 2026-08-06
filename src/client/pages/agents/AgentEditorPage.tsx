@@ -50,6 +50,7 @@ import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { computeConfigIssues } from "@/client/lib/configHealth";
+import { shouldRestoreUserBaseUrl } from "@/client/lib/credentialBaseUrl";
 import { slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
@@ -269,6 +270,10 @@ function readBehaviorState(a: Agent) {
   const ka = (s.kanban ?? {}) as Record<string, unknown>;
   const tg = (s.toolGuidance ?? {}) as Record<string, unknown>;
   const li = (s.limits ?? {}) as Record<string, unknown>;
+  const ac = (s.attributeContext ?? {}) as Record<string, unknown>;
+  // NOTE: Attribute keys per scope: plain string lists (the runtime reader trims/dedups/caps them).
+  const attrKeys = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : [];
   return {
     transferWithSummary: a.transferWithSummary,
     kanbanInstructions: str(ka.instructions),
@@ -346,6 +351,11 @@ function readBehaviorState(a: Agent) {
     },
     limits: {
       maxToolCalls: num(li.maxToolCalls) || "10",
+    },
+    attributeContext: {
+      conversation: attrKeys(ac.conversation),
+      contact: attrKeys(ac.contact),
+      task: attrKeys(ac.task),
     },
   };
 }
@@ -593,6 +603,13 @@ export function AgentEditorPage() {
   });
   // Runtime limits. Mirrors agent.settings.limits (modules/agents/limits): the per-turn tool-call cap.
   const [limits, setLimits] = useState({ maxToolCalls: "10" });
+  // NOTE: Which Chatwoot custom attributes are injected into the prompt as current values, per
+  // scope. Mirrors agent.settings.attributeContext (modules/chatwoot/attributes).
+  const [attributeContext, setAttributeContext] = useState<{
+    conversation: string[];
+    contact: string[];
+    task: string[];
+  }>({ conversation: [], contact: [], task: [] });
   // WhatsApp → website-chat redirect. Its own editor section (own Save + dirty tracking), though the
   // config lives in agent.settings.channelRedirect. Mirrors modules/channel-redirect/service.
   const [channelRedirect, setChannelRedirect] =
@@ -749,6 +766,7 @@ export function AgentEditorPage() {
     setFollowUp(b.followUp);
     setVision(b.vision);
     setLimits(b.limits);
+    setAttributeContext(b.attributeContext);
     setChannelRedirect(readChannelRedirectState(a));
     setGuardrails(readGuardrailsConfig(a.settings));
   }, []);
@@ -779,6 +797,7 @@ export function AgentEditorPage() {
     setFollowUp(b.followUp);
     setVision(b.vision);
     setLimits(b.limits);
+    setAttributeContext(b.attributeContext);
   }, []);
 
   // Reset ONLY the channelRedirect section from a synced agent — the post-save sync for the Redirect tab.
@@ -1033,6 +1052,11 @@ export function AgentEditorPage() {
       limits: {
         maxToolCalls: Number(limits.maxToolCalls) || 10,
       },
+      attributeContext: {
+        conversation: attributeContext.conversation,
+        contact: attributeContext.contact,
+        task: attributeContext.task,
+      },
     };
   }
 
@@ -1062,6 +1086,7 @@ export function AgentEditorPage() {
       followUp,
       vision,
       limits,
+      attributeContext,
     }),
     // The WhatsApp→website-chat redirect (own Save button). widgetInboxId is excluded (server-owned,
     // persisted on provision), so provisioning the widget never lights up this tab's unsaved-changes dot.
@@ -1552,6 +1577,7 @@ export function AgentEditorPage() {
     setFollowUp(b.followUp);
     setVision(b.vision);
     setLimits(b.limits);
+    setAttributeContext(b.attributeContext);
   };
   const revertChannelRedirect = () => {
     const a = syncedAgentRef.current;
@@ -1967,13 +1993,16 @@ export function AgentEditorPage() {
     });
   }
 
-  // Closed-over callback for model credential entry change (preserves ref across tab unmounts).
+  // NOTE: Closed-over callback for model credential entry change (preserves ref across tab
+  // unmounts). The `else if` is load-bearing: on mount the picker reports the resolved entry, and a
+  // credential WITHOUT a baseUrl must leave the persisted field alone (shouldRestoreUserBaseUrl).
   const onModelEntryChange = (entry: VaultEntry | null) => {
     const credUrl = entry?.baseUrl ?? null;
+    const restore = shouldRestoreUserBaseUrl(modelCredBaseUrl, credUrl);
     setModelCredBaseUrl(credUrl);
     if (credUrl) {
       modelUserBaseUrlRef.current = model.baseURL;
-    } else {
+    } else if (restore) {
       setModel((prev) => ({
         ...prev,
         baseURL: modelUserBaseUrlRef.current,
@@ -1984,11 +2013,12 @@ export function AgentEditorPage() {
   // Closed-over callback for STT credential entry change (preserves sttUserBaseUrlRef across tab unmounts).
   const onSttEntryChange = (entry: VaultEntry | null) => {
     const credUrl = entry?.baseUrl ?? null;
+    const restore = shouldRestoreUserBaseUrl(sttCredBaseUrl, credUrl);
     setSttCredBaseUrl(credUrl);
     if (credUrl) {
       // Lock: preserve the user's own value while locked.
       sttUserBaseUrlRef.current = stt.baseURL;
-    } else {
+    } else if (restore) {
       // Unlock: restore the user's own value.
       setStt((prev) => ({
         ...prev,
@@ -2000,10 +2030,11 @@ export function AgentEditorPage() {
   // Closed-over callback for vision credential entry change (mirror of onSttEntryChange).
   const onVisionEntryChange = (entry: VaultEntry | null) => {
     const credUrl = entry?.baseUrl ?? null;
+    const restore = shouldRestoreUserBaseUrl(visionCredBaseUrl, credUrl);
     setVisionCredBaseUrl(credUrl);
     if (credUrl) {
       visionUserBaseUrlRef.current = vision.baseURL;
-    } else {
+    } else if (restore) {
       setVision((prev) => ({
         ...prev,
         baseURL: visionUserBaseUrlRef.current,
@@ -2441,6 +2472,8 @@ export function AgentEditorPage() {
                 onVisionEntryChange={onVisionEntryChange}
                 limits={limits}
                 setLimits={setLimits}
+                attributeContext={attributeContext}
+                setAttributeContext={setAttributeContext}
                 onScheduleSaved={onScheduleSaved}
                 dirty={dirty.behavior}
                 saving={savingAgent}

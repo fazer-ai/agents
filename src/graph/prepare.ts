@@ -14,6 +14,12 @@ import {
   enqueueAppointmentReminders,
 } from "@/modules/appointments/reminders";
 import { parseWindows, type WindowSpec } from "@/modules/business-hours/hours";
+import {
+  attributeBagsFrom,
+  buildAttributeContextSection,
+  isAttributeContextEmpty,
+  readAttributeContextConfig,
+} from "@/modules/chatwoot/attributes";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   type KanbanContext,
@@ -307,6 +313,8 @@ export async function loadAgentConfig(
       );
     }
   }
+  const attributeContext = readAttributeContextConfig(effSettings);
+  const wantsAttributeContext = !isAttributeContextEmpty(attributeContext);
   const conv = await db.conversation.findUnique({
     where: {
       tenantId_chatwootInstanceId_chatwootConversationId: {
@@ -318,6 +326,12 @@ export async function loadAgentConfig(
     select: {
       id: true,
       contactInboxId: true,
+      // NOTE: Mirrored Chatwoot custom attributes (conversation + linked kanban card); the contact's
+      // own bag comes from the relation below. Feed the attribute-context block — no API call. The
+      // three bags are unbounded jsonb, so they are projected ONLY when the agent selected keys:
+      // an agent with the feature off would otherwise pay for them on every single turn.
+      customAttributes: wantsAttributeContext,
+      kanbanAttributes: wantsAttributeContext,
       contact: {
         select: {
           id: true,
@@ -326,6 +340,7 @@ export async function loadAgentConfig(
           email: true,
           phone: true,
           voiceReply: true,
+          customAttributes: wantsAttributeContext,
         },
       },
       inbox: { select: { id: true, chatwootInboxId: true, name: true } },
@@ -422,6 +437,24 @@ export async function loadAgentConfig(
         : undefined,
     },
   );
+  // NOTE: The current values of the attribute keys the operator selected, rendered as an XML block
+  // APPENDED to the FINISHED prompt — never interpolated, so a stored value containing
+  // `{{nome_contato}}` stays literal. Values come from the mirror (webhook-fed), so this costs one
+  // already-loaded row and no Chatwoot call. Absent selection / no conversation ⇒ no block.
+  const attributeSection =
+    conv && wantsAttributeContext
+      ? buildAttributeContextSection(
+          attributeBagsFrom({
+            conversationAttributes: conv.customAttributes,
+            contactAttributes: conv.contact?.customAttributes,
+            kanbanAttributes: conv.kanbanAttributes,
+          }),
+          attributeContext,
+          undefined,
+          !sel.nativeToolsAllow ||
+            sel.nativeToolsAllow.includes("set_custom_attribute"),
+        )
+      : null;
   return {
     agentId: agent.id,
     agentBotId: bot?.chatwootAgentBotId ?? null,
@@ -430,7 +463,9 @@ export async function loadAgentConfig(
     inboxDbId: conv?.inbox?.id ?? null,
     contactDbId: conv?.contact?.id ?? null,
     contactInboxId: conv?.contactInboxId ?? null,
-    systemPrompt,
+    systemPrompt: attributeSection
+      ? `${systemPrompt}\n\n${attributeSection}`
+      : systemPrompt,
     mc,
     apiKey,
     credentialBaseUrl,
@@ -500,6 +535,7 @@ export interface ToolBuildDeps {
       tenantId?: bigint;
       base?: PrismaClient;
       contactDbId?: bigint | null;
+      conversationDbId?: bigint | null;
       contactVoiceReply?: boolean | null;
       timezone?: string;
       vocab?: ChatwootVocab;
@@ -757,6 +793,7 @@ export async function buildToolset(
         tenantId: ctx.tenantId,
         base: ctx.base,
         contactDbId: cfg.contactDbId,
+        conversationDbId: cfg.conversationDbId,
         contactVoiceReply: cfg.contactVoiceReply,
         timezone: cfg.timezone,
         vocab,

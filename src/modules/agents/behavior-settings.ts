@@ -1,5 +1,6 @@
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import { readAttributeContextConfig } from "@/modules/chatwoot/attributes";
 import { readDebounceConfig } from "@/modules/debounce/settings";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readGuardrailsConfig } from "@/modules/guardrails/settings";
@@ -43,6 +44,8 @@ export interface BehaviorSettings {
   limits: ReturnType<typeof readLimitsConfig>;
   channelRedirect: ReturnType<typeof readChannelRedirectConfig>;
   guardrails: ReturnType<typeof readGuardrailsConfig>;
+  // NOTE: Which Chatwoot custom attributes (per scope) are injected into the system prompt.
+  attributeContext: ReturnType<typeof readAttributeContextConfig>;
 }
 
 // The keys this surface owns inside the settings bag. Any other key (future/unknown) is preserved
@@ -60,6 +63,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "limits",
   "channelRedirect",
   "guardrails",
+  "attributeContext",
 ] as const;
 export type BehaviorSettingsKey = (typeof BEHAVIOR_SETTINGS_KEYS)[number];
 
@@ -78,6 +82,7 @@ export function readBehaviorSettings(settings: unknown): BehaviorSettings {
     limits: readLimitsConfig(settings),
     channelRedirect: readChannelRedirectConfig(settings),
     guardrails: readGuardrailsConfig(settings),
+    attributeContext: readAttributeContextConfig(settings),
   };
 }
 
@@ -96,6 +101,7 @@ export interface BehaviorSettingsPatch {
   limits?: Record<string, unknown>;
   channelRedirect?: Record<string, unknown>;
   guardrails?: Record<string, unknown>;
+  attributeContext?: Record<string, unknown>;
 }
 
 // Merge a behavior patch into the existing raw settings bag, then RE-READ each touched block through
@@ -137,6 +143,7 @@ export function mergeBehaviorSettings(
   next.limits = normalized.limits;
   next.channelRedirect = normalized.channelRedirect;
   next.guardrails = normalized.guardrails;
+  next.attributeContext = normalized.attributeContext;
   // grounding: only persist when a valid distance is set; otherwise leave whatever was there
   // (a null maxDistance means "no grounding filter" — represent it explicitly when the patch
   // touched grounding so the operator can clear it).

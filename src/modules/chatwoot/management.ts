@@ -963,6 +963,31 @@ export async function listServiceWindowTemplates(
   return { templates: [...byName.values()] };
 }
 
+// NOTE: The Chatwoot instances an agent's inboxes live on, plus how many distinct ACCOUNTS they
+// span. Every per-account listing below (labels, custom-attribute definitions) unions across the
+// instances and warns the editor when accountCount > 1, so the resolution lives in one place.
+async function agentInboxScope(
+  ctx: TenantContext,
+  agentId: bigint,
+  base: PrismaClient,
+): Promise<{ instanceIds: bigint[]; accountCount: number }> {
+  const inboxes = await runScopedOn(base, ctx, (db) =>
+    db.inbox.findMany({
+      where: { agentId },
+      select: {
+        chatwootInstanceId: true,
+        instance: { select: { accountId: true } },
+      },
+    }),
+  );
+  return {
+    instanceIds: [...new Set(inboxes.map((i) => i.chatwootInstanceId))],
+    accountCount: new Set(
+      inboxes.map((i) => i.instance?.accountId).filter((a) => a != null),
+    ).size,
+  };
+}
+
 // Account label TITLES available to an agent's inbox(es), for the follow-up step's label picker.
 // Reads live (admin token) via the cached vocab, deduped across the agent's instances. Best-effort:
 // an unreachable instance contributes nothing. Empty → the editor falls back to a free-text field.
@@ -985,19 +1010,11 @@ export async function listInboxLabels(
 }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const inboxes = await runScopedOn(base, ctx, (db) =>
-    db.inbox.findMany({
-      where: { agentId },
-      select: {
-        chatwootInstanceId: true,
-        instance: { select: { accountId: true } },
-      },
-    }),
+  const { instanceIds, accountCount } = await agentInboxScope(
+    ctx,
+    agentId,
+    base,
   );
-  const instanceIds = [...new Set(inboxes.map((i) => i.chatwootInstanceId))];
-  const accountCount = new Set(
-    inboxes.map((i) => i.instance?.accountId).filter((a) => a != null),
-  ).size;
   if (instanceIds.length === 0) return { labels: [], accountCount: 0 };
   const byTitle = new Map<string, InboxLabel>();
   for (const instanceId of instanceIds) {
@@ -1014,6 +1031,52 @@ export async function listInboxLabels(
     }
   }
   return { labels: [...byTitle.values()], accountCount };
+}
+
+// NOTE: Custom-attribute DEFINITIONS available to an agent's inbox(es), for the attribute-context
+// picker. Same best-effort contract as listInboxLabels, deduped by (model, key).
+export interface InboxCustomAttribute {
+  key: string;
+  displayName: string;
+  // NOTE: Chatwoot `attribute_model`: conversation_attribute | contact_attribute | task_attribute …
+  model: string;
+}
+
+export async function listInboxCustomAttributes(
+  ctx: TenantContext,
+  agentId: bigint,
+  deps: LoadChatwootClientDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<{ attributes: InboxCustomAttribute[]; accountCount: number }> {
+  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  const tenantId = ctx.tenantId;
+  const { instanceIds, accountCount } = await agentInboxScope(
+    ctx,
+    agentId,
+    base,
+  );
+  if (instanceIds.length === 0) return { attributes: [], accountCount: 0 };
+  const byKey = new Map<string, InboxCustomAttribute>();
+  for (const instanceId of instanceIds) {
+    try {
+      const client = await loadChatwootClient(tenantId, instanceId, {
+        base,
+        makeClient: deps.makeClient,
+      });
+      for (const def of await client.listCustomAttributeDefinitions()) {
+        const id = `${def.model}:${def.key}`;
+        if (byKey.has(id)) continue;
+        byKey.set(id, {
+          key: def.key,
+          displayName: def.displayName,
+          model: def.model,
+        });
+      }
+    } catch {
+      // NOTE: best-effort — an unreachable instance contributes no definitions
+    }
+  }
+  return { attributes: [...byKey.values()], accountCount };
 }
 
 // The load-bearing binding: which agent answers an inbox. This is the SINGLE operator action that

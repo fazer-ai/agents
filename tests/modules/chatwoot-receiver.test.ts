@@ -687,6 +687,244 @@ describe.skipIf(!dbUp)("chatwoot mirror sync", () => {
     expect(conv.lastInboundAt?.getTime()).toBe(firstInbound?.getTime());
     expect(conv.lastEventAt?.getTime()).toBe(5000 * 1000);
   });
+
+  test("custom attribute bags are mirrored, and a payload without them preserves the stored ones", async () => {
+    const withBags = ev({
+      conversationId: 530,
+      lastActivityAt: 9000,
+      customAttributes: { origem: "Instagram" },
+      kanbanAttributes: { orcamento: 3200 },
+      contact: {
+        id: 322,
+        name: "Joana",
+        email: null,
+        phone: null,
+        identifier: null,
+        customAttributes: { plano: "pro" },
+      },
+    });
+    await mirrorChatwootEvent(tenantId, instanceId, withBags, appDb);
+    let conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 530 },
+      include: { contact: true },
+    });
+    expect(conv.customAttributes).toEqual({ origem: "Instagram" });
+    expect(conv.kanbanAttributes).toEqual({ orcamento: 3200 });
+    expect(conv.contact?.customAttributes).toEqual({ plano: "pro" });
+
+    // NOTE: A later event that carries no bags (degraded payload) must NOT wipe what is stored.
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 530,
+        lastActivityAt: 9100,
+        contact: {
+          id: 322,
+          name: "Joana",
+          email: null,
+          phone: null,
+          identifier: null,
+        },
+      }),
+      appDb,
+    );
+    conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 530 },
+      include: { contact: true },
+    });
+    expect(conv.customAttributes).toEqual({ origem: "Instagram" });
+    expect(conv.kanbanAttributes).toEqual({ orcamento: 3200 });
+    expect(conv.contact?.customAttributes).toEqual({ plano: "pro" });
+
+    // NOTE: A newer event with a new bag REPLACES it wholesale (Chatwoot ships the whole hash).
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 530,
+        lastActivityAt: 9200,
+        customAttributes: { etapa: "proposta" },
+      }),
+      appDb,
+    );
+    conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 530 },
+      include: { contact: true },
+    });
+    expect(conv.customAttributes).toEqual({ etapa: "proposta" });
+
+    // NOTE: An EXPLICIT {} is a real "the operator cleared everything", not a degraded payload:
+    // unlike an absent bag it must clear the stored one, on all three scopes.
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 530,
+        lastActivityAt: 9300,
+        customAttributes: {},
+        kanbanAttributes: {},
+        contact: {
+          id: 322,
+          name: "Joana",
+          email: null,
+          phone: null,
+          identifier: null,
+          customAttributes: {},
+        },
+      }),
+      appDb,
+    );
+    conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 530 },
+      include: { contact: true },
+    });
+    expect(conv.customAttributes).toEqual({});
+    expect(conv.kanbanAttributes).toEqual({});
+    expect(conv.contact?.customAttributes).toEqual({});
+  });
+
+  test("a stale event cannot roll back the mirrored contact attributes", async () => {
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 540,
+        lastActivityAt: 9500,
+        contact: {
+          id: 324,
+          name: "Rita",
+          email: null,
+          phone: null,
+          identifier: null,
+          customAttributes: { plano: "pro" },
+        },
+      }),
+      appDb,
+    );
+
+    // NOTE: The contact upsert runs BEFORE the conversation's stale check (the conversation row
+    // needs the contact id), so without the per-contact watermark this out-of-order delivery would
+    // downgrade the stored plan even though the conversation update itself is skipped.
+    const stale = await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 540,
+        lastActivityAt: 9400,
+        contact: {
+          id: 324,
+          name: "Rita",
+          email: null,
+          phone: null,
+          identifier: null,
+          customAttributes: { plano: "free" },
+        },
+      }),
+      appDb,
+    );
+    expect(stale.applied).toBe(false);
+    const contact = await suDb.contact.findFirstOrThrow({
+      where: { tenantId, chatwootContactId: 324 },
+    });
+    expect(contact.customAttributes).toEqual({ plano: "pro" });
+
+    // NOTE: …and a genuinely newer delivery still gets through.
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 540,
+        lastActivityAt: 9600,
+        contact: {
+          id: 324,
+          name: "Rita",
+          email: null,
+          phone: null,
+          identifier: null,
+          customAttributes: { plano: "enterprise" },
+        },
+      }),
+      appDb,
+    );
+    const fresh = await suDb.contact.findFirstOrThrow({
+      where: { tenantId, chatwootContactId: 324 },
+    });
+    expect(fresh.customAttributes).toEqual({ plano: "enterprise" });
+
+    // NOTE: An undated payload has no place in the order. Stamping it with OUR receipt time would
+    // make it beat every real Chatwoot timestamp, so it must not displace a positioned snapshot.
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 540,
+        lastActivityAt: null,
+        contact: {
+          id: 324,
+          name: "Rita",
+          email: null,
+          phone: null,
+          identifier: null,
+          customAttributes: { plano: "free" },
+        },
+      }),
+      appDb,
+    );
+    const undated = await suDb.contact.findFirstOrThrow({
+      where: { tenantId, chatwootContactId: 324 },
+    });
+    expect(undated.customAttributes).toEqual({ plano: "enterprise" });
+  });
+
+  test("an undated payload still bootstraps a contact nothing has positioned yet", async () => {
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 550,
+        lastActivityAt: null,
+        contact: {
+          id: 326,
+          name: "Ana",
+          email: null,
+          phone: null,
+          identifier: null,
+          customAttributes: { plano: "trial" },
+        },
+      }),
+      appDb,
+    );
+    const seeded = await suDb.contact.findFirstOrThrow({
+      where: { tenantId, chatwootContactId: 326 },
+    });
+    expect(seeded.customAttributes).toEqual({ plano: "trial" });
+    // NOTE: …and the watermark stays null, so the first DATED event still takes over.
+    expect(seeded.customAttributesAt).toBeNull();
+
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 550,
+        lastActivityAt: 9700,
+        contact: {
+          id: 326,
+          name: "Ana",
+          email: null,
+          phone: null,
+          identifier: null,
+          customAttributes: { plano: "pro" },
+        },
+      }),
+      appDb,
+    );
+    const dated = await suDb.contact.findFirstOrThrow({
+      where: { tenantId, chatwootContactId: 326 },
+    });
+    expect(dated.customAttributes).toEqual({ plano: "pro" });
+    expect(dated.customAttributesAt).not.toBeNull();
+  });
 });
 
 // ── loadChatwootClient (real DB) ──

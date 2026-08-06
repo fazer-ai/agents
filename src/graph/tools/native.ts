@@ -72,6 +72,10 @@ export interface ToolCtx {
   tenantId?: bigint;
   base?: PrismaClient;
   contactDbId?: bigint | null;
+  // NOTE: Our Conversation row id, for the write-through that keeps the mirrored attribute bags in
+  // step right after set_custom_attribute writes to Chatwoot (see mirrorAttributeWrite). Absent ⇒
+  // the write-through is skipped and the mirror catches up on the next webhook event.
+  conversationDbId?: bigint | null;
   // The contact's CURRENT stored voice preference (snapshot at turn prep), surfaced in the
   // set_voice_preference description so the model knows the existing value before changing it.
   // true = audio, false = text, null/undefined = not set yet.
@@ -340,6 +344,78 @@ function knownAttributesXml(
   return `<known_attributes>\n${blocks.join("\n")}\n</known_attributes>`;
 }
 
+// NOTE: Write-through of a just-written attribute into OUR mirrored bag, so the attribute-context
+// block (built from the mirror at turn prep) reflects it immediately. Chatwoot is still the source
+// of truth: the next webhook event overwrites the bag wholesale. This only closes the window where a
+// proactive nudge — which is not preceded by an inbound event — would otherwise read a stale value,
+// and it matters most for the contact scope (Chatwoot does not deliver contact_updated to bots).
+//
+// The merge is a single `jsonb || jsonb` UPDATE rather than a read-modify-write: a turn can emit
+// several set_custom_attribute calls and the tool node runs them CONCURRENTLY, so a read-then-write
+// would let two calls on the same scope clobber each other's key. Postgres takes the row lock for
+// the duration of the statement, so the distinct keys both survive.
+// Best-effort: any failure is logged and swallowed, never surfaced to the model.
+async function mirrorAttributeWrite(
+  ctx: ToolCtx,
+  scope: "conversation" | "contact" | "task",
+  key: string,
+  value: string,
+): Promise<void> {
+  if (!ctx.base || ctx.tenantId == null) return;
+  const base = ctx.base;
+  const tenantId = ctx.tenantId;
+  const patch = JSON.stringify({ [key]: value });
+  try {
+    await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      if (scope === "contact") {
+        if (ctx.contactDbId == null) return;
+        // NOTE: The write-through also ADVANCES the contact's source watermark. Chatwoot accepted
+        // this key a moment ago, so every event generated before now carries a pre-write snapshot —
+        // and one of those, delivered late but still stamped after the last mirrored event, would
+        // otherwise pass upsertContact's compare-and-set and replace the whole bag, erasing the key
+        // we just wrote. It matters here and not on the conversation scopes because agent bots
+        // never get contact_updated, so nothing would put the key back. GREATEST (which ignores
+        // NULL) keeps it from moving backwards if Chatwoot's clock runs ahead of ours.
+        //
+        // `AT TIME ZONE 'UTC'` is load-bearing: the column is TIMESTAMP (no zone) holding UTC, and
+        // bare NOW() is timestamptz. Mixing them makes GREATEST resolve through the SESSION
+        // TimeZone, which nothing here pins — under a non-UTC session the stored value reads as
+        // offset-hours in the future and wins, so the barrier silently never advances.
+        await db.$executeRaw`
+          UPDATE contacts
+          SET custom_attributes = custom_attributes || ${patch}::jsonb,
+              custom_attributes_at = GREATEST(
+                custom_attributes_at,
+                (NOW() AT TIME ZONE 'UTC')
+              )
+          WHERE id = ${ctx.contactDbId} AND tenant_id = ${tenantId}
+        `;
+        return;
+      }
+      if (ctx.conversationDbId == null) return;
+      if (scope === "task") {
+        await db.$executeRaw`
+          UPDATE conversations
+          SET kanban_attributes = kanban_attributes || ${patch}::jsonb
+          WHERE id = ${ctx.conversationDbId} AND tenant_id = ${tenantId}
+        `;
+        return;
+      }
+      await db.$executeRaw`
+        UPDATE conversations
+        SET custom_attributes = custom_attributes || ${patch}::jsonb
+        WHERE id = ${ctx.conversationDbId} AND tenant_id = ${tenantId}
+      `;
+    });
+  } catch (e) {
+    logger.warn(
+      "attribute mirror write-through failed (scope=%s): %s",
+      scope,
+      e instanceof Error ? e.message : String(e),
+    );
+  }
+}
+
 // Set a custom attribute on the conversation OR the contact. The valid keys (and list values) of
 // each scope are enumerated in the description from the account's definitions (ctx.vocab), so the
 // model writes a KNOWN key instead of inventing one. Contact scope resolves the Chatwoot contact id
@@ -376,6 +452,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         await ctx.client.setKanbanTaskCustomAttributes(ctx.kanban.taskId, {
           [key]: value,
         });
+        await mirrorAttributeWrite(ctx, "task", key, value);
         return `Task attribute ${key} set.`;
       }
       if (scope === "contact") {
@@ -396,11 +473,13 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         await ctx.client.setContactCustomAttributes(contact.chatwootContactId, {
           [key]: value,
         });
+        await mirrorAttributeWrite(ctx, "contact", key, value);
         return `Contact attribute ${key} set.`;
       }
       await ctx.client.setConversationCustomAttributes(ctx.conversationId, {
         [key]: value,
       });
+      await mirrorAttributeWrite(ctx, "conversation", key, value);
       return `Conversation attribute ${key} set.`;
     },
     {

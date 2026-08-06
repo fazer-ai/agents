@@ -41,3 +41,59 @@ describe("behavior-settings — vision", () => {
     expect(v.enabled).toBe(true);
   });
 });
+
+// NOTE: attributeContext rides the same surface, so REST/UI/MCP project the same normalized value.
+describe("behavior-settings — attributeContext", () => {
+  test("it is an owned key and projects empty scopes when absent", () => {
+    expect(BEHAVIOR_SETTINGS_KEYS).toContain("attributeContext");
+    expect(readBehaviorSettings({}).attributeContext).toEqual({
+      conversation: [],
+      contact: [],
+      task: [],
+    });
+  });
+
+  test("a partial patch replaces only the given scope and is normalized on write", () => {
+    const current = {
+      attributeContext: {
+        conversation: ["origem"],
+        contact: ["plano"],
+        task: ["orcamento"],
+      },
+    };
+    const next = mergeBehaviorSettings(current, {
+      attributeContext: { contact: [" cpf ", "cpf", ""] },
+    });
+    // NOTE: Both unspecified scopes survive with their real selections — a patch that touches one
+    // scope must not silently empty the others (which `task: []` alone would not have caught).
+    expect(next.attributeContext).toEqual({
+      conversation: ["origem"],
+      contact: ["cpf"],
+      task: ["orcamento"],
+    });
+    expect(readBehaviorSettings(next).attributeContext).toEqual({
+      conversation: ["origem"],
+      contact: ["cpf"],
+      task: ["orcamento"],
+    });
+  });
+
+  test("the prompt-growth bounds hold on the write path too (20 keys, 64 chars)", () => {
+    const next = mergeBehaviorSettings(
+      {},
+      {
+        attributeContext: {
+          conversation: Array.from({ length: 25 }, (_, i) => `k${i}`),
+          // NOTE: An over-long key is DROPPED, not truncated — a truncated key would silently point
+          // at a different (or nonexistent) Chatwoot attribute.
+          contact: ["x".repeat(65), "plano"],
+        },
+      },
+    );
+    expect(readBehaviorSettings(next).attributeContext).toEqual({
+      conversation: Array.from({ length: 20 }, (_, i) => `k${i}`),
+      contact: ["plano"],
+      task: [],
+    });
+  });
+});

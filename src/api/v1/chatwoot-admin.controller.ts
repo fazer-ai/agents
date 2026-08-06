@@ -19,6 +19,7 @@ import {
   getWidgetInboxHealth,
   listAgentsAndTeams,
   listDeploymentAccounts,
+  listInboxCustomAttributes,
   listInboxes,
   listInboxLabels,
   listServiceWindowTemplates,
@@ -466,6 +467,29 @@ export const chatwootAdminController = new Elysia({
       detail: doc(
         "List inbox labels",
         "List Chatwoot account labels available to an agent's inboxes.",
+      ),
+      params: t.Object({
+        agentId: t.String({ description: "Agent id (BigInt string)." }),
+      }),
+      response: errors(400, 401, 403),
+    },
+  )
+  // NOTE: Custom-attribute definitions available to an agent's inbox(es), for the attribute-context
+  // picker. Empty when no inbox is bound or Chatwoot is unreachable → the editor keeps free text.
+  .get(
+    "/custom-attributes/:agentId",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      ...(await listInboxCustomAttributes(
+        ctxOrThrow(tenantContext),
+        BigInt(params.agentId),
+      )),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "List custom attribute definitions",
+        "List Chatwoot custom attribute definitions available to an agent's inboxes.",
       ),
       params: t.Object({
         agentId: t.String({ description: "Agent id (BigInt string)." }),

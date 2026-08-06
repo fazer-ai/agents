@@ -18,6 +18,12 @@ function str(v: unknown): string | null {
   return typeof v === "string" ? v : null;
 }
 
+// NOTE: undefined means "this payload said nothing", so the mirror keeps the stored bag instead of
+// wiping it; `{}` is a real "no attributes" and DOES clear it.
+function attrs(v: unknown): Record<string, unknown> | undefined {
+  return isRecord(v) ? v : undefined;
+}
+
 export function normalizeChatwootEvent(
   payload: unknown,
 ): NormalizedChatwootEvent | null {
@@ -95,14 +101,26 @@ export function normalizeChatwootEvent(
   // ── mirror metadata (best-effort) ──
   // Contact: conversation events carry it at meta.sender (EventDataPresenter push_meta).
   if (sender) {
+    const contactAttrs = attrs(sender.custom_attributes);
     normalized.contact = {
       id: num(sender.id),
       name: str(sender.name),
       email: str(sender.email),
       phone: str(sender.phone_number),
       identifier: str(sender.identifier),
+      ...(contactAttrs ? { customAttributes: contactAttrs } : {}),
     };
   }
+  // Conversation + kanban-card custom attributes ride along on every event (push_data.custom_attributes
+  // and the fork's push_data.kanban_task), so the agent's attribute context needs NO extra API call.
+  const convAttrs = conv ? attrs(conv.custom_attributes) : undefined;
+  if (convAttrs) normalized.customAttributes = convAttrs;
+  const kanbanTask =
+    conv && isRecord(conv.kanban_task) ? conv.kanban_task : null;
+  const taskAttrs = kanbanTask
+    ? attrs(kanbanTask.custom_attributes)
+    : undefined;
+  if (taskAttrs) normalized.kanbanAttributes = taskAttrs;
   // Inbox name only ships on message events (Message#webhook_data → inbox: {id, name}).
   const inboxObj = isMessage && isRecord(payload.inbox) ? payload.inbox : null;
   normalized.inboxName = inboxObj ? str(inboxObj.name) : null;

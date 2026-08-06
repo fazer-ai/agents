@@ -82,6 +82,10 @@ export interface NormalizedChatwootContact {
   email: string | null;
   phone: string | null;
   identifier: string | null;
+  // NOTE: meta.sender.custom_attributes — Contact#push_event_data ships the whole jsonb on every
+  // event, which is what lets the agent READ it with no extra API call. `undefined` = the payload
+  // did not carry it ⇒ the mirror keeps whatever it had (never wiped by a degraded payload).
+  customAttributes?: Record<string, unknown>;
 }
 
 export interface NormalizedChatwootEvent {
@@ -107,4 +111,12 @@ export interface NormalizedChatwootEvent {
   // last_activity_at as unix SECONDS (EventDataPresenter push_timestamps); drives the
   // monotonic lastEventAt guard so out-of-order deliveries cannot regress mirror state.
   lastActivityAt?: number | null;
+  // The CONVERSATION's custom attributes (conversation.custom_attributes on EventDataPresenter
+  // push_data). Mirrored for the agent's attribute context. `undefined` ⇒ absent from this payload.
+  customAttributes?: Record<string, unknown>;
+  // The linked kanban CARD's custom attributes (conversation.kanban_task.custom_attributes — the Pro
+  // fork's FazerAi::Conversations::EventDataPresenter adds `kanban_task` to push_data, and
+  // Kanban::Task#common_event_data carries `custom_attributes`). `undefined` ⇒ absent (upstream
+  // Chatwoot, or a conversation with no card).
+  kanbanAttributes?: Record<string, unknown>;
 }

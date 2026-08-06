@@ -41,29 +41,41 @@ export interface PromptVarContext {
   agentName?: string | null;
 }
 
-const VALUE_MAX = 120;
+export const VALUE_MAX = 120;
 
-// Contact/inbox values are customer-controlled → drop control chars and newlines (so a value can
-// never forge multi-line "system" framing in the prompt), collapse whitespace, and bound length.
-function sanitizeValue(v: string | null | undefined): string {
+// NOTE: Contact/inbox values are customer-controlled → drop control chars and newlines (so a value
+// can never forge multi-line "system" framing in the prompt), collapse whitespace, and bound length.
+// Exported as sanitizePromptValue because every OTHER customer-controlled string we splice into the
+// system prompt (e.g. the Chatwoot attribute values) must go through the same treatment. `max` is
+// per-caller: VALUE_MAX suits identity variables, but a stored attribute (an address, a note) is
+// legitimately longer — see ATTRIBUTE_VALUE_MAX in chatwoot/attributes.ts.
+export function sanitizePromptValue(
+  v: string | null | undefined,
+  max: number = VALUE_MAX,
+): string {
   if (!v) return "";
   let out = "";
   for (const ch of v) {
     const code = ch.codePointAt(0) ?? 0;
-    out += code < 0x20 || code === 0x7f ? " " : ch;
+    // NOTE: C0 + DEL + C1. The C1 range matters as much as C0 and is easy to miss: U+0085 (NEL) is
+    // a line break to plenty of renderers and tokenizers, and JS `\s` does NOT match it, so the
+    // collapse below would let it through and a value could still forge a new line of framing.
+    const control =
+      code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
+    out += control ? " " : ch;
   }
-  return out.replace(/\s+/g, " ").trim().slice(0, VALUE_MAX);
+  return out.replace(/\s+/g, " ").trim().slice(0, max);
 }
 
 // Placeholder → value. English canonical names plus the common pt-BR aliases the audience writes.
 export function buildPromptVars(ctx: PromptVarContext): Record<string, string> {
-  const name = sanitizeValue(ctx.contactName);
+  const name = sanitizePromptValue(ctx.contactName);
   const firstName = name.split(" ")[0] ?? "";
-  const email = sanitizeValue(ctx.contactEmail);
-  const phone = sanitizeValue(ctx.contactPhone);
-  const inbox = sanitizeValue(ctx.inboxName);
-  const company = sanitizeValue(ctx.companyName);
-  const agent = sanitizeValue(ctx.agentName);
+  const email = sanitizePromptValue(ctx.contactEmail);
+  const phone = sanitizePromptValue(ctx.contactPhone);
+  const inbox = sanitizePromptValue(ctx.inboxName);
+  const company = sanitizePromptValue(ctx.companyName);
+  const agent = sanitizePromptValue(ctx.agentName);
   return {
     contact_name: name,
     nome_contato: name,

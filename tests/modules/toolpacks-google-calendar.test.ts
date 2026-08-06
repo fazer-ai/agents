@@ -1023,7 +1023,7 @@ describe("google calendar toolpack — blocking calendars (issue #1)", () => {
   });
 });
 
-// A booked "call" must hand the customer a real meeting room: without conferenceData the model only
+// NOTE: a booked "call" must hand the customer a real meeting room: without conferenceData the model only
 // ever gets htmlLink, the calendar PAGE of the event. Two API traps pinned here: the Google API
 // honors conferenceData only when the request carries conferenceDataVersion=1 (silently ignored
 // otherwise), and createRequest.requestId must be unique per event (a reused id returns the SAME
@@ -1111,7 +1111,7 @@ describe("google calendar toolpack — Meet room on create", () => {
   });
 
   test("a pending room is re-read once so the reply still carries meetLink", async () => {
-    // The POST answers without hangoutLink (createRequest still pending); one follow-up GET has it.
+    // NOTE: the POST answers without hangoutLink (createRequest still pending); one follow-up GET has it.
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const responses: unknown[] = [
       {

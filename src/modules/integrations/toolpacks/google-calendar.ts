@@ -93,7 +93,7 @@ function resolveBlockingCalendarIds(config: Record<string, unknown>): string[] {
   return Array.from(new Set(ids));
 }
 
-// Whether calendar_create_event asks Google for a Meet room. ON by default: an agent that books a
+// NOTE: whether calendar_create_event asks Google for a Meet room. ON by default: an agent that books a
 // "call" must hand the customer a real meeting room, not the calendar page (htmlLink). Operators who
 // use the calendar purely as a busy-block turn it off in the integration config. When the connected
 // account cannot create Meet rooms, Google keeps the event and just omits the conference (no error).
@@ -448,7 +448,7 @@ function projectEvent(ev: Record<string, unknown>) {
     start: flattenTime(ev.start),
     end: flattenTime(ev.end),
     htmlLink: typeof ev.htmlLink === "string" ? ev.htmlLink : undefined,
-    // The Meet room (hangoutLink) — THE link to hand the customer; htmlLink is only the event's
+    // NOTE: the Meet room (hangoutLink) — THE link to hand the customer; htmlLink is only the event's
     // calendar page, useless to a lead without access to the calendar.
     meetLink: typeof ev.hangoutLink === "string" ? ev.hangoutLink : undefined,
   };
@@ -824,7 +824,7 @@ function buildCreateEventTool(
         ...(input.description ? { description: input.description } : {}),
         // Owner stamp injected from context, never from the model: locks this appointment to the contact.
         extendedProperties: { private: { [SECV4_CONTACT_KEY]: stamp } },
-        // A Meet room for the appointment. requestId MUST be unique per event: Google returns the
+        // NOTE: a Meet room for the appointment. requestId MUST be unique per event: Google returns the
         // SAME room for a reused id, which would put different leads in one meeting.
         ...(meetEnabled
           ? {
@@ -840,7 +840,7 @@ function buildCreateEventTool(
       let res: GcalResponse;
       try {
         res = await gcalFetch(
-          // Without conferenceDataVersion=1 the API IGNORES conferenceData in silence — no error,
+          // NOTE: without conferenceDataVersion=1 the API IGNORES conferenceData in silence — no error,
           // no room. Easy to lose in a refactor; pinned by tests.
           `/calendars/${encodeURIComponent(calendarId)}/events${meetEnabled ? "?conferenceDataVersion=1" : ""}`,
           { method: "POST", token, body },
@@ -858,7 +858,7 @@ function buildCreateEventTool(
         return "Google Calendar returned an unexpected response.";
       }
       const eventId = data.id;
-      // Room creation is usually synchronous, but the API may answer with the createRequest still
+      // NOTE: room creation is usually synchronous, but the API may answer with the createRequest still
       // pending and no hangoutLink; one cheap re-read closes that gap (no polling — if it is STILL
       // pending, the reply simply carries no meetLink and the event stands).
       if (meetEnabled && typeof data.hangoutLink !== "string") {

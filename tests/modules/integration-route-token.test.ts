@@ -1,0 +1,219 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import { AppError, NotFoundError } from "@/lib/errors";
+import type { TenantContext } from "@/lib/tenancy";
+import {
+  createIntegrationInstance,
+  getIntegrationInstance,
+  listIntegrationInstances,
+  resolveInboundRouteByToken,
+  rotateIntegrationRouteToken,
+} from "@/modules/integrations/service";
+
+// NOTE: The inbound webhook URL is an ADDRESS the operator pastes into the provider's dashboard, so
+// it has to stay readable after creation. The token is therefore persisted twice — the SHA-256 hash
+// the hot inbound path probes, plus an encrypted copy for the editor — and rotation exists for the
+// two cases the stored copy cannot serve: a row created before the column existed, and a leak.
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
+
+let tenantId = 0n;
+const ctx = (): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
+
+describe.skipIf(!dbUp)("integration route token", () => {
+  beforeAll(async () => {
+    const t = await suDb.tenant.create({
+      data: { name: "RT", slug: `rt-${process.pid}` },
+    });
+    tenantId = t.id;
+  });
+
+  afterAll(async () => {
+    if (dbUp && tenantId) {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM integration_instances WHERE tenant_id = ${tenantId}`,
+      );
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${tenantId}`,
+      );
+    }
+    await app?.$disconnect();
+    await su?.$disconnect();
+  });
+
+  test("the created token is readable again, and only on the single-instance read", async () => {
+    const created = await createIntegrationInstance(
+      tenantId,
+      {
+        catalogType: "ASAAS",
+        name: "asaas-read",
+      },
+      appDb,
+    );
+    expect(created.routeToken).toBeTruthy();
+
+    const one = await getIntegrationInstance(ctx(), created.id, appDb);
+    expect(one.routeToken).toBe(created.routeToken as string);
+    expect(one.routeTokenStatus).toBe("present");
+
+    // NOTE: The list backs a screen that shows no URL, so it must not ship N tokens to the browser.
+    const many = await listIntegrationInstances(ctx(), appDb);
+    const row = many.find((i) => i.id === String(created.id));
+    expect(row?.routeToken).toBeNull();
+  });
+
+  test("the stored copy is encrypted, never the plaintext", async () => {
+    const created = await createIntegrationInstance(
+      tenantId,
+      {
+        catalogType: "ASAAS",
+        name: "asaas-enc",
+      },
+      appDb,
+    );
+    const raw = await suDb.integrationInstance.findUniqueOrThrow({
+      where: { id: created.id },
+      select: { routeToken: true, routeTokenHash: true },
+    });
+    expect(raw.routeToken).not.toBe(created.routeToken);
+    expect(raw.routeToken).not.toContain(created.routeToken as string);
+    expect(raw.routeTokenHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("rotating mints a new token and kills the old address", async () => {
+    const created = await createIntegrationInstance(
+      tenantId,
+      {
+        catalogType: "ASAAS",
+        name: "asaas-rotate",
+      },
+      appDb,
+    );
+    const old = created.routeToken as string;
+    expect(await resolveInboundRouteByToken(old, suDb)).not.toBeNull();
+
+    const { routeToken: fresh } = await rotateIntegrationRouteToken(
+      ctx(),
+      created.id,
+      appDb,
+    );
+    expect(fresh).not.toBe(old);
+    // The provider must be updated: the previous URL stops resolving immediately.
+    expect(await resolveInboundRouteByToken(old, suDb)).toBeNull();
+    const resolved = await resolveInboundRouteByToken(fresh, suDb);
+    expect(resolved?.id).toBe(created.id);
+    // And the new one is readable, so the operator can copy it without the reveal modal.
+    expect(
+      (await getIntegrationInstance(ctx(), created.id, appDb)).routeToken,
+    ).toBe(fresh);
+  });
+
+  test("an instance predating the stored copy reads null and recovers by rotating", async () => {
+    const created = await createIntegrationInstance(
+      tenantId,
+      {
+        catalogType: "ASAAS",
+        name: "asaas-legacy",
+      },
+      appDb,
+    );
+    // NOTE: Exactly the shape of a row created before the column existed: the hash still resolves
+    // inbound calls, but nothing can recover the plaintext.
+    await suDb.integrationInstance.update({
+      where: { id: created.id },
+      data: { routeToken: null },
+    });
+    const legacy = await getIntegrationInstance(ctx(), created.id, appDb);
+    expect(legacy.routeToken).toBeNull();
+    expect(legacy.routeTokenStatus).toBe("absent");
+
+    const { routeToken } = await rotateIntegrationRouteToken(
+      ctx(),
+      created.id,
+      appDb,
+    );
+    expect(
+      (await getIntegrationInstance(ctx(), created.id, appDb)).routeToken,
+    ).toBe(routeToken);
+  });
+
+  test("a blob the key cannot read is 'unreadable', never confused with 'absent'", async () => {
+    const created = await createIntegrationInstance(
+      tenantId,
+      { catalogType: "ASAAS", name: "asaas-corrupt" },
+      appDb,
+    );
+    // NOTE: A blob that survives storage but fails authentication — what an ENCRYPTION_KEY rotation
+    // leaves behind. Collapsing this into "absent" would tell the operator the row predates the
+    // feature and send them hunting in the wrong place; both still recover by rotating.
+    await suDb.integrationInstance.update({
+      where: { id: created.id },
+      data: { routeToken: "bm90LWEtcmVhbC1ibG9i" },
+    });
+    const broken = await getIntegrationInstance(ctx(), created.id, appDb);
+    expect(broken.routeToken).toBeNull();
+    expect(broken.routeTokenStatus).toBe("unreadable");
+
+    // The read stays usable — a corrupt blob must not take the whole editor down with it.
+    expect(broken.name).toBe("asaas-corrupt");
+
+    const { routeToken } = await rotateIntegrationRouteToken(
+      ctx(),
+      created.id,
+      appDb,
+    );
+    const healed = await getIntegrationInstance(ctx(), created.id, appDb);
+    expect(healed.routeToken).toBe(routeToken);
+    expect(healed.routeTokenStatus).toBe("present");
+  });
+
+  test("an outbound-only integration has no URL and cannot be rotated", async () => {
+    const created = await createIntegrationInstance(
+      tenantId,
+      {
+        catalogType: "GOOGLE_CALENDAR",
+        name: "cal",
+      },
+      appDb,
+    );
+    expect(created.routeToken).toBeNull();
+    expect(
+      (await getIntegrationInstance(ctx(), created.id, appDb)).routeToken,
+    ).toBeNull();
+    await expect(
+      rotateIntegrationRouteToken(ctx(), created.id, appDb),
+    ).rejects.toBeInstanceOf(AppError);
+  });
+
+  test("rotating an unknown instance is a 404, not a silent mint", async () => {
+    await expect(
+      rotateIntegrationRouteToken(ctx(), 999999999n, appDb),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+});

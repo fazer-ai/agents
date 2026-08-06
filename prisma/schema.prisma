@@ -9,7 +9,9 @@
 //   * Secrets at rest are encryptJson() base64 blobs stored in plain String columns
 //     (never Json, never logged). VaultEntry.secret, ChatwootInstance.*Token, etc.
 //   * Opaque tokens (routeToken, quote access token) are stored as SHA-256 hashes for
-//     constant-time unique-index lookup; the plaintext is shown once at creation.
+//     constant-time unique-index lookup. The quote token is shown once at creation.
+//     IntegrationInstance.routeToken ALSO keeps an encryptJson() copy so the operator can
+//     re-read the inbound webhook URL in the editor (see the model for why).
 //   * `catalogType` is a String validated against the in-code integration registry, not a
 //     DB enum, so new integrations need no enum migration.
 
@@ -784,8 +786,14 @@ model McpServerConnection {
   @@map("mcp_server_connections")
 }
 
-// NOTE: routeToken is stored as a SHA-256 hash for constant-time unique-index lookup;
-// inbound auth secret lives in the vault by reference. See docs/integrations.md.
+// NOTE: routeTokenHash is the SHA-256 of the route token, for constant-time unique-index lookup on
+// the hot inbound path. `routeToken` is the SAME token as an encryptJson() blob, kept because the
+// operator pastes this URL into the provider's dashboard (Asaas) and legitimately needs to re-read
+// it later — a hash-only design forced a rotation (and a re-paste upstream) just to see it again.
+// It is an ADDRESS, not the authenticator: inbound calls are authenticated by inboundAuthStrategy +
+// the vault secret. Returned only by GET /instances/:id (never by the list), never logged.
+// NULL on rows created before this column existed → the editor offers a rotation instead.
+// The inbound auth secret itself lives in the vault by reference. See docs/integrations.md.
 model IntegrationInstance {
   id                  BigInt              @id @default(autoincrement())
   tenantId            BigInt              @map("tenant_id")
@@ -797,6 +805,7 @@ model IntegrationInstance {
   inboundAuthStrategy InboundAuthStrategy @default(NONE) @map("inbound_auth_strategy")
   inboundSecretRef    String?             @map("inbound_secret_ref")
   routeTokenHash      String?             @unique @map("route_token_hash")
+  routeToken          String?             @map("route_token")
   createdAt           DateTime            @default(now()) @map("created_at")
   updatedAt           DateTime            @updatedAt @map("updated_at")
 

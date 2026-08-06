@@ -1138,13 +1138,22 @@
     "saveError": "Não foi possível salvar.",
     "sharedNotice": "Esta é uma integração compartilhada. Alterações afetam todos os agentes que a usam.",
     "subtitle": "Ative integrações prontas que seus agentes podem usar.",
-    "tokenHint": "Copie esta URL para as configurações de webhook do provedor. Ela é exibida apenas uma vez.",
+    "tokenHint": "Copie esta URL para as configurações de webhook do provedor. Você pode consultá-la depois editando esta integração.",
     "tokenTitle": "URL do webhook de entrada",
     "toolsTitle": "O que esta integração faz",
     "type": "Integração",
     "webhook": {
       "explain": "Quando uma cobrança é paga, o Asaas chama este webhook e o agente é acordado exatamente na conversa que gerou a cobrança. Ele então decide se manda uma mensagem ao cliente (podendo usar as ferramentas). Você cola a URL do webhook no painel do Asaas depois de salvar.",
-      "title": "Webhook de pagamento"
+      "rotate": "Gerar nova URL",
+      "rotateConfirm": "Gerar",
+      "rotateError": "Não foi possível gerar.",
+      "rotateMessage": "A URL atual para de funcionar na hora. Você precisa colar a nova no painel do provedor, senão os avisos de pagamento deixam de chegar.",
+      "rotateTitle": "Gerar uma nova URL",
+      "title": "Webhook de pagamento",
+      "url": "URL do webhook",
+      "urlHint": "Cole esta URL no painel do provedor.",
+      "urlMissing": "Esta integração foi criada antes de a URL poder ser exibida de novo, então não temos mais como mostrá-la. Gere uma nova e atualize no painel do provedor.",
+      "urlUnreadable": "A URL guardada não pode mais ser decifrada, o que normalmente significa que a chave de criptografia mudou. Gere uma nova e atualize no painel do provedor."
     }
   },
   "invite": {

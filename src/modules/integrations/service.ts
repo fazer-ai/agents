@@ -3,6 +3,8 @@ import type {
   Prisma,
   PrismaClient,
 } from "@/../generated/prisma/client";
+import { decryptJson, encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -13,9 +15,16 @@ import {
 import { CATALOG, getCatalogEntry } from "./catalog";
 import type { CatalogEntry } from "./types";
 
-// Integration instances: the per-tenant activation of a catalog entry. Creation mints the
-// opaque inbound route token (returned once); resolution maps an incoming token to the owning
-// tenant + instance via a constant-time hash lookup (cross-tenant, so asSuperAdmin).
+// Integration instances: the per-tenant activation of a catalog entry. Creation mints the opaque
+// inbound route token; resolution maps an incoming token to the owning tenant + instance via a
+// constant-time hash lookup (cross-tenant, so asSuperAdmin).
+//
+// NOTE: The token is persisted TWICE — `routeTokenHash` (SHA-256) is what the hot inbound path
+// probes, and `routeToken` is an encryptJson() copy that exists purely so the operator can re-read
+// the webhook URL in the editor. It is an ADDRESS, not the authenticator (inbound calls are
+// authenticated by inboundAuthStrategy + the vault secret), and it is returned only by the
+// single-instance read, never by the list. Rows created before that column exists decrypt to null,
+// and the editor offers rotateIntegrationRouteToken instead.
 
 export interface ResolvedInboundRoute {
   id: bigint;
@@ -60,9 +69,9 @@ export interface CreateIntegrationParams {
   enabled?: boolean;
 }
 
-// Returns the plaintext route token ONCE (never stored, never logged) for inbound-capable
-// integrations; outbound-only ones (Calendar/Drive) carry no token (routeTokenHash null, no
-// inbound auth). Callers surface the token to the operator who pastes it into the provider.
+// Returns the plaintext route token for inbound-capable integrations; outbound-only ones
+// (Calendar/Drive) carry no token (routeTokenHash null, no inbound auth). Callers surface it to the
+// operator who pastes it into the provider; it stays re-readable via getIntegrationInstance.
 export async function createIntegrationInstance(
   tenantId: bigint,
   params: CreateIntegrationParams,
@@ -91,6 +100,7 @@ export async function createIntegrationInstance(
             : "NONE",
           inboundSecretRef: minted ? (params.inboundSecretRef ?? null) : null,
           routeTokenHash: minted?.hash ?? null,
+          routeToken: minted ? encryptJson(minted.token) : null,
         },
         select: { id: true },
       }),
@@ -113,6 +123,12 @@ export interface IntegrationInstanceDto {
   credentialRef: string | null;
   inboundAuthStrategy: InboundAuthStrategy;
   inboundSecretRef: string | null;
+  // NOTE: The inbound webhook token, decrypted. Populated ONLY by getIntegrationInstance (the
+  // editor needs it to show the URL); the list leaves it null so N tokens are not sprayed to a
+  // screen that shows none of them. `routeTokenStatus` says WHY it is null when it is — see
+  // readRouteToken; the list always reports "absent" because it never reads the column.
+  routeToken: string | null;
+  routeTokenStatus: RouteTokenStatus;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -130,6 +146,28 @@ const INSTANCE_SELECT = {
   updatedAt: true,
 } as const;
 
+// NOTE: Why the three states are distinct. A blob that fails to decrypt does NOT throw here —
+// nothing downstream makes a security decision on this value (it is an address for the operator to
+// copy), and throwing would 500 the edit modal of every integration on the instance. But it must
+// not collapse into `absent` either: that would tell the operator "this predates the feature" when
+// the truth is "the key can no longer read it", which sends them looking in the wrong place. So the
+// failure keeps its own status, and the logger.warn stays as the ops signal. Both non-present
+// states resolve the same way — rotate — but the editor says which one it is.
+export type RouteTokenStatus = "present" | "absent" | "unreadable";
+
+function readRouteToken(blob: string | null | undefined): {
+  token: string | null;
+  status: RouteTokenStatus;
+} {
+  if (!blob) return { token: null, status: "absent" };
+  try {
+    return { token: decryptJson<string>(blob), status: "present" };
+  } catch {
+    logger.warn("integration route token failed to decrypt (rotation needed)");
+    return { token: null, status: "unreadable" };
+  }
+}
+
 function toInstanceDto(r: {
   id: bigint;
   catalogType: string;
@@ -139,6 +177,7 @@ function toInstanceDto(r: {
   credentialRef: string | null;
   inboundAuthStrategy: InboundAuthStrategy;
   inboundSecretRef: string | null;
+  routeToken?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }): IntegrationInstanceDto {
@@ -151,6 +190,10 @@ function toInstanceDto(r: {
     credentialRef: r.credentialRef,
     inboundAuthStrategy: r.inboundAuthStrategy,
     inboundSecretRef: r.inboundSecretRef,
+    ...(() => {
+      const { token, status } = readRouteToken(r.routeToken);
+      return { routeToken: token, routeTokenStatus: status };
+    })(),
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -169,6 +212,8 @@ export async function listIntegrationInstances(
   return rows.map(toInstanceDto);
 }
 
+// NOTE: The only read that returns the decrypted routeToken — this is what backs the webhook URL
+// field in the editor. Keep it out of the list (see IntegrationInstanceDto.routeToken).
 export async function getIntegrationInstance(
   ctx: TenantContext,
   id: bigint,
@@ -177,7 +222,7 @@ export async function getIntegrationInstance(
   const row = await runScopedOn(base, ctx, (db) =>
     db.integrationInstance.findUnique({
       where: { id },
-      select: INSTANCE_SELECT,
+      select: { ...INSTANCE_SELECT, routeToken: true },
     }),
   );
   if (!row) {
@@ -239,6 +284,46 @@ export async function updateIntegrationInstance(
       select: INSTANCE_SELECT,
     });
     return toInstanceDto(row);
+  });
+}
+
+// NOTE: Mints a NEW inbound route token, invalidating the old URL the instant it commits. Two
+// reasons it exists: an instance created before `routeToken` was stored has no readable URL (only
+// the hash survives), and a leaked URL needs a way out. The caller must warn the operator that the
+// provider's dashboard has to be updated — nothing else can reach the old address afterwards.
+export async function rotateIntegrationRouteToken(
+  ctx: TenantContext,
+  id: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<{ routeToken: string }> {
+  return runScopedOn(base, ctx, async (db) => {
+    const current = await db.integrationInstance.findUnique({
+      where: { id },
+      select: { catalogType: true },
+    });
+    if (!current) {
+      throw new NotFoundError(
+        "integration instance not found",
+        "errors.integrationInstanceNotFound",
+      );
+    }
+    // Outbound-only entries (Calendar/Drive) have no inbound surface, so there is no URL to rotate.
+    if (!getCatalogEntry(current.catalogType)?.supportsInbound) {
+      throw new AppError(
+        `integration ${current.catalogType} has no inbound webhook`,
+        400,
+        "errors.integrationNoInboundWebhook",
+      );
+    }
+    const minted = generateRouteToken();
+    await db.integrationInstance.update({
+      where: { id },
+      data: {
+        routeTokenHash: minted.hash,
+        routeToken: encryptJson(minted.token),
+      },
+    });
+    return { routeToken: minted.token };
   });
 }
 

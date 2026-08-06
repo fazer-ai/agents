@@ -1135,13 +1135,22 @@
     "saveError": "Could not save.",
     "sharedNotice": "This is a shared integration. Changes affect every agent that uses it.",
     "subtitle": "Activate ready-made integrations your agents can use.",
-    "tokenHint": "Copy this URL into the provider's webhook settings. It is shown only once.",
+    "tokenHint": "Copy this URL into the provider's webhook settings. You can read it again later by editing this integration.",
     "tokenTitle": "Inbound webhook URL",
     "toolsTitle": "What this integration can do",
     "type": "Integration",
     "webhook": {
       "explain": "When a charge is paid, Asaas calls this webhook and the agent is woken on the exact conversation that generated the charge. It then decides whether to message the customer (and may use its tools). You paste the webhook URL into the Asaas panel after saving.",
-      "title": "Payment webhook"
+      "rotate": "Generate new URL",
+      "rotateConfirm": "Generate",
+      "rotateError": "Could not generate.",
+      "rotateMessage": "The current URL stops working immediately. You must paste the new one into the provider's panel, or payment notifications stop arriving.",
+      "rotateTitle": "Generate a new URL",
+      "title": "Payment webhook",
+      "url": "Webhook URL",
+      "urlHint": "Paste this into the provider's panel.",
+      "urlMissing": "This integration was created before the URL could be shown again, so we no longer have it. Generate a new one and update it in the provider's panel.",
+      "urlUnreadable": "The stored URL can no longer be decrypted, which usually means the encryption key changed. Generate a new one and update it in the provider's panel."
     }
   },
   "invite": {

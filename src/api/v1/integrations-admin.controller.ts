@@ -12,6 +12,7 @@ import {
   getIntegrationInstance,
   listCatalog,
   listIntegrationInstances,
+  rotateIntegrationRouteToken,
   updateIntegrationInstance,
 } from "@/modules/integrations/service";
 import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
@@ -19,7 +20,8 @@ import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
 // Integration-instance management (per-tenant). TENANT_ADMIN. Separate from the PUBLIC inbound
 // receptor controller (same /v1/integrations prefix, no path overlap: /catalog + /instances* here
 // vs /inbound/:routeToken there) so the high-volume webhook path stays free of the session lookup.
-// The opaque routeToken is returned ONCE on create and never again.
+// The opaque routeToken comes back on create and on the single-instance read (the editor shows the
+// webhook URL); POST /instances/:id/route-token mints a new one and invalidates the old.
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
@@ -118,25 +120,30 @@ export const integrationsAdminController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "List integration instances",
-        "Returns the tenant's configured integration instances; the routeToken is never returned after creation.",
+        "Returns the tenant's configured integration instances. The routeToken is omitted here; read a single instance to get it.",
       ),
       response: errors(401, 403),
     },
   )
   .get(
     "/instances/:id",
-    async ({ tenantContext, params }) => ({
-      instance: instanceIdentity,
-      integration: await getIntegrationInstance(
-        ctxOrThrow(tenantContext),
-        BigInt(params.id),
-      ),
-    }),
+    async ({ tenantContext, params, set }) => {
+      // NOTE: no-store — this is the ONE read that returns the decrypted routeToken, and nothing
+      // global sets the header. Keeps the webhook URL out of the browser's disk cache.
+      set.headers["cache-control"] = "no-store";
+      return {
+        instance: instanceIdentity,
+        integration: await getIntegrationInstance(
+          ctxOrThrow(tenantContext),
+          BigInt(params.id),
+        ),
+      };
+    },
     {
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Get integration instance",
-        "Fetches a single integration instance by id; the routeToken is never returned after creation.",
+        "Fetches a single integration instance by id, including its inbound routeToken (null when the entry has no inbound surface, or when the instance predates token storage — rotate to mint a readable one).",
       ),
       params: t.Object({
         id: t.String({
@@ -167,7 +174,8 @@ export const integrationsAdminController = new Elysia({
       return {
         instance: instanceIdentity,
         id: String(created.id),
-        // Shown ONCE — paste into the upstream provider; it is never returned again.
+        // NOTE: Paste into the upstream provider. Also readable later via GET /instances/:id, so
+        // losing this response is no longer a dead end.
         routeToken: created.routeToken,
       };
     },
@@ -175,7 +183,7 @@ export const integrationsAdminController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Create integration instance",
-        "Creates an integration instance and returns its id plus the opaque routeToken, which is shown only once and never returned again.",
+        "Creates an integration instance and returns its id plus the opaque routeToken for the inbound webhook URL. The token stays readable afterwards via GET /instances/:id.",
       ),
       body: t.Object({
         catalogType: t.String({
@@ -234,7 +242,7 @@ export const integrationsAdminController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Update integration instance",
-        "Updates fields of an integration instance by id; the routeToken is never returned after creation.",
+        "Updates fields of an integration instance by id. The routeToken is not returned here; read the instance or rotate it.",
       ),
       params: t.Object({
         id: t.String({
@@ -273,6 +281,33 @@ export const integrationsAdminController = new Elysia({
               "New vault reference name for the inbound auth secret, or null to clear it.",
           }),
         ),
+      }),
+      response: errors(400, 401, 403, 404),
+    },
+  )
+  // NOTE: Rotation is a POST because it MUTATES: the old URL stops resolving the moment it commits.
+  // It exists for the two cases the stored token cannot cover — an instance created before the
+  // token was persisted (hash only), and a URL that leaked.
+  .post(
+    "/instances/:id/route-token",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      ...(await rotateIntegrationRouteToken(
+        ctxOrThrow(tenantContext),
+        BigInt(params.id),
+      )),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Rotate inbound route token",
+        "Mints a new inbound webhook token for the instance and returns it. The previous URL stops working immediately, so the provider's dashboard must be updated.",
+      ),
+      params: t.Object({
+        id: t.String({
+          description:
+            "Integration instance id (BigInt serialized as a string).",
+        }),
       }),
       response: errors(400, 401, 403, 404),
     },

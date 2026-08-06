@@ -18807,7 +18807,7 @@
           "Integrations"
         ],
         "summary": "List integration instances",
-        "description": "Returns the tenant's configured integration instances; the routeToken is never returned after creation.",
+        "description": "Returns the tenant's configured integration instances. The routeToken is omitted here; read a single instance to get it.",
         "responses": {
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
@@ -18868,7 +18868,7 @@
           "Integrations"
         ],
         "summary": "Create integration instance",
-        "description": "Creates an integration instance and returns its id plus the opaque routeToken, which is shown only once and never returned again.",
+        "description": "Creates an integration instance and returns its id plus the opaque routeToken for the inbound webhook URL. The token stays readable afterwards via GET /instances/:id.",
         "requestBody": {
           "required": true,
           "content": {
@@ -19141,7 +19141,7 @@
           "Integrations"
         ],
         "summary": "Get integration instance",
-        "description": "Fetches a single integration instance by id; the routeToken is never returned after creation.",
+        "description": "Fetches a single integration instance by id, including its inbound routeToken (null when the entry has no inbound surface, or when the instance predates token storage — rotate to mint a readable one).",
         "parameters": [
           {
             "name": "id",
@@ -19249,7 +19249,7 @@
           "Integrations"
         ],
         "summary": "Update integration instance",
-        "description": "Updates fields of an integration instance by id; the routeToken is never returned after creation.",
+        "description": "Updates fields of an integration instance by id. The routeToken is not returned here; read the instance or rotate it.",
         "parameters": [
           {
             "name": "id",
@@ -19626,6 +19626,116 @@
           }
         },
         "operationId": "deleteV1IntegrationsInstancesById"
+      }
+    },
+    "/v1/integrations/instances/{id}/route-token": {
+      "post": {
+        "tags": [
+          "Integrations"
+        ],
+        "summary": "Rotate inbound route token",
+        "description": "Mints a new inbound webhook token for the instance and returns it. The previous URL stops working immediately, so the provider's dashboard must be updated.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Integration instance id (BigInt serialized as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1IntegrationsInstancesByIdRoute-token"
       }
     },
     "/v1/knowledge/bases": {

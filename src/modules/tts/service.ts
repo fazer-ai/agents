@@ -8,7 +8,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { tryResolveVaultEntry } from "@/modules/vault/service";
-import { getTtsProvider, type TtsResult } from "./providers";
+import { getTtsProvider, pickTtsFormat, type TtsResult } from "./providers";
 import type { TtsConfig } from "./settings";
 
 // Text-to-speech orchestration: normalize the reply for speech, synthesize via the configured
@@ -45,6 +45,10 @@ export interface SynthesizeReplyParams {
   tenantId: bigint;
   cfg: TtsConfig;
   text: string;
+  // The conversation's Chatwoot channel class ("Channel::Api", "Channel::Instagram", …). Decides the
+  // audio container via pickTtsFormat: Instagram refuses WhatsApp's Ogg/Opus (and mp3), so the reply
+  // must be aac/wav there. Absent/null keeps the WhatsApp-first default.
+  channelType?: string | null;
   base?: PrismaClient;
   deps?: {
     fetchImpl?: typeof fetch;
@@ -106,6 +110,18 @@ export async function synthesizeReply(
     logger.warn("tts: provider %s requires a voice — skipping", cfg.provider);
     return skip("no_voice");
   }
+  // Container per destination channel. null = the provider cannot emit anything this channel accepts
+  // (openrouter on Instagram: mp3-only, and Meta refuses mp3) — synthesizing would produce a message
+  // Chatwoot shows as sent and Meta then rejects, so degrade to a text reply with a visible skip.
+  const format = pickTtsFormat(provider, params.channelType ?? null);
+  if (!format) {
+    logger.warn(
+      "tts: provider %s has no output format accepted on %s — falling back to text",
+      cfg.provider,
+      params.channelType,
+    );
+    return skip("channel_format_unsupported");
+  }
   if (!cfg.credentialRef) {
     logger.warn("tts: no credentialRef configured — skipping");
     return skip("no_credential");
@@ -134,7 +150,7 @@ export async function synthesizeReply(
     {
       provider: cfg.provider,
       model: cfg.model || provider.defaultModel,
-      detail: { normalized: cfg.normalize },
+      detail: { normalized: cfg.normalize, format },
       // TTS is best-effort: the runtime falls back to a text reply on a synth error, so log a warn
       // (advisory), not a red error, on the conversation/Logs.
       errorLevel: "warn",
@@ -148,6 +164,7 @@ export async function synthesizeReply(
         apiKey: entry.secret,
         baseURL: effectiveBaseURL,
         fetchImpl: params.deps?.fetchImpl ?? fetch,
+        format,
       }),
   );
 }

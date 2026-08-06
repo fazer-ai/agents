@@ -492,6 +492,7 @@ export async function runLoadedTurn(
           tenantId,
           cfg: loaded.ttsConfig,
           text: reply,
+          channelType: loaded.channelType,
           base,
           deps: { fetchImpl: params.deps?.ttsFetch, normalizeSpeech },
           flow,

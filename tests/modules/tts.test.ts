@@ -41,6 +41,7 @@ let instanceId = 0n;
 let contactId = 0n;
 let llmKeyId = 0n;
 let ttsKeyId = 0n;
+let igInboxId = 0n;
 
 const REPLY = "Claro, vou te ajudar!";
 
@@ -73,11 +74,11 @@ function makeStub(rec: {
   return async () => client;
 }
 
-const audioEvent = (convId: number): NormalizedChatwootEvent => ({
+const audioEvent = (convId: number, inboxId = 7): NormalizedChatwootEvent => ({
   event: "message_created",
   conversationId: convId,
   contactInboxId: null,
-  inboxId: 7,
+  inboxId,
   status: "pending",
   assigneeType: null,
   assigneeId: null,
@@ -104,7 +105,7 @@ const textEvent = (convId: number): NormalizedChatwootEvent => ({
   message: { id: 2, content: "oi", messageType: "incoming", private: false },
 });
 
-async function seedConversation(convId: number) {
+async function seedConversation(convId: number, inboxDbId?: bigint) {
   await suDb.conversation.create({
     data: {
       tenantId,
@@ -113,6 +114,7 @@ async function seedConversation(convId: number) {
       status: "pending",
       assigneeType: null,
       contactId,
+      ...(inboxDbId === undefined ? {} : { inboxId: inboxDbId }),
       threadId: `${tenantId}:${instanceId}:${convId}`,
       lastEventAt: new Date(),
     },
@@ -185,6 +187,20 @@ describe.skipIf(!dbUp)("tts", () => {
         agentId: agent.id,
       },
     });
+    // A second inbox on a channel that refuses Ogg/Opus (Meta's Instagram messaging accepts audio
+    // only as aac/m4a/wav/mp4) — the reply container must follow the channel.
+    const igInbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 8,
+        name: "Instagram",
+        channelType: "Channel::Instagram",
+        agentId: agent.id,
+      },
+      select: { id: true },
+    });
+    igInboxId = igInbox.id;
     const contact = await suDb.contact.create({
       data: { tenantId, name: "Cliente", chatwootContactId: 1 },
     });
@@ -386,6 +402,32 @@ describe.skipIf(!dbUp)("tts", () => {
     });
     expect(outcome).toBe("posted");
     expect(rec.audio).toEqual([[910, "reply.ogg"]]);
+    expect(rec.text).toEqual([]);
+  });
+
+  test("mirror mode on an Instagram inbox → the audio reply is aac, not ogg", async () => {
+    await seedConversation(933, igInboxId);
+    const rec = {
+      text: [] as [number, string][],
+      audio: [] as [number, string][],
+    };
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: audioEvent(933, 8),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub(rec),
+        checkpointer: new MemorySaver(),
+        ttsFetch: audioFetch(),
+      },
+    });
+    // Ogg would make Meta's send job fail AFTER Chatwoot shows the message as sent (the customer
+    // never receives it); on this channel the openai provider must emit aac.
+    expect(outcome).toBe("posted");
+    expect(rec.audio).toEqual([[933, "reply.aac"]]);
     expect(rec.text).toEqual([]);
   });
 

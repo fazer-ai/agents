@@ -21,6 +21,7 @@ function makeConfig(
     agentBotToken: null,
     conversationDbId: null,
     inboxDbId: null,
+    channelType: null,
     contactDbId: null,
     contactInboxId: null,
     systemPrompt: "Você é um assistente.",

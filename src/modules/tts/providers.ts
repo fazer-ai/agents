@@ -1,12 +1,21 @@
 // Text-to-speech provider abstraction. Each provider has a different shape, so each gets a thin
 // adapter behind one interface + registry. Adding a provider = one function + one registry entry, no
-// caller changes. The API key is a vault entry; provider/voice are per-agent. WhatsApp only renders a
-// recorded voice note (PTT) when the audio is **Ogg/Opus** — anything else (mp3/wav) arrives as a
-// plain file attachment. openai/elevenlabs both emit Opus natively, so no server-side transcode
-// (ffmpeg) is needed for them. openrouter has no Opus output (only mp3/pcm), so its replies
-// necessarily arrive as a file, not a native voice note — surfaced as a warning in the editor.
+// caller changes. The API key is a vault entry; provider/voice are per-agent. The OUTPUT CONTAINER
+// follows the destination channel (TtsRequest.format, chosen by pickTtsFormat): WhatsApp renders a
+// recorded voice note (PTT) only when the audio is **Ogg/Opus** — anything else arrives as a plain
+// file attachment — while Meta's Instagram messaging accepts audio only as aac/m4a/wav/mp4 and
+// refuses ogg AND mp3 (the send job fails AFTER Chatwoot shows the message as sent, so the customer
+// silently never receives it). openai emits aac natively; elevenlabs has no aac/wav output, so its
+// Instagram replies are raw PCM wrapped in a 44-byte RIFF header locally (pcmToWav — a header write,
+// not a transcode); openrouter only emits mp3 and therefore cannot serve Instagram at all (the
+// service falls back to a text reply there).
+
+import { pcmToWav } from "./wav";
 
 const TTS_TIMEOUT_MS = 60_000;
+
+// The audio container the reply is delivered in, decided per destination channel by pickTtsFormat.
+export type TtsOutputFormat = "ogg_opus" | "aac" | "wav" | "mp3";
 
 export interface TtsRequest {
   text: string;
@@ -16,6 +25,9 @@ export interface TtsRequest {
   apiKey: string;
   baseURL: string | null;
   fetchImpl: typeof fetch;
+  // Delivery container for the destination channel (see pickTtsFormat). Adapters map it onto their
+  // provider parameter and return the matching mime/fileName.
+  format: TtsOutputFormat;
 }
 
 export interface TtsResult {
@@ -29,6 +41,8 @@ export interface TtsProvider {
   defaultVoice: string;
   requiresVoice?: boolean;
   requiresBaseURL?: boolean;
+  // Containers this provider can emit; pickTtsFormat picks from these per channel.
+  formats: readonly TtsOutputFormat[];
   synthesize(req: TtsRequest): Promise<TtsResult>;
 }
 
@@ -43,14 +57,45 @@ export class TtsError extends Error {
   }
 }
 
-// Chatwoot infers file_type "audio" from the audio/ogg mime + .ogg name, and `is_recorded_audio`
-// marks it as a recording; baileys then sends it to WhatsApp as a PTT voice note.
-const OGG_OPUS: Pick<TtsResult, "mime" | "fileName"> = {
-  mime: "audio/ogg",
-  fileName: "reply.ogg",
+// Chatwoot infers file_type "audio" from the audio/* mime + the extension, and `is_recorded_audio`
+// marks it as a recording; baileys then sends Ogg/Opus to WhatsApp as a PTT voice note.
+const RESULT_BY_FORMAT: Record<
+  TtsOutputFormat,
+  Pick<TtsResult, "mime" | "fileName">
+> = {
+  ogg_opus: { mime: "audio/ogg", fileName: "reply.ogg" },
+  aac: { mime: "audio/aac", fileName: "reply.aac" },
+  wav: { mime: "audio/wav", fileName: "reply.wav" },
+  mp3: { mime: "audio/mpeg", fileName: "reply.mp3" },
 };
 
-// OpenAI speech: POST /audio/speech with response_format "opus" → Ogg/Opus bytes.
+// Picks the container for the destination channel. Instagram (Meta messaging) accepts audio only as
+// aac/m4a/wav/mp4 — ogg and mp3 are refused by the send job AFTER Chatwoot already shows the message
+// as sent, so the customer silently never receives the reply. Every other channel keeps the
+// WhatsApp-first default: Ogg/Opus (native PTT voice note) when the provider can emit it, else the
+// provider's mp3 file behavior. Returns null when the provider cannot emit any container the channel
+// accepts — the caller must fall back to a text reply.
+export function pickTtsFormat(
+  provider: TtsProvider,
+  channelType: string | null,
+): TtsOutputFormat | null {
+  if (channelType === "Channel::Instagram") {
+    if (provider.formats.includes("aac")) return "aac";
+    if (provider.formats.includes("wav")) return "wav";
+    return null;
+  }
+  return provider.formats.includes("ogg_opus") ? "ogg_opus" : "mp3";
+}
+
+// OpenAI speech: POST /audio/speech; response_format maps 1:1 from the requested container ("opus"
+// returns an Ogg-Opus stream, the WhatsApp voice-note format; "aac" serves Instagram natively).
+const OPENAI_FORMAT: Record<TtsOutputFormat, string> = {
+  ogg_opus: "opus",
+  aac: "aac",
+  wav: "wav",
+  mp3: "mp3",
+};
+
 async function openaiSynthesize(req: TtsRequest): Promise<TtsResult> {
   const base = (req.baseURL ?? "https://api.openai.com/v1").replace(/\/+$/, "");
   const res = await req.fetchImpl(`${base}/audio/speech`, {
@@ -63,31 +108,40 @@ async function openaiSynthesize(req: TtsRequest): Promise<TtsResult> {
       model: req.model,
       input: req.text,
       voice: req.voice,
-      // "opus" returns an Ogg-Opus stream (WhatsApp voice-note format); "mp3" would arrive as a file.
-      response_format: "opus",
+      response_format: OPENAI_FORMAT[req.format],
     }),
     redirect: "error",
     signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
   });
   if (!res.ok) throw new TtsError("openai", res.status);
-  return { audio: await res.arrayBuffer(), ...OGG_OPUS };
+  return { audio: await res.arrayBuffer(), ...RESULT_BY_FORMAT[req.format] };
 }
 
-// ElevenLabs text-to-speech: POST /text-to-speech/{voice_id}?output_format=opus_48000_64 → Ogg/Opus.
-// Opus output was added 2025-03; 48kHz/64kbps is ample for a voice note.
+// ElevenLabs text-to-speech: POST /text-to-speech/{voice_id}?output_format=…. Opus output was added
+// 2025-03; 48kHz/64kbps is ample for a voice note. There is no aac/wav output, so the "wav"
+// container is served as pcm_24000 (raw 16-bit mono PCM, available on every plan tier) wrapped in a
+// RIFF header locally — a 44-byte header write, no transcode.
+const ELEVENLABS_OUTPUT: Partial<Record<TtsOutputFormat, string>> = {
+  ogg_opus: "opus_48000_64",
+  wav: "pcm_24000",
+  mp3: "mp3_44100_128",
+};
+const ELEVENLABS_PCM_RATE = 24_000;
+
 async function elevenlabsSynthesize(req: TtsRequest): Promise<TtsResult> {
   const base = (req.baseURL ?? "https://api.elevenlabs.io/v1").replace(
     /\/+$/,
     "",
   );
+  const output = ELEVENLABS_OUTPUT[req.format] ?? "opus_48000_64";
   const res = await req.fetchImpl(
-    `${base}/text-to-speech/${encodeURIComponent(req.voice)}?output_format=opus_48000_64`,
+    `${base}/text-to-speech/${encodeURIComponent(req.voice)}?output_format=${output}`,
     {
       method: "POST",
       headers: {
         "xi-api-key": req.apiKey,
         "content-type": "application/json",
-        accept: "audio/ogg",
+        ...(req.format === "ogg_opus" ? { accept: "audio/ogg" } : {}),
       },
       body: JSON.stringify({ text: req.text, model_id: req.model }),
       redirect: "error",
@@ -95,13 +149,22 @@ async function elevenlabsSynthesize(req: TtsRequest): Promise<TtsResult> {
     },
   );
   if (!res.ok) throw new TtsError("elevenlabs", res.status);
-  return { audio: await res.arrayBuffer(), ...OGG_OPUS };
+  const raw = await res.arrayBuffer();
+  if (req.format === "wav") {
+    return {
+      audio: pcmToWav(raw, ELEVENLABS_PCM_RATE),
+      ...RESULT_BY_FORMAT.wav,
+    };
+  }
+  return { audio: raw, ...RESULT_BY_FORMAT[req.format] };
 }
 
 // OpenRouter speech: dedicated audio API (launched 2026-05-01), POST /audio/speech. Unlike openai/
-// elevenlabs it has NO Opus output option (only "mp3"/"pcm"), so the reply arrives at WhatsApp as a
-// plain file attachment instead of a native voice note (PTT) — the editor surfaces this as a warning
-// when the operator picks this provider (no server-side transcode, by design — see docs/tts.md).
+// elevenlabs it has NO Opus output option (only "mp3"/"pcm", and pcm's sample rate varies per routed
+// model, so it cannot be safely wrapped), so the reply arrives at WhatsApp as a plain file
+// attachment instead of a native voice note (PTT) — surfaced as a warning in the editor — and
+// Instagram cannot be served at all (pickTtsFormat returns null there; the service falls back to a
+// text reply). The `format` field is accepted but always rendered as mp3.
 async function openrouterSynthesize(req: TtsRequest): Promise<TtsResult> {
   const base = (req.baseURL ?? "https://openrouter.ai/api/v1").replace(
     /\/+$/,
@@ -123,23 +186,21 @@ async function openrouterSynthesize(req: TtsRequest): Promise<TtsResult> {
     signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
   });
   if (!res.ok) throw new TtsError("openrouter", res.status);
-  return {
-    audio: await res.arrayBuffer(),
-    mime: "audio/mpeg",
-    fileName: "reply.mp3",
-  };
+  return { audio: await res.arrayBuffer(), ...RESULT_BY_FORMAT.mp3 };
 }
 
 const PROVIDERS: Record<string, TtsProvider> = {
   openai: {
     defaultModel: "gpt-4o-mini-tts",
     defaultVoice: "alloy",
+    formats: ["ogg_opus", "aac", "wav", "mp3"],
     synthesize: openaiSynthesize,
   },
   elevenlabs: {
     defaultModel: "eleven_flash_v2_5",
     defaultVoice: "",
     requiresVoice: true,
+    formats: ["ogg_opus", "wav", "mp3"],
     synthesize: elevenlabsSynthesize,
   },
   openrouter: {
@@ -152,6 +213,7 @@ const PROVIDERS: Record<string, TtsProvider> = {
     // model requires picking a matching voice — same caveat as elevenlabs).
     defaultModel: "hexgrad/kokoro-82m",
     defaultVoice: "af_alloy",
+    formats: ["mp3"],
     synthesize: openrouterSynthesize,
   },
 };

@@ -61,6 +61,10 @@ export interface ToolpackCtx {
     credentialRef: string | null;
     offsetsHours: number[];
     askConfirmationOnLast: boolean;
+    // Snapshot for the job payload: lets the reminder turn and the per-turn appointment context
+    // describe the event without a Google call.
+    summary: string | null;
+    calendarLabel: string | null;
   }) => Promise<void>;
   // Cancels an appointment's pending reminders (Calendar cancel; the toolpack re-arms on reschedule by
   // calling scheduleAppointmentReminders again). Same gating as scheduleAppointmentReminders.

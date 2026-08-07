@@ -45,6 +45,10 @@ export interface AgentNudge {
   value?: number | null;
   currency?: string | null;
   summary?: string | null;
+  // Opaque external references the agent may need as TOOL ARGUMENTS (event id, calendar id, …).
+  // Rendered INSIDE the data fence as extra k=v facts — sanitized like every fenced field, and never
+  // appended to the instructions lane (which is trusted operator/code text).
+  refs?: Record<string, string | null | undefined>;
   instructions?: string;
   // For a follow-up sequence: the 1-based step that fired. Surfaced on the conversation timeline
   // ("Follow-up N enviado") and in the flow log. Undefined for non-sequenced nudges (inbound events).
@@ -152,6 +156,15 @@ export function renderNudge(
     );
   }
   if (n.summary) facts.push(`summary=${sanitizeFreeText(n.summary, 500)}`);
+  if (n.refs) {
+    for (const [key, value] of Object.entries(n.refs)) {
+      if (value) {
+        facts.push(
+          `${sanitizeFreeText(key, 40)}=${sanitizeFreeText(value, 200)}`,
+        );
+      }
+    }
+  }
   const directive = canMessageCustomer
     ? `An external system event just occurred for this conversation. By default, send a brief, warm, helpful proactive message to the customer about it — keep it short and natural, in the conversation's language. Lean toward reaching out: a timely follow-up is usually welcome. Stay silent ONLY if a message would clearly be unhelpful, premature, duplicated, or annoying; in that rare case reply with EXACTLY ${FOLLOWUP_SKIP_SENTINEL} and nothing else.`
     : `A human agent is currently handling this conversation. Do NOT message the customer. If the event is worth flagging, write a short internal note for the human; otherwise reply with EXACTLY ${FOLLOWUP_SKIP_SENTINEL} and nothing else.`;

@@ -893,6 +893,9 @@ function buildCreateEventTool(
           credentialRef: sel.credentialRef,
           offsetsHours: apptCfg.offsetsHours,
           askConfirmationOnLast: apptCfg.askConfirmationOnLast,
+          summary:
+            typeof data.summary === "string" ? data.summary : input.summary,
+          calendarLabel: labels[calendarId] ?? null,
         });
       }
       return JSON.stringify(projectEvent(data));
@@ -994,6 +997,11 @@ function buildUpdateEventTool(
             credentialRef: sel.credentialRef,
             offsetsHours: apptCfg.offsetsHours,
             askConfirmationOnLast: apptCfg.askConfirmationOnLast,
+            summary:
+              typeof data.summary === "string"
+                ? data.summary
+                : (input.summary ?? null),
+            calendarLabel: labels[calendarId] ?? null,
           });
         }
       }

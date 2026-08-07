@@ -356,13 +356,15 @@ export async function updateAgent(
     const updateData: Record<string, unknown> = { ...rest };
     if (hasBh) updateData.businessHoursId = bhId;
     if (hasFuh) updateData.followUpHoursId = fuhId;
-    // NOTE: Arm the follow-up backlog fence on the OFF→ON transition of the effective state. Read-then-
-    // write is safe here: with expectedUpdatedAt a concurrent writer makes the updateMany miss (409);
-    // without it, last-write-wins already tolerates racing saves and the next save re-evaluates.
-    const before = await db.agent.findUnique({
-      where: { id },
-      select: { enabled: true, mode: true, settings: true },
-    });
+    // NOTE: Arm the follow-up backlog fence on the OFF→ON transition of the effective state. The row
+    // lock (FOR UPDATE, held to commit — runScopedOn is one interactive transaction) serializes the
+    // read-compute-write against concurrent saves: without it, a save that read the old ON state
+    // could land last after another save turned follow-up OFF, restoring ON with the STALE watermark
+    // and re-exposing the pre-arm backlog to the sweep. RLS still applies to the raw read.
+    const beforeRows = await db.$queryRaw<
+      Array<{ enabled: boolean; mode: string; settings: unknown }>
+    >`SELECT enabled, mode, settings FROM agents WHERE id = ${id} FOR UPDATE`;
+    const before = beforeRows[0];
     if (before) {
       const after = {
         enabled: rest.enabled !== undefined ? rest.enabled : before.enabled,
@@ -507,7 +509,7 @@ export async function createAgent(
     }
     const createShape = {
       enabled: data.enabled ?? true,
-      // New agents are born in test mode (operator opt-in before going live).
+      // NOTE: New agents are born in test mode (operator opt-in before going live).
       mode: data.mode ?? "test",
       settings: (data.settings ?? {}) as Prisma.InputJsonValue,
     };

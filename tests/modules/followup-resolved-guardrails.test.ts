@@ -18,7 +18,7 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Guardrails da cadeia "follow-up em conversa resolvida" (post da comunidade "Followup indo como
+// NOTE: Guardrails da cadeia "follow-up em conversa resolvida" (post da comunidade "Followup indo como
 // conversa privada", 2026-08-06). O incidente: espelho local preso em `pending` (resolve perdido /
 // entrega fora de ordem) → sweep enfileira FOLLOWUP para conversas que o Chatwoot real já resolveu
 // → nudge posta o texto como nota privada (fora da janela de 24h sem template), em massa, para a

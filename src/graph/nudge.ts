@@ -227,6 +227,8 @@ export async function runAgentNudge(
         inboxId: true,
         status: true,
         assigneeType: true,
+        assigneeId: true,
+        assigneeName: true,
         lastInboundAt: true,
         testActivatedAt: true,
       },
@@ -258,6 +260,8 @@ export async function runAgentNudge(
       cfg,
       status: conv.status,
       assigneeType: conv.assigneeType,
+      assigneeId: conv.assigneeId,
+      assigneeName: conv.assigneeName,
       lastInboundAt: conv.lastInboundAt,
       channelType: inbox.channelType,
       provider: inbox.provider,
@@ -341,7 +345,9 @@ export async function runAgentNudge(
     if (!live) return "unavailable";
     if (
       live.status !== loaded.status ||
-      live.assigneeType !== loaded.assigneeType
+      live.assigneeType !== loaded.assigneeType ||
+      live.assigneeId !== loaded.assigneeId ||
+      live.assigneeName !== loaded.assigneeName
     ) {
       try {
         await runScopedOn(base, sysCtx(tenantId), (db) =>
@@ -361,9 +367,11 @@ export async function runAgentNudge(
             },
           }),
         );
-        // Keep the in-memory snapshot in step so a second probe only re-writes on a NEW divergence.
+        // NOTE: Keep the in-memory snapshot in step so a second probe only re-writes on a NEW divergence.
         loaded.status = live.status;
         loaded.assigneeType = live.assigneeType;
+        loaded.assigneeId = live.assigneeId;
+        loaded.assigneeName = live.assigneeName;
       } catch (err) {
         logger.warn(
           { err, conversationId: String(conversationId) },
@@ -406,7 +414,11 @@ export async function runAgentNudge(
   const canMessagePre = params.requireLiveBotOwnership
     ? true
     : shouldBotHandle(
-        { assigneeType: loaded.assigneeType, status: loaded.status },
+        {
+          assigneeType: loaded.assigneeType,
+          status: loaded.status,
+          assigneeId: loaded.assigneeId,
+        },
         { ourAgentBotId: cfg.agentBotId },
       );
 
@@ -492,12 +504,13 @@ export async function runAgentNudge(
             chatwootConversationId: conversationId,
           },
         },
-        select: { assigneeType: true, status: true },
+        select: { assigneeType: true, status: true, assigneeId: true },
       });
       return shouldBotHandle(
         {
           assigneeType: conv?.assigneeType ?? null,
           status: conv?.status ?? null,
+          assigneeId: conv?.assigneeId ?? null,
         },
         { ourAgentBotId: cfg.agentBotId },
       );

@@ -87,6 +87,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         tenantId: tenant,
         name: "FU Persona",
         systemPrompt: "x",
+        followUpArmedAt: new Date("2026-01-01T00:00:00Z"),
         mode: "production",
         modelConfig: { provider: "openai", model: "gpt-4o-mini" },
         settings: {
@@ -153,6 +154,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         tenantId: tenant,
         name: "FU Hours",
         systemPrompt: "x",
+        followUpArmedAt: new Date("2026-01-01T00:00:00Z"),
         mode: "production",
         modelConfig: { provider: "openai", model: "gpt-4o-mini" },
         followUpHoursId: hours.id,
@@ -228,6 +230,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         tenantId: tenant,
         name: "FU Test",
         systemPrompt: "x",
+        followUpArmedAt: new Date("2026-01-01T00:00:00Z"),
         mode: "test",
         modelConfig: { provider: "openai", model: "gpt-4o-mini" },
         settings: {
@@ -294,6 +297,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         tenantId: tenant,
         name: "FU Redirect",
         systemPrompt: "x",
+        followUpArmedAt: new Date("2026-01-01T00:00:00Z"),
         mode: "production",
         modelConfig: { provider: "openai", model: "gpt-4o-mini" },
         settings: {

@@ -529,6 +529,11 @@ model Agent {
   // answering after the migration.
   mode                String   @default("production")
   settings            Json     @default("{}")
+  // Watermark stamped when the EFFECTIVE follow-up state (enabled && production && followUp.enabled)
+  // transitions OFF→ON. The sweep only STARTS a sequence for conversations whose lastInboundAt is at
+  // or after this instant, so arming follow-up never blasts the historical backlog. NULL = never
+  // armed (fail-safe: the sweep skips this agent's conversations entirely).
+  followUpArmedAt     DateTime? @map("follow_up_armed_at")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 

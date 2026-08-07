@@ -604,6 +604,7 @@ export async function getConversationDetail(
               modelConfig: true,
               businessHoursId: true,
               followUpHoursId: true,
+              followUpArmedAt: true,
             },
           }),
         )
@@ -700,6 +701,11 @@ export async function getConversationDetail(
       cfg.enabled &&
       firstStep &&
       isNewFollowUpEpisode(conv.lastFollowUpAt, conv.lastInboundAt) &&
+      // Activation fence (mirrors the sweep SQL): no estimate for an episode that began before
+      // follow-up was armed — the sweep will never enqueue it, so the indicator must not promise it.
+      agent?.followUpArmedAt != null &&
+      conv.lastInboundAt != null &&
+      conv.lastInboundAt >= agent.followUpArmedAt &&
       conv.lastEventAt &&
       shouldBotHandle({
         status: conv.status,

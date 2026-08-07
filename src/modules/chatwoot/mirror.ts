@@ -187,7 +187,20 @@ export async function mirrorChatwootEvent(
       }
 
       const updatedLastEventAt = newLastEventAt ?? new Date();
-      const nextStatus = n.status ?? existing.status;
+      // A MESSAGE event's conversation snapshot is frozen at enqueue time (AgentBots::WebhookJob
+      // serializes the payload before delivery, and failed deliveries retry with the stale copy), so
+      // a non-incoming message delivered AFTER the conversation_resolved must not drag the mirror
+      // back to pending/open — that stale "pending" is what made follow-ups fire on conversations the
+      // operator had already resolved. Only an INCOMING message may reopen (Chatwoot's ReopenService
+      // reopens exclusively on customer messages); conversation_* events stay authoritative.
+      const staleMessageReopen =
+        n.message !== undefined &&
+        n.message.messageType !== "incoming" &&
+        (existing.status === "resolved" || existing.status === "snoozed") &&
+        (n.status === "pending" || n.status === "open");
+      const applyStatus = n.status != null && !staleMessageReopen;
+      const nextStatus =
+        applyStatus && n.status != null ? n.status : existing.status;
       await db.conversation.update({
         where: { id: existing.id },
         data: {
@@ -196,7 +209,7 @@ export async function mirrorChatwootEvent(
             : {}),
           ...(inboxRowId != null ? { inboxId: inboxRowId } : {}),
           ...(contactId != null ? { contactId } : {}),
-          ...(n.status != null ? { status: n.status } : {}),
+          ...(applyStatus && n.status != null ? { status: n.status } : {}),
           assigneeId: n.assigneeId,
           assigneeType: n.assigneeType,
           assigneeName: n.assigneeName,
@@ -215,7 +228,7 @@ export async function mirrorChatwootEvent(
         },
       });
       const inboxIdStr = inboxRowId != null ? String(inboxRowId) : null;
-      if (n.status != null && n.status !== existing.status) {
+      if (applyStatus && n.status != null && n.status !== existing.status) {
         await emitMirrorEvent(db, tenantId, "conversation.status_changed", {
           conversation_id: String(existing.id),
           inbox_id: inboxIdStr,
@@ -238,7 +251,7 @@ export async function mirrorChatwootEvent(
         // The status as persisted BEFORE this update — the real transition source value.
         prevStatus: existing.status,
         applied: true,
-        status: n.status ?? existing.status,
+        status: nextStatus,
         assigneeId: n.assigneeId,
         assigneeType: n.assigneeType,
         lastEventAt: updatedLastEventAt,

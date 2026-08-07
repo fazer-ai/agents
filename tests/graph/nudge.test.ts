@@ -8,6 +8,7 @@ import { contactInboxThreadId } from "@/graph/checkpointer";
 import {
   FOLLOWUP_SKIP_SENTINEL,
   isNudgeSilent,
+  OUTSIDE_WINDOW_NOTE_PREFIX,
   parseThreadId,
   renderNudge,
   runAgentNudge,
@@ -332,9 +333,11 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         persistUsage: async () => {},
       },
     });
-    expect(outcome).toBe("noted");
+    expect(outcome).toBe("noted-window");
     expect(s.messages).toEqual([]);
-    expect(s.notes).toEqual([[903, "Pagamento confirmado!"]]);
+    expect(s.notes).toEqual([
+      [903, `${OUTSIDE_WINDOW_NOTE_PREFIX}Pagamento confirmado!`],
+    ]);
   });
 
   test("human-handling conversation → private note, never a customer message", async () => {

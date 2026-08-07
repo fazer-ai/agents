@@ -55,6 +55,11 @@ function stubClient() {
   const resolved: number[] = [];
   let currentLabels: string[] = [];
   const client = {
+    getConversation: async (c: number) => ({
+      id: c,
+      status: "pending",
+      meta: {},
+    }),
     sendMessage: async (c: number, t: string) => {
       sent.push([c, t]);
       return {};
@@ -201,6 +206,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         tenantId,
         name: "Atendente",
         systemPrompt: "Você é prestativa.",
+        followUpArmedAt: new Date(Date.now() - 30 * 86_400_000),
         modelConfig: {
           provider: "openai",
           model: "gpt-4o-mini",

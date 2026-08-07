@@ -130,6 +130,33 @@ export function normalizeChatwootEvent(
   return normalized;
 }
 
+// Minimal parse of a LIVE conversation payload (GET /conversations/:id — the REST show shape;
+// same field positions as the conversation-event payloads: `status` at the top, `meta.assignee_type`,
+// `meta.assignee.{id,name}`, `id` = display_id). Null when the payload does not look like a
+// conversation. Feeds the proactive-send live gate: the mirror can be stale forever (a lost resolve
+// webhook has no reconciliation), so anything about to message a customer proactively re-checks this.
+export interface LiveConversationState {
+  status: string | null;
+  assigneeType: string | null;
+  assigneeId: number | null;
+  assigneeName: string | null;
+}
+
+export function parseLiveConversation(
+  raw: unknown,
+): LiveConversationState | null {
+  if (!isRecord(raw)) return null;
+  if (num(raw.id) === null) return null;
+  const meta = isRecord(raw.meta) ? raw.meta : null;
+  const assignee = meta && isRecord(meta.assignee) ? meta.assignee : null;
+  return {
+    status: str(raw.status),
+    assigneeType: meta ? str(meta.assignee_type) : null,
+    assigneeId: assignee ? num(assignee.id) : null,
+    assigneeName: assignee ? str(assignee.name) : null,
+  };
+}
+
 // Attribution = source of truth. The bot owns a conversation only while NO human is assigned
 // (assignee_type !== "User") and it is still pending. A human assignee (handoff) or a
 // resolved/snoozed/open status means fazer.ai agents stays silent. The gate is OUR responsibility:

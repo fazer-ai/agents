@@ -130,13 +130,15 @@ export function normalizeChatwootEvent(
   return normalized;
 }
 
-// Minimal parse of a LIVE conversation payload (GET /conversations/:id — the REST show shape;
+// NOTE: Minimal parse of a LIVE conversation payload (GET /conversations/:id — the REST show shape;
 // same field positions as the conversation-event payloads: `status` at the top, `meta.assignee_type`,
 // `meta.assignee.{id,name}`, `id` = display_id). Null when the payload does not look like a
-// conversation. Feeds the proactive-send live gate: the mirror can be stale forever (a lost resolve
-// webhook has no reconciliation), so anything about to message a customer proactively re-checks this.
+// conversation — a missing `status` is treated as unparseable (the caller must fail closed and retry,
+// never conclude "not bot-owned" from a degraded payload). Feeds the proactive-send live gate: the
+// mirror can be stale forever (a lost resolve webhook has no reconciliation), so anything about to
+// message a customer proactively re-checks this.
 export interface LiveConversationState {
-  status: string | null;
+  status: string;
   assigneeType: string | null;
   assigneeId: number | null;
   assigneeName: string | null;
@@ -147,10 +149,12 @@ export function parseLiveConversation(
 ): LiveConversationState | null {
   if (!isRecord(raw)) return null;
   if (num(raw.id) === null) return null;
+  const status = str(raw.status);
+  if (status === null) return null;
   const meta = isRecord(raw.meta) ? raw.meta : null;
   const assignee = meta && isRecord(meta.assignee) ? meta.assignee : null;
   return {
-    status: str(raw.status),
+    status,
     assigneeType: meta ? str(meta.assignee_type) : null,
     assigneeId: assignee ? num(assignee.id) : null,
     assigneeName: assignee ? str(assignee.name) : null,

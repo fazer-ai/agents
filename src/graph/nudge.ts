@@ -58,13 +58,13 @@ export type RunAgentNudgeOutcome =
   | "messaged"
   | "templated"
   | "noted"
-  // The outside-24h-window fallback note specifically (no usable template): the intended customer
+  // NOTE: The outside-24h-window fallback note specifically (no usable template): the intended customer
   // message was left as an EXPLAINED private note. Distinct from "noted" so the follow-up sequence
   // can END here — every further step would be equally undeliverable.
   | "noted-window"
   | "silent"
   | "deferred"
-  // Live-state gate (requireLiveBotOwnership): the conversation is NOT bot-owned in Chatwoot right
+  // NOTE: Live-state gate (requireLiveBotOwnership): the conversation is NOT bot-owned in Chatwoot right
   // now (resolved/open/snoozed or a human assigned) — nothing was posted, mirror reconciled.
   | "stale"
   // Live-state gate could not verify (GET failed): fail-closed, nothing posted; caller may retry.
@@ -85,7 +85,7 @@ export interface RunAgentNudgeParams {
   threadId: string;
   nudge: AgentNudge;
   postActions?: NudgePostActions;
-  // Opt-in live-state gate: before ANY proactive work (model invoke included), fetch the REAL
+  // NOTE: Opt-in live-state gate: before ANY proactive work (model invoke included), fetch the REAL
   // conversation from Chatwoot and abort ("stale") unless the bot still owns it, reconciling the
   // mirror with what came back. The mirror alone is not trustworthy for proactive sends: a lost
   // resolve webhook leaves it pending forever (no reconciliation), and that stale pending is how
@@ -118,7 +118,7 @@ export function parseThreadId(
 // from untrusted input so it can't be forged) — the playground session rebuild relies on this.
 export const DATA_FENCE = "⟦external-data⟧";
 
-// Operator-facing header for the outside-24h-window fallback note (WhatsApp oficial, no approved
+// NOTE: Operator-facing header for the outside-24h-window fallback note (WhatsApp oficial, no approved
 // template configured). Explains WHY the follow-up became a private note and what to configure —
 // without it the yellow note reads as a bug. Same hardcoded pt-BR register as the one-shot
 // test-mode/out-of-hours notices in the webhook gate.
@@ -317,11 +317,16 @@ export async function runAgentNudge(
     botToken: cfg.agentBotToken ?? undefined,
   });
 
-  // 2b. Live-state gate (opt-in, BEFORE any model spend): fetch the REAL conversation from Chatwoot
-  // and only proceed while the bot still owns it. The mirror is not trustworthy for proactive sends —
-  // a lost resolve webhook leaves it pending forever — and this is the fence that stops a follow-up
-  // from landing on a conversation the operator already resolved.
-  if (params.requireLiveBotOwnership) {
+  // NOTE: Live-ownership probe (the opt-in requireLiveBotOwnership path): fetch the REAL
+  // conversation from Chatwoot, reconcile the mirror with what came back (the GET is fresher than
+  // any queued webhook, and fixing the stored status is what stops the sweep from re-enqueuing this
+  // conversation), and report whether the bot still owns it. "unavailable" = cannot VERIFY ⇒ the
+  // caller must not SEND (fail-closed). Used BOTH before any model spend AND again right before
+  // delivery — an operator can resolve/take over during model execution, and a delayed or lost
+  // webhook would leave the mirror bot-owned.
+  const probeLiveOwnership = async (): Promise<
+    "owned" | "not-owned" | "unavailable"
+  > => {
     let live: ReturnType<typeof parseLiveConversation> = null;
     try {
       live = parseLiveConversation(
@@ -333,22 +338,11 @@ export async function runAgentNudge(
         "agentNudge: live conversation fetch failed — failing closed",
       );
     }
-    // Cannot VERIFY ⇒ cannot SEND (fail-closed). The caller decides whether to retry later.
-    if (!live) return "live-unavailable";
-    // Reconcile the mirror with reality (best-effort): the GET is fresher than any queued webhook,
-    // and fixing the stored status is what stops the sweep from re-enqueuing this conversation.
-    const liveStatus = live.status;
+    if (!live) return "unavailable";
     if (
-      liveStatus !== null &&
-      (liveStatus !== loaded.status ||
-        live.assigneeType !== loaded.assigneeType)
+      live.status !== loaded.status ||
+      live.assigneeType !== loaded.assigneeType
     ) {
-      const reconcile = {
-        status: liveStatus,
-        assigneeType: live.assigneeType,
-        assigneeId: live.assigneeId,
-        assigneeName: live.assigneeName,
-      };
       try {
         await runScopedOn(base, sysCtx(tenantId), (db) =>
           db.conversation.update({
@@ -359,9 +353,17 @@ export async function runAgentNudge(
                 chatwootConversationId: conversationId,
               },
             },
-            data: reconcile,
+            data: {
+              status: live.status,
+              assigneeType: live.assigneeType,
+              assigneeId: live.assigneeId,
+              assigneeName: live.assigneeName,
+            },
           }),
         );
+        // Keep the in-memory snapshot in step so a second probe only re-writes on a NEW divergence.
+        loaded.status = live.status;
+        loaded.assigneeType = live.assigneeType;
       } catch (err) {
         logger.warn(
           { err, conversationId: String(conversationId) },
@@ -369,24 +371,33 @@ export async function runAgentNudge(
         );
       }
     }
-    if (
-      !shouldBotHandle(
-        {
-          assigneeType: live.assigneeType,
-          status: live.status,
-          assigneeId: live.assigneeId,
-        },
-        { ourAgentBotId: cfg.agentBotId },
-      )
-    ) {
+    const owned = shouldBotHandle(
+      {
+        assigneeType: live.assigneeType,
+        status: live.status,
+        assigneeId: live.assigneeId,
+      },
+      { ourAgentBotId: cfg.agentBotId },
+    );
+    if (!owned) {
       logger.info(
         "agentNudge: live state not bot-owned (conv=%s status=%s assignee=%s) — skipping",
         String(conversationId),
-        live.status ?? "?",
+        live.status,
         live.assigneeType ?? "none",
       );
-      return "stale";
     }
+    return owned ? "owned" : "not-owned";
+  };
+
+  // NOTE: 2b. Live-state gate (opt-in, BEFORE any model spend): only proceed while the bot still owns the
+  // conversation in Chatwoot. The mirror is not trustworthy for proactive sends — a lost resolve
+  // webhook leaves it pending forever — and this is the fence that stops a follow-up from landing on
+  // a conversation the operator already resolved.
+  if (params.requireLiveBotOwnership) {
+    const pre = await probeLiveOwnership();
+    if (pre === "unavailable") return "live-unavailable";
+    if (pre === "not-owned") return "stale";
   }
 
   // Pre-invoke gate: may we message the customer (bot owns it), or only note (human owns it)?
@@ -459,12 +470,20 @@ export async function runAgentNudge(
     ? ""
     : replyRaw.split(FOLLOWUP_SKIP_SENTINEL).join("").trim();
 
-  // 5. Re-check the live gate (a human may have taken over). Needed for BOTH the customer message AND
-  // the deterministic post-actions.
-  const canMessagePost = await runScopedOn(
-    base,
-    sysCtx(tenantId),
-    async (db) => {
+  // 5. Re-check ownership at post time (a human may have taken over during model execution). Needed
+  // for BOTH the customer message AND the deterministic post-actions. The live-gated path re-probes
+  // Chatwoot itself — the pre-invoke GET only covers the window BEFORE the model ran, and a resolve
+  // during execution with a delayed/lost webhook would leave the mirror bot-owned; nothing has been
+  // posted yet, so failing closed here is free. Event nudges keep the mirror read (for them a
+  // human-owned conversation downgrades to a private note rather than aborting).
+  let canMessagePost: boolean;
+  if (params.requireLiveBotOwnership) {
+    const post = await probeLiveOwnership();
+    if (post === "unavailable") return "live-unavailable";
+    if (post === "not-owned") return "stale";
+    canMessagePost = true;
+  } else {
+    canMessagePost = await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
         where: {
           tenantId_chatwootInstanceId_chatwootConversationId: {
@@ -482,8 +501,8 @@ export async function runAgentNudge(
         },
         { ourAgentBotId: cfg.agentBotId },
       );
-    },
-  );
+    });
+  }
 
   // Deterministic post-actions applied by the SYSTEM whenever the step fires and the bot still owns
   // the conversation — even when the agent stayed silent. Best-effort: a failure here must NOT fail

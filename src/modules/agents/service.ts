@@ -254,7 +254,7 @@ export function assertPromptSize(systemPrompt: string | undefined): void {
 
 // Allowlist of editable fields. tenantId/id are never touched; modelConfig/settings must be
 // objects (the runtime's own parser validates their inner shape at load time).
-// The EFFECTIVE follow-up state: only an ENABLED agent in PRODUCTION with followUp.enabled sweeps.
+// NOTE: The EFFECTIVE follow-up state: only an ENABLED agent in PRODUCTION with followUp.enabled sweeps.
 // Its OFF→ON transition stamps Agent.followUpArmedAt (the sweep's backlog fence) — see updateAgent/
 // createAgent. Re-arming on every OFF→ON is deliberate: disabling and re-enabling means "from now on".
 function effectiveFollowUpOn(a: {
@@ -356,7 +356,7 @@ export async function updateAgent(
     const updateData: Record<string, unknown> = { ...rest };
     if (hasBh) updateData.businessHoursId = bhId;
     if (hasFuh) updateData.followUpHoursId = fuhId;
-    // Arm the follow-up backlog fence on the OFF→ON transition of the effective state. Read-then-
+    // NOTE: Arm the follow-up backlog fence on the OFF→ON transition of the effective state. Read-then-
     // write is safe here: with expectedUpdatedAt a concurrent writer makes the updateMany miss (409);
     // without it, last-write-wins already tolerates racing saves and the next save re-evaluates.
     const before = await db.agent.findUnique({
@@ -524,7 +524,7 @@ export async function createAgent(
         settings: createShape.settings,
         businessHoursId: bhId,
         followUpHoursId: fuhId,
-        // Born already effectively follow-up-ON (explicit production + enabled + followUp.enabled)
+        // NOTE: Born already effectively follow-up-ON (explicit production + enabled + followUp.enabled)
         // → armed from creation, so only post-creation episodes are swept.
         ...(effectiveFollowUpOn(createShape)
           ? { followUpArmedAt: new Date() }

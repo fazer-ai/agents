@@ -89,7 +89,11 @@ function jobFor(convId: number): ClaimedJob {
 function convPayload(
   convId: number,
   inboxId: number,
-  over: { status: string; lastActivityAt: number },
+  over: {
+    status: string;
+    lastActivityAt: number;
+    assignee?: { id: number; name: string };
+  },
 ) {
   return {
     id: convId,
@@ -97,8 +101,8 @@ function convPayload(
     status: over.status,
     contact_inbox: { id: 88_000 + convId },
     meta: {
-      assignee_type: null,
-      assignee: null,
+      assignee_type: over.assignee ? "User" : null,
+      assignee: over.assignee ?? null,
       sender: {
         id: 500 + convId,
         name: "Cliente",
@@ -338,6 +342,7 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
       ...convPayload(CONV, INBOX_A, {
         status: "resolved",
         lastActivityAt: tClose,
+        assignee: { id: 7, name: "Atendente Humana" },
       }),
     });
     expect((await mirroredConv(CONV)).status).toBe("resolved");
@@ -356,7 +361,10 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
         lastActivityAt: tClose,
       }),
     });
-    expect((await mirroredConv(CONV)).status).toBe("resolved");
+    const afterStale = await mirroredConv(CONV);
+    expect(afterStale.status).toBe("resolved");
+    // O snapshot congelado também não apaga o assignee que o resolve gravou.
+    expect(afterStale.assigneeType).toBe("User");
 
     // Reabertura LEGÍTIMA 1: o cliente responde (incoming) → o Chatwoot reabre como pending.
     await mirror({
@@ -434,6 +442,32 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(s.sent).toEqual([]);
     expect(s.notes).toEqual([]);
     expect((await mirroredConv(CONV)).assigneeType).toBe("User");
+  });
+
+  test("(2c) live gate pós-invoke: resolve DURANTE o turno do modelo → nada postado, espelho reconciliado", async () => {
+    const CONV = 4310;
+    // Dentro da janela de 24h: sem o gate pós-invoke, o texto iria como sendMessage ao cliente.
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: new Date(Date.now() - 2 * HOUR),
+    });
+    // 1ª consulta (pré-invoke): pending; 2ª (pós-invoke): o operador resolveu no meio do turno.
+    let calls = 0;
+    const s = stubClient(() => {
+      calls += 1;
+      return {
+        id: CONV,
+        status: calls === 1 ? "pending" : "resolved",
+        meta: {},
+      };
+    });
+    const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    expect(result).toEqual({ outcome: "done" });
+    expect(calls).toBeGreaterThanOrEqual(2);
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+    expect((await mirroredConv(CONV)).status).toBe("resolved");
+    expect((await mirroredConv(CONV)).lastFollowUpAt).toBeNull();
   });
 
   test("(3) live gate fail-closed: GET falhou → nada postado, mesmo step re-tentado depois", async () => {
@@ -569,7 +603,7 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
       appDb,
     );
     const rearmed = await armedOf(dormant.id);
-    expect((rearmed as Date).getTime()).toBeGreaterThanOrEqual(
+    expect((rearmed as Date).getTime()).toBeGreaterThan(
       (armed as Date).getTime(),
     );
   });

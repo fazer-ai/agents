@@ -40,7 +40,7 @@ const IN_FLIGHT_BACKOFF_MS = 30_000;
 // dying, so it resumes once the appointment passes / is cancelled. Coarse (1h) because the sweep
 // already filters these out — this only catches a FOLLOWUP that was in flight before the booking.
 const APPOINTMENT_BACKOFF_MS = 3_600_000;
-// Back-off when the nudge could not run to completion without posting anything: the live-state GET
+// NOTE: Back-off when the nudge could not run to completion without posting anything: the live-state GET
 // failed (fail-closed) or a pending human-in-the-loop interrupt deferred it. Retry the SAME step —
 // nothing was sent, so the watermark must not advance.
 const NUDGE_RETRY_BACKOFF_MS = 900_000;
@@ -285,7 +285,7 @@ export async function followUpHandler(
     // Step 0 (sequence start) only proceeds for a fresh episode — the sweep's SQL filter already
     // enforces this; re-checking here blocks a stale step-0 job on an already-handled conversation.
     if (!newEpisode) return { outcome: "done" };
-    // Activation fence (mirrors the sweep SQL): a sequence only STARTS for an episode that began
+    // NOTE: Activation fence (mirrors the sweep SQL): a sequence only STARTS for an episode that began
     // after follow-up was armed. Catches a step-0 job enqueued before a re-arm (disable → re-enable)
     // and any agent never armed (NULL → fail-safe). Later steps are exempt: an in-flight sequence
     // legitimately outlives a re-arm.
@@ -366,7 +366,7 @@ export async function followUpHandler(
           : undefined,
       resolve: isLast && step.resolve === true,
     },
-    // An inactivity follow-up must verify the LIVE conversation state before posting: the mirror can
+    // NOTE: An inactivity follow-up must verify the LIVE conversation state before posting: the mirror can
     // be stale forever (a lost resolve webhook has no reconciliation), and following up a resolved
     // conversation was the community-reported incident this gate exists for.
     requireLiveBotOwnership: true,
@@ -374,10 +374,10 @@ export async function followUpHandler(
     deps,
   });
 
-  // Live gate: the conversation is no longer bot-owned in Chatwoot (resolved / human took over) —
+  // NOTE: Live gate: the conversation is no longer bot-owned in Chatwoot (resolved / human took over) —
   // the episode is moot. No watermark, no next step; the reconciled mirror keeps the sweep away.
   if (nudgeOutcome === "stale") return { outcome: "done" };
-  // Nothing was posted: the live-state GET failed (fail-closed) or a pending human-in-the-loop
+  // NOTE: Nothing was posted: the live-state GET failed (fail-closed) or a pending human-in-the-loop
   // interrupt deferred the nudge. Retry the SAME step later (payload preserved) instead of stamping
   // a follow-up that never happened.
   if (nudgeOutcome === "live-unavailable" || nudgeOutcome === "deferred") {
@@ -396,7 +396,7 @@ export async function followUpHandler(
     }),
   );
 
-  // The outside-window fallback note ENDS the sequence: with no usable template, every further step
+  // NOTE: The outside-window fallback note ENDS the sequence: with no usable template, every further step
   // would be equally undeliverable (only a customer reply reopens the 24h window, and that reply
   // ends the episode anyway). One explained note is the operator's cue — N would be noise. Any
   // configured resolve on the unreached last step deliberately does NOT run: the conversation stays

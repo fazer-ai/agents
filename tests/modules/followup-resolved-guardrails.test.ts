@@ -9,7 +9,10 @@ import type { TenantContext } from "@/lib/tenancy";
 import { createAgent, updateAgent } from "@/modules/agents/service";
 import { ChatwootClient } from "@/modules/chatwoot/client";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
-import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import {
+  normalizeChatwootEvent,
+  parseLiveConversation,
+} from "@/modules/chatwoot/normalize";
 import {
   followUpHandler,
   registerFollowUpHandlers,
@@ -23,12 +26,14 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 // entrega fora de ordem) → sweep enfileira FOLLOWUP para conversas que o Chatwoot real já resolveu
 // → nudge posta o texto como nota privada (fora da janela de 24h sem template), em massa, para a
 // base histórica. Cada teste aqui trava uma das defesas:
-//   (1) mirror: mensagem não-incoming não regride resolved→pending (reaberturas legítimas seguem);
+//   (1) mirror: só um message_created INCOMING reabre resolved/snoozed (message_updated e
+//       não-incoming carregam snapshot congelado e não regridem; reaberturas legítimas seguem);
 //   (2) live gate: o handler verifica o estado REAL no Chatwoot antes de postar e reconcilia o
 //       espelho stale (fail-closed quando não dá para verificar);
 //   (3) watermark de ativação: o sweep só inicia sequência para episódios pós-arm;
-//   (4) nota fora-da-janela explicada + encerra a sequência;
-//   (5) transições OFF→ON do estado efetivo armam Agent.followUpArmedAt no service.
+//   (4) nota fora-da-janela explicada + encerra a sequência (sem auto-resolve);
+//   (5) transições OFF→ON do estado efetivo (qualquer modo) armam Agent.followUpArmedAt no
+//       service; promover test→production re-arma.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -221,6 +226,7 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
         tenantId,
         name: "Guard A",
         systemPrompt: "Você é prestativa.",
+        mode: "production",
         modelConfig,
         followUpArmedAt: new Date(Date.now() - ARMED_A_AGO_MS),
         settings: {
@@ -237,6 +243,7 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
         tenantId,
         name: "Guard B",
         systemPrompt: "Você é prestativa.",
+        mode: "production",
         modelConfig,
         followUpArmedAt: new Date(Date.now() - 30 * 24 * HOUR),
         settings: {
@@ -396,6 +403,28 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
       }),
     });
     expect((await mirroredConv(CONV)).status).toBe("open");
+
+    // message_updated de mensagem INCOMING (ex.: write-back do STT) com snapshot congelado
+    // pré-resolve também NÃO reabre — só um message_created incoming novo reabre.
+    await mirror({
+      event: "conversation_resolved",
+      ...convPayload(CONV, INBOX_A, {
+        status: "resolved",
+        lastActivityAt: tClose + 240,
+      }),
+    });
+    await mirror({
+      event: "message_updated",
+      id: 9003,
+      content: "na verdade tenho outra dúvida (transcrito)",
+      message_type: "incoming",
+      private: false,
+      conversation: convPayload(CONV, INBOX_A, {
+        status: "pending",
+        lastActivityAt: tClose + 240,
+      }),
+    });
+    expect((await mirroredConv(CONV)).status).toBe("resolved");
   });
 
   test("(2) live gate: espelho stale-pending + Chatwoot REAL resolved → aborta sem postar e reconcilia", async () => {
@@ -565,20 +594,29 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     );
     expect(await armedOf(born.id)).not.toBeNull();
 
-    // Create default (test mode) → OFF → não armado.
+    // Create default (test mode) SEM followUp → OFF de verdade → não armado.
+    const off = await createAgent(ctx(), { name: "Off" }, appDb);
+    expect(await armedOf(off.id)).toBeNull();
+
+    // Create default (test mode) com followUp on → efetivo ON (o sweep admite conversas ativadas
+    // com /teste, então modo teste também arma).
     const dormant = await createAgent(
       ctx(),
       { name: "Dormant", settings: { followUp: { enabled: true } } },
       appDb,
     );
-    expect(await armedOf(dormant.id)).toBeNull();
+    const armedAtCreate = await armedOf(dormant.id);
+    expect(armedAtCreate).not.toBeNull();
 
-    // test→production com followUp on = transição OFF→ON → arma.
-    const before = Date.now();
+    // test→production = PROMOÇÃO → re-arma (watermark novo): o conjunto elegível explode de
+    // "ativadas com /teste" para toda pending — um watermark do período de teste exporia o
+    // backlog histórico inteiro.
     await updateAgent(ctx(), BigInt(dormant.id), { mode: "production" }, appDb);
     const armed = await armedOf(dormant.id);
     expect(armed).not.toBeNull();
-    expect((armed as Date).getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect((armed as Date).getTime()).toBeGreaterThan(
+      (armedAtCreate as Date).getTime(),
+    );
 
     // Save sem transição (rename) → watermark inalterado.
     await updateAgent(ctx(), BigInt(dormant.id), { name: "Renamed" }, appDb);
@@ -606,6 +644,42 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect((rearmed as Date).getTime()).toBeGreaterThan(
       (armed as Date).getTime(),
     );
+
+    // production→test (rebaixamento) NÃO re-arma: o conjunto elegível só encolhe; o watermark
+    // vigente continua correto para as conversas ativadas com /teste.
+    await updateAgent(ctx(), BigInt(dormant.id), { mode: "test" }, appDb);
+    expect((await armedOf(dormant.id))?.getTime()).toBe(
+      (rearmed as Date).getTime(),
+    );
+  });
+
+  test("(6b) parseLiveConversation: AgentBot sem id numérico = ownership não verificável → null", async () => {
+    const base = { id: 1, status: "pending" };
+    // Shape unassigned (sem assignee_type/assignee) segue válido.
+    expect(parseLiveConversation({ ...base, meta: {} })).toMatchObject({
+      status: "pending",
+      assigneeType: null,
+      assigneeId: null,
+    });
+    // AgentBot com id numérico segue válido.
+    expect(
+      parseLiveConversation({
+        ...base,
+        meta: { assignee_type: "AgentBot", assignee: { id: 7, name: "Bot" } },
+      }),
+    ).toMatchObject({ assigneeType: "AgentBot", assigneeId: 7 });
+    // AgentBot sem objeto assignee ou com id ilegível → null (o live gate vira
+    // "live-unavailable" e re-tenta) — com assigneeId null, shouldBotHandle trataria a conversa
+    // de OUTRO bot como nossa.
+    expect(
+      parseLiveConversation({ ...base, meta: { assignee_type: "AgentBot" } }),
+    ).toBeNull();
+    expect(
+      parseLiveConversation({
+        ...base,
+        meta: { assignee_type: "AgentBot", assignee: { id: "not-a-number" } },
+      }),
+    ).toBeNull();
   });
 
   // ── Fiação HTTP real (mockup camada-transporte): ChatwootClient REAL + fetch fake que responde

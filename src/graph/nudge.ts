@@ -521,7 +521,14 @@ export async function runAgentNudge(
   // the conversation — even when the agent stayed silent. Best-effort: a failure here must NOT fail
   // the job (any customer message already went out → retrying would double-post), so each action is
   // wrapped + logged. MUST run AFTER any customer message: a message reopens a resolved conversation.
-  const applyPostActions = async (): Promise<void> => {
+  // allowResolve=false skips ONLY the resolve action (labels still apply): the noted-window branch
+  // never reached the customer AND ends the sequence, so auto-resolving there would close the
+  // conversation on the back of a message nobody received.
+  const applyPostActions = async ({
+    allowResolve = true,
+  }: {
+    allowResolve?: boolean;
+  } = {}): Promise<void> => {
     const actions = params.postActions;
     if (!actions || !canMessagePost) return;
     const labels = actions.assignLabels?.filter((l) => l.trim());
@@ -537,7 +544,7 @@ export async function runAgentNudge(
         );
       }
     }
-    if (actions.resolve) {
+    if (allowResolve && actions.resolve) {
       try {
         await client.toggleStatus(conversationId, "resolved");
       } catch (err) {
@@ -609,7 +616,7 @@ export async function runAgentNudge(
       params.nudge.source,
     );
     markFollowUp("noted-window");
-    await applyPostActions();
+    await applyPostActions({ allowResolve: false });
     return "noted-window";
   }
   await client.sendPrivateNote(conversationId, reply);

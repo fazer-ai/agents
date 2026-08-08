@@ -254,19 +254,18 @@ export function assertPromptSize(systemPrompt: string | undefined): void {
 
 // Allowlist of editable fields. tenantId/id are never touched; modelConfig/settings must be
 // objects (the runtime's own parser validates their inner shape at load time).
-// NOTE: The EFFECTIVE follow-up state: only an ENABLED agent in PRODUCTION with followUp.enabled sweeps.
-// Its OFF→ON transition stamps Agent.followUpArmedAt (the sweep's backlog fence) — see updateAgent/
-// createAgent. Re-arming on every OFF→ON is deliberate: disabling and re-enabling means "from now on".
+// NOTE: The EFFECTIVE follow-up state: an ENABLED agent with followUp.enabled, in ANY mode — the
+// sweep admits test-mode conversations explicitly activated with /teste, so test-mode agents need
+// the fence armed too. Its OFF→ON transition stamps Agent.followUpArmedAt (the sweep's backlog
+// fence) — see updateAgent/createAgent. Re-arming on every OFF→ON is deliberate: disabling and
+// re-enabling means "from now on". Promotion to production ALSO re-arms (updateAgent): it widens
+// the eligible set from /teste-activated conversations to every pending one, and a watermark from
+// the test period would expose that whole historical backlog to the sweep at once.
 function effectiveFollowUpOn(a: {
   enabled: boolean;
-  mode: string;
   settings: unknown;
 }): boolean {
-  return (
-    a.enabled &&
-    a.mode === "production" &&
-    readFollowUpConfig(a.settings).enabled
-  );
+  return a.enabled && readFollowUpConfig(a.settings).enabled;
 }
 
 export const agentUpdateSchema = z
@@ -371,7 +370,16 @@ export async function updateAgent(
         mode: rest.mode !== undefined ? rest.mode : before.mode,
         settings: rest.settings !== undefined ? rest.settings : before.settings,
       };
-      if (!effectiveFollowUpOn(before) && effectiveFollowUpOn(after)) {
+      // NOTE: Promotion to production re-arms even with follow-up already effectively ON: the
+      // eligible set widens from /teste-activated conversations to EVERY pending one, and keeping a
+      // watermark from the test period would blast the whole pre-promotion backlog (the community
+      // incident this fence exists to prevent).
+      const promotedToProduction =
+        before.mode !== "production" && after.mode === "production";
+      if (
+        effectiveFollowUpOn(after) &&
+        (!effectiveFollowUpOn(before) || promotedToProduction)
+      ) {
         updateData.followUpArmedAt = new Date();
       }
     }
@@ -526,8 +534,9 @@ export async function createAgent(
         settings: createShape.settings,
         businessHoursId: bhId,
         followUpHoursId: fuhId,
-        // NOTE: Born already effectively follow-up-ON (explicit production + enabled + followUp.enabled)
-        // → armed from creation, so only post-creation episodes are swept.
+        // NOTE: Born already effectively follow-up-ON (enabled + followUp.enabled, any mode: the
+        // sweep admits /teste-activated conversations) → armed from creation, so only post-creation
+        // episodes are swept.
         ...(effectiveFollowUpOn(createShape)
           ? { followUpArmedAt: new Date() }
           : {}),

@@ -421,11 +421,13 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     });
     expect(result).toEqual({ outcome: "done" }); // no further step
     // A 1-day cadence means the client has been silent past WhatsApp's 24h window, so the proactive
-    // message is delivered as a private note (no free-form). The deterministic actions still fire.
+    // message is delivered as a private note (noted-window). Labels still fire, but the
+    // auto-resolve is SKIPPED: nothing reached the customer, so resolving would close the
+    // conversation unanswered.
     expect(s.notes.length).toBeGreaterThan(0);
     expect(s.sent).toEqual([]);
     expect(s.labelSets).toContainEqual(["sem-resposta"]);
-    expect(s.resolved).toContain(1007);
+    expect(s.resolved).toEqual([]);
   });
 
   test("(h) last step actions fire EVEN when the agent stays silent", async () => {

@@ -153,10 +153,18 @@ export function parseLiveConversation(
   if (status === null) return null;
   const meta = isRecord(raw.meta) ? raw.meta : null;
   const assignee = meta && isRecord(meta.assignee) ? meta.assignee : null;
+  const assigneeType = meta ? str(meta.assignee_type) : null;
+  const assigneeId = assignee ? num(assignee.id) : null;
+  // NOTE: An "AgentBot" claim without a readable numeric id is unverifiable ownership — with a null
+  // assigneeId, shouldBotHandle would treat a conversation owned by ANOTHER bot as ours. The fork's
+  // jbuilder always renders meta.assignee (agent_bot_slim, with id) alongside assignee_type
+  // "AgentBot", so this only rejects genuinely malformed payloads. Fail closed: the live gate turns
+  // null into "live-unavailable" and retries.
+  if (assigneeType === "AgentBot" && assigneeId === null) return null;
   return {
     status,
-    assigneeType: meta ? str(meta.assignee_type) : null,
-    assigneeId: assignee ? num(assignee.id) : null,
+    assigneeType,
+    assigneeId,
     assigneeName: assignee ? str(assignee.name) : null,
   };
 }

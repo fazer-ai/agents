@@ -324,6 +324,10 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       tenantId,
       threadId: `${tenantId}:${instanceId}:903`,
       nudge: { source: "ASAAS", status: "paid" },
+      // NOTE: resolve MUST be skipped on noted-window (nothing reached the customer and the
+      // sequence ends here — auto-resolving would close the conversation unanswered); labels
+      // still apply so the operator can triage the fenced conversations.
+      postActions: { assignLabels: ["follow-up"], resolve: true },
       base: appDb,
       deps: {
         makeModel: () =>
@@ -338,6 +342,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.notes).toEqual([
       [903, `${OUTSIDE_WINDOW_NOTE_PREFIX}Pagamento confirmado!`],
     ]);
+    expect(s.resolved).toEqual([]);
+    expect(s.labelSets).toEqual([["follow-up"]]);
   });
 
   test("human-handling conversation → private note, never a customer message", async () => {

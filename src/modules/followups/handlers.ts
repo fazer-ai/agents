@@ -107,9 +107,10 @@ async function sweepHandler(
           OR c.last_inbound_at > c.last_follow_up_at
         )
         -- Activation fence: only episodes of silence that BEGAN after follow-up was armed for this
-        -- agent (Agent.followUpArmedAt, stamped on the effective OFF→ON transition). Without it,
-        -- flipping an agent to production with follow-up on would blast every eligible conversation
-        -- in the historical backlog at once. NULL = never armed → fail-safe skip.
+        -- agent (Agent.followUpArmedAt, stamped on the effective OFF→ON transition and re-stamped
+        -- on promotion to production). Without it, flipping an agent to production with follow-up
+        -- on would blast every eligible conversation in the historical backlog at once.
+        -- NULL = never armed → fail-safe skip.
         AND a.follow_up_armed_at IS NOT NULL
         AND c.last_inbound_at >= a.follow_up_armed_at
         -- Pause re-engagement while a FUTURE appointment exists (a pending APPOINTMENT_REMINDER),

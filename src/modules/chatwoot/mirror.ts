@@ -190,15 +190,18 @@ export async function mirrorChatwootEvent(
       const updatedLastEventAt = newLastEventAt ?? new Date();
       // NOTE: A MESSAGE event's conversation snapshot is frozen at enqueue time (AgentBots::WebhookJob
       // serializes the payload before delivery, and failed deliveries retry with the stale copy), so
-      // a non-incoming message delivered AFTER the conversation_resolved must not drag the mirror
-      // back to pending/open — that stale "pending" is what made follow-ups fire on conversations the
-      // operator had already resolved. Only an INCOMING message may reopen (Chatwoot's ReopenService
-      // reopens exclusively on customer messages); conversation_* events stay authoritative. The
-      // whole frozen snapshot is suspect, so the ASSIGNEE fields are preserved too (and the handoff
-      // edge below is suppressed) — a pre-resolve snapshot must not resurrect a cleared assignee.
+      // a message delivered AFTER the conversation_resolved must not drag the mirror back to
+      // pending/open — that stale "pending" is what made follow-ups fire on conversations the
+      // operator had already resolved. Only a BRAND-NEW incoming message (message_created) may
+      // reopen — Chatwoot's ReopenService reopens exclusively on new customer messages. A
+      // message_updated of an INCOMING message (our own STT/vision write-back re-dispatches one)
+      // carries the same frozen snapshot and must not reopen either; conversation_* events stay
+      // authoritative. The whole frozen snapshot is suspect, so the ASSIGNEE fields are preserved
+      // too (and the handoff edge below is suppressed) — a pre-resolve snapshot must not resurrect
+      // a cleared assignee.
       const staleMessageReopen =
         n.message !== undefined &&
-        n.message.messageType !== "incoming" &&
+        !isNewIncomingMessage(n) &&
         (existing.status === "resolved" || existing.status === "snoozed") &&
         (n.status === "pending" || n.status === "open");
       const appliedStatus = staleMessageReopen ? null : n.status;

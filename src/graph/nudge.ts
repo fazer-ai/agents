@@ -45,9 +45,9 @@ export interface AgentNudge {
   value?: number | null;
   currency?: string | null;
   summary?: string | null;
-  // Opaque external references the agent may need as TOOL ARGUMENTS (event id, calendar id, …).
-  // Rendered INSIDE the data fence as extra k=v facts — sanitized like every fenced field, and never
-  // appended to the instructions lane (which is trusted operator/code text).
+  // NOTE: Opaque external references the agent may need as TOOL ARGUMENTS (event id, calendar id,
+  // …). Rendered INSIDE the data fence as extra k=v facts — sanitized like every fenced field, and
+  // never appended to the instructions lane (which is trusted operator/code text).
   refs?: Record<string, string | null | undefined>;
   instructions?: string;
   // For a follow-up sequence: the 1-based step that fired. Surfaced on the conversation timeline

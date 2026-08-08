@@ -488,13 +488,22 @@ export async function loadAgentConfig(
           ].includes(t),
         ),
     );
-    appointmentSection = buildAppointmentContextSection(
-      await loadAppointmentContext(
-        db,
-        chatwootThreadId(args.tenantId, args.instanceId, args.conversationId),
-      ),
-      canOperate,
-    );
+    try {
+      appointmentSection = buildAppointmentContextSection(
+        await loadAppointmentContext(
+          db,
+          args.tenantId,
+          chatwootThreadId(args.tenantId, args.instanceId, args.conversationId),
+        ),
+        canOperate,
+      );
+    } catch (e) {
+      // NOTE: Optional context fails OPEN — a read error here must not silence the whole turn.
+      logger.warn(
+        "appointment context load failed: %s",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
   }
   const promptSections = [attributeSection, appointmentSection].filter(
     (s): s is string => s !== null,

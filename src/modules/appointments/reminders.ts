@@ -132,28 +132,18 @@ export async function cancelAppointmentReminders(
   // which is indistinguishable from "fired" — without the stamp, the per-turn appointment context
   // would keep presenting a cancelled appointment as live until its start passed. A reschedule
   // re-arm replaces the payload wholesale (enqueueJob's upsert is authoritative), clearing the stamp
-  // on the offsets that survive. At most one row per configured offset (≤5), so the loop is tiny.
+  // on the offsets that survive. One atomic jsonb merge, never read-modify-write: a concurrent
+  // re-arm's payload is stamped or replaced whole, so a stale snapshot can never clobber it.
   await runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const rows = await db.schedulerJob.findMany({
-      where: {
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: { startsWith: reminderPrefix(eventId) },
-      },
-      select: { id: true, payload: true },
-    });
-    const cancelledAt = new Date().toISOString();
-    for (const row of rows) {
-      const payload =
-        typeof row.payload === "object" &&
-        row.payload !== null &&
-        !Array.isArray(row.payload)
-          ? (row.payload as Record<string, unknown>)
-          : {};
-      await db.schedulerJob.update({
-        where: { id: row.id },
-        data: { payload: { ...payload, cancelledAt } },
-      });
-    }
+    // LIKE needs its own escaping (Google recurrence ids carry `_`).
+    const likePrefix = `${reminderPrefix(eventId).replace(/[\\%_]/g, "\\$&")}%`;
+    const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
+    await db.$executeRaw`
+      UPDATE scheduler_jobs
+         SET payload = payload || ${stamp}::jsonb, updated_at = now()
+       WHERE tenant_id = ${tenantId}
+         AND kind = 'APPOINTMENT_REMINDER'
+         AND dedupe_key LIKE ${likePrefix}`;
   });
 }
 

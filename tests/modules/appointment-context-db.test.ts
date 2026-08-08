@@ -187,14 +187,14 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
       base: appDb,
     });
     const before = await runScopedOn(appDb, sysCtx(), (db) =>
-      loadAppointmentContext(db, threadOf(103)),
+      loadAppointmentContext(db, tenantId, threadOf(103)),
     );
     expect(before.map((e) => e.eventId)).toEqual(["ev_ctx2"]);
     expect(before[0]?.summary).toBe("Retorno");
 
     await cancelAppointmentReminders(tenantId, "ev_ctx2", appDb);
     const after = await runScopedOn(appDb, sysCtx(), (db) =>
-      loadAppointmentContext(db, threadOf(103)),
+      loadAppointmentContext(db, tenantId, threadOf(103)),
     );
     expect(after).toEqual([]);
     const prompt = await promptFor(103);

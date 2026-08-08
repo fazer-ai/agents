@@ -106,22 +106,37 @@ export function projectAppointmentEvents(
 }
 
 // The conversation's reminder rows, ALL statuses (see the liveness note above). Bounded: ≤5 offsets
-// per event and a hard `take`, ordered by runAt desc so the freshest arming wins the cut.
+// per event and a hard LIMIT, ordered by run_at desc so the freshest arming wins the cut.
+// NOTE: Raw SQL on purpose. Prisma's JSON filter parameterizes the path (`payload #> ARRAY[$n]`),
+// which no index can serve; and a partial expression index is not representable in schema.prisma
+// (the next `migrate dev` would try to drop it). Filtering on explicit tenant + kind instead rides
+// the existing unique index (tenant_id, kind, dedupe_key) as a prefix, bounding the scan to this
+// tenant's reminder rows — the same `payload->>'threadId'` shape the follow-up sweep already uses.
 export async function loadAppointmentContext(
   db: ScopedDb,
+  tenantId: bigint,
   threadId: string,
   now: Date = new Date(),
 ): Promise<AppointmentContextEvent[]> {
-  const rows = await db.schedulerJob.findMany({
-    where: {
-      kind: "APPOINTMENT_REMINDER",
-      payload: { path: ["threadId"], equals: threadId },
-    },
-    orderBy: { runAt: "desc" },
-    take: 30,
-    select: { status: true, runAt: true, updatedAt: true, payload: true },
-  });
-  return projectAppointmentEvents(rows, now);
+  const rows = await db.$queryRaw<
+    Array<{ status: string; run_at: Date; updated_at: Date; payload: unknown }>
+  >`
+    SELECT status::text AS status, run_at, updated_at, payload
+      FROM scheduler_jobs
+     WHERE tenant_id = ${tenantId}
+       AND kind = 'APPOINTMENT_REMINDER'
+       AND payload->>'threadId' = ${threadId}
+     ORDER BY run_at DESC
+     LIMIT 30`;
+  return projectAppointmentEvents(
+    rows.map((r) => ({
+      status: r.status,
+      runAt: r.run_at,
+      updatedAt: r.updated_at,
+      payload: r.payload,
+    })),
+    now,
+  );
 }
 
 // NOTE: The identity block appended to the system prompt (sibling of the Chatwoot attribute

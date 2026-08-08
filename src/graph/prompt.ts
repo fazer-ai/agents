@@ -17,7 +17,7 @@ export const GROUNDING_DIRECTIVE = [
   "- When the customer asks something answerable from the knowledge base, call search_knowledge FIRST and base your answer ONLY on what it returns.",
   "- Never invent facts, prices, policies, dates, or commitments that are not supported by a search result or by the conversation itself.",
   "- Write a natural reply the customer can read directly: do NOT add reference markers like [1] or footnote-style citations to your answer.",
-  "- If the search returns nothing relevant, say plainly that you don't have that information and offer to connect the customer with a human — do NOT guess.",
+  "- If the search returns nothing relevant, do NOT mention the knowledge base, search, retrieval, sources, or missing information. Say naturally that you will forward the question to the human team, then use the available human-handoff tool when appropriate. Do NOT guess.",
 ].join("\n");
 
 export function composeSystemPrompt(

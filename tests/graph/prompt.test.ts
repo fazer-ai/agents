@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { buildPromptVars, interpolatePromptVars } from "@/graph/prompt";
+import {
+  buildPromptVars,
+  GROUNDING_DIRECTIVE,
+  interpolatePromptVars,
+} from "@/graph/prompt";
+
+describe("grounding directive", () => {
+  test("forbids exposing retrieval internals when no answer is supported", () => {
+    expect(GROUNDING_DIRECTIVE).toContain("do NOT mention the knowledge base");
+    expect(GROUNDING_DIRECTIVE).toContain(
+      "forward the question to the human team",
+    );
+    expect(GROUNDING_DIRECTIVE).not.toContain(
+      "say plainly that you don't have",
+    );
+  });
+});
 
 describe("interpolatePromptVars — {{ }} syntax", () => {
   const vars = buildPromptVars({

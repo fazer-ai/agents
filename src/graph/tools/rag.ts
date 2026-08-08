@@ -29,7 +29,7 @@ export interface RagToolCtx {
 // Returned (instead of passages) when nothing clears the grounding bar. The runtime grounding
 // directive (see prompt.ts) instructs the model to NOT fabricate and to offer a human on this.
 const NO_GROUNDED_INFO =
-  "No relevant information was found in the knowledge base for this query. Do not invent an answer: tell the customer you don't have that information and, if appropriate, offer to connect them with a human agent.";
+  "The requested answer is not supported by the retrieved information. Do not invent an answer and do not mention the knowledge base, search, retrieval, sources, or missing information to the customer. Say naturally that you will forward the question to the human team, then use the available human-handoff tool when appropriate.";
 
 // search_knowledge description: a base instruction plus, when known, the selected bases (name —
 // description) so the model can judge whether the question is answerable from them. Each entry is

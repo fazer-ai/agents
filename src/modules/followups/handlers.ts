@@ -44,6 +44,12 @@ const APPOINTMENT_BACKOFF_MS = 3_600_000;
 // failed (fail-closed) or a pending human-in-the-loop interrupt deferred it. Retry the SAME step —
 // nothing was sent, so the watermark must not advance.
 const NUDGE_RETRY_BACKOFF_MS = 900_000;
+// NOTE: Cap on consecutive same-step retries (payload `nudgeRetries`, reset when the step advances).
+// A conversation whose live GET fails forever (e.g. deleted in Chatwoot) must not stay PENDING
+// indefinitely. On exhaustion the CURRENT EPISODE is abandoned by stamping lastFollowUpAt WITHOUT
+// posting — dead-lettering alone would loop, because the sweep re-enqueues any conversation with
+// no stamp; the stamp keeps it away until the customer speaks again (which starts a new episode).
+const NUDGE_RETRY_LIMIT = 8;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -379,12 +385,35 @@ export async function followUpHandler(
   // the episode is moot. No watermark, no next step; the reconciled mirror keeps the sweep away.
   if (nudgeOutcome === "stale") return { outcome: "done" };
   // NOTE: Nothing was posted: the live-state GET failed (fail-closed) or a pending human-in-the-loop
-  // interrupt deferred the nudge. Retry the SAME step later (payload preserved) instead of stamping
-  // a follow-up that never happened.
+  // interrupt deferred the nudge. Retry the SAME step later instead of stamping a follow-up that
+  // never happened — but bounded (NUDGE_RETRY_LIMIT): on exhaustion, abandon the episode with a
+  // stamp so the sweep stays away until the customer speaks again.
   if (nudgeOutcome === "live-unavailable" || nudgeOutcome === "deferred") {
+    const priorRetries =
+      typeof job.payload.nudgeRetries === "number" &&
+      Number.isInteger(job.payload.nudgeRetries)
+        ? job.payload.nudgeRetries
+        : 0;
+    if (priorRetries + 1 >= NUDGE_RETRY_LIMIT) {
+      logger.warn(
+        "followUpHandler: giving up on step %d after %d %s retries (thread=%s) — stamping without posting",
+        stepIndex,
+        priorRetries + 1,
+        nudgeOutcome,
+        threadId,
+      );
+      await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.conversation.update({
+          where: { id: ctx.conv.id },
+          data: { lastFollowUpAt: new Date() },
+        }),
+      );
+      return { outcome: "done" };
+    }
     return {
       outcome: "reschedule",
       runAt: new Date(Date.now() + NUDGE_RETRY_BACKOFF_MS),
+      payload: { ...job.payload, nudgeRetries: priorRetries + 1 },
     };
   }
 

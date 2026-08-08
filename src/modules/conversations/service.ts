@@ -667,7 +667,8 @@ export async function getConversationDetail(
     // activation fence — the estimate must not promise it. Later steps stay exempt (an in-flight
     // sequence legitimately outlives a re-arm), mirroring followUpHandler.
     const rawStep = (job?.payload as { stepIndex?: unknown } | null)?.stepIndex;
-    const jobStepIndex = typeof rawStep === "number" ? rawStep : 0;
+    const jobStepIndex =
+      typeof rawStep === "number" && Number.isInteger(rawStep) ? rawStep : 0;
     const fencedStep0Job =
       job != null &&
       jobStepIndex === 0 &&

@@ -142,6 +142,10 @@ export interface LiveConversationState {
   assigneeType: string | null;
   assigneeId: number | null;
   assigneeName: string | null;
+  // NOTE: The conversation's last_activity_at (REST show renders it both as `last_activity_at` and
+  // `timestamp`, epoch seconds). Lets the live-probe reconcile compare freshness against the
+  // mirror's monotonic lastEventAt. null when the payload omits both.
+  lastActivityAt: Date | null;
 }
 
 export function parseLiveConversation(
@@ -161,11 +165,13 @@ export function parseLiveConversation(
   // "AgentBot", so this only rejects genuinely malformed payloads. Fail closed: the live gate turns
   // null into "live-unavailable" and retries.
   if (assigneeType === "AgentBot" && assigneeId === null) return null;
+  const activitySec = num(raw.last_activity_at) ?? num(raw.timestamp);
   return {
     status,
     assigneeType,
     assigneeId,
     assigneeName: assignee ? str(assignee.name) : null,
+    lastActivityAt: activitySec !== null ? new Date(activitySec * 1000) : null,
   };
 }
 

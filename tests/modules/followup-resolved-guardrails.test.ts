@@ -512,12 +512,70 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(result.outcome).toBe("reschedule");
     if (result.outcome === "reschedule") {
       expect(result.runAt.getTime()).toBeGreaterThan(Date.now() + 10 * 60_000);
-      // Payload omitido ⇒ o scheduler preserva o payload atual (mesmo step).
-      expect(result.payload).toBeUndefined();
+      // Mesmo step (threadId preservado), com o contador de retries avançado.
+      expect(result.payload).toMatchObject({
+        threadId: threadOf(CONV),
+        nudgeRetries: 1,
+      });
     }
     expect(s.sent).toEqual([]);
     expect(s.notes).toEqual([]);
     expect((await mirroredConv(CONV)).lastFollowUpAt).toBeNull();
+  });
+
+  test("(3b) retries esgotados: desiste do episódio com stamp (sem postar) — o sweep não re-enfileira em loop", async () => {
+    const CONV = 4314;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: new Date(Date.now() - 2 * HOUR),
+    });
+    const s = stubClient(() => {
+      throw new Error("chatwoot indisponível");
+    });
+    const job: ClaimedJob = {
+      id: 2n,
+      tenantId,
+      kind: "FOLLOWUP",
+      payload: { threadId: threadOf(CONV), nudgeRetries: 7 },
+      attempts: 0,
+    };
+    const result = await followUpHandler(job, appDb, handlerDeps(s));
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+    // O stamp encerra o episódio: o sweep exige lastInboundAt > lastFollowUpAt para re-enfileirar,
+    // então esta conversa só volta quando o cliente falar de novo.
+    expect((await mirroredConv(CONV)).lastFollowUpAt).not.toBeNull();
+  });
+
+  test("(2d) reconcile do live gate respeita o guard monotônico: espelho mais novo não regride", async () => {
+    const CONV = 4315;
+    // Espelho avançado por um webhook MAIS NOVO que o snapshot do GET (cliente reabriu → pending);
+    // 61min atrás para o step 0 (delay 60min) já estar vencido.
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 61 * 60_000),
+      lastInboundAt: new Date(Date.now() - 2 * HOUR),
+    });
+    // O GET devolve um snapshot ANTERIOR à reabertura (resolved, activity 2h atrás) — a corrida
+    // GET → webhook commit → reconcile.
+    let gets = 0;
+    const s = stubClient(() => {
+      gets += 1;
+      return {
+        id: CONV,
+        status: "resolved",
+        last_activity_at: Math.floor(Date.now() / 1000) - 7200,
+        meta: {},
+      };
+    });
+    const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    expect(gets).toBeGreaterThan(0);
+    // O live diz resolved → o follow-up morre (o fluxo reativo atende a reabertura), mas o
+    // espelho mais novo NÃO é sobrescrito pelo snapshot velho.
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+    expect((await mirroredConv(CONV)).status).toBe("pending");
   });
 
   test("(4) sweep: só episódios iniciados APÓS o arm entram; backlog pré-arm fica de fora", async () => {

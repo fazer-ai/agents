@@ -2,6 +2,7 @@ import { HumanMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
@@ -350,22 +351,56 @@ export async function runAgentNudge(
       live.assigneeName !== loaded.assigneeName
     ) {
       try {
+        // NOTE: Serialize with mirrorChatwootEvent: same per-conversation withEntityLock, and a
+        // freshness guard — a webhook committed between our GET and this write is NEWER than the
+        // probe snapshot, so the reconcile must not restore stale status/assignee over it. The
+        // stored monotonic lastEventAt vs the live payload's last_activity_at decides; when the
+        // live is fresher it also advances lastEventAt so later frozen retries stay fenced.
+        const liveState = live;
         await runScopedOn(base, sysCtx(tenantId), (db) =>
-          db.conversation.update({
-            where: {
-              tenantId_chatwootInstanceId_chatwootConversationId: {
-                tenantId,
-                chatwootInstanceId: instanceId,
-                chatwootConversationId: conversationId,
-              },
+          withEntityLock(
+            db,
+            `${tenantId}:${instanceId}:${conversationId}`,
+            async () => {
+              const where = {
+                tenantId_chatwootInstanceId_chatwootConversationId: {
+                  tenantId,
+                  chatwootInstanceId: instanceId,
+                  chatwootConversationId: conversationId,
+                },
+              };
+              const current = await db.conversation.findUnique({
+                where,
+                select: { lastEventAt: true },
+              });
+              if (!current) return;
+              // Second-granular like the mirror's monotonic guard (last_activity_at is epoch
+              // seconds); a strict > on raw ms would false-skip same-second states.
+              const sec = (d: Date) => Math.floor(d.getTime() / 1000);
+              const liveAt = liveState.lastActivityAt;
+              if (
+                liveAt !== null &&
+                current.lastEventAt !== null &&
+                sec(current.lastEventAt) > sec(liveAt)
+              ) {
+                return;
+              }
+              await db.conversation.update({
+                where,
+                data: {
+                  status: liveState.status,
+                  assigneeType: liveState.assigneeType,
+                  assigneeId: liveState.assigneeId,
+                  assigneeName: liveState.assigneeName,
+                  ...(liveAt !== null &&
+                  (current.lastEventAt === null ||
+                    sec(liveAt) > sec(current.lastEventAt))
+                    ? { lastEventAt: liveAt }
+                    : {}),
+                },
+              });
             },
-            data: {
-              status: live.status,
-              assigneeType: live.assigneeType,
-              assigneeId: live.assigneeId,
-              assigneeName: live.assigneeName,
-            },
-          }),
+          ),
         );
         // NOTE: Keep the in-memory snapshot in step so a second probe only re-writes on a NEW divergence.
         loaded.status = live.status;

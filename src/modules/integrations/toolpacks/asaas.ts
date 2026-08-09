@@ -335,13 +335,16 @@ function buildCreatePixChargeTool(
           );
         }
         const first = (json.data as Array<{ id?: unknown }>)[0]?.id;
-        if (json.data.length > 0 && typeof first !== "string") {
+        // NOTE: A blank ("" / whitespace) id must count as missing — it would leave customerId
+        // falsy and reach the create branch anyway.
+        const firstId = typeof first === "string" ? first.trim() : "";
+        if (json.data.length > 0 && !firstId) {
           logger.warn("asaas: customer lookup response missing customer id");
           return toolFailure(
             "The payment provider returned an unexpected response.",
           );
         }
-        if (typeof first === "string") customerId = first;
+        if (firstId) customerId = firstId;
       } catch (err) {
         logger.warn({ err, env }, "asaas: customer lookup failed");
         return toolFailure(

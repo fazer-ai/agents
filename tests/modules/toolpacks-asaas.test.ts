@@ -529,9 +529,14 @@ describe("asaas toolpack — integration failures are marked (issue #40)", () =>
   });
 
   test("a malformed 2xx lookup body fails the call — no duplicate customer POST", async () => {
-    // NOTE: Two malformed shapes a 2xx can carry: no data array at all, and a non-empty data array
-    // whose first customer has no string id. Either falling through would POST a duplicate customer.
-    for (const body of [{}, { data: [{ nome: "sem id" }] }]) {
+    // NOTE: Malformed shapes a 2xx can carry: no data array at all, a non-empty data array whose
+    // first customer has no string id, and a blank id (customerId would stay falsy and reach the
+    // create branch). Any of them falling through would POST a duplicate customer.
+    for (const body of [
+      {},
+      { data: [{ nome: "sem id" }] },
+      { data: [{ id: "   " }] },
+    ]) {
       const { impl, calls } = scriptedFetch([
         {
           match: (u, i) =>

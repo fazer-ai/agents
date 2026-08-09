@@ -46,6 +46,26 @@ function cleanText(v: unknown, max: number): string | null {
   return s || null;
 }
 
+// NOTE: One shared time-zone rule for startISO values WITHOUT an offset, mirrored by the follow-up
+// sweep's SQL normalization (followups/handlers.ts): all-day dates and offset-less datetimes are
+// pinned to UTC. Date.parse already reads a bare date as UTC midnight but reads an offset-less
+// DATETIME in the host zone — while Postgres would use the session TimeZone — so without the pin the
+// two liveness decisions could diverge when app and DB zones differ. startISO can carry an
+// offset-less datetime only via the model-input fallback in the Calendar toolpack (Google always
+// returns an offset); UTC is arbitrary there, but agreement matters more than the boundary instant.
+export function parseStartMs(startISO: string): number {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(startISO)) {
+    return Date.parse(`${startISO}T00:00:00Z`);
+  }
+  if (
+    /[Tt ]\d{2}:/.test(startISO) &&
+    !/(?:[Zz]|[+-]\d{2}:?\d{2})$/.test(startISO)
+  ) {
+    return Date.parse(`${startISO}Z`);
+  }
+  return Date.parse(startISO);
+}
+
 // Pure: scheduler rows → the LIVE appointments of a conversation. A row counts toward an event when
 // it is not tombstoned; an event is live when some row is still queued (PENDING/CLAIMED — the
 // reminder turn itself runs on a CLAIMED row) or when its start is still ahead of `now`. The freshest
@@ -82,7 +102,7 @@ export function projectAppointmentEvents(
       typeof winner.payload.startISO === "string"
         ? winner.payload.startISO
         : "";
-    const startMs = Date.parse(startISO);
+    const startMs = parseStartMs(startISO);
     const queued = group.rows.some(
       ({ row }) => row.status === "PENDING" || row.status === "CLAIMED",
     );

@@ -132,8 +132,10 @@ async function sweepHandler(
         -- while it is still queued (PENDING/CLAIMED) OR its startISO is still ahead — firing marks
         -- rows DONE, so after the LAST reminder only the future-start arm keeps suppression on
         -- (issue #39). The cast is guarded (CASE + pg_input_is_valid; deploy mandates pg17):
-        -- startISO can be all-day (YYYY-MM-DD, forced to UTC midnight to match JS Date.parse) or
-        -- model-supplied garbage, and an unguarded cast would abort the WHOLE tenant sweep.
+        -- startISO can be all-day (YYYY-MM-DD) or model-supplied garbage, and an unguarded cast
+        -- would abort the WHOLE tenant sweep. Offset-less values are pinned to UTC exactly like
+        -- parseStartMs (all-day → UTC midnight; offset-less datetime → 'Z'), so the SQL and JS
+        -- liveness decisions agree regardless of the session/host time zones.
         -- Invalid/absent start = not-future (fail-safe: only the queued arm suppresses then).
         AND NOT (
           coalesce(a.settings->'followUp'->>'pauseWhileAppointment', 'true') <> 'false'
@@ -144,6 +146,9 @@ async function sweepHandler(
               SELECT CASE
                 WHEN sj.payload->>'startISO' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
                   THEN sj.payload->>'startISO' || 'T00:00:00Z'
+                WHEN sj.payload->>'startISO' ~ '[Tt ][0-9]{2}:'
+                     AND sj.payload->>'startISO' !~ '([Zz]|[+-][0-9]{2}:?[0-9]{2})$'
+                  THEN sj.payload->>'startISO' || 'Z'
                 ELSE sj.payload->>'startISO'
               END AS start_iso
             ) norm

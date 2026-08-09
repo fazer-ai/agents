@@ -5,6 +5,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
+import { hasLiveAppointment } from "@/modules/appointments/reminders";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   ensureAllTenantSweeps,
@@ -767,7 +768,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    // The last reminder already fired (DONE, runAt in the past) but the appointment is 2h ahead.
+    // NOTE: The last reminder already fired (DONE, runAt in the past) but the appointment is 2h ahead.
     await suDb.schedulerJob.create({
       data: {
         tenantId,
@@ -817,7 +818,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         },
       },
     });
-    // The reminder's OWN turn runs with the row CLAIMED — also live, even without a startISO.
+    // NOTE: The reminder's OWN turn runs with the row CLAIMED — also live, even without a startISO.
     await seedConversation(1042, {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
@@ -898,7 +899,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    // Cancelling marks rows DONE too — the tombstone is what tells them apart from "fired".
+    // NOTE: Cancelling marks rows DONE too — the tombstone is what tells them apart from "fired".
     await suDb.schedulerJob.create({
       data: {
         tenantId,
@@ -935,8 +936,9 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     await setAgentSteps([
       { delayValue: 1, delayUnit: "minutes", instructions: "" },
     ]);
-    // Conv A carries model-supplied garbage in startISO; conv B is a plain eligible conversation.
-    // An unguarded ::timestamptz cast would throw on A and kill follow-ups for the WHOLE tenant.
+    // NOTE: Conv A carries model-supplied garbage in startISO; conv B is a plain eligible
+    // conversation. An unguarded ::timestamptz cast would throw on A and kill follow-ups for the
+    // WHOLE tenant.
     await seedConversation(1045, {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
@@ -965,7 +967,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       { id: 995n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
       appDb,
     );
-    // Garbage = not-future = not suppressed (fail-safe), and the sweep survives for everyone.
+    // NOTE: Garbage = not-future = not suppressed (fail-safe), and the sweep survives for everyone.
     for (const convId of [1045, 1046]) {
       expect(
         await suDb.schedulerJob.findFirst({
@@ -977,6 +979,53 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         }),
       ).not.toBeNull();
     }
+  });
+
+  test("(w) an offset-less datetime is read as UTC by BOTH sides (sweep and re-check agree)", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "" },
+    ]);
+    await seedConversation(1048, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    // NOTE: The model-input fallback can leave startISO WITHOUT an offset; both runtimes must pin it
+    // to UTC (parseStartMs / the SQL normalization) or their decisions diverge across time zones.
+    const offsetLessFutureUtc = new Date(Date.now() + 2 * 3_600_000)
+      .toISOString()
+      .slice(0, 19);
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: "reminder:ev_w:0",
+        status: "DONE",
+        runAt: new Date(Date.now() - 60 * 60_000),
+        payload: {
+          threadId: threadOf(1048),
+          eventId: "ev_w",
+          startISO: offsetLessFutureUtc,
+        },
+      },
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    await sweep?.(
+      { id: 993n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      appDb,
+    );
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1048)}`,
+        },
+      }),
+    ).toBeNull();
+    expect(await hasLiveAppointment(tenantId, threadOf(1048), appDb)).toBe(
+      true,
+    );
   });
 
   test("(v) an all-day (date-only) future start suppresses the sweep", async () => {
@@ -997,7 +1046,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         payload: {
           threadId: threadOf(1047),
           eventId: "ev_v",
-          // All-day events carry a bare YYYY-MM-DD (UTC midnight per Date.parse).
+          // NOTE: All-day events carry a bare YYYY-MM-DD (UTC midnight, parseStartMs).
           startISO: new Date(Date.now() + 3 * 86_400_000)
             .toISOString()
             .slice(0, 10),

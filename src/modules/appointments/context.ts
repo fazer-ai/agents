@@ -53,7 +53,10 @@ function hasImpossibleDateParts(startISO: string): boolean {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ]|$)/.exec(startISO);
   if (!m) return false;
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  const roundTrip = new Date(Date.UTC(y, mo - 1, d));
+  // NOTE: setUTCFullYear, not Date.UTC — Date.UTC maps years 0-99 to 1900-1999, which would flag
+  // valid ancient dates ("0099-02-28") as impossible.
+  const roundTrip = new Date(0);
+  roundTrip.setUTCFullYear(y, mo - 1, d);
   return (
     roundTrip.getUTCFullYear() !== y ||
     roundTrip.getUTCMonth() !== mo - 1 ||

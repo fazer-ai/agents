@@ -252,5 +252,7 @@ describe("parseStartMs", () => {
     expect(Number.isNaN(parseStartMs("2026-04-31T12:00:00"))).toBe(true);
     expect(Number.isNaN(parseStartMs("2023-02-29T10:00:00Z"))).toBe(true);
     expect(Number.isNaN(parseStartMs("2024-02-29"))).toBe(false);
+    // NOTE: Years below 0100 are valid — the guard must not let Date.UTC remap them to 19xx.
+    expect(parseStartMs("0099-02-28")).toBe(Date.parse("0099-02-28T00:00:00Z"));
   });
 });

@@ -523,9 +523,41 @@ describe("asaas toolpack — integration failures are marked (issue #40)", () =>
     })) as ToolMessage;
     expect(out.status).toBe("error");
     expect(String(out.content)).toContain("customer lookup (HTTP 500)");
-    // Exactly ONE request (the lookup): the create branch must never run on a rejected lookup.
+    // NOTE: Exactly ONE request (the lookup): the create branch must never run on a rejected lookup.
     expect(calls).toHaveLength(1);
     expect(calls[0]?.init.method).toBe("GET");
+  });
+
+  test("a malformed 2xx lookup body fails the call — no duplicate customer POST", async () => {
+    // NOTE: Two malformed shapes a 2xx can carry: no data array at all, and a non-empty data array
+    // whose first customer has no string id. Either falling through would POST a duplicate customer.
+    for (const body of [{}, { data: [{ nome: "sem id" }] }]) {
+      const { impl, calls } = scriptedFetch([
+        {
+          match: (u, i) =>
+            u.includes("/customers?cpfCnpj=") && i.method === "GET",
+          status: 200,
+          json: body,
+        },
+      ]);
+      const tool = asaasToolpack.build(
+        sel({
+          enabledTools: ["asaas_create_pix_charge"],
+          config: { environment: "sandbox" },
+        }),
+        baseCtx({ fetchImpl: impl }),
+      )[0];
+      const out = (await tool?.invoke({
+        type: "tool_call",
+        id: "call_as_4",
+        name: "asaas_create_pix_charge",
+        args: { value: 10, customerName: "X", cpfCnpj: "12345678909" },
+      })) as ToolMessage;
+      expect(out.status).toBe("error");
+      expect(String(out.content)).toContain("unexpected response");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.init.method).toBe("GET");
+    }
   });
 
   test("an invalid CPF (model input) is NOT marked as a failure", async () => {

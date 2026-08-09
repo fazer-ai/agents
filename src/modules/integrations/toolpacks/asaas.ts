@@ -324,8 +324,23 @@ function buildCreatePixChargeTool(
             `The payment provider rejected the customer lookup (HTTP ${found.status}).`,
           );
         }
-        const data = (found.json ?? {}) as { data?: Array<{ id?: unknown }> };
-        const first = data.data?.[0]?.id;
+        // NOTE: A malformed 2xx body must also fail the call (asaasFetch yields json: null on an
+        // unparseable body) — only a valid data array may reach the create branch, and a non-empty
+        // one must carry a string id, otherwise a parse glitch would duplicate the customer.
+        const json = found.json as { data?: unknown } | null;
+        if (!json || typeof json !== "object" || !Array.isArray(json.data)) {
+          logger.warn("asaas: customer lookup returned an invalid response");
+          return toolFailure(
+            "The payment provider returned an unexpected response.",
+          );
+        }
+        const first = (json.data as Array<{ id?: unknown }>)[0]?.id;
+        if (json.data.length > 0 && typeof first !== "string") {
+          logger.warn("asaas: customer lookup response missing customer id");
+          return toolFailure(
+            "The payment provider returned an unexpected response.",
+          );
+        }
         if (typeof first === "string") customerId = first;
       } catch (err) {
         logger.warn({ err, env }, "asaas: customer lookup failed");

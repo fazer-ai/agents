@@ -215,8 +215,6 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       },
     );
 
-    // NOTE: The second model call received the failure as a ToolMessage whose content is EXACTLY the
-    // friendly string — the model-facing contract is unchanged by the error marking.
     const second = model.seen[1] ?? [];
     const toolMsg = second.find((m) => m.getType() === "tool") as
       | ToolMessage
@@ -226,7 +224,6 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(toolMsg?.status).toBe("error");
     expect(toolMsg?.tool_call_id).toBe("call_f1");
 
-    // NOTE: Exactly ONE tool line for the turn, and it is the alertable one.
     const rows = await pollToolRows(flow.turnId, 1);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.level).toBe("warn");

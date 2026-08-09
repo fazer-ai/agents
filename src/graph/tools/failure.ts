@@ -6,7 +6,7 @@ import {
 } from "@langchain/core/tools";
 import type { z } from "zod";
 
-// Marks a friendly tool reply as an INTEGRATION FAILURE: the model still sees the exact same string
+// NOTE: Marks a friendly tool reply as an INTEGRATION FAILURE: the model still sees the exact same string
 // (graceful degradation is the right model-facing contract), but the flow log records the call as
 // warn/error so alert channels can fire on it (issue #40). Business-level replies — "no free slots",
 // policy limits, bad model input — must NOT use this: they are normal operation, not failures.
@@ -25,7 +25,7 @@ type FailableFn = (
   config: ToolRunnableConfig,
 ) => Promise<string | ToolFailure>;
 
-// tool() wrapper whose fn may return toolFailure(...): the failure reaches the model as a
+// NOTE: tool() wrapper whose fn may return toolFailure(...): the failure reaches the model as a
 // ToolMessage with status "error" and the SAME friendly string as content. LangChain's
 // direct-tool-output passthrough (_formatToolOutput → isDirectToolOutput) hands that ToolMessage
 // intact both to handleToolEnd (where ToolFlowLogger reads the status and logs warn/error) and to

@@ -25,7 +25,7 @@ function toolOutputValue(output: unknown): unknown {
   return output;
 }
 
-// A ToolMessage with status "error" is a tool-marked integration failure (failableTool/toolFailure —
+// NOTE: A ToolMessage with status "error" is a tool-marked integration failure (failableTool/toolFailure —
 // the friendly string went to the model, but the call must be logged as a failure). Thrown errors
 // take the handleToolError path instead; this only classifies returned outputs.
 function isErrorToolOutput(output: unknown): boolean {
@@ -82,7 +82,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     this.starts.delete(runId);
     const failed = isErrorToolOutput(output);
     const value = toolOutputValue(output);
-    // Integration failure returned as a friendly string (failableTool): ONE line, level warn —
+    // NOTE: Integration failure returned as a friendly string (failableTool): ONE line, level warn —
     // same level as handleToolError, so alert channels (minLevel warn) can subscribe (issue #40).
     emitFlowEvent(this.flow, {
       stage: "tool",

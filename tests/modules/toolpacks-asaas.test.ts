@@ -499,6 +499,35 @@ describe("asaas toolpack — integration failures are marked (issue #40)", () =>
     expect(calls).toHaveLength(0);
   });
 
+  test("a rejected customer lookup fails the call — no duplicate customer POST", async () => {
+    const { impl, calls } = scriptedFetch([
+      {
+        match: (u, i) =>
+          u.includes("/customers?cpfCnpj=") && i.method === "GET",
+        status: 500,
+        json: { error: "boom" },
+      },
+    ]);
+    const tool = asaasToolpack.build(
+      sel({
+        enabledTools: ["asaas_create_pix_charge"],
+        config: { environment: "sandbox" },
+      }),
+      baseCtx({ fetchImpl: impl }),
+    )[0];
+    const out = (await tool?.invoke({
+      type: "tool_call",
+      id: "call_as_3",
+      name: "asaas_create_pix_charge",
+      args: { value: 10, customerName: "X", cpfCnpj: "12345678909" },
+    })) as ToolMessage;
+    expect(out.status).toBe("error");
+    expect(String(out.content)).toContain("customer lookup (HTTP 500)");
+    // Exactly ONE request (the lookup): the create branch must never run on a rejected lookup.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.init.method).toBe("GET");
+  });
+
   test("an invalid CPF (model input) is NOT marked as a failure", async () => {
     const { impl, calls } = stubFetch(200, {});
     const tool = asaasToolpack.build(

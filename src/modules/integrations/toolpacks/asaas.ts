@@ -313,11 +313,20 @@ function buildCreatePixChargeTool(
           { method: "GET", token },
           ctx,
         );
-        if (found.status >= 200 && found.status < 300) {
-          const data = (found.json ?? {}) as { data?: Array<{ id?: unknown }> };
-          const first = data.data?.[0]?.id;
-          if (typeof first === "string") customerId = first;
+        // NOTE: A rejected lookup must fail the call, not fall through with an empty customerId —
+        // falling through would POST /customers and create a DUPLICATE on a transient provider error.
+        if (found.status < 200 || found.status >= 300) {
+          logger.warn(
+            "asaas: customer lookup returned HTTP %s",
+            String(found.status),
+          );
+          return toolFailure(
+            `The payment provider rejected the customer lookup (HTTP ${found.status}).`,
+          );
         }
+        const data = (found.json ?? {}) as { data?: Array<{ id?: unknown }> };
+        const first = data.data?.[0]?.id;
+        if (typeof first === "string") customerId = first;
       } catch (err) {
         logger.warn({ err, env }, "asaas: customer lookup failed");
         return toolFailure(

@@ -18,7 +18,7 @@ import { createAlertChannel } from "@/modules/flowlog/channels";
 import type { FlowContext } from "@/modules/flowlog/service";
 import { outboundUrl } from "../utils/outbound";
 
-// The tool line of the execution-flow log must distinguish integration failures from successes:
+// NOTE: The tool line of the execution-flow log must distinguish integration failures from successes:
 // a ToolMessage with status "error" (failableTool) is logged as ONE warn/error line with the
 // friendly string as errorMessage, so alert channels (minLevel warn) can fire (issue #40).
 
@@ -63,7 +63,7 @@ type LogRow = {
   detail: unknown;
 };
 
-// emitFlowEvent is fire-and-forget; poll until the expected row count lands.
+// NOTE: emitFlowEvent is fire-and-forget; poll until the expected row count lands.
 async function pollToolRows(turnId: string, count: number): Promise<LogRow[]> {
   for (let i = 0; i < 50; i++) {
     const rows = await suDb.executionLog.findMany({
@@ -81,7 +81,7 @@ async function pollToolRows(turnId: string, count: number): Promise<LogRow[]> {
   return [];
 }
 
-// Scripted model: first call emits a tool_call for `toolName`, second call replies with text.
+// NOTE: Scripted model: first call emits a tool_call for `toolName`, second call replies with text.
 // Captures every message list it is invoked with, so the test can assert what the model SAW.
 class ToolCallThenReplyModel {
   seen: BaseMessage[][] = [];
@@ -215,7 +215,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       },
     );
 
-    // The second model call received the failure as a ToolMessage whose content is EXACTLY the
+    // NOTE: The second model call received the failure as a ToolMessage whose content is EXACTLY the
     // friendly string — the model-facing contract is unchanged by the error marking.
     const second = model.seen[1] ?? [];
     const toolMsg = second.find((m) => m.getType() === "tool") as
@@ -226,7 +226,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(toolMsg?.status).toBe("error");
     expect(toolMsg?.tool_call_id).toBe("call_f1");
 
-    // Exactly ONE tool line for the turn, and it is the alertable one.
+    // NOTE: Exactly ONE tool line for the turn, and it is the alertable one.
     const rows = await pollToolRows(flow.turnId, 1);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.level).toBe("warn");
@@ -269,7 +269,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       },
     );
 
-    // The delivery row is what the alert worker POSTs from — before this fix the failure was
+    // NOTE: The delivery row is what the alert worker POSTs from — before this fix the failure was
     // logged info/ok and no channel could ever produce one (the issue's exact complaint).
     let delivery: { stage: string | null; level: string | null } | null = null;
     for (let i = 0; i < 50 && !delivery; i++) {

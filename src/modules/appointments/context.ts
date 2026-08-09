@@ -46,6 +46,21 @@ function cleanText(v: unknown, max: number): string | null {
   return s || null;
 }
 
+// NOTE: Date.parse rolls impossible calendar dates over ("2026-02-30" parses as March 2) while the
+// SQL mirror's pg_input_is_valid REJECTS them — without this guard an impossible startISO would look
+// upcoming to the JS re-check but never to the sweep. Reject the roll-over up front: NaN, like garbage.
+function hasImpossibleDateParts(startISO: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ]|$)/.exec(startISO);
+  if (!m) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const roundTrip = new Date(Date.UTC(y, mo - 1, d));
+  return (
+    roundTrip.getUTCFullYear() !== y ||
+    roundTrip.getUTCMonth() !== mo - 1 ||
+    roundTrip.getUTCDate() !== d
+  );
+}
+
 // NOTE: One shared time-zone rule for startISO values WITHOUT an offset, mirrored by the follow-up
 // sweep's SQL normalization (followups/handlers.ts): all-day dates and offset-less datetimes are
 // pinned to UTC. Date.parse already reads a bare date as UTC midnight but reads an offset-less
@@ -54,6 +69,7 @@ function cleanText(v: unknown, max: number): string | null {
 // offset-less datetime only via the model-input fallback in the Calendar toolpack (Google always
 // returns an offset); UTC is arbitrary there, but agreement matters more than the boundary instant.
 export function parseStartMs(startISO: string): number {
+  if (hasImpossibleDateParts(startISO)) return Number.NaN;
   if (/^\d{4}-\d{2}-\d{2}$/.test(startISO)) {
     return Date.parse(`${startISO}T00:00:00Z`);
   }

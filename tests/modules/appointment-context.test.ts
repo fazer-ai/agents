@@ -244,4 +244,13 @@ describe("parseStartMs", () => {
     expect(Number.isNaN(parseStartMs("amanhã de manhã"))).toBe(true);
     expect(Number.isNaN(parseStartMs(""))).toBe(true);
   });
+
+  // NOTE: Date.parse would roll these over (Feb 30 → Mar 2) while the sweep's pg_input_is_valid
+  // rejects them — NaN keeps the two liveness decisions in agreement.
+  test("impossible calendar dates are NaN, not rolled over", () => {
+    expect(Number.isNaN(parseStartMs("2026-02-30"))).toBe(true);
+    expect(Number.isNaN(parseStartMs("2026-04-31T12:00:00"))).toBe(true);
+    expect(Number.isNaN(parseStartMs("2023-02-29T10:00:00Z"))).toBe(true);
+    expect(Number.isNaN(parseStartMs("2024-02-29"))).toBe(false);
+  });
 });

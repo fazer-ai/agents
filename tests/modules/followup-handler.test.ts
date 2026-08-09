@@ -1069,4 +1069,49 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       }),
     ).toBeNull();
   });
+
+  test("(x) an impossible calendar date never suppresses (no Date.parse roll-over on either side)", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "" },
+    ]);
+    await seedConversation(1049, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    // NOTE: Feb 30 of NEXT year: Date.parse would roll it over to a FUTURE March 2 (suppressing the
+    // follow-up), while pg_input_is_valid rejects it. Both sides must treat it as garbage.
+    const impossibleFuture = `${new Date().getUTCFullYear() + 1}-02-30T00:00:00Z`;
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: "reminder:ev_x:0",
+        status: "DONE",
+        runAt: new Date(Date.now() - 60 * 60_000),
+        payload: {
+          threadId: threadOf(1049),
+          eventId: "ev_x",
+          startISO: impossibleFuture,
+        },
+      },
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    await sweep?.(
+      { id: 992n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      appDb,
+    );
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1049)}`,
+        },
+      }),
+    ).not.toBeNull();
+    expect(await hasLiveAppointment(tenantId, threadOf(1049), appDb)).toBe(
+      false,
+    );
+  });
 });

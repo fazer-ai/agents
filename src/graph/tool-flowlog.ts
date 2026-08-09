@@ -25,6 +25,18 @@ function toolOutputValue(output: unknown): unknown {
   return output;
 }
 
+// A ToolMessage with status "error" is a tool-marked integration failure (failableTool/toolFailure —
+// the friendly string went to the model, but the call must be logged as a failure). Thrown errors
+// take the handleToolError path instead; this only classifies returned outputs.
+function isErrorToolOutput(output: unknown): boolean {
+  return (
+    !!output &&
+    typeof output === "object" &&
+    "status" in output &&
+    (output as { status?: unknown }).status === "error"
+  );
+}
+
 // Logs each tool call the agent makes during a turn as a `tool` execution-flow line (name + status +
 // duration + the redacted args/result), so the operator can SEE which tools ran AND expand the marker
 // to inspect what was passed and returned (parity with the playground trace). Bound to the running
@@ -68,12 +80,23 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     const s = this.starts.get(runId);
     if (!s) return;
     this.starts.delete(runId);
+    const failed = isErrorToolOutput(output);
+    const value = toolOutputValue(output);
+    // Integration failure returned as a friendly string (failableTool): ONE line, level warn —
+    // same level as handleToolError, so alert channels (minLevel warn) can subscribe (issue #40).
     emitFlowEvent(this.flow, {
       stage: "tool",
-      level: "info",
-      status: "ok",
+      level: failed ? "warn" : "info",
+      status: failed ? "error" : "ok",
       durationMs: Date.now() - s.at,
-      detail: { tool: s.tool, args: s.args, output: toolOutputValue(output) },
+      detail: { tool: s.tool, args: s.args, output: value },
+      ...(failed
+        ? {
+            errorMessage: sanitizeErrorMessage(
+              typeof value === "string" ? value : JSON.stringify(value),
+            ),
+          }
+        : {}),
     });
   }
 

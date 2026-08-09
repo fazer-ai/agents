@@ -1,6 +1,7 @@
-import { type StructuredToolInterface, tool } from "@langchain/core/tools";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import logger from "@/api/lib/logger";
+import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { xmlAttr } from "@/lib/xml";
 import { readAppointmentReminderConfig } from "@/modules/appointments/settings";
@@ -576,7 +577,7 @@ function buildListEventsTool(
 ): StructuredToolInterface {
   const allowed = resolveAllowedCalendarIds(sel.config);
   const labels = resolveCalendarLabels(sel.config);
-  return tool(
+  return failableTool(
     async (input: {
       timeMin?: string;
       timeMax?: string;
@@ -586,7 +587,7 @@ function buildListEventsTool(
       const stamp = contactStamp(ctx);
       if (!stamp) return NO_CONTACT;
       const token = await resolveToken(sel, ctx);
-      if (!token) return NOT_CONNECTED;
+      if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
       if ("error" in pick) return pick.error;
       const calendarId = pick.id;
@@ -610,10 +611,12 @@ function buildListEventsTool(
         );
       } catch (err) {
         logger.warn({ err }, "gcal: list events request failed");
-        return "Failed to reach Google Calendar. Try again shortly.";
+        return toolFailure(
+          "Failed to reach Google Calendar. Try again shortly.",
+        );
       }
       if (res.status < 200 || res.status >= 300) {
-        return `Google Calendar returned HTTP ${res.status}.`;
+        return toolFailure(`Google Calendar returned HTTP ${res.status}.`);
       }
       const data = (res.json ?? {}) as Record<string, unknown>;
       const items = Array.isArray(data.items) ? data.items : [];
@@ -654,7 +657,7 @@ function buildCheckAvailabilityTool(
   const businessHoursId = resolveBusinessHoursId(sel.config);
   const minLeadMinutes = resolveMinLead(sel.config);
   const blockingIds = resolveBlockingCalendarIds(sel.config);
-  return tool(
+  return failableTool(
     async (input: {
       timeMin: string;
       timeMax: string;
@@ -671,7 +674,7 @@ function buildCheckAvailabilityTool(
         return "Please search at most 24 hours at a time. Narrow the range to a single day and call again for other days.";
       }
       const token = await resolveToken(sel, ctx);
-      if (!token) return NOT_CONNECTED;
+      if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
       if ("error" in pick) return pick.error;
       const calendarId = pick.id;
@@ -690,10 +693,12 @@ function buildCheckAvailabilityTool(
         );
       } catch (err) {
         logger.warn({ err }, "gcal: freeBusy request failed");
-        return "Failed to reach Google Calendar. Try again shortly.";
+        return toolFailure(
+          "Failed to reach Google Calendar. Try again shortly.",
+        );
       }
       if (res.status < 200 || res.status >= 300) {
-        return `Google Calendar returned HTTP ${res.status}.`;
+        return toolFailure(`Google Calendar returned HTTP ${res.status}.`);
       }
       const data = (res.json ?? {}) as Record<string, unknown>;
       const calendars = (data.calendars ?? {}) as Record<string, unknown>;
@@ -733,11 +738,15 @@ function buildCheckAvailabilityTool(
           );
         } catch (err) {
           logger.warn({ err }, "gcal: blocking calendars request failed");
-          return "Failed to read a blocking calendar (holidays/closures), so availability cannot be verified right now. Try again shortly.";
+          return toolFailure(
+            "Failed to read a blocking calendar (holidays/closures), so availability cannot be verified right now. Try again shortly.",
+          );
         }
         for (const r of blockingRes) {
           if (r.status < 200 || r.status >= 300) {
-            return `Google Calendar returned HTTP ${r.status} for a blocking calendar, so availability cannot be verified right now.`;
+            return toolFailure(
+              `Google Calendar returned HTTP ${r.status} for a blocking calendar, so availability cannot be verified right now.`,
+            );
           }
           const evData = (r.json ?? {}) as Record<string, unknown>;
           // A nextPageToken means the window holds more events than the cap covers; treating the
@@ -802,7 +811,7 @@ function buildCreateEventTool(
   const labels = resolveCalendarLabels(sel.config);
   const timeZone = resolveTimeZone(sel.config);
   const meetEnabled = resolveCreateMeetLink(sel.config);
-  return tool(
+  return failableTool(
     async (input: {
       summary: string;
       start: string;
@@ -813,7 +822,7 @@ function buildCreateEventTool(
       const stamp = contactStamp(ctx);
       if (!stamp) return NO_CONTACT;
       const token = await resolveToken(sel, ctx);
-      if (!token) return NOT_CONNECTED;
+      if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
       if ("error" in pick) return pick.error;
       const calendarId = pick.id;
@@ -848,14 +857,18 @@ function buildCreateEventTool(
         );
       } catch (err) {
         logger.warn({ err }, "gcal: create event request failed");
-        return "Failed to reach Google Calendar. Try again shortly.";
+        return toolFailure(
+          "Failed to reach Google Calendar. Try again shortly.",
+        );
       }
       if (res.status < 200 || res.status >= 300) {
-        return `Google Calendar rejected the event (HTTP ${res.status}).`;
+        return toolFailure(
+          `Google Calendar rejected the event (HTTP ${res.status}).`,
+        );
       }
       let data = (res.json ?? {}) as Record<string, unknown>;
       if (typeof data.id !== "string") {
-        return "Google Calendar returned an unexpected response.";
+        return toolFailure("Google Calendar returned an unexpected response.");
       }
       const eventId = data.id;
       // NOTE: room creation is usually synchronous, but the API may answer with the createRequest still
@@ -918,7 +931,7 @@ function buildUpdateEventTool(
   const allowed = resolveAllowedCalendarIds(sel.config);
   const labels = resolveCalendarLabels(sel.config);
   const timeZone = resolveTimeZone(sel.config);
-  return tool(
+  return failableTool(
     async (input: {
       eventId: string;
       summary?: string;
@@ -930,7 +943,7 @@ function buildUpdateEventTool(
       const stamp = contactStamp(ctx);
       if (!stamp) return NO_CONTACT;
       const token = await resolveToken(sel, ctx);
-      if (!token) return NOT_CONNECTED;
+      if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
       if ("error" in pick) return pick.error;
       const calendarId = pick.id;
@@ -955,11 +968,13 @@ function buildUpdateEventTool(
         );
       } catch (err) {
         logger.warn({ err }, "gcal: update ownership check failed");
-        return "Failed to reach Google Calendar. Try again shortly.";
+        return toolFailure(
+          "Failed to reach Google Calendar. Try again shortly.",
+        );
       }
       if (owner.status === 404) return FOREIGN_EVENT;
       if (owner.status < 200 || owner.status >= 300) {
-        return `Google Calendar returned HTTP ${owner.status}.`;
+        return toolFailure(`Google Calendar returned HTTP ${owner.status}.`);
       }
       const ownerEv = (owner.json ?? {}) as Record<string, unknown>;
       if (eventStamp(ownerEv) !== stamp) return FOREIGN_EVENT;
@@ -972,10 +987,14 @@ function buildUpdateEventTool(
         );
       } catch (err) {
         logger.warn({ err }, "gcal: update event request failed");
-        return "Failed to reach Google Calendar. Try again shortly.";
+        return toolFailure(
+          "Failed to reach Google Calendar. Try again shortly.",
+        );
       }
       if (res.status < 200 || res.status >= 300) {
-        return `Google Calendar rejected the update (HTTP ${res.status}).`;
+        return toolFailure(
+          `Google Calendar rejected the update (HTTP ${res.status}).`,
+        );
       }
       const data = (res.json ?? {}) as Record<string, unknown>;
       // A reschedule (start changed) re-arms reminders against the new time: cancel the old ones, then
@@ -1024,12 +1043,12 @@ function buildCancelEventTool(
 ): StructuredToolInterface {
   const allowed = resolveAllowedCalendarIds(sel.config);
   const labels = resolveCalendarLabels(sel.config);
-  return tool(
+  return failableTool(
     async (input: { eventId: string; calendarId?: string }) => {
       const stamp = contactStamp(ctx);
       if (!stamp) return NO_CONTACT;
       const token = await resolveToken(sel, ctx);
-      if (!token) return NOT_CONNECTED;
+      if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
       if ("error" in pick) return pick.error;
       const calendarId = pick.id;
@@ -1044,11 +1063,13 @@ function buildCancelEventTool(
         );
       } catch (err) {
         logger.warn({ err }, "gcal: cancel ownership check failed");
-        return "Failed to reach Google Calendar. Try again shortly.";
+        return toolFailure(
+          "Failed to reach Google Calendar. Try again shortly.",
+        );
       }
       if (owner.status === 404) return FOREIGN_EVENT;
       if (owner.status < 200 || owner.status >= 300) {
-        return `Google Calendar returned HTTP ${owner.status}.`;
+        return toolFailure(`Google Calendar returned HTTP ${owner.status}.`);
       }
       const ownerEv = (owner.json ?? {}) as Record<string, unknown>;
       if (eventStamp(ownerEv) !== stamp) return FOREIGN_EVENT;
@@ -1061,12 +1082,16 @@ function buildCancelEventTool(
         );
       } catch (err) {
         logger.warn({ err }, "gcal: cancel event request failed");
-        return "Failed to reach Google Calendar. Try again shortly.";
+        return toolFailure(
+          "Failed to reach Google Calendar. Try again shortly.",
+        );
       }
       // 204 No Content is the success shape; 410 Gone means it was already cancelled (idempotent).
       if (res.status === 410) return "The appointment was already cancelled.";
       if (res.status !== 204 && (res.status < 200 || res.status >= 300)) {
-        return `Google Calendar rejected the cancellation (HTTP ${res.status}).`;
+        return toolFailure(
+          `Google Calendar rejected the cancellation (HTTP ${res.status}).`,
+        );
       }
       // Drop any pending reminders for this appointment (best-effort).
       await ctx.cancelAppointmentReminders?.(input.eventId);
@@ -1089,12 +1114,12 @@ function buildConfirmAppointmentTool(
 ): StructuredToolInterface {
   const allowed = resolveAllowedCalendarIds(sel.config);
   const labels = resolveCalendarLabels(sel.config);
-  return tool(
+  return failableTool(
     async (input: { eventId: string; calendarId?: string }) => {
       const stamp = contactStamp(ctx);
       if (!stamp) return NO_CONTACT;
       const token = await resolveToken(sel, ctx);
-      if (!token) return NOT_CONNECTED;
+      if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickCalendarId(allowed, labels, input.calendarId);
       if ("error" in pick) return pick.error;
       const calendarId = pick.id;
@@ -1108,11 +1133,13 @@ function buildConfirmAppointmentTool(
         );
       } catch (err) {
         logger.warn({ err }, "gcal: confirm ownership check failed");
-        return "Failed to reach Google Calendar. Try again shortly.";
+        return toolFailure(
+          "Failed to reach Google Calendar. Try again shortly.",
+        );
       }
       if (owner.status === 404) return FOREIGN_EVENT;
       if (owner.status < 200 || owner.status >= 300) {
-        return `Google Calendar returned HTTP ${owner.status}.`;
+        return toolFailure(`Google Calendar returned HTTP ${owner.status}.`);
       }
       const ownerEv = (owner.json ?? {}) as Record<string, unknown>;
       if (eventStamp(ownerEv) !== stamp) return FOREIGN_EVENT;
@@ -1142,10 +1169,14 @@ function buildConfirmAppointmentTool(
         );
       } catch (err) {
         logger.warn({ err }, "gcal: confirm event request failed");
-        return "Failed to reach Google Calendar. Try again shortly.";
+        return toolFailure(
+          "Failed to reach Google Calendar. Try again shortly.",
+        );
       }
       if (res.status < 200 || res.status >= 300) {
-        return `Google Calendar rejected the confirmation (HTTP ${res.status}).`;
+        return toolFailure(
+          `Google Calendar rejected the confirmation (HTTP ${res.status}).`,
+        );
       }
       return "The appointment was marked as confirmed.";
     },

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ToolMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { googleDriveToolpack } from "@/modules/integrations/toolpacks/google-drive";
@@ -318,5 +319,43 @@ describe("google drive toolpack — send file", () => {
     const out = (await tool?.invoke({ fileId: "f1" })) as string;
     expect(out).toContain("too large");
     expect(cw.sent).toHaveLength(0);
+  });
+});
+
+// NOTE: Integration failures must reach the flow log as failures (issue #40): invoked as a
+// tool_call, network/credential failures return a ToolMessage with status "error" (same friendly
+// content the model already saw).
+describe("google drive toolpack — integration failures are marked (issue #40)", () => {
+  test("network failure and missing credential return ToolMessage status error", async () => {
+    const boom = (async () => {
+      throw new Error("boom");
+    }) as unknown as typeof fetch;
+    const network = googleDriveToolpack.build(
+      sel({ enabledTools: ["drive_find_file"] }),
+      baseCtx({ fetchImpl: boom }),
+    )[0];
+    const out = (await network?.invoke({
+      type: "tool_call",
+      id: "call_dr_1",
+      name: "drive_find_file",
+      args: { query: "contrato" },
+    })) as ToolMessage;
+    expect(out.status).toBe("error");
+    expect(String(out.content)).toContain("Failed to reach Google Drive");
+
+    const { impl, calls } = routerFetch(() => json(200, {}));
+    const notConnected = googleDriveToolpack.build(
+      sel({ enabledTools: ["drive_find_file"], credentialRef: null }),
+      baseCtx({ fetchImpl: impl }),
+    )[0];
+    const out2 = (await notConnected?.invoke({
+      type: "tool_call",
+      id: "call_dr_2",
+      name: "drive_find_file",
+      args: { query: "x" },
+    })) as ToolMessage;
+    expect(out2.status).toBe("error");
+    expect(String(out2.content)).toContain("not connected");
+    expect(calls).toHaveLength(0);
   });
 });

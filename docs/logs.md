@@ -21,6 +21,10 @@ All three are in `TENANT_SCOPED_MODELS` with the standard `tenant_isolation` RLS
 
 `generate` (runtime + playground graph invoke), `stt` (`transcribeInboundAudio`), `vision` (`extractInboundFile` + the playground's `extractPlaygroundFile`; the two-step playground UI logs it under step 1's `extract` call), `tts` (`synthesizeReply`), `split` (`deliverReply`), `handoff` (assignee re-check in `runLoadedTurn`). **`embed` is in the vocabulary but not yet wired** — RAG search runs inside the `generate` span, so an embedding failure surfaces there; threading a flow context through the shared toolset builder is a deferred follow-up.
 
+### Tool lines and integration failures
+
+`ToolFlowLogger` (`src/graph/tool-flowlog.ts`) emits one `tool` line per tool call. A tool that **throws** is logged `warn`/`error` via `handleToolError`. A tool that degrades gracefully — returns a friendly string to the model instead of throwing (toolpacks, operator HTTP tools) — marks provider/credential failures with `toolFailure(...)` (`src/graph/tools/failure.ts`, built via `failableTool`): the model still sees the exact same string, but the line is logged `level: warn`, `status: error`, with the string as `errorMessage` — so alert channels with `minLevel: warn` fire on integration failures (expired OAuth, provider outage, rejected payloads). Business-level replies ("no free slots", policy limits, bad model input) stay `info`/`ok` — they are normal operation. For operator-authored HTTP tools every non-2xx counts as a failure.
+
 ## Alerting (`alerts.ts`, `alert-worker.ts`)
 
 - `dispatchAlertsForEvent` is called fire-and-forget from `emitFlowEvent` for `warn`/`error` events **on `source==="inbox"` only** (a playground error must not page). It matches channels by `minLevel` + stage allowlist and **coalesces**: a pending delivery for the same `(channel, stage, level)` is bumped (`count++`) instead of inserting a new row.

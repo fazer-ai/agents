@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ToolMessage } from "@langchain/core/messages";
 import type { z } from "zod";
 import {
   buildHttpTool,
@@ -1021,5 +1022,42 @@ describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_sch
     expect(String(out)).toContain("id");
     expect(String(out).toLowerCase()).toContain("error");
     expect(captured.url).toBeUndefined();
+  });
+});
+
+// NOTE: For operator-authored HTTP tools EVERY non-2xx is an integration failure (issue #40):
+// invoked as a tool_call it returns a ToolMessage with status "error" carrying the same
+// "HTTP <status>" body the model already saw; 2xx stays a plain success.
+describe("buildHttpTool — non-2xx marked as integration failure (issue #40)", () => {
+  test("HTTP 500 and HTTP 404 return ToolMessage status error; 200 stays success", async () => {
+    for (const [status, id] of [
+      [500, "call_h1"],
+      [404, "call_h2"],
+    ] as const) {
+      const tool = buildHttpTool(def(), {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch({}, status, '{"err":true}'),
+      });
+      const out = (await tool.invoke({
+        type: "tool_call",
+        id,
+        name: "thing",
+        args: {},
+      })) as ToolMessage;
+      expect(out.status).toBe("error");
+      expect(String(out.content)).toContain(`HTTP ${status}`);
+    }
+    const ok = buildHttpTool(def(), {
+      resolveCredential: async () => null,
+      fetchImpl: stubFetch({}, 200),
+    });
+    const okOut = (await ok.invoke({
+      type: "tool_call",
+      id: "call_h3",
+      name: "thing",
+      args: {},
+    })) as ToolMessage;
+    expect(okOut.status).toBe("success");
+    expect(String(okOut.content)).toContain("HTTP 200");
   });
 });

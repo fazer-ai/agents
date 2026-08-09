@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
+import type { ToolMessage } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { getMapper } from "@/modules/integrations/mappers";
@@ -474,5 +475,46 @@ describe.skipIf(!dbUp)("asaas toolpack — correlation ref persistence", () => {
     expect((ref?.metadata as Record<string, unknown>)?.paymentId).toBe(
       "pay_db_1",
     );
+  });
+});
+
+// NOTE: Integration failures must reach the flow log as failures (issue #40): invoked as a
+// tool_call, a missing credential returns a ToolMessage with status "error"; bad model input
+// (invalid CPF) stays a plain success — normal operation, not an outage.
+describe("asaas toolpack — integration failures are marked (issue #40)", () => {
+  test("missing credential returns ToolMessage status error", async () => {
+    const { impl, calls } = stubFetch(200, {});
+    const tool = asaasToolpack.build(
+      sel({ enabledTools: ["asaas_payment_status"], credentialRef: null }),
+      baseCtx({ fetchImpl: impl }),
+    )[0];
+    const out = (await tool?.invoke({
+      type: "tool_call",
+      id: "call_as_1",
+      name: "asaas_payment_status",
+      args: { paymentLinkId: "plink_1" },
+    })) as ToolMessage;
+    expect(out.status).toBe("error");
+    expect(String(out.content)).toContain("not configured");
+    expect(calls).toHaveLength(0);
+  });
+
+  test("an invalid CPF (model input) is NOT marked as a failure", async () => {
+    const { impl, calls } = stubFetch(200, {});
+    const tool = asaasToolpack.build(
+      sel({
+        enabledTools: ["asaas_create_pix_charge"],
+        config: { environment: "sandbox" },
+      }),
+      baseCtx({ fetchImpl: impl }),
+    )[0];
+    const out = (await tool?.invoke({
+      type: "tool_call",
+      id: "call_as_2",
+      name: "asaas_create_pix_charge",
+      args: { value: 10, customerName: "X", cpfCnpj: "123" },
+    })) as ToolMessage;
+    expect(out.status).toBe("success");
+    expect(calls).toHaveLength(0);
   });
 });

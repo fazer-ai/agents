@@ -3,6 +3,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
 import type {
@@ -883,7 +884,7 @@ function setVoicePreferenceTool(ctx: ToolCtx) {
 // reacting with the same emoji again removes it. Pair with skip_reply when a reaction is the whole
 // response (e.g. the customer sent just "ok"/👍).
 function reactToMessageTool(ctx: ToolCtx) {
-  return tool(
+  return failableTool(
     async ({ emoji }: { emoji: string }) => {
       const e = emoji.trim();
       if (!e) return "Provide an emoji to react with.";
@@ -902,7 +903,7 @@ function reactToMessageTool(ctx: ToolCtx) {
         await ctx.client.addMessageReaction(ctx.conversationId, latest.id, e);
         return `Reacted with ${e} to the customer's last message.`;
       } catch {
-        return "Could not add the reaction.";
+        return toolFailure("Could not add the reaction.");
       }
     },
     {

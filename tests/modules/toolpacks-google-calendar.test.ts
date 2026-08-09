@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ToolMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { googleCalendarToolpack } from "@/modules/integrations/toolpacks/google-calendar";
 import type {
@@ -1143,5 +1144,57 @@ describe("google calendar toolpack — Meet room on create", () => {
     expect(JSON.parse(out)).toMatchObject({
       meetLink: "https://meet.google.com/abc-defg-hij",
     });
+  });
+});
+
+// NOTE: Integration failures must reach the flow log as failures (issue #40): invoked as a
+// tool_call, a provider/credential failure returns a ToolMessage with status "error" (same friendly
+// content), while bad model input stays a plain success — it is normal operation, not an outage.
+describe("google calendar toolpack — integration failures are marked (issue #40)", () => {
+  test("a non-2xx and a missing credential return ToolMessage status error", async () => {
+    const { impl } = stubFetch(500, { error: "boom" });
+    const http = (await toolFor(
+      "calendar_list_events",
+      {},
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      type: "tool_call",
+      id: "call_cal_1",
+      name: "calendar_list_events",
+      args: {},
+    })) as ToolMessage;
+    expect(http.status).toBe("error");
+    expect(String(http.content)).toContain("500");
+
+    const notConnected = (await toolFor(
+      "calendar_list_events",
+      {},
+      baseCtx({ resolveCredential: async () => null }),
+    )?.invoke({
+      type: "tool_call",
+      id: "call_cal_2",
+      name: "calendar_list_events",
+      args: {},
+    })) as ToolMessage;
+    expect(notConnected.status).toBe("error");
+    expect(String(notConnected.content)).toContain("not connected");
+  });
+
+  test("bad model input (range over 24h) is NOT marked as a failure", async () => {
+    const out = (await toolFor(
+      "calendar_check_availability",
+      {},
+      baseCtx(),
+    )?.invoke({
+      type: "tool_call",
+      id: "call_cal_3",
+      name: "calendar_check_availability",
+      args: {
+        timeMin: "2099-06-22T00:00:00-03:00",
+        timeMax: "2099-06-24T00:00:00-03:00",
+      },
+    })) as ToolMessage;
+    expect(out.status).toBe("success");
+    expect(String(out.content).toLowerCase()).toContain("at most 24 hours");
   });
 });

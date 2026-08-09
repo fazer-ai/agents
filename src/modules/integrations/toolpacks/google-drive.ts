@@ -1,6 +1,7 @@
-import { type StructuredToolInterface, tool } from "@langchain/core/tools";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import logger from "@/api/lib/logger";
+import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import {
   type IntegrationSelection,
@@ -173,10 +174,10 @@ function buildFindFileTool(
   ctx: ToolpackCtx,
 ): StructuredToolInterface {
   const folderId = resolveFolderId(sel.config);
-  return tool(
+  return failableTool(
     async (input: { query: string; maxResults?: number }) => {
       const token = await resolveToken(sel, ctx);
-      if (!token) return NOT_CONNECTED;
+      if (!token) return toolFailure(NOT_CONNECTED);
       const term = escapeQueryValue(input.query.trim());
       const clauses = [`name contains '${term}'`, "trashed = false"];
       if (folderId) clauses.push(`'${escapeQueryValue(folderId)}' in parents`);
@@ -200,10 +201,10 @@ function buildFindFileTool(
         );
       } catch (err) {
         logger.warn({ err }, "drive: find file request failed");
-        return "Failed to reach Google Drive. Try again shortly.";
+        return toolFailure("Failed to reach Google Drive. Try again shortly.");
       }
       if (res.status < 200 || res.status >= 300) {
-        return `Google Drive returned HTTP ${res.status}.`;
+        return toolFailure(`Google Drive returned HTTP ${res.status}.`);
       }
       const data = (res.json ?? {}) as Record<string, unknown>;
       const files = Array.isArray(data.files) ? data.files : [];
@@ -240,10 +241,10 @@ function buildSendFileTool(
   sel: IntegrationSelection,
   ctx: ToolpackCtx,
 ): StructuredToolInterface {
-  return tool(
+  return failableTool(
     async (input: { fileId: string; caption?: string }) => {
       const token = await resolveToken(sel, ctx);
-      if (!token) return NOT_CONNECTED;
+      if (!token) return toolFailure(NOT_CONNECTED);
       if (!ctx.chatwoot) {
         return "Sending a file to the customer is not available in this context (e.g. the playground). Share the file's link (returned by drive_find_file) instead.";
       }
@@ -258,10 +259,10 @@ function buildSendFileTool(
         );
       } catch (err) {
         logger.warn({ err }, "drive: send file metadata request failed");
-        return "Failed to reach Google Drive. Try again shortly.";
+        return toolFailure("Failed to reach Google Drive. Try again shortly.");
       }
       if (meta.status < 200 || meta.status >= 300) {
-        return `Google Drive returned HTTP ${meta.status}.`;
+        return toolFailure(`Google Drive returned HTTP ${meta.status}.`);
       }
       const m = (meta.json ?? {}) as Record<string, unknown>;
       const name = typeof m.name === "string" ? m.name : "file";
@@ -284,13 +285,17 @@ function buildSendFileTool(
         dl = await driveDownload(downloadPath, token, ctx);
       } catch (err) {
         logger.warn({ err }, "drive: send file download failed");
-        return "Failed to download the file from Google Drive. Try again shortly.";
+        return toolFailure(
+          "Failed to download the file from Google Drive. Try again shortly.",
+        );
       }
       if (dl.tooLarge) {
         return "That file is too large to send here. Share the file's link (returned by drive_find_file) instead.";
       }
       if (dl.status < 200 || dl.status >= 300 || !dl.bytes) {
-        return `Could not download the file from Google Drive (HTTP ${dl.status}).`;
+        return toolFailure(
+          `Could not download the file from Google Drive (HTTP ${dl.status}).`,
+        );
       }
 
       // 3) Deliver to the customer via the live conversation (bot token, multipart).
@@ -304,7 +309,9 @@ function buildSendFileTool(
         );
       } catch (err) {
         logger.warn({ err }, "drive: send file delivery failed");
-        return "Downloaded the file but could not deliver it to the conversation.";
+        return toolFailure(
+          "Downloaded the file but could not deliver it to the conversation.",
+        );
       }
       return `Sent the file "${sendName}" to the customer.`;
     },

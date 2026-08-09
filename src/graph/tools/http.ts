@@ -1,5 +1,6 @@
-import { type StructuredToolInterface, tool } from "@langchain/core/tools";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
+import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
@@ -318,7 +319,7 @@ export function buildHttpTool(
     ? `${def.credentialBaseUrl}${urlTemplate}`
     : urlTemplate;
 
-  return tool(
+  return failableTool(
     async (input: Record<string, unknown>) => {
       // 0. Ack (the model-written holding message): required when an ack is configured. The schema
       // already enforces non-empty, so this is a defensive guard — if a provider somehow let an empty
@@ -587,7 +588,13 @@ export function buildHttpTool(
         text.length > maxChars
           ? `${text.slice(0, maxChars)}…[truncated]`
           : text;
-      return `HTTP ${res.status}\n${trimmed}`;
+      // NOTE: For an operator-authored tool EVERY non-2xx is an integration failure worth alerting
+      // on (broken credential, provider outage, rejected payload) — the model still sees the same
+      // "HTTP <status>" body either way (issue #40).
+      const resultText = `HTTP ${res.status}\n${trimmed}`;
+      return res.status >= 200 && res.status < 300
+        ? resultText
+        : toolFailure(resultText);
     },
     {
       name: sanitizeToolName(def.name),

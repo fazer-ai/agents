@@ -6,7 +6,7 @@ import { parseThreadId, runAgentNudge } from "@/graph/nudge";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isTestSilenced } from "@/modules/agents/test-mode";
-import { hasPendingAppointmentReminder } from "@/modules/appointments/reminders";
+import { hasLiveAppointment } from "@/modules/appointments/reminders";
 import {
   isOpenAt,
   nextOpenAt,
@@ -35,10 +35,11 @@ const SWEEP_INTERVAL_MS = 60_000;
 // nudging mid-turn. Anchored on lastEventAt, which the agent's own reply advances, so once the turn
 // finishes the follow-up naturally measures inactivity from the reply.
 const IN_FLIGHT_BACKOFF_MS = 30_000;
-// Back-off when the conversation has a pending appointment reminder (a future booking) and the agent
-// pauses follow-ups during appointments: hold the sequence and re-check later rather than nudging or
-// dying, so it resumes once the appointment passes / is cancelled. Coarse (1h) because the sweep
-// already filters these out — this only catches a FOLLOWUP that was in flight before the booking.
+// Back-off when the conversation has a LIVE appointment (queued reminder OR one already fired with
+// the start still ahead) and the agent pauses follow-ups during appointments: hold the sequence and
+// re-check later rather than nudging or dying, so it resumes once the appointment passes / is
+// cancelled. Coarse (1h) because the sweep already filters these out — this only catches a FOLLOWUP
+// that was in flight before the booking.
 const APPOINTMENT_BACKOFF_MS = 3_600_000;
 // NOTE: Back-off when the nudge could not run to completion without posting anything: the live-state GET
 // failed (fail-closed) or a pending human-in-the-loop interrupt deferred it. Retry the SAME step —
@@ -125,17 +126,40 @@ async function sweepHandler(
         -- NULL = never armed → fail-safe skip.
         AND a.follow_up_armed_at IS NOT NULL
         AND c.last_inbound_at >= a.follow_up_armed_at
-        -- Pause re-engagement while a FUTURE appointment exists (a pending APPOINTMENT_REMINDER),
-        -- unless the agent opted out (followUp.pauseWhileAppointment = false). Mirrors the handler's
-        -- suppression gate so the operator-facing estimate and the worker agree.
+        -- NOTE: Pause re-engagement while the conversation has a LIVE future appointment, unless the
+        -- agent opted out (followUp.pauseWhileAppointment = false). SQL mirror of
+        -- projectAppointmentEvents (appointments/context.ts): a non-tombstoned reminder row counts
+        -- while it is still queued (PENDING/CLAIMED) OR its startISO is still ahead — firing marks
+        -- rows DONE, so after the LAST reminder only the future-start arm keeps suppression on
+        -- (issue #39). The cast is guarded (CASE + pg_input_is_valid; deploy mandates pg17):
+        -- startISO can be all-day (YYYY-MM-DD, forced to UTC midnight to match JS Date.parse) or
+        -- model-supplied garbage, and an unguarded cast would abort the WHOLE tenant sweep.
+        -- Invalid/absent start = not-future (fail-safe: only the queued arm suppresses then).
         AND NOT (
           coalesce(a.settings->'followUp'->>'pauseWhileAppointment', 'true') <> 'false'
           AND EXISTS (
-            SELECT 1 FROM scheduler_jobs sj
+            SELECT 1
+            FROM scheduler_jobs sj
+            CROSS JOIN LATERAL (
+              SELECT CASE
+                WHEN sj.payload->>'startISO' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                  THEN sj.payload->>'startISO' || 'T00:00:00Z'
+                ELSE sj.payload->>'startISO'
+              END AS start_iso
+            ) norm
             WHERE sj.tenant_id = c.tenant_id
               AND sj.kind = 'APPOINTMENT_REMINDER'
-              AND sj.status = 'PENDING'
               AND sj.payload->>'threadId' = c.thread_id
+              AND sj.payload->>'cancelledAt' IS NULL
+              AND (
+                sj.status IN ('PENDING', 'CLAIMED')
+                OR CASE
+                  WHEN norm.start_iso IS NOT NULL
+                       AND pg_input_is_valid(norm.start_iso, 'timestamptz')
+                    THEN norm.start_iso::timestamptz > now()
+                  ELSE false
+                END
+              )
           )
         )
         -- Skip a conversation managed by a WhatsApp→chat redirect (channelRedirect): both the WIDGET
@@ -258,12 +282,13 @@ export async function followUpHandler(
   });
   if (!ctx) return { outcome: "done" };
 
-  // Appointment-reminder suppression: hold the follow-up while this conversation has a FUTURE
-  // appointment (a pending reminder). Re-check later instead of nudging OR ending the sequence, so it
-  // resumes once the appointment passes / is cancelled. Defense in depth — the inbound that booked the
-  // appointment already cancels any prior FOLLOWUP, and the sweep won't enqueue a new one meanwhile.
+  // Appointment suppression: hold the follow-up while this conversation has a LIVE appointment —
+  // queued reminder OR already-fired one with the start still ahead (issue #39). Re-check later
+  // instead of nudging OR ending the sequence, so it resumes once the appointment passes / is
+  // cancelled. Defense in depth — the inbound that booked the appointment already cancels any prior
+  // FOLLOWUP, and the sweep won't enqueue a new one meanwhile.
   if (ctx.followUpCfg.pauseWhileAppointment) {
-    const blockedByAppointment = await hasPendingAppointmentReminder(
+    const blockedByAppointment = await hasLiveAppointment(
       tenantId,
       threadId,
       base,

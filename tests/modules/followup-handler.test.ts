@@ -754,4 +754,270 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     });
     expect(ours.sent).toEqual([[1031, REPLY]]);
   });
+
+  // NOTE: Firing a reminder marks its row DONE. Suppression anchored on PENDING rows alone goes
+  // blind after the LAST reminder fires while the appointment is still ahead (issue #39) — both
+  // the handler re-check and the sweep must treat "DONE with a future start" as a live appointment,
+  // tombstoned (cancelled) rows excluded.
+  test("(q) follow-up stays paused after the LAST reminder fired while the appointment is ahead", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "" },
+    ]);
+    await seedConversation(1040, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    // The last reminder already fired (DONE, runAt in the past) but the appointment is 2h ahead.
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: "reminder:ev_q:0",
+        status: "DONE",
+        runAt: new Date(Date.now() - 60 * 60_000),
+        payload: {
+          threadId: threadOf(1040),
+          eventId: "ev_q",
+          startISO: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+        },
+      },
+    });
+    const s = stubClient();
+    const result = await followUpHandler(jobFor(1040), appDb, {
+      makeModel: fakeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(result.outcome).toBe("reschedule");
+    expect(s.sent).toEqual([]);
+    expect(s.notes).toEqual([]);
+    expect(await lastFollowUpOf(1040)).toBeNull();
+  });
+
+  test("(r) sweep skips conversations with a live appointment: DONE + future start, and CLAIMED", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "" },
+    ]);
+    await seedConversation(1041, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: "reminder:ev_r:0",
+        status: "DONE",
+        runAt: new Date(Date.now() - 60 * 60_000),
+        payload: {
+          threadId: threadOf(1041),
+          eventId: "ev_r",
+          startISO: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+        },
+      },
+    });
+    // The reminder's OWN turn runs with the row CLAIMED — also live, even without a startISO.
+    await seedConversation(1042, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: "reminder:ev_r2:0",
+        status: "CLAIMED",
+        runAt: new Date(),
+        payload: { threadId: threadOf(1042), eventId: "ev_r2" },
+      },
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    await sweep?.(
+      { id: 998n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      appDb,
+    );
+    for (const convId of [1041, 1042]) {
+      expect(
+        await suDb.schedulerJob.findFirst({
+          where: {
+            tenantId,
+            kind: "FOLLOWUP",
+            dedupeKey: `followup:${threadOf(convId)}`,
+          },
+        }),
+      ).toBeNull();
+    }
+  });
+
+  test("(s) sweep resumes once the appointment start has passed (DONE, past start)", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "" },
+    ]);
+    await seedConversation(1043, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: "reminder:ev_s:0",
+        status: "DONE",
+        runAt: new Date(Date.now() - 3 * 3_600_000),
+        payload: {
+          threadId: threadOf(1043),
+          eventId: "ev_s",
+          startISO: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+        },
+      },
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    await sweep?.(
+      { id: 997n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      appDb,
+    );
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1043)}`,
+        },
+      }),
+    ).not.toBeNull();
+  });
+
+  test("(t) sweep resumes for a cancelled appointment (tombstoned rows, start still ahead)", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "" },
+    ]);
+    await seedConversation(1044, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    // Cancelling marks rows DONE too — the tombstone is what tells them apart from "fired".
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: "reminder:ev_t:0",
+        status: "DONE",
+        runAt: new Date(Date.now() - 60 * 60_000),
+        payload: {
+          threadId: threadOf(1044),
+          eventId: "ev_t",
+          startISO: new Date(Date.now() + 2 * 3_600_000).toISOString(),
+          cancelledAt: new Date().toISOString(),
+        },
+      },
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    await sweep?.(
+      { id: 996n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      appDb,
+    );
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1044)}`,
+        },
+      }),
+    ).not.toBeNull();
+  });
+
+  test("(u) a garbage startISO never aborts the sweep for the tenant", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "" },
+    ]);
+    // Conv A carries model-supplied garbage in startISO; conv B is a plain eligible conversation.
+    // An unguarded ::timestamptz cast would throw on A and kill follow-ups for the WHOLE tenant.
+    await seedConversation(1045, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: "reminder:ev_u:0",
+        status: "DONE",
+        runAt: new Date(Date.now() - 60 * 60_000),
+        payload: {
+          threadId: threadOf(1045),
+          eventId: "ev_u",
+          startISO: "amanhã de manhã",
+        },
+      },
+    });
+    await seedConversation(1046, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    await sweep?.(
+      { id: 995n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      appDb,
+    );
+    // Garbage = not-future = not suppressed (fail-safe), and the sweep survives for everyone.
+    for (const convId of [1045, 1046]) {
+      expect(
+        await suDb.schedulerJob.findFirst({
+          where: {
+            tenantId,
+            kind: "FOLLOWUP",
+            dedupeKey: `followup:${threadOf(convId)}`,
+          },
+        }),
+      ).not.toBeNull();
+    }
+  });
+
+  test("(v) an all-day (date-only) future start suppresses the sweep", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "" },
+    ]);
+    await seedConversation(1047, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: "reminder:ev_v:0",
+        status: "DONE",
+        runAt: new Date(Date.now() - 60 * 60_000),
+        payload: {
+          threadId: threadOf(1047),
+          eventId: "ev_v",
+          // All-day events carry a bare YYYY-MM-DD (UTC midnight per Date.parse).
+          startISO: new Date(Date.now() + 3 * 86_400_000)
+            .toISOString()
+            .slice(0, 10),
+        },
+      },
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    await sweep?.(
+      { id: 994n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      appDb,
+    );
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1047)}`,
+        },
+      }),
+    ).toBeNull();
+  });
 });

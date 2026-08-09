@@ -8,6 +8,7 @@ import { loadAppointmentContext } from "@/modules/appointments/context";
 import {
   cancelAppointmentReminders,
   enqueueAppointmentReminders,
+  hasLiveAppointment,
 } from "@/modules/appointments/reminders";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -199,5 +200,49 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(after).toEqual([]);
     const prompt = await promptFor(103);
     expect(prompt).not.toContain("## Agendamentos deste atendimento");
+  });
+
+  // NOTE: hasLiveAppointment is the follow-up suppression predicate (issue #39) — the same shared
+  // liveness projection, adapted from a base PrismaClient. Covered here because this file already
+  // owns the enqueue/cancel fixtures.
+  test("hasLiveAppointment: true after the last reminder fired (DONE, future start)", async () => {
+    await seedConversation(104);
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: "reminder:ev_ctx3:1",
+        status: "DONE",
+        runAt: new Date(Date.now() - 3_600_000),
+        payload: {
+          threadId: threadOf(104),
+          eventId: "ev_ctx3",
+          startISO: inHours(2),
+        },
+      },
+    });
+    expect(await hasLiveAppointment(tenantId, threadOf(104), appDb)).toBe(true);
+  });
+
+  test("hasLiveAppointment: false once the appointment is cancelled (tombstoned)", async () => {
+    await seedConversation(105);
+    await enqueueAppointmentReminders({
+      tenantId,
+      threadId: threadOf(105),
+      eventId: "ev_ctx4",
+      calendarId: "primary",
+      credentialRef: null,
+      startISO: inHours(48),
+      offsetsHours: [24, 1],
+      askConfirmationOnLast: true,
+      summary: null,
+      calendarLabel: null,
+      base: appDb,
+    });
+    expect(await hasLiveAppointment(tenantId, threadOf(105), appDb)).toBe(true);
+    await cancelAppointmentReminders(tenantId, "ev_ctx4", appDb);
+    expect(await hasLiveAppointment(tenantId, threadOf(105), appDb)).toBe(
+      false,
+    );
   });
 });

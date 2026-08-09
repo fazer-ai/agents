@@ -5,6 +5,7 @@ import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { loadAppointmentContext } from "@/modules/appointments/context";
 import {
   type ClaimedJob,
   cancelPendingJobsByPrefix,
@@ -147,25 +148,21 @@ export async function cancelAppointmentReminders(
   });
 }
 
-// True when this conversation (by thread) has at least one PENDING appointment reminder — i.e. a known
-// FUTURE appointment. The follow-up sweep + handler use it to pause re-engagement while a booking is
-// live (FollowUpConfig.pauseWhileAppointment): a customer who just booked should not get "still there?"
-// nudges; the reminder owns the conversation until the appointment passes / is cancelled. Tenant-scoped.
-export async function hasPendingAppointmentReminder(
+// True while this conversation (by thread) has at least one LIVE appointment — a queued reminder row
+// (PENDING/CLAIMED) or an already-fired one whose start is still ahead, tombstones excluded: the shared
+// projectAppointmentEvents predicate, via loadAppointmentContext. The follow-up handler uses it to
+// pause re-engagement while a booking is live (FollowUpConfig.pauseWhileAppointment): a customer who
+// just booked should not get "still there?" nudges until the appointment passes / is cancelled.
+// NOTE: Anchoring on PENDING rows alone went blind after the LAST reminder fired (issue #39).
+// Tenant-scoped.
+export async function hasLiveAppointment(
   tenantId: bigint,
   threadId: string,
   base: PrismaClient = basePrisma,
 ): Promise<boolean> {
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const row = await db.schedulerJob.findFirst({
-      where: {
-        kind: "APPOINTMENT_REMINDER",
-        status: "PENDING",
-        payload: { path: ["threadId"], equals: threadId },
-      },
-      select: { id: true },
-    });
-    return row !== null;
+    const events = await loadAppointmentContext(db, tenantId, threadId);
+    return events.length > 0;
   });
 }
 

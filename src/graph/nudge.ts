@@ -557,8 +557,8 @@ export async function runAgentNudge(
       return shouldBotHandle(
         {
           assigneeType: conv?.assigneeType ?? null,
-          status: conv?.status ?? null,
           assigneeId: conv?.assigneeId ?? null,
+          status: conv?.status ?? null,
         },
         { ourAgentBotId: cfg.agentBotId },
       );

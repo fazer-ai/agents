@@ -98,10 +98,14 @@ export interface NormalizedChatwootEvent {
   contactInboxId: number | null;
   inboxId: number | null;
   status: string | null;
-  assigneeType: string | null;
-  assigneeId: number | null;
-  // Display name of the assignee (meta.assignee.name) — only meaningful for a human (User) assignee.
-  assigneeName: string | null;
+  // NOTE: The assignee trio uses `undefined` as "this payload said nothing" (no `meta`), so the
+  // mirror keeps the stored values instead of wiping them — same convention as the attribute bags.
+  // An explicit `null` means meta WAS present with no assignee: a real unassign, and it clears.
+  assigneeType?: string | null;
+  assigneeId?: number | null;
+  // NOTE: Display name of the assignee (meta.assignee.name) — the human's name for a User
+  // assignee, the bot's name for an AgentBot one.
+  assigneeName?: string | null;
   message?: NormalizedChatwootMessage;
   changedAttributes?: unknown;
   // ── mirror metadata (best-effort; absent on payloads that do not carry it) ──

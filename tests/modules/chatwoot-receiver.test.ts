@@ -6,7 +6,10 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
-import { shouldBotHandle } from "@/modules/chatwoot/normalize";
+import {
+  normalizeChatwootEvent,
+  shouldBotHandle,
+} from "@/modules/chatwoot/normalize";
 import { ensureAgentBot } from "@/modules/chatwoot/provisioning";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import {
@@ -384,6 +387,77 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
       select: { lastHandledMessageId: true },
     });
     expect(conv.lastHandledMessageId).toBe(2001);
+  });
+
+  // NOTE: End-to-end pin of the degraded-payload fallback (issue #27's second bug): a signed
+  // message_created whose conversation snapshot carries NO meta must neither wipe the mirrored
+  // human assignee nor read as bot-owned — the gate falls back to the mirror's effective state,
+  // so the message takes the handled-skip path (watermark advances, no turn).
+  test("a signed event without meta keeps the human owner and the gate stays closed", async () => {
+    const deliver = async (body: string, uuid: string) => {
+      const r = await receiveChatwootWebhook({
+        routeToken,
+        rawBody: body,
+        getHeader: signedHeaders(body, NOW, uuid),
+        nowSeconds: NOW,
+        base: appDb,
+      });
+      expect(r.outcome).toBe("queued");
+      const proc = await processChatwootDelivery({
+        tenantId,
+        instanceId: r.instanceId as bigint,
+        deliveryRowId: r.deliveryRowId as bigint,
+        agentBotId: r.agentBotId ?? null,
+        normalized: r.normalized as NonNullable<typeof r.normalized>,
+        base: appDb,
+      });
+      expect(proc).toBe("processed");
+    };
+
+    // A human owns conversation 46 (meta present).
+    await deliver(
+      JSON.stringify({
+        event: "message_created",
+        id: 2100,
+        content: "quero falar com um atendente",
+        message_type: "incoming",
+        private: false,
+        conversation: {
+          id: 46,
+          inbox_id: 7,
+          status: "pending",
+          meta: { assignee_type: "User", assignee: { id: 5, name: "Rita" } },
+        },
+      }),
+      "uuid-degraded-1",
+    );
+
+    // Degraded snapshot: same conversation, NO meta at all.
+    await deliver(
+      JSON.stringify({
+        event: "message_created",
+        id: 2101,
+        content: "alô?",
+        message_type: "incoming",
+        private: false,
+        conversation: { id: 46, inbox_id: 7, status: "pending" },
+      }),
+      "uuid-degraded-2",
+    );
+
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 46 },
+      select: {
+        assigneeType: true,
+        assigneeId: true,
+        lastHandledMessageId: true,
+      },
+    });
+    // Mirror guard: the stored human assignee survived the degraded event.
+    expect(conv.assigneeType).toBe("User");
+    expect(conv.assigneeId).toBe(5);
+    // Gate: read the mirror's effective state → !act → handled-skip advances the watermark.
+    expect(conv.lastHandledMessageId).toBe(2101);
   });
 });
 
@@ -924,6 +998,90 @@ describe.skipIf(!dbUp)("chatwoot mirror sync", () => {
     });
     expect(dated.customAttributes).toEqual({ plano: "pro" });
     expect(dated.customAttributesAt).not.toBeNull();
+  });
+
+  // NOTE: Same sentinel convention as the attribute bags right above: `undefined` = "this payload
+  // said nothing about the assignee" (no meta) and must preserve the stored trio; an explicit null
+  // = a real unassign carried by meta. Without the guard, any degraded event silently wipes an
+  // 'AgentBot'/'User' — which is what made issue #27 intermittent.
+  test("an event without meta preserves the stored assignee; meta with null assignee clears it", async () => {
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 560,
+        lastActivityAt: 9800,
+        assigneeType: "AgentBot",
+        assigneeId: 9,
+        assigneeName: "Bot",
+      }),
+      appDb,
+    );
+
+    // Degraded payload: the normalizer saw no meta, so the trio is undefined.
+    const degraded = await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 560,
+        lastActivityAt: 9900,
+        assigneeType: undefined,
+        assigneeId: undefined,
+        assigneeName: undefined,
+      }),
+      appDb,
+    );
+    expect(degraded.applied).toBe(true);
+    let conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 560 },
+    });
+    expect(conv.assigneeType).toBe("AgentBot");
+    expect(conv.assigneeId).toBe(9);
+    expect(conv.assigneeName).toBe("Bot");
+    // The mirror result reports the EFFECTIVE state (what is stored), not the payload's silence.
+    expect(degraded.assigneeType).toBe("AgentBot");
+    expect(degraded.assigneeId).toBe(9);
+
+    // Meta present with no assignee = a real unassign; it must still clear.
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 560,
+        lastActivityAt: 10000,
+        assigneeType: null,
+        assigneeId: null,
+        assigneeName: null,
+      }),
+      appDb,
+    );
+    conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 560 },
+    });
+    expect(conv.assigneeType).toBeNull();
+    expect(conv.assigneeId).toBeNull();
+    expect(conv.assigneeName).toBeNull();
+  });
+
+  test("normalize: a payload without meta leaves the assignee trio undefined; meta without assignee yields null", () => {
+    const noMeta = normalizeChatwootEvent({
+      event: "conversation_updated",
+      id: 561,
+      status: "pending",
+    });
+    expect(noMeta?.assigneeType).toBeUndefined();
+    expect(noMeta?.assigneeId).toBeUndefined();
+    expect(noMeta?.assigneeName).toBeUndefined();
+
+    const unassigned = normalizeChatwootEvent({
+      event: "conversation_updated",
+      id: 561,
+      status: "pending",
+      meta: { assignee_type: null, assignee: null },
+    });
+    expect(unassigned?.assigneeType).toBeNull();
+    expect(unassigned?.assigneeId).toBeNull();
+    expect(unassigned?.assigneeName).toBeNull();
   });
 });
 

@@ -1056,11 +1056,17 @@ export async function processChatwootDelivery(
   }
 
   // Gate, then the agent runtime — all network OUTSIDE the transaction.
+  // NOTE: The payload wins when it spoke (explicit null = a real unassign); when it said nothing
+  // (no meta), fall back to the mirror's EFFECTIVE state — it preserves the stored trio now, so a
+  // degraded event on a human-owned conversation must not read as bot-owned.
+  const assigneeKnown = n.assigneeType !== undefined;
   const act = shouldBotHandle(
     {
-      assigneeType: n.assigneeType,
+      assigneeType: assigneeKnown
+        ? (n.assigneeType ?? null)
+        : mirror.assigneeType,
       status: n.status,
-      assigneeId: n.assigneeId,
+      assigneeId: assigneeKnown ? (n.assigneeId ?? null) : mirror.assigneeId,
     },
     { ourAgentBotId: params.agentBotId },
   );

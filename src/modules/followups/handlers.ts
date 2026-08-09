@@ -102,7 +102,13 @@ async function sweepHandler(
       JOIN agents a ON a.id = i.agent_id
       WHERE c.tenant_id = ${tenantId}
         AND c.status = 'pending'
-        AND c.assignee_type IS NULL
+        -- NOTE: Bot-owned = anything but a human, mirroring shouldBotHandle: NULL (unassigned — Chatwoot
+        -- < 4.16.2, Dialogflow-style hooks) AND 'AgentBot' (the NORMAL state since Chatwoot 4.16.2
+        -- auto-assigns the connected bot at conversation creation). IS DISTINCT FROM because
+        -- NULL <> 'User' evaluates to NULL. A foreign bot's AgentBot is deliberately NOT filtered
+        -- here: the nudge's own ownership gate (assignee bot id vs ours) re-checks before invoking
+        -- the model, so a rare false positive costs one no-op job cycle.
+        AND c.assignee_type IS DISTINCT FROM 'User'
         AND c.inbox_id IS NOT NULL
         AND a.enabled = true
         AND (a.mode <> 'test' OR c.test_activated_at IS NOT NULL)

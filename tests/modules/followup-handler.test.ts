@@ -9,8 +9,10 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   ensureAllTenantSweeps,
   followUpHandler,
+  registerFollowUpHandlers,
 } from "@/modules/followups/handlers";
 import type { ClaimedJob } from "@/modules/scheduler/service";
+import { getJobHandler } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -48,17 +50,19 @@ function fakeModel() {
   return new FakeListChatModel({ responses: [REPLY] });
 }
 
-function stubClient() {
+function stubClient(over: { liveMeta?: Record<string, unknown> } = {}) {
   const sent: Array<[number, string]> = [];
   const notes: Array<[number, string]> = [];
   const labelSets: string[][] = [];
   const resolved: number[] = [];
   let currentLabels: string[] = [];
   const client = {
+    // NOTE: `liveMeta` lets a test make the LIVE state (the requireLiveBotOwnership probe) agree
+    // with the mirrored assignee it seeded — the default `{}` reads as unassigned.
     getConversation: async (c: number) => ({
       id: c,
       status: "pending",
-      meta: {},
+      meta: over.liveMeta ?? {},
     }),
     sendMessage: async (c: number, t: string) => {
       sent.push([c, t]);
@@ -134,6 +138,7 @@ async function seedConversation(
     lastFollowUpAt?: Date | null;
     status?: string;
     assigneeType?: string | null;
+    assigneeId?: number | null;
   } = {},
 ) {
   // Two minutes ago so the inactivity threshold (1min delay agent) is exceeded.
@@ -153,6 +158,7 @@ async function seedConversation(
       chatwootConversationId: convId,
       status: over.status ?? "pending",
       assigneeType: over.assigneeType ?? null,
+      assigneeId: over.assigneeId ?? null,
       threadId: threadOf(convId),
       lastEventAt,
       lastInboundAt:
@@ -172,6 +178,7 @@ async function seedConversation(
         over.lastFollowUpAt !== undefined ? over.lastFollowUpAt : null,
       status: over.status ?? "pending",
       assigneeType: over.assigneeType ?? null,
+      assigneeId: over.assigneeId ?? null,
     },
   });
 }
@@ -647,5 +654,104 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     // The agent opted out of pausing, so the follow-up fires normally.
     expect(result).toEqual({ outcome: "done" });
     expect(s.sent.length).toBeGreaterThan(0);
+  });
+
+  // NOTE: Chatwoot ≥ 4.16.2 auto-assigns the connected Agent Bot at conversation creation, so
+  // `assignee_type = 'AgentBot'` is the NORMAL bot-owned state — the sweep must treat it exactly
+  // like unassigned (shouldBotHandle's `!== 'User'`), or follow-up never fires in ordinary
+  // operation (issue #27).
+  test("(o) sweep enqueues for a bot-owned conversation (AgentBot) and skips a human-owned one", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          followUp: {
+            enabled: true,
+            steps: [{ delayValue: 1, delayUnit: "minutes", instructions: "" }],
+          },
+        },
+      },
+    });
+    await seedConversation(1020, {
+      assigneeType: "AgentBot",
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await seedConversation(1021, {
+      assigneeType: "User",
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    registerFollowUpHandlers();
+    const sweep = getJobHandler("FOLLOWUP_SWEEP");
+    expect(sweep).toBeDefined();
+    await sweep?.(
+      {
+        id: 999n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+      },
+      appDb,
+    );
+    const botJob = await suDb.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: `followup:${threadOf(1020)}`,
+      },
+    });
+    const humanJob = await suDb.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: `followup:${threadOf(1021)}`,
+      },
+    });
+    expect(botJob).not.toBeNull();
+    expect(humanJob).toBeNull();
+  });
+
+  // NOTE: The permissive sweep makes a conversation owned by a DIFFERENT Agent Bot reachable, so
+  // the nudge's ownership gate must exclude it by id — our bot messages only its own conversations.
+  test("(p) a conversation owned by a FOREIGN Agent Bot is never messaged; our own is", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "" },
+    ]);
+    // NOTE: Our bot is chatwootAgentBotId 5 (beforeAll); 777 is another bot on the same account.
+    await seedConversation(1030, {
+      assigneeType: "AgentBot",
+      assigneeId: 777,
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    const foreign = stubClient({
+      liveMeta: { assignee_type: "AgentBot", assignee: { id: 777 } },
+    });
+    await followUpHandler(jobFor(1030), appDb, {
+      makeModel: fakeModel,
+      makeClient: foreign.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(foreign.sent).toEqual([]);
+
+    await seedConversation(1031, {
+      assigneeType: "AgentBot",
+      assigneeId: 5,
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    const ours = stubClient({
+      liveMeta: { assignee_type: "AgentBot", assignee: { id: 5 } },
+    });
+    await followUpHandler(jobFor(1031), appDb, {
+      makeModel: fakeModel,
+      makeClient: ours.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(ours.sent).toEqual([[1031, REPLY]]);
   });
 });

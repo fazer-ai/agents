@@ -55,9 +55,11 @@ export function normalizeChatwootEvent(
         : null,
     inboxId: conv ? num(conv.inbox_id) : null,
     status: conv ? str(conv.status) : null,
-    assigneeType: meta ? str(meta.assignee_type) : null,
-    assigneeId: assignee ? num(assignee.id) : null,
-    assigneeName: assignee ? str(assignee.name) : null,
+    // NOTE: No meta ⇒ undefined ("said nothing", the mirror preserves); meta without an assignee ⇒
+    // explicit null (a real unassign). Mirrors the attrs() sentinel above.
+    assigneeType: meta ? str(meta.assignee_type) : undefined,
+    assigneeId: meta ? (assignee ? num(assignee.id) : null) : undefined,
+    assigneeName: meta ? (assignee ? str(assignee.name) : null) : undefined,
   };
 
   if (isMessage) {

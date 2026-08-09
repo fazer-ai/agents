@@ -149,9 +149,9 @@ export async function mirrorChatwootEvent(
             inboxId: inboxRowId,
             contactId,
             status: createdStatus,
-            assigneeId: n.assigneeId,
-            assigneeType: n.assigneeType,
-            assigneeName: n.assigneeName,
+            assigneeId: n.assigneeId ?? null,
+            assigneeType: n.assigneeType ?? null,
+            assigneeName: n.assigneeName ?? null,
             threadId,
             lastEventAt: createdLastEventAt,
             lastInboundAt: inboundAt,
@@ -172,7 +172,7 @@ export async function mirrorChatwootEvent(
           conversation_id: String(created.id),
           inbox_id: inboxRowId != null ? String(inboxRowId) : null,
           status: createdStatus,
-          assignee_type: n.assigneeType,
+          assignee_type: n.assigneeType ?? null,
         });
         return {
           conversationRowId: created.id,
@@ -181,8 +181,8 @@ export async function mirrorChatwootEvent(
           prevStatus: null,
           applied: true,
           status: createdStatus,
-          assigneeId: n.assigneeId,
-          assigneeType: n.assigneeType,
+          assigneeId: n.assigneeId ?? null,
+          assigneeType: n.assigneeType ?? null,
           lastEventAt: createdLastEventAt,
         };
       }
@@ -206,17 +206,17 @@ export async function mirrorChatwootEvent(
         (n.status === "pending" || n.status === "open");
       const appliedStatus = staleMessageReopen ? null : n.status;
       const nextStatus = appliedStatus ?? existing.status;
-      const nextAssignee = staleMessageReopen
-        ? {
-            assigneeId: existing.assigneeId,
-            assigneeType: existing.assigneeType,
-            assigneeName: existing.assigneeName,
-          }
-        : {
-            assigneeId: n.assigneeId,
-            assigneeType: n.assigneeType,
-            assigneeName: n.assigneeName,
-          };
+      // NOTE: The assignee trio travels together and applies only when BOTH hold: the payload
+      // actually spoke about the assignee (`meta` present — undefined means "said nothing", and a
+      // degraded event must NOT wipe a stored 'AgentBot'/'User', the intermittent self-wipe behind
+      // issue #27) AND the snapshot is not the frozen stale one fenced above.
+      const assigneeKnown = n.assigneeType !== undefined && !staleMessageReopen;
+      const nextAssigneeId = assigneeKnown
+        ? (n.assigneeId ?? null)
+        : existing.assigneeId;
+      const nextAssigneeType = assigneeKnown
+        ? (n.assigneeType ?? null)
+        : existing.assigneeType;
       await db.conversation.update({
         where: { id: existing.id },
         data: {
@@ -226,7 +226,13 @@ export async function mirrorChatwootEvent(
           ...(inboxRowId != null ? { inboxId: inboxRowId } : {}),
           ...(contactId != null ? { contactId } : {}),
           ...(appliedStatus != null ? { status: appliedStatus } : {}),
-          ...nextAssignee,
+          ...(assigneeKnown
+            ? {
+                assigneeId: n.assigneeId ?? null,
+                assigneeType: n.assigneeType ?? null,
+                assigneeName: n.assigneeName ?? null,
+              }
+            : {}),
           lastEventAt: updatedLastEventAt,
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
           // NOTE: Attribute bags are ASSIGNED (the payload always ships the whole jsonb), but only
@@ -248,12 +254,13 @@ export async function mirrorChatwootEvent(
           inbox_id: inboxIdStr,
           status: nextStatus,
           previous_status: existing.status,
-          assignee_type: nextAssignee.assigneeType,
+          assignee_type: nextAssigneeType,
         });
       }
       // Handoff = the assignee transitions to a human (User). Detect the bot→human edge:
       // prior assignee type was not User and the new one is User. A stale frozen snapshot never
-      // fires it — its assignee was not applied above.
+      // fires it — its assignee was not applied above. (An undefined trio — degraded payload —
+      // never equals "User" either, so it can neither fire nor mask the edge.)
       if (
         !staleMessageReopen &&
         existing.assigneeType !== "User" &&
@@ -271,8 +278,9 @@ export async function mirrorChatwootEvent(
         prevStatus: existing.status,
         applied: true,
         status: nextStatus,
-        assigneeId: nextAssignee.assigneeId,
-        assigneeType: nextAssignee.assigneeType,
+        // EFFECTIVE values (what is stored after this update), not the payload's silence.
+        assigneeId: nextAssigneeId,
+        assigneeType: nextAssigneeType,
         lastEventAt: updatedLastEventAt,
       };
     });

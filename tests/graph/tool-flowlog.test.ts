@@ -13,7 +13,10 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { buildAgentGraph } from "@/graph/graph";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
+import type { TenantContext } from "@/lib/tenancy";
+import { createAlertChannel } from "@/modules/flowlog/channels";
 import type { FlowContext } from "@/modules/flowlog/service";
+import { outboundUrl } from "../utils/outbound";
 
 // The tool line of the execution-flow log must distinguish integration failures from successes:
 // a ToolMessage with status "error" (failableTool) is logged as ONE warn/error line with the
@@ -119,9 +122,15 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
 
   afterAll(async () => {
     if (tenantId) {
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`,
-      );
+      for (const table of [
+        "alert_deliveries",
+        "alert_channels",
+        "execution_logs",
+      ]) {
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+        );
+      }
       await suDb.$executeRawUnsafe(
         `DELETE FROM tenants WHERE id = ${tenantId}`,
       );
@@ -223,5 +232,54 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(rows[0]?.level).toBe("warn");
     expect(rows[0]?.status).toBe("error");
     expect(rows[0]?.errorMessage).toContain("HTTP 503");
+  });
+
+  test("the issue's full loop: a marked failure creates an alert delivery for a minLevel:warn channel", async () => {
+    const ctx: TenantContext = { tenantId, userId: null, role: "TENANT_ADMIN" };
+    const channel = await createAlertChannel(
+      ctx,
+      {
+        name: "Ops",
+        type: "webhook",
+        url: outboundUrl("/hooks/ops"),
+        minLevel: "warn",
+      },
+      appDb,
+    );
+
+    const MSG = "Google Drive returned HTTP 403.";
+    const probe = failableTool(async () => toolFailure(MSG), {
+      name: "probe_alert",
+      description: "always fails",
+      schema: z.object({ fail: z.boolean().optional() }),
+    });
+    const model = new ToolCallThenReplyModel("probe_alert", "ok");
+    const graph = buildAgentGraph({
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "Você é prestativa.",
+      checkpointer: new MemorySaver(),
+      tools: [probe],
+    });
+    const flow = flowCtx();
+    await graph.invoke(
+      { messages: [new HumanMessage("oi")] },
+      {
+        configurable: { thread_id: `tfl-alert-${process.pid}` },
+        callbacks: [new ToolFlowLogger(flow)],
+      },
+    );
+
+    // The delivery row is what the alert worker POSTs from — before this fix the failure was
+    // logged info/ok and no channel could ever produce one (the issue's exact complaint).
+    let delivery: { stage: string | null; level: string | null } | null = null;
+    for (let i = 0; i < 50 && !delivery; i++) {
+      delivery = await suDb.alertDelivery.findFirst({
+        where: { tenantId, channelId: BigInt(channel.id), stage: "tool" },
+        select: { stage: true, level: true },
+      });
+      if (!delivery) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(delivery).not.toBeNull();
+    expect(delivery?.level).toBe("warn");
   });
 });

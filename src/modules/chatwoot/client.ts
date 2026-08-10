@@ -358,25 +358,6 @@ export class ChatwootClient {
     );
   }
 
-  // Updates identity fields on a contact through the admin-token endpoint. Only the provided
-  // fields are sent, so changing the customer's name never clears phone, email or identifier.
-  updateContact(
-    contactId: number,
-    fields: {
-      identifier?: string;
-      phone_number?: string;
-      email?: string;
-      name?: string;
-    },
-  ): Promise<unknown> {
-    return this.request(
-      this.config.adminToken,
-      "PUT",
-      `/contacts/${contactId}`,
-      fields,
-    );
-  }
-
   // Conversation labels (admin token — labels are NOT in the bot allowlist). The POST REPLACES the
   // whole set, so the assign_label native tool reads the current labels first and appends. Shapes
   // CONFIRMED against the chatwoot-pro fork (2026-06-14): LabelConcern + labels/{index,create}.json

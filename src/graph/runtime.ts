@@ -47,14 +47,14 @@ import type { McpLoadDeps } from "./tools/mcp";
 import { buildNativeTools, type TurnState } from "./tools/native";
 import type { UsagePersist } from "./usage";
 
-// The agent runtime: an incoming Chatwoot message (gate=act) → resolve the inbox's Agent config
-// → build the model (key from the vault) → run the LangGraph thread (history persisted by the
-// checkpointer keyed on the conversation) → re-check the live assignee → post the reply via the
+// The agent runtime: an incoming Chatwoot message (gate=act) â†’ resolve the inbox's Agent config
+// â†’ build the model (key from the vault) â†’ run the LangGraph thread (history persisted by the
+// checkpointer keyed on the conversation) â†’ re-check the live assignee â†’ post the reply via the
 // bot token. ALL network I/O is outside any transaction; the scoped reads are short and DB-only.
 //
 // runLoadedTurn is the shared tail used by BOTH entry points: the direct webhook path (runAgentTurn,
 // one message) and the debounce flush (a coalesced burst). The flush passes a `shouldPost` hook so
-// it can suppress the reply at the last moment (a newer message arrived during the LLM call → let
+// it can suppress the reply at the last moment (a newer message arrived during the LLM call â†’ let
 // the re-armed flush answer the full burst instead of double-replying).
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -81,7 +81,7 @@ export interface RuntimeDeps {
   // Injectable fetch for the TTS provider (tests); real fetch in production.
   ttsFetch?: typeof fetch;
   // Injectable LLM speech normalizer (tests); production builds one from the agent's model when the
-  // agent enables tts.normalize. Best-effort — synthesizeReply falls back to raw text on failure.
+  // agent enables tts.normalize. Best-effort â€” synthesizeReply falls back to raw text on failure.
   normalizeSpeech?: (text: string) => Promise<string>;
   // Injectable sleep for the split/typing pacing (tests pass a no-op); real setTimeout otherwise.
   sleep?: (ms: number) => Promise<void>;
@@ -100,9 +100,9 @@ export interface RunLoadedTurnParams {
   // The user text to feed the graph (a single message, or the coalesced burst from a debounce flush).
   text: string;
   // Chatwoot id of the triggering message, surfaced to HTTP tools as {{message_id}}. Direct path: the
-  // incoming message id; debounce flush: the burst watermark. Omitted ⇒ {{message_id}} stays unset.
+  // incoming message id; debounce flush: the burst watermark. Omitted â‡’ {{message_id}} stays unset.
   messageId?: number;
-  // Whether the customer's turn included a voice note — drives the "mirror" TTS reply mode.
+  // Whether the customer's turn included a voice note â€” drives the "mirror" TTS reply mode.
   userSentAudio?: boolean;
   base?: PrismaClient;
   deps?: RuntimeDeps;
@@ -115,7 +115,7 @@ export interface RunLoadedTurnParams {
 // Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
 // records the intent (see tools/native.ts TurnState): toggling mid-turn makes the webhook mirror
 // flip Conversation.status before the recheck, which then reads our own resolve as a human
-// takeover and discards the generated reply — and posting into a resolved conversation reopens
+// takeover and discards the generated reply â€” and posting into a resolved conversation reopens
 // it anyway (same invariant as nudge.ts applyPostActions). Invariant: called ONLY on the
 // "posted" and "empty" outcomes; the intent is discarded on taken-over / superseded / blocked /
 // throw. Best-effort, never throws: the reply is already out, so a failed toggle only leaves the
@@ -169,7 +169,7 @@ export async function runLoadedTurn(
   const base = params.base ?? basePrisma;
 
   // Execution-flow telemetry context: one turnId correlates every stage of this turn. Source is
-  // real (inbox) traffic — warn/error stages may page an alert channel.
+  // real (inbox) traffic â€” warn/error stages may page an alert channel.
   const flow: FlowContext = {
     tenantId,
     turnId: params.turnId ?? crypto.randomUUID(),
@@ -209,7 +209,7 @@ export async function runLoadedTurn(
   const graph = await buildModelAndGraph(loaded, tools, {
     makeModel: params.deps?.makeModel,
     checkpointer: params.deps?.checkpointer,
-    // Hard tool-call limit reached → surface a warn in the turn trail/Logs so the operator sees the
+    // Hard tool-call limit reached â†’ surface a warn in the turn trail/Logs so the operator sees the
     // agent was forced to answer (vs silently looping or erroring with GraphRecursionError).
     onToolLimit: ({ maxToolCalls, toolCalls }) =>
       emitFlowEvent(flow, {
@@ -224,7 +224,7 @@ export async function runLoadedTurn(
     threadId,
     base,
     persistUsage: params.deps?.persistUsage,
-    // Same id as the ExecutionLog turn → the Langfuse trace correlates 1:1 with our Logs.
+    // Same id as the ExecutionLog turn â†’ the Langfuse trace correlates 1:1 with our Logs.
     turnId: flow.turnId,
     tools,
   });
@@ -247,8 +247,8 @@ export async function runLoadedTurn(
       sysCtx(tenantId),
       async (db) => {
         // Per-THREAD divider marker (AgentThread keyed by contact-inbox): compare the last
-        // conversation that ran on THIS thread. A different display_id ⇒ a new conversation reusing
-        // the thread ⇒ inject the "fresh attendance" divider. Tracking it per-thread (not per-contact)
+        // conversation that ran on THIS thread. A different display_id â‡’ a new conversation reusing
+        // the thread â‡’ inject the "fresh attendance" divider. Tracking it per-thread (not per-contact)
         // means a multi-channel contact never gets a spurious divider from activity on another channel.
         const key = {
           tenantId_chatwootInstanceId_contactInboxId: {
@@ -285,7 +285,7 @@ export async function runLoadedTurn(
   // The live "agent is working" indicator on the per-tenant realtime channel:
   // `started` before the first token (instant feedback), `step` events from the
   // graph callbacks (thinking / tool), and a GUARANTEED `finished` in the finally
-  // (every exit — posted, empty, taken-over, superseded, or thrown — clears it).
+  // (every exit â€” posted, empty, taken-over, superseded, or thrown â€” clears it).
   const status = new AgentStatusReporter({
     tenantId,
     conversationDbId: loaded.conversationDbId,
@@ -296,7 +296,7 @@ export async function runLoadedTurn(
   // Guardrails (input/output moderation): build the guardrails agent's model once (its OWN
   // credential, resolved in loadAgentConfig). runGuardrail returns null when nothing tripped,
   // { reply: string } to send/replace with, or { reply: null } to suppress (the "silent" action).
-  // A trip logs a `guardrail` flow line (warn → may alert) + posts a private operator note so a
+  // A trip logs a `guardrail` flow line (warn â†’ may alert) + posts a private operator note so a
   // blocked/replaced reply is never invisible. Fail-open (see analyzeGuardrail).
   const gr = loaded.guardrails;
   const guardrailModel =
@@ -323,6 +323,7 @@ export async function runLoadedTurn(
       competitors: gr.competitors,
       customPolicy: gr.customPolicy,
       systemPrompt: direction === "output" ? loaded.systemPrompt : undefined,
+      customerMessage: direction === "output" ? turnText : undefined,
       generationPrompt:
         dir.action === "generated" ? dir.generationPrompt : undefined,
     });
@@ -341,7 +342,7 @@ export async function runLoadedTurn(
     await client
       .sendPrivateNote(
         conversationId,
-        `Guardrail (${direction}): ${verdict.categories.join(", ") || "policy"} — ${dir.action}. ${verdict.rationale}`,
+        `Guardrail (${direction}): ${verdict.categories.join(", ") || "policy"} â€” ${dir.action}. ${verdict.rationale}`,
       )
       .catch(() => {});
     if (dir.action === "silent") return { reply: null };
@@ -362,7 +363,7 @@ export async function runLoadedTurn(
   try {
     // INPUT guardrail: screen the customer message BEFORE the agent processes it. On a violation,
     // send the configured template / a guardrails-generated safe reply and skip the graph, or stay
-    // silent (send nothing). null ⇒ nothing tripped, proceed as normal.
+    // silent (send nothing). null â‡’ nothing tripped, proceed as normal.
     const inGuard = await runGuardrail("input", turnText);
     if (inGuard) {
       if (inGuard.reply !== null) {
@@ -402,7 +403,7 @@ export async function runLoadedTurn(
     const ourBot = loaded.agentBotId ?? agentBotId;
     // Re-read the live assignee AND the contact's current voice preference in the same scoped read.
     // set_voice_preference writes Contact.voiceReply DURING the invoke, so the pre-turn snapshot
-    // (loaded.contactVoiceReply) is stale — using the fresh value lets "prefiro texto" take effect in
+    // (loaded.contactVoiceReply) is stale â€” using the fresh value lets "prefiro texto" take effect in
     // THIS same turn instead of only the next one.
     const recheck = await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
@@ -441,7 +442,7 @@ export async function runLoadedTurn(
       return "taken-over";
     }
 
-    // Last-moment supersede gate (debounce): a newer message arrived mid-turn → drop this reply
+    // Last-moment supersede gate (debounce): a newer message arrived mid-turn â†’ drop this reply
     // AND any deferred resolve intent (the re-armed flush re-decides over the full burst).
     if (params.shouldPost && !(await params.shouldPost())) return "superseded";
 
@@ -457,7 +458,7 @@ export async function runLoadedTurn(
 
     // OUTPUT guardrail: screen the model's reply BEFORE delivery. On a violation, replace it with the
     // template / a guardrails-generated safe reply, or suppress the send entirely ("silent"). A
-    // suppressed send also discards the deferred resolve intent — resolving a conversation whose
+    // suppressed send also discards the deferred resolve intent â€” resolving a conversation whose
     // goodbye was blocked would strand the customer with no reply and no human.
     const outGuard = await runGuardrail("output", reply);
     if (outGuard) {
@@ -466,7 +467,7 @@ export async function runLoadedTurn(
     }
 
     // Reply modality: audio (TTS) per the agent's mode + the customer's modality/preference, else
-    // text. TTS is best-effort — any synthesis failure falls back to a text reply, never drops it.
+    // text. TTS is best-effort â€” any synthesis failure falls back to a text reply, never drops it.
     const wantAudio = shouldReplyWithAudio(
       loaded.ttsConfig.mode,
       params.userSentAudio ?? false,
@@ -476,7 +477,7 @@ export async function runLoadedTurn(
       try {
         // Opt-in LLM speech normalization: build a temp-0 model from the agent's own model config
         // (no extra credential), or use the injected normalizer in tests. Only when the agent enabled
-        // it — and synthesizeReply still falls back to raw text if it throws.
+        // it â€” and synthesizeReply still falls back to raw text if it throws.
         let normalizeSpeech = params.deps?.normalizeSpeech;
         if (!normalizeSpeech && loaded.ttsConfig.normalize) {
           const makeModel = params.deps?.makeModel ?? createChatModel;
@@ -558,7 +559,7 @@ export interface RunAgentTurnParams {
   deps?: RuntimeDeps;
 }
 
-// Direct (no-debounce) entry: one incoming message → resolve the inbox's Agent → run the turn.
+// Direct (no-debounce) entry: one incoming message â†’ resolve the inbox's Agent â†’ run the turn.
 export async function runAgentTurn(
   params: RunAgentTurnParams,
 ): Promise<RunAgentTurnOutcome> {
@@ -587,8 +588,8 @@ export async function runAgentTurn(
   const threadId = chatwootThreadId(tenantId, instanceId, conversationId);
 
   // Reply context (item 11): when this message quotes another, fetch the thread page once and
-  // re-render WITH the quoted snippet, so the agent sees "<em resposta a: …>" just like the flush
-  // path. Best-effort and reply-only — a normal message never pays the extra fetch.
+  // re-render WITH the quoted snippet, so the agent sees "<em resposta a: â€¦>" just like the flush
+  // path. Best-effort and reply-only â€” a normal message never pays the extra fetch.
   if (n.message?.inReplyTo != null) {
     try {
       const client = await loadChatwootClient(tenantId, instanceId, {
@@ -648,10 +649,10 @@ export async function runAgentTurn(
     deps: params.deps,
   });
   // The direct path never uses shouldPost (no supersede gate), so nothing else advances the handled
-  // watermark here — left alone it stays NULL forever, and the first flush after debounce is later
+  // watermark here â€” left alone it stays NULL forever, and the first flush after debounce is later
   // enabled (or after an arm failure fell back here) re-answers the whole recent page (issue #8).
   // Every completed outcome consumed this message: posted/empty/blocked, or taken over (the human
-  // owns it now). Best-effort — the reply is already delivered, a watermark miss must not fail the
+  // owns it now). Best-effort â€” the reply is already delivered, a watermark miss must not fail the
   // turn.
   if (n.message?.id != null && loaded.conversationDbId !== null) {
     try {
@@ -671,3 +672,4 @@ export async function runAgentTurn(
   }
   return outcome;
 }
+

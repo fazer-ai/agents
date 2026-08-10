@@ -202,6 +202,9 @@ export interface AgentConfig {
   timezone: string;
   // Soft+hard cap on tool executions within one turn (agent.settings.limits.maxToolCalls).
   maxToolCalls: number;
+  // Ceiling on the history tokens sent to the model (agent.settings.limits.maxHistoryTokens).
+  // null = send the whole thread.
+  maxHistoryTokens: number | null;
 }
 
 export interface LoadAgentArgs {
@@ -509,6 +512,7 @@ export async function loadAgentConfig(
   const promptSections = [attributeSection, appointmentSection].filter(
     (s): s is string => s !== null,
   );
+  const limits = readLimitsConfig(effSettings);
   return {
     agentId: agent.id,
     agentBotId: bot?.chatwootAgentBotId ?? null,
@@ -557,7 +561,8 @@ export async function loadAgentConfig(
     },
     contactName: conv?.contact?.name ?? null,
     timezone,
-    maxToolCalls: readLimitsConfig(effSettings).maxToolCalls,
+    maxToolCalls: limits.maxToolCalls,
+    maxHistoryTokens: limits.maxHistoryTokens,
   };
 }
 
@@ -985,6 +990,8 @@ export interface GraphBuildDeps {
   checkpointer?: BaseCheckpointSaver;
   // Fired when the hard tool-call limit forces a no-tools answer (runtime emits a flow warn).
   onToolLimit?: (info: { maxToolCalls: number; toolCalls: number }) => void;
+  // Fired when a turn dropped history to fit maxHistoryTokens (runtime emits a flow warn).
+  onHistoryTrim?: (info: { kept: number; dropped: number }) => void;
 }
 
 export async function buildModelAndGraph(
@@ -1014,5 +1021,7 @@ export async function buildModelAndGraph(
     tools,
     maxToolCalls: cfg.maxToolCalls,
     onToolLimit: deps.onToolLimit,
+    maxHistoryTokens: cfg.maxHistoryTokens,
+    onHistoryTrim: deps.onHistoryTrim,
   });
 }

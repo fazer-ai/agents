@@ -5,6 +5,7 @@ import {
   type BaseMessage,
   HumanMessage,
   SystemMessage,
+  ToolMessage,
 } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
@@ -124,5 +125,134 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     ).toBe(true);
     // The first invoke (0 executions) used the plain prompt.
     expect(model.boundSystemPrompts[0]).toBe("PROMPT");
+  });
+});
+
+// A recording model that also counts tokens, so trimMessages has a budget to work against.
+// getNumTokens is what BaseLanguageModel exposes as a tokenCounter; one "token" per 4 chars here
+// keeps the arithmetic in the test obvious.
+class CountingModel extends RecordingModel {
+  async getNumTokens(content: unknown): Promise<number> {
+    return Math.ceil(String(content).length / 4);
+  }
+}
+
+// Regression for the unbounded-memory bug: the checkpointer thread is per contact-inbox and spans
+// every conversation a contact ever had on the channel, and agentNode used to hand the model ALL of
+// it, forever. Measured in production: 79.8k tokens of context against a 15.8k floor, i.e. ~64k of
+// already-finished conversations re-sent on every single turn — which is what actually exhausted the
+// provider's per-minute token quota.
+describe("agentNode history ceiling (limits.maxHistoryTokens)", () => {
+  // 40 chars ≈ 10 tokens with the counter above.
+  const long = (tag: string) => `${tag} ${"x".repeat(37)}`;
+
+  const history = () => [
+    new HumanMessage(long("h1")),
+    new AIMessage(long("a1")),
+    new HumanMessage(long("h2")),
+    new AIMessage(long("a2")),
+    new HumanMessage(long("h3")),
+  ];
+
+  test("sends the whole history when no ceiling is set (previous behavior)", async () => {
+    const model = new CountingModel();
+    const graph = buildAgentGraph({
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+    });
+    await graph.invoke(
+      { messages: history() },
+      { configurable: { thread_id: "no-ceiling" } },
+    );
+    // system prompt + all 5
+    expect(model.seen[0]).toHaveLength(6);
+  });
+
+  test("drops the oldest messages to fit the ceiling and keeps the newest", async () => {
+    const model = new CountingModel();
+    const trims: { kept: number; dropped: number }[] = [];
+    const graph = buildAgentGraph({
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      maxHistoryTokens: 25,
+      onHistoryTrim: (info) => trims.push(info),
+    });
+    await graph.invoke(
+      { messages: history() },
+      { configurable: { thread_id: "ceiling" } },
+    );
+    const seen = model.seen[0];
+    expect(seen).toBeDefined();
+    if (!seen) return;
+    // The prompt is always first and is never counted against the history budget.
+    expect(seen[0]?.content).toBe("PROMPT");
+    expect(seen.length).toBeLessThan(6);
+    // The turn being answered survives; the oldest exchange is what goes.
+    expect(seen.at(-1)?.content).toBe(long("h3"));
+    expect(seen.some((m) => m.content === long("h1"))).toBe(false);
+    // A trim that leaves no trace is indistinguishable from the agent forgetting things.
+    expect(trims).toHaveLength(1);
+    expect(trims[0]?.dropped).toBeGreaterThan(0);
+  });
+
+  // The budget here is deliberately calibrated so that a NAIVE "keep the last N tokens" window
+  // would open exactly on the ToolMessage: tool-result + a1 + h2 fit, and adding the AIMessage that
+  // issued the call does not. Without startOn:"human" this test fails — which is the point, since a
+  // version of it with a rounder budget passes either way and pins nothing.
+  test("a trimmed window never opens on a tool result whose call was dropped", async () => {
+    const model = new CountingModel();
+    const graph = buildAgentGraph({
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      maxHistoryTokens: 35,
+    });
+    await graph.invoke(
+      {
+        messages: [
+          new HumanMessage(long("h1")),
+          new AIMessage({
+            // Non-empty on purpose: an empty content costs 0 tokens, so the call message would
+            // always fit and the window could never land on the orphan in the first place.
+            content: long("calling"),
+            tool_calls: [{ id: "c1", name: "t", args: {} }],
+          }),
+          new ToolMessage({ content: long("tool-result"), tool_call_id: "c1" }),
+          new AIMessage(long("a1")),
+          new HumanMessage(long("h2")),
+        ],
+      },
+      { configurable: { thread_id: "orphan" } },
+    );
+    const seen = model.seen[0];
+    expect(seen).toBeDefined();
+    if (!seen) return;
+    // Providers reject an orphan tool result outright (OpenAI 400), so the first history message
+    // after the prompt must never be one. This is why the trim starts on a human turn.
+    expect(seen[1]?.getType()).not.toBe("tool");
+    expect(seen.some((m) => m.getType() === "tool")).toBe(false);
+  });
+
+  test("falls back to the full history if trimming throws", async () => {
+    // A counter that blows up: trimming is an optimization and must never cost an answer.
+    class ExplodingModel extends RecordingModel {
+      async getNumTokens(_content: unknown): Promise<number> {
+        throw new Error("counter exploded");
+      }
+    }
+    const model = new ExplodingModel();
+    const graph = buildAgentGraph({
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      maxHistoryTokens: 25,
+    });
+    await graph.invoke(
+      { messages: history() },
+      { configurable: { thread_id: "explode" } },
+    );
+    expect(model.seen[0]).toHaveLength(6);
   });
 });

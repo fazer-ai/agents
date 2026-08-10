@@ -219,6 +219,15 @@ export async function runLoadedTurn(
         status: "ok",
         detail: { toolLimitHit: maxToolCalls, toolCalls },
       }),
+    // History was trimmed to fit maxHistoryTokens → say so in the turn trail. Trimming that leaves
+    // no trace is indistinguishable, from the operator's chair, from the agent forgetting things.
+    onHistoryTrim: ({ kept, dropped }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        detail: { historyTrimmed: dropped, historyKept: kept },
+      }),
   });
   const callbacks = buildCallbacks(loaded, {
     tenantId,

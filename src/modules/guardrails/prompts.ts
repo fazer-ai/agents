@@ -11,19 +11,22 @@ export interface GuardrailPromptParams {
   customPolicy: string;
   // The main agent's instructions (its system prompt), for the promptAdherence (output) check.
   systemPrompt?: string;
-  // Steering for the generated replacement reply (action === "generated"); empty → generic safe reply.
+  // The customer message the output reply is answering. Without it, prompt adherence can check
+  // persona and policy but cannot reliably detect an irrelevant or incomplete answer.
+  customerMessage?: string;
+  // Steering for the generated replacement reply (action === "generated"); empty â†’ generic safe reply.
   generationPrompt?: string;
 }
 
 const CHECK_DEFINITIONS: Record<keyof GuardrailChecks, string> = {
   toxicity:
-    "toxicity — harassment, hate speech, insults, or abusive/threatening language.",
+    "toxicity â€” harassment, hate speech, insults, or abusive/threatening language.",
   unsafeContent:
-    "unsafe_content — sexual content, graphic violence, instructions for illegal or dangerous acts, or self-harm.",
+    "unsafe_content â€” sexual content, graphic violence, instructions for illegal or dangerous acts, or self-harm.",
   competitorMentions:
-    "competitor_mention — any mention, recommendation, or promotion of a competitor from the list below.",
+    "competitor_mention â€” any mention, recommendation, or promotion of a competitor from the list below.",
   promptAdherence:
-    "prompt_adherence — the assistant reply goes outside the scope, persona, or policy set by the agent's instructions (off-topic, contradicts those instructions, or leaks internal details).",
+    "prompt_adherence â€” the assistant reply goes outside the scope, persona, or policy set by the agent's instructions (off-topic, contradicts those instructions, or leaks internal details).",
 };
 
 export function buildGuardrailSystemPrompt(p: GuardrailPromptParams): string {
@@ -53,6 +56,28 @@ export function buildGuardrailSystemPrompt(p: GuardrailPromptParams): string {
       '"""',
     );
   }
+  if (
+    p.direction === "output" &&
+    p.checks.promptAdherence &&
+    p.customerMessage?.trim()
+  ) {
+    lines.push(
+      "",
+      "The customer message this reply must answer:",
+      '"""',
+      p.customerMessage.trim(),
+      '"""',
+    );
+  }
+  if (p.direction === "output" && p.checks.promptAdherence) {
+    lines.push(
+      "",
+      "Prompt-adherence review procedure:",
+      "- Compare the reply with both the customer message and the agent's instructions.",
+      "- Treat explicit MUST, ALWAYS, NEVER, REQUIRED, EXACTLY, and equivalent instructions in any language as testable requirements, not suggestions.",
+      "- Mark prompt_adherence violated when the reply omits a required element, includes forbidden wording or action, answers a different question, or claims support that the supplied context does not establish.",
+    );
+  }
   if (p.customPolicy.trim()) {
     lines.push("", `Additional policy: ${p.customPolicy.trim()}`);
   }
@@ -74,3 +99,4 @@ export function buildGuardrailSystemPrompt(p: GuardrailPromptParams): string {
   );
   return lines.join("\n");
 }
+

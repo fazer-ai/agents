@@ -324,6 +324,7 @@ export async function runLoadedTurn(
       competitors: gr.competitors,
       customPolicy: gr.customPolicy,
       systemPrompt: direction === "output" ? loaded.systemPrompt : undefined,
+      customerMessage: direction === "output" ? turnText : undefined,
       generationPrompt:
         dir.action === "generated" ? dir.generationPrompt : undefined,
     });

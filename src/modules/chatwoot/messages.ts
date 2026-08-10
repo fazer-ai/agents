@@ -29,8 +29,8 @@ export interface ChatwootMessageRow {
   extractedText: string | null;
   // Best-effort first-attachment file name (from the data_url basename), for the unsupported marker.
   attachmentName: string | null;
-  // The first usable location attachment's content (coordinates/title), for the <localização>
-  // marker — mirrors the direct webhook path (issue #45). Null when absent/unusable.
+  // NOTE: The first usable location attachment's content (coordinates/title), for the
+  // <localização> marker — mirrors the direct webhook path (issue #45). Null when absent/unusable.
   location: RenderableLocation | null;
   // content_attributes.in_reply_to — the quoted/replied-to message id, if any.
   inReplyTo: number | null;
@@ -90,8 +90,8 @@ function fileNameFrom(attachments: unknown): string | null {
   return null;
 }
 
-// Raw REST attachments → the shared location extractor (the same fields the webhook mapper reads:
-// coordinates_lat / coordinates_long / fallback_title).
+// NOTE: Raw REST attachments → the shared location extractor (the same fields the webhook mapper
+// reads: coordinates_lat / coordinates_long / fallback_title).
 function locationFrom(attachments: unknown): RenderableLocation | null {
   if (!Array.isArray(attachments)) return null;
   return firstLocationAttachment(

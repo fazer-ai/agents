@@ -165,6 +165,21 @@ describe("location markers (issue #45)", () => {
     );
   });
 
+  test("double quotes in the title become single quotes (the attribute stays intact)", () => {
+    const out = renderInboundMessage({
+      text: "",
+      attachmentTypes: ["location"],
+      location: {
+        latitude: -23.5,
+        longitude: -46.6,
+        title: 'Bar do "Zé"',
+      },
+    });
+    expect(out).toBe(
+      '<localização latitude="-23.5" longitude="-46.6" titulo="Bar do \'Zé\'">',
+    );
+  });
+
   test("a location without usable content falls back to the generic file marker", () => {
     const out = renderInboundMessage({
       text: "",

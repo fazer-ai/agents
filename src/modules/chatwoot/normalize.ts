@@ -98,8 +98,8 @@ export function normalizeChatwootEvent(
             // Audio attachments ship `transcribed_text` (empty until our write-back lands); empty
             // string normalizes to null so callers can treat "no transcription" uniformly.
             transcribedText: str(a.transcribed_text) || null,
-            // Location attachments ship coordinates + place name (location_metadata); null-ish on
-            // every other file_type.
+            // NOTE: Location attachments ship coordinates + place name (location_metadata);
+            // null-ish on every other file_type.
             latitude: float(a.coordinates_lat),
             longitude: float(a.coordinates_long),
             fallbackTitle: str(a.fallback_title) || null,
@@ -294,11 +294,12 @@ export function firstAudioAttachment(e: NormalizedChatwootEvent): {
   return null;
 }
 
-// The first USABLE location attachment (a WhatsApp pin): real coordinates and/or a human title, or
-// null. Chatwoot's coordinate columns default to 0.0, so an exact (0,0) — the null island — means
-// the provider sent no coordinates, not a pin in the Gulf of Guinea; such a pin can still carry a
-// usable fallback_title (place name + address). Neither ⇒ null, and the render falls back to the
-// generic attachment marker. Shared by the direct webhook path and the debounce re-fetch (issue #45).
+// NOTE: The first USABLE location attachment (a WhatsApp pin): real coordinates and/or a human
+// title, or null. Chatwoot's coordinate columns default to 0.0, so an exact (0,0) — the null
+// island — means the provider sent no coordinates, not a pin in the Gulf of Guinea; such a pin can
+// still carry a usable fallback_title (place name + address). Neither ⇒ null, and the render falls
+// back to the generic attachment marker. Shared by the direct webhook path and the debounce
+// re-fetch (issue #45).
 export function firstLocationAttachment(
   attachments:
     | Array<
@@ -313,8 +314,16 @@ export function firstLocationAttachment(
     if (a.fileType !== "location") continue;
     const lat = a.latitude ?? null;
     const long = a.longitude ?? null;
+    // NOTE: Out-of-range values (|lat| > 90, |long| > 180) are provider garbage, not coordinates —
+    // they would flow into tool args. Same fail-safe as (0,0): drop the coords, keep the title.
     const hasCoords =
-      lat !== null && long !== null && !(lat === 0 && long === 0);
+      lat !== null &&
+      long !== null &&
+      lat >= -90 &&
+      lat <= 90 &&
+      long >= -180 &&
+      long <= 180 &&
+      !(lat === 0 && long === 0);
     const title = a.fallbackTitle?.replace(/\s+/g, " ").trim() || null;
     if (hasCoords || title) {
       return {

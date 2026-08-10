@@ -261,6 +261,27 @@ describe("firstLocationAttachment (issue #45)", () => {
     expect(firstLocationAttachment(undefined)).toBeNull();
     expect(firstLocationAttachment([])).toBeNull();
   });
+
+  test("boundary coordinates are accepted; out-of-range values are dropped", () => {
+    expect(
+      firstLocationAttachment([loc({ latitude: 90, longitude: 180 })]),
+    ).toEqual({ latitude: 90, longitude: 180, title: null });
+    expect(
+      firstLocationAttachment([loc({ latitude: -90, longitude: -180 })]),
+    ).toEqual({ latitude: -90, longitude: -180, title: null });
+    // Provider garbage: no coordinate survives, the title (when present) still does.
+    expect(
+      firstLocationAttachment([loc({ latitude: 91, longitude: 10 })]),
+    ).toBeNull();
+    expect(
+      firstLocationAttachment([loc({ latitude: 10, longitude: 181 })]),
+    ).toBeNull();
+    expect(
+      firstLocationAttachment([
+        loc({ latitude: -91, longitude: 10, fallbackTitle: "Praça da Sé" }),
+      ]),
+    ).toEqual({ latitude: null, longitude: null, title: "Praça da Sé" });
+  });
 });
 
 describe("isHumanAgentMessage (continuous-ingestion role gate)", () => {

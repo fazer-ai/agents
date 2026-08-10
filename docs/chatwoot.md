@@ -70,6 +70,16 @@ act ⇔ status == "pending"
     ∧ ¬(assignee_type == "AgentBot" ∧ assigneeId is known ∧ assigneeId != ourAgentBotId)
 ```
 
+## Contact name updates
+
+The `set_contact_name` native conversation tool lets an agent update the current contact after the
+customer explicitly states or corrects their own name. It resolves the mirrored contact inside the
+tenant scope, updates Chatwoot through the admin-token `updateContact` endpoint, then updates the local
+mirror so prompt variables use the new name on the next turn. The tool normalizes whitespace, requires
+letters, rejects phone-number-shaped values, and tells the model not to invent surnames or overwrite a
+reliable name without an explicit correction. It is fail-closed through the agent's native-tool
+allowlist and is simulated in the playground like every other conversation-scoped tool.
+
 ## Kanban driver + client loader
 
 Chatwoot's Kanban owns the funnel/board/step/card model (the agents has **no** Funnel/Card tables). We drive it via admin-token methods on `ChatwootClient` — `listKanbanBoards`, `createKanbanBoard`, `updateKanbanBoard`, `listKanbanSteps`, `createKanbanStep`, `setBoardInboxes`, `setBoardAgents`, `listKanbanTasks`, `createKanbanTask`, `moveKanbanTask`, `updateKanbanTask` — against the Kanban routes `/kanban/{boards, boards/:id/steps, boards/:id/update_{inboxes,agents}, tasks, tasks/:id, tasks/:id/move}`. Create/update bodies wrap the Rails-required root key (`board`/`step`/ `task`); bind/move params (`inbox_ids`, `agent_ids`, `board_step_id`, `insert_before_task_id`) are confirmed against Chatwoot. `updateKanbanTask` PATCHes a partial `{ task: {...} }` (camel→snake: `startDate`→ `start_date`, `dueDate`→`due_date`) limited to the scalar fields `title`/`description`/`priority`/ `start_date`/`due_date` (the `update_kanban_task` native tool; `value`/`board_step_id`/`labels`/ `custom_attributes` keep their own paths). Permit list + `Task::PRIORITIES` (urgent|high|medium|low) + the `start ≤ due` validation confirmed against Chatwoot's Kanban API. The inner board/step/task shape is owned by the `/desenhar-funil` wizard.

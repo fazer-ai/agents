@@ -23,6 +23,7 @@ export type SchedulerJobKind =
   | "RAG_INGEST"
   | "HEARTBEAT"
   | "FLOWLOG_SWEEP"
+  | "MEMORY_SWEEP"
   | "APPOINTMENT_REMINDER"
   | "REDIRECT_FOLLOWUP";
 

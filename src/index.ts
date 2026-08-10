@@ -7,6 +7,10 @@ import {
   assertRuntimeRoleIsNotSuperuser,
   SuperuserRuntimeError,
 } from "@/lib/db-guard";
+import {
+  ensureAllMemorySweeps,
+  registerMemoryRetentionHandler,
+} from "@/modules/agents/memory-retention";
 import { registerAppointmentReminderHandler } from "@/modules/appointments/reminders";
 import { registerRedirectFollowUpHandlers } from "@/modules/channel-redirect/followup";
 import { registerDebounceHandler } from "@/modules/debounce/handler";
@@ -157,6 +161,7 @@ if (config.schedulerWorker.enabled) {
   registerRagIngestHandler();
   registerHeartbeatHandler();
   registerFlowlogRetentionHandler();
+  registerMemoryRetentionHandler();
   registerAppointmentReminderHandler();
   registerRedirectFollowUpHandlers();
   startScheduler();
@@ -164,6 +169,11 @@ if (config.schedulerWorker.enabled) {
   // boot-time DB outage just means the sweep arms on the next restart).
   void ensureAllFlowlogSweeps().catch((error) =>
     logger.warn({ error }, "Failed to arm flowlog retention sweeps"),
+  );
+  // Arm the per-tenant agent-memory sweep. Armed unconditionally: the handler checks whether any
+  // agent set limits.forgetResolvedAfterDays, so enabling it later needs no restart.
+  void ensureAllMemorySweeps().catch((error) =>
+    logger.warn({ error }, "Failed to arm agent memory sweeps"),
   );
   // Arm the per-tenant follow-up sweep for every existing tenant so follow-ups self-heal after the
   // sweep's row is lost (DB reset, external truncate). Same best-effort discipline as above.

@@ -49,6 +49,14 @@ interface ForgettableThread {
 // Threads whose every conversation has been closed for longer than `days` and that carry no live
 // scheduler job. `last_event_at` is the mirror's timestamp of the last Chatwoot event on the
 // conversation — the closest thing we have to "when this attendance actually went quiet".
+//
+// The pending-job check matches TWO ways on purpose: a job points at its conversation either
+// through the dedupe key (`followup:<tenant>:<instance>:<display_id>`) or through its payload
+// (`{ threadId }`). APPOINTMENT_REMINDER only ever uses the payload — its key is
+// `reminder:<googleEventId>:<offsetHours>`, which carries no thread at all — so matching the key
+// alone would silently leave the 24h visit reminder unprotected, one of the cases where the
+// memory matters most. A false positive here only delays a cleanup; a false negative deletes
+// memory a scheduled job still needs.
 async function findForgettableThreads(
   db: ScopedDb,
   instanceId: bigint,
@@ -74,14 +82,15 @@ async function findForgettableThreads(
                OR c.last_event_at IS NULL
                OR c.last_event_at >= ${cutoff})
       )
-      -- Nothing scheduled that will want this memory (follow-up ladder, reminders, redirect chain).
+      -- Nothing scheduled that will want this memory (see the note above the function).
       AND NOT EXISTS (
         SELECT 1 FROM scheduler_jobs j
         JOIN conversations c2
           ON c2.contact_inbox_id = t.contact_inbox_id
          AND c2.chatwoot_instance_id = t.chatwoot_instance_id
         WHERE j.status IN ('PENDING', 'CLAIMED')
-          AND j.dedupe_key LIKE '%' || c2.thread_id
+          AND (j.dedupe_key LIKE '%' || c2.thread_id
+               OR j.payload->>'threadId' = c2.thread_id)
       )
     LIMIT ${limit}`);
 }

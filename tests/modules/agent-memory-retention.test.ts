@@ -46,6 +46,9 @@ const FORGET_DAYS = 7;
 const CI_STALE = 900_001;
 const CI_PENDING_JOB = 900_002;
 const CI_RECENT = 900_003;
+// Long resolved, nothing in the dedupe key — but an appointment reminder still queued, which
+// points at its conversation ONLY through the payload.
+const CI_REMINDER = 900_005;
 
 async function seedThread(contactInboxId: number, resolvedDaysAgo: number) {
   const at = new Date(Date.now() - resolvedDaysAgo * 86_400_000);
@@ -96,12 +99,21 @@ describe.skipIf(!dbUp)("agent memory retention", () => {
     await seedThread(CI_STALE, FORGET_DAYS + 3);
     await seedThread(CI_PENDING_JOB, FORGET_DAYS + 3);
     await seedThread(CI_RECENT, 1);
+    await seedThread(CI_REMINDER, FORGET_DAYS + 3);
 
-    // A follow-up still queued for the second thread's conversation.
+    // A follow-up still queued for the second thread's conversation (linked by dedupe key).
     await suDb.$executeRawUnsafe(
       `INSERT INTO scheduler_jobs (tenant_id, kind, dedupe_key, status, run_at)
        VALUES (${tenantId}, 'FOLLOWUP',
                'followup:${tenantId}:${instanceId}:${CI_PENDING_JOB}', 'PENDING', NOW())`,
+    );
+    // An appointment reminder for the fourth: its dedupe key is keyed by the Google event id and
+    // carries no thread, so the ONLY link is payload.threadId. Found the hard way against a real
+    // database — matching the dedupe key alone silently left visit reminders unprotected.
+    await suDb.$executeRawUnsafe(
+      `INSERT INTO scheduler_jobs (tenant_id, kind, dedupe_key, status, run_at, payload)
+       VALUES (${tenantId}, 'APPOINTMENT_REMINDER', 'reminder:someGoogleEventId:24', 'PENDING',
+               NOW(), '{"threadId":"${tenantId}:${instanceId}:${CI_REMINDER}","offsetHours":24}')`,
     );
   });
 
@@ -128,7 +140,7 @@ describe.skipIf(!dbUp)("agent memory retention", () => {
     await appDb.$disconnect();
   });
 
-  test("forgets long-resolved threads, spares recent ones and any with a pending job", async () => {
+  test("forgets long-resolved threads, spares recent ones and any with a pending job (by dedupe key OR payload)", async () => {
     registerMemoryRetentionHandler();
     const handler = getJobHandler("MEMORY_SWEEP");
     expect(handler).toBeDefined();
@@ -157,7 +169,7 @@ describe.skipIf(!dbUp)("agent memory retention", () => {
     )
       .map((r) => r.contactInboxId)
       .sort();
-    expect(left).toEqual([CI_PENDING_JOB, CI_RECENT]);
+    expect(left).toEqual([CI_PENDING_JOB, CI_RECENT, CI_REMINDER]);
   });
 
   test("an agent without the knob forgets nothing", async () => {

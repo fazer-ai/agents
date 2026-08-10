@@ -98,8 +98,8 @@ export interface ToolCtx {
   // model-facing description so transfer/funnel logic lives WITH the tool instead of buried in the
   // prompt. Populated at turn prep from agent.settings (handoff.instructions / kanban.instructions).
   toolInstructions?: Partial<Record<NativeToolName, string>>;
-  // Reports a side effect that failed INSIDE a tool that still returns success to the model (e.g.
-  // the handoff happened but the assignment failed). prepare.ts binds this to a flowlog
+  // NOTE: Reports a side effect that failed INSIDE a tool that still returns success to the model
+  // (e.g. the handoff happened but the assignment failed). prepare.ts binds this to a flowlog
   // `tool`-stage warn so the failure reaches the Logs page and alert channels; absent
   // (playground/tests) ⇒ the failure stays log-only. NEVER changes the tool's return value.
   onSideEffectError?: SideEffectErrorReporter;

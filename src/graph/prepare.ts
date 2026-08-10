@@ -634,8 +634,8 @@ export async function buildToolset(
     return { windows: parseWindows(row.windows), timezone: row.timezone };
   };
   const flow = deps.flow;
-  // A side effect that fails INSIDE a tool that still returns success is invisible in the tool's own
-  // flowlog line (the tool legitimately succeeded for the model). This binding lets toolpacks and
+  // NOTE: A side effect that fails INSIDE a tool that still returns success is invisible in the
+  // tool's own flowlog line (the tool legitimately succeeded for the model). This binding lets toolpacks and
   // native tools surface those failures as their OWN `tool`-stage warn line (same shape as the MCP
   // onDiscoverError below): visible in the Logs page, and inbox traffic pages minLevel:warn alert
   // channels. detail.tool names the trail card; detail.phase discriminates the side effect.

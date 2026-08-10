@@ -134,7 +134,7 @@ function page(
   };
 }
 
-// A duck-typed model that records every prompt it sees (same shape as ResolveThenReplyModel).
+// NOTE: A duck-typed model that records every prompt it sees (same shape as ResolveThenReplyModel).
 class CaptureReplyModel {
   seen: string[] = [];
   constructor(private reply: string) {}
@@ -793,7 +793,7 @@ describe.skipIf(!dbUp)("debounce", () => {
   test("issue #49: the flush renders a voice note from the in-process annotation when the meta is empty (upstream Chatwoot)", async () => {
     clearMediaAnnotations();
     await seedConversation(830);
-    // Upstream Chatwoot: the fork meta route 404s, so the eager pass could only stash in-process.
+    // NOTE: Upstream Chatwoot: the fork meta route 404s, so the eager pass could only stash in-process.
     stashMediaAnnotation(
       { tenantId, instanceId, messageId: 3 },
       { transcribedText: "olá, quero agendar uma consulta" },

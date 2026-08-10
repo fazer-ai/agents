@@ -646,7 +646,7 @@ export async function runAgentTurn(
   });
   if (!loaded) return "no-agent";
 
-  // Post gate, mirroring the debounce flush (issue #49): concurrent direct turns on the same
+  // NOTE: Post gate, mirroring the debounce flush (issue #49): concurrent direct turns on the same
   // conversation (webhook deliveries are not serialized) each generate a reply — without this gate
   // the STALE one posts too, answering a message the customer already moved past. Re-fetch to
   // detect a newer incoming message (defer to its own turn), then advance the watermark via the
@@ -702,7 +702,7 @@ export async function runAgentTurn(
     deps: params.deps,
     shouldPost,
   });
-  // Watermark tail for the outcomes shouldPost's CAS did not cover ("posted" already advanced):
+  // NOTE: Watermark tail for the outcomes shouldPost's CAS did not cover ("posted" already advanced):
   // empty/blocked consumed the message, taken over hands it to the human — left alone the watermark
   // stays NULL forever, and the first flush after debounce is later enabled (or after an arm failure
   // fell back here) re-answers the whole recent page (issue #8). "superseded" stays put BY DESIGN:

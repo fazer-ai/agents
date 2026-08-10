@@ -1018,6 +1018,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
       expect(outcome).toBe("superseded");
       expect(sent).toEqual([]);
+      // NOTE: The operator note still goes out, on purpose: it records that the guardrail screened
+      // and rejected THIS text, which happened regardless of who ends up answering. Claiming before
+      // the screening would instead burn the claim on a "silent" verdict that posts nothing.
+      expect(notes.length).toBe(1);
     });
 
     test("output 'generated' → replaces the agent reply with the suggestedReply", async () => {

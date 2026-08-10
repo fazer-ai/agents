@@ -222,8 +222,8 @@ export async function extractInboundFile(
     kind === "image" ? { imageDescription: text } : { extractedText: text },
   );
 
-  // Write back so the debounce re-fetch (and human agents) see it. Best-effort; surfaced on the
-  // flow log so a meta that never lands is visible to the operator.
+  // NOTE: Write back so the debounce re-fetch (and human agents) see it. Best-effort; surfaced on
+  // the flow log so a meta that never lands is visible to the operator.
   try {
     await client.updateAttachmentMeta(
       params.conversationId,

@@ -218,7 +218,7 @@ describe.skipIf(!dbUp)("stt", () => {
         bytes: new ArrayBuffer(16),
         contentType: "audio/ogg",
       }),
-      // Upstream Chatwoot: the fork-only PATCH route does not exist.
+      // NOTE: Upstream Chatwoot: the fork-only PATCH route does not exist.
       updateAttachmentMeta: async () => {
         throw new Error("HTTP 404: route not found");
       },
@@ -242,9 +242,9 @@ describe.skipIf(!dbUp)("stt", () => {
         base: appDb,
       },
     });
-    // The transcription survives the lost write-back...
+    // NOTE: The transcription survives the lost write-back...
     expect(text).toBe(TRANSCRIPT);
-    // ...and lands in the in-process annotation store so the flush overlay can read it.
+    // NOTE: ...and lands in the in-process annotation store so the flush overlay can read it.
     const rows: ChatwootMessageRow[] = [
       {
         id: 60,
@@ -262,7 +262,7 @@ describe.skipIf(!dbUp)("stt", () => {
     ];
     overlayMediaAnnotations(tenantId, instanceId, rows);
     expect(rows[0]?.transcribedText).toBe(TRANSCRIPT);
-    // The lost write-back is observable on the flow log (stt stage, warn, step write_back).
+    // NOTE: The lost write-back is observable on the flow log (stt stage, warn, step write_back).
     let warned = false;
     for (let i = 0; i < 30 && !warned; i++) {
       const logs = await suDb.executionLog.findMany({

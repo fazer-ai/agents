@@ -185,8 +185,8 @@ export async function transcribeInboundAudio(
     { transcribedText: text },
   );
 
-  // Write back so the debounce re-fetch (and human agents) see it. Best-effort: a write-back failure
-  // should not lose the transcription — the direct path uses the returned value and the flush reads
+  // NOTE: Write back so the debounce re-fetch (and human agents) see it. Best-effort: a write-back
+  // failure should not lose the transcription — the direct path uses the returned value and the flush reads
   // the stash above. Surface it on the flow log anyway (a fork operator wants to know the meta is
   // not landing; an upstream operator learns why Chatwoot shows no transcription).
   try {

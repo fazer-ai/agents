@@ -46,7 +46,7 @@ describe("media annotations (issue #49)", () => {
     );
     const rows = [
       row({ id: 1 }),
-      // Meta already carries the transcription (fork write-back landed) — it stays authoritative.
+      // NOTE: Meta already carries the transcription (fork write-back landed) — it stays authoritative.
       row({ id: 2, transcribedText: "do meta" }),
       row({ id: 3 }),
     ];

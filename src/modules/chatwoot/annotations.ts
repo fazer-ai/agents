@@ -46,15 +46,28 @@ function enforceSizeCap(): void {
   }
 }
 
+// Delay until the EARLIEST retained annotation expires (null when the store is empty). Map
+// iteration is insertion-ordered and stash() re-inserts on update, so the first entry is the
+// oldest. A flat TTL_MS delay would instead let an annotation stashed right after a sweep sit for
+// nearly two TTLs before the next one runs.
+export function nextSweepDelayMs(nowMs: number = Date.now()): number | null {
+  const oldest = store.values().next().value;
+  if (!oldest) return null;
+  return Math.max(0, oldest.at + TTL_MS - nowMs);
+}
+
 // NOTE: One rescheduled timer, armed only while the store holds something and unref'd (same idiom
 // as the alert worker) so a pending sweep never keeps the process alive at shutdown.
-function scheduleSweep(): void {
-  if (sweepTimer || store.size === 0) return;
+function scheduleSweep(nowMs: number): void {
+  if (sweepTimer) return;
+  const delay = nextSweepDelayMs(nowMs);
+  if (delay === null) return;
   sweepTimer = setTimeout(() => {
     sweepTimer = undefined;
-    sweepMediaAnnotations();
-    scheduleSweep();
-  }, TTL_MS);
+    const now = Date.now();
+    sweepMediaAnnotations(now);
+    scheduleSweep(now);
+  }, delay);
   sweepTimer.unref?.();
 }
 
@@ -71,7 +84,7 @@ export function stashMediaAnnotation(
   store.set(k, { at: nowMs, note: { ...prev?.note, ...note } });
   sweepMediaAnnotations(nowMs);
   enforceSizeCap();
-  scheduleSweep();
+  scheduleSweep(nowMs);
 }
 
 // Fills IN PLACE the annotation fields a fetched page is missing. A value already present on the

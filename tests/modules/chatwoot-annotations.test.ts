@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import {
   clearMediaAnnotations,
   mediaAnnotationCount,
+  nextSweepDelayMs,
   overlayMediaAnnotations,
   stashMediaAnnotation,
   sweepMediaAnnotations,
@@ -121,6 +122,32 @@ describe("media annotations (issue #49)", () => {
     );
     sweepMediaAnnotations(1_000 + 60_000);
     expect(mediaAnnotationCount()).toBe(1);
+  });
+
+  test("the sweep is scheduled for the earliest expiry, not a flat TTL from the last stash", () => {
+    const t0 = 1_000;
+    stashMediaAnnotation(
+      { tenantId: T1, instanceId: I1, messageId: 1 },
+      { transcribedText: "A" },
+      t0,
+    );
+    const later = t0 + 14 * 60_000;
+    stashMediaAnnotation(
+      { tenantId: T1, instanceId: I1, messageId: 2 },
+      { transcribedText: "B" },
+      later,
+    );
+    // NOTE: A expires one minute from `later`; a flat TTL_MS delay would wait fifteen instead, so B
+    // would then linger for nearly a second TTL after A's sweep.
+    expect(nextSweepDelayMs(later)).toBe(60_000);
+    // After A is reclaimed, the next wake-up follows B's own expiry.
+    sweepMediaAnnotations(t0 + 16 * 60_000);
+    expect(mediaAnnotationCount()).toBe(1);
+    expect(nextSweepDelayMs(t0 + 16 * 60_000)).toBe(13 * 60_000);
+  });
+
+  test("no sweep is scheduled when nothing is retained", () => {
+    expect(nextSweepDelayMs(1_000)).toBeNull();
   });
 
   test("the size cap evicts the oldest stashes first", () => {

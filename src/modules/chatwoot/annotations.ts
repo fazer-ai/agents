@@ -21,22 +21,41 @@ const TTL_MS = 15 * 60 * 1000;
 const MAX_ENTRIES = 2000;
 
 const store = new Map<string, { at: number; note: MediaAnnotation }>();
+let sweepTimer: ReturnType<typeof setTimeout> | undefined;
 
 function keyOf(tenantId: bigint, instanceId: bigint, messageId: number) {
   return `${tenantId}:${instanceId}:${messageId}`;
 }
 
-function sweep(nowMs: number): void {
+// Deletes every annotation past the TTL. Called on each stash AND by the scheduled sweeper below,
+// so an idle process (no further voice notes) still FORGETS old transcriptions rather than holding
+// them in memory until restart — the overlay's own TTL check only hides them from readers.
+export function sweepMediaAnnotations(nowMs: number = Date.now()): void {
   for (const [k, v] of store) {
     if (nowMs - v.at > TTL_MS) store.delete(k);
   }
-  // NOTE: Map iteration is insertion-ordered and stash() re-inserts on update, so evicting from the
-  // front drops the oldest annotations when a burst outruns the TTL.
+}
+
+// NOTE: Second, independent bound: a burst that outruns the TTL is capped by entry count. Map
+// iteration is insertion-ordered and stash() re-inserts on update, so the front is the oldest.
+function enforceSizeCap(): void {
   while (store.size > MAX_ENTRIES) {
     const oldest = store.keys().next().value;
     if (oldest === undefined) break;
     store.delete(oldest);
   }
+}
+
+// NOTE: One rescheduled timer, armed only while the store holds something and unref'd (same idiom
+// as the alert worker) so a pending sweep never keeps the process alive at shutdown.
+function scheduleSweep(): void {
+  if (sweepTimer || store.size === 0) return;
+  sweepTimer = setTimeout(() => {
+    sweepTimer = undefined;
+    sweepMediaAnnotations();
+    scheduleSweep();
+  }, TTL_MS);
+  sweepTimer.unref?.();
 }
 
 // Records a completed annotation for a message, merging with any field the other eager pass already
@@ -50,7 +69,9 @@ export function stashMediaAnnotation(
   const prev = store.get(k);
   store.delete(k);
   store.set(k, { at: nowMs, note: { ...prev?.note, ...note } });
-  sweep(nowMs);
+  sweepMediaAnnotations(nowMs);
+  enforceSizeCap();
+  scheduleSweep();
 }
 
 // Fills IN PLACE the annotation fields a fetched page is missing. A value already present on the
@@ -70,7 +91,17 @@ export function overlayMediaAnnotations(
   }
 }
 
-// NOTE: Test isolation only — production never clears the store wholesale (the TTL does).
+// NOTE: Test isolation only — production never clears the store wholesale (the TTL sweep does).
 export function clearMediaAnnotations(): void {
   store.clear();
+  if (sweepTimer) {
+    clearTimeout(sweepTimer);
+    sweepTimer = undefined;
+  }
+}
+
+// NOTE: How many annotations are actually RETAINED (not merely hidden from the overlay). Exposed so
+// the TTL-deletion contract is assertable.
+export function mediaAnnotationCount(): number {
+  return store.size;
 }

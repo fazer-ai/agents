@@ -368,6 +368,12 @@ export async function runLoadedTurn(
     const inGuard = await runGuardrail("input", turnText);
     if (inGuard) {
       if (inGuard.reply !== null) {
+        // NOTE: The guardrail reply is a post like any other, so it claims the trigger through the
+        // same gate: without this, two concurrent deliveries that both trip the guardrail each post
+        // their template, and a stale one posts over newer customer input.
+        if (params.shouldPost && !(await params.shouldPost())) {
+          return "superseded";
+        }
         await client.sendMessage(conversationId, inGuard.reply);
         deliveredBalloons = 1;
         return "posted";

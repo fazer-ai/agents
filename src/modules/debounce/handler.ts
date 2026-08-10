@@ -209,8 +209,8 @@ export async function coalesceAndRunTurn(
     shouldPost,
   });
   // Every completed outcome except "superseded" consumed the burst: answered ("posted" — where
-  // shouldPost's CAS already advanced, making this a no-op), answered by the input-guardrail
-  // template (which never consults shouldPost), or deliberately dropped (taken over mid-turn, empty
+  // shouldPost's CAS already advanced, making this a no-op, including the input-guardrail template
+  // which claims through the same gate), or deliberately dropped (taken over mid-turn, empty
   // reply, guardrail "silent"). Advance so the next flush cannot re-answer the same burst (issue
   // #8: the pre-handoff backlog was re-coalesced — and the bot re-transferred for the old reason —
   // after a human returned the conversation). "superseded" stays put by design: the re-armed flush

@@ -45,7 +45,8 @@ The OpenAI `/audio/transcriptions` multipart shape is a de-facto standard, so `o
 
 - **text** → as-is.
 - **audio** → `<mensagem-de-audio>{transcription}</mensagem-de-audio>`, or a "não audível; peça texto" marker when transcription is empty/failed.
-- **image** → marker asking the customer to send text/audio (no vision yet).
+- **image/document with a vision extraction** → `<imagem>{description}</imagem>` / `<documento>{text}</documento>` (from `image_description` / `extracted_text`, meta or in-process overlay).
+- **image without an extraction** (vision off/failed) → marker asking the customer to send text/audio.
 - **other file** → `<usuário enviou um arquivo do tipo '{type}'>`.
 - **quoted/replied-to** (`content_attributes.in_reply_to`) → prefixed with the referenced snippet, resolved from the re-fetched page (flush) — omitted on the direct path (no page).
 

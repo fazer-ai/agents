@@ -583,7 +583,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   test("issue #49: a newer incoming message mid-turn supersedes the direct reply", async () => {
     await seedConversation(960, null);
     const sent: Array<[number, string]> = [];
-    // The shouldPost re-fetch sees a newer incoming message (id 2) than the trigger (id 1).
+    // NOTE: The shouldPost re-fetch sees a newer incoming message (id 2) than the trigger (id 1).
     const client = {
       getMessages: async () => ({
         payload: [
@@ -615,7 +615,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("superseded");
     expect(sent).toEqual([]);
-    // Superseded leaves the watermark for the newer message's own turn.
+    // NOTE: Superseded leaves the watermark for the newer message's own turn.
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: 960 },
       select: { lastHandledMessageId: true },
@@ -644,6 +644,49 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       instanceId,
       agentBotId: 9,
       event: incoming({ conversationId: 961 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("superseded");
+    expect(sent).toEqual([]);
+  });
+
+  test("issue #49: a newer attachment-only message (voice note) also supersedes the direct reply", async () => {
+    await seedConversation(963, null);
+    const sent: Array<[number, string]> = [];
+    // NOTE: The newer message carries no text at all — only an audio attachment.
+    const client = {
+      getMessages: async () => ({
+        payload: [
+          { id: 1, content: "oi", message_type: 0, private: false },
+          {
+            id: 2,
+            content: "",
+            message_type: 0,
+            private: false,
+            attachments: [
+              {
+                file_type: "audio",
+                data_url: "https://chat.example.com/blobs/voice.oga",
+              },
+            ],
+          },
+        ],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 963 }),
       base: appDb,
       deps: {
         makeModel: fakeModel,
@@ -908,6 +951,73 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(sent).toEqual([[940, "GEN-IN-REPLY"]]);
       // The operator is notified via a private note so a replaced reply is never invisible.
       expect(notes.length).toBe(1);
+    });
+
+    test("issue #49: an input-guardrail reply claims the trigger too (superseded → nothing posted)", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: {
+          enabled: true,
+          action: "generated",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-IN",
+        },
+        output: { enabled: false },
+      });
+      await seedConv(944);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "abuse",
+        suggestedReply: "GEN-IN-REPLY",
+      });
+      // NOTE: A newer customer message (id 2) landed while the guardrail was screening id 1.
+      const client = {
+        getMessages: async () => ({
+          payload: [
+            { id: 1, content: "xingamento", message_type: 0, private: false },
+            {
+              id: 2,
+              content: "desculpa, foi sem querer",
+              message_type: 0,
+              private: false,
+            },
+          ],
+        }),
+        sendMessage: async (c: number, content: string) => {
+          sent.push([c, content]);
+          return {};
+        },
+        sendPrivateNote: async (c: number, content: string) => {
+          notes.push([c, content]);
+          return {};
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 944, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: branchingModel(verdict),
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("superseded");
+      expect(sent).toEqual([]);
     });
 
     test("output 'generated' → replaces the agent reply with the suggestedReply", async () => {

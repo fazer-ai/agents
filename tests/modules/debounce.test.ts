@@ -752,6 +752,44 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(await watermarkOf(807)).toBe(9);
   });
 
+  test("issue #49: a newer attachment-only message (voice note) supersedes the flush", async () => {
+    await seedConversation(832);
+    const sent: Array<[number, string]> = [];
+    const calls = { getMessages: 0 };
+    const out = await flushDebounceJob({
+      job: jobFor(832),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          // NOTE: The mid-turn arrival (id 3) is a voice note: empty content, one attachment.
+          pages: [
+            page([{ id: 2, content: "oi" }]),
+            page([
+              { id: 2, content: "oi" },
+              {
+                id: 3,
+                content: "",
+                attachments: [
+                  {
+                    file_type: "audio",
+                    data_url: "https://chat.example.com/blobs/voice.oga",
+                  },
+                ],
+              },
+            ]),
+          ],
+          sent,
+          calls,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]);
+    expect(await watermarkOf(832)).toBeNull();
+  });
+
   test("issue #49: the flush renders a voice note from the in-process annotation when the meta is empty (upstream Chatwoot)", async () => {
     clearMediaAnnotations();
     await seedConversation(830);

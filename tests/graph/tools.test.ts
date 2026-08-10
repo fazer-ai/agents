@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { StructuredToolInterface } from "@langchain/core/tools";
+import type { PrismaClient } from "@/../generated/prisma/client";
 import { buildNativeTools, NATIVE_TOOL_NAMES } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 
@@ -746,5 +747,151 @@ describe("handoff targeting", () => {
     expect(byName(tools, "kanban_move_card").description ?? "").not.toContain(
       "Operator guidance:",
     );
+  });
+});
+
+// NOTE: A side effect that fails INSIDE a tool that still returns success (issue #46) must reach
+// ctx.onSideEffectError so prepare.ts can surface it as a flowlog warn — while the tool's return
+// value (what the model sees) stays a success.
+describe("swallowed side effects reach onSideEffectError (issue #46)", () => {
+  type SideEffect = {
+    tool: string;
+    phase: string;
+    detail?: Record<string, unknown>;
+    err: unknown;
+  };
+
+  test("handoff assignment failure reports phase assign and still hands off", async () => {
+    const calls: string[] = [];
+    const client = {
+      toggleStatus: async () => {
+        calls.push("toggleStatus");
+        return {};
+      },
+      assignToAgent: async () => {
+        throw new Error("Chatwoot 500 on assign");
+      },
+    } as unknown as ChatwootClient;
+    const effects: SideEffect[] = [];
+    const tools = buildNativeTools({
+      client,
+      conversationId: 5,
+      handoff: {
+        mode: "pinned",
+        targetAgentId: 7,
+        targetTeamId: null,
+        targetInstanceId: null,
+        instructions: null,
+      },
+      onSideEffectError: (e) => effects.push(e),
+    });
+    const out = String(await byName(tools, "handoff_to_human").invoke({}));
+    expect(out).toContain("Handed off to a human");
+    expect(calls).toContain("toggleStatus");
+    expect(effects).toHaveLength(1);
+    expect(effects[0]?.tool).toBe("handoff_to_human");
+    expect(effects[0]?.phase).toBe("assign");
+    expect(effects[0]?.err).toBeInstanceOf(Error);
+  });
+
+  test("handoff customer-message failure reports phase customer_message and the transfer proceeds", async () => {
+    const calls: string[] = [];
+    const client = {
+      sendMessage: async () => {
+        throw new Error("send blew up");
+      },
+      toggleStatus: async () => {
+        calls.push("toggleStatus");
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const effects: SideEffect[] = [];
+    const tools = buildNativeTools({
+      client,
+      conversationId: 5,
+      onSideEffectError: (e) => effects.push(e),
+    });
+    const out = String(
+      await byName(tools, "handoff_to_human").invoke({
+        customerMessage: "Um humano vai te atender.",
+      }),
+    );
+    expect(out).toContain("Handed off to a human");
+    expect(calls).toContain("toggleStatus");
+    expect(effects.map((e) => e.phase)).toEqual(["customer_message"]);
+    expect(effects[0]?.tool).toBe("handoff_to_human");
+  });
+
+  test("set_custom_attribute mirror write-through failure reports phase mirror_write after the Chatwoot write", async () => {
+    const { client, calls } = recordingClient();
+    const effects: SideEffect[] = [];
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      tenantId: 1n,
+      // A garbage base makes the scoped write-through throw — the exact swallowed path.
+      base: {} as unknown as PrismaClient,
+      conversationDbId: 5n,
+      onSideEffectError: (e) => effects.push(e),
+    });
+    const out = String(
+      await byName(tools, "set_custom_attribute").invoke({
+        key: "plano",
+        value: "Pro",
+        scope: "conversation",
+      }),
+    );
+    expect(out).toBe("Conversation attribute plano set.");
+    expect(calls.map((c) => c[0])).toEqual(["setConversationCustomAttributes"]);
+    expect(effects).toHaveLength(1);
+    expect(effects[0]).toMatchObject({
+      tool: "set_custom_attribute",
+      phase: "mirror_write",
+      detail: { scope: "conversation", key: "plano" },
+    });
+  });
+
+  test("kanban_move_card outbound-emit failure reports phase outbound_emit and the move sticks", async () => {
+    const { client, calls } = recordingClient();
+    const effects: SideEffect[] = [];
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      tenantId: 1n,
+      base: {} as unknown as PrismaClient,
+      kanban: {
+        taskId: 11,
+        boardId: 2,
+        boardName: "Vendas SDR",
+        currentStepId: 7,
+        currentStepName: "Novo Lead",
+        steps: [
+          { id: 7, name: "Novo Lead" },
+          { id: 22, name: "Ganho" },
+        ],
+        card: {
+          title: "Lead 1",
+          description: null,
+          priority: null,
+          status: "open",
+          value: null,
+          startDate: null,
+          dueDate: null,
+          attributes: {},
+          labels: [],
+        },
+      },
+      onSideEffectError: (e) => effects.push(e),
+    });
+    const out = String(
+      await byName(tools, "kanban_move_card").invoke({ targetStep: "Ganho" }),
+    );
+    expect(out).toBe('Moved the card to "Ganho".');
+    expect(calls.map((c) => c[0])).toEqual(["moveKanbanTask"]);
+    expect(effects).toHaveLength(1);
+    expect(effects[0]).toMatchObject({
+      tool: "kanban_move_card",
+      phase: "outbound_emit",
+    });
   });
 });

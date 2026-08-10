@@ -69,6 +69,16 @@ export interface ToolpackCtx {
   // Cancels an appointment's pending reminders (Calendar cancel; the toolpack re-arms on reschedule by
   // calling scheduleAppointmentReminders again). Same gating as scheduleAppointmentReminders.
   cancelAppointmentReminders?: (eventId: string) => Promise<void>;
+  // Reports a side effect that failed INSIDE a tool that still returns success to the model (e.g.
+  // the Asaas charge exists but persisting the correlation ref failed). prepare.ts binds this to a
+  // flowlog `tool`-stage warn so the failure reaches the Logs page and alert channels; absent
+  // (playground/tests) ⇒ the failure stays log-only. NEVER changes the tool's return value.
+  onSideEffectError?: (e: {
+    tool: string;
+    phase: string;
+    detail?: Record<string, unknown>;
+    err: unknown;
+  }) => void;
 }
 
 export type ToolRisk = "low" | "medium" | "high";

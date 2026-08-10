@@ -352,6 +352,10 @@ function readBehaviorState(a: Agent) {
     },
     limits: {
       maxToolCalls: num(li.maxToolCalls) || "10",
+      // Both memory knobs are optional: an empty field means "off", so they must NOT fall back to
+      // a number the way maxToolCalls does.
+      maxHistoryTokens: num(li.maxHistoryTokens),
+      forgetResolvedAfterDays: num(li.forgetResolvedAfterDays),
     },
     attributeContext: {
       conversation: attrKeys(ac.conversation),
@@ -603,7 +607,11 @@ export function AgentEditorPage() {
     extractionPrompt: DEFAULT_EXTRACTION_PROMPT,
   });
   // Runtime limits. Mirrors agent.settings.limits (modules/agents/limits): the per-turn tool-call cap.
-  const [limits, setLimits] = useState({ maxToolCalls: "10" });
+  const [limits, setLimits] = useState({
+    maxToolCalls: "10",
+    maxHistoryTokens: "",
+    forgetResolvedAfterDays: "",
+  });
   // NOTE: Which Chatwoot custom attributes are injected into the prompt as current values, per
   // scope. Mirrors agent.settings.attributeContext (modules/chatwoot/attributes).
   const [attributeContext, setAttributeContext] = useState<{
@@ -1052,6 +1060,10 @@ export function AgentEditorPage() {
       },
       limits: {
         maxToolCalls: Number(limits.maxToolCalls) || 10,
+        // Empty (or junk) → null, which readLimitsConfig reads as "feature off". Sending 0 would
+        // mean the same thing, but null is what the rest of the settings bag uses for "unset".
+        maxHistoryTokens: Number(limits.maxHistoryTokens) || null,
+        forgetResolvedAfterDays: Number(limits.forgetResolvedAfterDays) || null,
       },
       attributeContext: {
         conversation: attributeContext.conversation,

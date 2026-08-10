@@ -130,6 +130,8 @@ interface VisionState {
 
 interface LimitsState {
   maxToolCalls: string;
+  maxHistoryTokens: string;
+  forgetResolvedAfterDays: string;
 }
 
 // NOTE: Which Chatwoot custom attributes the agent sees the CURRENT VALUES of (one key list per
@@ -1470,6 +1472,47 @@ export function BehaviorTab({
                   value={limits.maxToolCalls}
                   onChange={(e) =>
                     setLimits({ ...limits, maxToolCalls: e.target.value })
+                  }
+                />
+              </FormField>
+              <FormField
+                label={t(
+                  "editor.limitsMaxHistoryTokens",
+                  "Memory ceiling (tokens)",
+                )}
+                description={t(
+                  "editor.limitsMaxHistoryTokensHint",
+                  "Only the most recent conversation history up to this many tokens is sent to the model. The agent's memory spans every conversation a contact had on the channel, so without a ceiling it grows forever — costing latency and provider rate limit on every message. Empty = no ceiling.",
+                )}
+              >
+                <Input
+                  type="number"
+                  min={2000}
+                  value={limits.maxHistoryTokens}
+                  onChange={(e) =>
+                    setLimits({ ...limits, maxHistoryTokens: e.target.value })
+                  }
+                />
+              </FormField>
+              <FormField
+                label={t(
+                  "editor.limitsForgetResolvedAfterDays",
+                  "Forget resolved conversations after (days)",
+                )}
+                description={t(
+                  "editor.limitsForgetResolvedAfterDaysHint",
+                  "Drops the memory of a contact whose conversations have all been closed for this long. Keep it comfortably above your longest follow-up delay — follow-ups run on this same memory. A contact with anything still scheduled is never forgotten. Empty = keep forever.",
+                )}
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  value={limits.forgetResolvedAfterDays}
+                  onChange={(e) =>
+                    setLimits({
+                      ...limits,
+                      forgetResolvedAfterDays: e.target.value,
+                    })
                   }
                 />
               </FormField>

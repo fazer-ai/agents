@@ -50,6 +50,7 @@ import {
 import {
   buildToolpackTools,
   type IntegrationSelection,
+  type SideEffectErrorReporter,
 } from "@/modules/integrations/toolpacks";
 import { type KanbanConfig, readKanbanConfig } from "@/modules/kanban/settings";
 import {
@@ -595,12 +596,7 @@ export interface ToolBuildDeps {
       vocab?: ChatwootVocab;
       kanban?: KanbanContext;
       toolInstructions?: Partial<Record<NativeToolName, string>>;
-      onSideEffectError?: (e: {
-        tool: string;
-        phase: string;
-        detail?: Record<string, unknown>;
-        err: unknown;
-      }) => void;
+      onSideEffectError?: SideEffectErrorReporter;
     },
     allowed?: Iterable<string>,
   ) => StructuredToolInterface[];
@@ -654,7 +650,9 @@ export async function buildToolset(
           stage: "tool",
           level: "warn",
           status: "error",
-          detail: { tool: e.tool, phase: e.phase, ...(e.detail ?? {}) },
+          // NOTE: Spread first — the canonical tool/phase discriminators must win over any
+          // caller-supplied detail keys (the Logs page and alerting key on detail.phase).
+          detail: { ...(e.detail ?? {}), tool: e.tool, phase: e.phase },
           errorMessage: e.err instanceof Error ? e.err.message : String(e.err),
         })
     : undefined;

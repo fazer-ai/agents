@@ -495,6 +495,10 @@ function buildCreatePixChargeTool(
           // the tool returns success either way, but the customer gets no copy-and-paste code.
           // (A 2xx without a payload is a legitimate state — e.g. no PIX key, invoiceUrl still
           // payable — and stays quiet.)
+          logger.warn(
+            { status: qr.status, env },
+            "asaas: pix qr fetch returned a non-2xx response",
+          );
           ctx.onSideEffectError?.({
             tool: "asaas_create_pix_charge",
             phase: "pix_qr",

@@ -20,6 +20,7 @@ import {
   type HandoffTargets,
   matchHandoffTarget,
 } from "@/modules/handoff/targets";
+import type { SideEffectErrorReporter } from "@/modules/integrations/toolpacks";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import {
   DEFAULT_TIMEZONE,
@@ -101,12 +102,7 @@ export interface ToolCtx {
   // the handoff happened but the assignment failed). prepare.ts binds this to a flowlog
   // `tool`-stage warn so the failure reaches the Logs page and alert channels; absent
   // (playground/tests) ⇒ the failure stays log-only. NEVER changes the tool's return value.
-  onSideEffectError?: (e: {
-    tool: string;
-    phase: string;
-    detail?: Record<string, unknown>;
-    err: unknown;
-  }) => void;
+  onSideEffectError?: SideEffectErrorReporter;
 }
 
 // Assembles a tool's final model-facing description in a fixed order: the static capability text,

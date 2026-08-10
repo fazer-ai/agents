@@ -322,12 +322,12 @@ describe("asaas toolpack — PIX charge (hermetic)", () => {
   });
 
   test("a non-2xx pixQrCode response reports the side effect (it never threw, so it used to vanish)", async () => {
-    const routes = pixRoutes({ data: [], totalCount: 0 });
-    routes[3] = {
-      match: (u: string) => u.includes("/pixQrCode"),
-      status: 500,
-      json: {},
-    };
+    // Replace the QR route by its own match predicate, independent of pixRoutes ordering.
+    const routes = pixRoutes({ data: [], totalCount: 0 }).map((r) =>
+      r.match("/payments/pay_pix_1/pixQrCode", { method: "GET" })
+        ? { ...r, status: 500, json: {} }
+        : r,
+    );
     const { impl } = scriptedFetch(routes);
     const effects: Array<{ tool: string; phase: string; err: unknown }> = [];
     const tool = pixTool(

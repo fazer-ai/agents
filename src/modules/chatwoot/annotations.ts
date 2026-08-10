@@ -32,7 +32,9 @@ function keyOf(tenantId: bigint, instanceId: bigint, messageId: number) {
 // them in memory until restart — the overlay's own TTL check only hides them from readers.
 export function sweepMediaAnnotations(nowMs: number = Date.now()): void {
   for (const [k, v] of store) {
-    if (nowMs - v.at > TTL_MS) store.delete(k);
+    // NOTE: Inclusive boundary: the scheduled sweep wakes exactly at `at + TTL_MS`, so a strict `>`
+    // would leave the entry in place and re-arm a zero-delay timer instead of reclaiming it.
+    if (nowMs - v.at >= TTL_MS) store.delete(k);
   }
 }
 
@@ -97,7 +99,7 @@ export function overlayMediaAnnotations(
 ): void {
   for (const row of rows) {
     const hit = store.get(keyOf(tenantId, instanceId, row.id));
-    if (!hit || nowMs - hit.at > TTL_MS) continue;
+    if (!hit || nowMs - hit.at >= TTL_MS) continue;
     row.transcribedText ??= hit.note.transcribedText ?? null;
     row.imageDescription ??= hit.note.imageDescription ?? null;
     row.extractedText ??= hit.note.extractedText ?? null;

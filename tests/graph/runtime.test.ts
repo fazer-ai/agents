@@ -653,6 +653,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("superseded");
     expect(sent).toEqual([]);
+    // NOTE: The CAS must also never move the watermark BACKWARDS (5 → 1), which would let the
+    // messages in between be handled a second time.
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 961 },
+      select: { lastHandledMessageId: true },
+    });
+    expect(conv.lastHandledMessageId).toBe(5);
   });
 
   test("issue #49: a newer attachment-only message (voice note) also supersedes the direct reply", async () => {

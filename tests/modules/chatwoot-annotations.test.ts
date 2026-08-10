@@ -146,6 +146,23 @@ describe("media annotations (issue #49)", () => {
     expect(nextSweepDelayMs(t0 + 16 * 60_000)).toBe(13 * 60_000);
   });
 
+  test("an annotation is reclaimed exactly at the TTL boundary", () => {
+    const t0 = 1_000;
+    stashMediaAnnotation(
+      { tenantId: T1, instanceId: I1, messageId: 1 },
+      { transcribedText: "no limite" },
+      t0,
+    );
+    // NOTE: This is the instant the scheduled sweep wakes at; a strict `>` would keep the entry and
+    // re-arm a zero-delay timer forever instead of deleting it.
+    const boundary = t0 + 15 * 60_000;
+    const rows = [row({ id: 1 })];
+    overlayMediaAnnotations(T1, I1, rows, boundary);
+    expect(rows[0]?.transcribedText).toBeNull();
+    sweepMediaAnnotations(boundary);
+    expect(mediaAnnotationCount()).toBe(0);
+  });
+
   test("no sweep is scheduled when nothing is retained", () => {
     expect(nextSweepDelayMs(1_000)).toBeNull();
   });

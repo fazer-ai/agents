@@ -13,6 +13,7 @@ export {
   getToolpackToolViews,
   type IntegrationSelection,
   registerToolpack,
+  type SideEffectErrorReporter,
   type ToolArgSpec,
   type Toolpack,
   type ToolpackCtx,

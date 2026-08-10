@@ -20,6 +20,7 @@ import {
   type HandoffTargets,
   matchHandoffTarget,
 } from "@/modules/handoff/targets";
+import type { SideEffectErrorReporter } from "@/modules/integrations/toolpacks";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import {
   DEFAULT_TIMEZONE,
@@ -97,6 +98,11 @@ export interface ToolCtx {
   // model-facing description so transfer/funnel logic lives WITH the tool instead of buried in the
   // prompt. Populated at turn prep from agent.settings (handoff.instructions / kanban.instructions).
   toolInstructions?: Partial<Record<NativeToolName, string>>;
+  // NOTE: Reports a side effect that failed INSIDE a tool that still returns success to the model
+  // (e.g. the handoff happened but the assignment failed). prepare.ts binds this to a flowlog
+  // `tool`-stage warn so the failure reaches the Logs page and alert channels; absent
+  // (playground/tests) ⇒ the failure stays log-only. NEVER changes the tool's return value.
+  onSideEffectError?: SideEffectErrorReporter;
 }
 
 // Assembles a tool's final model-facing description in a fixed order: the static capability text,
@@ -186,6 +192,11 @@ function handoffTool(ctx: ToolCtx) {
             String(ctx.conversationId),
             e instanceof Error ? e.message : String(e),
           );
+          ctx.onSideEffectError?.({
+            tool: "handoff_to_human",
+            phase: "customer_message",
+            err: e,
+          });
         }
       }
       // Transfer-with-summary: a private note for the human BEFORE handing off, gated by the
@@ -245,6 +256,12 @@ function handoffTool(ctx: ToolCtx) {
           String(ctx.conversationId),
           e instanceof Error ? e.message : String(e),
         );
+        ctx.onSideEffectError?.({
+          tool: "handoff_to_human",
+          phase: "assign",
+          detail: { mode },
+          err: e,
+        });
       }
       return `Handed off to a human (status set to open).${assigned} The bot will stay silent now.`;
     },
@@ -414,6 +431,12 @@ async function mirrorAttributeWrite(
       scope,
       e instanceof Error ? e.message : String(e),
     );
+    ctx.onSideEffectError?.({
+      tool: "set_custom_attribute",
+      phase: "mirror_write",
+      detail: { scope, key },
+      err: e,
+    });
   }
 }
 
@@ -737,6 +760,12 @@ function kanbanMoveTool(ctx: ToolCtx) {
             "outbound emit failed (event=kanban.card_moved): %s",
             err instanceof Error ? err.message : String(err),
           );
+          ctx.onSideEffectError?.({
+            tool: "kanban_move_card",
+            phase: "outbound_emit",
+            detail: { event: "kanban.card_moved" },
+            err,
+          });
         }
       }
       return `Moved the card to "${step.name}".`;

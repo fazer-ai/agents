@@ -1,4 +1,9 @@
-import { cleanTranscription, type RenderableMessage } from "./render";
+import { firstLocationAttachment } from "./normalize";
+import {
+  cleanTranscription,
+  type RenderableLocation,
+  type RenderableMessage,
+} from "./render";
 
 // Pure parser for the Chatwoot conversation-messages REST response (admin-token getMessages). The
 // list endpoint returns `{ meta, payload: [...] }` (or, defensively, a bare array). Each message
@@ -24,6 +29,9 @@ export interface ChatwootMessageRow {
   extractedText: string | null;
   // Best-effort first-attachment file name (from the data_url basename), for the unsupported marker.
   attachmentName: string | null;
+  // NOTE: The first usable location attachment's content (coordinates/title), for the
+  // <localização> marker — mirrors the direct webhook path (issue #45). Null when absent/unusable.
+  location: RenderableLocation | null;
   // content_attributes.in_reply_to — the quoted/replied-to message id, if any.
   inReplyTo: number | null;
   // content_attributes.is_reaction — true when this message is an emoji reaction (content = emoji).
@@ -82,6 +90,29 @@ function fileNameFrom(attachments: unknown): string | null {
   return null;
 }
 
+// NOTE: Raw REST attachments → the shared location extractor (the same fields the webhook mapper
+// reads: coordinates_lat / coordinates_long / fallback_title).
+function locationFrom(attachments: unknown): RenderableLocation | null {
+  if (!Array.isArray(attachments)) return null;
+  return firstLocationAttachment(
+    attachments.filter(isRecord).map((a) => ({
+      fileType: typeof a.file_type === "string" ? a.file_type : null,
+      latitude:
+        typeof a.coordinates_lat === "number" &&
+        Number.isFinite(a.coordinates_lat)
+          ? a.coordinates_lat
+          : null,
+      longitude:
+        typeof a.coordinates_long === "number" &&
+        Number.isFinite(a.coordinates_long)
+          ? a.coordinates_long
+          : null,
+      fallbackTitle:
+        typeof a.fallback_title === "string" ? a.fallback_title : null,
+    })),
+  );
+}
+
 function attachmentTypesFrom(attachments: unknown): string[] {
   if (!Array.isArray(attachments)) return [];
   const out: string[] = [];
@@ -117,6 +148,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       imageDescription: metaStringFrom(item.attachments, "image_description"),
       extractedText: metaStringFrom(item.attachments, "extracted_text"),
       attachmentName: fileNameFrom(item.attachments),
+      location: locationFrom(item.attachments),
       inReplyTo: ca ? num(ca.in_reply_to) : null,
       isReaction: ca?.is_reaction === true,
     });
@@ -148,6 +180,7 @@ export function toRenderable(row: ChatwootMessageRow): RenderableMessage {
     extractedText: row.extractedText,
     attachmentTypes: row.attachmentTypes,
     attachmentName: row.attachmentName,
+    location: row.location,
     inReplyTo: row.inReplyTo,
     isReaction: row.isReaction,
   };

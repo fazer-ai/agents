@@ -56,6 +56,7 @@ import {
   type ControlCommand,
   controlCommand,
   firstAudioAttachment,
+  firstLocationAttachment,
   firstVisualAttachment,
   isHumanAgentMessage,
   isIncomingMessage,
@@ -525,6 +526,7 @@ async function ingestUnhandledMessage(args: {
     attachmentTypes: (n.message.attachments ?? [])
       .map((a) => a.fileType)
       .filter((t): t is string => t !== null),
+    location: firstLocationAttachment(n.message.attachments),
     inReplyTo: n.message.inReplyTo,
   });
   if (!text.trim()) return;

@@ -299,6 +299,77 @@ describe("asaas toolpack — PIX charge (hermetic)", () => {
     })) as string;
     expect(out).toContain("https://sandbox.asaas.com/i/pix1");
   });
+
+  // NOTE: Issue #46 — a side effect that fails inside a tool that still returns success must reach
+  // ctx.onSideEffectError (prepare.ts surfaces it as a flowlog warn). The model-facing return value
+  // never changes.
+  test("a failed correlation-ref persist reports the side effect but still returns the charge", async () => {
+    const { impl } = scriptedFetch(pixRoutes({ data: [], totalCount: 0 }));
+    const effects: Array<{ tool: string; phase: string; err: unknown }> = [];
+    // base is undefined in this pure ctx, so the scoped write throws — the exact orphan-ref path.
+    const tool = pixTool(
+      baseCtx({ fetchImpl: impl, onSideEffectError: (e) => effects.push(e) }),
+    );
+    const out = (await tool?.invoke({
+      value: 10,
+      customerName: "Zé",
+      cpfCnpj: CPF,
+    })) as string;
+    expect(out).toContain("00020126PIXCOPYPASTE6304ABCD");
+    const persist = effects.find((e) => e.phase === "persist_ref");
+    expect(persist?.tool).toBe("asaas_create_pix_charge");
+    expect(persist?.err).toBeDefined();
+  });
+
+  test("a non-2xx pixQrCode response reports the side effect (it never threw, so it used to vanish)", async () => {
+    // Replace the QR route by its own match predicate, independent of pixRoutes ordering.
+    const routes = pixRoutes({ data: [], totalCount: 0 }).map((r) =>
+      r.match("/payments/pay_pix_1/pixQrCode", { method: "GET" })
+        ? { ...r, status: 500, json: {} }
+        : r,
+    );
+    const { impl } = scriptedFetch(routes);
+    const effects: Array<{ tool: string; phase: string; err: unknown }> = [];
+    const tool = pixTool(
+      baseCtx({ fetchImpl: impl, onSideEffectError: (e) => effects.push(e) }),
+    );
+    const out = (await tool?.invoke({
+      value: 10,
+      customerName: "Y",
+      cpfCnpj: CPF,
+    })) as string;
+    // Still a success for the model: the charge exists and the page is payable.
+    expect(out).toContain("https://sandbox.asaas.com/i/pix1");
+    const qr = effects.find((e) => e.phase === "pix_qr");
+    expect(qr?.tool).toBe("asaas_create_pix_charge");
+    expect(String(qr?.err)).toContain("500");
+  });
+
+  test("a failed correlation-ref persist on payment link reports the side effect but still returns the link", async () => {
+    const { impl } = stubFetch(200, {
+      id: "plink_9",
+      url: "https://sandbox.asaas.com/i/l9",
+    });
+    const effects: Array<{
+      tool: string;
+      phase: string;
+      detail?: Record<string, unknown>;
+    }> = [];
+    const tool = asaasToolpack.build(
+      sel({
+        enabledTools: ["asaas_payment_link_create"],
+        config: { environment: "sandbox" },
+      }),
+      baseCtx({ fetchImpl: impl, onSideEffectError: (e) => effects.push(e) }),
+    )[0];
+    const out = (await tool?.invoke({
+      value: 25,
+      description: "Plano",
+    })) as string;
+    expect(out).toContain("https://sandbox.asaas.com/i/l9");
+    expect(effects.map((e) => e.phase)).toEqual(["persist_ref"]);
+    expect(effects[0]?.tool).toBe("asaas_payment_link_create");
+  });
 });
 
 // ── DB-gated: the create tool persists the correlation ref ──

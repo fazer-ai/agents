@@ -8,6 +8,15 @@
 //   * a quoted/replied-to message → prefixed with the referenced snippet when resolvable.
 // Pure: no DB, no network. Shared by the direct (webhook) path and the debounce flush.
 
+// NOTE: A location attachment's usable content (issue #45): coordinates and/or the provider's place
+// title ("Padaria do Zé, Rua X, 123"). Coordinate-less pins keep the title; see
+// firstLocationAttachment for the (0,0) null-island rule.
+export interface RenderableLocation {
+  latitude: number | null;
+  longitude: number | null;
+  title: string | null;
+}
+
 export interface RenderableMessage {
   text: string;
   transcribedText?: string | null;
@@ -18,6 +27,9 @@ export interface RenderableMessage {
   attachmentTypes: string[];
   // Best-effort file name of the first attachment (for the "could not extract" marker).
   attachmentName?: string | null;
+  // NOTE: The first usable location attachment's content (coordinates/title), or null/absent.
+  // Rendered as a <localização …> marker so the model can pass the coordinates on as tool args.
+  location?: RenderableLocation | null;
   inReplyTo?: number | null;
   // True when this message is an emoji reaction (content = the emoji). Rendered as a context marker so
   // the agent understands the customer reacted (vs sent the emoji as a message) and can decide whether
@@ -76,6 +88,22 @@ export function renderInboundMessage(
     body = withText(
       "<usuário enviou uma imagem; peça que envie a informação por texto ou áudio>",
     );
+  } else if (m.location) {
+    // NOTE: A WhatsApp location pin: surfaced as attributes (mirroring the reaction marker) so the
+    // model reads the coordinates and forwards them as ordinary tool arguments (issue #45). A pin
+    // with neither coordinates nor title never gets here (location is null) and falls through to
+    // the generic marker below.
+    const coords =
+      m.location.latitude !== null && m.location.longitude !== null
+        ? ` latitude="${m.location.latitude}" longitude="${m.location.longitude}"`
+        : "";
+    // NOTE: The title is provider/user text inside a quoted pseudo-attribute — a double quote in it
+    // would read as closing the attribute early; swap for single quotes (no full XML escaping, per
+    // this file's marker convention).
+    const title = m.location.title
+      ? ` titulo="${m.location.title.replace(/"/g, "'")}"`
+      : "";
+    body = withText(`<localização${coords}${title}>`);
   } else if (text) {
     body = text;
   } else if (types.size > 0) {

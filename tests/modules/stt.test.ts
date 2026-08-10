@@ -258,6 +258,7 @@ describe.skipIf(!dbUp)("stt", () => {
         attachmentName: null,
         inReplyTo: null,
         isReaction: false,
+        location: null,
       },
     ];
     overlayMediaAnnotations(tenantId, instanceId, rows);
@@ -313,6 +314,7 @@ describe.skipIf(!dbUp)("stt", () => {
         attachmentName: null,
         inReplyTo: null,
         isReaction: false,
+        location: null,
       },
     ];
     overlayMediaAnnotations(tenantId, instanceId, rows);

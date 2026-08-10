@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -53,6 +54,20 @@ type JsonValue =
 
 function fakeModel() {
   return new FakeListChatModel({ responses: [REPLY] });
+}
+
+// NOTE: Captures every message list the model is invoked with, so a test can assert what the model
+// actually SAW (issue #45: the rendered location marker).
+class CaptureReplyModel {
+  seen: unknown[][] = [];
+  constructor(private reply: string) {}
+  async invoke(messages: unknown[]) {
+    this.seen.push(messages);
+    return new AIMessage(this.reply);
+  }
+  bindTools(_tools: unknown) {
+    return { invoke: (messages: unknown[]) => this.invoke(messages) };
+  }
 }
 
 function makeStubClient(sent: Array<[number, string]>) {
@@ -221,6 +236,54 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     expect(sent).toEqual([[900, REPLY]]);
+  });
+
+  // NOTE: Issue #45 end-to-end (direct path): a WhatsApp location pin must reach the model as the
+  // rendered <localização> marker — before the fix it arrived as an unusable "unsupported file".
+  test("a location pin reaches the model as a <localização> marker", async () => {
+    await seedConversation(960, null);
+    const model = new CaptureReplyModel(REPLY);
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({
+        conversationId: 960,
+        message: {
+          id: 2,
+          content: "",
+          messageType: "incoming",
+          private: false,
+          attachments: [
+            {
+              id: 5,
+              fileType: "location",
+              dataUrl: "https://maps.google.com/maps?q=-23.5505,-46.6333",
+              latitude: -23.5505,
+              longitude: -46.6333,
+              fallbackTitle: "Padaria do Zé",
+            },
+          ],
+        },
+      }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as never,
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    const first = model.seen[0] ?? [];
+    const human = [...first]
+      .reverse()
+      .find((m) => (m as { getType(): string }).getType() === "human") as
+      | { content: unknown }
+      | undefined;
+    expect(String(human?.content ?? "")).toContain(
+      '<localização latitude="-23.5505" longitude="-46.6333" titulo="Padaria do Zé">',
+    );
   });
 
   test("memory is per-contact-inbox: a new conversation reuses the thread with a divider", async () => {
@@ -581,7 +644,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   });
 
   test("issue #49: a newer incoming message mid-turn supersedes the direct reply", async () => {
-    await seedConversation(960, null);
+    await seedConversation(970, null);
     const sent: Array<[number, string]> = [];
     // NOTE: The shouldPost re-fetch sees a newer incoming message (id 2) than the trigger (id 1).
     const client = {
@@ -605,7 +668,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       tenantId,
       instanceId,
       agentBotId: 9,
-      event: incoming({ conversationId: 960 }),
+      event: incoming({ conversationId: 970 }),
       base: appDb,
       deps: {
         makeModel: fakeModel,
@@ -617,16 +680,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent).toEqual([]);
     // NOTE: Superseded leaves the watermark for the newer message's own turn.
     const conv = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: 960 },
+      where: { tenantId, chatwootConversationId: 970 },
       select: { lastHandledMessageId: true },
     });
     expect(conv.lastHandledMessageId).toBeNull();
   });
 
   test("issue #49: a stale trigger loses the watermark CAS and does not double-post", async () => {
-    await seedConversation(961, null);
+    await seedConversation(971, null);
     await suDb.conversation.updateMany({
-      where: { tenantId, chatwootConversationId: 961 },
+      where: { tenantId, chatwootConversationId: 971 },
       data: { lastHandledMessageId: 5 },
     });
     const sent: Array<[number, string]> = [];
@@ -643,7 +706,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       tenantId,
       instanceId,
       agentBotId: 9,
-      event: incoming({ conversationId: 961 }),
+      event: incoming({ conversationId: 971 }),
       base: appDb,
       deps: {
         makeModel: fakeModel,
@@ -656,14 +719,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // NOTE: The CAS must also never move the watermark BACKWARDS (5 → 1), which would let the
     // messages in between be handled a second time.
     const conv = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: 961 },
+      where: { tenantId, chatwootConversationId: 971 },
       select: { lastHandledMessageId: true },
     });
     expect(conv.lastHandledMessageId).toBe(5);
   });
 
   test("issue #49: a newer attachment-only message (voice note) also supersedes the direct reply", async () => {
-    await seedConversation(963, null);
+    await seedConversation(973, null);
     const sent: Array<[number, string]> = [];
     // NOTE: The newer message carries no text at all — only an audio attachment.
     const client = {
@@ -693,7 +756,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       tenantId,
       instanceId,
       agentBotId: 9,
-      event: incoming({ conversationId: 963 }),
+      event: incoming({ conversationId: 973 }),
       base: appDb,
       deps: {
         makeModel: fakeModel,
@@ -706,7 +769,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   });
 
   test("issue #49 guard: a clean direct turn still posts and lands the watermark", async () => {
-    await seedConversation(962, null);
+    await seedConversation(972, null);
     const sent: Array<[number, string]> = [];
     const client = {
       getMessages: async () => ({
@@ -721,7 +784,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       tenantId,
       instanceId,
       agentBotId: 9,
-      event: incoming({ conversationId: 962 }),
+      event: incoming({ conversationId: 972 }),
       base: appDb,
       deps: {
         makeModel: fakeModel,
@@ -730,9 +793,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
     });
     expect(outcome).toBe("posted");
-    expect(sent).toEqual([[962, REPLY]]);
+    expect(sent).toEqual([[972, REPLY]]);
     const conv = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: 962 },
+      where: { tenantId, chatwootConversationId: 972 },
       select: { lastHandledMessageId: true },
     });
     expect(conv.lastHandledMessageId).toBe(1);

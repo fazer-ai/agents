@@ -258,6 +258,12 @@ function buildCreateLinkTool(
           { err, linkId },
           "asaas: failed to persist correlation ref (orphan link)",
         );
+        ctx.onSideEffectError?.({
+          tool: "asaas_payment_link_create",
+          phase: "persist_ref",
+          detail: { linkId },
+          err,
+        });
       }
       return `Payment link created. Send this URL to the customer: ${url}\n(paymentLinkId: ${linkId})`;
     },
@@ -463,6 +469,12 @@ function buildCreatePixChargeTool(
           { err, paymentId },
           "asaas: failed to persist correlation ref (orphan charge)",
         );
+        ctx.onSideEffectError?.({
+          tool: "asaas_create_pix_charge",
+          phase: "persist_ref",
+          detail: { paymentId },
+          err,
+        });
       }
 
       // 3) Fetch the PIX copy-and-paste code. Best-effort: a missing PIX key on the account still
@@ -478,9 +490,30 @@ function buildCreatePixChargeTool(
         if (qr.status >= 200 && qr.status < 300) {
           const qd = (qr.json ?? {}) as Record<string, unknown>;
           if (typeof qd.payload === "string") payload = qd.payload;
+        } else {
+          // NOTE: A non-2xx never threw, so this used to vanish silently — the charge exists and
+          // the tool returns success either way, but the customer gets no copy-and-paste code.
+          // (A 2xx without a payload is a legitimate state — e.g. no PIX key, invoiceUrl still
+          // payable — and stays quiet.)
+          logger.warn(
+            { status: qr.status, env },
+            "asaas: pix qr fetch returned a non-2xx response",
+          );
+          ctx.onSideEffectError?.({
+            tool: "asaas_create_pix_charge",
+            phase: "pix_qr",
+            detail: { paymentId },
+            err: `HTTP ${qr.status}`,
+          });
         }
       } catch (err) {
         logger.warn({ err, env }, "asaas: pix qr fetch failed");
+        ctx.onSideEffectError?.({
+          tool: "asaas_create_pix_charge",
+          phase: "pix_qr",
+          detail: { paymentId },
+          err,
+        });
       }
 
       const lines = ["PIX charge created."];

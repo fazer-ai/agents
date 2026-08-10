@@ -116,3 +116,76 @@ describe("renderInboundMessage", () => {
     expect(out).toBe('<reação do cliente emoji="👍">');
   });
 });
+
+// NOTE: Issue #45 — a WhatsApp location pin must reach the model as coordinates, not as an
+// unusable "unsupported file" marker. The marker style mirrors the reaction marker (pt-BR
+// pseudo-tag with attributes).
+describe("location markers (issue #45)", () => {
+  test("coordinates + title render as a <localização> marker", () => {
+    const out = renderInboundMessage({
+      text: "",
+      attachmentTypes: ["location"],
+      location: {
+        latitude: -23.5505,
+        longitude: -46.6333,
+        title: "Padaria do Zé, Rua X, 123",
+      },
+    });
+    expect(out).toBe(
+      '<localização latitude="-23.5505" longitude="-46.6333" titulo="Padaria do Zé, Rua X, 123">',
+    );
+  });
+
+  test("coordinates without a title omit the titulo attribute", () => {
+    const out = renderInboundMessage({
+      text: "",
+      attachmentTypes: ["location"],
+      location: { latitude: 48.7484, longitude: 30.2216, title: null },
+    });
+    expect(out).toBe('<localização latitude="48.7484" longitude="30.2216">');
+  });
+
+  test("a title-only pin (provider sent no coordinates) still renders", () => {
+    const out = renderInboundMessage({
+      text: "",
+      attachmentTypes: ["location"],
+      location: { latitude: null, longitude: null, title: "Praça da Sé" },
+    });
+    expect(out).toBe('<localização titulo="Praça da Sé">');
+  });
+
+  test("text alongside the pin keeps the text and appends the marker", () => {
+    const out = renderInboundMessage({
+      text: "estou aqui",
+      attachmentTypes: ["location"],
+      location: { latitude: -1.5, longitude: -48.2, title: null },
+    });
+    expect(out).toBe(
+      'estou aqui\n<localização latitude="-1.5" longitude="-48.2">',
+    );
+  });
+
+  test("double quotes in the title become single quotes (the attribute stays intact)", () => {
+    const out = renderInboundMessage({
+      text: "",
+      attachmentTypes: ["location"],
+      location: {
+        latitude: -23.5,
+        longitude: -46.6,
+        title: 'Bar do "Zé"',
+      },
+    });
+    expect(out).toBe(
+      '<localização latitude="-23.5" longitude="-46.6" titulo="Bar do \'Zé\'">',
+    );
+  });
+
+  test("a location without usable content falls back to the generic file marker", () => {
+    const out = renderInboundMessage({
+      text: "",
+      attachmentTypes: ["location"],
+      location: null,
+    });
+    expect(out).toContain("arquivo do tipo 'location'");
+  });
+});

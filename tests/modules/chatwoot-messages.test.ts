@@ -3,7 +3,9 @@ import {
   buildQuoteResolver,
   parseChatwootMessages,
   pendingIncoming,
+  toRenderable,
 } from "@/modules/chatwoot/messages";
+import { renderInboundMessage } from "@/modules/chatwoot/render";
 
 describe("parseChatwootMessages", () => {
   test("parses { payload } with integer message_type, sorted by id", () => {
@@ -24,6 +26,7 @@ describe("parseChatwootMessages", () => {
       imageDescription: null,
       extractedText: null,
       attachmentName: null,
+      location: null,
       inReplyTo: null,
       isReaction: false,
     });
@@ -83,6 +86,43 @@ describe("parseChatwootMessages", () => {
     expect(rows[0]?.attachmentTypes).toEqual(["audio"]);
     expect(rows[0]?.transcribedText).toBe("oi tudo bem");
     expect(rows[0]?.inReplyTo).toBe(7);
+  });
+
+  // NOTE: Issue #45 — the debounce re-fetch path must carry the pin the same way the direct path
+  // does, and the maps-URL basename ("maps") must stop leaking as a fake file name.
+  test("location attachment: coordinates ride the REST row into the renderable", () => {
+    const rows = parseChatwootMessages({
+      payload: [
+        {
+          id: 11,
+          content: "",
+          message_type: 0,
+          attachments: [
+            {
+              id: 2,
+              file_type: "location",
+              coordinates_lat: -23.5505,
+              coordinates_long: -46.6333,
+              fallback_title: "Padaria do Zé",
+              data_url: "https://maps.google.com/maps?q=-23.5505,-46.6333",
+            },
+          ],
+        },
+      ],
+    });
+    const row = rows[0];
+    expect(row).toBeDefined();
+    if (!row) return;
+    const renderable = toRenderable(row);
+    expect(renderable.location).toEqual({
+      latitude: -23.5505,
+      longitude: -46.6333,
+      title: "Padaria do Zé",
+    });
+    const out = renderInboundMessage(renderable);
+    expect(out).toBe(
+      '<localização latitude="-23.5505" longitude="-46.6333" titulo="Padaria do Zé">',
+    );
   });
 });
 

@@ -50,6 +50,7 @@ import {
 import {
   buildToolpackTools,
   type IntegrationSelection,
+  type SideEffectErrorReporter,
 } from "@/modules/integrations/toolpacks";
 import { type KanbanConfig, readKanbanConfig } from "@/modules/kanban/settings";
 import {
@@ -595,6 +596,7 @@ export interface ToolBuildDeps {
       vocab?: ChatwootVocab;
       kanban?: KanbanContext;
       toolInstructions?: Partial<Record<NativeToolName, string>>;
+      onSideEffectError?: SideEffectErrorReporter;
     },
     allowed?: Iterable<string>,
   ) => StructuredToolInterface[];
@@ -631,6 +633,29 @@ export async function buildToolset(
     if (!row) return null;
     return { windows: parseWindows(row.windows), timezone: row.timezone };
   };
+  const flow = deps.flow;
+  // NOTE: A side effect that fails INSIDE a tool that still returns success is invisible in the
+  // tool's own flowlog line (the tool legitimately succeeded for the model). This binding lets toolpacks and
+  // native tools surface those failures as their OWN `tool`-stage warn line (same shape as the MCP
+  // onDiscoverError below): visible in the Logs page, and inbox traffic pages minLevel:warn alert
+  // channels. detail.tool names the trail card; detail.phase discriminates the side effect.
+  const onSideEffectError = flow
+    ? (e: {
+        tool: string;
+        phase: string;
+        detail?: Record<string, unknown>;
+        err: unknown;
+      }) =>
+        emitFlowEvent(flow, {
+          stage: "tool",
+          level: "warn",
+          status: "error",
+          // NOTE: Spread first — the canonical tool/phase discriminators must win over any
+          // caller-supplied detail keys (the Logs page and alerting key on detail.phase).
+          detail: { ...(e.detail ?? {}), tool: e.tool, phase: e.phase },
+          errorMessage: e.err instanceof Error ? e.err.message : String(e.err),
+        })
+    : undefined;
   // Deterministic appointment reminders: when the Calendar toolpack books an appointment, arm one
   // scheduler job per configured offset; cancel them on cancel/reschedule. Bound to the tenant + THIS
   // conversation's thread (the per-conversation `tenant:instance:convId`, which runAgentNudge parses —
@@ -672,6 +697,15 @@ export async function buildToolset(
             "appointment reminders enqueue failed: %s",
             e instanceof Error ? e.message : String(e),
           );
+          // NOTE: The appointment exists in Google but its reminders were never armed — the customer
+          // silently misses them. `google_calendar` is the toolpack family name (the closure does not
+          // know which calendar tool called it).
+          onSideEffectError?.({
+            tool: "google_calendar",
+            phase: "reminders_enqueue",
+            detail: { eventId: a.eventId },
+            err: e,
+          });
         }
       }
     : undefined;
@@ -684,6 +718,12 @@ export async function buildToolset(
             "appointment reminders cancel failed: %s",
             e instanceof Error ? e.message : String(e),
           );
+          onSideEffectError?.({
+            tool: "google_calendar",
+            phase: "reminders_cancel",
+            detail: { eventId },
+            err: e,
+          });
         }
       }
     : undefined;
@@ -706,7 +746,6 @@ export async function buildToolset(
           }
         }
       : undefined;
-  const flow = deps.flow;
   const mcpTools = await loadMcpToolsForAgent(ctx.tenantId, cfg.mcpSelections, {
     // Default google_oauth refresh (overridable by tests via deps.mcp). Resolves the entry id from
     // the `vault:<id>` ref and returns a fresh access token, refreshing via Google when stale.
@@ -742,6 +781,7 @@ export async function buildToolset(
     resolveBusinessHours,
     scheduleAppointmentReminders,
     cancelAppointmentReminders: cancelAppointmentRemindersFn,
+    onSideEffectError,
     // Only a real conversation gets the live handle (mirrors the emitAck gate); the playground
     // builds with conversationId 0 + a stub client, so customer-delivery tools degrade.
     ...(ctx.conversationId > 0
@@ -857,6 +897,7 @@ export async function buildToolset(
         vocab,
         kanban,
         toolInstructions,
+        onSideEffectError,
       },
       cfg.nativeToolsAllow,
     ),

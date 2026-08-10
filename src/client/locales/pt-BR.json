@@ -1493,6 +1493,10 @@
       "desc": "Registra se o cliente prefere respostas em áudio ou em texto.",
       "label": "Preferência de voz"
     },
+    "set_contact_name": {
+      "desc": "Salva no contato do Chatwoot o nome informado explicitamente pelo cliente.",
+      "label": "Atualizar nome do contato"
+    },
     "skip_reply": {
       "desc": "Decide não responder quando a mensagem não pede resposta (ex.: só 'ok' ou um emoji).",
       "label": "Não responder"

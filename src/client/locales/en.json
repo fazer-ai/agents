@@ -1488,6 +1488,10 @@
       "desc": "Record whether the customer prefers audio or text replies.",
       "label": "Voice preference"
     },
+    "set_contact_name": {
+      "desc": "Save the customer's explicitly provided name on the Chatwoot contact.",
+      "label": "Update contact name"
+    },
     "skip_reply": {
       "desc": "Decide not to reply when a message needs no answer (e.g. just 'ok' or an emoji).",
       "label": "Skip reply"

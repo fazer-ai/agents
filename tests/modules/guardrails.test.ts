@@ -107,6 +107,29 @@ describe("buildGuardrailSystemPrompt", () => {
     expect(p).toContain("Offer a human handoff.");
     expect(p).toContain("suggestedReply");
   });
+
+  test("grounds output adherence in the customer message and strict instructions", () => {
+    const p = buildGuardrailSystemPrompt({
+      ...base,
+      systemPrompt: "Always address the customer by name. Never mention internals.",
+      customerMessage: "Quanto tempo dura a consulta?",
+    });
+    expect(p).toContain("The customer message this reply must answer");
+    expect(p).toContain("Quanto tempo dura a consulta?");
+    expect(p).toContain("MUST, ALWAYS, NEVER, REQUIRED, EXACTLY");
+    expect(p).toContain("answers a different question");
+    expect(p).toContain("omits a required element");
+  });
+
+  test("does not include customer context for input moderation", () => {
+    const p = buildGuardrailSystemPrompt({
+      ...base,
+      direction: "input",
+      customerMessage: "context must stay output-only",
+    });
+    expect(p).not.toContain("context must stay output-only");
+    expect(p).not.toContain("Prompt-adherence review procedure");
+  });
 });
 
 describe("analyzeGuardrail", () => {

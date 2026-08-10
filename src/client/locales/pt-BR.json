@@ -1485,6 +1485,10 @@
       "desc": "Marca a conversa como resolvida quando o pedido foi totalmente atendido.",
       "label": "Resolver"
     },
+    "set_contact_name": {
+      "desc": "Salva no contato do Chatwoot o nome informado explicitamente pelo cliente.",
+      "label": "Atualizar nome do contato"
+    },
     "set_custom_attribute": {
       "desc": "Define um atributo personalizado na conversa, no contato ou no card do kanban (ex.: estágio do lead, qualificação).",
       "label": "Definir atributo"
@@ -1492,10 +1496,6 @@
     "set_voice_preference": {
       "desc": "Registra se o cliente prefere respostas em áudio ou em texto.",
       "label": "Preferência de voz"
-    },
-    "set_contact_name": {
-      "desc": "Salva no contato do Chatwoot o nome informado explicitamente pelo cliente.",
-      "label": "Atualizar nome do contato"
     },
     "skip_reply": {
       "desc": "Decide não responder quando a mensagem não pede resposta (ex.: só 'ok' ou um emoji).",

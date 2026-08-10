@@ -19,6 +19,7 @@ function recordingClient() {
     setConversationCustomAttributes: rec("setConversationCustomAttributes"),
     moveKanbanTask: rec("moveKanbanTask"),
     updateKanbanTask: rec("updateKanbanTask"),
+    updateContact: rec("updateContact"),
   } as unknown as ChatwootClient;
   return { client, calls };
 }
@@ -87,6 +88,48 @@ describe("native tools", () => {
       ["toggleStatus", [42, "open"]],
     ]);
     expect(String(out)).toContain("human");
+  });
+
+  test("set_contact_name updates Chatwoot and the mirrored contact", async () => {
+    const { client, calls } = recordingClient();
+    const updates: unknown[] = [];
+    const tx = {
+      $executeRaw: async () => 1,
+      contact: {
+        findUnique: async () => ({ chatwootContactId: 321 }),
+        updateMany: async (args: unknown) => {
+          updates.push(args);
+          return { count: 1 };
+        },
+      },
+    };
+    const base = {
+      $extends: () => ({
+        $transaction: async (fn: (db: typeof tx) => Promise<unknown>) => fn(tx),
+      }),
+    } as never;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 42,
+      tenantId: 1n,
+      contactDbId: 7n,
+      base,
+    });
+
+    const result = await byName(tools, "set_contact_name").invoke({
+      name: "  Mariana   Almeida  ",
+    });
+
+    expect(calls).toEqual([
+      ["updateContact", [321, { name: "Mariana Almeida" }]],
+    ]);
+    expect(updates).toEqual([
+      {
+        where: { id: 7n },
+        data: { name: "Mariana Almeida" },
+      },
+    ]);
+    expect(String(result)).toContain("Mariana Almeida");
   });
 
   test("handoff with customerMessage replies to the customer before the note and transfer", async () => {

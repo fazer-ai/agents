@@ -865,6 +865,63 @@ function updateKanbanTaskTool(ctx: ToolCtx) {
   );
 }
 
+// Updates the current customer's name after they explicitly state or correct it. Chatwoot remains
+// the source of truth; the local mirror is updated immediately so the next prompt sees the new name.
+function setContactNameTool(ctx: ToolCtx) {
+  return tool(
+    async ({ name }: { name: string }) => {
+      const normalized = name.trim().replace(/\s+/g, " ");
+      if (!ctx.tenantId || !ctx.base || !ctx.contactDbId) {
+        return "The contact is not mirrored, so the name could not be updated.";
+      }
+      const contactDbId = ctx.contactDbId;
+
+      const contact = await runScopedOn(ctx.base, sysCtx(ctx.tenantId), (db) =>
+        db.contact.findUnique({
+          where: { id: contactDbId },
+          select: { chatwootContactId: true },
+        }),
+      );
+      if (!contact?.chatwootContactId) {
+        return "The contact no longer exists in Chatwoot.";
+      }
+
+      await ctx.client.updateContact(contact.chatwootContactId, {
+        name: normalized,
+      });
+      await runScopedOn(ctx.base, sysCtx(ctx.tenantId), (db) =>
+        db.contact.updateMany({
+          where: { id: contactDbId },
+          data: { name: normalized },
+        }),
+      );
+      return `Contact name updated to "${normalized}".`;
+    },
+    {
+      name: "set_contact_name",
+      description: withOperatorNote(
+        "Update the current customer's name in Chatwoot after the customer explicitly states or corrects their own name. Use the full name exactly as provided, without inventing a surname. Do not call when the current contact name is already reliable, when the text is only a greeting, or when the apparent name belongs to someone else.",
+        ctx,
+        "set_contact_name",
+      ),
+      schema: z.object({
+        name: z
+          .string()
+          .trim()
+          .min(2)
+          .max(120)
+          .regex(/[\p{L}]/u)
+          .refine((value) => !/^\+?[\d\s().-]+$/.test(value), {
+            message: "name must not be a phone number",
+          })
+          .describe(
+            "Customer name exactly as explicitly provided by the customer.",
+          ),
+      }),
+    },
+  );
+}
+
 // Records the customer's audio-vs-text reply preference on the Contact (TTS "preference" mode). A
 // DB write (RLS-scoped), not a Chatwoot call — the elegant replacement for the n8n custom attribute.
 function setVoicePreferenceTool(ctx: ToolCtx) {
@@ -1045,6 +1102,7 @@ export function buildNativeTools(
     kanbanMoveTool(ctx),
     updateKanbanTaskTool(ctx),
     setVoicePreferenceTool(ctx),
+    setContactNameTool(ctx),
     reactToMessageTool(ctx),
     skipReplyTool(ctx),
     calculatorTool(ctx),

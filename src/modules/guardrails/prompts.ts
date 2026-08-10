@@ -11,6 +11,9 @@ export interface GuardrailPromptParams {
   customPolicy: string;
   // The main agent's instructions (its system prompt), for the promptAdherence (output) check.
   systemPrompt?: string;
+  // The customer message the output reply is answering. Without it, prompt adherence can check
+  // persona and policy but cannot reliably detect an irrelevant or incomplete answer.
+  customerMessage?: string;
   // Steering for the generated replacement reply (action === "generated"); empty → generic safe reply.
   generationPrompt?: string;
 }
@@ -51,6 +54,28 @@ export function buildGuardrailSystemPrompt(p: GuardrailPromptParams): string {
       '"""',
       p.systemPrompt,
       '"""',
+    );
+  }
+  if (
+    p.direction === "output" &&
+    p.checks.promptAdherence &&
+    p.customerMessage?.trim()
+  ) {
+    lines.push(
+      "",
+      "The customer message this reply must answer:",
+      '"""',
+      p.customerMessage.trim(),
+      '"""',
+    );
+  }
+  if (p.direction === "output" && p.checks.promptAdherence) {
+    lines.push(
+      "",
+      "Prompt-adherence review procedure:",
+      "- Compare the reply with both the customer message and the agent's instructions.",
+      "- Treat explicit MUST, ALWAYS, NEVER, REQUIRED, EXACTLY, and equivalent instructions in any language as testable requirements, not suggestions.",
+      "- Mark prompt_adherence violated when the reply omits a required element, includes forbidden wording or action, answers a different question, or claims support that the supplied context does not establish.",
     );
   }
   if (p.customPolicy.trim()) {

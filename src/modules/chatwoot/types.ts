@@ -42,6 +42,14 @@ export interface NormalizedChatwootAttachment {
   // message_created; populated once our STT write-back lands (which the fork re-dispatches as a
   // message_updated). Read to make eager STT idempotent and to render the transcription in the UI.
   transcribedText?: string | null;
+  // Location attachments (a WhatsApp pin) also ship their coordinates + human-readable place name
+  // in the payload (Attachment#push_event_data → location_metadata: coordinates_lat /
+  // coordinates_long / fallback_title). The columns default to 0.0, so an exact (0,0) means "the
+  // provider sent no coordinates", not a real pin (see firstLocationAttachment). Absent on every
+  // other file_type.
+  latitude?: number | null;
+  longitude?: number | null;
+  fallbackTitle?: string | null;
 }
 
 export interface NormalizedChatwootMessage {

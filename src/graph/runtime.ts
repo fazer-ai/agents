@@ -13,6 +13,7 @@ import {
 } from "@/modules/chatwoot/messages";
 import {
   firstAudioAttachment,
+  firstLocationAttachment,
   isIncomingMessage,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
@@ -578,6 +579,7 @@ export async function runAgentTurn(
     attachmentTypes: (n.message?.attachments ?? [])
       .map((a) => a.fileType)
       .filter((t): t is string => t !== null),
+    location: firstLocationAttachment(n.message?.attachments),
     inReplyTo: n.message?.inReplyTo,
     isReaction: n.message?.isReaction,
   };

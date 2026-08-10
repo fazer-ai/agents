@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -53,6 +54,20 @@ type JsonValue =
 
 function fakeModel() {
   return new FakeListChatModel({ responses: [REPLY] });
+}
+
+// NOTE: Captures every message list the model is invoked with, so a test can assert what the model
+// actually SAW (issue #45: the rendered location marker).
+class CaptureReplyModel {
+  seen: unknown[][] = [];
+  constructor(private reply: string) {}
+  async invoke(messages: unknown[]) {
+    this.seen.push(messages);
+    return new AIMessage(this.reply);
+  }
+  bindTools(_tools: unknown) {
+    return { invoke: (messages: unknown[]) => this.invoke(messages) };
+  }
 }
 
 function makeStubClient(sent: Array<[number, string]>) {
@@ -221,6 +236,54 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     expect(sent).toEqual([[900, REPLY]]);
+  });
+
+  // NOTE: Issue #45 end-to-end (direct path): a WhatsApp location pin must reach the model as the
+  // rendered <localização> marker — before the fix it arrived as an unusable "unsupported file".
+  test("a location pin reaches the model as a <localização> marker", async () => {
+    await seedConversation(960, null);
+    const model = new CaptureReplyModel(REPLY);
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({
+        conversationId: 960,
+        message: {
+          id: 2,
+          content: "",
+          messageType: "incoming",
+          private: false,
+          attachments: [
+            {
+              id: 5,
+              fileType: "location",
+              dataUrl: "https://maps.google.com/maps?q=-23.5505,-46.6333",
+              latitude: -23.5505,
+              longitude: -46.6333,
+              fallbackTitle: "Padaria do Zé",
+            },
+          ],
+        },
+      }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as never,
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    const first = model.seen[0] ?? [];
+    const human = [...first]
+      .reverse()
+      .find((m) => (m as { getType(): string }).getType() === "human") as
+      | { content: unknown }
+      | undefined;
+    expect(String(human?.content ?? "")).toContain(
+      '<localização latitude="-23.5505" longitude="-46.6333" titulo="Padaria do Zé">',
+    );
   });
 
   test("memory is per-contact-inbox: a new conversation reuses the thread with a divider", async () => {

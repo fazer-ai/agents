@@ -43,6 +43,7 @@ The OpenAI `/audio/transcriptions` multipart shape is a de-facto standard, so `o
 - **text** → as-is.
 - **audio** → `<mensagem-de-audio>{transcription}</mensagem-de-audio>`, or a "não audível; peça texto" marker when transcription is empty/failed.
 - **image** → marker asking the customer to send text/audio (no vision yet).
+- **location** (a WhatsApp pin) → `<localização latitude="…" longitude="…" titulo="…">` — coordinates + place title from the attachment (`coordinates_lat`/`coordinates_long`/`fallback_title`); the model forwards them as ordinary tool args. `(0,0)` is the column default, treated as "no coordinates"; a pin with neither coordinates nor title falls back to the generic marker.
 - **other file** → `<usuário enviou um arquivo do tipo '{type}'>`.
 - **quoted/replied-to** (`content_attributes.in_reply_to`) → prefixed with the referenced snippet, resolved from the re-fetched page (flush) — omitted on the direct path (no page).
 

@@ -8,10 +8,12 @@ import {
   runLoadedTurn,
 } from "@/graph/runtime";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   buildQuoteResolver,
   type ChatwootMessageRow,
+  maxIncomingId,
   parseChatwootMessages,
   pendingIncoming,
   toRenderable,
@@ -43,22 +45,6 @@ function sysCtx(tenantId: bigint): TenantContext {
 
 function err(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
-}
-
-// The highest incoming, non-private, non-empty message id in a fetched page (or `floor` if none).
-function maxIncomingId(messages: ChatwootMessageRow[], floor: number): number {
-  let max = floor;
-  for (const m of messages) {
-    if (
-      m.messageType === "incoming" &&
-      !m.private &&
-      m.content.trim() &&
-      m.id > max
-    ) {
-      max = m.id;
-    }
-  }
-  return max;
 }
 
 // The shared "re-fetch → coalesce a burst → answer once" tail, reused by the debounce flush AND the
@@ -107,6 +93,10 @@ export async function coalesceAndRunTurn(
   const messages = parseChatwootMessages(
     await client.getMessages(conversationId),
   );
+  // NOTE: Overlay the in-process media annotations BEFORE selecting/rendering: on upstream Chatwoot
+  // the attachment-meta write-back 404s, so this is the only way a voice note's transcription (or a
+  // vision extraction) reaches the flush (issue #49). Meta values, when present, stay authoritative.
+  overlayMediaAnnotations(tenantId, instanceId, messages);
   let pending = ctx.selectPending(messages);
   if (pending.length === 0) return "empty";
 

@@ -580,6 +580,114 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     }
   });
 
+  test("issue #49: a newer incoming message mid-turn supersedes the direct reply", async () => {
+    await seedConversation(960, null);
+    const sent: Array<[number, string]> = [];
+    // The shouldPost re-fetch sees a newer incoming message (id 2) than the trigger (id 1).
+    const client = {
+      getMessages: async () => ({
+        payload: [
+          { id: 1, content: "oi", message_type: 0, private: false },
+          {
+            id: 2,
+            content: "na verdade, esquece",
+            message_type: 0,
+            private: false,
+          },
+        ],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 960 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("superseded");
+    expect(sent).toEqual([]);
+    // Superseded leaves the watermark for the newer message's own turn.
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 960 },
+      select: { lastHandledMessageId: true },
+    });
+    expect(conv.lastHandledMessageId).toBeNull();
+  });
+
+  test("issue #49: a stale trigger loses the watermark CAS and does not double-post", async () => {
+    await seedConversation(961, null);
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 961 },
+      data: { lastHandledMessageId: 5 },
+    });
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [{ id: 1, content: "oi", message_type: 0, private: false }],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 961 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("superseded");
+    expect(sent).toEqual([]);
+  });
+
+  test("issue #49 guard: a clean direct turn still posts and lands the watermark", async () => {
+    await seedConversation(962, null);
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [{ id: 1, content: "oi", message_type: 0, private: false }],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 962 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(sent).toEqual([[962, REPLY]]);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 962 },
+      select: { lastHandledMessageId: true },
+    });
+    expect(conv.lastHandledMessageId).toBe(1);
+  });
+
   test("non-incoming (outgoing) message is skipped before any LLM call", async () => {
     const sent: Array<[number, string]> = [];
     const outcome = await runAgentTurn({

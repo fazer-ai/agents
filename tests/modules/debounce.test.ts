@@ -1,10 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import {
+  clearMediaAnnotations,
+  stashMediaAnnotation,
+} from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import {
@@ -110,7 +115,13 @@ function makeResolveStub(opts: {
 }
 
 function page(
-  msgs: Array<{ id: number; content: string; type?: number; priv?: boolean }>,
+  msgs: Array<{
+    id: number;
+    content: string;
+    type?: number;
+    priv?: boolean;
+    attachments?: unknown[];
+  }>,
 ) {
   return {
     payload: msgs.map((m) => ({
@@ -118,8 +129,24 @@ function page(
       content: m.content,
       message_type: m.type ?? 0,
       private: m.priv ?? false,
+      ...(m.attachments ? { attachments: m.attachments } : {}),
     })),
   };
+}
+
+// A duck-typed model that records every prompt it sees (same shape as ResolveThenReplyModel).
+class CaptureReplyModel {
+  seen: string[] = [];
+  constructor(private reply: string) {}
+  async invoke(messages: Array<{ content: unknown }>) {
+    this.seen.push(messages.map((m) => String(m.content)).join("\n"));
+    return new AIMessage(this.reply);
+  }
+  bindTools(_tools: unknown) {
+    return {
+      invoke: (messages: Array<{ content: unknown }>) => this.invoke(messages),
+    };
+  }
 }
 
 function threadOf(convId: number) {
@@ -723,5 +750,94 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([[807, REPLY]]); // one reply, to the new request only
     expect(await watermarkOf(807)).toBe(9);
+  });
+
+  test("issue #49: the flush renders a voice note from the in-process annotation when the meta is empty (upstream Chatwoot)", async () => {
+    clearMediaAnnotations();
+    await seedConversation(830);
+    // Upstream Chatwoot: the fork meta route 404s, so the eager pass could only stash in-process.
+    stashMediaAnnotation(
+      { tenantId, instanceId, messageId: 3 },
+      { transcribedText: "olá, quero agendar uma consulta" },
+    );
+    const sent: Array<[number, string]> = [];
+    const calls = { getMessages: 0 };
+    const model = new CaptureReplyModel(REPLY);
+    const out = await flushDebounceJob({
+      job: jobFor(830),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              {
+                id: 3,
+                content: "",
+                attachments: [
+                  {
+                    file_type: "audio",
+                    data_url: "https://chat.example.com/blobs/voice.oga",
+                  },
+                ],
+              },
+            ]),
+          ],
+          sent,
+          calls,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([[830, REPLY]]);
+    expect(model.seen[0]).toContain(
+      "<mensagem-de-audio>olá, quero agendar uma consulta</mensagem-de-audio>",
+    );
+    expect(model.seen[0]).not.toContain("não audível");
+    expect(await watermarkOf(830)).toBe(3);
+  });
+
+  test("issue #49 guard: a transcription already on the attachment meta wins over the stash", async () => {
+    clearMediaAnnotations();
+    await seedConversation(831);
+    stashMediaAnnotation(
+      { tenantId, instanceId, messageId: 4 },
+      { transcribedText: "cache perdedor" },
+    );
+    const sent: Array<[number, string]> = [];
+    const calls = { getMessages: 0 };
+    const model = new CaptureReplyModel(REPLY);
+    const out = await flushDebounceJob({
+      job: jobFor(831),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              {
+                id: 4,
+                content: "",
+                attachments: [
+                  {
+                    file_type: "audio",
+                    data_url: "https://chat.example.com/blobs/voice.oga",
+                    meta: { transcribed_text: "vim do meta do fork" },
+                  },
+                ],
+              },
+            ]),
+          ],
+          sent,
+          calls,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(model.seen[0]).toContain(
+      "<mensagem-de-audio>vim do meta do fork</mensagem-de-audio>",
+    );
   });
 });

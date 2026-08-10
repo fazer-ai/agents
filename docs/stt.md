@@ -17,11 +17,14 @@ incoming message with an audio attachment (gate=act)
      cleanTranscription (drop Whisper's Amara.org silence hallucination) →
      client.updateAttachmentMeta { transcribed_text }   ← write-back (no body mirrored in OUR DB)
         │  also stashed on the in-memory event (n.message.transcribedText) for the direct path
+        │  AND in the in-process annotation store (chatwoot/annotations.ts) for the flush
         ▼
-   arm debounce / direct turn  (the flush re-fetch reads transcribed_text back)
+   arm debounce / direct turn  (the flush re-fetch reads transcribed_text back, overlaying the store)
 ```
 
-STT runs **before** arming/answering so the debounce re-fetch (and the direct path) get text instead of an empty audio message. The transcription lives only in Chatwoot (attachment meta), never in our DB — consistent with the anti-PII no-body-mirror rule. Best-effort: any STT failure leaves the audio to render as a "please send text" marker and never strands the delivery.
+STT runs **before** arming/answering so the debounce re-fetch (and the direct path) get text instead of an empty audio message. The transcription lives only in Chatwoot (attachment meta) plus a TTL-bound in-process cache, never in our DB — consistent with the anti-PII no-body-mirror rule. Best-effort: any STT failure leaves the audio to render as a "please send text" marker and never strands the delivery.
+
+**The meta write-back is a fork route, not a requirement.** `updateAttachmentMeta` PATCHes a route that only exists on the fazer.ai Chatwoot fork; on upstream Chatwoot it 404s (logged as an `stt`/`vision` warn line, `detail.step = "write_back"`). The transcription still reaches the agent on both paths: the direct turn uses the returned value, and the debounce flush overlays the in-process annotation store (`src/modules/chatwoot/annotations.ts`, stash-at-transcription + overlay-at-re-fetch, 15-minute TTL) over whatever the attachment meta is missing. What the fork ADDS is persistence and visibility: human agents see the transcription in the Chatwoot UI, and it survives an app restart within the debounce window. The same contract covers the vision write-back (`image_description` / `extracted_text`).
 
 **The download races Chatwoot's own storage write.** `message_created` carries the attachment's `data_url` but is dispatched *before* ActiveStorage finishes writing the file, so the eager download (it fires ~70ms after the webhook) can hit the storage service ahead of the bytes and get a **404** — the voice note then goes untranscribed and the customer is asked to "send text" for an audio that is perfectly fine. `downloadAttachment` therefore takes `retryOnMissing`, retrying **404 only** on a bounded backoff (250/750/1500ms, ~3 extra seconds worst case, inside a typical debounce window); every other status still fails immediately. The eager STT/vision path opts in; the interactive media proxy (`getConversationMedia`) does **not**, because there a 404 means the file is genuinely gone and the operator must not wait out the backoff. A download failure now also emits its own `stt`/`vision` line (warn + `status: error`, `detail.step = "download"`): it sits outside the `withFlowStage` span, so before this it left **no** trace on the Logs page at all.
 
@@ -46,7 +49,7 @@ The OpenAI `/audio/transcriptions` multipart shape is a de-facto standard, so `o
 - **other file** → `<usuário enviou um arquivo do tipo '{type}'>`.
 - **quoted/replied-to** (`content_attributes.in_reply_to`) → prefixed with the referenced snippet, resolved from the re-fetched page (flush) — omitted on the direct path (no page).
 
-The flush's `pendingIncoming` now includes voice notes (empty content + an attachment), not just text. `parseChatwootMessages` reads `attachments[].meta.transcribed_text` (REST list) so the re-fetch surfaces the write-back.
+The flush's `pendingIncoming` now includes voice notes (empty content + an attachment), not just text. `parseChatwootMessages` reads `attachments[].meta.transcribed_text` (REST list) so the re-fetch surfaces the write-back; `overlayMediaAnnotations` then fills anything the meta is missing from the in-process store (upstream Chatwoot, where the write-back route does not exist).
 
 ## Configuration
 
@@ -54,8 +57,9 @@ Per-agent, in `agent.settings.stt` (free-form bag, validated by `readSttConfig`)
 
 ## Known limits
 
-- Vision is not implemented: images become a "send text/audio" marker (n8n parity — it was a placeholder there too).
+- Images/documents without a vision extraction (vision off or failed) become a "send text/audio" marker; the eager vision pass, when enabled, fills `image_description`/`extracted_text` under the same write-back + overlay contract as STT.
 - Attachment download follows storage redirects (S3) without re-validating the redirect target (TOCTOU); the data_url comes from the HMAC-authenticated webhook of the tenant's own Chatwoot.
-- If STT is slower than the debounce window the flush may re-fetch before write-back lands; the re-arm/supersede recovers on the next message. Whisper/Scribe are fast; rare.
+- If STT is slower than the debounce window a CONCURRENT delivery's flush may re-fetch before this message's transcription completes (nothing to overlay yet); the re-arm/supersede recovers on the next message. Whisper/Scribe are fast; rare.
+- The in-process annotation store is per-process memory: an app restart inside the debounce window loses the overlay on upstream Chatwoot (the fork's meta write-back survives restarts). Bounded by the single-replica deploy invariant (`docs/deploy.md`).
 
 Read before touching `src/modules/stt/*`, `chatwoot/render.ts`, the message parser, or the eager-STT seam in the webhook.

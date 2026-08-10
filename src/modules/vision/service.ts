@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
@@ -210,7 +211,19 @@ export async function extractInboundFile(
   }
   if (!text) return null;
 
-  // Write back so the debounce re-fetch (and human agents) see it. Best-effort.
+  // NOTE: Stash BEFORE the write-back — same contract as the STT pass: on upstream Chatwoot (no
+  // fork meta route) the in-process overlay is the only reader of this extraction (issue #49).
+  stashMediaAnnotation(
+    {
+      tenantId: params.tenantId,
+      instanceId: params.instanceId,
+      messageId: params.messageId,
+    },
+    kind === "image" ? { imageDescription: text } : { extractedText: text },
+  );
+
+  // Write back so the debounce re-fetch (and human agents) see it. Best-effort; surfaced on the
+  // flow log so a meta that never lands is visible to the operator.
   try {
     await client.updateAttachmentMeta(
       params.conversationId,
@@ -219,6 +232,16 @@ export async function extractInboundFile(
       { [metaKeyFor(kind)]: text },
     );
   } catch (e) {
+    if (params.flow) {
+      emitFlowEvent(params.flow, {
+        stage: "vision",
+        level: "warn",
+        status: "error",
+        provider: cfg.provider,
+        detail: { step: "write_back" },
+        errorMessage: e instanceof Error ? e.message : String(e),
+      });
+    }
     logger.warn(
       "vision: write-back failed (conv=%s msg=%d): %s",
       String(params.conversationId),

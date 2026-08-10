@@ -2,7 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import {
+  clearMediaAnnotations,
+  overlayMediaAnnotations,
+} from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 import {
   resolveSttConfig,
   transcribeInboundAudio,
@@ -198,6 +203,120 @@ describe.skipIf(!dbUp)("stt", () => {
     });
     expect(text).toBeNull();
     expect(meta).toEqual([]);
+  });
+
+  test("issue #49: a write-back failure (upstream Chatwoot) keeps the transcription, stashes the annotation, and logs a warn", async () => {
+    clearMediaAnnotations();
+    const cfg = (await resolveSttConfig(
+      tenantId,
+      instanceId,
+      CHATWOOT_INBOX_ID,
+      appDb,
+    )) as SttConfig;
+    const client = {
+      downloadAttachment: async () => ({
+        bytes: new ArrayBuffer(16),
+        contentType: "audio/ogg",
+      }),
+      // Upstream Chatwoot: the fork-only PATCH route does not exist.
+      updateAttachmentMeta: async () => {
+        throw new Error("HTTP 404: route not found");
+      },
+    } as unknown as ChatwootClient;
+    const turnId = crypto.randomUUID();
+    const text = await transcribeInboundAudio({
+      tenantId,
+      instanceId,
+      conversationId: 903,
+      messageId: 60,
+      attachmentId: 12,
+      dataUrl: "https://chat.example.com/audio.ogg",
+      cfg,
+      base: appDb,
+      deps: { makeClient: async () => client, fetchImpl: sttFetch(TRANSCRIPT) },
+      flow: {
+        tenantId,
+        turnId,
+        source: "inbox",
+        threadId: `${tenantId}:${instanceId}:903`,
+        base: appDb,
+      },
+    });
+    // The transcription survives the lost write-back...
+    expect(text).toBe(TRANSCRIPT);
+    // ...and lands in the in-process annotation store so the flush overlay can read it.
+    const rows: ChatwootMessageRow[] = [
+      {
+        id: 60,
+        content: "",
+        messageType: "incoming" as const,
+        private: false,
+        attachmentTypes: ["audio"],
+        transcribedText: null,
+        imageDescription: null,
+        extractedText: null,
+        attachmentName: null,
+        inReplyTo: null,
+        isReaction: false,
+      },
+    ];
+    overlayMediaAnnotations(tenantId, instanceId, rows);
+    expect(rows[0]?.transcribedText).toBe(TRANSCRIPT);
+    // The lost write-back is observable on the flow log (stt stage, warn, step write_back).
+    let warned = false;
+    for (let i = 0; i < 30 && !warned; i++) {
+      const logs = await suDb.executionLog.findMany({
+        where: { tenantId, turnId, stage: "stt", level: "warn" },
+        select: { detail: true },
+      });
+      warned = logs.some(
+        (r) =>
+          (r.detail as Record<string, unknown> | null)?.step === "write_back",
+      );
+      if (!warned) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(warned).toBe(true);
+  });
+
+  test("issue #49: the annotation is stashed even when the fork write-back succeeds", async () => {
+    clearMediaAnnotations();
+    const cfg = (await resolveSttConfig(
+      tenantId,
+      instanceId,
+      CHATWOOT_INBOX_ID,
+      appDb,
+    )) as SttConfig;
+    const meta: Array<Record<string, unknown>> = [];
+    const text = await transcribeInboundAudio({
+      tenantId,
+      instanceId,
+      conversationId: 904,
+      messageId: 61,
+      attachmentId: 13,
+      dataUrl: "https://chat.example.com/audio.ogg",
+      cfg,
+      base: appDb,
+      deps: { makeClient: stubClient(meta), fetchImpl: sttFetch(TRANSCRIPT) },
+    });
+    expect(text).toBe(TRANSCRIPT);
+    expect(meta).toHaveLength(1);
+    const rows: ChatwootMessageRow[] = [
+      {
+        id: 61,
+        content: "",
+        messageType: "incoming" as const,
+        private: false,
+        attachmentTypes: ["audio"],
+        transcribedText: null,
+        imageDescription: null,
+        extractedText: null,
+        attachmentName: null,
+        inReplyTo: null,
+        isReaction: false,
+      },
+    ];
+    overlayMediaAnnotations(tenantId, instanceId, rows);
+    expect(rows[0]?.transcribedText).toBe(TRANSCRIPT);
   });
 
   test("the Amara.org hallucination is dropped (no write-back)", async () => {

@@ -910,7 +910,9 @@ function setContactNameTool(ctx: ToolCtx) {
           .trim()
           .min(2)
           .max(120)
-          .regex(/[\p{L}]/u)
+          .refine((value) => /[\p{L}]/u.test(value), {
+            message: "name must contain at least one letter",
+          })
           .refine((value) => !/^\+?[\d\s().-]+$/.test(value), {
             message: "name must not be a phone number",
           })

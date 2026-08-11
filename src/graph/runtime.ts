@@ -304,7 +304,10 @@ export async function runLoadedTurn(
     gr.enabled && loaded.guardrailsApiKey
       ? (params.deps?.makeModel ?? createChatModel)({
           provider: gr.provider,
-          model: gr.model,
+          // The editor shows the provider's default model when the persisted guardrail model is
+          // empty. For OpenAI, however, sending an empty model makes every moderation call fail
+          // open. Fall back to the agent's working model so an enabled guardrail is actually run.
+          model: gr.model.trim() || loaded.mc.model,
           baseURL:
             loaded.guardrailsCredentialBaseUrl ?? gr.baseURL ?? undefined,
           apiKey: loaded.guardrailsApiKey,

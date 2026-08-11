@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { StructuredToolInterface } from "@langchain/core/tools";
+import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { buildNativeTools, NATIVE_TOOL_NAMES } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -130,6 +131,17 @@ describe("native tools", () => {
       },
     ]);
     expect(String(result)).toContain("Mariana Almeida");
+  });
+
+  test("set_contact_name exposes an OpenAI-compatible JSON schema", () => {
+    const { client } = recordingClient();
+    const tool = byName(
+      buildNativeTools({ client, conversationId: 42 }),
+      "set_contact_name",
+    );
+    const schema = JSON.stringify(z.toJSONSchema(tool.schema));
+
+    expect(schema).not.toContain("\\\\p{L}");
   });
 
   test("handoff with customerMessage replies to the customer before the note and transfer", async () => {

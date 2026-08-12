@@ -292,6 +292,77 @@ describe.skipIf(!dbUp)("tts", () => {
     expect(row?.status).toBe("skipped");
   });
 
+  // NOTE: a failing ElevenLabs synth used to log `format: "ogg_opus"` (our INTERNAL container name) next
+  // to a bare "failed with 400" — which reads exactly like the value we put on the wire, and was
+  // reported as such. The line now carries the provider-level format alongside it, plus the
+  // provider's own machine-readable error code (never its free-text message).
+  test("a provider failure logs the wire format and the provider's error code", async () => {
+    const cfg: TtsConfig = {
+      mode: "mirror",
+      provider: "elevenlabs",
+      model: "",
+      voice: "Keren123",
+      credentialRef: `vault:${ttsKeyId}`,
+      baseURL: null,
+      normalize: false,
+    };
+    const f: FlowContext = {
+      tenantId,
+      turnId: "tts-fail-400",
+      source: "inbox",
+      base: appDb,
+    };
+    const failingFetch = (async () =>
+      new Response(
+        JSON.stringify({
+          detail: {
+            status: "voice_not_found",
+            message: "A voice with voice_id Keren123 was not found.",
+          },
+        }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch;
+    await expect(
+      synthesizeReply({
+        tenantId,
+        cfg,
+        text: "olá",
+        base: appDb,
+        deps: { fetchImpl: failingFetch },
+        flow: f,
+      }),
+    ).rejects.toThrow("TTS elevenlabs failed with 400 (voice_not_found)");
+
+    let row: {
+      level: string;
+      status: string | null;
+      errorMessage: string | null;
+      detail: unknown;
+    } | null = null;
+    for (let i = 0; i < 100 && !row; i++) {
+      row = await suDb.executionLog.findFirst({
+        where: { tenantId, turnId: "tts-fail-400", stage: "tts" },
+        select: {
+          level: true,
+          status: true,
+          errorMessage: true,
+          detail: true,
+        },
+      });
+      if (!row) await new Promise((r) => setTimeout(r, 20));
+    }
+    // TTS is best-effort (the runtime falls back to text), so the line is advisory, not a red error.
+    expect(row?.level).toBe("warn");
+    expect(row?.status).toBe("error");
+    expect(row?.errorMessage).toBe(
+      "TTS elevenlabs failed with 400 (voice_not_found)",
+    );
+    expect(row?.errorMessage).not.toContain("was not found.");
+    const detail = row?.detail as Record<string, unknown>;
+    expect(detail.format).toBe("ogg_opus");
+    expect(detail.providerFormat).toBe("opus_48000_64");
+  });
+
   test("normalize=true rewrites the synth input via the injected normalizer", async () => {
     const cfg: TtsConfig = {
       mode: "mirror",

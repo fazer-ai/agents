@@ -158,7 +158,14 @@ export async function synthesizeReply(
     {
       provider: cfg.provider,
       model: cfg.model || provider.defaultModel,
-      detail: { normalized: cfg.normalize, format },
+      // NOTE: `format` is our internal container name; `providerFormat` is the value that actually goes on
+      // the wire (ElevenLabs `output_format`, OpenAI `response_format`). Both, because a failing line
+      // showing only "ogg_opus" reads like the wire value and has been reported as one.
+      detail: {
+        normalized: cfg.normalize,
+        format,
+        providerFormat: provider.providerFormat(format),
+      },
       // TTS is best-effort: the runtime falls back to a text reply on a synth error, so log a warn
       // (advisory), not a red error, on the conversation/Logs.
       errorLevel: "warn",

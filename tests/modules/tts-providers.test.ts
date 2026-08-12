@@ -19,6 +19,42 @@ function mockAudioFetch(status = 200) {
   return { calls, fetchImpl };
 }
 
+function mockErrorFetch(
+  status: number,
+  body: string,
+  contentType = "application/json",
+) {
+  const calls: Call[] = [];
+  const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return new Response(body, {
+      status,
+      headers: { "content-type": contentType },
+    });
+  }) as unknown as typeof fetch;
+  return { calls, fetchImpl };
+}
+
+const ELEVEN_REQ = {
+  text: "olá",
+  voice: "Keren123",
+  model: "eleven_flash_v2_5",
+  language: "",
+  apiKey: "xi",
+  baseURL: null,
+} as const;
+
+async function synthError(
+  provider: string,
+  fetchImpl: typeof fetch,
+): Promise<TtsError> {
+  const err = await getTtsProvider(provider)
+    ?.synthesize({ ...ELEVEN_REQ, fetchImpl, format: "ogg_opus" })
+    .catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(TtsError);
+  return err as TtsError;
+}
+
 describe("prepareSpeechText", () => {
   test("strips markdown, links, emojis and collapses whitespace", () => {
     const out = prepareSpeechText(
@@ -188,5 +224,141 @@ describe("TTS providers", () => {
     expect(body.model).toBe("hexgrad/kokoro-82m");
     expect(body.voice).toBe("af_alloy");
     expect(body.response_format).toBe("mp3");
+  });
+});
+
+// NOTE: `ogg_opus` is our INTERNAL container name, not a wire value — each adapter maps it onto its own
+// provider parameter. An operator who read `format: "ogg_opus"` on a failing tts log line next to a
+// 400 reasonably concluded that string was what we sent to ElevenLabs (it never was: the URL carries
+// `output_format=opus_48000_64`). providerFormat is what the log now reports alongside it.
+describe("providerFormat", () => {
+  test("reports the provider-level value each container maps onto", () => {
+    const elevenlabs = getTtsProvider("elevenlabs");
+    expect(elevenlabs?.providerFormat("ogg_opus")).toBe("opus_48000_64");
+    expect(elevenlabs?.providerFormat("wav")).toBe("pcm_24000");
+    expect(elevenlabs?.providerFormat("mp3")).toBe("mp3_44100_128");
+    // ElevenLabs cannot emit aac; pickTtsFormat never asks for it, and the fallback stays Opus.
+    expect(elevenlabs?.providerFormat("aac")).toBe("opus_48000_64");
+
+    const openai = getTtsProvider("openai");
+    expect(openai?.providerFormat("ogg_opus")).toBe("opus");
+    expect(openai?.providerFormat("aac")).toBe("aac");
+
+    // openrouter renders every container as mp3 (no Opus option in its audio API).
+    expect(getTtsProvider("openrouter")?.providerFormat("ogg_opus")).toBe(
+      "mp3",
+    );
+  });
+
+  test("the reported value is the one the adapter actually sends", async () => {
+    const elevenlabs = getTtsProvider("elevenlabs");
+    for (const format of ["ogg_opus", "wav"] as const) {
+      const { calls, fetchImpl } = mockAudioFetch();
+      await elevenlabs?.synthesize({ ...ELEVEN_REQ, fetchImpl, format });
+      expect(calls[0]?.url).toContain(
+        `output_format=${elevenlabs?.providerFormat(format)}`,
+      );
+    }
+
+    const openai = getTtsProvider("openai");
+    const { calls, fetchImpl } = mockAudioFetch();
+    await openai?.synthesize({
+      ...ELEVEN_REQ,
+      voice: "alloy",
+      model: "tts-1",
+      fetchImpl,
+      format: "aac",
+    });
+    const body = JSON.parse(calls[0]?.init.body as string);
+    expect(body.response_format).toBe(openai?.providerFormat("aac"));
+  });
+});
+
+// NOTE: a failing synth used to surface only "failed with 400" — the provider's own machine-readable
+// status was discarded with the body, which is what made a real 400 undiagnosable from the Logs
+// page. The code is kept; the free-text message (provider detail / billing info) still is not.
+describe("TTS provider error codes", () => {
+  test("elevenlabs: detail.status is kept, its message is not", async () => {
+    const { fetchImpl } = mockErrorFetch(
+      400,
+      JSON.stringify({
+        detail: {
+          status: "voice_not_found",
+          message: "A voice with voice_id Keren123 was not found.",
+        },
+      }),
+    );
+    const err = await synthError("elevenlabs", fetchImpl);
+    expect(err.code).toBe("voice_not_found");
+    expect(err.status).toBe(400);
+    expect(err.message).toBe(
+      "TTS elevenlabs failed with 400 (voice_not_found)",
+    );
+  });
+
+  test("openai: error.code is kept, the key fragment in its message is not", async () => {
+    const { fetchImpl } = mockErrorFetch(
+      401,
+      JSON.stringify({
+        error: {
+          code: "invalid_api_key",
+          type: "invalid_request_error",
+          message: "Incorrect API key provided: sk-proj-abc123.",
+        },
+      }),
+    );
+    const err = await synthError("openai", fetchImpl);
+    expect(err.code).toBe("invalid_api_key");
+    expect(err.message).not.toContain("sk-proj");
+  });
+
+  test("error.type serves when the provider sends no code", async () => {
+    const { fetchImpl } = mockErrorFetch(
+      429,
+      JSON.stringify({ error: { type: "rate_limit_exceeded", message: "…" } }),
+    );
+    const err = await synthError("openrouter", fetchImpl);
+    expect(err.code).toBe("rate_limit_exceeded");
+  });
+
+  test("a prose-only field is NOT captured (a code is a slug, a message is not)", async () => {
+    const { fetchImpl } = mockErrorFetch(
+      400,
+      JSON.stringify({
+        detail: "Your account balance of $12.40 is insufficient for this call.",
+      }),
+    );
+    const err = await synthError("elevenlabs", fetchImpl);
+    expect(err.code).toBeNull();
+    expect(err.message).toBe("TTS elevenlabs failed with 400");
+  });
+
+  test("a non-JSON body (proxy/gateway error page) yields no code", async () => {
+    const { fetchImpl } = mockErrorFetch(
+      502,
+      "<html><body>502 Bad Gateway</body></html>",
+      "text/html",
+    );
+    const err = await synthError("elevenlabs", fetchImpl);
+    expect(err.code).toBeNull();
+    expect(err.message).toBe("TTS elevenlabs failed with 502");
+  });
+
+  test("an oversized body is not parsed", async () => {
+    const { fetchImpl } = mockErrorFetch(
+      400,
+      JSON.stringify({
+        detail: { status: "voice_not_found", pad: "x".repeat(9000) },
+      }),
+    );
+    const err = await synthError("elevenlabs", fetchImpl);
+    expect(err.code).toBeNull();
+  });
+
+  test("an empty body yields no code", async () => {
+    const { fetchImpl } = mockErrorFetch(500, "");
+    const err = await synthError("elevenlabs", fetchImpl);
+    expect(err.code).toBeNull();
+    expect(err.message).toBe("TTS elevenlabs failed with 500");
   });
 });

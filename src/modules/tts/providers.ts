@@ -65,8 +65,8 @@ export class TtsError extends Error {
   }
 }
 
-// A provider error body is not a safe thing to keep (free-text messages carry account/billing detail and
-// echoed credentials), but the machine-readable STATUS inside it is: `voice_not_found`,
+// NOTE: a provider error body is not a safe thing to keep (free-text messages carry account/billing
+// detail and echoed credentials), but the machine-readable STATUS inside it is: `voice_not_found`,
 // `invalid_api_key`, `quota_exceeded` each end a debugging session in one line. Known shapes:
 // ElevenLabs `{detail: {status}}`, OpenAI/OpenRouter `{error: {code|type}}`.
 const MAX_ERROR_BODY = 8_192;
@@ -78,14 +78,44 @@ function pickErrorCode(value: unknown): string | null {
   return typeof value === "string" && ERROR_CODE_RE.test(value) ? value : null;
 }
 
-// Reads the provider's error code off a failed response. Never throws and never returns free text: a
-// body that is absent, oversized, not JSON, or carries no slug-shaped code yields null.
+// NOTE: reads at most `max` bytes and cancels the stream past that, instead of `res.text()`, which
+// buffers the WHOLE body before any size check — a chunked error body has no declared length, so an
+// unbounded one would be fully materialized just to be discarded.
+async function readCappedText(
+  res: Response,
+  max: number,
+): Promise<string | null> {
+  if (!res.body) return null;
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const joined = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(joined);
+}
+
+// NOTE: reads the provider's error code off a failed response. Never throws and never returns free text:
+// a body that is absent, oversized, not JSON, or carries no slug-shaped code yields null.
 export async function readProviderErrorCode(
   res: Response,
 ): Promise<string | null> {
   try {
-    const raw = await res.text();
-    if (!raw || raw.length > MAX_ERROR_BODY) return null;
+    const raw = await readCappedText(res, MAX_ERROR_BODY);
+    if (!raw) return null;
     const body: unknown = JSON.parse(raw);
     if (!body || typeof body !== "object") return null;
     const { detail, error, status, code } = body as Record<string, unknown>;

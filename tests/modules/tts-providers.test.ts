@@ -355,6 +355,33 @@ describe("TTS provider error codes", () => {
     expect(err.code).toBeNull();
   });
 
+  // NOTE: a chunked error body declares no length, so the cap has to hold while streaming — and the
+  // stream must be cancelled rather than drained, or an endless body keeps the turn alive.
+  test("an unbounded streaming body is capped and the stream cancelled", async () => {
+    let cancelled = false;
+    let pulls = 0;
+    const stream = new ReadableStream({
+      pull(controller) {
+        pulls++;
+        controller.enqueue(new TextEncoder().encode("x".repeat(4_096)));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchImpl = (async () =>
+      new Response(stream, {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    const err = await synthError("elevenlabs", fetchImpl);
+    expect(err.code).toBeNull();
+    expect(err.message).toBe("TTS elevenlabs failed with 400");
+    expect(cancelled).toBe(true);
+    // Bounded by the cap (8192 / 4096), not by the body: a stream that never ends still stops here.
+    expect(pulls).toBeLessThanOrEqual(4);
+  });
+
   test("an empty body yields no code", async () => {
     const { fetchImpl } = mockErrorFetch(500, "");
     const err = await synthError("elevenlabs", fetchImpl);

@@ -416,11 +416,10 @@ describe("Gemini tool declarations", () => {
         } as never,
       });
       const [entry] = toGeminiTools([legacy]) as GeminiFunctionTool[];
-      const pair = (
-        entry?.functionDeclarations[0]?.parametersJsonSchema as {
-          properties: { pair: Record<string, unknown> };
-        }
-      ).properties.pair;
+      const declared = entry?.functionDeclarations[0]?.parametersJsonSchema as {
+        properties: { pair: Record<string, unknown> };
+      };
+      const pair = declared.properties.pair;
       expect(pair.prefixItems).toEqual([
         { type: "string" },
         { type: "number" },
@@ -446,11 +445,10 @@ describe("Gemini tool declarations", () => {
       } as never,
     });
     const [entry] = toGeminiTools([stray]) as GeminiFunctionTool[];
-    const list = (
-      entry?.functionDeclarations[0]?.parametersJsonSchema as {
-        properties: { list: Record<string, unknown> };
-      }
-    ).properties.list;
+    const declared = entry?.functionDeclarations[0]?.parametersJsonSchema as {
+      properties: { list: Record<string, unknown> };
+    };
+    const list = declared.properties.list;
     expect(list.items).toEqual({ type: "string" });
     expect(list).not.toHaveProperty("additionalItems");
   });

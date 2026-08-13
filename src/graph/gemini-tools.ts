@@ -71,18 +71,41 @@ function normalizeTupleItems(node: unknown, depth = 0): unknown {
   return out;
 }
 
-// A tool whose object schema declares no property is sent WITHOUT parameters, the same shape
-// @langchain/google-genai produces today for `z.object({})` (`resolve_conversation`). An empty
-// schema is accepted either way; keeping the omission means parameterless tools go on the wire
+// Keywords that describe arguments without listing a single property, so a schema carrying any of
+// them is NOT parameterless even though `properties` is empty.
+const ARGUMENT_KEYWORDS = [
+  "$ref",
+  "anyOf",
+  "oneOf",
+  "allOf",
+  "patternProperties",
+  "propertyNames",
+];
+
+// A tool that takes no parameters is declared WITHOUT `parametersJsonSchema`, the same shape
+// @langchain/google-genai already sends today for `z.object({})` (`resolve_conversation`); an empty
+// schema is accepted either way, and keeping the omission means parameterless tools go on the wire
 // exactly as they did before this change.
-function declaredParameters(schema: unknown): unknown | undefined {
-  if (!schema || typeof schema !== "object") return undefined;
-  const properties = (schema as { properties?: unknown }).properties;
-  const declared =
+//
+// NOTE: "no properties" alone is NOT the test. A third-party MCP server can describe its arguments
+// with an `additionalProperties` map, a root `$ref`, or a union, and omitting those would hand the
+// model a tool it then has to call with no arguments at all. What makes a schema parameterless is
+// that it can accept nothing: no properties, closed to extras, and no keyword that admits any.
+function acceptsNoArguments(source: Record<string, unknown>): boolean {
+  const properties = source.properties;
+  const listsProperties =
     !!properties &&
     typeof properties === "object" &&
     Object.keys(properties).length > 0;
-  return declared ? normalizeTupleItems(schema) : undefined;
+  if (listsProperties || source.additionalProperties !== false) return false;
+  return !ARGUMENT_KEYWORDS.some((keyword) => keyword in source);
+}
+
+function declaredParameters(schema: unknown): unknown | undefined {
+  if (!schema || typeof schema !== "object") return undefined;
+  return acceptsNoArguments(schema as Record<string, unknown>)
+    ? undefined
+    : normalizeTupleItems(schema);
 }
 
 // Rewrites a bindTools argument list into Gemini's own tool shape. LangChain tools become function

@@ -127,9 +127,25 @@ function fakeGemini(): FakeGemini {
       tools?: { functionDeclarations?: Record<string, unknown>[] }[];
     };
     requests.push(body);
-    const declarations = (body.tools ?? []).flatMap(
-      (t) => t.functionDeclarations ?? [],
+    // Gemini refuses a request carrying more than one tool entry unless they are all search tools,
+    // so a regression that emits one entry per tool has to fail here, not just in a unit assertion.
+    const entries = (body.tools ?? []).filter(
+      (t) => (t.functionDeclarations ?? []).length > 0,
     );
+    if (entries.length > 1) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 400,
+            message:
+              "Multiple tools are supported only when they are all search tools",
+            status: "INVALID_ARGUMENT",
+          },
+        }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      );
+    }
+    const declarations = entries.flatMap((t) => t.functionDeclarations ?? []);
     for (const [i, decl] of declarations.entries()) {
       const at = `tools[0].function_declarations[${i}].parameters`;
       const bad = decl.parameters
@@ -334,6 +350,62 @@ describe("Gemini tool declarations", () => {
     const pair =
       entry?.functionDeclarations[0]?.parametersJsonSchema.properties.pair;
     expect(pair?.prefixItems).toEqual([{ type: "boolean" }]);
+  });
+
+  // An MCP server can describe its arguments without listing a single property. Treating "no
+  // properties" as "no parameters" would declare those tools parameterless, and the model would
+  // then call them with nothing.
+  test.each([
+    [
+      "an additionalProperties map",
+      { type: "object", additionalProperties: { type: "string" } },
+    ],
+    [
+      "a root $ref",
+      { $ref: "#/$defs/Input", $defs: { Input: { type: "object" } } },
+    ],
+    ["a union", { anyOf: [{ type: "object" }, { type: "string" }] }],
+  ])(
+    "a schema that describes arguments through %s is still declared",
+    (_label, schema) => {
+      const mcp = tool(async () => "ok", {
+        name: "mcp__srv__thing",
+        description: "d",
+        schema: schema as never,
+      });
+      const [entry] = toGeminiTools([mcp]) as GeminiFunctionTool[];
+      expect(entry?.functionDeclarations[0]?.parametersJsonSchema).toEqual(
+        schema,
+      );
+    },
+  );
+
+  test("nesting past the depth cap travels untransformed instead of throwing", () => {
+    // NOTE: pins the documented degradation. Past MAX_DEPTH the subtree is left exactly as it
+    // arrived, which is what shipped before this module existed, rather than a stack overflow on a
+    // hostile schema.
+    let deep: Record<string, unknown> = {
+      type: "array",
+      items: [{ type: "string" }],
+    };
+    for (let i = 0; i < 70; i++) {
+      deep = { type: "object", properties: { next: deep } };
+    }
+    const hostile = tool(async () => "ok", {
+      name: "mcp__srv__deep",
+      description: "d",
+      schema: deep as never,
+    });
+    const [entry] = toGeminiTools([hostile]) as GeminiFunctionTool[];
+    const declared = entry?.functionDeclarations[0]?.parametersJsonSchema as
+      | Record<string, unknown>
+      | undefined;
+    let node = declared;
+    for (let i = 0; i < 70; i++) {
+      node = (node?.properties as { next?: Record<string, unknown> })?.next;
+    }
+    expect(node).toHaveProperty("items");
+    expect(node).not.toHaveProperty("prefixItems");
   });
 
   test("what is not a LangChain tool is passed through untouched", () => {

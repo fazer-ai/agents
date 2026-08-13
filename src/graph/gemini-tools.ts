@@ -57,12 +57,26 @@ function normalizeTupleItems(node: unknown, depth = 0): unknown {
     return node.map((v) => normalizeTupleItems(v, depth + 1));
   if (!node || typeof node !== "object") return node;
   const source = node as Record<string, unknown>;
+  const isTuple = Array.isArray(source.items);
   const hasPrefixItems = "prefixItems" in source;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(source)) {
     if (key === "items" && Array.isArray(value)) {
       if (!hasPrefixItems) {
         out.prefixItems = value.map((v) => normalizeTupleItems(v, depth + 1));
+      }
+      continue;
+    }
+    if (key === "additionalItems") {
+      // The other half of the same translation: what draft-07 spelled `additionalItems` is the
+      // single-schema form of `items` in 2020-12. Dropping it would silently widen the contract —
+      // `additionalItems: false` means "nothing past the tuple", and losing it lets the model send
+      // extra elements. Outside a tuple the keyword has no meaning in either draft, so it goes.
+      if (isTuple) {
+        out.items =
+          typeof value === "boolean"
+            ? value
+            : normalizeTupleItems(value, depth + 1);
       }
       continue;
     }

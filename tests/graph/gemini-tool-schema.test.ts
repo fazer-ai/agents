@@ -392,6 +392,69 @@ describe("Gemini tool declarations", () => {
     expect(pair).not.toHaveProperty("items");
   });
 
+  // `additionalItems` is the other half of the same draft-07 tuple. Leaving it behind would widen
+  // the contract, because `false` means "nothing past the tuple" and 2020-12 spells that `items:
+  // false` — measured accepted by the live API.
+  test.each([
+    ["a closed tuple", false, false],
+    ["an open tuple with a type", { type: "string" }, { type: "string" }],
+  ])(
+    "%s keeps its bound on the extras",
+    (_label, additionalItems, expected) => {
+      const legacy = tool(async () => "ok", {
+        name: "mcp__legacy__bounded",
+        description: "d",
+        schema: {
+          type: "object",
+          properties: {
+            pair: {
+              type: "array",
+              items: [{ type: "string" }, { type: "number" }],
+              additionalItems,
+            },
+          },
+        } as never,
+      });
+      const [entry] = toGeminiTools([legacy]) as GeminiFunctionTool[];
+      const pair = (
+        entry?.functionDeclarations[0]?.parametersJsonSchema as {
+          properties: { pair: Record<string, unknown> };
+        }
+      ).properties.pair;
+      expect(pair.prefixItems).toEqual([
+        { type: "string" },
+        { type: "number" },
+      ]);
+      expect(pair.items).toEqual(expected);
+      expect(pair).not.toHaveProperty("additionalItems");
+    },
+  );
+
+  test("additionalItems outside a tuple is dropped, as both drafts ignore it", () => {
+    const stray = tool(async () => "ok", {
+      name: "mcp__legacy__stray",
+      description: "d",
+      schema: {
+        type: "object",
+        properties: {
+          list: {
+            type: "array",
+            items: { type: "string" },
+            additionalItems: { type: "number" },
+          },
+        },
+      } as never,
+    });
+    const [entry] = toGeminiTools([stray]) as GeminiFunctionTool[];
+    const list = (
+      entry?.functionDeclarations[0]?.parametersJsonSchema as {
+        properties: { list: Record<string, unknown> };
+      }
+    ).properties.list;
+    expect(list.items).toEqual({ type: "string" });
+    expect(list).not.toHaveProperty("additionalItems");
+  });
+
   test("an explicit prefixItems is not overwritten by the items rename", () => {
     const both = tool(async () => "ok", {
       name: "mcp__legacy__both",

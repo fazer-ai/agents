@@ -6,6 +6,7 @@ import { modelConfigSchema } from "@/graph/model-config";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isTestSilenced } from "@/modules/agents/test-mode";
+import { loadAppointmentContext } from "@/modules/appointments/context";
 import {
   isOutOfHoursNow,
   nextOpenAt,
@@ -348,6 +349,12 @@ export interface ConversationDetail {
     // conversation carries one (the entry/WhatsApp side is re-engaged by the gate re-sending the link on
     // the next inbound, not a scheduled job). null = none pending (or not the widget side).
     redirectNext: { stage: "chat" | "whatsapp"; runAt: string } | null;
+    // The agent pauses re-engagement while the contact has a live appointment
+    // (followUp.pauseWhileAppointment, on by default), so the sweep skips this conversation and the
+    // handler reschedules an already-armed job. Surfaced instead of a countdown that never fires:
+    // an indicator that promises a follow-up the sweep suppresses is indistinguishable from a broken
+    // scheduler, which is the worst failure mode for an indicator whose whole job is to be trusted.
+    pausedByAppointment: boolean;
   } | null;
   // Pending appointment reminders for THIS conversation (deterministic Calendar-booked reminders), for
   // an operator-facing "a reminder is scheduled" indicator. One entry per pending scheduler job, soonest
@@ -588,7 +595,7 @@ export async function getConversationDetail(
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<ConversationDetail> {
-  requireTenant(ctx);
+  const tenantId = requireTenant(ctx);
   const conv = await loadConvRef(ctx, id, base);
   // Resolve the bound persona's name (separate read — Inbox carries only agentId, no relation).
   const agentId = conv.inbox?.agentId ?? null;
@@ -644,6 +651,20 @@ export async function getConversationDetail(
           )
         : null;
     const hoursWindows = hoursRow ? parseWindows(hoursRow.windows) : [];
+    // NOTE: the sweep's live-appointment fence, read from the SAME source the handler uses
+    // (loadAppointmentContext via hasLiveAppointment), instead of a third hand-kept copy of the
+    // predicate. The estimate and the sweep have now drifted twice — the suppression itself in #39,
+    // and this indicator in #60 — so anything else here would be the third.
+    const pausedByAppointment =
+      cfg.enabled && cfg.pauseWhileAppointment && !managedByRedirect
+        ? await runScopedOn(
+            base,
+            ctx,
+            async (db) =>
+              (await loadAppointmentContext(db, tenantId, conv.threadId))
+                .length > 0,
+          )
+        : false;
     const job = managedByRedirect
       ? null
       : await runScopedOn(base, ctx, (db) =>
@@ -737,6 +758,15 @@ export async function getConversationDetail(
       if (dueAt.getTime() > ungated) nextRunAtDeferred = true;
       nextRunAt = dueAt.toISOString();
     }
+    // A live appointment suppresses BOTH shapes: the sweep never enqueues the estimated step, and an
+    // already-armed job is rescheduled by the handler for as long as the appointment stands, so its
+    // countdown would just slip an hour at a time. Show the reason instead of a time that never comes.
+    if (pausedByAppointment) {
+      nextStep = null;
+      nextRunAt = null;
+      nextRunAtDeferred = false;
+    }
+
     // The pending redirect follow-up, keyed to the WIDGET conversation's thread (the entry/WhatsApp
     // side has no job of its own). Surfaced in place of the — suppressed — generic estimate.
     let redirectNext: { stage: "chat" | "whatsapp"; runAt: string } | null =
@@ -783,6 +813,7 @@ export async function getConversationDetail(
           : null,
       managedByRedirect,
       redirectNext,
+      pausedByAppointment,
     };
   }
 

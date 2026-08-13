@@ -363,6 +363,8 @@
       "done": "Sequência de follow-up concluída",
       "imminent": "a qualquer momento",
       "imminentHint": "O horário estimado já passou; o envio roda em segundo plano, então o follow-up será enviado a qualquer momento.",
+      "pausedAppointment": "Follow-up pausado · compromisso agendado",
+      "pausedAppointmentHint": "O contato tem um compromisso agendado, e este agente pausa a reativação até ele passar ou ser cancelado. Depois disso a sequência volta sozinha.",
       "redirectHint": "O canal desta conversa é gerenciado pelo redirecionamento, então o follow-up padrão não roda aqui. O redirecionamento reengaja o lead entre o WhatsApp e o chat do site.",
       "redirectManaged": "Reengajamento gerenciado pelo Redirecionamento",
       "redirectScheduled": "Follow-up do redirecionamento · {{stage}} · {{when}} · {{at}}",

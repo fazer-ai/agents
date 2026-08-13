@@ -741,7 +741,16 @@ function FollowUpLine({
   let label: string;
   let imminent = false;
   let imminentHint: string | null = null;
-  if (followUp.nextStep != null && followUp.nextRunAt) {
+  // A booked appointment pauses the sequence (the sweep skips the conversation and the handler
+  // reschedules an armed job), so there is no time to count down to. Say WHY instead of hiding the
+  // line: an empty indicator here reads exactly like a broken scheduler.
+  const paused = followUp.pausedByAppointment;
+  if (paused) {
+    label = t(
+      "conversation.followUp.pausedAppointment",
+      "Follow-up paused · appointment booked",
+    );
+  } else if (followUp.nextStep != null && followUp.nextRunAt) {
     const deltaSec = (Date.parse(followUp.nextRunAt) - Date.now()) / 1000;
     let when: string;
     if (deltaSec <= 0) {
@@ -777,6 +786,20 @@ function FollowUpLine({
         <div className="flex items-start gap-1.5 rounded bg-warning/15 px-2 py-1.5 text-warning">
           <Clock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden="true" />
           <span>{imminentHint}</span>
+        </div>
+      )}
+      {paused && (
+        <div className="flex items-start gap-1.5 rounded bg-bg-tertiary px-2 py-1.5 text-text-secondary">
+          <CalendarClock
+            className="mt-0.5 h-3 w-3 shrink-0"
+            aria-hidden="true"
+          />
+          <span>
+            {t(
+              "conversation.followUp.pausedAppointmentHint",
+              "The contact has an appointment booked, and this agent pauses re-engagement until it passes or is cancelled. The sequence resumes on its own after that.",
+            )}
+          </span>
         </div>
       )}
       {!imminent && followUp.nextRunAtDeferred && (
@@ -1356,7 +1379,10 @@ export function ConversationDetailPage() {
     conv?.followUp?.enabled === true &&
     conv.followUp.managedByRedirect !== true &&
     conv.followUp.lastFollowUpAt != null &&
-    conv.followUp.nextStep == null;
+    conv.followUp.nextStep == null &&
+    // NOTE: a paused sequence also has no next step, and it is not complete — it resumes once the
+    // appointment passes.
+    conv.followUp.pausedByAppointment !== true;
 
   // Caller passes the already-translated success message (static t() at the call
   // site, so the extractor sees the key).

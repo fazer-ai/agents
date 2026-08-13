@@ -362,6 +362,8 @@
       "done": "Follow-up sequence complete",
       "imminent": "any moment now",
       "imminentHint": "The estimated time has passed; it runs on a background worker, so the follow-up will be sent at any moment.",
+      "pausedAppointment": "Follow-up paused · appointment booked",
+      "pausedAppointmentHint": "The contact has an appointment booked, and this agent pauses re-engagement until it passes or is cancelled. The sequence resumes on its own after that.",
       "redirectHint": "This conversation's channel is managed by the redirect, so the standard follow-up does not run here. The redirect re-engages the lead across WhatsApp and the website chat.",
       "redirectManaged": "Re-engagement handled by Redirect",
       "redirectScheduled": "Redirect follow-up · {{stage}} · {{when}} · {{at}}",

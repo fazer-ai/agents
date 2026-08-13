@@ -30,6 +30,10 @@ export interface BuildAgentGraphParams {
   // Fired once when the hard limit forces a no-tools answer (runtime emits a flow warn so it shows
   // up in the turn trail / Logs). Best-effort; never throws.
   onToolLimit?: (info: { maxToolCalls: number; toolCalls: number }) => void;
+  // Fired when a model call is retried after the provider answered with no completion (see
+  // model-limit). Same purpose as onToolLimit: without it a recovered turn looks like a clean one
+  // and the fault rate stays invisible.
+  onModelRetry?: (info: { attempt: number; error: unknown }) => void;
 }
 
 const DEFAULT_MAX_TOOL_CALLS = 10;
@@ -53,6 +57,7 @@ export function buildAgentGraph({
   tools,
   maxToolCalls,
   onToolLimit,
+  onModelRetry,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
@@ -81,8 +86,13 @@ export function buildAgentGraph({
       onToolLimit?.({ maxToolCalls: max, toolCalls });
     }
 
-    const response = await runModelCall(() =>
-      (hardLimit ? model : llm).invoke([new SystemMessage(prompt), ...history]),
+    const response = await runModelCall(
+      () =>
+        (hardLimit ? model : llm).invoke([
+          new SystemMessage(prompt),
+          ...history,
+        ]),
+      onModelRetry,
     );
     return { messages: [response] };
   };

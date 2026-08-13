@@ -22,6 +22,7 @@ import { shouldBotHandle } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import {
   clearConversationError,
+  postTurnFailureNote,
   recordConversationError,
 } from "@/modules/conversations/error";
 import { emitFlowEvent } from "@/modules/flowlog/service";
@@ -359,13 +360,23 @@ export async function flushDebounceJob(
     }
     return { outcome: "done" };
   } catch (e) {
-    await recordConversationError({
+    const { announce } = await recordConversationError({
       tenantId,
       instanceId,
       chatwootConversationId: conversationId,
       error: e,
       base,
     });
+    if (announce) {
+      await postTurnFailureNote({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conversationId,
+        error: e,
+        base,
+        makeClient: deps?.makeClient,
+      });
+    }
     throw e;
   }
 }

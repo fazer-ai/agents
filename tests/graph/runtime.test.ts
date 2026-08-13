@@ -13,7 +13,10 @@ import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
-import { ResolveThenReplyModel } from "../utils/scripted-models";
+import {
+  EmptyThenReplyModel,
+  ResolveThenReplyModel,
+} from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -236,6 +239,47 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     expect(sent).toEqual([[900, REPLY]]);
+  });
+
+  // NOTE: Issue #63 end-to-end. A provider answering 200 with an empty completion used to end the
+  // turn, and if that was the customer's last message they were simply never answered. Both halves
+  // are asserted here: the reply IS delivered, and the recovered fault leaves a warn on the turn's
+  // trail, so a rate measured at 1 in 184 on one install can never go silent again.
+  test("an empty provider response is retried and the customer still gets an answer", async () => {
+    await seedConversation(995, null);
+    const sent: Array<[number, string]> = [];
+    const model = new EmptyThenReplyModel(REPLY);
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 995 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model,
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(sent).toEqual([[995, REPLY]]);
+    expect(model.calls).toBe(2);
+
+    // emitFlowEvent is fire-and-forget, so poll briefly.
+    let retryLogged = false;
+    for (let i = 0; i < 30 && !retryLogged; i++) {
+      const rows = await suDb.executionLog.findMany({
+        where: { tenantId, stage: "generate", level: "warn" },
+        select: { detail: true },
+      });
+      retryLogged = rows.some(
+        (r) =>
+          (r.detail as Record<string, unknown> | null)?.retriedEmptyResponse ===
+          1,
+      );
+      if (!retryLogged) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(retryLogged).toBe(true);
   });
 
   // NOTE: Issue #45 end-to-end (direct path): a WhatsApp location pin must reach the model as the

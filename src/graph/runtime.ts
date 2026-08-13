@@ -221,6 +221,18 @@ export async function runLoadedTurn(
         status: "ok",
         detail: { toolLimitHit: maxToolCalls, toolCalls },
       }),
+    // A turn recovered from an empty provider response must not read like a clean one: without this
+    // line the fault is invisible and its rate (issue #63 measured 1 in 184 on one install) can
+    // never be told apart from a turn that simply worked.
+    onModelRetry: ({ attempt }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        provider: loaded.mc.provider,
+        model: loaded.mc.model,
+        detail: { retriedEmptyResponse: attempt },
+      }),
   });
   const callbacks = buildCallbacks(loaded, {
     tenantId,

@@ -985,6 +985,7 @@ export interface GraphBuildDeps {
   checkpointer?: BaseCheckpointSaver;
   // Fired when the hard tool-call limit forces a no-tools answer (runtime emits a flow warn).
   onToolLimit?: (info: { maxToolCalls: number; toolCalls: number }) => void;
+  onModelRetry?: (info: { attempt: number; error: unknown }) => void;
 }
 
 export async function buildModelAndGraph(
@@ -1014,5 +1015,6 @@ export async function buildModelAndGraph(
     tools,
     maxToolCalls: cfg.maxToolCalls,
     onToolLimit: deps.onToolLimit,
+    onModelRetry: deps.onModelRetry,
   });
 }

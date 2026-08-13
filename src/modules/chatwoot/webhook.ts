@@ -36,6 +36,7 @@ import {
 } from "@/modules/channel-redirect/service";
 import {
   clearConversationError,
+  postTurnFailureNote,
   recordConversationError,
 } from "@/modules/conversations/error";
 import { armDebounce, resolveDebounceConfig } from "@/modules/debounce/service";
@@ -1302,15 +1303,26 @@ export async function processChatwootDelivery(
             convLabel,
             err instanceof Error ? err.message : String(err),
           );
-          // Surface the failure to the operator (sanitized) so they can re-engage (item 6).
+          // Surface the failure to the operator (sanitized) so they can re-engage (item 6), and
+          // announce it on the conversation itself when it is the first of its window (issue #63:
+          // a turn that dies leaves the customer unanswered and the inbox shows nothing).
           if (n.conversationId !== null) {
-            await recordConversationError({
+            const { announce } = await recordConversationError({
               tenantId: params.tenantId,
               instanceId: params.instanceId,
               chatwootConversationId: n.conversationId,
               error: err,
               base,
             });
+            if (announce) {
+              await postTurnFailureNote({
+                tenantId: params.tenantId,
+                instanceId: params.instanceId,
+                chatwootConversationId: n.conversationId,
+                error: err,
+                base,
+              });
+            }
           }
         }
       }

@@ -151,7 +151,7 @@ function fakeGemini(): FakeGemini {
       const bad = decl.parameters
         ? rejectOpenApiSubset(decl.parameters, at)
         : decl.parametersJsonSchema
-          ? rejectJsonSchema(decl.parametersJsonSchema, "")
+          ? rejectJsonSchema(decl.parametersJsonSchema, at)
           : null;
       if (bad) {
         return new Response(
@@ -240,6 +240,71 @@ let gemini: FakeGemini | null = null;
 afterEach(() => {
   gemini?.restore();
   gemini = null;
+});
+
+// The whole suite leans on the fake rejecting what the real API rejects. If a branch of that
+// validator silently stopped firing, every positive test below would still pass and the regression
+// guard would be decorative, so the validator is driven into each of its rejections directly.
+describe("the fake API rejects what generativelanguage rejects", () => {
+  const post = (tools: unknown) =>
+    fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+      { method: "POST", body: JSON.stringify({ tools }) },
+    );
+
+  test("a field outside the OpenAPI subset", async () => {
+    gemini = fakeGemini();
+    const res = await post([
+      {
+        functionDeclarations: [
+          {
+            name: "t",
+            parameters: {
+              type: "object",
+              properties: { n: { type: "integer", exclusiveMinimum: 0 } },
+            },
+          },
+        ],
+      },
+    ]);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.message).toContain(
+      'Unknown name "exclusiveMinimum"',
+    );
+  });
+
+  test("a draft-07 tuple declared as JSON Schema", async () => {
+    gemini = fakeGemini();
+    const res = await post([
+      {
+        functionDeclarations: [
+          {
+            name: "t",
+            parametersJsonSchema: {
+              type: "object",
+              properties: {
+                pair: { type: "array", items: [{ type: "string" }] },
+              },
+            },
+          },
+        ],
+      },
+    ]);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.message).toContain(
+      "must be a boolean or an object",
+    );
+  });
+
+  test("more than one tool entry", async () => {
+    gemini = fakeGemini();
+    const res = await post([
+      { functionDeclarations: [{ name: "a" }] },
+      { functionDeclarations: [{ name: "b" }] },
+    ]);
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.message).toContain("Multiple tools");
+  });
 });
 
 describe("Gemini tool declarations", () => {

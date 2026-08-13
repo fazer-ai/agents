@@ -4,6 +4,7 @@ import { ChatDeepSeek } from "@langchain/deepseek";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import { AppError } from "@/lib/errors";
+import { toGeminiTools } from "./gemini-tools";
 import type { ModelConfig } from "./model-config";
 
 // Per-agent/per-node model factory. The config SCHEMA lives in ./model-config (LangChain-free, so
@@ -75,8 +76,24 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
       });
     case "anthropic":
       return new ChatAnthropic({ model, apiKey, temperature });
-    case "google":
-      return new ChatGoogleGenerativeAI({ model, apiKey, temperature });
+    case "google": {
+      const gemini = new ChatGoogleGenerativeAI({ model, apiKey, temperature });
+      // NOTE: the adapter declares tool parameters in the OpenAPI subset, whose closed field set
+      // rejects the whole request over a single unknown key (issue #64). Redeclaring them as JSON
+      // Schema is the carve-out; see ./gemini-tools for the field set and what was measured.
+      // Patched on the INSTANCE rather than by subclassing: LangChain derives the serialized model
+      // id from the constructor name, so a subclass renames the model to itself in every payload
+      // that reaches Langfuse (measured: the lc_id tail becomes the subclass name). An own property
+      // also shadows the prototype for the adapter's own internal `this.bindTools(...)` calls.
+      type BindTools = typeof gemini.bindTools;
+      const bindTools = gemini.bindTools.bind(gemini) as BindTools;
+      gemini.bindTools = ((tools, kwargs) =>
+        bindTools(
+          toGeminiTools(tools) as Parameters<BindTools>[0],
+          kwargs,
+        )) as BindTools;
+      return gemini;
+    }
     case "deepseek":
       return new ChatDeepSeek({ model, apiKey, temperature });
     default:

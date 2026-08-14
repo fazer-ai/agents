@@ -299,6 +299,45 @@ describe.skipIf(!dbUp)(
       expect((await mirrored(29)).status).toBe("open");
     });
 
+    // The same undo, from the other side: here the mirror never SAW the resolve, so there is no
+    // status change to notice when the customer's message arrives — the row already says open. The
+    // delayed resolve then carries a version greater than anything applied and would close a
+    // conversation with a customer waiting in it, firing the closing hooks on the way.
+    //
+    // What rules it out is not a version at all: `last_activity_at` moves only when a message is
+    // created, so a row ahead of this event on that axis has seen a message the event knows nothing
+    // about — and Chatwoot reopens on a new incoming message, so a `resolved` from before it is
+    // already void at the source.
+    test("a resolve that predates the customer's message cannot close the conversation", async () => {
+      const T = 1_786_496_800;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(31, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.1,
+        }),
+      });
+      await mirror(
+        messageEvent(31, "message_created", {
+          messageId: 975,
+          messageType: "incoming",
+          status: "open",
+          lastActivityAt: T + 5,
+          updatedAt: T + 5.4,
+        }),
+      );
+      await mirror({
+        event: "conversation_resolved",
+        ...convPayload(31, {
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 0.5,
+        }),
+      });
+      expect((await mirrored(31)).status).toBe("open");
+    });
+
     // The mirror image of the burst above, and the reason ordering beats a blanket "message events
     // are never authoritative": when the handoff's own event is delayed past the first message the
     // human sends, that message's snapshot is the ONLY witness of the new owner. Distrusting it

@@ -114,6 +114,7 @@ export async function mirrorChatwootEvent(
           id: true,
           lastEventAt: true,
           chatwootUpdatedAt: true,
+          chatwootStateLocalAt: true,
           assigneeId: true,
           assigneeType: true,
           assigneeName: true,
@@ -239,7 +240,25 @@ export async function mirrorChatwootEvent(
           ? existing.chatwootUpdatedAt == null ||
             stateUpdatedAt >= existing.chatwootUpdatedAt
           : n.message === undefined || isNewIncomingMessage(n));
-      const appliedStatus = applyState ? n.status : null;
+      // One case ordering CANNOT decide: a state write of OUR OWN. The console's take-over,
+      // return-to-bot and resolve buttons (and the live reconcile in the nudge probe) write
+      // status/assignee straight to this row, and Chatwoot's REST never serializes a conversation's
+      // `updated_at` — only the webhook payload does — so there is no version to stamp alongside
+      // them. The row's state is then newer than the version it carries, and a snapshot serialized
+      // BEFORE that write can still carry a higher version and win on ordering while describing the
+      // past. That is not cosmetic: the mid-turn ownership recheck reads this row, so an assignee
+      // wiped here puts the bot's reply on top of the human who just took the conversation.
+      //
+      // While the row is marked, a snapshot that merely RIDES ALONG with a message is not allowed to
+      // move the assignee at all, nor to walk the status back. A brand-new incoming message still
+      // reopens, because that reopen is Chatwoot's own doing and real. The write's echo arrives as a
+      // conversation-level event, which applies and clears the marker, and ordering runs again.
+      const localAhead = existing.chatwootStateLocalAt != null;
+      const rideAlong = localAhead && n.message !== undefined;
+      const appliedStatus =
+        applyState && !(rideAlong && !isNewIncomingMessage(n))
+          ? n.status
+          : null;
       const nextStatus = appliedStatus ?? existing.status;
       // NOTE: The assignee trio travels together and applies only when BOTH hold: the payload
       // actually spoke about the assignee (`meta` present — undefined means "said nothing", and a
@@ -262,6 +281,7 @@ export async function mirrorChatwootEvent(
       const assigneeKnown =
         n.assigneeType !== undefined &&
         applyState &&
+        !rideAlong &&
         !(
           sameVersion &&
           n.assigneeType == null &&
@@ -297,6 +317,12 @@ export async function mirrorChatwootEvent(
           (existing.chatwootUpdatedAt == null ||
             stateUpdatedAt > existing.chatwootUpdatedAt)
             ? { chatwootUpdatedAt: stateUpdatedAt }
+            : {}),
+          // NOTE: The echo of our own write is a conversation-level event, and applying one means
+          // Chatwoot has spoken about this row since. The marker comes off and ordering takes over
+          // again; leaving it on would fence out message snapshots forever.
+          ...(localAhead && applyState && n.message === undefined
+            ? { chatwootStateLocalAt: null }
             : {}),
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
           // NOTE: Attribute bags are ASSIGNED (the payload always ships the whole jsonb), but only

@@ -438,6 +438,13 @@ model Conversation {
   // would round them to the same millisecond, making the version comparison lose the ordering this
   // column exists to provide.
   chatwootUpdatedAt      Float?    @map("chatwoot_updated_at")
+  // Set when WE wrote status/assignee ourselves (the console's take-over / return-to-bot / resolve
+  // buttons, the live reconcile) instead of learning them from a payload. Chatwoot's REST never
+  // serializes a conversation's updated_at — only the webhook payload does — so such a write leaves
+  // the row's state NEWER than the version stamped above it, and a snapshot serialized before it can
+  // still carry a higher version. Cleared by the first conversation-level event, which is the write's
+  // own echo and restores ordering.
+  chatwootStateLocalAt   DateTime? @map("chatwoot_state_local_at")
   // Debounce watermark: the Chatwoot message id of the last inbound message already handled
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.

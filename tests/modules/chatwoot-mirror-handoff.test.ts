@@ -2,8 +2,13 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import type { TenantContext } from "@/lib/tenancy";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import {
+  handoffConversation,
+  setConversationStatus,
+} from "@/modules/conversations/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Issue #61. After a handoff, Chatwoot delivers a burst of conversation_* events and then a
@@ -102,7 +107,12 @@ async function mirror(payload: unknown) {
 async function mirrored(convId: number) {
   return suDb.conversation.findFirstOrThrow({
     where: { tenantId, chatwootConversationId: convId },
-    select: { status: true, assigneeType: true, assigneeId: true },
+    select: {
+      status: true,
+      assigneeType: true,
+      assigneeId: true,
+      chatwootStateLocalAt: true,
+    },
   });
 }
 
@@ -562,6 +572,191 @@ describe.skipIf(!dbUp)(
         }),
       });
       expect((await mirrored(24)).status).toBe("resolved");
+    });
+
+    // The one thing ordering cannot rank: a state write of OUR OWN. The console's buttons write
+    // status/assignee straight to this row, and Chatwoot answers them with no version (its REST
+    // never serializes a conversation's updated_at), so a snapshot serialized BEFORE the click can
+    // still carry a higher version than the row's stamp. It must not undo the click — the mid-turn
+    // ownership recheck reads this row, so a wiped assignee is the bot replying over the operator.
+    describe("state written from our own console", () => {
+      const opCtx = (): TenantContext => ({
+        tenantId,
+        userId: null,
+        role: "TENANT_ADMIN",
+      });
+
+      function stubClient() {
+        const calls: string[] = [];
+        const client = {
+          assignToAgent: async () => {
+            calls.push("assignToAgent");
+            return {};
+          },
+          unassignConversation: async () => {
+            calls.push("unassignConversation");
+            return {};
+          },
+          toggleStatus: async () => {
+            calls.push("toggleStatus");
+            return {};
+          },
+        };
+        return {
+          calls,
+          makeClient: async () => client as never,
+        };
+      }
+
+      async function rowIdOf(convId: number) {
+        const r = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: convId },
+          select: { id: true },
+        });
+        return r.id;
+      }
+
+      test("a take-over in the console survives a message tail from before it", async () => {
+        const T = 1_786_500_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(40, {
+            status: "pending",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        const stub = stubClient();
+        await handoffConversation(
+          opCtx(),
+          await rowIdOf(40),
+          HUMAN.id,
+          { makeClient: stub.makeClient },
+          appDb,
+        );
+        expect(stub.calls).toEqual(["assignToAgent", "toggleStatus"]);
+        expect((await mirrored(40)).chatwootStateLocalAt).not.toBeNull();
+        // Serialized after the version we hold, but before the operator clicked. Higher version,
+        // older truth.
+        await mirror(
+          messageEvent(40, "message_updated", {
+            messageId: 940,
+            status: "pending",
+            lastActivityAt: T,
+            updatedAt: T + 0.3,
+          }),
+        );
+        const row = await mirrored(40);
+        expect(row.assigneeType).toBe("User");
+        expect(row.assigneeId).toBe(HUMAN.id);
+        expect(row.status).toBe("open");
+      });
+
+      test("a resolve in the console is not walked back by a message tail", async () => {
+        const T = 1_786_501_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(41, {
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        const stub = stubClient();
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(41),
+          "resolved",
+          { makeClient: stub.makeClient },
+          appDb,
+        );
+        await mirror(
+          messageEvent(41, "message_updated", {
+            messageId: 941,
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.3,
+          }),
+        );
+        expect((await mirrored(41)).status).toBe("resolved");
+      });
+
+      // The fence is a hold, not a wall: the write's own echo is a conversation-level event, and it
+      // takes the marker off so ordering runs again. Otherwise every later message snapshot would be
+      // fenced out for the life of the conversation.
+      test("the echo clears the marker and ordering resumes", async () => {
+        const T = 1_786_502_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(42, {
+            status: "pending",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        const stub = stubClient();
+        await handoffConversation(
+          opCtx(),
+          await rowIdOf(42),
+          HUMAN.id,
+          { makeClient: stub.makeClient },
+          appDb,
+        );
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(42, {
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.5,
+            assignee: HUMAN,
+          }),
+        });
+        expect((await mirrored(42)).chatwootStateLocalAt).toBeNull();
+        // A REAL later unassignment, carried by a message and correctly ordered, now applies again.
+        await mirror(
+          messageEvent(42, "message_updated", {
+            messageId: 942,
+            status: "pending",
+            lastActivityAt: T,
+            updatedAt: T + 0.9,
+          }),
+        );
+        const row = await mirrored(42);
+        expect(row.assigneeType).toBeNull();
+        expect(row.status).toBe("pending");
+      });
+
+      // Not over-fenced: a brand-new customer message genuinely reopens, and that reopen is
+      // Chatwoot's own doing, not a stale snapshot.
+      test("a new incoming message still reopens a conversation resolved in the console", async () => {
+        const T = 1_786_503_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(43, {
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        const stub = stubClient();
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(43),
+          "resolved",
+          { makeClient: stub.makeClient },
+          appDb,
+        );
+        await mirror(
+          messageEvent(43, "message_created", {
+            messageId: 943,
+            messageType: "incoming",
+            status: "open",
+            lastActivityAt: T + 5,
+            updatedAt: T + 5.1,
+          }),
+        );
+        expect((await mirrored(43)).status).toBe("open");
+      });
     });
   },
 );

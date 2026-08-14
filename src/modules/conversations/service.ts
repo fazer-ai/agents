@@ -585,7 +585,14 @@ async function updateMirror(
   },
 ): Promise<void> {
   await runScopedOn(base, ctx, (db) =>
-    db.conversation.updateMany({ where: { id }, data }),
+    db.conversation.updateMany({
+      where: { id },
+      // NOTE: Stamped so the mirror knows this row's state came from us and not from a payload.
+      // Chatwoot answers these writes with no version (its REST never serializes a conversation's
+      // updated_at), so without the marker a snapshot serialized before the write can out-rank the
+      // row's own stamp and undo it — including clearing the human an operator just assigned.
+      data: { ...data, chatwootStateLocalAt: new Date() },
+    }),
   );
 }
 

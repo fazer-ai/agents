@@ -338,6 +338,42 @@ describe.skipIf(!dbUp)(
       expect((await mirrored(31)).status).toBe("open");
     });
 
+    // The close fence has to key on the CUSTOMER's last message, not on any activity. Only a new
+    // incoming message reopens the conversation; an outgoing reply or a private note advances
+    // `last_activity_at` and reopens nothing. Treating those as evidence of a reopen would discard a
+    // genuine resolve and leave the mirror open, with the follow-up armed and the bot answering.
+    test("a resolve delayed behind an outgoing message still closes the conversation", async () => {
+      const T = 1_786_504_600;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(50, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.1,
+        }),
+      });
+      // The AGENT replies: last_activity_at moves, nothing reopens.
+      await mirror(
+        messageEvent(50, "message_created", {
+          messageId: 979,
+          messageType: "outgoing",
+          status: "open",
+          lastActivityAt: T + 5,
+          updatedAt: T + 5.4,
+        }),
+      );
+      // The resolve was serialized before that reply and delivered after it.
+      await mirror({
+        event: "conversation_resolved",
+        ...convPayload(50, {
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 2,
+        }),
+      });
+      expect((await mirrored(50)).status).toBe("resolved");
+    });
+
     // The mirror image of the burst above, and the reason ordering beats a blanket "message events
     // are never authoritative": when the handoff's own event is delayed past the first message the
     // human sends, that message's snapshot is the ONLY witness of the new owner. Distrusting it

@@ -289,31 +289,12 @@ export async function mirrorChatwootEvent(
       // than 4.0.2: nothing to order by, so conversation events apply best-effort, as they did before.
       const statusOrdered = fromConversationEvent && !olderThanStatus;
       const assigneeOrdered = fromConversationEvent && !olderThanAssignee;
-      // NOTE: A conversation event that arrives BEHIND the row's last activity may still rule on the
-      // assignee — that is the delayed handoff, and losing it is this issue — but it may not CLOSE
-      // the conversation. `last_activity_at` moves only when a message is created, so a row ahead of
-      // this event on that axis has seen a message the event knows nothing about, and Chatwoot
-      // reopens on a new incoming message: a `resolved` serialized before it is already void at the
-      // source. The asymmetry is deliberate. Opening a conversation that is already open costs
-      // nothing; closing one a customer is waiting in suppresses the turn and fires the closing
-      // hooks. This is also what a version cannot settle on its own — a reopen carried by a message
-      // moves the status without moving the watermark (a snapshot claims no version), so a delayed
-      // resolve can be both older in truth and greater in version.
-      //
-      // NOTE: The status does NOT depend on `meta`. That object is the ASSIGNEE, and its intermittent
-      // absence (issue #27) says nothing about a `status` field sitting right next to it, intact. A
-      // degraded `conversation_resolved` that failed to resolve the mirror would leave the follow-up
-      // armed and the bot answering on a conversation Chatwoot has already closed.
-      const closesConversation =
-        n.status === "resolved" || n.status === "snoozed";
-      const statusIsCurrent = payloadIsCurrent || !closesConversation;
-      const appliedStatus =
-        statusOrdered && statusIsCurrent
+      const appliedStatus = statusOrdered
+        ? n.status
+        : // The reopen above: status only, and only from a brand-new incoming message.
+          isNewIncomingMessage(n)
           ? n.status
-          : // The reopen above: status only, and only from a brand-new incoming message.
-            isNewIncomingMessage(n)
-            ? n.status
-            : null;
+          : null;
       const nextStatus = appliedStatus ?? existing.status;
       // NOTE: The assignee trio travels together and applies only when BOTH hold: the payload
       // actually spoke about the assignee (`meta` present — undefined means "said nothing", and a

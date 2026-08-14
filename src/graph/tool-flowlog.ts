@@ -10,7 +10,45 @@ function parseToolInput(input: string): unknown {
   const s = (input ?? "").trim();
   if (!s) return null;
   try {
-    return JSON.parse(s);
+    return sanitizeToolArgs(JSON.parse(s));
+  } catch {
+    return sanitizeToolArgs(s);
+  }
+}
+
+// Tool arguments the model chose, on their way into `ExecutionLog.detail`, which is documented to
+// carry no message text and no PII (docs/logs.md). Two things a tool argument can be that the
+// secret redactor does not catch:
+//   * a URL whose QUERY carries the credential — a presigned link is signature-in-the-query, and
+//     `redactSecretsDeep` keys off names like `api_key`, not off an arbitrary `X-Amz-Signature`.
+//     The path is what makes a log line useful, so the query and fragment are what get dropped;
+//   * a caption, which is text WRITTEN FOR THE CUSTOMER TO READ, i.e. message text by definition.
+const MESSAGE_TEXT_KEYS = new Set(["caption"]);
+
+function sanitizeToolArgs(value: unknown, depth = 0): unknown {
+  if (depth > 4) return value;
+  if (typeof value === "string") return stripUrlQuery(value);
+  if (Array.isArray(value)) {
+    return value.map((v) => sanitizeToolArgs(v, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (MESSAGE_TEXT_KEYS.has(k)) continue;
+      out[k] = sanitizeToolArgs(v, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
+// Keeps a URL readable (scheme, host, path) and drops what a signature or a tracking payload rides
+// in. Anything that is not an http(s) URL is left exactly as it was.
+function stripUrlQuery(s: string): string {
+  if (!/^https?:\/\//i.test(s)) return s;
+  try {
+    const u = new URL(s);
+    return u.search || u.hash ? `${u.origin}${u.pathname}` : s;
   } catch {
     return s;
   }

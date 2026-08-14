@@ -88,6 +88,7 @@ class ToolCallThenReplyModel {
   constructor(
     private toolName: string,
     private reply: string,
+    private args: Record<string, unknown> = { fail: true },
   ) {}
   async invoke(): Promise<AIMessage> {
     return new AIMessage(this.reply);
@@ -103,7 +104,7 @@ class ToolCallThenReplyModel {
           ? new AIMessage({
               content: "",
               tool_calls: [
-                { name: self.toolName, args: { fail: true }, id: "call_f1" },
+                { name: self.toolName, args: self.args, id: "call_f1" },
               ],
             })
           : new AIMessage(self.reply);
@@ -278,5 +279,58 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     }
     expect(delivery).not.toBeNull();
     expect(delivery?.level).toBe("warn");
+  });
+  // Issue #65 review: a tool's ARGUMENTS land in ExecutionLog.detail, which docs/logs.md states never
+  // carries message text or PII. send_image adds two shapes the secret redactor does not catch: a URL
+  // whose credential rides in the query (a presigned link — `redactSecretsDeep` keys off names like
+  // `api_key`, not off `X-Amz-Signature`), and a caption, which is text written for the customer.
+  describe("tool args reaching storage", () => {
+    async function argsLoggedFor(args: Record<string, unknown>) {
+      const probe = failableTool(async () => "ok", {
+        name: "probe_image",
+        description: "probe",
+        schema: z.object({
+          url: z.string().optional(),
+          caption: z.string().optional(),
+        }),
+      });
+      const model = new ToolCallThenReplyModel("probe_image", "pronto", args);
+      const graph = buildAgentGraph({
+        model: model as unknown as BaseChatModel,
+        systemPrompt: "Você é prestativa.",
+        checkpointer: new MemorySaver(),
+        tools: [probe],
+      });
+      const flow = flowCtx();
+      await graph.invoke(
+        { messages: [new HumanMessage("oi")] },
+        {
+          configurable: { thread_id: `tfl-args-${crypto.randomUUID()}` },
+          callbacks: [new ToolFlowLogger(flow)],
+        },
+      );
+      const rows = await pollToolRows(flow.turnId, 1);
+      const detail = rows[0]?.detail as { args?: Record<string, unknown> };
+      return detail?.args;
+    }
+
+    test("a presigned URL keeps its path and loses its signature", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://bucket.s3.amazonaws.com/fotos/camiseta.png?X-Amz-Signature=deadbeefcafe0000&X-Amz-Credential=CRED",
+      });
+      expect(logged?.url).toBe(
+        "https://bucket.s3.amazonaws.com/fotos/camiseta.png",
+      );
+      expect(JSON.stringify(logged)).not.toContain("deadbeefcafe0000");
+    });
+
+    test("a caption never reaches storage at all", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://cdn.loja.com.br/x.png",
+        caption: "Oi Maria, aqui está o modelo que você pediu",
+      });
+      expect(logged).not.toHaveProperty("caption");
+      expect(JSON.stringify(logged)).not.toContain("Maria");
+    });
   });
 });

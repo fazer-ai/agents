@@ -56,12 +56,6 @@ export interface MirrorResult {
   lastEventAt: Date | null;
 }
 
-// How long a row whose state we wrote ourselves distrusts snapshots that ride along with a message.
-// Sized against Chatwoot's own delivery bound (AgentBots::WebhookJob retries 3× at 3s on the `high`
-// queue), with room for queue latency on top. It is a hold over the window where a pre-write snapshot
-// can still land, never a permanent one: see the fence in the update branch for why it must expire.
-export const LOCAL_STATE_FENCE_MS = 60_000;
-
 export async function mirrorChatwootEvent(
   tenantId: bigint,
   instanceId: bigint,
@@ -120,7 +114,6 @@ export async function mirrorChatwootEvent(
           id: true,
           lastEventAt: true,
           chatwootUpdatedAt: true,
-          chatwootStateLocalAt: true,
           assigneeId: true,
           assigneeType: true,
           assigneeName: true,
@@ -134,13 +127,31 @@ export async function mirrorChatwootEvent(
       // version nothing honored, and the complete event that follows with a lower one would lose.
       const describesState = n.assigneeType !== undefined;
 
-      // Monotonic guard: only when both timestamps are known. A null new timestamp applies
-      // best-effort (the next timestamped event reconciles).
+      // A message event's embedded `conversation` is a SNAPSHOT taken when the message fired, not a
+      // statement about the conversation. Conversation state comes from conversation-level events;
+      // this flag is what separates the two all the way down.
+      const fromConversationEvent = n.message === undefined;
+
+      // Out-of-order guard, on the axis each kind of event can actually be ordered by. A message is
+      // ordered by `last_activity_at`, which is exactly what moves when a message is created. A
+      // conversation event is ordered by the conversation's own version — and MUST NOT be ordered by
+      // `last_activity_at`, because that value does not move on a status or assignee change: a
+      // handoff event delayed past the human's first message carries the older last_activity_at and
+      // would be discarded as stale while being the newest word on the conversation. That discard is
+      // what used to leave the mirror bot-owned for good, and it is why the old code felt it had to
+      // trust message snapshots.
+      const orderedByVersion =
+        fromConversationEvent &&
+        stateUpdatedAt != null &&
+        existing?.chatwootUpdatedAt != null;
       const stale =
-        newLastEventAt != null &&
-        existing?.lastEventAt != null &&
-        existing.lastEventAt > newLastEventAt;
-      if (stale) {
+        orderedByVersion && stateUpdatedAt != null
+          ? stateUpdatedAt <
+            (existing?.chatwootUpdatedAt ?? Number.NEGATIVE_INFINITY)
+          : newLastEventAt != null &&
+            existing?.lastEventAt != null &&
+            existing.lastEventAt > newLastEventAt;
+      if (existing && stale) {
         return {
           conversationRowId: existing.id,
           prevAssigneeId,
@@ -219,79 +230,56 @@ export async function mirrorChatwootEvent(
       // is serialized together with the state it describes. Ordering conversation-level state by it
       // is exactly the finer-resolution tiebreaker the issue asks for, and Chatwoot already ships it.
       //
-      // Ordering also settles the two cases a blanket "message events are never authoritative" rule
-      // gets wrong, both of which carry state nothing else will resend: Chatwoot reopens BEFORE it
-      // dispatches the message event (Message#execute_after_create_commit_callbacks runs
-      // reopen_conversation, then dispatch_create_events), and a message a human sends after a
-      // handoff is the only witness of the new assignee while the handoff's own event is in flight.
+      // A message event's embedded `conversation` is a SNAPSHOT taken when the message fired, not a
+      // statement about the conversation, and `handoff_to_human` posts its message BEFORE it changes
+      // the status, so the tail of every handoff burst carries the pre-handoff copy. Conversation
+      // state therefore comes from conversation-level events only. That single rule is what closes
+      // this issue: the frozen tail has nothing to say, whatever second it landed in.
       //
-      // Two ways to have no version to compare against, and they are NOT the same:
-      //   * the payload carries none — a Chatwoot older than 4.0.2, where no payload ever will.
-      //     There is no ordering to be had, so fall back to distrusting message snapshots, minus
-      //     the brand-new incoming message whose reopen would otherwise be lost.
-      //   * the payload carries one but the ROW does not — a conversation mirrored before this
-      //     column existed. Only our history is missing: the payload's version is the first thing
-      //     we know about this row, so take it and let ordering run from there. Delivery is
-      //     bounded (AgentBots::WebhookJob retries 3× at 3s), so the only snapshot this can
-      //     mis-trust is one that straddles the deploy itself.
+      // The reason the old code trusted those snapshots was that a handoff event delayed past the
+      // human's first message left the message as the only witness of the new assignee — and under
+      // the old monotonic guard the delayed event LOST on arrival, so the mirror stayed bot-owned for
+      // good. Ordering removes that trap: a snapshot that moves no state claims no version either, so
+      // the watermark does not advance past the delayed event, and it applies when it lands. The
+      // witness argument was an artifact of the guard it was written against.
       //
+      // One transition IS carried faithfully by a message, and it is Chatwoot's own doing: a brand-new
+      // incoming customer message reopens the conversation BEFORE the event is dispatched
+      // (Message#execute_after_create_commit_callbacks runs reopen_conversation, then
+      // dispatch_create_events). That is a status change, never an assignee change, and it is applied
+      // as such below.
       // NOTE: `>=`, not `>`. An equal version is the same conversation row, so re-applying it is
       // idempotent — while REJECTING it is not: Chatwoot emits several events for one write
       // (conversation_updated + conversation_status_changed), and the one that arrives second is
       // frequently the one carrying `meta`. Under `>` the first delivery would win and its
-      // companion's assignee would be dropped, which is the failure this fence exists to stop.
+      // companion's assignee would be dropped. A payload with no version at all is a Chatwoot older
+      // than 4.0.2: nothing to order by, so conversation events apply best-effort, as they did before.
       const applyState =
         describesState &&
-        (stateUpdatedAt != null
-          ? existing.chatwootUpdatedAt == null ||
-            stateUpdatedAt >= existing.chatwootUpdatedAt
-          : n.message === undefined || isNewIncomingMessage(n));
-      // One case ordering CANNOT decide: a state write of OUR OWN. The console's take-over,
-      // return-to-bot and resolve buttons (and the live reconcile in the nudge probe) write
-      // status/assignee straight to this row, and Chatwoot's REST never serializes a conversation's
-      // `updated_at` — only the webhook payload does — so there is no version to stamp alongside
-      // them. The row's state is then newer than the version it carries, and a snapshot serialized
-      // BEFORE that write can still carry a higher version and win on ordering while describing the
-      // past. That is not cosmetic: the mid-turn ownership recheck reads this row, so an assignee
-      // wiped here puts the bot's reply on top of the human who just took the conversation.
-      //
-      // While the row is marked, a snapshot that merely RIDES ALONG with a message is not allowed to
-      // move the assignee at all, nor to walk the status back. A brand-new incoming message still
-      // reopens, because that reopen is Chatwoot's own doing and real.
-      //
-      // The marker EXPIRES ON ITS OWN, and that is load-bearing rather than tidy: clearing it on the
-      // write's echo alone would leave it stuck in two real cases — the nudge's live reconcile only
-      // READS Chatwoot, so it produces no echo at all, and a console write can have its echo land
-      // and clear before `updateMirror` even runs. A stuck marker fences out message-carried
-      // assignments forever, which is this issue's own failure with the sides swapped: the bot keeps
-      // answering a conversation a human took. The window it has to cover is webhook delivery
-      // lateness, which Chatwoot bounds (AgentBots::WebhookJob: retry_on wait 3s, attempts 3, on the
-      // `high` queue); LOCAL_STATE_FENCE_MS sits well above that, and past it the row is back to
-      // plain ordering, which is where it was before this column existed. Both clocks here are ours.
-      const localAhead =
-        existing.chatwootStateLocalAt != null &&
-        Date.now() - existing.chatwootStateLocalAt.getTime() <
-          LOCAL_STATE_FENCE_MS;
-      const rideAlong = localAhead && n.message !== undefined;
-      const appliedStatus =
-        applyState && !(rideAlong && !isNewIncomingMessage(n))
+        fromConversationEvent &&
+        (stateUpdatedAt == null ||
+          existing.chatwootUpdatedAt == null ||
+          stateUpdatedAt >= existing.chatwootUpdatedAt);
+      const appliedStatus = applyState
+        ? n.status
+        : // The reopen above: status only, and only from a brand-new incoming message.
+          isNewIncomingMessage(n)
           ? n.status
           : null;
       const nextStatus = appliedStatus ?? existing.status;
       // NOTE: The assignee trio travels together and applies only when BOTH hold: the payload
       // actually spoke about the assignee (`meta` present — undefined means "said nothing", and a
       // degraded event must NOT wipe a stored 'AgentBot'/'User', the intermittent self-wipe behind
-      // issue #27) AND the snapshot is newer than the state we already have, per the fence above.
+      // issue #27) AND the event is an ordered conversation-level one, per the rule above.
       //
-      // Plus one rule for the EQUAL-version case, so the outcome cannot depend on delivery order —
-      // the exact dependency this whole fence exists to remove. An equal version is the row version
-      // we already hold, and a real unassignment is its own write, so it always arrives strictly
-      // greater; every payload is serialized from ONE conversation object (Message#webhook_data
-      // embeds conversation.webhook_data), so companions of a single write agree by construction.
-      // A disagreement here therefore means one of the two witnesses is degraded, and `null` is the
-      // degraded reading: it is indistinguishable from "did not know". So at an equal version an
-      // assignee may be SET but never CLEARED. The status needs no such rule — its two readings are
-      // equally informative, and it is not the field that decides whether the bot may answer.
+      // Plus one rule for the EQUAL-version case, so the outcome cannot depend on delivery order.
+      // An equal version is the row version we already hold, and a real unassignment is its own
+      // write, so it always arrives strictly greater; every payload is serialized from ONE
+      // conversation object, so companions of a single write agree by construction. A disagreement
+      // therefore means one witness is degraded, and `null` is the degraded reading: it cannot be
+      // told apart from "did not know". So at an equal version an assignee may be SET but never
+      // CLEARED. The status needs no such rule — its two readings are equally informative, and it is
+      // not the field that decides whether the bot may answer.
       const sameVersion =
         stateUpdatedAt != null &&
         existing.chatwootUpdatedAt != null &&
@@ -299,7 +287,6 @@ export async function mirrorChatwootEvent(
       const assigneeKnown =
         n.assigneeType !== undefined &&
         applyState &&
-        !rideAlong &&
         !(
           sameVersion &&
           n.assigneeType == null &&
@@ -327,20 +314,25 @@ export async function mirrorChatwootEvent(
                 assigneeName: n.assigneeName ?? null,
               }
             : {}),
-          lastEventAt: updatedLastEventAt,
+          // NOTE: Monotonic on its own now that the guard above may let a conversation event
+          // through on version alone: its last_activity_at can legitimately be older than the row's.
+          ...(existing.lastEventAt == null ||
+          updatedLastEventAt > existing.lastEventAt
+            ? { lastEventAt: updatedLastEventAt }
+            : {}),
           // NOTE: The watermark only moves forward. An equal version was applied just above but is
           // not news, and a strictly older one was rejected, so neither may rewrite it.
-          ...(describesState &&
+          // NOTE: Only a conversation event claims the version, and this is the half of the rule
+          // that makes the other half work: a snapshot riding along with a message moves no state,
+          // so it must not move the watermark either. If it did, it would push the mark past a
+          // conversation event still in flight and that event would arrive already "stale" —
+          // precisely how a delayed handoff used to be lost. The mark also only moves forward: an
+          // equal version was applied just above but is not news, and an older one was rejected.
+          ...(applyState &&
           stateUpdatedAt != null &&
           (existing.chatwootUpdatedAt == null ||
             stateUpdatedAt > existing.chatwootUpdatedAt)
             ? { chatwootUpdatedAt: stateUpdatedAt }
-            : {}),
-          // NOTE: The echo of our own write is a conversation-level event, and applying one means
-          // Chatwoot has spoken about this row since. The marker comes off and ordering takes over
-          // again; leaving it on would fence out message snapshots forever.
-          ...(localAhead && applyState && n.message === undefined
-            ? { chatwootStateLocalAt: null }
             : {}),
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
           // NOTE: Attribute bags are ASSIGNED (the payload always ships the whole jsonb), but only

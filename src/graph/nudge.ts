@@ -405,10 +405,6 @@ export async function runAgentNudge(
                   assigneeType: liveState.assigneeType,
                   assigneeId: liveState.assigneeId,
                   assigneeName: liveState.assigneeName,
-                  // NOTE: Read live from Chatwoot, which returns no version for a conversation, so
-                  // this state is newer than the row's stamp and nothing records that. Marked so a
-                  // message snapshot from before the probe cannot out-rank it on ordering alone.
-                  chatwootStateLocalAt: new Date(),
                   ...(liveAt !== null &&
                   (current.lastEventAt === null ||
                     sec(liveAt) > sec(current.lastEventAt))

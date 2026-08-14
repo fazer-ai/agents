@@ -3,10 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
-import {
-  LOCAL_STATE_FENCE_MS,
-  mirrorChatwootEvent,
-} from "@/modules/chatwoot/mirror";
+import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
   handoffConversation,
@@ -110,12 +107,7 @@ async function mirror(payload: unknown) {
 async function mirrored(convId: number) {
   return suDb.conversation.findFirstOrThrow({
     where: { tenantId, chatwootConversationId: convId },
-    select: {
-      status: true,
-      assigneeType: true,
-      assigneeId: true,
-      chatwootStateLocalAt: true,
-    },
+    select: { status: true, assigneeType: true, assigneeId: true },
   });
 }
 
@@ -267,7 +259,7 @@ describe.skipIf(!dbUp)(
     // human sends, that message's snapshot is the ONLY witness of the new owner. Distrusting it
     // leaves the conversation bot-owned forever, because the delayed event loses to the monotonic
     // guard on arrival, and conversation.handoff never fires for anyone listening.
-    test("a message that overtakes the handoff event carries the handoff", async () => {
+    test("a handoff event overtaken by a message still lands when it arrives", async () => {
       const T = 1_786_492_000;
       const handoffsBefore = await suDb.outboundWebhookDelivery.count({
         where: { tenantId, event: "conversation.handoff" },
@@ -507,7 +499,10 @@ describe.skipIf(!dbUp)(
     // not its own. The payload's is the first thing we learn, so it decides that one event and
     // ordering runs from there — otherwise the row would fall back to the type rule forever and a
     // handoff carried by a message would stay invisible.
-    test("a row with no stored version bootstraps from the payload", async () => {
+    // A conversation mirrored before this column existed carries no version. Only OUR history is
+    // missing, so the first versioned conversation event establishes the mark and ordering runs from
+    // there.
+    test("a row with no stored version bootstraps from the first conversation event", async () => {
       const T = 1_786_496_000;
       await mirror({
         event: "conversation_updated",
@@ -521,27 +516,27 @@ describe.skipIf(!dbUp)(
           })
         ).chatwootUpdatedAt,
       ).toBeNull();
-      await mirror(
-        messageEvent(33, "message_created", {
-          messageId: 995,
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(33, {
           status: "open",
-          lastActivityAt: T + 5,
+          lastActivityAt: T,
           updatedAt: T + 5.4,
           assignee: HUMAN,
         }),
-      );
+      });
       const row = await mirrored(33);
       expect(row.status).toBe("open");
       expect(row.assigneeType).toBe("User");
-      // And from here the ordering holds: the pre-handoff snapshot no longer wins.
-      await mirror(
-        messageEvent(33, "message_updated", {
-          messageId: 995,
+      // And from here ordering holds: an older conversation event no longer wins.
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(33, {
           status: "pending",
-          lastActivityAt: T + 5,
+          lastActivityAt: T,
           updatedAt: T + 0.2,
         }),
-      );
+      });
       expect((await mirrored(33)).status).toBe("open");
     });
 
@@ -638,7 +633,6 @@ describe.skipIf(!dbUp)(
           appDb,
         );
         expect(stub.calls).toEqual(["assignToAgent", "toggleStatus"]);
-        expect((await mirrored(40)).chatwootStateLocalAt).not.toBeNull();
         // Serialized after the version we hold, but before the operator clicked. Higher version,
         // older truth.
         await mirror(
@@ -682,94 +676,6 @@ describe.skipIf(!dbUp)(
           }),
         );
         expect((await mirrored(41)).status).toBe("resolved");
-      });
-
-      // The fence is a hold, not a wall: the write's own echo is a conversation-level event, and it
-      // takes the marker off so ordering runs again. Otherwise every later message snapshot would be
-      // fenced out for the life of the conversation.
-      test("the echo clears the marker and ordering resumes", async () => {
-        const T = 1_786_502_000;
-        await mirror({
-          event: "conversation_updated",
-          ...convPayload(42, {
-            status: "pending",
-            lastActivityAt: T,
-            updatedAt: T + 0.1,
-          }),
-        });
-        const stub = stubClient();
-        await handoffConversation(
-          opCtx(),
-          await rowIdOf(42),
-          HUMAN.id,
-          { makeClient: stub.makeClient },
-          appDb,
-        );
-        await mirror({
-          event: "conversation_updated",
-          ...convPayload(42, {
-            status: "open",
-            lastActivityAt: T,
-            updatedAt: T + 0.5,
-            assignee: HUMAN,
-          }),
-        });
-        expect((await mirrored(42)).chatwootStateLocalAt).toBeNull();
-        // A REAL later unassignment, carried by a message and correctly ordered, now applies again.
-        await mirror(
-          messageEvent(42, "message_updated", {
-            messageId: 942,
-            status: "pending",
-            lastActivityAt: T,
-            updatedAt: T + 0.9,
-          }),
-        );
-        const row = await mirrored(42);
-        expect(row.assigneeType).toBeNull();
-        expect(row.status).toBe("pending");
-      });
-
-      // The nudge's live reconcile only READS Chatwoot, so its write will never have an echo to
-      // clear the marker, and a console write can have its echo land before updateMirror even runs.
-      // Either way the marker has to expire on its own: stuck ON, it fences out message-carried
-      // assignments forever, which is this issue's failure with the sides swapped (the bot keeps
-      // answering a conversation a human took).
-      test("the fence expires on its own, with no echo to clear it", async () => {
-        const T = 1_786_504_000;
-        await mirror({
-          event: "conversation_updated",
-          ...convPayload(44, {
-            status: "pending",
-            lastActivityAt: T,
-            updatedAt: T + 0.1,
-          }),
-        });
-        // A read-only reconcile: state written from a live probe, no Chatwoot write, no echo ever.
-        await suDb.conversation.updateMany({
-          where: { tenantId, chatwootConversationId: 44 },
-          data: {
-            status: "pending",
-            assigneeType: null,
-            assigneeId: null,
-            chatwootStateLocalAt: new Date(
-              Date.now() - LOCAL_STATE_FENCE_MS - 1_000,
-            ),
-          },
-        });
-        // A real handoff, first seen in a message. Under a marker that never expires it would be
-        // ignored for the life of the conversation.
-        await mirror(
-          messageEvent(44, "message_updated", {
-            messageId: 944,
-            status: "open",
-            lastActivityAt: T,
-            updatedAt: T + 0.4,
-            assignee: HUMAN,
-          }),
-        );
-        const row = await mirrored(44);
-        expect(row.assigneeType).toBe("User");
-        expect(row.assigneeId).toBe(HUMAN.id);
       });
 
       // Not over-fenced: a brand-new customer message genuinely reopens, and that reopen is

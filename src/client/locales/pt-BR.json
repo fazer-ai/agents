@@ -886,7 +886,7 @@
     "sectionsNav": "Seções",
     "selectProvider": "Selecione…",
     "sendImage": "Envio de imagens",
-    "sendImageHint": "Hosts de onde o agente pode baixar uma imagem quando usa a ferramenta \"Enviar imagem\". Quem escolhe a URL é o agente, então esta lista é o que decide aonde ele consegue ir de fato: deixe vazia e toda tentativa é recusada. Não tem efeito enquanto a ferramenta não for concedida na aba Ferramentas.",
+    "sendImageHint": "Hosts de onde o agente pode baixar uma imagem quando usa a ferramenta \"Enviar imagem\". Quem escolhe a URL é o agente, então esta lista é o que decide aonde ele consegue ir de fato: deixe vazia e toda tentativa é recusada. Os guardrails de saída leem texto, nunca a imagem em si, então esta lista é o único controle sobre o que uma imagem pode mostrar. Não tem efeito enquanto a ferramenta não for concedida na aba Ferramentas.",
     "sendImageHosts": "Hosts liberados",
     "sendImageHostsHint": "Um por linha, ex.: cdn.minhaloja.com.br. Comece com \"*.\" para cobrir um domínio e seus subdomínios (*.minhaloja.com.br). Se colar uma URL inteira, só o host é aproveitado.",
     "split": "Resposta em várias mensagens",

@@ -8,3 +8,15 @@
 # phantom countdown even with no appointment anywhere. That is a separate defect in the estimate
 # itself and belongs in its own change, not folded into the appointment flag. Filed as #72.
 src/modules/conversations/service.ts: Validate pending jobs before marking the sequence paused
+
+# PR #76 (issue #65). The premise is right — the guardrail never sees the picture — but neither
+# remedy is. Submitting bytes to it means a multimodal guardrail: the guardrails agent is text-only
+# by construction (toxicity / unsafe content / competitor mentions / prompt adherence, all over a
+# string), so this is a feature of its own, with its own model, cost and latency on the hot path.
+# And suppressing images whenever they cannot be screened would disable the tool precisely for the
+# operator careful enough to turn guardrails on, which inverts the incentive. An image already has
+# its own mandatory, default-closed control: `sendImage.allowedHosts` is an operator decision, empty
+# by default, and empty refuses every call — no image leaves without an explicit choice about its
+# ORIGIN. What was genuinely missing is that the operator could not know the split, so the hint on
+# that field now says guardrails read text and never the picture.
+src/graph/runtime.ts: Screen image contents before delivering guarded output

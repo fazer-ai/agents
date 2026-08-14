@@ -1469,7 +1469,7 @@ export function BehaviorTab({
             title={t("editor.sendImage", "Sending images")}
             description={t(
               "editor.sendImageHint",
-              'Hosts the agent may fetch an image from when it uses the "Send image" tool. The agent chooses the URL, so this list is what decides where it can actually go: leave it empty and every attempt is refused. It has no effect unless the tool is granted on the Tools tab.',
+              'Hosts the agent may fetch an image from when it uses the "Send image" tool. The agent chooses the URL, so this list is what decides where it can actually go: leave it empty and every attempt is refused. Output guardrails read text and never the picture itself, so this list is the only control over what an image may show. It has no effect unless the tool is granted on the Tools tab.',
             )}
           >
             <FormField

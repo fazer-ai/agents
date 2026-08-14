@@ -19,9 +19,10 @@ function parseToolInput(input: string): unknown {
 // Tool arguments the model chose, on their way into `ExecutionLog.detail`, which is documented to
 // carry no message text and no PII (docs/logs.md). Two things a tool argument can be that the
 // secret redactor does not catch:
-//   * a URL whose QUERY carries the credential — a presigned link is signature-in-the-query, and
-//     `redactSecretsDeep` keys off names like `api_key`, not off an arbitrary `X-Amz-Signature`.
-//     The path is what makes a log line useful, so the query and fragment are what get dropped;
+//   * a URL, whose every part past the origin is model-written free text — a presigned signature in
+//     the query, an order id or a customer's name in the path, credentials in the userinfo. None of
+//     it is the ids/counts/enums `detail` is allowed to hold, and `redactSecretsDeep` keys off names
+//     like `api_key`, not off an arbitrary `X-Amz-Signature` or a filename;
 //   * a caption, which is text WRITTEN FOR THE CUSTOMER TO READ, i.e. message text by definition.
 const MESSAGE_TEXT_KEYS = new Set(["caption"]);
 
@@ -42,17 +43,21 @@ function sanitizeToolArgs(value: unknown, depth = 0): unknown {
   return value;
 }
 
-// Keeps a URL readable (scheme, host, path) and drops the three places a credential hides in one:
-// the query (a presigned signature), the fragment, and the userinfo — `origin` excludes `user:pass@`
-// by construction. Rebuilt UNCONDITIONALLY: a URL with credentials but no query would otherwise pass
-// through whole. Anything that is not an http(s) URL is left exactly as it was.
+// Reduces a URL to its ORIGIN, which is the part an operator reading a log line actually acts on
+// ("it fetched from a host I allowed") and the only part that is not model-written free text. The
+// image itself is in the conversation, so the path buys little here and can carry anything the model
+// composed. `origin` also excludes `user:pass@` by construction. A string that does not parse as an
+// http(s) URL after announcing itself as one is replaced outright rather than passed through: it is
+// unparseable precisely because we cannot tell which part of it is what. Anything that is not an
+// http(s) URL at all is left exactly as it was.
+const REDACTED_URL = "[url]";
+
 function urlWithoutSecrets(s: string): string {
   if (!/^https?:\/\//i.test(s)) return s;
   try {
-    const u = new URL(s);
-    return `${u.origin}${u.pathname}`;
+    return new URL(s).origin;
   } catch {
-    return s;
+    return REDACTED_URL;
   }
 }
 

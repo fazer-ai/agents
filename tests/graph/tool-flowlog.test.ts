@@ -314,23 +314,43 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       return detail?.args;
     }
 
-    test("a presigned URL keeps its path and loses its signature", async () => {
+    test("a URL is logged as its origin, and nothing past it", async () => {
       const logged = await argsLoggedFor({
         url: "https://bucket.s3.amazonaws.com/fotos/camiseta.png?X-Amz-Signature=deadbeefcafe0000&X-Amz-Credential=CRED",
       });
-      expect(logged?.url).toBe(
-        "https://bucket.s3.amazonaws.com/fotos/camiseta.png",
-      );
+      expect(logged?.url).toBe("https://bucket.s3.amazonaws.com");
       expect(JSON.stringify(logged)).not.toContain("deadbeefcafe0000");
+    });
+
+    // The path is model-written free text: an order number, a document, a person's name in a
+    // filename. `detail` is documented to hold ids/counts/enums and to be exportable, so it does not
+    // get to hold whichever of those the model happened to compose.
+    test("an identifying path does not survive into storage", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://cdn.loja.com.br/pedidos/48213/nota-fiscal-maria-silva.png",
+      });
+      expect(logged?.url).toBe("https://cdn.loja.com.br");
+      expect(JSON.stringify(logged)).not.toContain("maria-silva");
+      expect(JSON.stringify(logged)).not.toContain("48213");
     });
 
     test("credentials embedded in the URL itself are dropped too", async () => {
       const logged = await argsLoggedFor({
         url: "https://usuario:senha-secreta@cdn.loja.com.br/fotos/x.png",
       });
-      expect(logged?.url).toBe("https://cdn.loja.com.br/fotos/x.png");
+      expect(logged?.url).toBe("https://cdn.loja.com.br");
       expect(JSON.stringify(logged)).not.toContain("senha-secreta");
       expect(JSON.stringify(logged)).not.toContain("usuario");
+    });
+
+    // A string that announces itself as http(s) and then does not parse is exactly the case where we
+    // cannot tell which part of it is host and which is payload, so none of it is kept.
+    test("a URL that does not parse is replaced, not passed through", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://cdn.loja.com.br:99999/x.png?token=segredo-em-voo",
+      });
+      expect(logged?.url).toBe("[url]");
+      expect(JSON.stringify(logged)).not.toContain("segredo-em-voo");
     });
 
     test("a caption never reaches storage at all", async () => {

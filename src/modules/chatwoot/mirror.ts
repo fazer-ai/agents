@@ -228,30 +228,24 @@ export async function mirrorChatwootEvent(
       // (conversation_updated + conversation_status_changed), and the one that arrives second is
       // frequently the one carrying `meta`. Under `>` the first delivery would win and its
       // companion's assignee would be dropped, which is the failure this fence exists to stop.
-      const ordered = stateUpdatedAt != null;
-      const applyState = ordered
-        ? existing.chatwootUpdatedAt == null ||
-          stateUpdatedAt >= existing.chatwootUpdatedAt
-        : n.message === undefined || isNewIncomingMessage(n);
-      // NOTE: With nothing to order by, a message snapshot is not trusted for `status` — but it may
-      // still hand the conversation to a HUMAN. The frozen tail of a handoff carries the pre-handoff
-      // state, so it can never invent a User assignee; the first message that human sends, on the
-      // other hand, is the only witness of the takeover while the handoff's own event is in flight.
-      // Promotion only, and only unordered: it never clears an assignee, and where versions exist
-      // they decide instead (an older event genuinely may be reporting an assignment already undone).
-      const promotesToHuman =
-        !ordered &&
-        !applyState &&
-        n.assigneeType === "User" &&
-        existing.assigneeType !== "User";
-      const applyAssignee = applyState || promotesToHuman;
+      // NOTE: A payload that says nothing about the assignee (`meta` absent — the degraded shape
+      // behind issue #27) is not a description of the conversation, so it neither applies state nor
+      // claims to be the version we hold. Advancing the watermark from it would be the worse half:
+      // it would then outrank a complete payload that arrives late with the assignment.
+      const describesState = n.assigneeType !== undefined;
+      const applyState =
+        describesState &&
+        (stateUpdatedAt != null
+          ? existing.chatwootUpdatedAt == null ||
+            stateUpdatedAt >= existing.chatwootUpdatedAt
+          : n.message === undefined || isNewIncomingMessage(n));
       const appliedStatus = applyState ? n.status : null;
       const nextStatus = appliedStatus ?? existing.status;
       // NOTE: The assignee trio travels together and applies only when BOTH hold: the payload
       // actually spoke about the assignee (`meta` present — undefined means "said nothing", and a
       // degraded event must NOT wipe a stored 'AgentBot'/'User', the intermittent self-wipe behind
       // issue #27) AND the snapshot is newer than the state we already have, per the fence above.
-      const assigneeKnown = n.assigneeType !== undefined && applyAssignee;
+      const assigneeKnown = n.assigneeType !== undefined && applyState;
       const nextAssigneeId = assigneeKnown
         ? (n.assigneeId ?? null)
         : existing.assigneeId;
@@ -277,7 +271,8 @@ export async function mirrorChatwootEvent(
           lastEventAt: updatedLastEventAt,
           // NOTE: The watermark only moves forward. An equal version was applied just above but is
           // not news, and a strictly older one was rejected, so neither may rewrite it.
-          ...(stateUpdatedAt != null &&
+          ...(describesState &&
+          stateUpdatedAt != null &&
           (existing.chatwootUpdatedAt == null ||
             stateUpdatedAt > existing.chatwootUpdatedAt)
             ? { chatwootUpdatedAt: stateUpdatedAt }
@@ -310,7 +305,7 @@ export async function mirrorChatwootEvent(
       // we hold never fires it — its assignee was not applied above. (An undefined trio — degraded
       // payload — never equals "User" either, so it can neither fire nor mask the edge.)
       if (
-        applyAssignee &&
+        applyState &&
         existing.assigneeType !== "User" &&
         n.assigneeType === "User"
       ) {

@@ -295,29 +295,37 @@ describe.skipIf(!dbUp)(
       expect(handoffsAfter - handoffsBefore).toBe(1);
     });
 
-    // Same reordering as above, on a Chatwoot that sends no version at all: distrusting the message
-    // outright would lose the takeover for good, since the delayed handoff event then loses to the
-    // monotonic guard. A frozen tail can never invent a human assignee, so promotion is the one
-    // thing a message snapshot is still allowed to say here.
-    test("without any version, a message may still hand the conversation to a human", async () => {
+    // With no version anywhere, a message snapshot cannot be ordered against the conversation at
+    // all, so it moves no conversation state. Trusting it to PROMOTE an assignee was tried and is
+    // not safe either: a message a human sent BEFORE the conversation went back to the bot arrives
+    // with the same last_activity_at, and would re-take it — a false handoff, fired at whoever is
+    // subscribed. Neither direction can be ordered, so the mirror keeps what it has.
+    test("without any version, a message that arrives late cannot re-take the conversation", async () => {
       const T = 1_786_497_000;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(36, {
+          status: "open",
+          lastActivityAt: T,
+          assignee: HUMAN,
+        }),
+      });
       await mirror({
         event: "conversation_updated",
         ...convPayload(36, { status: "pending", lastActivityAt: T }),
       });
+      // The human's message, serialized while they still owned it, delivered after the handback.
       await mirror(
         messageEvent(36, "message_created", {
           messageId: 998,
           status: "open",
-          lastActivityAt: T + 5,
+          lastActivityAt: T,
           assignee: HUMAN,
         }),
       );
       const row = await mirrored(36);
-      expect(row.assigneeType).toBe("User");
-      expect(row.assigneeId).toBe(3);
-      // Status is NOT taken from it: only the assignee promotion is.
       expect(row.status).toBe("pending");
+      expect(row.assigneeType).toBeNull();
     });
 
     // The other half of that rule: the frozen tail of a handoff is exactly a message snapshot that
@@ -328,6 +336,42 @@ describe.skipIf(!dbUp)(
       expect(row.status).toBe("open");
       expect(row.assigneeType).toBe("User");
       expect(row.assigneeId).toBe(3);
+    });
+
+    // A payload with no `meta` said nothing about the assignee (the degraded shape behind issue
+    // #27). It must not apply state — and, more importantly, must not claim to be the version we
+    // hold, or it outranks the complete payload that arrives late with the assignment.
+    test("a payload that says nothing about the assignee claims no version", async () => {
+      const T = 1_786_499_000;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(42, {
+          status: "pending",
+          lastActivityAt: T,
+          updatedAt: T + 0.1,
+        }),
+      });
+      const degraded = convPayload(42, {
+        status: "open",
+        lastActivityAt: T,
+        updatedAt: T + 0.9,
+      }) as Record<string, unknown>;
+      degraded.meta = undefined;
+      await mirror({ event: "conversation_updated", ...degraded });
+      expect((await mirrored(42)).status).toBe("pending");
+      // The real assignment, serialized EARLIER than the degraded payload and delivered after it.
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(42, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.5,
+          assignee: HUMAN,
+        }),
+      });
+      const row = await mirrored(42);
+      expect(row.status).toBe("open");
+      expect(row.assigneeType).toBe("User");
     });
 
     // Chatwoot emits several events for ONE write to the conversation (conversation_updated +

@@ -40,24 +40,41 @@ const suDb = su as PrismaClient;
 let tenantId = 0n;
 let instanceId = 0n;
 
+// A Chatwoot that authenticates like the real one: `sendPrivateNote` posts through `sendMessage`,
+// which sends the PERSONA BOT token, so a client built without one is rejected with 401 instead of
+// quietly accepting the note. A stub that ignores the token green-lights a note production never
+// posts.
 function noteRecorder(opts: { fail?: boolean } = {}) {
   const notes: Array<[number, string]> = [];
-  const client = {
-    sendPrivateNote: async (conversationId: number, content: string) => {
-      if (opts.fail) throw new Error("chatwoot is down");
-      notes.push([conversationId, content]);
-      return {};
-    },
-  } as unknown as ChatwootClient;
-  return { notes, makeClient: async () => client };
+  const makeClient = async (cfg: { botToken?: string }) => {
+    const token = cfg.botToken ?? "";
+    return {
+      sendPrivateNote: async (conversationId: number, content: string) => {
+        if (!token) throw new Error("401 Unauthorized: missing bot token");
+        if (opts.fail) throw new Error("chatwoot is down");
+        notes.push([conversationId, content]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+  };
+  return {
+    notes,
+    makeClient: makeClient as unknown as Parameters<
+      typeof postTurnFailureNote
+    >[0]["makeClient"],
+  };
 }
 
-async function seedConversation(convId: number): Promise<void> {
+async function seedConversation(
+  convId: number,
+  inboxId?: bigint,
+): Promise<void> {
   await suDb.conversation.create({
     data: {
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootConversationId: convId,
+      inboxId: inboxId ?? null,
       status: "open",
       threadId: `t:${process.pid}:${convId}`,
     },
@@ -77,13 +94,63 @@ describe.skipIf(!dbUp)("turn failure surfacing", () => {
       adminToken: encryptJson("ADMIN"),
     });
     instanceId = inst.id;
-    await seedConversation(400);
-    await seedConversation(401);
-    await seedConversation(402);
+    // The persona whose turn fails: the note is posted AS its Chatwoot Agent Bot, resolved through
+    // the conversation's inbox.
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "CE Persona",
+        systemPrompt: "x",
+        mode: "production",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+      },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: agent.id,
+        chatwootAgentBotId: 9,
+        accessToken: encryptJson("BOT"),
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `ce-route-${process.pid}`,
+        name: "Atendente",
+      },
+    });
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 84,
+        name: "Sup",
+        agentId: agent.id,
+      },
+    });
+    // An inbox with no persona bound: nothing to post as.
+    const orphanInbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 85,
+        name: "Sem persona",
+        agentId: null,
+      },
+    });
+    await seedConversation(400, inbox.id);
+    await seedConversation(401, inbox.id);
+    await seedConversation(402, inbox.id);
+    await seedConversation(403, orphanInbox.id);
+    await seedConversation(404, inbox.id);
   });
 
   afterAll(async () => {
-    for (const table of ["conversations", "chatwoot_instances"]) {
+    for (const table of [
+      "conversations",
+      "inboxes",
+      "chatwoot_agent_bots",
+      "agents",
+      "chatwoot_instances",
+    ]) {
       await suDb.$executeRawUnsafe(
         `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
       );
@@ -158,6 +225,50 @@ describe.skipIf(!dbUp)("turn failure surfacing", () => {
     expect(content).toContain("sem resposta");
     expect(content).toContain("humano");
     expect(content).toContain("no completion");
+  });
+
+  test("an inbox with no persona bound skips the note instead of failing", async () => {
+    const chatwoot = noteRecorder();
+    await expect(
+      postTurnFailureNote({
+        tenantId,
+        instanceId,
+        chatwootConversationId: 403,
+        error: new Error("boom"),
+        base: appDb,
+        makeClient: chatwoot.makeClient,
+      }),
+    ).resolves.toBeUndefined();
+    expect(chatwoot.notes).toHaveLength(0);
+  });
+
+  // Two deliveries for one conversation are processed concurrently whenever debounce is off, and a
+  // read-then-write cooldown lets both read the pre-failure stamp and both announce. The second
+  // client is what makes the interleaving real: on a single pool the two transactions can be handed
+  // the same connection and serialize by accident, which hides the defect instead of proving it.
+  test("two failures racing on one conversation announce exactly once", async () => {
+    const other = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl as string }),
+    });
+    try {
+      // Warm it: a cold client spends longer opening its connection than the first transaction takes
+      // end to end, so the two would never overlap and the assertion would pass on any code at all.
+      await other.$queryRaw`SELECT 1`;
+      const results = await Promise.all(
+        [appDb, other].map((db) =>
+          recordConversationError({
+            tenantId,
+            instanceId,
+            chatwootConversationId: 404,
+            error: new Error("provider down"),
+            base: db,
+          }),
+        ),
+      );
+      expect(results.filter((r) => r.announce)).toHaveLength(1);
+    } finally {
+      await other.$disconnect();
+    }
   });
 
   test("a Chatwoot that refuses the note does not turn one failure into two", async () => {

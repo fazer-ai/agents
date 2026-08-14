@@ -433,11 +433,18 @@ model Conversation {
   // order those (one-second resolution, unchanged by a status change), which is what let a frozen
   // message snapshot undo a handoff. NULL = the payload never carried it (Chatwoot < 4.0.2).
   //
+  // The conversation's own version (`updated_at`) as of the payload that last wrote each field.
+  // ONE mark cannot serve both: a degraded payload (no `meta`, issue #27) carries a trustworthy
+  // status and no assignee at all, so after it lands the two fields legitimately reflect different
+  // versions of the source row, and whichever single number were kept would be ordering one of them
+  // by a value that does not describe it.
+  //
   // Unix seconds WITH FRACTION, stored as the double Chatwoot sent (`updated_at.to_f`) rather than
   // as a timestamp: two writes to the same conversation land microseconds apart, and a TIMESTAMP(3)
-  // would round them to the same millisecond, making the version comparison lose the ordering this
-  // column exists to provide.
-  chatwootUpdatedAt      Float?    @map("chatwoot_updated_at")
+  // would round them to the same millisecond, making the version comparison lose the ordering these
+  // columns exist to provide.
+  chatwootStatusAt       Float?    @map("chatwoot_status_at")
+  chatwootAssigneeAt     Float?    @map("chatwoot_assignee_at")
   // Debounce watermark: the Chatwoot message id of the last inbound message already handled
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.

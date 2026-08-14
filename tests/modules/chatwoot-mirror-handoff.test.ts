@@ -399,9 +399,10 @@ describe.skipIf(!dbUp)(
       });
       const seeded = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: 22 },
-        select: { chatwootUpdatedAt: true },
+        select: { chatwootStatusAt: true, chatwootAssigneeAt: true },
       });
-      expect(seeded.chatwootUpdatedAt).toBeNull();
+      expect(seeded.chatwootStatusAt).toBeNull();
+      expect(seeded.chatwootAssigneeAt).toBeNull();
       await mirror(
         messageEvent(22, "message_created", {
           messageId: 971,
@@ -583,6 +584,45 @@ describe.skipIf(!dbUp)(
       expect(row.assigneeType).toBe("User");
     });
 
+    // A degraded event applies its status; a complete one delivered after it, from EARLIER, still
+    // owns the assignee. Both are true at once, and with a single mark they cannot be: whichever
+    // version the mark holds, one of the two fields is being ordered by a number that does not
+    // describe it.
+    test("a status from a degraded event is not walked back by an older complete one", async () => {
+      const T = 1_786_502_400;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(46, {
+          status: "pending",
+          lastActivityAt: T,
+          updatedAt: T + 0.1,
+        }),
+      });
+      const degraded = convPayload(46, {
+        status: "resolved",
+        lastActivityAt: T,
+        updatedAt: T + 0.9,
+      }) as Record<string, unknown>;
+      degraded.meta = undefined;
+      await mirror({ event: "conversation_resolved", ...degraded });
+      expect((await mirrored(46)).status).toBe("resolved");
+      // Serialized BEFORE the resolve and delivered after it.
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(46, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.5,
+          assignee: HUMAN,
+        }),
+      });
+      const row = await mirrored(46);
+      // The older event owns the assignee it is the only witness of...
+      expect(row.assigneeType).toBe("User");
+      // ...and does not get to reopen a conversation resolved after it.
+      expect(row.status).toBe("resolved");
+    });
+
     test("a payload that says nothing about the assignee claims no version", async () => {
       const T = 1_786_499_000;
       await mirror({
@@ -600,15 +640,22 @@ describe.skipIf(!dbUp)(
       }) as Record<string, unknown>;
       degraded.meta = undefined;
       await mirror({ event: "conversation_updated", ...degraded });
-      // Its status applies — that field is intact — but it leaves the assignee it never mentioned
-      // alone, and, the point of this test, it does not claim to be the version we now hold.
+      // Its status applies — that field is intact — and it moves the STATUS mark with it. What it
+      // does not touch, and the point of this test, is the assignee it never mentioned, nor the mark
+      // that orders one.
       const afterDegraded = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: 42 },
-        select: { status: true, assigneeType: true, chatwootUpdatedAt: true },
+        select: {
+          status: true,
+          assigneeType: true,
+          chatwootStatusAt: true,
+          chatwootAssigneeAt: true,
+        },
       });
       expect(afterDegraded.status).toBe("open");
       expect(afterDegraded.assigneeType).toBeNull();
-      expect(afterDegraded.chatwootUpdatedAt).toBe(T + 0.1);
+      expect(afterDegraded.chatwootStatusAt).toBe(T + 0.9);
+      expect(afterDegraded.chatwootAssigneeAt).toBe(T + 0.1);
       // The real assignment, serialized EARLIER than the degraded payload and delivered after it.
       await mirror({
         event: "conversation_updated",
@@ -624,10 +671,10 @@ describe.skipIf(!dbUp)(
       expect(row.assigneeType).toBe("User");
     });
 
-    // Same rule on the CREATE branch: a row seeded from a degraded event would carry a version
-    // nothing honored, and the complete event that follows with a lower one would lose the assignee
-    // for good.
-    test("a row created from a degraded payload stores no version", async () => {
+    // Same rule on the CREATE branch. A row seeded from a degraded event holds a status version and
+    // no assignee version at all, so the complete event that follows from EARLIER still owns the
+    // assignee it is the only witness of, and still does not get to walk the status back.
+    test("a row created from a degraded payload stores only the version it can vouch for", async () => {
       const T = 1_786_500_000;
       const degraded = convPayload(45, {
         status: "pending",
@@ -640,9 +687,9 @@ describe.skipIf(!dbUp)(
         (
           await suDb.conversation.findFirstOrThrow({
             where: { tenantId, chatwootConversationId: 45 },
-            select: { chatwootUpdatedAt: true },
+            select: { chatwootAssigneeAt: true },
           })
-        ).chatwootUpdatedAt,
+        ).chatwootAssigneeAt,
       ).toBeNull();
       // Serialized EARLIER than the degraded payload, delivered after it.
       await mirror({
@@ -655,8 +702,8 @@ describe.skipIf(!dbUp)(
         }),
       });
       const row = await mirrored(45);
-      expect(row.status).toBe("open");
       expect(row.assigneeType).toBe("User");
+      expect(row.status).toBe("pending");
     });
 
     // Chatwoot emits several events for ONE write to the conversation (conversation_updated +
@@ -757,9 +804,9 @@ describe.skipIf(!dbUp)(
         (
           await suDb.conversation.findFirstOrThrow({
             where: { tenantId, chatwootConversationId: 33 },
-            select: { chatwootUpdatedAt: true },
+            select: { chatwootAssigneeAt: true },
           })
-        ).chatwootUpdatedAt,
+        ).chatwootAssigneeAt,
       ).toBeNull();
       await mirror({
         event: "conversation_updated",

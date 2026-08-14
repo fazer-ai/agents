@@ -113,7 +113,8 @@ export async function mirrorChatwootEvent(
         select: {
           id: true,
           lastEventAt: true,
-          chatwootUpdatedAt: true,
+          chatwootStatusAt: true,
+          chatwootAssigneeAt: true,
           assigneeId: true,
           assigneeType: true,
           assigneeName: true,
@@ -121,18 +122,29 @@ export async function mirrorChatwootEvent(
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
-      // A payload that says nothing about the assignee (`meta` absent — the degraded shape behind
-      // issue #27) is not a description of the conversation, so it never claims to be the version
-      // we hold. That has to hold on CREATION too: a row seeded from a degraded event would carry a
-      // version nothing honored, and the complete event that follows with a lower one would lose.
-      const describesState = n.assigneeType !== undefined;
-
-      // A message event's embedded `conversation` is a SNAPSHOT taken when the message fired, not a
-      // statement about the conversation. Conversation state comes from conversation-level events;
-      // this flag is what separates the two all the way down.
+      // NOTE: A message event's embedded `conversation` is a SNAPSHOT taken when the message fired,
+      // not a statement about the conversation. Conversation state comes from conversation-level
+      // events; this flag is what separates the two all the way down.
       const fromConversationEvent = n.message === undefined;
 
-      // Out-of-order guard, on the axis the event itself offers. A conversation event that carries a
+      // NOTE: Each field is ordered by the version of the payload that last WROTE it, which is why
+      // there are two marks and not one. A degraded payload (`meta` absent — the intermittent shape
+      // behind issue #27) carries a trustworthy status and says nothing at all about the assignee,
+      // so after it lands the two fields legitimately reflect different versions of the source row.
+      // A single mark would then be ordering one of them by a number that does not describe it:
+      // hold the degraded event's version and the complete event delivered after it loses the
+      // assignee it is the only witness of; withhold it and that same event reopens a conversation
+      // resolved after it.
+      const olderThanStatus =
+        existing?.chatwootStatusAt != null &&
+        stateUpdatedAt != null &&
+        stateUpdatedAt < existing.chatwootStatusAt;
+      const olderThanAssignee =
+        existing?.chatwootAssigneeAt != null &&
+        stateUpdatedAt != null &&
+        stateUpdatedAt < existing.chatwootAssigneeAt;
+
+      // NOTE: Out-of-order guard, on the axis the event itself offers. A conversation event that carries a
       // version is judged by that version and by NOTHING ELSE — never by `last_activity_at`, which
       // does not move on a status or assignee change: a handoff event delayed past the human's first
       // message carries the older last_activity_at and would be discarded as stale while being the
@@ -149,8 +161,7 @@ export async function mirrorChatwootEvent(
       // monotonic guard remains the only protection against a status regression.
       const stale =
         fromConversationEvent && stateUpdatedAt != null
-          ? existing?.chatwootUpdatedAt != null &&
-            stateUpdatedAt < existing.chatwootUpdatedAt
+          ? olderThanStatus && olderThanAssignee
           : newLastEventAt != null &&
             existing?.lastEventAt != null &&
             existing.lastEventAt > newLastEventAt;
@@ -158,7 +169,7 @@ export async function mirrorChatwootEvent(
         return {
           conversationRowId: existing.id,
           prevAssigneeId,
-          // No transition applied — report status/prevStatus equal so a caller's diff sees "no change".
+          // NOTE: No transition applied — report status/prevStatus equal so a caller's diff sees "no change".
           prevStatus: existing.status,
           applied: false,
           status: existing.status,
@@ -185,7 +196,9 @@ export async function mirrorChatwootEvent(
             assigneeName: n.assigneeName ?? null,
             threadId,
             lastEventAt: createdLastEventAt,
-            chatwootUpdatedAt: describesState ? stateUpdatedAt : null,
+            chatwootStatusAt: stateUpdatedAt,
+            chatwootAssigneeAt:
+              n.assigneeType !== undefined ? stateUpdatedAt : null,
             lastInboundAt: inboundAt,
             ...(n.customAttributes
               ? {
@@ -209,7 +222,7 @@ export async function mirrorChatwootEvent(
         return {
           conversationRowId: created.id,
           prevAssigneeId,
-          // No prior row → no prior status (never a "transition" for a brand-new conversation).
+          // NOTE: No prior row → no prior status (never a "transition" for a brand-new conversation).
           prevStatus: null,
           applied: true,
           status: createdStatus,
@@ -230,7 +243,7 @@ export async function mirrorChatwootEvent(
         existing.lastEventAt > updatedLastEventAt
           ? existing.lastEventAt
           : updatedLastEventAt;
-      // Whether this payload is at least as recent as what the row already holds. False only for a
+      // NOTE: Whether this payload is at least as recent as what the row already holds. False only for a
       // conversation event that won on version while carrying an older last_activity_at — the
       // delayed-handoff case — and it is what stops the UNVERSIONED fields below (the attribute
       // bags) from riding along on that event's authority over the versioned state.
@@ -274,12 +287,9 @@ export async function mirrorChatwootEvent(
       // frequently the one carrying `meta`. Under `>` the first delivery would win and its
       // companion's assignee would be dropped. A payload with no version at all is a Chatwoot older
       // than 4.0.2: nothing to order by, so conversation events apply best-effort, as they did before.
-      const ordered =
-        fromConversationEvent &&
-        (stateUpdatedAt == null ||
-          existing.chatwootUpdatedAt == null ||
-          stateUpdatedAt >= existing.chatwootUpdatedAt);
-      // A conversation event that arrives BEHIND the row's last activity may still rule on the
+      const statusOrdered = fromConversationEvent && !olderThanStatus;
+      const assigneeOrdered = fromConversationEvent && !olderThanAssignee;
+      // NOTE: A conversation event that arrives BEHIND the row's last activity may still rule on the
       // assignee — that is the delayed handoff, and losing it is this issue — but it may not CLOSE
       // the conversation. `last_activity_at` moves only when a message is created, so a row ahead of
       // this event on that axis has seen a message the event knows nothing about, and Chatwoot
@@ -298,7 +308,7 @@ export async function mirrorChatwootEvent(
         n.status === "resolved" || n.status === "snoozed";
       const statusIsCurrent = payloadIsCurrent || !closesConversation;
       const appliedStatus =
-        ordered && statusIsCurrent
+        statusOrdered && statusIsCurrent
           ? n.status
           : // The reopen above: status only, and only from a brand-new incoming message.
             isNewIncomingMessage(n)
@@ -320,12 +330,11 @@ export async function mirrorChatwootEvent(
       // not the field that decides whether the bot may answer.
       const sameVersion =
         stateUpdatedAt != null &&
-        existing.chatwootUpdatedAt != null &&
-        stateUpdatedAt === existing.chatwootUpdatedAt;
+        existing.chatwootAssigneeAt != null &&
+        stateUpdatedAt === existing.chatwootAssigneeAt;
       const assigneeKnown =
         n.assigneeType !== undefined &&
-        ordered &&
-        describesState &&
+        assigneeOrdered &&
         !(
           sameVersion &&
           n.assigneeType == null &&
@@ -354,20 +363,27 @@ export async function mirrorChatwootEvent(
               }
             : {}),
           lastEventAt: effectiveLastEventAt,
-          // NOTE: The watermark only moves forward. An equal version was applied just above but is
-          // not news, and a strictly older one was rejected, so neither may rewrite it.
-          // NOTE: Only a conversation event claims the version, and this is the half of the rule
-          // that makes the other half work: a snapshot riding along with a message moves no state,
-          // so it must not move the watermark either. If it did, it would push the mark past a
-          // conversation event still in flight and that event would arrive already "stale" —
-          // precisely how a delayed handoff used to be lost. The mark also only moves forward: an
-          // equal version was applied just above but is not news, and an older one was rejected.
-          ...(ordered &&
-          describesState &&
+          // NOTE: A mark moves when the field it belongs to is WRITTEN, and only forward. That is the
+          // whole rule, and it is what keeps the two independent: a degraded payload writes the
+          // status and moves the status mark, while the assignee mark stays where the last payload
+          // that actually spoke about the assignee left it.
+          // NOTE: Only a conversation event claims a version, and this is the half of the rule that
+          // makes the other half work: a snapshot riding along with a message moves no state, so it
+          // must not move a mark either. If it did, it would push one past a conversation event
+          // still in flight and that event would arrive already "stale" — precisely how a delayed
+          // handoff used to be lost.
+          ...(appliedStatus != null &&
+          statusOrdered &&
           stateUpdatedAt != null &&
-          (existing.chatwootUpdatedAt == null ||
-            stateUpdatedAt > existing.chatwootUpdatedAt)
-            ? { chatwootUpdatedAt: stateUpdatedAt }
+          (existing.chatwootStatusAt == null ||
+            stateUpdatedAt > existing.chatwootStatusAt)
+            ? { chatwootStatusAt: stateUpdatedAt }
+            : {}),
+          ...(assigneeKnown &&
+          stateUpdatedAt != null &&
+          (existing.chatwootAssigneeAt == null ||
+            stateUpdatedAt > existing.chatwootAssigneeAt)
+            ? { chatwootAssigneeAt: stateUpdatedAt }
             : {}),
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
           // NOTE: Attribute bags are ASSIGNED (the payload always ships the whole jsonb), but only
@@ -397,7 +413,7 @@ export async function mirrorChatwootEvent(
           assignee_type: nextAssigneeType,
         });
       }
-      // Handoff = the assignee transitions to a human (User). Detect the bot→human edge:
+      // NOTE: Handoff = the assignee transitions to a human (User). Detect the bot→human edge:
       // prior assignee type was not User and the new one is User. A snapshot older than the state
       // we hold never fires it — its assignee was not applied above. (An undefined trio — degraded
       // payload — never equals "User" either, so it can neither fire nor mask the edge.)
@@ -414,11 +430,11 @@ export async function mirrorChatwootEvent(
       return {
         conversationRowId: existing.id,
         prevAssigneeId,
-        // The status as persisted BEFORE this update — the real transition source value.
+        // NOTE: The status as persisted BEFORE this update — the real transition source value.
         prevStatus: existing.status,
         applied: true,
         status: nextStatus,
-        // EFFECTIVE values (what is stored after this update), not the payload's silence.
+        // NOTE: EFFECTIVE values (what is stored after this update), not the payload's silence.
         assigneeId: nextAssigneeId,
         assigneeType: nextAssigneeType,
         lastEventAt: effectiveLastEventAt,

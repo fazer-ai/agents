@@ -22,12 +22,11 @@ import { shouldBotHandle } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import {
   clearConversationError,
-  postTurnFailureNote,
   recordConversationError,
 } from "@/modules/conversations/error";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import type { FlowStage } from "@/modules/flowlog/stages";
-import { type ClaimedJob, isFinalAttempt } from "@/modules/scheduler/service";
+import type { ClaimedJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { readLastMessageId } from "./service";
 import { readDebounceConfig } from "./settings";
@@ -360,30 +359,13 @@ export async function flushDebounceJob(
     }
     return { outcome: "done" };
   } catch (e) {
-    // Only once the scheduler is out of retries. A flush that will be requeued has NOT failed the
-    // turn: a later attempt can still answer, and telling the operator that a human must take over
-    // would be false — worse, taking over closes the bot-ownership gate, so the announcement would
-    // cause the failure it reports. The console badge waits for the same reason: its "re-engage"
-    // action would collide with the attempt still queued.
-    if (isFinalAttempt(job)) {
-      const { announce } = await recordConversationError({
-        tenantId,
-        instanceId,
-        chatwootConversationId: conversationId,
-        error: e,
-        base,
-      });
-      if (announce) {
-        await postTurnFailureNote({
-          tenantId,
-          instanceId,
-          chatwootConversationId: conversationId,
-          error: e,
-          base,
-          makeClient: deps?.makeClient,
-        });
-      }
-    }
+    await recordConversationError({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conversationId,
+      error: e,
+      base,
+    });
     throw e;
   }
 }

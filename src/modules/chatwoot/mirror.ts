@@ -245,7 +245,28 @@ export async function mirrorChatwootEvent(
       // actually spoke about the assignee (`meta` present — undefined means "said nothing", and a
       // degraded event must NOT wipe a stored 'AgentBot'/'User', the intermittent self-wipe behind
       // issue #27) AND the snapshot is newer than the state we already have, per the fence above.
-      const assigneeKnown = n.assigneeType !== undefined && applyState;
+      //
+      // Plus one rule for the EQUAL-version case, so the outcome cannot depend on delivery order —
+      // the exact dependency this whole fence exists to remove. An equal version is the row version
+      // we already hold, and a real unassignment is its own write, so it always arrives strictly
+      // greater; every payload is serialized from ONE conversation object (Message#webhook_data
+      // embeds conversation.webhook_data), so companions of a single write agree by construction.
+      // A disagreement here therefore means one of the two witnesses is degraded, and `null` is the
+      // degraded reading: it is indistinguishable from "did not know". So at an equal version an
+      // assignee may be SET but never CLEARED. The status needs no such rule — its two readings are
+      // equally informative, and it is not the field that decides whether the bot may answer.
+      const sameVersion =
+        stateUpdatedAt != null &&
+        existing.chatwootUpdatedAt != null &&
+        stateUpdatedAt === existing.chatwootUpdatedAt;
+      const assigneeKnown =
+        n.assigneeType !== undefined &&
+        applyState &&
+        !(
+          sameVersion &&
+          n.assigneeType == null &&
+          existing.assigneeType != null
+        );
       const nextAssigneeId = assigneeKnown
         ? (n.assigneeId ?? null)
         : existing.assigneeId;
@@ -305,7 +326,7 @@ export async function mirrorChatwootEvent(
       // we hold never fires it — its assignee was not applied above. (An undefined trio — degraded
       // payload — never equals "User" either, so it can neither fire nor mask the edge.)
       if (
-        applyState &&
+        assigneeKnown &&
         existing.assigneeType !== "User" &&
         n.assigneeType === "User"
       ) {

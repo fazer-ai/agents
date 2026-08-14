@@ -413,35 +413,55 @@ describe.skipIf(!dbUp)(
     // conversation_status_changed), all carrying that write's version. They must not fight: the one
     // that arrives second is frequently the one carrying `meta`, so rejecting an equal version
     // would drop the assignee it brought.
-    test("companions of one write all apply, whichever arrives with meta", async () => {
-      const T = 1_786_494_000;
-      const U = T + 0.123_456;
-      await mirror({
-        event: "conversation_updated",
-        ...convPayload(27, {
-          status: "pending",
-          lastActivityAt: T,
-          updatedAt: T + 0.1,
-        }),
-      });
-      await mirror({
-        event: "conversation_status_changed",
-        ...convPayload(27, { status: "open", lastActivityAt: T, updatedAt: U }),
-      });
-      await mirror({
-        event: "conversation_updated",
-        ...convPayload(27, {
-          status: "open",
-          lastActivityAt: T,
-          updatedAt: U,
-          assignee: HUMAN,
-        }),
-      });
-      const row = await mirrored(27);
-      expect(row.status).toBe("open");
-      expect(row.assigneeType).toBe("User");
-      expect(row.assigneeId).toBe(3);
-    });
+    // Chatwoot emits several events for ONE write (conversation_updated +
+    // conversation_status_changed), so an equal version is routine, not exotic. The pair must land
+    // on the same row state whichever half is delivered first: they describe the same row version,
+    // and a real unassignment would carry a strictly greater one. Under a plain `>=` the second
+    // delivery simply wins, so the reversed order clears the human and re-opens the very regression
+    // this suite is about.
+    test.each([
+      ["meta last", ["bare", "meta"]],
+      ["meta first", ["meta", "bare"]],
+    ] as const)(
+      "companions of one write converge on the same state (%s)",
+      async (_label, order) => {
+        const convId = order[0] === "bare" ? 27 : 28;
+        const T = 1_786_494_000;
+        const U = T + 0.123_456;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(convId, {
+            status: "pending",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        const events = {
+          bare: {
+            event: "conversation_status_changed",
+            ...convPayload(convId, {
+              status: "open",
+              lastActivityAt: T,
+              updatedAt: U,
+            }),
+          },
+          meta: {
+            event: "conversation_updated",
+            ...convPayload(convId, {
+              status: "open",
+              lastActivityAt: T,
+              updatedAt: U,
+              assignee: HUMAN,
+            }),
+          },
+        };
+        for (const which of order) await mirror(events[which]);
+        const row = await mirrored(convId);
+        expect(row.status).toBe("open");
+        expect(row.assigneeType).toBe("User");
+        expect(row.assigneeId).toBe(3);
+      },
+    );
 
     // The stamp is stored as the double Chatwoot sent. Rounding it to a timestamp would collapse
     // two writes a few hundred microseconds apart into one version, and the second would lose.

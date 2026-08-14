@@ -56,6 +56,12 @@ export interface MirrorResult {
   lastEventAt: Date | null;
 }
 
+// How long a row whose state we wrote ourselves distrusts snapshots that ride along with a message.
+// Sized against Chatwoot's own delivery bound (AgentBots::WebhookJob retries 3× at 3s on the `high`
+// queue), with room for queue latency on top. It is a hold over the window where a pre-write snapshot
+// can still land, never a permanent one: see the fence in the update branch for why it must expire.
+export const LOCAL_STATE_FENCE_MS = 60_000;
+
 export async function mirrorChatwootEvent(
   tenantId: bigint,
   instanceId: bigint,
@@ -251,9 +257,21 @@ export async function mirrorChatwootEvent(
       //
       // While the row is marked, a snapshot that merely RIDES ALONG with a message is not allowed to
       // move the assignee at all, nor to walk the status back. A brand-new incoming message still
-      // reopens, because that reopen is Chatwoot's own doing and real. The write's echo arrives as a
-      // conversation-level event, which applies and clears the marker, and ordering runs again.
-      const localAhead = existing.chatwootStateLocalAt != null;
+      // reopens, because that reopen is Chatwoot's own doing and real.
+      //
+      // The marker EXPIRES ON ITS OWN, and that is load-bearing rather than tidy: clearing it on the
+      // write's echo alone would leave it stuck in two real cases — the nudge's live reconcile only
+      // READS Chatwoot, so it produces no echo at all, and a console write can have its echo land
+      // and clear before `updateMirror` even runs. A stuck marker fences out message-carried
+      // assignments forever, which is this issue's own failure with the sides swapped: the bot keeps
+      // answering a conversation a human took. The window it has to cover is webhook delivery
+      // lateness, which Chatwoot bounds (AgentBots::WebhookJob: retry_on wait 3s, attempts 3, on the
+      // `high` queue); LOCAL_STATE_FENCE_MS sits well above that, and past it the row is back to
+      // plain ordering, which is where it was before this column existed. Both clocks here are ours.
+      const localAhead =
+        existing.chatwootStateLocalAt != null &&
+        Date.now() - existing.chatwootStateLocalAt.getTime() <
+          LOCAL_STATE_FENCE_MS;
       const rideAlong = localAhead && n.message !== undefined;
       const appliedStatus =
         applyState && !(rideAlong && !isNewIncomingMessage(n))

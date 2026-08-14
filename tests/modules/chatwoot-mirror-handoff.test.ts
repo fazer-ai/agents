@@ -3,7 +3,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
-import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
+import {
+  LOCAL_STATE_FENCE_MS,
+  mirrorChatwootEvent,
+} from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import {
   handoffConversation,
@@ -724,6 +727,49 @@ describe.skipIf(!dbUp)(
         const row = await mirrored(42);
         expect(row.assigneeType).toBeNull();
         expect(row.status).toBe("pending");
+      });
+
+      // The nudge's live reconcile only READS Chatwoot, so its write will never have an echo to
+      // clear the marker, and a console write can have its echo land before updateMirror even runs.
+      // Either way the marker has to expire on its own: stuck ON, it fences out message-carried
+      // assignments forever, which is this issue's failure with the sides swapped (the bot keeps
+      // answering a conversation a human took).
+      test("the fence expires on its own, with no echo to clear it", async () => {
+        const T = 1_786_504_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(44, {
+            status: "pending",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        // A read-only reconcile: state written from a live probe, no Chatwoot write, no echo ever.
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 44 },
+          data: {
+            status: "pending",
+            assigneeType: null,
+            assigneeId: null,
+            chatwootStateLocalAt: new Date(
+              Date.now() - LOCAL_STATE_FENCE_MS - 1_000,
+            ),
+          },
+        });
+        // A real handoff, first seen in a message. Under a marker that never expires it would be
+        // ignored for the life of the conversation.
+        await mirror(
+          messageEvent(44, "message_updated", {
+            messageId: 944,
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.4,
+            assignee: HUMAN,
+          }),
+        );
+        const row = await mirrored(44);
+        expect(row.assigneeType).toBe("User");
+        expect(row.assigneeId).toBe(HUMAN.id);
       });
 
       // Not over-fenced: a brand-new customer message genuinely reopens, and that reopen is

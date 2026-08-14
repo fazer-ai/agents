@@ -8,6 +8,7 @@ import {
   isAllowedImageHost,
   normalizeAllowedHost,
   readSendImageConfig,
+  SEND_IMAGE_MAX_PER_TURN,
 } from "@/modules/images/settings";
 
 // Issue #65. An agent that already holds a product image's URL had no way to deliver it: the only
@@ -314,8 +315,9 @@ describe("the send_image tool", () => {
   });
 
   // A proactive nudge has no turn to queue into, and its own gate (the 24h service window) decides
-  // whether anything may be sent at all. Declining is the only safe answer there.
-  test("declines when there is no turn to queue into", async () => {
+  // whether anything may be sent at all. Declining is the only safe answer there — and it is decided
+  // BEFORE the download, so a refusal never costs a DNS lookup and up to 5 MB over ten seconds.
+  test("declines when there is no turn to queue into, without fetching", async () => {
     const sent: Sent[] = [];
     const host = fakeHost(PNG);
     const tools = buildNativeTools(
@@ -332,6 +334,41 @@ describe("the send_image tool", () => {
       url: "https://cdn.loja.com.br/camiseta.png",
     });
     expect(String(out)).toContain("link em texto");
+    expect(sent).toEqual([]);
+    expect(host.calls).toEqual([]);
+  });
+
+  // One model response can carry a batch of tool calls, and every accepted image is held in memory
+  // until the turn's gates clear. The ceiling is checked before the download, so an over-budget call
+  // costs nothing.
+  test("the per-turn queue has a ceiling, enforced before the download", async () => {
+    const sent: Sent[] = [];
+    const host = fakeHost(PNG);
+    const turnState: TurnState = { resolveRequested: false, pendingImages: [] };
+    const tools = buildNativeTools(
+      {
+        client: stubClient(sent),
+        conversationId: 42,
+        sendImage: HOSTS,
+        fetchImpl: host.impl,
+        assertSafe: noSsrf,
+        turnState,
+      },
+      ["send_image"],
+    );
+    const outs: string[] = [];
+    for (let i = 0; i < SEND_IMAGE_MAX_PER_TURN + 2; i++) {
+      outs.push(
+        String(
+          await sendImage(tools)?.invoke({
+            url: `https://cdn.loja.com.br/camiseta-${i}.png`,
+          }),
+        ),
+      );
+    }
+    expect(turnState.pendingImages).toHaveLength(SEND_IMAGE_MAX_PER_TURN);
+    expect(host.calls).toHaveLength(SEND_IMAGE_MAX_PER_TURN);
+    expect(outs[SEND_IMAGE_MAX_PER_TURN]).toContain("Limite de imagens");
     expect(sent).toEqual([]);
   });
 
@@ -365,12 +402,14 @@ describe("the send_image tool", () => {
   test("with no host configured the tool says so instead of trying", async () => {
     const sent: Sent[] = [];
     const host = fakeHost(PNG);
+    const turnState: TurnState = { resolveRequested: false, pendingImages: [] };
     const tools = buildNativeTools(
       {
         client: stubClient(sent),
         conversationId: 42,
         fetchImpl: host.impl,
         assertSafe: noSsrf,
+        turnState,
       },
       ["send_image"],
     );

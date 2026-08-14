@@ -16,6 +16,7 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
   ResolveThenReplyModel,
+  SendImageOnlyModel,
   SendImageThenReplyModel,
 } from "../utils/scripted-models";
 
@@ -725,6 +726,34 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
+  // An image IS an answer, so a turn whose only output is a picture must not report "empty" — the
+  // callers clear the surfaced turn error on "posted", and a conversation that was just answered
+  // would otherwise keep showing the previous failure.
+  test("an image with no final text still counts as an answered turn", async () => {
+    await allowImageHost();
+    await seedConversation(932, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 932 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SendImageOnlyModel(
+            IMG_URL,
+            "Camiseta azul",
+          ) as unknown as BaseChatModel,
+        makeClient: makeImageClient(calls),
+        checkpointer: new MemorySaver(),
+        imageDeps,
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(calls).toEqual([["sendFileAttachment", 932, "camiseta.png"]]);
+  });
+
   // The finding this defers for: a turn a human took over mid-flight must not have already put an
   // image in front of the customer. Nothing at all reaches Chatwoot.
   test("a turn taken over mid-flight delivers no image", async () => {
@@ -1197,6 +1226,63 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(outcome).toBe("posted");
       expect(sent).toEqual([[946, "GEN-OUT-REPLY"]]);
       expect(attachments).toEqual([]);
+    });
+
+    // Same rule with no reply to hide behind: when the caption is the ONLY customer-facing text the
+    // turn produces, it is still the guardrail's business. A turn that skipped the reply must not be
+    // a way around output moderation.
+    test("a caption is screened even when the model wrote no reply", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-OUT",
+        },
+      });
+      await seedConv(947);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const attachments: Array<[number, string]> = [];
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "caption",
+      });
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 947, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+            cfg.model === GUARD_MODEL
+              ? ({
+                  invoke: async () => ({ content: verdict }),
+                } as unknown as BaseChatModel)
+              : (new SendImageOnlyModel(
+                  IMG_URL,
+                  "legenda proibida",
+                ) as unknown as BaseChatModel),
+          makeClient: guardStub(sent, notes, [], attachments),
+          checkpointer: new MemorySaver(),
+          imageDeps,
+        },
+      });
+      expect(outcome).toBe("blocked");
+      expect(attachments).toEqual([]);
+      expect(sent).toEqual([]);
     });
 
     test("input 'generated' → delivers the suggestedReply and skips the agent graph", async () => {

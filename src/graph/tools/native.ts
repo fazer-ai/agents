@@ -27,6 +27,8 @@ import {
 } from "@/modules/images/fetch";
 import {
   SEND_IMAGE_DEFAULTS,
+  SEND_IMAGE_MAX_PER_TURN,
+  SEND_IMAGE_MAX_TURN_BYTES,
   type SendImageConfig,
 } from "@/modules/images/settings";
 import type { SideEffectErrorReporter } from "@/modules/integrations/toolpacks";
@@ -1025,6 +1027,31 @@ function sendImageTool(ctx: ToolCtx) {
     }\n</imagens-permitidas>`;
   return failableTool(
     async ({ url, caption }: { url: string; caption?: string }) => {
+      // NOTE: Both refusals below are decided BEFORE the fetch. Downloading megabytes over ten
+      // seconds only to throw the result away is work a model can ask for repeatedly, and the DNS
+      // lookup alone is a signal leaving the box for a call whose answer is already "no".
+      //
+      // Queued, not sent: delivery happens after the turn's gates, so a turn that is superseded,
+      // taken over or blocked must not have already messaged the customer. Without a turn to queue
+      // into (a proactive nudge, where the 24h service window decides the send mode) the tool
+      // declines rather than posting behind that gate's back.
+      const turnState = ctx.turnState;
+      if (!turnState) {
+        return "Não é possível enviar imagem neste momento (mensagem proativa). Responda com o link em texto.";
+      }
+      // One model response can carry a whole batch of tool calls, and the graph's tool-call limit is
+      // only re-checked between responses, so the queue needs its own ceiling: every accepted image
+      // is held in memory until the turn ends and then uploaded one by one.
+      const queuedBytes = turnState.pendingImages.reduce(
+        (n, i) => n + i.bytes.byteLength,
+        0,
+      );
+      if (
+        turnState.pendingImages.length >= SEND_IMAGE_MAX_PER_TURN ||
+        queuedBytes >= SEND_IMAGE_MAX_TURN_BYTES
+      ) {
+        return `Limite de imagens deste turno atingido (${SEND_IMAGE_MAX_PER_TURN}). Envie as demais em outra mensagem ou responda com o link em texto.`;
+      }
       const res = await fetchImageForDelivery(url, cfg, {
         fetchImpl: ctx.fetchImpl,
         assertSafe: ctx.assertSafe,
@@ -1038,14 +1065,7 @@ function sendImageTool(ctx: ToolCtx) {
           ? toolFailure(message)
           : message;
       }
-      // NOTE: Queued, not sent. Delivery happens after the turn's gates; a turn that is superseded,
-      // taken over or blocked must not have already messaged the customer. Without a turn to queue
-      // into (a proactive nudge, where the 24h service window decides the send mode) the tool
-      // declines rather than posting behind that gate's back.
-      if (!ctx.turnState) {
-        return "Não é possível enviar imagem neste momento (mensagem proativa). Responda com o link em texto.";
-      }
-      ctx.turnState.pendingImages.push({
+      turnState.pendingImages.push({
         bytes: res.bytes,
         mime: res.mime,
         fileName: res.fileName,

@@ -21,6 +21,13 @@ export const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 export const IMAGE_FETCH_TIMEOUT_MS = 10_000;
 export const MAX_ALLOWED_HOSTS = 50;
 
+// Per-TURN ceilings, which the per-image cap above does not give: one model response can carry a
+// batch of tool calls, every accepted image is held in memory until the turn's gates clear, and each
+// one costs an upload to Chatwoot on the way out. Three is already more pictures than a single reply
+// has any business carrying.
+export const SEND_IMAGE_MAX_PER_TURN = 3;
+export const SEND_IMAGE_MAX_TURN_BYTES = 12 * 1024 * 1024;
+
 // Accepts what an operator is likely to paste: a bare host, a full URL, a host with a port, with or
 // without a "*." prefix. Returns null for anything that does not reduce to a hostname.
 export function normalizeAllowedHost(raw: unknown): string | null {

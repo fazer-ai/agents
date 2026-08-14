@@ -161,14 +161,16 @@ async function applyDeferredResolve(
 // Delivers the images the agent queued this turn, AFTER the same gates the reply passes. Best-effort
 // per image: one failed attachment must not cost the customer the reply that follows it. Invariant:
 // called only on the "posted" and "empty" outcomes — a superseded, taken-over or blocked turn drops
-// the queue, exactly like the deferred resolve intent.
+// the queue, exactly like the deferred resolve intent. Returns whether the customer actually received
+// something, which is what makes an image-only turn count as answered.
 async function deliverPendingImages(
   client: ChatwootClient,
   conversationId: number,
   turnState: TurnState,
   flow: FlowContext,
-): Promise<void> {
+): Promise<boolean> {
   const queued = turnState.pendingImages.splice(0);
+  let sent = false;
   for (const img of queued) {
     try {
       await client.sendFileAttachment(
@@ -178,6 +180,7 @@ async function deliverPendingImages(
         img.mime,
         { caption: img.caption },
       );
+      sent = true;
       emitFlowEvent(flow, {
         stage: "tool",
         status: "ok",
@@ -199,6 +202,7 @@ async function deliverPendingImages(
       });
     }
   }
+  return sent;
 }
 
 // Builds the client + tools + graph from an already-loaded AgentConfig, invokes the thread, re-checks
@@ -513,35 +517,43 @@ export async function runLoadedTurn(
     // AND any deferred resolve intent (the re-armed flush re-decides over the full burst).
     if (params.shouldPost && !(await params.shouldPost())) return "superseded";
 
-    // Empty reply: nothing to post, but a deferred resolve intent still applies (resolve with no
-    // final text is a legitimate shape). This runs AFTER the recheck and the supersede gate on
-    // purpose: resolving under a takeover belongs to the human, and resolving under a superseded
-    // turn would make the next flush's gate read "resolved" and swallow the customer's newest
-    // message via the watermark.
-    if (!reply) {
-      await deliverPendingImages(client, conversationId, turnState, flow);
-      await applyDeferredResolve(client, conversationId, turnState, flow);
-      return "empty";
-    }
-
     // OUTPUT guardrail: screen the model's reply BEFORE delivery. On a violation, replace it with the
     // template / a guardrails-generated safe reply, or suppress the send entirely ("silent"). A
     // suppressed send also discards the deferred resolve intent — resolving a conversation whose
     // goodbye was blocked would strand the customer with no reply and no human.
     // NOTE: The captions ride along into the screening: they are model-written text the customer
     // reads, so moderating the reply while a caption goes out unread would be a hole. A trip drops
-    // the queue — the safe reply replaces what the model wrote, images included.
+    // the queue — the safe reply replaces what the model wrote, images included. This sits ABOVE the
+    // empty-reply branch because a caption is customer-facing text even when the model produced no
+    // final message of its own (skip_reply with an image is a legitimate shape).
     const captions = turnState.pendingImages
       .map((i) => i.caption?.trim())
       .filter((c): c is string => !!c);
-    const outGuard = await runGuardrail(
-      "output",
-      captions.length ? [reply, ...captions].join("\n") : reply,
-    );
+    const screened = [reply, ...captions].filter(Boolean).join("\n");
+    const outGuard = screened ? await runGuardrail("output", screened) : null;
     if (outGuard) {
       turnState.pendingImages.length = 0;
       if (outGuard.reply === null) return "blocked";
       reply = outGuard.reply;
+    }
+
+    // Empty reply: no text to post, but the queued images and a deferred resolve intent still apply
+    // (both are legitimate shapes with no final text). This runs AFTER the recheck and the supersede
+    // gate on purpose: resolving under a takeover belongs to the human, and resolving under a
+    // superseded turn would make the next flush's gate read "resolved" and swallow the customer's
+    // newest message via the watermark.
+    // NOTE: An image that reached the customer IS an answer, so the turn reports "posted" — the
+    // callers key the error-cleared/answered bookkeeping off that word, and an image-only turn that
+    // reported "empty" would leave a stale turn error on a conversation that was just answered.
+    if (!reply) {
+      const sent = await deliverPendingImages(
+        client,
+        conversationId,
+        turnState,
+        flow,
+      );
+      await applyDeferredResolve(client, conversationId, turnState, flow);
+      return sent ? "posted" : "empty";
     }
 
     // The image lands before the text that talks about it, and before the TTS branch: an audio

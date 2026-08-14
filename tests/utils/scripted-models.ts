@@ -87,3 +87,11 @@ export class SendImageThenReplyModel {
     };
   }
 }
+
+// Sends an image and then ends the turn with NO final text — the skip_reply shape, where the caption
+// is the only thing the customer reads.
+export class SendImageOnlyModel extends SendImageThenReplyModel {
+  constructor(url: string, caption?: string) {
+    super("", url, caption);
+  }
+}

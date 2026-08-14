@@ -14,9 +14,11 @@ src/modules/conversations/service.ts: Validate pending jobs before marking the s
 # reject an in-flight conversation event after a console write either. The one sub-case where the old
 # guard did reject it — a message landed in between and moved `lastEventAt` — is the exact discard
 # that leaves a delayed handoff lost forever, i.e. issue #61 itself; the two cannot both hold.
-# Closing it properly needs the version our own REST call produced, and neither endpoint returns it
-# (`assignments#create` renders the agent; `toggle_status` renders success/conversation_id/
-# current_status/snoozed_until). The marker-based attempt at doing it without that version was built
-# and removed inside this PR after review found four races in it. Filed as #77, whose fix is in the
-# fork: return `updated_at` from both endpoints and let the local write claim the watermark.
+# Closing it needs the version our own write produced, and the two endpoints it calls do not return
+# it (`assignments#create` renders the agent; `toggle_status` renders success/conversation_id/
+# current_status/snoozed_until). The REST `show` DOES render it, though
+# (`conversations/partials/_conversation.json.jbuilder`), so the fix is a re-read after the write
+# rather than a fork change — one extra call per console action, which is its own scope. The
+# marker-based attempt at doing it without any version was built and removed inside this PR after
+# review found four races in it. Filed as #77.
 src/modules/chatwoot/mirror.ts: Fence source events after locally written state

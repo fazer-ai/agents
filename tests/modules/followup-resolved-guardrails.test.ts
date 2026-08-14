@@ -452,6 +452,42 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(after.lastFollowUpAt).toBeNull();
   });
 
+  // O reconcile escreve status e assignee a partir de um snapshot REST que também traz a versão da
+  // conversa (`updated_at.to_f`, o mesmo campo do webhook). Sem gravá-la, a linha fica à frente das
+  // próprias marcas e o próximo evento atrasado parece mais novo que um estado que ele antecede.
+  test("(2e) o reconcile grava a versão do snapshot, então um evento atrasado não o desfaz", async () => {
+    const CONV = 4320;
+    const T = Math.floor(Date.now() / 1000) - 7200;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(T * 1000),
+      lastInboundAt: new Date(T * 1000),
+    });
+    const s = stubClient(() => ({
+      id: CONV,
+      status: "resolved",
+      meta: {},
+      last_activity_at: T,
+      updated_at: T + 30.5,
+    }));
+    await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    expect((await mirroredConv(CONV)).status).toBe("resolved");
+
+    // O evento que o espelho perdeu, entregue agora: anterior ao snapshot, e com uma versão que
+    // supera a marca antiga.
+    const n = normalizeChatwootEvent({
+      event: "conversation_updated",
+      id: CONV,
+      inbox_id: INBOX_A,
+      status: "pending",
+      contact_inbox: { id: 77_000 + CONV },
+      meta: { assignee_type: null, assignee: null },
+      last_activity_at: T,
+      updated_at: T + 10,
+    });
+    if (n) await mirrorChatwootEvent(tenantId, instanceId, n, appDb);
+    expect((await mirroredConv(CONV)).status).toBe("resolved");
+  });
+
   test("(2b) live gate: humano assumiu no Chatwoot real → aborta e espelha o assignee", async () => {
     const CONV = 4303;
     await seedConversation(CONV, inboxAId, {

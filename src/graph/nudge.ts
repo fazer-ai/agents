@@ -384,7 +384,11 @@ export async function runAgentNudge(
               };
               const current = await db.conversation.findUnique({
                 where,
-                select: { lastEventAt: true },
+                select: {
+                  lastEventAt: true,
+                  chatwootStatusAt: true,
+                  chatwootAssigneeAt: true,
+                },
               });
               if (!current) return;
               // Second-granular like the mirror's monotonic guard (last_activity_at is epoch
@@ -409,6 +413,20 @@ export async function runAgentNudge(
                   (current.lastEventAt === null ||
                     sec(liveAt) > sec(current.lastEventAt))
                     ? { lastEventAt: liveAt }
+                    : {}),
+                  // NOTE: This snapshot writes status and assignee, so it carries their versions
+                  // too — the REST show renders the same `updated_at.to_f` the webhook does. Without
+                  // them the row would sit ahead of its own marks, and the next delayed conversation
+                  // event would look newer than a state it predates and undo this reconcile.
+                  ...(liveState.updatedAt !== null &&
+                  (current.chatwootStatusAt === null ||
+                    liveState.updatedAt > current.chatwootStatusAt)
+                    ? { chatwootStatusAt: liveState.updatedAt }
+                    : {}),
+                  ...(liveState.updatedAt !== null &&
+                  (current.chatwootAssigneeAt === null ||
+                    liveState.updatedAt > current.chatwootAssigneeAt)
+                    ? { chatwootAssigneeAt: liveState.updatedAt }
                     : {}),
                 },
               });

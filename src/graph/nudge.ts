@@ -357,11 +357,16 @@ export async function runAgentNudge(
       );
     }
     if (!live) return "unavailable";
+    // NOTE: A probe that CONFIRMS the mirror still has something to record: the version it came
+    // back with. On a row migrated before those columns existed the marks are null, so the next
+    // delayed conversation event would be accepted as the first versioned word on a conversation
+    // this GET just verified. The write below no-ops when there is genuinely nothing to store.
     if (
       live.status !== loaded.status ||
       live.assigneeType !== loaded.assigneeType ||
       live.assigneeId !== loaded.assigneeId ||
-      live.assigneeName !== loaded.assigneeName
+      live.assigneeName !== loaded.assigneeName ||
+      live.updatedAt !== null
     ) {
       try {
         // NOTE: Serialize with mirrorChatwootEvent: same per-conversation withEntityLock, and a
@@ -402,34 +407,52 @@ export async function runAgentNudge(
               ) {
                 return;
               }
-              await db.conversation.update({
-                where,
-                data: {
-                  status: liveState.status,
-                  assigneeType: liveState.assigneeType,
-                  assigneeId: liveState.assigneeId,
-                  assigneeName: liveState.assigneeName,
-                  ...(liveAt !== null &&
-                  (current.lastEventAt === null ||
-                    sec(liveAt) > sec(current.lastEventAt))
-                    ? { lastEventAt: liveAt }
-                    : {}),
-                  // NOTE: This snapshot writes status and assignee, so it carries their versions
-                  // too — the REST show renders the same `updated_at.to_f` the webhook does. Without
-                  // them the row would sit ahead of its own marks, and the next delayed conversation
-                  // event would look newer than a state it predates and undo this reconcile.
-                  ...(liveState.updatedAt !== null &&
-                  (current.chatwootStatusAt === null ||
-                    liveState.updatedAt > current.chatwootStatusAt)
-                    ? { chatwootStatusAt: liveState.updatedAt }
-                    : {}),
-                  ...(liveState.updatedAt !== null &&
-                  (current.chatwootAssigneeAt === null ||
-                    liveState.updatedAt > current.chatwootAssigneeAt)
-                    ? { chatwootAssigneeAt: liveState.updatedAt }
-                    : {}),
-                },
-              });
+              // NOTE: The same rule the mirror applies, because this is the same kind of payload:
+              // a field is written when the version carrying it is at least as new as the mark that
+              // orders that field, and the mark moves with it. Writing state without checking would
+              // leave fields from the GET under marks from a webhook that landed after it — a stale
+              // assignment surviving a live unassignment, with the equal-version rule then keeping
+              // the redelivery from clearing it. The REST show renders the same `updated_at.to_f`
+              // the webhook does. With no version at all (older Chatwoot) the last_activity_at guard
+              // above is all there is, and the write stays unconditional, as it was.
+              const liveVersion = liveState.updatedAt;
+              const statusOrdered =
+                liveVersion === null ||
+                current.chatwootStatusAt === null ||
+                liveVersion >= current.chatwootStatusAt;
+              const assigneeOrdered =
+                liveVersion === null ||
+                current.chatwootAssigneeAt === null ||
+                liveVersion >= current.chatwootAssigneeAt;
+              const data = {
+                ...(statusOrdered ? { status: liveState.status } : {}),
+                ...(assigneeOrdered
+                  ? {
+                      assigneeType: liveState.assigneeType,
+                      assigneeId: liveState.assigneeId,
+                      assigneeName: liveState.assigneeName,
+                    }
+                  : {}),
+                ...(liveAt !== null &&
+                (current.lastEventAt === null ||
+                  sec(liveAt) > sec(current.lastEventAt))
+                  ? { lastEventAt: liveAt }
+                  : {}),
+                ...(statusOrdered &&
+                liveVersion !== null &&
+                (current.chatwootStatusAt === null ||
+                  liveVersion > current.chatwootStatusAt)
+                  ? { chatwootStatusAt: liveVersion }
+                  : {}),
+                ...(assigneeOrdered &&
+                liveVersion !== null &&
+                (current.chatwootAssigneeAt === null ||
+                  liveVersion > current.chatwootAssigneeAt)
+                  ? { chatwootAssigneeAt: liveVersion }
+                  : {}),
+              };
+              if (Object.keys(data).length === 0) return;
+              await db.conversation.update({ where, data });
             },
           ),
         );

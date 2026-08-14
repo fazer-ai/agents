@@ -488,6 +488,72 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect((await mirroredConv(CONV)).status).toBe("resolved");
   });
 
+  // Uma sonda que CONFIRMA o espelho ainda traz algo novo: a versão. Numa linha migrada antes das
+  // colunas existirem as marcas são nulas, e o próximo evento atrasado seria aceito como a primeira
+  // palavra versionada sobre uma conversa que este GET acabou de verificar.
+  test("(2f) o reconcile grava a versão mesmo quando os valores conferem", async () => {
+    const CONV = 4321;
+    const T = Math.floor(Date.now() / 1000) - 7200;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(T * 1000),
+      lastInboundAt: new Date(T * 1000),
+    });
+    // O Chatwoot concorda com o espelho (pending, sem humano) — nada a corrigir, só a versão.
+    const s = stubClient(() => ({
+      id: CONV,
+      status: "pending",
+      meta: {},
+      last_activity_at: T,
+      updated_at: T + 30.5,
+    }));
+    await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    const marks = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: CONV },
+      select: { chatwootStatusAt: true, chatwootAssigneeAt: true },
+    });
+    expect(marks.chatwootStatusAt).toBe(T + 30.5);
+    expect(marks.chatwootAssigneeAt).toBe(T + 30.5);
+  });
+
+  // O GET acontece antes do lock, e status/assignee mudam sem mover `last_activity_at`: um webhook
+  // que aterrissa nesse intervalo é mais novo que a sonda, e só a versão sabe disso. Sem essa cerca
+  // o reconcile reescreve o estado que a sonda viu por cima do que chegou depois — aqui, um humano
+  // já desatribuído volta a ser dono e o agente para de responder.
+  test("(2g) um snapshot mais velho que a marca não sobrescreve o assignee", async () => {
+    const CONV = 4322;
+    const T = Math.floor(Date.now() / 1000) - 7200;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(T * 1000),
+      lastInboundAt: new Date(T * 1000),
+    });
+    // O webhook da DESATRIBUIÇÃO, versão T+50: a conversa volta para o bot.
+    const n = normalizeChatwootEvent({
+      event: "conversation_updated",
+      id: CONV,
+      inbox_id: INBOX_A,
+      status: "pending",
+      contact_inbox: { id: 77_000 + CONV },
+      meta: { assignee_type: null, assignee: null },
+      last_activity_at: T,
+      updated_at: T + 50,
+    });
+    if (n) await mirrorChatwootEvent(tenantId, instanceId, n, appDb);
+
+    // A sonda do nudge devolve o estado de ANTES dela: humano dono, versão menor, mesmo segundo.
+    const s = stubClient(() => ({
+      id: CONV,
+      status: "pending",
+      meta: {
+        assignee_type: "User",
+        assignee: { id: 9, name: "Atendente" },
+      },
+      last_activity_at: T,
+      updated_at: T + 10,
+    }));
+    await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    expect((await mirroredConv(CONV)).assigneeType).toBeNull();
+  });
+
   test("(2b) live gate: humano assumiu no Chatwoot real → aborta e espelha o assignee", async () => {
     const CONV = 4303;
     await seedConversation(CONV, inboxAId, {

@@ -180,6 +180,7 @@ export function ConversationsPage() {
   const fetchConversations = useCallback(async () => {
     const { data, error: err } = await api.api.v1.conversations.get({
       query: {
+        excludeGroups: true,
         ...(status ? { status } : {}),
         ...(debouncedSearch ? { q: debouncedSearch } : {}),
       },
@@ -201,6 +202,7 @@ export function ConversationsPage() {
     try {
       const { data, error: err } = await api.api.v1.conversations.get({
         query: {
+          excludeGroups: true,
           ...(status ? { status } : {}),
           ...(debouncedSearch ? { q: debouncedSearch } : {}),
           cursor: nextCursor,

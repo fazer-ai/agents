@@ -298,7 +298,11 @@ describe("native tools", () => {
 
   test("resolve_conversation with turnState defers (no client call, flags the state)", async () => {
     const { client, calls } = recordingClient();
-    const turnState = { resolveRequested: false, pendingImages: [] };
+    const turnState = {
+      resolveRequested: false,
+      pendingImages: [],
+      imagesInFlight: 0,
+    };
     const tools = buildNativeTools({ client, conversationId: 7, turnState });
     const out = String(await byName(tools, "resolve_conversation").invoke({}));
     // Idempotent: a second call in the same turn is still a single intent.

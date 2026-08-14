@@ -242,7 +242,11 @@ export async function runLoadedTurn(
     botToken: loaded.agentBotToken ?? undefined,
   });
   // Per-turn mutable state shared with the native tools (deferred resolve intent).
-  const turnState: TurnState = { resolveRequested: false, pendingImages: [] };
+  const turnState: TurnState = {
+    resolveRequested: false,
+    pendingImages: [],
+    imagesInFlight: 0,
+  };
   const tools = await buildToolset(
     loaded,
     {

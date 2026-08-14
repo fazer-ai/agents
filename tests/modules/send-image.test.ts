@@ -9,6 +9,7 @@ import {
   normalizeAllowedHost,
   readSendImageConfig,
   SEND_IMAGE_MAX_PER_TURN,
+  SEND_IMAGE_MAX_TURN_BYTES,
 } from "@/modules/images/settings";
 
 // Issue #65. An agent that already holds a product image's URL had no way to deliver it: the only
@@ -287,7 +288,11 @@ describe("the send_image tool", () => {
   test("queues the image with its caption instead of sending it mid-turn", async () => {
     const sent: Sent[] = [];
     const host = fakeHost(PNG);
-    const turnState: TurnState = { resolveRequested: false, pendingImages: [] };
+    const turnState: TurnState = {
+      resolveRequested: false,
+      pendingImages: [],
+      imagesInFlight: 0,
+    };
     const tools = buildNativeTools(
       {
         client: stubClient(sent),
@@ -344,7 +349,11 @@ describe("the send_image tool", () => {
   test("the per-turn queue has a ceiling, enforced before the download", async () => {
     const sent: Sent[] = [];
     const host = fakeHost(PNG);
-    const turnState: TurnState = { resolveRequested: false, pendingImages: [] };
+    const turnState: TurnState = {
+      resolveRequested: false,
+      pendingImages: [],
+      imagesInFlight: 0,
+    };
     const tools = buildNativeTools(
       {
         client: stubClient(sent),
@@ -372,12 +381,95 @@ describe("the send_image tool", () => {
     expect(sent).toEqual([]);
   });
 
+  // How a batch actually arrives: LangGraph's ToolNode runs one response's tool calls with
+  // Promise.all. A ceiling checked across the download is read by every call while the queue is
+  // still empty, so all of them pass and the ceiling means nothing.
+  test("the ceiling holds when the whole batch runs at once", async () => {
+    const sent: Sent[] = [];
+    const host = fakeHost(PNG);
+    const turnState: TurnState = {
+      resolveRequested: false,
+      pendingImages: [],
+      imagesInFlight: 0,
+    };
+    const tools = buildNativeTools(
+      {
+        client: stubClient(sent),
+        conversationId: 42,
+        sendImage: HOSTS,
+        fetchImpl: host.impl,
+        assertSafe: noSsrf,
+        turnState,
+      },
+      ["send_image"],
+    );
+    const outs = await Promise.all(
+      Array.from({ length: 12 }, (_, i) =>
+        sendImage(tools)
+          ?.invoke({ url: `https://cdn.loja.com.br/lote-${i}.png` })
+          .then(String),
+      ),
+    );
+    expect(turnState.pendingImages).toHaveLength(SEND_IMAGE_MAX_PER_TURN);
+    expect(host.calls.length).toBeLessThanOrEqual(SEND_IMAGE_MAX_PER_TURN);
+    expect(outs.filter((o) => o?.includes("Limite de imagens"))).toHaveLength(
+      12 - SEND_IMAGE_MAX_PER_TURN,
+    );
+    // The reservation is released either way, so a later turn is not permanently short of slots.
+    expect(turnState.imagesInFlight).toBe(0);
+  });
+
+  // The budget has to count the image being decided, not just the ones already in: excluding the
+  // candidate lets the last accepted one carry the total past the ceiling.
+  test("the byte budget counts the image it is deciding on", async () => {
+    const sent: Sent[] = [];
+    const big = new Uint8Array(5 * 1024 * 1024);
+    big.set(PNG);
+    const host = fakeHost(big, { chunkSize: 256 * 1024 });
+    const turnState: TurnState = {
+      resolveRequested: false,
+      pendingImages: [],
+      imagesInFlight: 0,
+    };
+    const tools = buildNativeTools(
+      {
+        client: stubClient(sent),
+        conversationId: 42,
+        sendImage: HOSTS,
+        fetchImpl: host.impl,
+        assertSafe: noSsrf,
+        turnState,
+      },
+      ["send_image"],
+    );
+    const outs: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      outs.push(
+        String(
+          await sendImage(tools)?.invoke({
+            url: `https://cdn.loja.com.br/grande-${i}.png`,
+          }),
+        ),
+      );
+    }
+    const queued = turnState.pendingImages.reduce(
+      (n, i) => n + i.bytes.byteLength,
+      0,
+    );
+    expect(queued).toBeLessThanOrEqual(SEND_IMAGE_MAX_TURN_BYTES);
+    expect(outs[2]).toContain("Limite de imagens");
+  });
+
   // The whole point of binding the list to the config: a URL the model was talked into using does
   // not become a fetch just because the model asked nicely.
   test("a URL outside the list sends nothing and tells the agent what to do instead", async () => {
     const sent: Sent[] = [];
     const host = fakeHost(PNG);
-    const turnState: TurnState = { resolveRequested: false, pendingImages: [] };
+    const turnState: TurnState = {
+      resolveRequested: false,
+      pendingImages: [],
+      imagesInFlight: 0,
+    };
     const tools = buildNativeTools(
       {
         client: stubClient(sent),
@@ -402,7 +494,11 @@ describe("the send_image tool", () => {
   test("with no host configured the tool says so instead of trying", async () => {
     const sent: Sent[] = [];
     const host = fakeHost(PNG);
-    const turnState: TurnState = { resolveRequested: false, pendingImages: [] };
+    const turnState: TurnState = {
+      resolveRequested: false,
+      pendingImages: [],
+      imagesInFlight: 0,
+    };
     const tools = buildNativeTools(
       {
         client: stubClient(sent),

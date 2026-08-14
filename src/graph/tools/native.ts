@@ -68,6 +68,11 @@ export interface TurnState {
   // because a tool that posts from inside the graph invocation can message a customer whose turn is
   // then discarded — the same reason resolve_conversation is deferred.
   pendingImages: PendingImage[];
+  // Downloads accepted but not yet queued. LangGraph's ToolNode runs one response's tool calls with
+  // Promise.all, so a batch of send_image calls all reach the ceiling check before any of them has
+  // queued anything: without a reservation taken BEFORE the await, every call in the batch reads the
+  // same empty queue, passes, and the ceiling means nothing.
+  imagesInFlight: number;
 }
 
 export interface PendingImage {
@@ -1013,6 +1018,12 @@ function skipReplyTool(_ctx: ToolCtx) {
 // in the agent's config, never in a tool argument: a prompt injection can write any URL it likes and
 // still not reach a host the operator did not list. See modules/images/fetch for the rest of the
 // fence (SSRF assertion, no redirects, byte cap on the body, type read from the file's signature).
+// The model-facing refusal when a turn has already taken all the images it may carry. Same wording
+// for the count and the byte budget: from the model's side both mean "not this turn".
+function limitReached(): string {
+  return `Limite de imagens deste turno atingido (${SEND_IMAGE_MAX_PER_TURN}). Envie as demais em outra mensagem ou responda com o link em texto.`;
+}
+
 function sendImageTool(ctx: ToolCtx) {
   const cfg = ctx.sendImage ?? SEND_IMAGE_DEFAULTS;
   const hosts = cfg.allowedHosts;
@@ -1041,37 +1052,52 @@ function sendImageTool(ctx: ToolCtx) {
       }
       // One model response can carry a whole batch of tool calls, and the graph's tool-call limit is
       // only re-checked between responses, so the queue needs its own ceiling: every accepted image
-      // is held in memory until the turn ends and then uploaded one by one.
-      const queuedBytes = turnState.pendingImages.reduce(
-        (n, i) => n + i.bytes.byteLength,
-        0,
-      );
-      if (
-        turnState.pendingImages.length >= SEND_IMAGE_MAX_PER_TURN ||
-        queuedBytes >= SEND_IMAGE_MAX_TURN_BYTES
-      ) {
-        return `Limite de imagens deste turno atingido (${SEND_IMAGE_MAX_PER_TURN}). Envie as demais em outra mensagem ou responda com o link em texto.`;
+      // is held in memory until the turn ends and then uploaded one by one. The slot is taken here,
+      // BEFORE the await, because the batch runs concurrently — a check that spans the download
+      // would be read by every call while the queue is still empty. Bytes are enforced at the other
+      // end, where the real size is known; the count keeps the in-flight total bounded meanwhile.
+      const tooManyQueued =
+        turnState.pendingImages.length + turnState.imagesInFlight >=
+        SEND_IMAGE_MAX_PER_TURN;
+      if (tooManyQueued) {
+        return limitReached();
       }
-      const res = await fetchImageForDelivery(url, cfg, {
-        fetchImpl: ctx.fetchImpl,
-        assertSafe: ctx.assertSafe,
-      });
-      if (!res.ok) {
-        // NOTE: A refusal the OPERATOR has to fix (no hosts configured, host not listed) is normal
-        // operation for the model — it should answer with a link instead — but it is not normal for
-        // the operator, so only the transport failures are marked as integration failures.
-        const message = sendImageRefusal(res.reason, res.detail);
-        return res.reason === "unreachable" || res.reason === "http_error"
-          ? toolFailure(message)
-          : message;
+      turnState.imagesInFlight++;
+      try {
+        const res = await fetchImageForDelivery(url, cfg, {
+          fetchImpl: ctx.fetchImpl,
+          assertSafe: ctx.assertSafe,
+        });
+        if (!res.ok) {
+          // NOTE: A refusal the OPERATOR has to fix (no hosts configured, host not listed) is normal
+          // operation for the model — it should answer with a link instead — but it is not normal
+          // for the operator, so only the transport failures are marked as integration failures.
+          const message = sendImageRefusal(res.reason, res.detail);
+          return res.reason === "unreachable" || res.reason === "http_error"
+            ? toolFailure(message)
+            : message;
+        }
+        // NOTE: Re-read the queue and count THIS image in: the batch's other calls may have queued
+        // while this one downloaded, and a budget that excludes the candidate lets the last accepted
+        // image carry the total past the ceiling. No await between the read and the push, so the
+        // pair is atomic.
+        const queuedBytes = turnState.pendingImages.reduce(
+          (n, i) => n + i.bytes.byteLength,
+          0,
+        );
+        if (queuedBytes + res.bytes.byteLength > SEND_IMAGE_MAX_TURN_BYTES) {
+          return limitReached();
+        }
+        turnState.pendingImages.push({
+          bytes: res.bytes,
+          mime: res.mime,
+          fileName: res.fileName,
+          caption: caption?.trim() || undefined,
+        });
+        return `Imagem pronta para envio (${res.fileName}); ela vai junto com a sua resposta deste turno.`;
+      } finally {
+        turnState.imagesInFlight--;
       }
-      turnState.pendingImages.push({
-        bytes: res.bytes,
-        mime: res.mime,
-        fileName: res.fileName,
-        caption: caption?.trim() || undefined,
-      });
-      return `Imagem pronta para envio (${res.fileName}); ela vai junto com a sua resposta deste turno.`;
     },
     {
       name: "send_image",

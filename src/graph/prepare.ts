@@ -597,6 +597,7 @@ export interface ToolsetCtx {
       fileName: string;
       caption?: string;
     }[];
+    imagesInFlight: number;
   };
 }
 
@@ -615,6 +616,7 @@ export interface ToolBuildDeps {
           fileName: string;
           caption?: string;
         }[];
+        imagesInFlight: number;
       };
       transferWithSummary?: boolean;
       handoff?: HandoffConfig;

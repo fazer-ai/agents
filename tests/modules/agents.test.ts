@@ -328,6 +328,38 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
     expect(a.mode).toBe("test");
   });
 
+  // The same storage invariant on the CREATE path: an agent can be born with a host list, and the
+  // promise that only the host is kept has to hold there too.
+  test("a pasted image URL is reduced to its host on creation as well", async () => {
+    const a = await createAgent(
+      ctx(tenantC),
+      {
+        name: "Com imagem",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: {
+          sendImage: {
+            allowedHosts: [
+              "https://usuario:senha-secreta@cdn.loja.com.br/x.png?sig=deadbeef",
+            ],
+          },
+        },
+      },
+      appDb,
+    );
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(a.id) },
+      select: { settings: true },
+    });
+    expect(
+      (
+        (row.settings as Record<string, unknown>).sendImage as {
+          allowedHosts: string[];
+        }
+      ).allowedHosts,
+    ).toEqual(["cdn.loja.com.br"]);
+    expect(JSON.stringify(row.settings)).not.toContain("senha-secreta");
+  });
+
   test("create without modelConfig applies the default model config", async () => {
     const a = await createAgent(ctx(tenantC), { name: "Defaulted" }, appDb);
     expect(a.modelConfig).toEqual({

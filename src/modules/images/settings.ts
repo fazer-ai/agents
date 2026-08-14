@@ -89,3 +89,20 @@ export function isAllowedImageHost(
     return host === pattern;
   });
 }
+
+// Every write path for `agent.settings` funnels through this: the operator is invited to paste a
+// full URL on the promise that only the host is kept, and that has to hold for what is STORED, not
+// only for what is read back. A pasted presigned link would otherwise leave its signature (and any
+// `user:pass@`) sitting in the row, handed to the editor on every load and to an export on the way
+// out. Blocks other than sendImage are clamped on read and hold nothing secret, so this is the one
+// that has to be normalized on the way in.
+export function normalizeSettingsForStorage(
+  settings: unknown,
+): Record<string, unknown> | undefined {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return undefined;
+  }
+  const bag = settings as Record<string, unknown>;
+  if (bag.sendImage === undefined) return undefined;
+  return { ...bag, sendImage: readSendImageConfig(bag) };
+}

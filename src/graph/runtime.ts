@@ -550,12 +550,22 @@ export async function runLoadedTurn(
     // callers key the error-cleared/answered bookkeeping off that word, and an image-only turn that
     // reported "empty" would leave a stale turn error on a conversation that was just answered.
     if (!reply) {
+      const queued = turnState.pendingImages.length;
       const sent = await deliverPendingImages(
         client,
         conversationId,
         turnState,
         flow,
       );
+      // NOTE: The images WERE the turn and none of them reached the customer. That is a failed turn,
+      // not a silent one: returning "empty" here would let the deferred resolve close a conversation
+      // nobody answered, and the callers only record a turn error (private note, lastError, alert)
+      // when the turn THROWS. Best-effort per image still holds where a reply carries the turn.
+      if (queued > 0 && !sent) {
+        throw new Error(
+          "send_image: nenhuma imagem foi entregue e o turno não tinha resposta em texto",
+        );
+      }
       await applyDeferredResolve(client, conversationId, turnState, flow);
       return sent ? "posted" : "empty";
     }

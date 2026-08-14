@@ -95,3 +95,34 @@ export class SendImageOnlyModel extends SendImageThenReplyModel {
     super("", url, caption);
   }
 }
+
+// The picture IS the answer, and the agent closes the conversation in the same breath: both calls in
+// one response, no final text. The pair the turn has to get right when the delivery fails.
+export class SendImageAndResolveModel {
+  constructor(private url: string) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage("");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "send_image",
+                  args: { url: self.url },
+                  id: "call_send_image",
+                },
+                { name: "resolve_conversation", args: {}, id: "call_resolve" },
+              ],
+            })
+          : new AIMessage("");
+      },
+    };
+  }
+}

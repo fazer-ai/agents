@@ -16,6 +16,7 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
   ResolveThenReplyModel,
+  SendImageAndResolveModel,
   SendImageOnlyModel,
   SendImageThenReplyModel,
 } from "../utils/scripted-models";
@@ -117,10 +118,17 @@ function makeResolveClient(
 
 // Records the customer-facing posts in order: an attachment and a text send are both "the customer
 // was messaged", which is exactly what a discarded turn must not have done.
-function makeImageClient(calls: Array<[string, number, string]>) {
+function makeImageClient(
+  calls: Array<[string, number, string]>,
+  opts: { attachmentFails?: boolean } = {},
+) {
   const client = {
     sendMessage: async (conversationId: number, content: string) => {
       calls.push(["sendMessage", conversationId, content]);
+      return {};
+    },
+    toggleStatus: async (conversationId: number, status: string) => {
+      calls.push(["toggleStatus", conversationId, status]);
       return {};
     },
     sendFileAttachment: async (
@@ -129,6 +137,7 @@ function makeImageClient(calls: Array<[string, number, string]>) {
       fileName: string,
     ) => {
       calls.push(["sendFileAttachment", conversationId, fileName]);
+      if (opts.attachmentFails) throw new Error("chatwoot 500");
       return {};
     },
   } as unknown as ChatwootClient;
@@ -175,6 +184,18 @@ const incoming = (
   message: { id: 1, content: "oi", messageType: "incoming", private: false },
   ...over,
 });
+
+async function mirroredStatus(convId: number) {
+  const row = await suDb.conversation.findFirst({
+    where: {
+      tenantId,
+      chatwootInstanceId: instanceId,
+      chatwootConversationId: convId,
+    },
+    select: { status: true },
+  });
+  return row?.status ?? null;
+}
 
 async function seedConversation(convId: number, assigneeType: string | null) {
   await suDb.conversation.create({
@@ -752,6 +773,33 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     expect(calls).toEqual([["sendFileAttachment", 932, "camiseta.png"]]);
+  });
+
+  // The other half of that rule: when the images were the whole turn and NONE of them got through,
+  // nothing reached the customer. Reporting "empty" would let the deferred resolve close an
+  // unanswered conversation, and the callers only record a turn error when the turn throws.
+  test("an image-only turn whose delivery fails does not resolve, and fails loudly", async () => {
+    await allowImageHost();
+    await seedConversation(933, null);
+    const calls: Array<[string, number, string]> = [];
+    await expect(
+      runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 933 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new SendImageAndResolveModel(IMG_URL) as unknown as BaseChatModel,
+          makeClient: makeImageClient(calls, { attachmentFails: true }),
+          checkpointer: new MemorySaver(),
+          imageDeps,
+        },
+      }),
+    ).rejects.toThrow(/nenhuma imagem foi entregue/);
+    expect(calls).toEqual([["sendFileAttachment", 933, "camiseta.png"]]);
+    expect((await mirroredStatus(933)) === "resolved").toBe(false);
   });
 
   // The finding this defers for: a turn a human took over mid-flight must not have already put an

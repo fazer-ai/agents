@@ -22,3 +22,16 @@ src/modules/conversations/service.ts: Validate pending jobs before marking the s
 # marker-based attempt at doing it without any version was built and removed inside this PR after
 # review found four races in it. Filed as #77.
 src/modules/chatwoot/mirror.ts: Fence source events after locally written state
+
+# PR #75 (issue #61). The gap is real — while the handoff's own event is delayed, the mirror does not
+# know about the human, and a turn already running rechecks the ROW — but the remedy is not available
+# yet. Trusting a versioned message snapshot for the assignee undoes a take-over made from our own
+# console: that write claims no version, so the row sits ahead of its marks and the tail carries a
+# HIGHER version with an OLDER truth. Measured, not argued: applying the suggested change turns "a
+# take-over in the console survives a message tail from before it" red. Both failure modes end the
+# same way (the bot answers over a human); this one is bounded by the webhook's own retry budget
+# (AgentBots::WebhookJob, 3 attempts 3s apart), while the console one lasts until the echo arrives.
+# #77 is what unblocks it: once a local write claims the version it produced (the REST show renders
+# `updated_at`), the row is never ahead of its marks and a newer versioned snapshot stops being
+# ambiguous. Then this change becomes correct, and desirable.
+src/modules/chatwoot/mirror.ts: Mirror newer human ownership from message events

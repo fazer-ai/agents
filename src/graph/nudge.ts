@@ -390,6 +390,10 @@ export async function runAgentNudge(
               const current = await db.conversation.findUnique({
                 where,
                 select: {
+                  status: true,
+                  assigneeType: true,
+                  assigneeId: true,
+                  assigneeName: true,
                   lastEventAt: true,
                   chatwootStatusAt: true,
                   chatwootAssigneeAt: true,
@@ -424,9 +428,17 @@ export async function runAgentNudge(
                 liveVersion === null ||
                 current.chatwootAssigneeAt === null ||
                 liveVersion >= current.chatwootAssigneeAt;
+              // NOTE: Only what actually differs. The probe runs on every proactive send, and the
+              // common outcome is "nothing changed" — writing the same values back would be two
+              // updates per follow-up and would advance the row's `updatedAt` for nothing.
               const data = {
-                ...(statusOrdered ? { status: liveState.status } : {}),
-                ...(assigneeOrdered
+                ...(statusOrdered && liveState.status !== current.status
+                  ? { status: liveState.status }
+                  : {}),
+                ...(assigneeOrdered &&
+                (liveState.assigneeType !== current.assigneeType ||
+                  liveState.assigneeId !== current.assigneeId ||
+                  liveState.assigneeName !== current.assigneeName)
                   ? {
                       assigneeType: liveState.assigneeType,
                       assigneeId: liveState.assigneeId,

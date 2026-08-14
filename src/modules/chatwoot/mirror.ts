@@ -132,22 +132,25 @@ export async function mirrorChatwootEvent(
       // this flag is what separates the two all the way down.
       const fromConversationEvent = n.message === undefined;
 
-      // Out-of-order guard, on the axis each kind of event can actually be ordered by. A message is
-      // ordered by `last_activity_at`, which is exactly what moves when a message is created. A
-      // conversation event is ordered by the conversation's own version — and MUST NOT be ordered by
-      // `last_activity_at`, because that value does not move on a status or assignee change: a
-      // handoff event delayed past the human's first message carries the older last_activity_at and
-      // would be discarded as stale while being the newest word on the conversation. That discard is
-      // what used to leave the mirror bot-owned for good, and it is why the old code felt it had to
-      // trust message snapshots.
-      const orderedByVersion =
-        fromConversationEvent &&
-        stateUpdatedAt != null &&
-        existing?.chatwootUpdatedAt != null;
+      // Out-of-order guard, on the axis the event itself offers. A conversation event that carries a
+      // version is judged by that version and by NOTHING ELSE — never by `last_activity_at`, which
+      // does not move on a status or assignee change: a handoff event delayed past the human's first
+      // message carries the older last_activity_at and would be discarded as stale while being the
+      // newest word on the conversation. That discard is what used to leave the mirror bot-owned for
+      // good, and it is why the old code felt it had to trust message snapshots.
+      //
+      // NOTE: An event with a version and a row with none is the shape of every conversation the
+      // migration touched, and it applies — a fallback to last_activity_at there would recreate the
+      // discard above for exactly the conversations that are live at the upgrade.
+      //
+      // Everything else falls back to `last_activity_at`: a message, which that value describes
+      // exactly (it is what moves when a message is created), and a conversation event from a
+      // Chatwoot too old to send a version, where there is nothing finer to order by and the
+      // monotonic guard remains the only protection against a status regression.
       const stale =
-        orderedByVersion && stateUpdatedAt != null
-          ? stateUpdatedAt <
-            (existing?.chatwootUpdatedAt ?? Number.NEGATIVE_INFINITY)
+        fromConversationEvent && stateUpdatedAt != null
+          ? existing?.chatwootUpdatedAt != null &&
+            stateUpdatedAt < existing.chatwootUpdatedAt
           : newLastEventAt != null &&
             existing?.lastEventAt != null &&
             existing.lastEventAt > newLastEventAt;
@@ -217,6 +220,16 @@ export async function mirrorChatwootEvent(
       }
 
       const updatedLastEventAt = newLastEventAt ?? new Date();
+      // NOTE: Monotonic, now that the guard above may let a conversation event through on version
+      // alone: its last_activity_at can legitimately be older than the row's. This is both what gets
+      // WRITTEN and what gets RETURNED — the webhook broadcasts the returned value and the console
+      // sorts the conversation list on it, so reporting the payload's older timestamp would rewind
+      // every client's idea of recency over an event that did not touch it.
+      const effectiveLastEventAt =
+        existing.lastEventAt != null &&
+        existing.lastEventAt > updatedLastEventAt
+          ? existing.lastEventAt
+          : updatedLastEventAt;
       // NOTE: A MESSAGE event's conversation snapshot is serialized when the message event fires
       // (AgentBotListener builds the payload and only then enqueues it; a failed delivery retries
       // with that same copy), so it describes the conversation as of THAT moment, not the delivery's.
@@ -314,12 +327,7 @@ export async function mirrorChatwootEvent(
                 assigneeName: n.assigneeName ?? null,
               }
             : {}),
-          // NOTE: Monotonic on its own now that the guard above may let a conversation event
-          // through on version alone: its last_activity_at can legitimately be older than the row's.
-          ...(existing.lastEventAt == null ||
-          updatedLastEventAt > existing.lastEventAt
-            ? { lastEventAt: updatedLastEventAt }
-            : {}),
+          lastEventAt: effectiveLastEventAt,
           // NOTE: The watermark only moves forward. An equal version was applied just above but is
           // not news, and a strictly older one was rejected, so neither may rewrite it.
           // NOTE: Only a conversation event claims the version, and this is the half of the rule
@@ -381,7 +389,7 @@ export async function mirrorChatwootEvent(
         // EFFECTIVE values (what is stored after this update), not the payload's silence.
         assigneeId: nextAssigneeId,
         assigneeType: nextAssigneeType,
-        lastEventAt: updatedLastEventAt,
+        lastEventAt: effectiveLastEventAt,
       };
     });
   });

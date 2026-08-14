@@ -300,6 +300,88 @@ describe.skipIf(!dbUp)(
       expect(handoffsAfter - handoffsBefore).toBe(1);
     });
 
+    // The same delayed handoff on a row that predates the column. The migration leaves
+    // `chatwoot_updated_at` null on every conversation that already exists, so on the deploy that
+    // ships this there is no stored version to order against — and a fallback to last_activity_at
+    // there would put exactly those rows back under the guard this change exists to remove, which
+    // is every conversation live at the moment of the upgrade.
+    test("a row with no watermark yet still takes the delayed handoff", async () => {
+      const T = 1_786_493_500;
+      // Seeded by an event carrying no updated_at, which is the shape a migrated row has: present,
+      // and holding no version.
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(22, { status: "pending", lastActivityAt: T }),
+      });
+      const seeded = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 22 },
+        select: { chatwootUpdatedAt: true },
+      });
+      expect(seeded.chatwootUpdatedAt).toBeNull();
+      await mirror(
+        messageEvent(22, "message_created", {
+          messageId: 971,
+          status: "open",
+          lastActivityAt: T + 5,
+          updatedAt: T + 5.4,
+          assignee: HUMAN,
+        }),
+      );
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(22, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.9,
+          assignee: HUMAN,
+        }),
+      });
+      const row = await mirrored(22);
+      expect(row.status).toBe("open");
+      expect(row.assigneeType).toBe("User");
+      expect(row.assigneeId).toBe(3);
+    });
+
+    // What the mirror RETURNS is what the webhook broadcasts and what the conversation list sorts
+    // on. A delayed conversation event legitimately carries an older last_activity_at, the row keeps
+    // the newer one, and the return has to report the value that was persisted — otherwise every
+    // client rewinds the conversation's recency over an event that did not change it.
+    test("a delayed conversation event reports the timestamp the row kept", async () => {
+      const T = 1_786_494_200;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(23, {
+          status: "pending",
+          lastActivityAt: T,
+          updatedAt: T + 0.1,
+        }),
+      });
+      await mirror(
+        messageEvent(23, "message_created", {
+          messageId: 972,
+          status: "pending",
+          lastActivityAt: T + 5,
+          updatedAt: T + 5.4,
+        }),
+      );
+      const res = await mirror({
+        event: "conversation_updated",
+        ...convPayload(23, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.9,
+          assignee: HUMAN,
+        }),
+      });
+      const stored = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 23 },
+        select: { lastEventAt: true },
+      });
+      expect(res.applied).toBe(true);
+      expect(res.lastEventAt?.getTime()).toBe(stored.lastEventAt?.getTime());
+      expect(res.lastEventAt?.getTime()).toBe((T + 5) * 1000);
+    });
+
     // With no version anywhere, a message snapshot cannot be ordered against the conversation at
     // all, so it moves no conversation state. Trusting it to PROMOTE an assignee was tried and is
     // not safe either: a message a human sent BEFORE the conversation went back to the bot arrives

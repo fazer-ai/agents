@@ -73,6 +73,11 @@ export interface TurnState {
   // queued anything: without a reservation taken BEFORE the await, every call in the batch reads the
   // same empty queue, passes, and the ceiling means nothing.
   imagesInFlight: number;
+  // Monotonic ticket, taken before the download for the same reason: the batch runs concurrently, so
+  // the queue fills in COMPLETION order and the customer would receive the pictures — and the
+  // captions written for them — in whatever order the hosts happened to answer. The order the model
+  // asked for is the one that matches the words around them.
+  imagesSeq: number;
 }
 
 export interface PendingImage {
@@ -80,6 +85,8 @@ export interface PendingImage {
   mime: string;
   fileName: string;
   caption?: string;
+  // Position in the model's tool-call order, not in download-completion order.
+  order: number;
 }
 
 export interface ToolCtx {
@@ -1063,6 +1070,7 @@ function sendImageTool(ctx: ToolCtx) {
         return limitReached();
       }
       turnState.imagesInFlight++;
+      const order = turnState.imagesSeq++;
       try {
         const res = await fetchImageForDelivery(url, cfg, {
           fetchImpl: ctx.fetchImpl,
@@ -1093,8 +1101,12 @@ function sendImageTool(ctx: ToolCtx) {
           mime: res.mime,
           fileName: res.fileName,
           caption: caption?.trim() || undefined,
+          order,
         });
-        return `Imagem pronta para envio (${res.fileName}); ela vai junto com a sua resposta deste turno.`;
+        // NOTE: No file name here. This string is the tool's OUTPUT, and `ToolFlowLogger` stores tool
+        // outputs verbatim in `ExecutionLog.detail` — a name derived from the URL path would put back
+        // exactly what the argument sanitizer strips out of that column.
+        return "Imagem pronta para envio; ela vai junto com a sua resposta deste turno.";
       } finally {
         turnState.imagesInFlight--;
       }

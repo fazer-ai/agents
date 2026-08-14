@@ -302,6 +302,7 @@ describe("native tools", () => {
       resolveRequested: false,
       pendingImages: [],
       imagesInFlight: 0,
+      imagesSeq: 0,
     };
     const tools = buildNativeTools({ client, conversationId: 7, turnState });
     const out = String(await byName(tools, "resolve_conversation").invoke({}));

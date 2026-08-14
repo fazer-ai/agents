@@ -96,6 +96,39 @@ export class SendImageOnlyModel extends SendImageThenReplyModel {
   }
 }
 
+// Several images in ONE response, which is how a model answers "show me the three colours". LangGraph
+// runs the batch with Promise.all, so what the customer receives is only in the model's order if
+// something remembers that order.
+export class SendImageBatchModel {
+  constructor(
+    private reply: string,
+    private images: { url: string; caption?: string }[],
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(this.reply);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: self.images.map((img, i) => ({
+                name: "send_image",
+                args: { url: img.url, caption: img.caption },
+                id: `call_send_image_${i}`,
+                type: "tool_call" as const,
+              })),
+            })
+          : new AIMessage(self.reply);
+      },
+    };
+  }
+}
+
 // The picture IS the answer, and the agent closes the conversation in the same breath: both calls in
 // one response, no final text. The pair the turn has to get right when the delivery fails.
 export class SendImageAndResolveModel {

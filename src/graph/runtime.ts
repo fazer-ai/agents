@@ -169,7 +169,11 @@ async function deliverPendingImages(
   turnState: TurnState,
   flow: FlowContext,
 ): Promise<boolean> {
-  const queued = turnState.pendingImages.splice(0);
+  // NOTE: Sorted by the model's tool-call order, not by the order the downloads finished in — the
+  // batch runs concurrently, and a caption only makes sense next to the picture it was written for.
+  const queued = turnState.pendingImages
+    .splice(0)
+    .sort((a, b) => a.order - b.order);
   let sent = false;
   for (const img of queued) {
     try {
@@ -246,6 +250,7 @@ export async function runLoadedTurn(
     resolveRequested: false,
     pendingImages: [],
     imagesInFlight: 0,
+    imagesSeq: 0,
   };
   const tools = await buildToolset(
     loaded,

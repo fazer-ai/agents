@@ -17,6 +17,7 @@ import {
   EmptyThenReplyModel,
   ResolveThenReplyModel,
   SendImageAndResolveModel,
+  SendImageBatchModel,
   SendImageOnlyModel,
   SendImageThenReplyModel,
 } from "../utils/scripted-models";
@@ -744,6 +745,59 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls).toEqual([
       ["sendFileAttachment", 930, "camiseta.png"],
       ["sendMessage", 930, "É essa aqui!"],
+    ]);
+  });
+
+  // "Show me the three colours" is one response with three tool calls, which LangGraph runs with
+  // Promise.all. Whoever answers first would otherwise be first in the conversation, and the customer
+  // would read "a azul é essa" under the green one.
+  test("a batch of images arrives in the order the model asked for", async () => {
+    await allowImageHost();
+    await seedConversation(936, null);
+    const calls: Array<[string, number, string]> = [];
+    // Answer time is the reverse of the order the model asked in.
+    const delayByName: Record<string, number> = {
+      "azul.png": 30,
+      "verde.png": 15,
+      "vermelha.png": 0,
+    };
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 936 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SendImageBatchModel("Essas são as três.", [
+            { url: "https://cdn.loja.com.br/azul.png", caption: "Azul" },
+            { url: "https://cdn.loja.com.br/verde.png", caption: "Verde" },
+            {
+              url: "https://cdn.loja.com.br/vermelha.png",
+              caption: "Vermelha",
+            },
+          ]) as unknown as BaseChatModel,
+        makeClient: makeImageClient(calls),
+        checkpointer: new MemorySaver(),
+        imageDeps: {
+          ...imageDeps,
+          fetchImpl: (async (input: string | URL) => {
+            const name = String(input).split("/").pop() ?? "";
+            await new Promise((r) => setTimeout(r, delayByName[name] ?? 0));
+            return new Response(IMG_BYTES, {
+              status: 200,
+              headers: { "content-type": "image/png" },
+            });
+          }) as unknown as typeof fetch,
+        },
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(calls).toEqual([
+      ["sendFileAttachment", 936, "azul.png"],
+      ["sendFileAttachment", 936, "verde.png"],
+      ["sendFileAttachment", 936, "vermelha.png"],
+      ["sendMessage", 936, "Essas são as três."],
     ]);
   });
 

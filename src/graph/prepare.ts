@@ -596,8 +596,10 @@ export interface ToolsetCtx {
       mime: string;
       fileName: string;
       caption?: string;
+      order: number;
     }[];
     imagesInFlight: number;
+    imagesSeq: number;
   };
 }
 
@@ -615,8 +617,10 @@ export interface ToolBuildDeps {
           mime: string;
           fileName: string;
           caption?: string;
+          order: number;
         }[];
         imagesInFlight: number;
+        imagesSeq: number;
       };
       transferWithSummary?: boolean;
       handoff?: HandoffConfig;

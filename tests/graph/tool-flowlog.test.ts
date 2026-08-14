@@ -343,6 +343,16 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       expect(JSON.stringify(logged)).not.toContain("usuario");
     });
 
+    // WHATWG ignores leading spaces and control characters, so this is a working URL to `new URL()`
+    // and to `fetch` — and was ordinary text to a `^https?` prefix check, which stored it whole.
+    test("whitespace in front of a URL does not smuggle it past the sanitizer", async () => {
+      const logged = await argsLoggedFor({
+        url: " \thttps://cdn.loja.com.br/fotos/x.png?token=segredo-escondido",
+      });
+      expect(logged?.url).toBe("https://cdn.loja.com.br");
+      expect(JSON.stringify(logged)).not.toContain("segredo-escondido");
+    });
+
     // A string that announces itself as http(s) and then does not parse is exactly the case where we
     // cannot tell which part of it is host and which is payload, so none of it is kept.
     test("a URL that does not parse is replaced, not passed through", async () => {

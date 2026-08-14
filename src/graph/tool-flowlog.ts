@@ -46,19 +46,29 @@ function sanitizeToolArgs(value: unknown, depth = 0): unknown {
 // Reduces a URL to its ORIGIN, which is the part an operator reading a log line actually acts on
 // ("it fetched from a host I allowed") and the only part that is not model-written free text. The
 // image itself is in the conversation, so the path buys little here and can carry anything the model
-// composed. `origin` also excludes `user:pass@` by construction. A string that does not parse as an
-// http(s) URL after announcing itself as one is replaced outright rather than passed through: it is
-// unparseable precisely because we cannot tell which part of it is what. Anything that is not an
-// http(s) URL at all is left exactly as it was.
+// composed. `origin` also excludes `user:pass@` by construction.
+//
+// The PARSER decides what is a URL, not a prefix test on the raw string. WHATWG strips leading and
+// trailing C0 control characters and spaces, and tabs and newlines anywhere, so `" https://host/x
+// ?token=…"` is a URL to `new URL()` and to `fetch`, and would have been ordinary text to a `^https?`
+// check — logged whole, credentials included. When it announces itself and still does not parse,
+// nothing is kept: it is unparseable precisely because we cannot tell which part of it is what.
 const REDACTED_URL = "[url]";
+const ANNOUNCES_HTTP = /^\s*https?:/i;
 
 function urlWithoutSecrets(s: string): string {
-  if (!/^https?:\/\//i.test(s)) return s;
+  let parsed: URL | null = null;
   try {
-    return new URL(s).origin;
+    parsed = new URL(s);
   } catch {
-    return REDACTED_URL;
+    parsed = null;
   }
+  if (parsed) {
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? parsed.origin
+      : s;
+  }
+  return ANNOUNCES_HTTP.test(s) ? REDACTED_URL : s;
 }
 
 // A tool run's output reaches the callback as a ToolMessage-like object; surface its `content` (the

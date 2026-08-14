@@ -292,6 +292,7 @@ describe("the send_image tool", () => {
       resolveRequested: false,
       pendingImages: [],
       imagesInFlight: 0,
+      imagesSeq: 0,
     };
     const tools = buildNativeTools(
       {
@@ -353,6 +354,7 @@ describe("the send_image tool", () => {
       resolveRequested: false,
       pendingImages: [],
       imagesInFlight: 0,
+      imagesSeq: 0,
     };
     const tools = buildNativeTools(
       {
@@ -391,6 +393,7 @@ describe("the send_image tool", () => {
       resolveRequested: false,
       pendingImages: [],
       imagesInFlight: 0,
+      imagesSeq: 0,
     };
     const tools = buildNativeTools(
       {
@@ -419,6 +422,60 @@ describe("the send_image tool", () => {
     expect(turnState.imagesInFlight).toBe(0);
   });
 
+  // The batch runs concurrently, so the queue fills in COMPLETION order: the ticket is what remembers
+  // the order the model asked for, and the runtime delivers by it. A caption is written for the
+  // picture it sits next to.
+  test("the ticket remembers the model's order when the downloads finish out of it", async () => {
+    const sent: Sent[] = [];
+    const turnState: TurnState = {
+      resolveRequested: false,
+      pendingImages: [],
+      imagesInFlight: 0,
+      imagesSeq: 0,
+    };
+    // The image the model asked for FIRST is the slow one.
+    const unevenHost = (async (input: string | URL) => {
+      if (String(input).endsWith("primeira.png")) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      return new Response(PNG, {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      });
+    }) as unknown as typeof fetch;
+    const tools = buildNativeTools(
+      {
+        client: stubClient(sent),
+        conversationId: 42,
+        sendImage: HOSTS,
+        fetchImpl: unevenHost,
+        assertSafe: noSsrf,
+        turnState,
+      },
+      ["send_image"],
+    );
+    await Promise.all([
+      sendImage(tools)?.invoke({
+        url: "https://cdn.loja.com.br/primeira.png",
+        caption: "Primeira",
+      }),
+      sendImage(tools)?.invoke({
+        url: "https://cdn.loja.com.br/segunda.png",
+        caption: "Segunda",
+      }),
+    ]);
+    // The queue really is in completion order — which is why sorting on delivery is not decoration.
+    expect(turnState.pendingImages.map((i) => i.caption)).toEqual([
+      "Segunda",
+      "Primeira",
+    ]);
+    expect(
+      [...turnState.pendingImages]
+        .sort((a, b) => a.order - b.order)
+        .map((i) => i.caption),
+    ).toEqual(["Primeira", "Segunda"]);
+  });
+
   // The budget has to count the image being decided, not just the ones already in: excluding the
   // candidate lets the last accepted one carry the total past the ceiling.
   test("the byte budget counts the image it is deciding on", async () => {
@@ -430,6 +487,7 @@ describe("the send_image tool", () => {
       resolveRequested: false,
       pendingImages: [],
       imagesInFlight: 0,
+      imagesSeq: 0,
     };
     const tools = buildNativeTools(
       {
@@ -469,6 +527,7 @@ describe("the send_image tool", () => {
       resolveRequested: false,
       pendingImages: [],
       imagesInFlight: 0,
+      imagesSeq: 0,
     };
     const tools = buildNativeTools(
       {
@@ -498,6 +557,7 @@ describe("the send_image tool", () => {
       resolveRequested: false,
       pendingImages: [],
       imagesInFlight: 0,
+      imagesSeq: 0,
     };
     const tools = buildNativeTools(
       {

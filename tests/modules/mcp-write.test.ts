@@ -592,6 +592,29 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     expect(audits[0]?.actorType).toBe("mcp");
   });
 
+  // The allowlist is what makes send_image usable at all, so an operator driving the fleet over MCP
+  // has to be able to set it — granting the tool without it leaves every call refused.
+  test("agent_settings_set persists the send_image host allowlist, normalized", async () => {
+    const p = principal({ tenantId: tenantA });
+    const r = await agentSettingsSet(
+      p,
+      {
+        agent_id: String(agentA),
+        sendImage: {
+          allowedHosts: ["https://CDN.loja.com.br/x", "cdn.loja.com.br", "??"],
+        },
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    const row = await suDb.agent.findUnique({ where: { id: agentA } });
+    // Normalized to a hostname, deduped, and the junk entry dropped by the reader.
+    expect(blk(row?.settings, "sendImage").allowedHosts).toEqual([
+      "cdn.loja.com.br",
+    ]);
+  });
+
   test("agent_settings_set partial block merge keeps sibling sub-keys", async () => {
     const p = principal({ tenantId: tenantA });
     // Only flip tts.mode; provider/model must keep their existing (default) values.

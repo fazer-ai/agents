@@ -1,0 +1,10 @@
+# Findings adjudicated and rejected, with the reason. One `<path>: <title>` per line.
+
+# PR #69 (issue #60). Half of this does not hold: `followUpComplete` already requires
+# `nextStep == null`, so a stale PENDING job blocks the completion marker on its own, with or
+# without the paused flag. The other half is real but predates this PR and is independent of
+# appointments: the job branch of the estimate does not mirror the handler's gates (agent.enabled,
+# isTestSilenced, step existence, the episode check, shouldBotHandle), so a stale job shows a
+# phantom countdown even with no appointment anywhere. That is a separate defect in the estimate
+# itself and belongs in its own change, not folded into the appointment flag.
+src/modules/conversations/service.ts: Validate pending jobs before marking the sequence paused

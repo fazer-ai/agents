@@ -46,6 +46,31 @@ function openaiTemperature(
   return REASONING_MODEL_RE.test(model.trim()) ? undefined : temperature;
 }
 
+// NOTE: OpenAI rejects function tools combined with ANY non-"none" reasoning effort on
+// /v1/chat/completions for the gpt-5.6 family: "Function tools with reasoning_effort are not
+// supported for gpt-5.6-luna in /v1/chat/completions" (issue #66). We never send an effort, so what
+// collides with the tools is the SERVER's own default. Measured against the live API: 400 on luna,
+// sol and terra with tools and no effort, 200 with `reasoning_effort: "none"` on the same call, and
+// 200 without tools either way.
+//
+// The carve-out stays on the family that is actually blocked. gpt-5.5, gpt-5.4, gpt-5.2 and
+// gpt-5-mini all answered 200 with tools and no effort, and gpt-5.4-mini accepts "none" too — so a
+// blanket "none" would silently drop the reasoning those agents get today, trading one regression
+// for another. Reasoning TOGETHER with tools needs /v1/responses (measured working there), which is
+// a transport change rather than part of this fix.
+const TOOL_EFFORT_NONE_RE = /^(?:[\w.-]+\/)?gpt-5\.6(?:-|$)/i;
+
+// NOTE: goes through `modelKwargs` rather than the typed `reasoning` field because
+// @langchain/openai gates that field behind its own isReasoningModel(), which tests
+// `model.startsWith("gpt-5")` and therefore DROPS it for a routed id like "openai/gpt-5.6-luna"
+// (OpenRouter). modelKwargs is spread into the request params unconditionally, so the parameter
+// reaches the wire on every OpenAI-shaped client, whatever the id looks like.
+function openaiModelKwargs(model: string): Record<string, unknown> | undefined {
+  return TOOL_EFFORT_NONE_RE.test(model.trim())
+    ? { reasoning_effort: "none" }
+    : undefined;
+}
+
 export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
   const { model, apiKey, temperature } = cfg;
   switch (cfg.provider) {
@@ -54,6 +79,7 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
         model,
         apiKey,
         temperature: openaiTemperature(model, temperature),
+        modelKwargs: openaiModelKwargs(model),
       });
     case "openai-compatible":
       if (!cfg.baseURL) {
@@ -65,6 +91,7 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
         model: model.trim() || "default",
         apiKey,
         temperature: openaiTemperature(model, temperature),
+        modelKwargs: openaiModelKwargs(model),
         configuration: { baseURL: cfg.baseURL },
       });
     case "openrouter":
@@ -72,6 +99,7 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
         model,
         apiKey,
         temperature: openaiTemperature(model, temperature),
+        modelKwargs: openaiModelKwargs(model),
         configuration: { baseURL: cfg.baseURL || OPENROUTER_BASE_URL },
       });
     case "anthropic":

@@ -295,6 +295,41 @@ describe.skipIf(!dbUp)(
       expect(handoffsAfter - handoffsBefore).toBe(1);
     });
 
+    // Same reordering as above, on a Chatwoot that sends no version at all: distrusting the message
+    // outright would lose the takeover for good, since the delayed handoff event then loses to the
+    // monotonic guard. A frozen tail can never invent a human assignee, so promotion is the one
+    // thing a message snapshot is still allowed to say here.
+    test("without any version, a message may still hand the conversation to a human", async () => {
+      const T = 1_786_497_000;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(36, { status: "pending", lastActivityAt: T }),
+      });
+      await mirror(
+        messageEvent(36, "message_created", {
+          messageId: 998,
+          status: "open",
+          lastActivityAt: T + 5,
+          assignee: HUMAN,
+        }),
+      );
+      const row = await mirrored(36);
+      expect(row.assigneeType).toBe("User");
+      expect(row.assigneeId).toBe(3);
+      // Status is NOT taken from it: only the assignee promotion is.
+      expect(row.status).toBe("pending");
+    });
+
+    // The other half of that rule: the frozen tail of a handoff is exactly a message snapshot that
+    // would UNDO the takeover, and it stays fenced out even with no version to order by.
+    test("without any version, a message still cannot take the conversation back", async () => {
+      await handoffBurst(39, 1_786_498_000, 1_786_498_000, 0, { legacy: true });
+      const row = await mirrored(39);
+      expect(row.status).toBe("open");
+      expect(row.assigneeType).toBe("User");
+      expect(row.assigneeId).toBe(3);
+    });
+
     // Chatwoot emits several events for ONE write to the conversation (conversation_updated +
     // conversation_status_changed), all carrying that write's version. They must not fight: the one
     // that arrives second is frequently the one carrying `meta`, so rejecting an equal version

@@ -228,18 +228,30 @@ export async function mirrorChatwootEvent(
       // (conversation_updated + conversation_status_changed), and the one that arrives second is
       // frequently the one carrying `meta`. Under `>` the first delivery would win and its
       // companion's assignee would be dropped, which is the failure this fence exists to stop.
-      const applyState =
-        stateUpdatedAt == null
-          ? n.message === undefined || isNewIncomingMessage(n)
-          : existing.chatwootUpdatedAt == null ||
-            stateUpdatedAt >= existing.chatwootUpdatedAt;
+      const ordered = stateUpdatedAt != null;
+      const applyState = ordered
+        ? existing.chatwootUpdatedAt == null ||
+          stateUpdatedAt >= existing.chatwootUpdatedAt
+        : n.message === undefined || isNewIncomingMessage(n);
+      // NOTE: With nothing to order by, a message snapshot is not trusted for `status` — but it may
+      // still hand the conversation to a HUMAN. The frozen tail of a handoff carries the pre-handoff
+      // state, so it can never invent a User assignee; the first message that human sends, on the
+      // other hand, is the only witness of the takeover while the handoff's own event is in flight.
+      // Promotion only, and only unordered: it never clears an assignee, and where versions exist
+      // they decide instead (an older event genuinely may be reporting an assignment already undone).
+      const promotesToHuman =
+        !ordered &&
+        !applyState &&
+        n.assigneeType === "User" &&
+        existing.assigneeType !== "User";
+      const applyAssignee = applyState || promotesToHuman;
       const appliedStatus = applyState ? n.status : null;
       const nextStatus = appliedStatus ?? existing.status;
       // NOTE: The assignee trio travels together and applies only when BOTH hold: the payload
       // actually spoke about the assignee (`meta` present — undefined means "said nothing", and a
       // degraded event must NOT wipe a stored 'AgentBot'/'User', the intermittent self-wipe behind
       // issue #27) AND the snapshot is newer than the state we already have, per the fence above.
-      const assigneeKnown = n.assigneeType !== undefined && applyState;
+      const assigneeKnown = n.assigneeType !== undefined && applyAssignee;
       const nextAssigneeId = assigneeKnown
         ? (n.assigneeId ?? null)
         : existing.assigneeId;
@@ -298,7 +310,7 @@ export async function mirrorChatwootEvent(
       // we hold never fires it — its assignee was not applied above. (An undefined trio — degraded
       // payload — never equals "User" either, so it can neither fire nor mask the edge.)
       if (
-        applyState &&
+        applyAssignee &&
         existing.assigneeType !== "User" &&
         n.assigneeType === "User"
       ) {

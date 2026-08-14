@@ -374,6 +374,53 @@ describe.skipIf(!dbUp)(
       expect((await mirrored(50)).status).toBe("resolved");
     });
 
+    // The bags are not the only unversioned field a delayed event carries. The conversation's
+    // RELATIONS travel in every payload too, and the graph's thread key is built from the contact
+    // inbox — restoring an obsolete one moves the agent's work to another thread.
+    test("a delayed conversation event does not restore obsolete relations", async () => {
+      const T = 1_786_505_200;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(51, {
+          status: "pending",
+          lastActivityAt: T,
+          updatedAt: T + 0.1,
+        }),
+      });
+      // A newer message observes the contact inbox after a merge.
+      const merged = messageEvent(51, "message_created", {
+        messageId: 980,
+        messageType: "incoming",
+        status: "pending",
+        lastActivityAt: T + 5,
+        updatedAt: T + 5.4,
+      }) as { conversation: { contact_inbox: { id: number } } };
+      merged.conversation.contact_inbox = { id: 99_051 };
+      await mirror(merged);
+      const afterMerge = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 51 },
+        select: { contactInboxId: true },
+      });
+      expect(afterMerge.contactInboxId).toBe(99_051);
+      // The handoff, serialized before the merge and delivered after it: newest word on the
+      // assignee, and no word at all on which contact inbox this conversation now belongs to.
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(51, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.9,
+          assignee: HUMAN,
+        }),
+      });
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 51 },
+        select: { contactInboxId: true, assigneeType: true },
+      });
+      expect(row.assigneeType).toBe("User");
+      expect(row.contactInboxId).toBe(99_051);
+    });
+
     // The mirror image of the burst above, and the reason ordering beats a blanket "message events
     // are never authoritative": when the handoff's own event is delayed past the first message the
     // human sends, that message's snapshot is the ONLY witness of the new owner. Distrusting it

@@ -330,11 +330,19 @@ export async function mirrorChatwootEvent(
       await db.conversation.update({
         where: { id: existing.id },
         data: {
-          ...(n.contactInboxId != null
+          // NOTE: The relations ride the same fence as the attribute bags below, and for the same
+          // reason: they are unversioned, every payload carries them, and a delayed conversation
+          // event is authoritative about the state it names and about nothing else. A contact merge
+          // or an inbox reassignment observed by a newer message would otherwise be undone by it —
+          // and the graph's thread key is built from the contact inbox, so that moves the agent's
+          // work to another conversation's history.
+          ...(payloadIsCurrent && n.contactInboxId != null
             ? { contactInboxId: n.contactInboxId }
             : {}),
-          ...(inboxRowId != null ? { inboxId: inboxRowId } : {}),
-          ...(contactId != null ? { contactId } : {}),
+          ...(payloadIsCurrent && inboxRowId != null
+            ? { inboxId: inboxRowId }
+            : {}),
+          ...(payloadIsCurrent && contactId != null ? { contactId } : {}),
           ...(appliedStatus != null ? { status: appliedStatus } : {}),
           ...(assigneeKnown
             ? {

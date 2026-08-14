@@ -324,6 +324,15 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       expect(JSON.stringify(logged)).not.toContain("deadbeefcafe0000");
     });
 
+    test("credentials embedded in the URL itself are dropped too", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://usuario:senha-secreta@cdn.loja.com.br/fotos/x.png",
+      });
+      expect(logged?.url).toBe("https://cdn.loja.com.br/fotos/x.png");
+      expect(JSON.stringify(logged)).not.toContain("senha-secreta");
+      expect(JSON.stringify(logged)).not.toContain("usuario");
+    });
+
     test("a caption never reaches storage at all", async () => {
       const logged = await argsLoggedFor({
         url: "https://cdn.loja.com.br/x.png",

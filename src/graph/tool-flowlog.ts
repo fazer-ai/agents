@@ -27,7 +27,7 @@ const MESSAGE_TEXT_KEYS = new Set(["caption"]);
 
 function sanitizeToolArgs(value: unknown, depth = 0): unknown {
   if (depth > 4) return value;
-  if (typeof value === "string") return stripUrlQuery(value);
+  if (typeof value === "string") return urlWithoutSecrets(value);
   if (Array.isArray(value)) {
     return value.map((v) => sanitizeToolArgs(v, depth + 1));
   }
@@ -42,13 +42,15 @@ function sanitizeToolArgs(value: unknown, depth = 0): unknown {
   return value;
 }
 
-// Keeps a URL readable (scheme, host, path) and drops what a signature or a tracking payload rides
-// in. Anything that is not an http(s) URL is left exactly as it was.
-function stripUrlQuery(s: string): string {
+// Keeps a URL readable (scheme, host, path) and drops the three places a credential hides in one:
+// the query (a presigned signature), the fragment, and the userinfo — `origin` excludes `user:pass@`
+// by construction. Rebuilt UNCONDITIONALLY: a URL with credentials but no query would otherwise pass
+// through whole. Anything that is not an http(s) URL is left exactly as it was.
+function urlWithoutSecrets(s: string): string {
   if (!/^https?:\/\//i.test(s)) return s;
   try {
     const u = new URL(s);
-    return u.search || u.hash ? `${u.origin}${u.pathname}` : s;
+    return `${u.origin}${u.pathname}`;
   } catch {
     return s;
   }

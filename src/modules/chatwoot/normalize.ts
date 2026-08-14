@@ -144,6 +144,9 @@ export function normalizeChatwootEvent(
   // `channel` (channel_type) is exposed by EventDataPresenter on conversation events.
   normalized.channel = conv ? str(conv.channel) : null;
   normalized.lastActivityAt = conv ? num(conv.last_activity_at) : null;
+  // NOTE: float() and not num() — `updated_at` ships as `to_f`, so it carries a fraction, and num()
+  // parses ids (its string branch is integers only).
+  normalized.conversationUpdatedAt = conv ? float(conv.updated_at) : null;
   return normalized;
 }
 

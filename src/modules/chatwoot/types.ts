@@ -123,6 +123,12 @@ export interface NormalizedChatwootEvent {
   // last_activity_at as unix SECONDS (EventDataPresenter push_timestamps); drives the
   // monotonic lastEventAt guard so out-of-order deliveries cannot regress mirror state.
   lastActivityAt?: number | null;
+  // NOTE: The CONVERSATION row's `updated_at` as unix seconds WITH FRACTION (push_timestamps sends
+  // `updated_at.to_f`, upstream since Chatwoot 4.0.2). It is the version stamp of the state this
+  // payload describes — unlike last_activity_at it advances on a status or assignee change, and it
+  // has sub-second resolution — so it, not last_activity_at, orders conversation-level state.
+  // `null` on a Chatwoot too old to send it.
+  conversationUpdatedAt?: number | null;
   // The CONVERSATION's custom attributes (conversation.custom_attributes on EventDataPresenter
   // push_data). Mirrored for the agent's attribute context. `undefined` ⇒ absent from this payload.
   customAttributes?: Record<string, unknown>;

@@ -427,6 +427,12 @@ model Conversation {
   customAttributes       Json      @default("{}") @map("custom_attributes")
   kanbanAttributes       Json      @default("{}") @map("kanban_attributes")
   lastEventAt            DateTime? @map("last_event_at")
+  // Ordering watermark for conversation-level STATE (status + assignee), mirrored from the payload's
+  // conversation `updated_at` — the source row's version stamp, which advances on every write to it,
+  // including the status and assignee changes that `last_activity_at` ignores. lastEventAt cannot
+  // order those (one-second resolution, unchanged by a status change), which is what let a frozen
+  // message snapshot undo a handoff. NULL = the payload never carried it (Chatwoot < 4.0.2).
+  chatwootUpdatedAt      DateTime? @map("chatwoot_updated_at")
   // Debounce watermark: the Chatwoot message id of the last inbound message already handled
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.

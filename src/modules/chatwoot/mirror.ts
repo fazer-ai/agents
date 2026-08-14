@@ -82,6 +82,11 @@ export async function mirrorChatwootEvent(
   const convId = n.conversationId;
   const newLastEventAt =
     n.lastActivityAt != null ? new Date(n.lastActivityAt * 1000) : null;
+  // Version stamp of the conversation-level state this payload carries (see the state fence below).
+  const stateUpdatedAt =
+    n.conversationUpdatedAt != null
+      ? new Date(n.conversationUpdatedAt * 1000)
+      : null;
   // The inbound watermark (`lastInboundAt`) advances only on a brand-new incoming customer message
   // (message_created), never on a message_updated — our own STT/vision write-back re-dispatches one
   // and must not push it forward. The caller also suppresses it for a consumed control command (see
@@ -109,6 +114,7 @@ export async function mirrorChatwootEvent(
         select: {
           id: true,
           lastEventAt: true,
+          chatwootUpdatedAt: true,
           assigneeId: true,
           assigneeType: true,
           assigneeName: true,
@@ -154,6 +160,7 @@ export async function mirrorChatwootEvent(
             assigneeName: n.assigneeName ?? null,
             threadId,
             lastEventAt: createdLastEventAt,
+            chatwootUpdatedAt: stateUpdatedAt,
             lastInboundAt: inboundAt,
             ...(n.customAttributes
               ? {
@@ -188,35 +195,38 @@ export async function mirrorChatwootEvent(
       }
 
       const updatedLastEventAt = newLastEventAt ?? new Date();
-      // NOTE: A MESSAGE event's conversation snapshot is frozen at enqueue time (AgentBots::WebhookJob
-      // serializes the payload before delivery, and failed deliveries retry with the stale copy), so
-      // it describes the MESSAGE's moment, not the delivery's. It is therefore not authoritative for
-      // conversation-level state at all: `status` and the assignee trio are mirrored only from
-      // conversation_* events (and from creation), while message events keep updating lastEventAt,
-      // lastInboundAt and contact data.
+      // NOTE: A MESSAGE event's conversation snapshot is serialized when the message event fires
+      // (AgentBotListener builds the payload and only then enqueues it; a failed delivery retries
+      // with that same copy), so it describes the conversation as of THAT moment, not the delivery's.
+      // handoff_to_human posts its message BEFORE assigning the human, so the tail of every handoff
+      // burst carries the pre-handoff state and used to rewrite the row back to it (issue #61).
       //
-      // The one exception is a BRAND-NEW incoming message, because Chatwoot's ReopenService really
-      // does reopen on a new customer message, so that snapshot's status is a fact about the
-      // conversation. A message_updated of an incoming message (our own STT/vision write-back
-      // re-dispatches one) carries the same frozen copy without that meaning.
+      // The guard above cannot order that: `last_activity_at` has one-second resolution and does not
+      // advance on a status or assignee change at all, so a whole burst shares one value. The
+      // conversation's `updated_at` can: it is the source row's version stamp, it moves on every
+      // write to it (the status and assignee changes included), it has sub-second resolution, and it
+      // is serialized together with the state it describes. Ordering conversation-level state by it
+      // is exactly the finer-resolution tiebreaker the issue asks for, and Chatwoot already ships it.
       //
-      // This started as a narrow fence for one symptom (a message delivered after a
-      // conversation_resolved dragging the mirror back to pending, which fired follow-ups on
-      // conversations the operator had already closed), and the narrowness was the bug: the fence
-      // only covered `resolved`/`snoozed`, so a handoff — which leaves the conversation `open` —
-      // walked straight through it, and the stale tail cleared a real human assignee (issue #61).
-      // Whether it corrupted the row came down to whether the burst's events shared a wall-clock
-      // second, since `last_activity_at` has one-second resolution and does not advance on a
-      // status or assignee change, so the monotonic guard above cannot order them.
-      const frozenSnapshot =
-        n.message !== undefined && !isNewIncomingMessage(n);
-      const appliedStatus = frozenSnapshot ? null : n.status;
+      // Ordering also settles the two cases a blanket "message events are never authoritative" rule
+      // gets wrong, both of which carry state nothing else will resend: Chatwoot reopens BEFORE it
+      // dispatches the message event (Message#execute_after_create_commit_callbacks runs
+      // reopen_conversation, then dispatch_create_events), and a message a human sends after a
+      // handoff is the only witness of the new assignee while the handoff's own event is in flight.
+      //
+      // Fallback for a Chatwoot too old to send `updated_at` (< 4.0.2): distrust message snapshots,
+      // minus the brand-new incoming message whose reopen would otherwise be lost.
+      const applyState =
+        stateUpdatedAt != null && existing.chatwootUpdatedAt != null
+          ? stateUpdatedAt > existing.chatwootUpdatedAt
+          : n.message === undefined || isNewIncomingMessage(n);
+      const appliedStatus = applyState ? n.status : null;
       const nextStatus = appliedStatus ?? existing.status;
       // NOTE: The assignee trio travels together and applies only when BOTH hold: the payload
       // actually spoke about the assignee (`meta` present — undefined means "said nothing", and a
       // degraded event must NOT wipe a stored 'AgentBot'/'User', the intermittent self-wipe behind
-      // issue #27) AND the snapshot is not the frozen stale one fenced above.
-      const assigneeKnown = n.assigneeType !== undefined && !frozenSnapshot;
+      // issue #27) AND the snapshot is newer than the state we already have, per the fence above.
+      const assigneeKnown = n.assigneeType !== undefined && applyState;
       const nextAssigneeId = assigneeKnown
         ? (n.assigneeId ?? null)
         : existing.assigneeId;
@@ -240,6 +250,11 @@ export async function mirrorChatwootEvent(
               }
             : {}),
           lastEventAt: updatedLastEventAt,
+          // NOTE: The state watermark only moves when this payload's state was the one applied —
+          // a snapshot we declined to trust must not claim to be the version we hold.
+          ...(applyState && stateUpdatedAt != null
+            ? { chatwootUpdatedAt: stateUpdatedAt }
+            : {}),
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
           // NOTE: Attribute bags are ASSIGNED (the payload always ships the whole jsonb), but only
           // when the event carried one — a payload without them must not wipe the stored snapshot.
@@ -264,11 +279,11 @@ export async function mirrorChatwootEvent(
         });
       }
       // Handoff = the assignee transitions to a human (User). Detect the bot→human edge:
-      // prior assignee type was not User and the new one is User. A stale frozen snapshot never
-      // fires it — its assignee was not applied above. (An undefined trio — degraded payload —
-      // never equals "User" either, so it can neither fire nor mask the edge.)
+      // prior assignee type was not User and the new one is User. A snapshot older than the state
+      // we hold never fires it — its assignee was not applied above. (An undefined trio — degraded
+      // payload — never equals "User" either, so it can neither fire nor mask the edge.)
       if (
-        !frozenSnapshot &&
+        applyState &&
         existing.assigneeType !== "User" &&
         n.assigneeType === "User"
       ) {

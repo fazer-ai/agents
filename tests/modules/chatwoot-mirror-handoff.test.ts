@@ -7,13 +7,17 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Issue #61. After a handoff, Chatwoot delivers a burst of conversation_* events and then a
-// message_updated tail whose embedded conversation snapshot is frozen at MESSAGE CREATION time —
-// and handoff_to_human posts the customer message BEFORE it changes the status, so that snapshot is
+// message_updated tail whose conversation snapshot was serialized when the message event fired —
+// and handoff_to_human posts the customer message BEFORE it assigns the human, so that snapshot is
 // always the pre-handoff one. Whether the mirror survived came down to luck: `last_activity_at` has
 // one-second resolution and does not advance on a status or assignee change, so when the whole burst
 // landed inside one second the monotonic guard could not order it and the stale tail won, rewriting
 // the row to pending and CLEARING a real human assignee. Two conversations twenty minutes apart, the
 // same code path and the same event sequence, ended differently.
+//
+// The ordering key is the conversation's own `updated_at`, which every payload carries and which
+// moves on exactly the writes last_activity_at ignores. These tests therefore build payloads with
+// BOTH timestamps, as Chatwoot sends them.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -44,7 +48,11 @@ const INBOX = 71;
 
 interface ConvOver {
   status: string;
+  // last_activity_at: whole seconds, and it only moves when a MESSAGE is created.
   lastActivityAt: number;
+  // conversation.updated_at: seconds with a fraction, and it moves on every write to the row.
+  // Left out to stand for a Chatwoot older than 4.0.2, which does not send it.
+  updatedAt?: number;
   assignee?: { id: number; name: string } | null;
 }
 
@@ -65,6 +73,7 @@ function convPayload(convId: number, over: ConvOver) {
     },
     channel: "Channel::Email",
     last_activity_at: over.lastActivityAt,
+    ...(over.updatedAt !== undefined ? { updated_at: over.updatedAt } : {}),
   };
 }
 
@@ -97,12 +106,27 @@ async function mirrored(convId: number) {
   });
 }
 
-// The burst as delivered, in order. `tail` is when the frozen message_updated pair carries its
-// (pre-handoff) snapshot: equal to the conversation events, or one second behind them.
-async function handoffBurst(convId: number, t: number, tail: number) {
+const HUMAN = { id: 3, name: "Atendente Humana" };
+
+// The burst as delivered, in order. `t` is the burst's shared last_activity_at (the agent's message);
+// `u` is when each event was serialized. The tail carries the snapshot from BEFORE the status change,
+// because that is when handoff_to_human posted its message. `opts.legacy` drops updated_at from every
+// payload, standing for a Chatwoot too old to send it.
+async function handoffBurst(
+  convId: number,
+  t: number,
+  tail: number,
+  u: number,
+  opts: { legacy?: boolean } = {},
+) {
+  const at = (sec: number) => (opts.legacy ? undefined : sec);
   await mirror({
     event: "conversation_updated",
-    ...convPayload(convId, { status: "pending", lastActivityAt: t }),
+    ...convPayload(convId, {
+      status: "pending",
+      lastActivityAt: t,
+      updatedAt: at(u + 0.1),
+    }),
   });
   for (const event of [
     "conversation_updated",
@@ -111,7 +135,11 @@ async function handoffBurst(convId: number, t: number, tail: number) {
   ] as const) {
     await mirror({
       event,
-      ...convPayload(convId, { status: "open", lastActivityAt: t }),
+      ...convPayload(convId, {
+        status: "open",
+        lastActivityAt: t,
+        updatedAt: at(u + 0.4),
+      }),
     });
   }
   await mirror({
@@ -119,7 +147,8 @@ async function handoffBurst(convId: number, t: number, tail: number) {
     ...convPayload(convId, {
       status: "open",
       lastActivityAt: t,
-      assignee: { id: 3, name: "Atendente Humana" },
+      updatedAt: at(u + 0.55),
+      assignee: HUMAN,
     }),
   });
   for (let i = 0; i < 2; i++) {
@@ -128,6 +157,8 @@ async function handoffBurst(convId: number, t: number, tail: number) {
         messageId: 900 + convId,
         status: "pending",
         lastActivityAt: tail,
+        // Serialized between the pending write and the reopen: this is the frozen copy.
+        updatedAt: at(u + 0.25),
       }),
     );
   }
@@ -148,6 +179,13 @@ describe.skipIf(!dbUp)(
         adminToken: encryptJson("ADMIN"),
       });
       instanceId = inst.id;
+      await suDb.webhookSubscription.create({
+        data: {
+          tenantId,
+          url: "https://example.com/hook",
+          events: ["conversation.handoff"],
+        },
+      });
     });
 
     afterAll(async () => {
@@ -159,7 +197,7 @@ describe.skipIf(!dbUp)(
 
     // The conversation from the report that broke: every event, stale tail included, on 1786483614.
     test("the whole burst inside one second still leaves the human owning it", async () => {
-      await handoffBurst(6, 1_786_483_614, 1_786_483_614);
+      await handoffBurst(6, 1_786_483_614, 1_786_483_614, 1_786_483_614);
       const row = await mirrored(6);
       expect(row.status).toBe("open");
       expect(row.assigneeType).toBe("User");
@@ -169,21 +207,35 @@ describe.skipIf(!dbUp)(
     // The conversation that survived on luck: its tail was one second behind, so the monotonic guard
     // discarded it. It must keep working for the same reason it worked before, not by accident.
     test("a tail one second behind is still discarded", async () => {
-      await handoffBurst(9, 1_786_484_801, 1_786_484_800);
+      await handoffBurst(9, 1_786_484_801, 1_786_484_800, 1_786_484_801);
       const row = await mirrored(9);
       expect(row.status).toBe("open");
       expect(row.assigneeType).toBe("User");
       expect(row.assigneeId).toBe(3);
     });
 
-    // Chatwoot's ReopenService really does reopen on a new customer message, so THAT snapshot's
-    // status is a fact about the conversation and must keep being mirrored (guardrail from the
-    // resolved-conversation follow-up chain).
+    // Same burst on a Chatwoot that does not send updated_at: with no key to order by, a message
+    // snapshot is not trusted for conversation state at all.
+    test("without the ordering key the tail is distrusted outright", async () => {
+      await handoffBurst(7, 1_786_485_000, 1_786_485_000, 0, { legacy: true });
+      const row = await mirrored(7);
+      expect(row.status).toBe("open");
+      expect(row.assigneeType).toBe("User");
+    });
+
+    // Chatwoot reopens BEFORE it dispatches the message event
+    // (Message#execute_after_create_commit_callbacks: reopen_conversation, then
+    // dispatch_create_events), so this snapshot is current and must keep being mirrored — the
+    // guardrail from the resolved-conversation follow-up chain.
     test("a brand-new incoming message still reopens a resolved conversation", async () => {
       const T = 1_786_490_000;
       await mirror({
         event: "conversation_resolved",
-        ...convPayload(12, { status: "resolved", lastActivityAt: T }),
+        ...convPayload(12, {
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 0.2,
+        }),
       });
       await mirror(
         messageEvent(12, "message_created", {
@@ -191,32 +243,88 @@ describe.skipIf(!dbUp)(
           messageType: "incoming",
           status: "open",
           lastActivityAt: T + 60,
+          updatedAt: T + 60.3,
         }),
       );
       expect((await mirrored(12)).status).toBe("open");
     });
 
-    // An outgoing message_created carries the same frozen copy with no reopen semantics behind it.
-    test("an outgoing message never moves the conversation's own state", async () => {
-      const T = 1_786_491_000;
+    // The mirror image of the burst above, and the reason ordering beats a blanket "message events
+    // are never authoritative": when the handoff's own event is delayed past the first message the
+    // human sends, that message's snapshot is the ONLY witness of the new owner. Distrusting it
+    // leaves the conversation bot-owned forever, because the delayed event loses to the monotonic
+    // guard on arrival, and conversation.handoff never fires for anyone listening.
+    test("a message that overtakes the handoff event carries the handoff", async () => {
+      const T = 1_786_492_000;
+      const handoffsBefore = await suDb.outboundWebhookDelivery.count({
+        where: { tenantId, event: "conversation.handoff" },
+      });
       await mirror({
         event: "conversation_updated",
-        ...convPayload(15, {
-          status: "open",
+        ...convPayload(21, {
+          status: "pending",
           lastActivityAt: T,
-          assignee: { id: 3, name: "Atendente Humana" },
+          updatedAt: T + 0.1,
         }),
       });
       await mirror(
-        messageEvent(15, "message_created", {
-          messageId: 960,
-          status: "pending",
-          lastActivityAt: T,
+        messageEvent(21, "message_created", {
+          messageId: 970,
+          status: "open",
+          lastActivityAt: T + 5,
+          updatedAt: T + 5.4,
+          assignee: HUMAN,
         }),
       );
-      const row = await mirrored(15);
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(21, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.9,
+          assignee: HUMAN,
+        }),
+      });
+      const row = await mirrored(21);
       expect(row.status).toBe("open");
       expect(row.assigneeType).toBe("User");
+      expect(row.assigneeId).toBe(3);
+      const handoffsAfter = await suDb.outboundWebhookDelivery.count({
+        where: { tenantId, event: "conversation.handoff" },
+      });
+      expect(handoffsAfter - handoffsBefore).toBe(1);
+    });
+
+    // A re-delivery of the same event carries the same version stamp, so it is not news.
+    test("a re-delivered event cannot walk the state backwards", async () => {
+      const T = 1_786_493_000;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(24, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.2,
+          assignee: HUMAN,
+        }),
+      });
+      await mirror({
+        event: "conversation_resolved",
+        ...convPayload(24, {
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 0.6,
+        }),
+      });
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(24, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.2,
+          assignee: HUMAN,
+        }),
+      });
+      expect((await mirrored(24)).status).toBe("resolved");
     });
   },
 );

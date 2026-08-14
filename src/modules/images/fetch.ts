@@ -108,6 +108,8 @@ function fileNameFor(url: URL, ext: string): string {
 export interface ImageFetchDeps {
   fetchImpl?: typeof fetch;
   assertSafe?: typeof assertSafeOutboundUrl;
+  // Injectable for tests only, so a case about the deadline does not have to wait out the real one.
+  timeoutMs?: number;
 }
 
 export async function fetchImageForDelivery(
@@ -129,9 +131,23 @@ export async function fetchImageForDelivery(
   if (!isAllowedImageHost(url.hostname, cfg.allowedHosts)) {
     return { ok: false, reason: "host_not_allowed", detail: url.hostname };
   }
+  // ONE deadline over both steps. The SSRF assertion resolves DNS, and a resolver that retries a
+  // nonexistent subdomain — which a wildcard allowlist lets the model ask for — can hold a customer's
+  // turn open on its own schedule, before the fetch's timeout has even been created.
+  const deadline = AbortSignal.timeout(
+    deps.timeoutMs ?? IMAGE_FETCH_TIMEOUT_MS,
+  );
   const assertSafe = deps.assertSafe ?? assertSafeOutboundUrl;
   try {
-    await assertSafe(url.toString());
+    await Promise.race([
+      assertSafe(url.toString()),
+      new Promise((_, reject) => {
+        if (deadline.aborted) return reject(new Error("timeout"));
+        deadline.addEventListener("abort", () => reject(new Error("timeout")), {
+          once: true,
+        });
+      }),
+    ]);
   } catch (e) {
     return {
       ok: false,
@@ -146,7 +162,7 @@ export async function fetchImageForDelivery(
     res = await fetchImpl(url.toString(), {
       method: "GET",
       redirect: "error",
-      signal: AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS),
+      signal: deadline,
     });
   } catch (e) {
     return {

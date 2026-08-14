@@ -28,6 +28,11 @@ export const MAX_ALLOWED_HOSTS = 50;
 export const SEND_IMAGE_MAX_PER_TURN = 3;
 export const SEND_IMAGE_MAX_TURN_BYTES = 12 * 1024 * 1024;
 
+// A caption rides ALONG with the attachment, and a channel that caps it rejects the whole upload
+// rather than trimming the text — so an over-long caption does not cost the sentence, it costs the
+// picture. Same 500 as `drive_send_file`, which posts through the same sendFileAttachment path.
+export const SEND_IMAGE_MAX_CAPTION_CHARS = 500;
+
 // Accepts what an operator is likely to paste: a bare host, a full URL, a host with a port, with or
 // without a "*." prefix. Returns null for anything that does not reduce to a hostname.
 export function normalizeAllowedHost(raw: unknown): string | null {

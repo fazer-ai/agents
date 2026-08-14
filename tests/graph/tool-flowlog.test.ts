@@ -314,23 +314,31 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       return detail?.args;
     }
 
-    test("a URL is logged as its origin, and nothing past it", async () => {
+    test("a URL is replaced, not trimmed down to something still readable", async () => {
       const logged = await argsLoggedFor({
         url: "https://bucket.s3.amazonaws.com/fotos/camiseta.png?X-Amz-Signature=deadbeefcafe0000&X-Amz-Credential=CRED",
       });
-      expect(logged?.url).toBe("https://bucket.s3.amazonaws.com");
+      expect(logged?.url).toBe("[url]");
       expect(JSON.stringify(logged)).not.toContain("deadbeefcafe0000");
     });
 
-    // The path is model-written free text: an order number, a document, a person's name in a
-    // filename. `detail` is documented to hold ids/counts/enums and to be exportable, so it does not
-    // get to hold whichever of those the model happened to compose.
+    // Everything past the scheme is model-written free text: an order number, a document, a person's
+    // name in a filename — and the HOST too, because an operator who allows `*.loja.com.br` has handed
+    // the model the subdomain. `detail` is documented to hold ids/counts/enums and to be exportable.
     test("an identifying path does not survive into storage", async () => {
       const logged = await argsLoggedFor({
         url: "https://cdn.loja.com.br/pedidos/48213/nota-fiscal-maria-silva.png",
       });
-      expect(logged?.url).toBe("https://cdn.loja.com.br");
+      expect(logged?.url).toBe("[url]");
       expect(JSON.stringify(logged)).not.toContain("maria-silva");
+      expect(JSON.stringify(logged)).not.toContain("48213");
+    });
+
+    test("a subdomain the model chose under a wildcard host is gone too", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://pedido-48213.loja.com.br/foto.png",
+      });
+      expect(logged?.url).toBe("[url]");
       expect(JSON.stringify(logged)).not.toContain("48213");
     });
 
@@ -338,7 +346,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       const logged = await argsLoggedFor({
         url: "https://usuario:senha-secreta@cdn.loja.com.br/fotos/x.png",
       });
-      expect(logged?.url).toBe("https://cdn.loja.com.br");
+      expect(logged?.url).toBe("[url]");
       expect(JSON.stringify(logged)).not.toContain("senha-secreta");
       expect(JSON.stringify(logged)).not.toContain("usuario");
     });
@@ -349,7 +357,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       const logged = await argsLoggedFor({
         url: " \thttps://cdn.loja.com.br/fotos/x.png?token=segredo-escondido",
       });
-      expect(logged?.url).toBe("https://cdn.loja.com.br");
+      expect(logged?.url).toBe("[url]");
       expect(JSON.stringify(logged)).not.toContain("segredo-escondido");
     });
 

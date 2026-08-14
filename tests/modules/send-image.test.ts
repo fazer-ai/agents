@@ -8,6 +8,7 @@ import {
   isAllowedImageHost,
   normalizeAllowedHost,
   readSendImageConfig,
+  SEND_IMAGE_MAX_CAPTION_CHARS,
   SEND_IMAGE_MAX_PER_TURN,
   SEND_IMAGE_MAX_TURN_BYTES,
 } from "@/modules/images/settings";
@@ -420,6 +421,63 @@ describe("the send_image tool", () => {
     );
     // The reservation is released either way, so a later turn is not permanently short of slots.
     expect(turnState.imagesInFlight).toBe(0);
+  });
+
+  // The SSRF assertion resolves DNS, and a wildcard allowlist lets the model name a subdomain that
+  // does not exist. A resolver retrying that one held the turn open on its own schedule, because the
+  // fetch's timeout had not been created yet.
+  test("a slow DNS lookup is bound by the same timeout as the download", async () => {
+    const host = fakeHost(PNG);
+    const started = Date.now();
+    const res = await fetchImageForDelivery(
+      "https://nao-existe.imagens.com.br/x.png",
+      HOSTS,
+      {
+        fetchImpl: host.impl,
+        // Stands for a resolver that never answers.
+        assertSafe: () => new Promise<URL>(() => {}),
+        timeoutMs: 50,
+      },
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toBe("unreachable");
+    // The deadline fired, rather than the call hanging until the test itself timed out.
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // And it never reached the host.
+    expect(host.calls).toHaveLength(0);
+  });
+
+  // A caption rides along with the attachment, and a channel that caps it rejects the whole upload —
+  // so an over-long caption does not cost the sentence, it costs the picture. Same 500 as
+  // drive_send_file, which posts through the same sendFileAttachment path.
+  test("a caption past the cap is refused before anything is queued", async () => {
+    const sent: Sent[] = [];
+    const host = fakeHost(PNG);
+    const turnState: TurnState = {
+      resolveRequested: false,
+      pendingImages: [],
+      imagesInFlight: 0,
+      imagesSeq: 0,
+    };
+    const tools = buildNativeTools(
+      {
+        client: stubClient(sent),
+        conversationId: 42,
+        sendImage: HOSTS,
+        fetchImpl: host.impl,
+        assertSafe: noSsrf,
+        turnState,
+      },
+      ["send_image"],
+    );
+    const out = await sendImage(tools)
+      ?.invoke({
+        url: "https://cdn.loja.com.br/x.png",
+        caption: "a".repeat(SEND_IMAGE_MAX_CAPTION_CHARS + 1),
+      })
+      .catch((e: unknown) => String(e));
+    expect(String(out)).toMatch(/too_big|at most|500/i);
+    expect(turnState.pendingImages).toHaveLength(0);
   });
 
   // The batch runs concurrently, so the queue fills in COMPLETION order: the ticket is what remembers

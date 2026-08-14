@@ -27,6 +27,7 @@ import {
 } from "@/modules/images/fetch";
 import {
   SEND_IMAGE_DEFAULTS,
+  SEND_IMAGE_MAX_CAPTION_CHARS,
   SEND_IMAGE_MAX_PER_TURN,
   SEND_IMAGE_MAX_TURN_BYTES,
   type SendImageConfig,
@@ -1123,6 +1124,7 @@ function sendImageTool(ctx: ToolCtx) {
           ),
         caption: z
           .string()
+          .max(SEND_IMAGE_MAX_CAPTION_CHARS)
           .optional()
           .describe(
             "Optional short text delivered with the image, in the customer's language.",

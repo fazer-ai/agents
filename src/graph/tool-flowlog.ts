@@ -43,16 +43,17 @@ function sanitizeToolArgs(value: unknown, depth = 0): unknown {
   return value;
 }
 
-// Reduces a URL to its ORIGIN, which is the part an operator reading a log line actually acts on
-// ("it fetched from a host I allowed") and the only part that is not model-written free text. The
-// image itself is in the conversation, so the path buys little here and can carry anything the model
-// composed. `origin` also excludes `user:pass@` by construction.
+// Replaces an http(s) URL with a marker. Every part of one is written by the MODEL — the query (a
+// presigned signature), the userinfo, the path (an order number, a document, a name), and the host
+// too: an operator who allows `*.loja.com.br` has handed the model the subdomain, so
+// `pedido-48213.loja.com.br` is a value it composed like any other. None of it is the allowlisted
+// ids/counts/enums `detail` is documented to hold, and the log is exportable. What the operator
+// needs to see about a send_image call is in the conversation and in the tool's own outcome.
 //
 // The PARSER decides what is a URL, not a prefix test on the raw string. WHATWG strips leading and
 // trailing C0 control characters and spaces, and tabs and newlines anywhere, so `" https://host/x
 // ?token=…"` is a URL to `new URL()` and to `fetch`, and would have been ordinary text to a `^https?`
-// check — logged whole, credentials included. When it announces itself and still does not parse,
-// nothing is kept: it is unparseable precisely because we cannot tell which part of it is what.
+// check — logged whole, credentials included.
 const REDACTED_URL = "[url]";
 const ANNOUNCES_HTTP = /^\s*https?:/i;
 
@@ -65,7 +66,7 @@ function urlWithoutSecrets(s: string): string {
   }
   if (parsed) {
     return parsed.protocol === "http:" || parsed.protocol === "https:"
-      ? parsed.origin
+      ? REDACTED_URL
       : s;
   }
   return ANNOUNCES_HTTP.test(s) ? REDACTED_URL : s;

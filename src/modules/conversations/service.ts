@@ -651,20 +651,6 @@ export async function getConversationDetail(
           )
         : null;
     const hoursWindows = hoursRow ? parseWindows(hoursRow.windows) : [];
-    // NOTE: the sweep's live-appointment fence, read from the SAME source the handler uses
-    // (loadAppointmentContext via hasLiveAppointment), instead of a third hand-kept copy of the
-    // predicate. The estimate and the sweep have now drifted twice — the suppression itself in #39,
-    // and this indicator in #60 — so anything else here would be the third.
-    const pausedByAppointment =
-      cfg.enabled && cfg.pauseWhileAppointment && !managedByRedirect
-        ? await runScopedOn(
-            base,
-            ctx,
-            async (db) =>
-              (await loadAppointmentContext(db, tenantId, conv.threadId))
-                .length > 0,
-          )
-        : false;
     const job = managedByRedirect
       ? null
       : await runScopedOn(base, ctx, (db) =>
@@ -761,6 +747,30 @@ export async function getConversationDetail(
     // A live appointment suppresses BOTH shapes: the sweep never enqueues the estimated step, and an
     // already-armed job is rescheduled by the handler for as long as the appointment stands, so its
     // countdown would just slip an hour at a time. Show the reason instead of a time that never comes.
+    //
+    // NOTE: read from the SAME source the handler uses (loadAppointmentContext via
+    // hasLiveAppointment), instead of a third hand-kept copy of the predicate. The estimate and the
+    // sweep have now drifted twice — the suppression itself in #39, and this indicator in #60 — so
+    // anything else here would be the third.
+    //
+    // The `nextStep` guard is what makes the flag mean "the appointment is hiding something": every
+    // OTHER reason the follow-up will not run (conversation resolved or taken by a human, episode
+    // older than the arming, agent test-silenced, sequence already finished) leaves nextStep null on
+    // its own, and announcing "paused by appointment" there would state a reason that is not the
+    // reason — and, because the completion marker yields to this flag, would hide a finished sequence
+    // behind it. It also skips the query on every conversation with nothing to suppress.
+    const pausedByAppointment =
+      nextStep !== null &&
+      cfg.enabled &&
+      cfg.pauseWhileAppointment &&
+      !managedByRedirect &&
+      (await runScopedOn(
+        base,
+        ctx,
+        async (db) =>
+          (await loadAppointmentContext(db, tenantId, conv.threadId)).length >
+          0,
+      ));
     if (pausedByAppointment) {
       nextStep = null;
       nextRunAt = null;

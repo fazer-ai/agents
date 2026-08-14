@@ -49,6 +49,8 @@ let convAppointmentLive = 0n;
 let convAppointmentPast = 0n;
 let convAppointmentCancelled = 0n;
 let convAppointmentOptOut = 0n;
+let convAppointmentResolved = 0n;
+let convAppointmentDone = 0n;
 
 // The redirect follow-up job's run time, asserted verbatim as the widget conversation's redirectNext.
 const REDIRECT_JOB_RUN_AT = new Date("2026-06-18T23:30:00Z");
@@ -412,6 +414,24 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       startISO: new Date(Date.now() + 2 * 3_600_000).toISOString(),
       cancelledAt: new Date(Date.now() - 60_000).toISOString(),
     });
+    // Live appointment on conversations the sweep would skip anyway: a human owns this one, and the
+    // next one already ran its whole sequence (same episode, no reply since).
+    convAppointmentResolved = await seedAppointmentConv(
+      315,
+      inbox.id,
+      { startISO: new Date(Date.now() + 2 * 3_600_000).toISOString() },
+      { status: "resolved" },
+    );
+    convAppointmentDone = await seedAppointmentConv(
+      316,
+      inbox.id,
+      { startISO: new Date(Date.now() + 2 * 3_600_000).toISOString() },
+      {
+        lastEventAt: FOLLOW_UP_AT,
+        lastInboundAt: new Date("2026-06-18T23:00:00Z"),
+        lastFollowUpAt: FOLLOW_UP_AT,
+      },
+    );
 
     // A second persona that opted OUT of the pause, on its own inbox.
     const optOutAgent = await suDb.agent.create({
@@ -452,6 +472,12 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     chatwootId: number,
     inboxId: bigint,
     reminder: { startISO: string; cancelledAt?: string } | null,
+    conv: {
+      status?: string;
+      lastEventAt?: Date;
+      lastInboundAt?: Date;
+      lastFollowUpAt?: Date;
+    } = {},
   ): Promise<bigint> {
     const c = await suDb.conversation.create({
       data: {
@@ -459,11 +485,12 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         chatwootInstanceId: inst,
         chatwootConversationId: chatwootId,
         inboxId,
-        status: "pending",
+        status: conv.status ?? "pending",
         assigneeType: null,
         threadId: `${tenant}:${inst}:${chatwootId}`,
-        lastEventAt: LAST_EVENT_AT,
-        lastInboundAt: REPLY_AT,
+        lastEventAt: conv.lastEventAt ?? LAST_EVENT_AT,
+        lastInboundAt: conv.lastInboundAt ?? REPLY_AT,
+        ...(conv.lastFollowUpAt ? { lastFollowUpAt: conv.lastFollowUpAt } : {}),
       },
     });
     if (reminder) {
@@ -676,6 +703,29 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     );
     expect(d.followUp?.pausedByAppointment).toBe(false);
     expect(d.followUp?.nextStep).toBe(1);
+  });
+
+  // The flag has to name the reason the follow-up is not coming, and on these two the appointment is
+  // not it. Saying "paused" here also costs the completion marker, which yields to this flag.
+  test("a human already owns the conversation → not attributed to the appointment", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convAppointmentResolved,
+      appDb,
+    );
+    expect(d.followUp?.pausedByAppointment).toBe(false);
+    expect(d.followUp?.nextStep).toBeNull();
+  });
+
+  test("the sequence already finished → still reads as complete, not paused", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convAppointmentDone,
+      appDb,
+    );
+    expect(d.followUp?.pausedByAppointment).toBe(false);
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.lastFollowUpAt).toBe(FOLLOW_UP_AT.toISOString());
   });
 
   test("an agent that opted out of the pause still gets its estimate", async () => {

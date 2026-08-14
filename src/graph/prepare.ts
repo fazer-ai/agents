@@ -48,6 +48,10 @@ import {
   loadHandoffTargets,
 } from "@/modules/handoff/targets";
 import {
+  readSendImageConfig,
+  type SendImageConfig,
+} from "@/modules/images/settings";
+import {
   buildToolpackTools,
   type IntegrationSelection,
   type SideEffectErrorReporter,
@@ -187,6 +191,8 @@ export interface AgentConfig {
   // WhatsApp 24h service-window gate for proactive sends + the contact name for template params.
   serviceWindowConfig: ServiceWindowConfig;
   handoffConfig: HandoffConfig;
+  // Hosts the send_image tool may fetch an image from (operator-set; empty = the tool refuses).
+  sendImageConfig: SendImageConfig;
   // Per-agent kanban guidance (operator funnel note), surfaced in the kanban_move_card description.
   kanbanConfig: KanbanConfig;
   // Operator-authored guidance for tools whose only config is the note (set_custom_attribute,
@@ -539,6 +545,7 @@ export async function loadAgentConfig(
     splitConfig: readSplitConfig(effSettings),
     serviceWindowConfig: readServiceWindowConfig(effSettings),
     handoffConfig: readHandoffConfig(effSettings),
+    sendImageConfig: readSendImageConfig(effSettings),
     kanbanConfig: readKanbanConfig(effSettings),
     toolGuidance: readToolGuidance(effSettings),
     httpToolContext: {
@@ -595,6 +602,7 @@ export interface ToolBuildDeps {
       timezone?: string;
       vocab?: ChatwootVocab;
       kanban?: KanbanContext;
+      sendImage?: SendImageConfig;
       toolInstructions?: Partial<Record<NativeToolName, string>>;
       onSideEffectError?: SideEffectErrorReporter;
     },
@@ -896,6 +904,7 @@ export async function buildToolset(
         timezone: cfg.timezone,
         vocab,
         kanban,
+        sendImage: cfg.sendImageConfig,
         toolInstructions,
         onSideEffectError,
       },

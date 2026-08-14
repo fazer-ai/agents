@@ -20,6 +20,15 @@ import {
   type HandoffTargets,
   matchHandoffTarget,
 } from "@/modules/handoff/targets";
+import {
+  fetchImageForDelivery,
+  type ImageFetchDeps,
+  type ImageFetchFailure,
+} from "@/modules/images/fetch";
+import {
+  SEND_IMAGE_DEFAULTS,
+  type SendImageConfig,
+} from "@/modules/images/settings";
 import type { SideEffectErrorReporter } from "@/modules/integrations/toolpacks";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import {
@@ -94,6 +103,14 @@ export interface ToolCtx {
   // model can't know ids), surface the funnel state, and set_custom_attribute target the task. Absent ⇒
   // no linked card / not granted.
   kanban?: KanbanContext;
+  // For send_image: the hosts the operator allows an image to be fetched from. Absent ⇒ none, and
+  // the tool refuses every call — the URL is model-supplied, so an unconfigured allowlist must fail
+  // closed rather than open.
+  sendImage?: SendImageConfig;
+  // Injectable for tests (the image download); default real fetch + assertSafeOutboundUrl. Same
+  // convention as ToolpackCtx: the SSRF assertion resolves DNS, so a hermetic test has to stub it.
+  fetchImpl?: typeof fetch;
+  assertSafe?: ImageFetchDeps["assertSafe"];
   // Per-agent, per-tool operator guidance (keyed by native tool name), appended to that tool's
   // model-facing description so transfer/funnel logic lives WITH the tool instead of buried in the
   // prompt. Populated at turn prep from agent.settings (handoff.instructions / kanban.instructions).
@@ -975,6 +992,102 @@ function skipReplyTool(_ctx: ToolCtx) {
   );
 }
 
+// Sends an image the agent already has a URL for (a product photo from an HTTP tool, an MCP tool or
+// a catalog integration) as a real attachment, instead of pasting a link the customer has to open.
+//
+// The URL is MODEL-supplied, so the hosts it may be fetched from are an operator decision that lives
+// in the agent's config, never in a tool argument: a prompt injection can write any URL it likes and
+// still not reach a host the operator did not list. See modules/images/fetch for the rest of the
+// fence (SSRF assertion, no redirects, byte cap on the body, type read from the file's signature).
+function sendImageTool(ctx: ToolCtx) {
+  const cfg = ctx.sendImage ?? SEND_IMAGE_DEFAULTS;
+  const hosts = cfg.allowedHosts;
+  const guidance = ctx.toolInstructions?.send_image;
+  const description =
+    "Send an IMAGE to the customer as an attachment, given its URL. Use it whenever you have the URL of a picture the customer would rather see than read about (a product photo, a plan, a receipt). The URL must come from data you actually received — another tool's result, the knowledge base, the conversation — never one you compose or guess. Optionally include a short caption. Only the hosts listed below can be reached; anything else is refused, so if the image you have is elsewhere, describe it or send the page link as text instead." +
+    (guidance ? `\n\n${guidance}` : "") +
+    `\n<imagens-permitidas>${
+      hosts.length
+        ? hosts.map((h) => `\n  <host>${xmlEscape(h)}</host>`).join("")
+        : "\n  <nenhum>Nenhum host liberado: a ferramenta vai recusar qualquer URL até o operador configurar a lista.</nenhum>"
+    }\n</imagens-permitidas>`;
+  return failableTool(
+    async ({ url, caption }: { url: string; caption?: string }) => {
+      const res = await fetchImageForDelivery(url, cfg, {
+        fetchImpl: ctx.fetchImpl,
+        assertSafe: ctx.assertSafe,
+      });
+      if (!res.ok) {
+        // NOTE: A refusal the OPERATOR has to fix (no hosts configured, host not listed) is normal
+        // operation for the model — it should answer with a link instead — but it is not normal for
+        // the operator, so only the transport failures are marked as integration failures.
+        const message = sendImageRefusal(res.reason, res.detail);
+        return res.reason === "unreachable" || res.reason === "http_error"
+          ? toolFailure(message)
+          : message;
+      }
+      try {
+        await ctx.client.sendFileAttachment(
+          ctx.conversationId,
+          res.bytes,
+          res.fileName,
+          res.mime,
+          { caption: caption?.trim() || undefined },
+        );
+      } catch (e) {
+        logger.warn(
+          "send_image delivery failed (conversation=%s): %s",
+          String(ctx.conversationId),
+          e instanceof Error ? e.message : String(e),
+        );
+        return toolFailure(
+          "Não consegui entregar a imagem na conversa. Responda com o link em texto.",
+        );
+      }
+      return `Imagem enviada para o cliente (${res.fileName}).`;
+    },
+    {
+      name: "send_image",
+      description,
+      schema: z.object({
+        url: z
+          .string()
+          .min(1)
+          .describe(
+            "Direct https URL of the image file itself (not the page that shows it). Its host must be one of the allowed ones.",
+          ),
+        caption: z
+          .string()
+          .optional()
+          .describe(
+            "Optional short text delivered with the image, in the customer's language.",
+          ),
+      }),
+    },
+  );
+}
+
+// Model-facing explanation of a refusal. Each one tells the agent what to do INSTEAD, so a blocked
+// image degrades into a useful answer rather than into an apology loop.
+function sendImageRefusal(reason: ImageFetchFailure, detail?: string): string {
+  switch (reason) {
+    case "no_hosts_configured":
+      return "Não posso enviar imagens: nenhum host foi liberado para esta configuração. Responda com o link em texto.";
+    case "host_not_allowed":
+      return `O host ${detail ?? "informado"} não está na lista de hosts liberados, então a imagem não foi enviada. Responda com o link em texto.`;
+    case "invalid_url":
+      return "Essa URL não é válida para envio de imagem. Confira o endereço ou responda com o link em texto.";
+    case "too_large":
+      return "A imagem é grande demais para enviar. Responda com o link em texto.";
+    case "not_an_image":
+      return "O endereço não devolveu uma imagem (só PNG, JPEG, GIF e WebP são aceitos). Responda com o link em texto.";
+    case "http_error":
+      return `O servidor da imagem respondeu ${detail ?? "com erro"}. Responda com o link em texto.`;
+    default:
+      return "Não consegui baixar a imagem agora. Responda com o link em texto.";
+  }
+}
+
 // Utility tool: exact arithmetic without a model round-trip. Context-free, so it is also exposed
 // in the playground (where there is no conversation to act on).
 function calculatorTool(_ctx: ToolCtx) {
@@ -1046,6 +1159,7 @@ export function buildNativeTools(
     updateKanbanTaskTool(ctx),
     setVoicePreferenceTool(ctx),
     reactToMessageTool(ctx),
+    sendImageTool(ctx),
     skipReplyTool(ctx),
     calculatorTool(ctx),
     getCurrentTimeTool(ctx),

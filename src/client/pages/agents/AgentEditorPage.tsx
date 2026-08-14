@@ -74,7 +74,7 @@ import {
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
-import { BehaviorTab } from "./BehaviorTab";
+import { BehaviorTab, type SendImageState } from "./BehaviorTab";
 import {
   type ChannelRedirectFormState,
   ChannelRedirectTab,
@@ -272,6 +272,7 @@ function readBehaviorState(a: Agent) {
   const tg = (s.toolGuidance ?? {}) as Record<string, unknown>;
   const li = (s.limits ?? {}) as Record<string, unknown>;
   const ac = (s.attributeContext ?? {}) as Record<string, unknown>;
+  const si = (s.sendImage ?? {}) as Record<string, unknown>;
   // NOTE: Attribute keys per scope: plain string lists (the runtime reader trims/dedups/caps them).
   const attrKeys = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : [];
@@ -358,6 +359,7 @@ function readBehaviorState(a: Agent) {
       contact: attrKeys(ac.contact),
       task: attrKeys(ac.task),
     },
+    sendImage: { allowedHosts: attrKeys(si.allowedHosts).join("\n") },
   };
 }
 
@@ -604,6 +606,11 @@ export function AgentEditorPage() {
   });
   // Runtime limits. Mirrors agent.settings.limits (modules/agents/limits): the per-turn tool-call cap.
   const [limits, setLimits] = useState({ maxToolCalls: "10" });
+  // NOTE: Hosts the send_image tool may fetch from. Mirrors agent.settings.sendImage
+  // (modules/images/settings), edited as one host per line.
+  const [sendImage, setSendImage] = useState<SendImageState>({
+    allowedHosts: "",
+  });
   // NOTE: Which Chatwoot custom attributes are injected into the prompt as current values, per
   // scope. Mirrors agent.settings.attributeContext (modules/chatwoot/attributes).
   const [attributeContext, setAttributeContext] = useState<{
@@ -767,6 +774,7 @@ export function AgentEditorPage() {
     setFollowUp(b.followUp);
     setVision(b.vision);
     setLimits(b.limits);
+    setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
     setChannelRedirect(readChannelRedirectState(a));
     setGuardrails(readGuardrailsConfig(a.settings));
@@ -798,6 +806,7 @@ export function AgentEditorPage() {
     setFollowUp(b.followUp);
     setVision(b.vision);
     setLimits(b.limits);
+    setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
   }, []);
 
@@ -1058,6 +1067,12 @@ export function AgentEditorPage() {
         contact: attributeContext.contact,
         task: attributeContext.task,
       },
+      sendImage: {
+        allowedHosts: sendImage.allowedHosts
+          .split("\n")
+          .map((h) => h.trim())
+          .filter(Boolean),
+      },
     };
   }
 
@@ -1088,6 +1103,7 @@ export function AgentEditorPage() {
       vision,
       limits,
       attributeContext,
+      sendImage,
     }),
     // The WhatsApp→website-chat redirect (own Save button). widgetInboxId is excluded (server-owned,
     // persisted on provision), so provisioning the widget never lights up this tab's unsaved-changes dot.
@@ -1578,6 +1594,7 @@ export function AgentEditorPage() {
     setFollowUp(b.followUp);
     setVision(b.vision);
     setLimits(b.limits);
+    setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
   };
   const revertChannelRedirect = () => {
@@ -2482,6 +2499,8 @@ export function AgentEditorPage() {
                 onVisionEntryChange={onVisionEntryChange}
                 limits={limits}
                 setLimits={setLimits}
+                sendImage={sendImage}
+                setSendImage={setSendImage}
                 attributeContext={attributeContext}
                 setAttributeContext={setAttributeContext}
                 onScheduleSaved={onScheduleSaved}

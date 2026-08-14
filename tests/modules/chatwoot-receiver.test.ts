@@ -615,6 +615,46 @@ describe.skipIf(!dbUp)("chatwoot mirror sync", () => {
     expect(conv.contactInboxId).toBe(9900);
   });
 
+  test("group classification is persisted and not cleared by a partial event", async () => {
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 530,
+        lastActivityAt: 8000,
+        contact: {
+          id: 322,
+          name: "Grupo de clientes",
+          email: null,
+          phone: "120363000000@g.us",
+          identifier: null,
+        },
+      }),
+      appDb,
+    );
+
+    let conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 530 },
+    });
+    expect(conv.isGroup).toBe(true);
+
+    await mirrorChatwootEvent(
+      tenantId,
+      instanceId,
+      ev({
+        conversationId: 530,
+        lastActivityAt: 9000,
+        contact: null,
+      }),
+      appDb,
+    );
+
+    conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 530 },
+    });
+    expect(conv.isGroup).toBe(true);
+  });
+
   test("an incoming message advances lastInboundAt; suppressInboundWatermark holds it back (command path)", async () => {
     const incoming = (lastActivityAt: number): NormalizedChatwootEvent =>
       ev({

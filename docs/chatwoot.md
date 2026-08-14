@@ -46,7 +46,7 @@ Flow:
 
 - **Contact** and **Inbox** upserts are atomic (`INSERT ... ON CONFLICT DO UPDATE`, safe under concurrency, never abort the tx). Contact keys on `(tenantId, chatwootContactId)` (the unique added by the `contact_chatwoot_unique` migration); Inbox on `(tenantId, instanceId, chatwootInboxId)`.
 - **Conversation** is a read-modify-write serialized per conversation by `withEntityLock(threadId)` and guarded **monotonically**: an event whose `last_activity_at` predates the stored `lastEventAt` is skipped, so out-of-order deliveries (Chatwoot does not guarantee order) cannot regress status or assignee. `prevAssigneeId` is captured before the overwrite for the REENGAGE flow.
-- Field sources (verified against Chatwoot): contact ← `meta.sender`; inbox name ← message-event `inbox.name`; `channel` ← `EventDataPresenter` conversation `channel`; `last_activity_at` ← push_timestamps.
+- Field sources (verified against Chatwoot): contact ← `meta.sender`; inbox name ← message-event `inbox.name`; `channel` ← `EventDataPresenter` conversation `channel`; `last_activity_at` ← push_timestamps. `Conversation.isGroup` is derived from a contact phone or identifier ending in Chatwoot's WhatsApp group suffix `@g.us` (case-insensitive); partial events without contact metadata preserve the existing marker.
 
 ## Attribution gate (`shouldBotHandle`)
 

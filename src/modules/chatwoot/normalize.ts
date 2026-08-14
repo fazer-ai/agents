@@ -1,4 +1,7 @@
-import type { NormalizedChatwootEvent } from "./types";
+import type {
+  NormalizedChatwootContact,
+  NormalizedChatwootEvent,
+} from "./types";
 
 // Pure normalization of an (untrusted) Chatwoot Agent Bot webhook payload into the fields we
 // act on, tolerant of the two payload shapes. No DB, no network — the receiver verifies HMAC,
@@ -16,6 +19,15 @@ function num(v: unknown): number | null {
 
 function str(v: unknown): string | null {
   return typeof v === "string" ? v : null;
+}
+
+export function isWhatsappGroupContact(
+  contact: NormalizedChatwootContact | null | undefined,
+): boolean | null {
+  if (!contact) return null;
+  return [contact.phone, contact.identifier].some((value) =>
+    value?.toLowerCase().endsWith("@g.us"),
+  );
 }
 
 export function normalizeChatwootEvent(

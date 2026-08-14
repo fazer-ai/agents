@@ -4,7 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
-import { isNewIncomingMessage } from "./normalize";
+import { isNewIncomingMessage, isWhatsappGroupContact } from "./normalize";
 import type { NormalizedChatwootEvent } from "./types";
 
 // Fire an outbound event from inside the mirror's scoped tx. Best-effort for the DOMAIN: a fan-out
@@ -91,6 +91,7 @@ export async function mirrorChatwootEvent(
     isNewIncomingMessage(n) && !opts.suppressInboundWatermark
       ? (newLastEventAt ?? new Date())
       : null;
+  const isGroup = isWhatsappGroupContact(n.contact);
 
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     const contactId = await upsertContact(db, tenantId, n);
@@ -151,6 +152,7 @@ export async function mirrorChatwootEvent(
             assigneeId: n.assigneeId,
             assigneeType: n.assigneeType,
             assigneeName: n.assigneeName,
+            isGroup: isGroup ?? false,
             threadId,
             lastEventAt: createdLastEventAt,
             lastInboundAt: inboundAt,
@@ -190,6 +192,7 @@ export async function mirrorChatwootEvent(
           assigneeId: n.assigneeId,
           assigneeType: n.assigneeType,
           assigneeName: n.assigneeName,
+          ...(isGroup != null ? { isGroup } : {}),
           lastEventAt: updatedLastEventAt,
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
         },

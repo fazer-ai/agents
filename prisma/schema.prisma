@@ -400,6 +400,7 @@ model Conversation {
   // payload (conversation.contact_inbox.id), always present for real traffic. NULL only on legacy rows.
   contactInboxId         Int?      @map("contact_inbox_id")
   status                 String // mirror: open|pending|resolved|snoozed
+  isGroup                Boolean   @default(false) @map("is_group")
   assigneeId             Int?      @map("assignee_id")
   assigneeType           String?   @map("assignee_type") // User|AgentBot
   // Display name of the current human assignee (meta.assignee.name), mirrored so the console shows a

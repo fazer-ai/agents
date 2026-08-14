@@ -11,6 +11,7 @@ import {
   isHumanAgentMessage,
   isIncomingMessage,
   isNewIncomingMessage,
+  isWhatsappGroupContact,
   normalizeChatwootEvent,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
@@ -84,6 +85,24 @@ describe("verifyChatwootSignature", () => {
 });
 
 describe("normalizeChatwootEvent", () => {
+  test.each([
+    [{ phone: "120363000000@g.us", identifier: null }, true],
+    [{ phone: null, identifier: "120363000000@G.US" }, true],
+    [{ phone: "+5511999999999", identifier: null }, false],
+    [null, null],
+  ] as const)("classifies WhatsApp group contacts", (contact, expected) => {
+    expect(
+      isWhatsappGroupContact(
+        contact && {
+          id: 1,
+          name: "Contact",
+          email: null,
+          ...contact,
+        },
+      ),
+    ).toBe(expected);
+  });
+
   test("conversation_* event: fields at top level", () => {
     const e = normalizeChatwootEvent({
       event: "conversation_updated",

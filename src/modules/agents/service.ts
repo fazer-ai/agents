@@ -21,6 +21,7 @@ import { isOutOfHoursNow, parseWindows } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
+import { readSendImageConfig } from "@/modules/images/settings";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
 import {
   getToolpackToolNames,
@@ -353,6 +354,17 @@ export async function updateAgent(
       }
     }
     const updateData: Record<string, unknown> = { ...rest };
+    // NOTE: The image host list is normalized on the way IN, not only when read. The operator is
+    // invited to paste a full URL and told only the host is kept, and that promise has to hold for
+    // what is STORED: a pasted presigned link would otherwise leave its signature (and any userinfo)
+    // sitting in `agent.settings`, handed back to the editor on every load. Every other block is
+    // clamped at read time and holds nothing secret, so this is the one that needs it here.
+    if (rest.settings && typeof rest.settings === "object") {
+      const bag = rest.settings as Record<string, unknown>;
+      if (bag.sendImage !== undefined) {
+        updateData.settings = { ...bag, sendImage: readSendImageConfig(bag) };
+      }
+    }
     if (hasBh) updateData.businessHoursId = bhId;
     if (hasFuh) updateData.followUpHoursId = fuhId;
     // NOTE: Arm the follow-up backlog fence on the OFF→ON transition of the effective state. The row

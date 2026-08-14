@@ -118,6 +118,42 @@ describe.skipIf(!dbUp)("agents service", () => {
     expect(a.enabled).toBe(false);
   });
 
+  // The editor tells the operator to paste a full URL and promises only the host is kept, and
+  // `readSendImageConfig` does that — at READ time. What lands in the row is whatever was typed, so
+  // a pasted presigned link stored its signature in `agent.settings` and handed it back to the
+  // editor on the next load. Normalizing on the way IN is what makes the promise true.
+  test("a pasted image URL is reduced to its host before it is stored", async () => {
+    await updateAgent(
+      ctx(tenantA),
+      agentAId,
+      {
+        settings: {
+          sendImage: {
+            allowedHosts: [
+              "https://usuario:senha-secreta@cdn.loja.com.br/fotos/x.png?X-Amz-Signature=deadbeef",
+              "  *.IMAGENS.com.br  ",
+              "localhost",
+            ],
+          },
+        },
+      },
+      appDb,
+    );
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: agentAId },
+      select: { settings: true },
+    });
+    const stored = (row.settings as Record<string, unknown>).sendImage as {
+      allowedHosts: string[];
+    };
+    expect(stored.allowedHosts).toEqual([
+      "cdn.loja.com.br",
+      "*.imagens.com.br",
+    ]);
+    expect(JSON.stringify(row.settings)).not.toContain("senha-secreta");
+    expect(JSON.stringify(row.settings)).not.toContain("deadbeef");
+  });
+
   test("a tenant cannot read another tenant's agent", async () => {
     expect(getAgent(ctx(tenantB), agentAId, appDb)).rejects.toThrow();
   });

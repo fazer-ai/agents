@@ -1141,7 +1141,11 @@ function sendImageRefusal(reason: ImageFetchFailure, detail?: string): string {
     case "no_hosts_configured":
       return "Não posso enviar imagens: nenhum host foi liberado para esta configuração. Responda com o link em texto.";
     case "host_not_allowed":
-      return `O host ${detail ?? "informado"} não está na lista de hosts liberados, então a imagem não foi enviada. Responda com o link em texto.`;
+      // NOTE: The rejected host is deliberately NOT echoed. It is a value the model composed — a
+      // wildcard allowlist means it picks the subdomain — and this string is the tool's OUTPUT,
+      // which `ToolFlowLogger` stores verbatim in `ExecutionLog.detail`. The model already knows
+      // which URL it asked for, and the hosts it MAY use are in the tool's own description.
+      return "Esse host não está na lista de hosts liberados, então a imagem não foi enviada. Responda com o link em texto.";
     case "invalid_url":
       return "Essa URL não é válida para envio de imagem. Confira o endereço ou responda com o link em texto.";
     case "too_large":

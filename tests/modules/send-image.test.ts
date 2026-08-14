@@ -603,6 +603,10 @@ describe("the send_image tool", () => {
     });
     expect(String(out)).toContain("não está na lista");
     expect(String(out)).toContain("link em texto");
+    // The refusal does not echo the host back: it is a value the model composed, and this string is
+    // the tool OUTPUT, which the flowlog stores verbatim.
+    expect(String(out)).not.toContain("exfiltra.example.com");
+    expect(String(out)).not.toContain("segredo");
     expect(sent).toEqual([]);
     expect(turnState.pendingImages).toEqual([]);
     expect(host.calls).toEqual([]);

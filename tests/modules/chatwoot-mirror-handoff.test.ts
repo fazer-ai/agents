@@ -59,6 +59,7 @@ interface ConvOver {
   // Left out to stand for a Chatwoot older than 4.0.2, which does not send it.
   updatedAt?: number;
   assignee?: { id: number; name: string } | null;
+  customAttributes?: Record<string, unknown>;
 }
 
 function convPayload(convId: number, over: ConvOver) {
@@ -79,6 +80,9 @@ function convPayload(convId: number, over: ConvOver) {
     channel: "Channel::Email",
     last_activity_at: over.lastActivityAt,
     ...(over.updatedAt !== undefined ? { updated_at: over.updatedAt } : {}),
+    ...(over.customAttributes
+      ? { custom_attributes: over.customAttributes }
+      : {}),
   };
 }
 
@@ -340,6 +344,50 @@ describe.skipIf(!dbUp)(
       expect(row.status).toBe("open");
       expect(row.assigneeType).toBe("User");
       expect(row.assigneeId).toBe(3);
+    });
+
+    // The attribute bags are ASSIGNED from whichever payload arrives, and the stale check used to be
+    // what kept a late delivery away from them. Now that a conversation event can win on version
+    // alone, one whose last_activity_at is older than the row's would roll a bag back over the newer
+    // payload that already mirrored it — a card jumping back a column after the handoff event lands.
+    test("a delayed conversation event does not roll back the attribute bags", async () => {
+      const T = 1_786_495_400;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(26, {
+          status: "pending",
+          lastActivityAt: T,
+          updatedAt: T + 0.1,
+          customAttributes: { etapa: "novo" },
+        }),
+      });
+      await mirror(
+        messageEvent(26, "message_created", {
+          messageId: 973,
+          status: "pending",
+          lastActivityAt: T + 5,
+          updatedAt: T + 5.4,
+          customAttributes: { etapa: "em-atendimento" },
+        }),
+      );
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(26, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.9,
+          assignee: HUMAN,
+          customAttributes: { etapa: "novo" },
+        }),
+      });
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 26 },
+        select: { customAttributes: true, assigneeType: true },
+      });
+      // The handoff still lands — it is the newest word on the assignee...
+      expect(row.assigneeType).toBe("User");
+      // ...and it is not the newest word on the bag it happened to be carrying.
+      expect(row.customAttributes).toEqual({ etapa: "em-atendimento" });
     });
 
     // What the mirror RETURNS is what the webhook broadcasts and what the conversation list sorts

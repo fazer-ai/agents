@@ -230,6 +230,13 @@ export async function mirrorChatwootEvent(
         existing.lastEventAt > updatedLastEventAt
           ? existing.lastEventAt
           : updatedLastEventAt;
+      // Whether this payload is at least as recent as what the row already holds. False only for a
+      // conversation event that won on version while carrying an older last_activity_at — the
+      // delayed-handoff case — and it is what stops the UNVERSIONED fields below (the attribute
+      // bags) from riding along on that event's authority over the versioned state.
+      const payloadIsCurrent =
+        existing.lastEventAt == null ||
+        updatedLastEventAt >= existing.lastEventAt;
       // NOTE: A MESSAGE event's conversation snapshot is serialized when the message event fires
       // (AgentBotListener builds the payload and only then enqueues it; a failed delivery retries
       // with that same copy), so it describes the conversation as of THAT moment, not the delivery's.
@@ -345,12 +352,17 @@ export async function mirrorChatwootEvent(
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
           // NOTE: Attribute bags are ASSIGNED (the payload always ships the whole jsonb), but only
           // when the event carried one — a payload without them must not wipe the stored snapshot.
-          // No watermark needed here: this runs inside the per-conversation lock, past the stale
-          // check, so a late delivery never reaches it.
-          ...(n.customAttributes
+          // They are NOT part of the versioned state above: every event mirrors them, a message
+          // snapshot included, which is what keeps the agent's attribute context current without an
+          // extra API call. What they do need is the recency fence the stale check used to give them
+          // for free. Now that a conversation event can win on version alone, one whose
+          // last_activity_at is older than the row's would roll a bag back over the newer payload
+          // that already mirrored it — a Kanban card jumping back a column when a delayed handoff
+          // lands. A payload behind the row on that axis keeps its state ruling and its bags silent.
+          ...(payloadIsCurrent && n.customAttributes
             ? { customAttributes: n.customAttributes as Prisma.InputJsonValue }
             : {}),
-          ...(n.kanbanAttributes
+          ...(payloadIsCurrent && n.kanbanAttributes
             ? { kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue }
             : {}),
         },

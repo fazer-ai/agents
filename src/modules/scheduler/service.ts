@@ -230,6 +230,14 @@ export async function rescheduleJob(
   );
 }
 
+// True when the run in progress is the last one the scheduler will give this job, so a handler can
+// tell "failed for now, a retry is coming" from "the job is about to be dead-lettered". Same
+// arithmetic as failJob below, read from the handler's side — `attempts` is not incremented at claim
+// time, so it counts the runs that already failed.
+export function isFinalAttempt(job: { attempts: number }): boolean {
+  return job.attempts + 1 >= MAX_ATTEMPTS;
+}
+
 // Failure: attempts++; retry with backoff until the cap, then DEAD.
 export async function failJob(
   tenantId: bigint,

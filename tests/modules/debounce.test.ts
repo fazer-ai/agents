@@ -177,7 +177,7 @@ async function seedConversation(
 
 function jobFor(
   convId: number,
-  extra: { lastMessageId?: number } = {},
+  extra: { lastMessageId?: number; attempts?: number } = {},
 ): ClaimedJob {
   return {
     id: 1n,
@@ -191,8 +191,35 @@ function jobFor(
         ? { lastMessageId: extra.lastMessageId }
         : {}),
     },
-    attempts: 0,
+    attempts: extra.attempts ?? 0,
   };
+}
+
+// A Chatwoot that also records private notes, for the turn-failure announcement.
+function makeNoteStub(notes: Array<[number, string]>) {
+  const client = {
+    getMessages: async () => page([{ id: 1, content: "oi" }]),
+    sendMessage: async () => ({}),
+    sendPrivateNote: async (conversationId: number, content: string) => {
+      notes.push([conversationId, content]);
+      return {};
+    },
+  } as unknown as ChatwootClient;
+  return async () => client;
+}
+
+// `never`, not inferred `void`: this stands in for a model factory, and a function that only throws
+// has to be assignable to one.
+function failingModel(): never {
+  throw new Error("the model provider is down");
+}
+
+async function lastErrorOf(convId: number): Promise<string | null> {
+  const row = await suDb.conversation.findFirstOrThrow({
+    where: { tenantId, chatwootConversationId: convId },
+    select: { lastError: true },
+  });
+  return row.lastError;
 }
 
 async function watermarkOf(convId: number): Promise<number | null> {
@@ -877,5 +904,45 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(model.seen[0]).toContain(
       "<mensagem-de-audio>vim do meta do fork</mensagem-de-audio>",
     );
+  });
+
+  // The announcement says the agent gave up and a human must take over. While the scheduler still
+  // has retries that is false, and it is also self-fulfilling: a human taking over closes the gate
+  // the retry depends on, so the next attempt would find the conversation no longer its own.
+  test("a flush that will be retried announces nothing", async () => {
+    await seedConversation(840);
+    const notes: Array<[number, string]> = [];
+    await expect(
+      flushDebounceJob({
+        job: jobFor(840),
+        base: appDb,
+        deps: {
+          makeModel: failingModel,
+          makeClient: makeNoteStub(notes),
+          checkpointer: new MemorySaver(),
+        },
+      }),
+    ).rejects.toThrow();
+    expect(notes).toHaveLength(0);
+    expect(await lastErrorOf(840)).toBeNull();
+  });
+
+  test("the attempt that dead-letters the job announces once", async () => {
+    await seedConversation(841);
+    const notes: Array<[number, string]> = [];
+    await expect(
+      flushDebounceJob({
+        job: jobFor(841, { attempts: 4 }),
+        base: appDb,
+        deps: {
+          makeModel: failingModel,
+          makeClient: makeNoteStub(notes),
+          checkpointer: new MemorySaver(),
+        },
+      }),
+    ).rejects.toThrow();
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.[1]).toContain("humano");
+    expect(await lastErrorOf(841)).toContain("provider is down");
   });
 });

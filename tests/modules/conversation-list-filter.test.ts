@@ -9,9 +9,21 @@ const tenant: TenantContext = {
   role: "TENANT_ADMIN",
 };
 
+interface FakeDb {
+  $extends(): FakeDb;
+  $transaction<T>(fn: (tx: FakeDb) => Promise<T>): Promise<T>;
+  $executeRaw(
+    strings: TemplateStringsArray,
+    ...values: unknown[]
+  ): Promise<number>;
+  conversation: {
+    findMany(args: { where: unknown }): Promise<never[]>;
+  };
+}
+
 function capturingDb() {
   let capturedWhere: unknown;
-  const fake = {
+  const fake: FakeDb = {
     $extends() {
       return fake;
     },

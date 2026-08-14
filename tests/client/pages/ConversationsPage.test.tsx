@@ -11,7 +11,33 @@ import {
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 
-const emptyPage = {
+interface MockConversation {
+  id: string;
+  threadId: string;
+  chatwootConversationId: number;
+  status: string;
+  assigneeId: number | null;
+  assigneeType: string | null;
+  assigneeName: string | null;
+  lastEventAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+  inbox: { id: string; name: string } | null;
+  contact: { name: string | null } | null;
+  agentName: string | null;
+  outOfHours: boolean;
+}
+
+interface MockPageResult {
+  data: {
+    instance: { id: string; name: string };
+    conversations: MockConversation[];
+    nextCursor: string | null;
+  };
+  error: null;
+}
+
+const emptyPage: MockPageResult = {
   data: {
     instance: { id: "test", name: "test" },
     conversations: [],
@@ -20,7 +46,9 @@ const emptyPage = {
   error: null,
 };
 
-const mockGetConversations = mock(async (_request: unknown) => emptyPage);
+const mockGetConversations = mock(
+  async (_request: unknown): Promise<MockPageResult> => emptyPage,
+);
 
 mock.module("@/client/lib/api", () => ({
   api: {

@@ -287,6 +287,21 @@ export async function mirrorChatwootEvent(
           ? n.status
           : null;
       const nextStatus = appliedStatus ?? existing.status;
+      // The reopen is the one place a MESSAGE moves state, so it is also the one place a message
+      // claims the version — the two halves of the rule cannot come apart, or the row ends up ahead
+      // of its own watermark and a companion of the write it just overrode sails through the
+      // idempotent `>=` below and undoes it. Chatwoot stamps a strictly greater version on this
+      // snapshot (`reopen_conversation`, then `set_conversation_activity` writing `updated_at:
+      // Time.current`, and only then `dispatch_create_events`), so the mark moves forward.
+      //
+      // NOTE: Strictly when the status CHANGED. Every message bumps `updated_at` through
+      // set_conversation_activity, so a message that moved nothing still carries a fresh version;
+      // letting that one claim the mark would push it past a conversation event still in flight —
+      // the delayed handoff, lost again.
+      const reopenedByMessage =
+        !applyState &&
+        appliedStatus != null &&
+        appliedStatus !== existing.status;
       // NOTE: The assignee trio travels together and applies only when BOTH hold: the payload
       // actually spoke about the assignee (`meta` present — undefined means "said nothing", and a
       // degraded event must NOT wipe a stored 'AgentBot'/'User', the intermittent self-wipe behind
@@ -343,7 +358,7 @@ export async function mirrorChatwootEvent(
           // conversation event still in flight and that event would arrive already "stale" —
           // precisely how a delayed handoff used to be lost. The mark also only moves forward: an
           // equal version was applied just above but is not news, and an older one was rejected.
-          ...(applyState &&
+          ...((applyState || reopenedByMessage) &&
           stateUpdatedAt != null &&
           (existing.chatwootUpdatedAt == null ||
             stateUpdatedAt > existing.chatwootUpdatedAt)

@@ -258,6 +258,47 @@ describe.skipIf(!dbUp)(
       expect((await mirrored(12)).status).toBe("open");
     });
 
+    // The reopen above is the ONE transition a message carries, so it is also the one place where a
+    // message moves state — and the two halves of the rule have to stay together there too. If it
+    // moved the status without claiming the version, the row would be ahead of its own watermark,
+    // and a companion of the resolve (same version, Chatwoot emits several events per write) would
+    // sail through the idempotent `>=` and write `resolved` back over a customer who is waiting.
+    // Chatwoot stamps a strictly greater version on that snapshot: `reopen_conversation` runs, then
+    // `set_conversation_activity` does `update_columns(..., updated_at: Time.current)`, and only
+    // then `dispatch_create_events` serializes it.
+    test("a resolve companion cannot undo the reopen it arrives after", async () => {
+      const T = 1_786_496_100;
+      await mirror({
+        event: "conversation_resolved",
+        ...convPayload(29, {
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 0.2,
+        }),
+      });
+      await mirror(
+        messageEvent(29, "message_created", {
+          messageId: 974,
+          messageType: "incoming",
+          status: "open",
+          lastActivityAt: T + 60,
+          updatedAt: T + 60.3,
+        }),
+      );
+      expect((await mirrored(29)).status).toBe("open");
+      // The companion of the resolve, delayed: same version as the write we already applied, and an
+      // older last_activity_at.
+      await mirror({
+        event: "conversation_status_changed",
+        ...convPayload(29, {
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 0.2,
+        }),
+      });
+      expect((await mirrored(29)).status).toBe("open");
+    });
+
     // The mirror image of the burst above, and the reason ordering beats a blanket "message events
     // are never authoritative": when the handoff's own event is delayed past the first message the
     // human sends, that message's snapshot is the ONLY witness of the new owner. Distrusting it

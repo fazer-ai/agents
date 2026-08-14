@@ -432,7 +432,12 @@ model Conversation {
   // including the status and assignee changes that `last_activity_at` ignores. lastEventAt cannot
   // order those (one-second resolution, unchanged by a status change), which is what let a frozen
   // message snapshot undo a handoff. NULL = the payload never carried it (Chatwoot < 4.0.2).
-  chatwootUpdatedAt      DateTime? @map("chatwoot_updated_at")
+  //
+  // Unix seconds WITH FRACTION, stored as the double Chatwoot sent (`updated_at.to_f`) rather than
+  // as a timestamp: two writes to the same conversation land microseconds apart, and a TIMESTAMP(3)
+  // would round them to the same millisecond, making the version comparison lose the ordering this
+  // column exists to provide.
+  chatwootUpdatedAt      Float?    @map("chatwoot_updated_at")
   // Debounce watermark: the Chatwoot message id of the last inbound message already handled
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.

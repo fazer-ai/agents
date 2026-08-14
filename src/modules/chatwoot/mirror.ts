@@ -83,10 +83,9 @@ export async function mirrorChatwootEvent(
   const newLastEventAt =
     n.lastActivityAt != null ? new Date(n.lastActivityAt * 1000) : null;
   // Version stamp of the conversation-level state this payload carries (see the state fence below).
-  const stateUpdatedAt =
-    n.conversationUpdatedAt != null
-      ? new Date(n.conversationUpdatedAt * 1000)
-      : null;
+  // Kept as the raw unix-seconds double Chatwoot sent: converting to Date would round to the
+  // millisecond and collapse two writes that are microseconds apart into one version.
+  const stateUpdatedAt = n.conversationUpdatedAt ?? null;
   // The inbound watermark (`lastInboundAt`) advances only on a brand-new incoming customer message
   // (message_created), never on a message_updated — our own STT/vision write-back re-dispatches one
   // and must not push it forward. The caller also suppresses it for a consumed control command (see
@@ -214,12 +213,26 @@ export async function mirrorChatwootEvent(
       // reopen_conversation, then dispatch_create_events), and a message a human sends after a
       // handoff is the only witness of the new assignee while the handoff's own event is in flight.
       //
-      // Fallback for a Chatwoot too old to send `updated_at` (< 4.0.2): distrust message snapshots,
-      // minus the brand-new incoming message whose reopen would otherwise be lost.
+      // Two ways to have no version to compare against, and they are NOT the same:
+      //   * the payload carries none — a Chatwoot older than 4.0.2, where no payload ever will.
+      //     There is no ordering to be had, so fall back to distrusting message snapshots, minus
+      //     the brand-new incoming message whose reopen would otherwise be lost.
+      //   * the payload carries one but the ROW does not — a conversation mirrored before this
+      //     column existed. Only our history is missing: the payload's version is the first thing
+      //     we know about this row, so take it and let ordering run from there. Delivery is
+      //     bounded (AgentBots::WebhookJob retries 3× at 3s), so the only snapshot this can
+      //     mis-trust is one that straddles the deploy itself.
+      //
+      // NOTE: `>=`, not `>`. An equal version is the same conversation row, so re-applying it is
+      // idempotent — while REJECTING it is not: Chatwoot emits several events for one write
+      // (conversation_updated + conversation_status_changed), and the one that arrives second is
+      // frequently the one carrying `meta`. Under `>` the first delivery would win and its
+      // companion's assignee would be dropped, which is the failure this fence exists to stop.
       const applyState =
-        stateUpdatedAt != null && existing.chatwootUpdatedAt != null
-          ? stateUpdatedAt > existing.chatwootUpdatedAt
-          : n.message === undefined || isNewIncomingMessage(n);
+        stateUpdatedAt == null
+          ? n.message === undefined || isNewIncomingMessage(n)
+          : existing.chatwootUpdatedAt == null ||
+            stateUpdatedAt >= existing.chatwootUpdatedAt;
       const appliedStatus = applyState ? n.status : null;
       const nextStatus = appliedStatus ?? existing.status;
       // NOTE: The assignee trio travels together and applies only when BOTH hold: the payload
@@ -250,9 +263,11 @@ export async function mirrorChatwootEvent(
               }
             : {}),
           lastEventAt: updatedLastEventAt,
-          // NOTE: The state watermark only moves when this payload's state was the one applied —
-          // a snapshot we declined to trust must not claim to be the version we hold.
-          ...(applyState && stateUpdatedAt != null
+          // NOTE: The watermark only moves forward. An equal version was applied just above but is
+          // not news, and a strictly older one was rejected, so neither may rewrite it.
+          ...(stateUpdatedAt != null &&
+          (existing.chatwootUpdatedAt == null ||
+            stateUpdatedAt > existing.chatwootUpdatedAt)
             ? { chatwootUpdatedAt: stateUpdatedAt }
             : {}),
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),

@@ -295,6 +295,109 @@ describe.skipIf(!dbUp)(
       expect(handoffsAfter - handoffsBefore).toBe(1);
     });
 
+    // Chatwoot emits several events for ONE write to the conversation (conversation_updated +
+    // conversation_status_changed), all carrying that write's version. They must not fight: the one
+    // that arrives second is frequently the one carrying `meta`, so rejecting an equal version
+    // would drop the assignee it brought.
+    test("companions of one write all apply, whichever arrives with meta", async () => {
+      const T = 1_786_494_000;
+      const U = T + 0.123_456;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(27, {
+          status: "pending",
+          lastActivityAt: T,
+          updatedAt: T + 0.1,
+        }),
+      });
+      await mirror({
+        event: "conversation_status_changed",
+        ...convPayload(27, { status: "open", lastActivityAt: T, updatedAt: U }),
+      });
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(27, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: U,
+          assignee: HUMAN,
+        }),
+      });
+      const row = await mirrored(27);
+      expect(row.status).toBe("open");
+      expect(row.assigneeType).toBe("User");
+      expect(row.assigneeId).toBe(3);
+    });
+
+    // The stamp is stored as the double Chatwoot sent. Rounding it to a timestamp would collapse
+    // two writes a few hundred microseconds apart into one version, and the second would lose.
+    test("two writes inside the same millisecond stay ordered", async () => {
+      const T = 1_786_495_000;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(30, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.500_1,
+          assignee: HUMAN,
+        }),
+      });
+      // 200µs EARLIER, same millisecond: a re-delivery of the pre-handoff snapshot.
+      await mirror(
+        messageEvent(30, "message_updated", {
+          messageId: 990,
+          status: "pending",
+          lastActivityAt: T,
+          updatedAt: T + 0.499_9,
+        }),
+      );
+      const row = await mirrored(30);
+      expect(row.status).toBe("open");
+      expect(row.assigneeType).toBe("User");
+    });
+
+    // A conversation mirrored before the watermark column existed knows the payload's version but
+    // not its own. The payload's is the first thing we learn, so it decides that one event and
+    // ordering runs from there — otherwise the row would fall back to the type rule forever and a
+    // handoff carried by a message would stay invisible.
+    test("a row with no stored version bootstraps from the payload", async () => {
+      const T = 1_786_496_000;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(33, { status: "pending", lastActivityAt: T }),
+      });
+      expect(
+        (
+          await suDb.conversation.findFirstOrThrow({
+            where: { tenantId, chatwootConversationId: 33 },
+            select: { chatwootUpdatedAt: true },
+          })
+        ).chatwootUpdatedAt,
+      ).toBeNull();
+      await mirror(
+        messageEvent(33, "message_created", {
+          messageId: 995,
+          status: "open",
+          lastActivityAt: T + 5,
+          updatedAt: T + 5.4,
+          assignee: HUMAN,
+        }),
+      );
+      const row = await mirrored(33);
+      expect(row.status).toBe("open");
+      expect(row.assigneeType).toBe("User");
+      // And from here the ordering holds: the pre-handoff snapshot no longer wins.
+      await mirror(
+        messageEvent(33, "message_updated", {
+          messageId: 995,
+          status: "pending",
+          lastActivityAt: T + 5,
+          updatedAt: T + 0.2,
+        }),
+      );
+      expect((await mirrored(33)).status).toBe("open");
+    });
+
     // A re-delivery of the same event carries the same version stamp, so it is not news.
     test("a re-delivered event cannot walk the state backwards", async () => {
       const T = 1_786_493_000;

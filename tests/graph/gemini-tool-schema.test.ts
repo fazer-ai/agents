@@ -486,6 +486,47 @@ describe("Gemini tool declarations", () => {
     expect(list).not.toHaveProperty("additionalItems");
   });
 
+  // Inside `properties` the keys are parameter NAMES chosen by whoever wrote the tool, so the
+  // draft-07 translation must not run there: it would delete a parameter the schema still requires.
+  test("a parameter NAMED additionalItems is not mistaken for the keyword", () => {
+    const collides = tool(async () => "ok", {
+      name: "mcp__legacy__collides",
+      description: "d",
+      schema: {
+        type: "object",
+        properties: { additionalItems: { type: "string" } },
+        required: ["additionalItems"],
+      } as never,
+    });
+    const [entry] = toGeminiTools([collides]) as GeminiFunctionTool[];
+    const declared = entry?.functionDeclarations[0]?.parametersJsonSchema as {
+      properties: Record<string, unknown>;
+      required: string[];
+    };
+    expect(Object.keys(declared.properties)).toEqual(["additionalItems"]);
+    expect(declared.required).toEqual(["additionalItems"]);
+  });
+
+  // Built through JSON.parse on purpose: an object literal would set the prototype instead of
+  // creating the key, which is exactly the trap on the output side.
+  test("a parameter named __proto__ still reaches the wire", () => {
+    const proto = tool(async () => "ok", {
+      name: "mcp__legacy__proto",
+      description: "d",
+      schema: JSON.parse(
+        '{"type":"object","properties":{"__proto__":{"type":"string"}},"required":["__proto__"]}',
+      ),
+    });
+    const [entry] = toGeminiTools([proto]) as GeminiFunctionTool[];
+    const declared = entry?.functionDeclarations[0]?.parametersJsonSchema as {
+      properties: Record<string, unknown>;
+    };
+    // Own key, and present in the serialized body — NOT `toContain("__proto__")` on the whole
+    // schema, which `required: ["__proto__"]` satisfies whether or not the parameter survived.
+    expect(Object.keys(declared.properties)).toEqual(["__proto__"]);
+    expect(JSON.stringify(declared.properties)).toContain('"__proto__"');
+  });
+
   test("an explicit prefixItems is not overwritten by the items rename", () => {
     const both = tool(async () => "ok", {
       name: "mcp__legacy__both",

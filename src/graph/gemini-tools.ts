@@ -51,6 +51,30 @@ const MAX_DEPTH = 64;
 // Always returns fresh objects: `toJsonSchema` memoizes per schema and hands back the SAME object
 // on every call, so editing in place would corrupt what the other providers declare for the rest of
 // the process.
+//
+// Keywords whose value is a MAP OF SCHEMAS keyed by a name the tool author chose, not a schema. The
+// walk has to change mode there: inside `properties` the key `additionalItems` is a parameter called
+// "additionalItems", and translating it as the draft-07 keyword deletes the parameter while
+// `required` goes on demanding it — a declaration the model cannot satisfy.
+const SCHEMA_MAP_KEYWORDS = new Set([
+  "properties",
+  "patternProperties",
+  "$defs",
+  "definitions",
+]);
+
+function normalizeSchemaMap(node: unknown, depth: number): unknown {
+  if (!node || typeof node !== "object" || Array.isArray(node))
+    return normalizeTupleItems(node, depth);
+  const out: Record<string, unknown> = Object.create(null);
+  for (const [name, schema] of Object.entries(
+    node as Record<string, unknown>,
+  )) {
+    out[name] = normalizeTupleItems(schema, depth + 1);
+  }
+  return out;
+}
+
 function normalizeTupleItems(node: unknown, depth = 0): unknown {
   if (depth > MAX_DEPTH) return node;
   if (Array.isArray(node))
@@ -59,8 +83,15 @@ function normalizeTupleItems(node: unknown, depth = 0): unknown {
   const source = node as Record<string, unknown>;
   const isTuple = Array.isArray(source.items);
   const hasPrefixItems = "prefixItems" in source;
-  const out: Record<string, unknown> = {};
+  // NOTE: null prototype because the keys come from a third-party schema. `out.__proto__ = x` on a
+  // normal object runs the prototype setter instead of creating an own key, so a parameter legally
+  // named `__proto__` would vanish from the declaration while `required` still demanded it.
+  const out: Record<string, unknown> = Object.create(null);
   for (const [key, value] of Object.entries(source)) {
+    if (SCHEMA_MAP_KEYWORDS.has(key)) {
+      out[key] = normalizeSchemaMap(value, depth + 1);
+      continue;
+    }
     if (key === "items" && Array.isArray(value)) {
       if (!hasPrefixItems) {
         out.prefixItems = value.map((v) => normalizeTupleItems(v, depth + 1));

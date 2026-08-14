@@ -54,6 +54,7 @@ export interface MirrorResult {
   assigneeId: number | null;
   assigneeType: string | null;
   lastEventAt: Date | null;
+  isGroup: boolean | null;
 }
 
 export async function mirrorChatwootEvent(
@@ -77,6 +78,7 @@ export async function mirrorChatwootEvent(
       assigneeId: null,
       assigneeType: null,
       lastEventAt: null,
+      isGroup: null,
     };
   }
   const convId = n.conversationId;
@@ -113,6 +115,7 @@ export async function mirrorChatwootEvent(
           assigneeId: true,
           assigneeType: true,
           status: true,
+          isGroup: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -134,6 +137,7 @@ export async function mirrorChatwootEvent(
           assigneeId: existing.assigneeId,
           assigneeType: existing.assigneeType,
           lastEventAt: existing.lastEventAt,
+          isGroup: existing.isGroup,
         };
       }
 
@@ -175,6 +179,7 @@ export async function mirrorChatwootEvent(
           assigneeId: n.assigneeId,
           assigneeType: n.assigneeType,
           lastEventAt: createdLastEventAt,
+          isGroup: isGroup ?? false,
         };
       }
 
@@ -225,6 +230,7 @@ export async function mirrorChatwootEvent(
         assigneeId: n.assigneeId,
         assigneeType: n.assigneeType,
         lastEventAt: updatedLastEventAt,
+        isGroup: isGroup ?? existing.isGroup,
       };
     });
   });

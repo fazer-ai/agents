@@ -95,6 +95,7 @@ export interface ConversationEvent {
   assigneeId: number | null;
   assigneeType: string | null;
   lastEventAt: string | null;
+  isGroup: boolean;
 }
 
 // NOTE: A TRANSIENT, ephemeral signal that the agent is actively working a

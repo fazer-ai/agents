@@ -380,6 +380,7 @@ describe("realtime.service", () => {
         assigneeId: 5,
         assigneeType: "User",
         lastEventAt: "2026-06-02T10:00:00.000Z",
+        isGroup: false,
       });
 
       expect(recorder.calls).toHaveLength(1);
@@ -397,6 +398,7 @@ describe("realtime.service", () => {
         assigneeId: 5,
         assigneeType: "User",
         lastEventAt: "2026-06-02T10:00:00.000Z",
+        isGroup: false,
       });
     });
 
@@ -434,6 +436,7 @@ describe("realtime.service", () => {
         assigneeId: null,
         assigneeType: null,
         lastEventAt: null,
+        isGroup: false,
       });
       broadcastAgentActivity(BigInt(3), {
         conversationId: "1",

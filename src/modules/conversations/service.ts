@@ -490,6 +490,7 @@ async function loadConvRef(
   assigneeId: number | null;
   assigneeType: string | null;
   assigneeName: string | null;
+  isGroup: boolean;
   threadId: string;
   lastEventAt: Date | null;
   lastInboundAt: Date | null;
@@ -517,6 +518,7 @@ async function loadConvRef(
         assigneeId: true,
         assigneeType: true,
         assigneeName: true,
+        isGroup: true,
         threadId: true,
         lastEventAt: true,
         lastInboundAt: true,
@@ -1065,6 +1067,7 @@ export async function handoffConversation(
     assigneeId: assigneeId ?? conv.assigneeId,
     assigneeType: "User",
     lastEventAt: conv.lastEventAt ? conv.lastEventAt.toISOString() : null,
+    isGroup: conv.isGroup,
   });
 }
 
@@ -1103,6 +1106,7 @@ export async function returnConversationToAgent(
     assigneeId: null,
     assigneeType: null,
     lastEventAt: conv.lastEventAt ? conv.lastEventAt.toISOString() : null,
+    isGroup: conv.isGroup,
   });
 }
 
@@ -1130,5 +1134,6 @@ export async function setConversationStatus(
     assigneeId: conv.assigneeId,
     assigneeType: conv.assigneeType,
     lastEventAt: conv.lastEventAt ? conv.lastEventAt.toISOString() : null,
+    isGroup: conv.isGroup,
   });
 }

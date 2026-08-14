@@ -238,6 +238,9 @@ export function ConversationsPage() {
   useTenantEvents({
     onConversation: (event) => {
       setConversations((prev) => {
+        if (event.isGroup) {
+          return prev.filter((c) => c.id !== event.conversationId);
+        }
         const current = prev.find((c) => c.id === event.conversationId);
         if (!current) {
           void fetchConversations();

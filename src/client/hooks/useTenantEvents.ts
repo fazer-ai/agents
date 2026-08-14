@@ -31,6 +31,7 @@ export type TenantRealtimeEvent =
       assigneeId: number | null;
       assigneeType: string | null;
       lastEventAt: string | null;
+      isGroup: boolean;
     }
   | {
       type: "agent-activity";
@@ -67,6 +68,7 @@ export interface ConversationRealtimeEvent {
   assigneeId: number | null;
   assigneeType: string | null;
   lastEventAt: string | null;
+  isGroup: boolean;
 }
 
 export interface AgentActivityRealtimeEvent {
@@ -136,6 +138,7 @@ export function useTenantEvents(options: UseTenantEventsOptions = {}) {
           assigneeId: msg.assigneeId,
           assigneeType: msg.assigneeType,
           lastEventAt: msg.lastEventAt,
+          isGroup: msg.isGroup,
         });
       } else if (msg.type === "agent-activity") {
         onAgentActivity?.({

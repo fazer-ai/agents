@@ -1014,6 +1014,7 @@ export async function processChatwootDelivery(
       assigneeId: mirror.assigneeId,
       assigneeType: mirror.assigneeType,
       lastEventAt: mirror.lastEventAt ? mirror.lastEventAt.toISOString() : null,
+      isGroup: mirror.isGroup ?? false,
     });
   }
 

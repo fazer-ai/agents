@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -50,6 +51,19 @@ const mockGetConversations = mock(
   async (_request: unknown): Promise<MockPageResult> => emptyPage,
 );
 
+interface CapturedTenantEvents {
+  onConversation?: (event: {
+    conversationId: string;
+    status: string | null;
+    assigneeId: number | null;
+    assigneeType: string | null;
+    lastEventAt: string | null;
+    isGroup: boolean;
+  }) => void;
+}
+
+let capturedTenantEvents: CapturedTenantEvents | null = null;
+
 mock.module("@/client/lib/api", () => ({
   api: {
     api: {
@@ -61,7 +75,9 @@ mock.module("@/client/lib/api", () => ({
 }));
 
 mock.module("@/client/hooks/useTenantEvents", () => ({
-  useTenantEvents: () => {},
+  useTenantEvents: (options: CapturedTenantEvents) => {
+    capturedTenantEvents = options;
+  },
 }));
 
 mock.module("@/client/contexts/ThemeContext", () => ({
@@ -88,6 +104,7 @@ describe("ConversationsPage group projection", () => {
   beforeEach(() => {
     mockGetConversations.mockClear();
     mockGetConversations.mockImplementation(async () => emptyPage);
+    capturedTenantEvents = null;
   });
 
   afterEach(() => {
@@ -149,5 +166,53 @@ describe("ConversationsPage group projection", () => {
         excludeGroups: true,
       },
     });
+  });
+
+  test("removes a visible conversation when realtime reclassifies it as a group", async () => {
+    mockGetConversations.mockResolvedValueOnce({
+      data: {
+        instance: { id: "test", name: "test" },
+        conversations: [
+          {
+            id: "1",
+            threadId: "1:1:1",
+            chatwootConversationId: 1,
+            status: "pending",
+            assigneeId: null,
+            assigneeType: "AgentBot",
+            assigneeName: null,
+            lastEventAt: "2026-08-14T12:00:00.000Z",
+            lastError: null,
+            lastErrorAt: null,
+            inbox: { id: "1", name: "Support" },
+            contact: { name: "Alice" },
+            agentName: "Julia",
+            outOfHours: false,
+          },
+        ],
+        nextCursor: null,
+      },
+      error: null,
+    });
+
+    render(
+      <MemoryRouter>
+        <ConversationsPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText("Alice")).toBeDefined();
+
+    await act(async () => {
+      capturedTenantEvents?.onConversation?.({
+        conversationId: "1",
+        status: "pending",
+        assigneeId: null,
+        assigneeType: "AgentBot",
+        lastEventAt: "2026-08-14T12:01:00.000Z",
+        isGroup: true,
+      });
+    });
+
+    expect(screen.queryByText("Alice")).toBeNull();
   });
 });

@@ -89,11 +89,14 @@ describe("runModelCall recovery from an empty completion", () => {
     expect(model.calls).toBe(2);
   });
 
-  test("a TypeError that is not an empty completion keeps its own message", async () => {
+  // A TypeError from anywhere else inside `invoke` — a tracing callback, an adapter bug — fires
+  // AFTER the provider answered and was billed. Retrying it would buy the same completion twice on
+  // every turn until that code is fixed, so the fault has to be recognised, not the error class.
+  test("a TypeError that is not an empty completion is neither retried nor renamed", async () => {
     const rejected = failing(new TypeError("undefined is not a function"));
     await expect(runModelCall(rejected.fn)).rejects.toThrow(
       "undefined is not a function",
     );
-    expect(rejected.calls).toBe(2);
+    expect(rejected.calls).toBe(1);
   });
 });

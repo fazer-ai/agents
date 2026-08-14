@@ -487,6 +487,17 @@ export async function runAgentNudge(
   const graph = await buildModelAndGraph(cfg, tools, {
     makeModel: params.deps?.makeModel,
     checkpointer: params.deps?.checkpointer,
+    // Same warn line the reactive turn leaves: a proactive send that only worked on the second
+    // attempt must not read like a clean one, and this path can page an alert channel.
+    onModelRetry: ({ attempt }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        provider: cfg.mc.provider,
+        model: cfg.mc.model,
+        detail: { retriedEmptyResponse: attempt },
+      }),
   });
   const callbacks = buildCallbacks(cfg, {
     tenantId,

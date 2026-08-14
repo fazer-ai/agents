@@ -274,8 +274,7 @@ export async function mirrorChatwootEvent(
       // frequently the one carrying `meta`. Under `>` the first delivery would win and its
       // companion's assignee would be dropped. A payload with no version at all is a Chatwoot older
       // than 4.0.2: nothing to order by, so conversation events apply best-effort, as they did before.
-      const applyState =
-        describesState &&
+      const ordered =
         fromConversationEvent &&
         (stateUpdatedAt == null ||
           existing.chatwootUpdatedAt == null ||
@@ -290,11 +289,16 @@ export async function mirrorChatwootEvent(
       // hooks. This is also what a version cannot settle on its own — a reopen carried by a message
       // moves the status without moving the watermark (a snapshot claims no version), so a delayed
       // resolve can be both older in truth and greater in version.
+      //
+      // NOTE: The status does NOT depend on `meta`. That object is the ASSIGNEE, and its intermittent
+      // absence (issue #27) says nothing about a `status` field sitting right next to it, intact. A
+      // degraded `conversation_resolved` that failed to resolve the mirror would leave the follow-up
+      // armed and the bot answering on a conversation Chatwoot has already closed.
       const closesConversation =
         n.status === "resolved" || n.status === "snoozed";
       const statusIsCurrent = payloadIsCurrent || !closesConversation;
       const appliedStatus =
-        applyState && statusIsCurrent
+        ordered && statusIsCurrent
           ? n.status
           : // The reopen above: status only, and only from a brand-new incoming message.
             isNewIncomingMessage(n)
@@ -320,7 +324,8 @@ export async function mirrorChatwootEvent(
         stateUpdatedAt === existing.chatwootUpdatedAt;
       const assigneeKnown =
         n.assigneeType !== undefined &&
-        applyState &&
+        ordered &&
+        describesState &&
         !(
           sameVersion &&
           n.assigneeType == null &&
@@ -357,7 +362,8 @@ export async function mirrorChatwootEvent(
           // conversation event still in flight and that event would arrive already "stale" —
           // precisely how a delayed handoff used to be lost. The mark also only moves forward: an
           // equal version was applied just above but is not news, and an older one was rejected.
-          ...(applyState &&
+          ...(ordered &&
+          describesState &&
           stateUpdatedAt != null &&
           (existing.chatwootUpdatedAt == null ||
             stateUpdatedAt > existing.chatwootUpdatedAt)

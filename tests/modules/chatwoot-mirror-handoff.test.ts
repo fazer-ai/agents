@@ -556,6 +556,33 @@ describe.skipIf(!dbUp)(
     // A payload with no `meta` said nothing about the assignee (the degraded shape behind issue
     // #27). It must not apply state — and, more importantly, must not claim to be the version we
     // hold, or it outranks the complete payload that arrives late with the assignment.
+    // The degraded shape behind issue #27 drops `meta`, which is the ASSIGNEE. The status field is
+    // right there and intact, and a resolve that does not reach the mirror keeps the follow-up armed
+    // and the bot answering on a conversation Chatwoot has already closed.
+    test("a degraded payload still resolves the conversation", async () => {
+      const T = 1_786_499_500;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(44, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.1,
+          assignee: HUMAN,
+        }),
+      });
+      const degraded = convPayload(44, {
+        status: "resolved",
+        lastActivityAt: T,
+        updatedAt: T + 0.9,
+      }) as Record<string, unknown>;
+      degraded.meta = undefined;
+      await mirror({ event: "conversation_resolved", ...degraded });
+      const row = await mirrored(44);
+      expect(row.status).toBe("resolved");
+      // ...and it still says nothing about the assignee, so the human it does not mention stays.
+      expect(row.assigneeType).toBe("User");
+    });
+
     test("a payload that says nothing about the assignee claims no version", async () => {
       const T = 1_786_499_000;
       await mirror({
@@ -573,7 +600,15 @@ describe.skipIf(!dbUp)(
       }) as Record<string, unknown>;
       degraded.meta = undefined;
       await mirror({ event: "conversation_updated", ...degraded });
-      expect((await mirrored(42)).status).toBe("pending");
+      // Its status applies — that field is intact — but it leaves the assignee it never mentioned
+      // alone, and, the point of this test, it does not claim to be the version we now hold.
+      const afterDegraded = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 42 },
+        select: { status: true, assigneeType: true, chatwootUpdatedAt: true },
+      });
+      expect(afterDegraded.status).toBe("open");
+      expect(afterDegraded.assigneeType).toBeNull();
+      expect(afterDegraded.chatwootUpdatedAt).toBe(T + 0.1);
       // The real assignment, serialized EARLIER than the degraded payload and delivered after it.
       await mirror({
         event: "conversation_updated",

@@ -16,6 +16,7 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
   ResolveThenReplyModel,
+  SendImageThenReplyModel,
 } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -111,6 +112,52 @@ function makeResolveClient(
     },
   } as unknown as ChatwootClient;
   return async () => client;
+}
+
+// Records the customer-facing posts in order: an attachment and a text send are both "the customer
+// was messaged", which is exactly what a discarded turn must not have done.
+function makeImageClient(calls: Array<[string, number, string]>) {
+  const client = {
+    sendMessage: async (conversationId: number, content: string) => {
+      calls.push(["sendMessage", conversationId, content]);
+      return {};
+    },
+    sendFileAttachment: async (
+      conversationId: number,
+      _bytes: ArrayBuffer,
+      fileName: string,
+    ) => {
+      calls.push(["sendFileAttachment", conversationId, fileName]);
+      return {};
+    },
+  } as unknown as ChatwootClient;
+  return async () => client;
+}
+
+// A one-pixel PNG served by a host the agent is allowed to fetch from, with no DNS and no network.
+const IMG_BYTES = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+]);
+const IMG_URL = "https://cdn.loja.com.br/produtos/camiseta.png";
+const imageDeps = {
+  fetchImpl: (async () =>
+    new Response(IMG_BYTES, {
+      status: 200,
+      headers: { "content-type": "image/png" },
+    })) as unknown as typeof fetch,
+  assertSafe: async (u: string) => new URL(u),
+};
+
+async function allowImageHost() {
+  await suDb.agent.updateMany({
+    where: { tenantId },
+    data: {
+      settings: {
+        split: { enabled: false },
+        sendImage: { allowedHosts: ["cdn.loja.com.br"] },
+      },
+    },
+  });
 }
 
 const incoming = (
@@ -647,6 +694,64 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
   });
 
+  // Issue #65 + review: the tool queues and the RUNTIME delivers, after the same gates the reply
+  // passes. The customer sees the picture, then the sentence about it.
+  test("a queued image is delivered before the reply, in the same turn", async () => {
+    await allowImageHost();
+    await seedConversation(930, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 930 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SendImageThenReplyModel(
+            "É essa aqui!",
+            IMG_URL,
+            "Camiseta azul",
+          ) as unknown as BaseChatModel,
+        makeClient: makeImageClient(calls),
+        checkpointer: new MemorySaver(),
+        imageDeps,
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(calls).toEqual([
+      ["sendFileAttachment", 930, "camiseta.png"],
+      ["sendMessage", 930, "É essa aqui!"],
+    ]);
+  });
+
+  // The finding this defers for: a turn a human took over mid-flight must not have already put an
+  // image in front of the customer. Nothing at all reaches Chatwoot.
+  test("a turn taken over mid-flight delivers no image", async () => {
+    await allowImageHost();
+    await seedConversation(931, "User");
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 931 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SendImageThenReplyModel(
+            "É essa aqui!",
+            IMG_URL,
+          ) as unknown as BaseChatModel,
+        makeClient: makeImageClient(calls),
+        checkpointer: new MemorySaver(),
+        imageDeps,
+      },
+    });
+    expect(outcome).toBe("taken-over");
+    expect(calls).toEqual([]);
+  });
+
   test("emits agent-activity (started + finished) on the tenant topic during a turn", async () => {
     await seedConversation(906, null);
     const published: Array<{ topic: string; data: string }> = [];
@@ -983,11 +1088,20 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         sent: Array<[number, string]>,
         notes: Array<[number, string]>,
         toggles: Array<[number, string]> = [],
+        attachments: Array<[number, string]> = [],
       ) =>
       async () =>
         ({
           sendMessage: async (c: number, content: string) => {
             sent.push([c, content]);
+            return {};
+          },
+          sendFileAttachment: async (
+            c: number,
+            _b: ArrayBuffer,
+            fileName: string,
+          ) => {
+            attachments.push([c, fileName]);
             return {};
           },
           sendPrivateNote: async (c: number, content: string) => {
@@ -1004,7 +1118,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const setGuardrails = (g: { [k: string]: JsonValue }) =>
       suDb.agent.update({
         where: { id: gAgentId },
-        data: { settings: { split: { enabled: false }, guardrails: g } },
+        data: {
+          settings: {
+            split: { enabled: false },
+            guardrails: g,
+            sendImage: { allowedHosts: ["cdn.loja.com.br"] },
+          },
+        },
       });
 
     const seedConv = (convId: number) =>
@@ -1019,6 +1139,65 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           lastEventAt: new Date(),
         },
       });
+
+    // The caption is model-written text the customer reads, so it is screened with the reply. A trip
+    // must take the IMAGE with it: replacing the words while the picture goes out would moderate
+    // half the message.
+    test("output 'generated' drops the queued image along with the reply", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "generated",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-OUT",
+        },
+      });
+      await seedConv(946);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const attachments: Array<[number, string]> = [];
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "caption",
+        suggestedReply: "GEN-OUT-REPLY",
+      });
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 946, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+            cfg.model === GUARD_MODEL
+              ? ({
+                  invoke: async () => ({ content: verdict }),
+                } as unknown as BaseChatModel)
+              : (new SendImageThenReplyModel(
+                  REPLY,
+                  IMG_URL,
+                  "legenda proibida",
+                ) as unknown as BaseChatModel),
+          makeClient: guardStub(sent, notes, [], attachments),
+          checkpointer: new MemorySaver(),
+          imageDeps,
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(sent).toEqual([[946, "GEN-OUT-REPLY"]]);
+      expect(attachments).toEqual([]);
+    });
 
     test("input 'generated' → delivers the suggestedReply and skips the agent graph", async () => {
       await setGuardrails({

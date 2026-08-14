@@ -53,3 +53,37 @@ export class ResolveThenReplyModel {
     };
   }
 }
+
+// Calls send_image once (a product photo the agent already has the URL for), then answers with text.
+// Mirrors ResolveThenReplyModel: the point is the ORDER of what reaches Chatwoot, not the content.
+export class SendImageThenReplyModel {
+  constructor(
+    private reply: string,
+    private url: string,
+    private caption?: string,
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(this.reply);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "send_image",
+                  args: { url: self.url, caption: self.caption },
+                  id: "call_send_image",
+                },
+              ],
+            })
+          : new AIMessage(self.reply);
+      },
+    };
+  }
+}

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { StructuredToolInterface } from "@langchain/core/tools";
-import { buildNativeTools } from "@/graph/tools/native";
+import { buildNativeTools, type TurnState } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { fetchImageForDelivery } from "@/modules/images/fetch";
 import {
@@ -280,7 +280,42 @@ afterEach(() => {
 });
 
 describe("the send_image tool", () => {
-  test("delivers the image as an attachment with its caption", async () => {
+  // The tool QUEUES: delivery belongs to the post-turn pipeline, after the ownership recheck, the
+  // supersede gate and the output guardrail. A tool that posts from inside the graph invocation can
+  // message a customer whose turn is then discarded — the same reason resolve_conversation defers.
+  test("queues the image with its caption instead of sending it mid-turn", async () => {
+    const sent: Sent[] = [];
+    const host = fakeHost(PNG);
+    const turnState: TurnState = { resolveRequested: false, pendingImages: [] };
+    const tools = buildNativeTools(
+      {
+        client: stubClient(sent),
+        conversationId: 42,
+        sendImage: HOSTS,
+        fetchImpl: host.impl,
+        assertSafe: noSsrf,
+        turnState,
+      },
+      ["send_image"],
+    );
+    const out = await sendImage(tools)?.invoke({
+      url: "https://cdn.loja.com.br/camiseta.png",
+      caption: "Essa é a azul",
+    });
+    expect(String(out)).toContain("Imagem pronta para envio");
+    expect(sent).toEqual([]);
+    expect(turnState.pendingImages).toHaveLength(1);
+    expect(turnState.pendingImages[0]).toMatchObject({
+      fileName: "camiseta.png",
+      mime: "image/png",
+      caption: "Essa é a azul",
+    });
+    expect(turnState.pendingImages[0]?.bytes.byteLength).toBe(PNG.byteLength);
+  });
+
+  // A proactive nudge has no turn to queue into, and its own gate (the 24h service window) decides
+  // whether anything may be sent at all. Declining is the only safe answer there.
+  test("declines when there is no turn to queue into", async () => {
     const sent: Sent[] = [];
     const host = fakeHost(PNG);
     const tools = buildNativeTools(
@@ -295,18 +330,9 @@ describe("the send_image tool", () => {
     );
     const out = await sendImage(tools)?.invoke({
       url: "https://cdn.loja.com.br/camiseta.png",
-      caption: "Essa é a azul",
     });
-    expect(String(out)).toContain("Imagem enviada");
-    expect(sent).toEqual([
-      {
-        conversationId: 42,
-        fileName: "camiseta.png",
-        mime: "image/png",
-        bytes: PNG.byteLength,
-        caption: "Essa é a azul",
-      },
-    ]);
+    expect(String(out)).toContain("link em texto");
+    expect(sent).toEqual([]);
   });
 
   // The whole point of binding the list to the config: a URL the model was talked into using does
@@ -314,6 +340,7 @@ describe("the send_image tool", () => {
   test("a URL outside the list sends nothing and tells the agent what to do instead", async () => {
     const sent: Sent[] = [];
     const host = fakeHost(PNG);
+    const turnState: TurnState = { resolveRequested: false, pendingImages: [] };
     const tools = buildNativeTools(
       {
         client: stubClient(sent),
@@ -321,6 +348,7 @@ describe("the send_image tool", () => {
         sendImage: HOSTS,
         fetchImpl: host.impl,
         assertSafe: noSsrf,
+        turnState,
       },
       ["send_image"],
     );
@@ -330,6 +358,7 @@ describe("the send_image tool", () => {
     expect(String(out)).toContain("não está na lista");
     expect(String(out)).toContain("link em texto");
     expect(sent).toEqual([]);
+    expect(turnState.pendingImages).toEqual([]);
     expect(host.calls).toEqual([]);
   });
 
@@ -351,24 +380,6 @@ describe("the send_image tool", () => {
     expect(String(out)).toContain("nenhum host foi liberado");
     expect(sent).toEqual([]);
     expect(host.calls).toEqual([]);
-  });
-
-  test("a Chatwoot failure degrades instead of losing the turn", async () => {
-    const host = fakeHost(PNG);
-    const tools = buildNativeTools(
-      {
-        client: stubClient([], true),
-        conversationId: 42,
-        sendImage: HOSTS,
-        fetchImpl: host.impl,
-        assertSafe: noSsrf,
-      },
-      ["send_image"],
-    );
-    const out = await sendImage(tools)?.invoke({
-      url: "https://cdn.loja.com.br/camiseta.png",
-    });
-    expect(String(out)).toContain("link em texto");
   });
 
   // The model has to know where it may point the tool BEFORE it calls it, or it burns a turn

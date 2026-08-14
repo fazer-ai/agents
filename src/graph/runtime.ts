@@ -28,6 +28,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { analyzeGuardrail } from "@/modules/guardrails/analyze";
+import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { deliverReply } from "@/modules/split/service";
 import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
 import { synthesizeReply } from "@/modules/tts/service";
@@ -83,6 +84,8 @@ export interface RuntimeDeps {
   mcp?: McpLoadDeps;
   // Injectable fetch for the TTS provider (tests); real fetch in production.
   ttsFetch?: typeof fetch;
+  // Injectable download + SSRF assertion for send_image (tests); the real ones in production.
+  imageDeps?: ImageFetchDeps;
   // Injectable LLM speech normalizer (tests); production builds one from the agent's model when the
   // agent enables tts.normalize. Best-effort — synthesizeReply falls back to raw text on failure.
   normalizeSpeech?: (text: string) => Promise<string>;
@@ -155,6 +158,49 @@ async function applyDeferredResolve(
   }
 }
 
+// Delivers the images the agent queued this turn, AFTER the same gates the reply passes. Best-effort
+// per image: one failed attachment must not cost the customer the reply that follows it. Invariant:
+// called only on the "posted" and "empty" outcomes — a superseded, taken-over or blocked turn drops
+// the queue, exactly like the deferred resolve intent.
+async function deliverPendingImages(
+  client: ChatwootClient,
+  conversationId: number,
+  turnState: TurnState,
+  flow: FlowContext,
+): Promise<void> {
+  const queued = turnState.pendingImages.splice(0);
+  for (const img of queued) {
+    try {
+      await client.sendFileAttachment(
+        conversationId,
+        img.bytes,
+        img.fileName,
+        img.mime,
+        { caption: img.caption },
+      );
+      emitFlowEvent(flow, {
+        stage: "tool",
+        status: "ok",
+        detail: { tool: "send_image", outcome: "sent" },
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.warn(
+        "send_image delivery failed (conv=%s): %s",
+        String(conversationId),
+        msg,
+      );
+      emitFlowEvent(flow, {
+        stage: "tool",
+        level: "warn",
+        status: "error",
+        detail: { tool: "send_image", outcome: "failed" },
+        errorMessage: msg,
+      });
+    }
+  }
+}
+
 // Builds the client + tools + graph from an already-loaded AgentConfig, invokes the thread, re-checks
 // the live assignee, optionally consults `shouldPost`, then posts via the bot token.
 export async function runLoadedTurn(
@@ -192,7 +238,7 @@ export async function runLoadedTurn(
     botToken: loaded.agentBotToken ?? undefined,
   });
   // Per-turn mutable state shared with the native tools (deferred resolve intent).
-  const turnState: TurnState = { resolveRequested: false };
+  const turnState: TurnState = { resolveRequested: false, pendingImages: [] };
   const tools = await buildToolset(
     loaded,
     {
@@ -203,6 +249,7 @@ export async function runLoadedTurn(
       conversationId,
       threadId,
       messageId: params.messageId,
+      imageDeps: params.deps?.imageDeps,
       turnState,
     },
     { buildNativeTools, mcp: params.deps?.mcp, flow },
@@ -472,6 +519,7 @@ export async function runLoadedTurn(
     // turn would make the next flush's gate read "resolved" and swallow the customer's newest
     // message via the watermark.
     if (!reply) {
+      await deliverPendingImages(client, conversationId, turnState, flow);
       await applyDeferredResolve(client, conversationId, turnState, flow);
       return "empty";
     }
@@ -480,11 +528,25 @@ export async function runLoadedTurn(
     // template / a guardrails-generated safe reply, or suppress the send entirely ("silent"). A
     // suppressed send also discards the deferred resolve intent — resolving a conversation whose
     // goodbye was blocked would strand the customer with no reply and no human.
-    const outGuard = await runGuardrail("output", reply);
+    // NOTE: The captions ride along into the screening: they are model-written text the customer
+    // reads, so moderating the reply while a caption goes out unread would be a hole. A trip drops
+    // the queue — the safe reply replaces what the model wrote, images included.
+    const captions = turnState.pendingImages
+      .map((i) => i.caption?.trim())
+      .filter((c): c is string => !!c);
+    const outGuard = await runGuardrail(
+      "output",
+      captions.length ? [reply, ...captions].join("\n") : reply,
+    );
     if (outGuard) {
+      turnState.pendingImages.length = 0;
       if (outGuard.reply === null) return "blocked";
       reply = outGuard.reply;
     }
+
+    // The image lands before the text that talks about it, and before the TTS branch: an audio
+    // reply must not swallow the attachment.
+    await deliverPendingImages(client, conversationId, turnState, flow);
 
     // Reply modality: audio (TTS) per the agent's mode + the customer's modality/preference, else
     // text. TTS is best-effort — any synthesis failure falls back to a text reply, never drops it.

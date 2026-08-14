@@ -61,6 +61,18 @@ function sysCtx(tenantId: bigint): TenantContext {
 // takeover and discard the reply — and the reply would reopen the conversation anyway).
 export interface TurnState {
   resolveRequested: boolean;
+  // Images the agent asked to send this turn, fetched and validated but NOT yet delivered. They ride
+  // the same post-time pipeline as the reply (ownership recheck, supersede gate, output guardrail),
+  // because a tool that posts from inside the graph invocation can message a customer whose turn is
+  // then discarded — the same reason resolve_conversation is deferred.
+  pendingImages: PendingImage[];
+}
+
+export interface PendingImage {
+  bytes: ArrayBuffer;
+  mime: string;
+  fileName: string;
+  caption?: string;
 }
 
 export interface ToolCtx {
@@ -1026,25 +1038,20 @@ function sendImageTool(ctx: ToolCtx) {
           ? toolFailure(message)
           : message;
       }
-      try {
-        await ctx.client.sendFileAttachment(
-          ctx.conversationId,
-          res.bytes,
-          res.fileName,
-          res.mime,
-          { caption: caption?.trim() || undefined },
-        );
-      } catch (e) {
-        logger.warn(
-          "send_image delivery failed (conversation=%s): %s",
-          String(ctx.conversationId),
-          e instanceof Error ? e.message : String(e),
-        );
-        return toolFailure(
-          "Não consegui entregar a imagem na conversa. Responda com o link em texto.",
-        );
+      // NOTE: Queued, not sent. Delivery happens after the turn's gates; a turn that is superseded,
+      // taken over or blocked must not have already messaged the customer. Without a turn to queue
+      // into (a proactive nudge, where the 24h service window decides the send mode) the tool
+      // declines rather than posting behind that gate's back.
+      if (!ctx.turnState) {
+        return "Não é possível enviar imagem neste momento (mensagem proativa). Responda com o link em texto.";
       }
-      return `Imagem enviada para o cliente (${res.fileName}).`;
+      ctx.turnState.pendingImages.push({
+        bytes: res.bytes,
+        mime: res.mime,
+        fileName: res.fileName,
+        caption: caption?.trim() || undefined,
+      });
+      return `Imagem pronta para envio (${res.fileName}); ela vai junto com a sua resposta deste turno.`;
     },
     {
       name: "send_image",

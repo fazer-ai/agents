@@ -47,6 +47,7 @@ import {
   type HandoffTargets,
   loadHandoffTargets,
 } from "@/modules/handoff/targets";
+import type { ImageFetchDeps } from "@/modules/images/fetch";
 import {
   readSendImageConfig,
   type SendImageConfig,
@@ -582,7 +583,21 @@ export interface ToolsetCtx {
   // Mutable per-turn state shared between runLoadedTurn and the native tools (deferred resolve).
   // Only runLoadedTurn passes it; nudge/playground omit it on purpose (structural mirror of
   // TurnState in tools/native.ts — this module deliberately does not import that file).
-  turnState?: { resolveRequested: boolean };
+  // Injectable for tests: the download + SSRF assertion send_image performs before queueing
+  // (defaults are the real ones). The assertion resolves DNS, so a hermetic test has to stub it —
+  // same convention as ToolpackCtx.assertSafe.
+  imageDeps?: ImageFetchDeps;
+  turnState?: {
+    resolveRequested: boolean;
+    // Mirror of TurnState.pendingImages: send_image queues here and the runtime delivers after the
+    // turn's gates.
+    pendingImages: {
+      bytes: ArrayBuffer;
+      mime: string;
+      fileName: string;
+      caption?: string;
+    }[];
+  };
 }
 
 export interface ToolBuildDeps {
@@ -590,7 +605,17 @@ export interface ToolBuildDeps {
     ctx: {
       client: ChatwootClient;
       conversationId: number;
-      turnState?: { resolveRequested: boolean };
+      turnState?: {
+        resolveRequested: boolean;
+        // Mirror of TurnState.pendingImages: send_image queues here and the runtime delivers after the
+        // turn's gates.
+        pendingImages: {
+          bytes: ArrayBuffer;
+          mime: string;
+          fileName: string;
+          caption?: string;
+        }[];
+      };
       transferWithSummary?: boolean;
       handoff?: HandoffConfig;
       handoffTargets?: HandoffTargets;
@@ -603,6 +628,8 @@ export interface ToolBuildDeps {
       vocab?: ChatwootVocab;
       kanban?: KanbanContext;
       sendImage?: SendImageConfig;
+      fetchImpl?: typeof fetch;
+      assertSafe?: ImageFetchDeps["assertSafe"];
       toolInstructions?: Partial<Record<NativeToolName, string>>;
       onSideEffectError?: SideEffectErrorReporter;
     },
@@ -905,6 +932,8 @@ export async function buildToolset(
         vocab,
         kanban,
         sendImage: cfg.sendImageConfig,
+        fetchImpl: ctx.imageDeps?.fetchImpl,
+        assertSafe: ctx.imageDeps?.assertSafe,
         toolInstructions,
         onSideEffectError,
       },

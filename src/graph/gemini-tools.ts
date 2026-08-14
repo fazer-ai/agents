@@ -122,6 +122,21 @@ function declaredParameters(schema: unknown): unknown | undefined {
     : normalizeTupleItems(schema);
 }
 
+// An entry the caller already handed over in Gemini's own shape. Upstream's `processTools` folds the
+// LangChain declarations INTO the first of these instead of appending a second entry, precisely
+// because Gemini refuses a request carrying more than one. Converting every tool ourselves leaves
+// upstream's accumulator empty by the time it checks, so the fold has to happen here or the mixed
+// case regresses into `Multiple tools are supported only when they are all search tools`.
+function isDeclarationTool(
+  candidate: unknown,
+): candidate is GeminiFunctionTool {
+  return (
+    !!candidate &&
+    typeof candidate === "object" &&
+    "functionDeclarations" in candidate
+  );
+}
+
 // Rewrites a bindTools argument list into Gemini's own tool shape. LangChain tools become function
 // declarations carrying their JSON Schema; anything else (a search or code-execution tool, or an
 // already-converted declaration coming back through `invocationParams`) is passed through as is.
@@ -145,8 +160,22 @@ export function toGeminiTools<T>(
     });
   }
   // NOTE: one entry holding every declaration, never one entry per tool — Gemini refuses a request
-  // with multiple tool entries unless they are all search tools.
-  return declarations.length > 0
-    ? [...passthrough, { functionDeclarations: declarations }]
-    : [...passthrough];
+  // with multiple tool entries unless they are all search tools. Same reason the fold below exists:
+  // a declaration entry the caller already passed has to absorb ours instead of sitting beside it.
+  if (declarations.length === 0) return [...passthrough];
+  const foldInto = passthrough.findIndex(isDeclarationTool);
+  if (foldInto < 0)
+    return [...passthrough, { functionDeclarations: declarations }];
+  return passthrough.map((tool, index) => {
+    if (index !== foldInto) return tool;
+    const existing = tool as GeminiFunctionTool;
+    return {
+      ...existing,
+      // Caller's declarations first, matching the order upstream produced before this module existed.
+      functionDeclarations: [
+        ...(existing.functionDeclarations ?? []),
+        ...declarations,
+      ],
+    };
+  });
 }

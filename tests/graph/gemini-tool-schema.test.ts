@@ -352,6 +352,39 @@ describe("Gemini tool declarations", () => {
     ]);
   });
 
+  // Regression: the upstream adapter folds ITS conversions into a declaration entry the caller
+  // already passed, exactly so the request never carries two. Ours arrive pre-converted, which
+  // leaves that accumulator empty, so a mixed bindTools call would ship both entries.
+  test("a declarations entry from the caller absorbs ours instead of sitting beside it", () => {
+    const preConverted = {
+      functionDeclarations: [{ name: "already_there", description: "Given" }],
+    };
+    const out = toGeminiTools([
+      preConverted,
+      getCurrentTime,
+    ]) as GeminiFunctionTool[];
+    expect(out).toHaveLength(1);
+    expect(out[0]?.functionDeclarations.map((d) => d.name)).toEqual([
+      "already_there",
+      "get_current_time",
+    ]);
+    // The caller's object is left alone: the fold builds a new entry.
+    expect(preConverted.functionDeclarations).toHaveLength(1);
+  });
+
+  test("a mixed bindTools call is not rejected as multiple tools", async () => {
+    gemini = fakeGemini();
+    const reply = await googleModel()
+      .bindTools?.([
+        { functionDeclarations: [{ name: "already_there" }] },
+        getCurrentTime,
+      ])
+      .invoke([{ role: "user", content: "que horas são?" }]);
+    expect(reply?.content).toBe("ok");
+    const [sent] = gemini.requests as { tools: unknown[] }[];
+    expect(sent?.tools).toHaveLength(1);
+  });
+
   test("a parameterless tool declares no parameters at all", () => {
     const [entry] = toGeminiTools([
       resolveConversation,

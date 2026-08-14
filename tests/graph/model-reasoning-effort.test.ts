@@ -164,6 +164,37 @@ describe("createChatModel on the gpt-5.6 family", () => {
     const { sent } = await turn("openai/gpt-5.6-luna", "openrouter");
     expect(sent.reasoning_effort).toBe("none");
   });
+
+  // Only the rejection's own precondition (tools) may disable reasoning. graph.ts invokes the RAW
+  // instance once the tool budget runs out — `hardLimit ? model : llm` — and THAT call writes the
+  // final answer to the customer. The guardrail pass, the TTS normalization and an agent with no
+  // grants never bind tools either. All of them are accepted at the provider's default effort.
+  test("a call with no tools keeps the provider's own default", async () => {
+    fake = fakeOpenAI();
+    const chat = createChatModel({
+      provider: "openai",
+      model: "gpt-5.6-luna",
+      apiKey: "test",
+      temperature: 0.3,
+    });
+    await chat.invoke([{ role: "user", content: "oi" }]);
+    expect(fake.requests[0]).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("binding tools does not contaminate the raw instance behind it", async () => {
+    fake = fakeOpenAI();
+    const chat = createChatModel({
+      provider: "openai",
+      model: "gpt-5.6-luna",
+      apiKey: "test",
+      temperature: 0.3,
+    });
+    const bound = chat.bindTools?.([getCurrentTime]) ?? chat;
+    await bound.invoke([{ role: "user", content: "oi" }]);
+    await chat.invoke([{ role: "user", content: "oi" }]);
+    expect(fake.requests[0]?.reasoning_effort).toBe("none");
+    expect(fake.requests[1]).not.toHaveProperty("reasoning_effort");
+  });
 });
 
 // The carve-out must not spread: gpt-5.5 and older answered 200 with tools and no effort, and

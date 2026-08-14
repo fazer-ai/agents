@@ -60,46 +60,61 @@ function openaiTemperature(
 // a transport change rather than part of this fix.
 const TOOL_EFFORT_NONE_RE = /^(?:[\w.-]+\/)?gpt-5\.6(?:-|$)/i;
 
-// NOTE: goes through `modelKwargs` rather than the typed `reasoning` field because
+type OpenAIChatFields = ConstructorParameters<typeof ChatOpenAI>[0];
+
+// Builds an OpenAI-shaped client, pinning the effort ONLY on the tool-bound model.
+//
+// NOTE: the rejection needs tools, so the parameter belongs to the bound model and nowhere else.
+// The raw instance is invoked on purpose when the tool budget runs out (`hardLimit ? model : llm`
+// in graph.ts), and that call is the one that writes the final answer to the customer; the
+// guardrail pass, the TTS normalization and an agent with no grants never bind tools either. All of
+// them are accepted with the provider's default effort (measured: 200 without tools either way), so
+// pinning "none" on the constructor would switch reasoning off exactly where nothing required it.
+//
+// NOTE: the parameter travels via `modelKwargs` rather than the typed `reasoning` field because
 // @langchain/openai gates that field behind its own isReasoningModel(), which tests
 // `model.startsWith("gpt-5")` and therefore DROPS it for a routed id like "openai/gpt-5.6-luna"
-// (OpenRouter). modelKwargs is spread into the request params unconditionally, so the parameter
-// reaches the wire on every OpenAI-shaped client, whatever the id looks like.
-function openaiModelKwargs(model: string): Record<string, unknown> | undefined {
-  return TOOL_EFFORT_NONE_RE.test(model.trim())
-    ? { reasoning_effort: "none" }
-    : undefined;
+// (OpenRouter). modelKwargs is spread into the request params unconditionally.
+function makeOpenAIChat(fields: OpenAIChatFields): ChatOpenAI {
+  const chat = new ChatOpenAI(fields);
+  if (!TOOL_EFFORT_NONE_RE.test(String(fields?.model ?? "").trim()))
+    return chat;
+  const withEffort = new ChatOpenAI({
+    ...fields,
+    modelKwargs: { ...fields?.modelKwargs, reasoning_effort: "none" },
+  });
+  type BindTools = typeof chat.bindTools;
+  const bindTools = withEffort.bindTools.bind(withEffort) as BindTools;
+  chat.bindTools = ((tools, kwargs) => bindTools(tools, kwargs)) as BindTools;
+  return chat;
 }
 
 export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
   const { model, apiKey, temperature } = cfg;
   switch (cfg.provider) {
     case "openai":
-      return new ChatOpenAI({
+      return makeOpenAIChat({
         model,
         apiKey,
         temperature: openaiTemperature(model, temperature),
-        modelKwargs: openaiModelKwargs(model),
       });
     case "openai-compatible":
       if (!cfg.baseURL) {
         throw new AppError("openai-compatible provider requires baseURL", 400);
       }
-      return new ChatOpenAI({
+      return makeOpenAIChat({
         // Empty model = "the server's default" (see model-config): send a neutral placeholder so
         // the request is well-formed; llama.cpp-style single-model servers ignore the name.
         model: model.trim() || "default",
         apiKey,
         temperature: openaiTemperature(model, temperature),
-        modelKwargs: openaiModelKwargs(model),
         configuration: { baseURL: cfg.baseURL },
       });
     case "openrouter":
-      return new ChatOpenAI({
+      return makeOpenAIChat({
         model,
         apiKey,
         temperature: openaiTemperature(model, temperature),
-        modelKwargs: openaiModelKwargs(model),
         configuration: { baseURL: cfg.baseURL || OPENROUTER_BASE_URL },
       });
     case "anthropic":

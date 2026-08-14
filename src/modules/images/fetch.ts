@@ -87,22 +87,12 @@ function detect(bytes: ArrayBuffer): Signature | null {
   return SIGNATURES.find((s) => s.matches(head)) ?? null;
 }
 
-// Keeps the customer-visible file name recognizable without letting a remote path decide it: the
-// basename is stripped to safe characters and the extension comes from the DETECTED type.
-function fileNameFor(url: URL, ext: string): string {
-  const raw = url.pathname.split("/").pop() ?? "";
-  let decoded = raw;
-  try {
-    decoded = decodeURIComponent(raw);
-  } catch {
-    // NOTE: A malformed escape is not worth failing the delivery over — keep the raw basename and
-    // let the sanitizer below deal with it.
-  }
-  const base = decoded
-    .replace(/\.[^.]*$/, "")
-    .replace(/[^A-Za-z0-9._-]/g, "")
-    .slice(0, 60);
-  return `${base || "imagem"}.${ext}`;
+// The customer-visible file name is OURS, not the URL's. A name taken from the path is text the
+// MODEL chose that reaches the customer without passing the output guardrail, which screens the
+// reply and the captions — a picture delivered as `marca-proibida.png` would walk straight through
+// it. The extension comes from the DETECTED type, so it also cannot lie about what the file is.
+function imageFileName(ext: string): string {
+  return `imagem.${ext}`;
 }
 
 export interface ImageFetchDeps {
@@ -213,6 +203,6 @@ export async function fetchImageForDelivery(
     ok: true,
     bytes: bytes.buffer,
     mime: sig.mime,
-    fileName: fileNameFor(url, sig.ext),
+    fileName: imageFileName(sig.ext),
   };
 }

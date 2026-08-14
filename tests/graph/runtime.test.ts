@@ -743,7 +743,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     expect(calls).toEqual([
-      ["sendFileAttachment", 930, "camiseta.png"],
+      ["sendFileAttachment", 930, "imagem.png"],
       ["sendMessage", 930, "É essa aqui!"],
     ]);
   });
@@ -794,9 +794,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     expect(calls).toEqual([
-      ["sendFileAttachment", 936, "azul.png"],
-      ["sendFileAttachment", 936, "verde.png"],
-      ["sendFileAttachment", 936, "vermelha.png"],
+      ["sendFileAttachment", 936, "imagem.png"],
+      ["sendFileAttachment", 936, "imagem.png"],
+      ["sendFileAttachment", 936, "imagem.png"],
       ["sendMessage", 936, "Essas são as três."],
     ]);
   });
@@ -826,7 +826,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
     });
     expect(outcome).toBe("posted");
-    expect(calls).toEqual([["sendFileAttachment", 932, "camiseta.png"]]);
+    expect(calls).toEqual([["sendFileAttachment", 932, "imagem.png"]]);
   });
 
   // The other half of that rule: when the images were the whole turn and NONE of them got through,
@@ -852,7 +852,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         },
       }),
     ).rejects.toThrow(/nenhuma imagem foi entregue/);
-    expect(calls).toEqual([["sendFileAttachment", 933, "camiseta.png"]]);
+    expect(calls).toEqual([["sendFileAttachment", 933, "imagem.png"]]);
     expect((await mirroredStatus(933)) === "resolved").toBe(false);
   });
 

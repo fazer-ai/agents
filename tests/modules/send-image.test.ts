@@ -129,7 +129,9 @@ describe("fetching the image", () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.mime).toBe("image/png");
-    expect(res.fileName).toBe("CamisetaAzul.png");
+    // The name is ours, not the URL's: it is text the model chose that would otherwise reach the
+    // customer without passing the output guardrail.
+    expect(res.fileName).toBe("imagem.png");
     expect(new Uint8Array(res.bytes)).toEqual(PNG);
     // A redirect is a second URL nobody allowlisted.
     expect(host.calls[0]?.redirect).toBe("error");
@@ -216,7 +218,7 @@ describe("fetching the image", () => {
       { fetchImpl: host.impl, assertSafe: noSsrf },
     );
     expect(res).toMatchObject({ ok: true, mime: "image/gif" });
-    if (res.ok) expect(res.fileName).toBe("banner.gif");
+    if (res.ok) expect(res.fileName).toBe("imagem.gif");
   });
 
   test("an HTTP error is reported as one", async () => {
@@ -314,7 +316,7 @@ describe("the send_image tool", () => {
     expect(sent).toEqual([]);
     expect(turnState.pendingImages).toHaveLength(1);
     expect(turnState.pendingImages[0]).toMatchObject({
-      fileName: "camiseta.png",
+      fileName: "imagem.png",
       mime: "image/png",
       caption: "Essa é a azul",
     });

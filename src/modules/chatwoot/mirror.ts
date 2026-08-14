@@ -121,6 +121,11 @@ export async function mirrorChatwootEvent(
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
+      // A payload that says nothing about the assignee (`meta` absent — the degraded shape behind
+      // issue #27) is not a description of the conversation, so it never claims to be the version
+      // we hold. That has to hold on CREATION too: a row seeded from a degraded event would carry a
+      // version nothing honored, and the complete event that follows with a lower one would lose.
+      const describesState = n.assigneeType !== undefined;
 
       // Monotonic guard: only when both timestamps are known. A null new timestamp applies
       // best-effort (the next timestamped event reconciles).
@@ -159,7 +164,7 @@ export async function mirrorChatwootEvent(
             assigneeName: n.assigneeName ?? null,
             threadId,
             lastEventAt: createdLastEventAt,
-            chatwootUpdatedAt: stateUpdatedAt,
+            chatwootUpdatedAt: describesState ? stateUpdatedAt : null,
             lastInboundAt: inboundAt,
             ...(n.customAttributes
               ? {
@@ -228,11 +233,6 @@ export async function mirrorChatwootEvent(
       // (conversation_updated + conversation_status_changed), and the one that arrives second is
       // frequently the one carrying `meta`. Under `>` the first delivery would win and its
       // companion's assignee would be dropped, which is the failure this fence exists to stop.
-      // NOTE: A payload that says nothing about the assignee (`meta` absent — the degraded shape
-      // behind issue #27) is not a description of the conversation, so it neither applies state nor
-      // claims to be the version we hold. Advancing the watermark from it would be the worse half:
-      // it would then outrank a complete payload that arrives late with the assignment.
-      const describesState = n.assigneeType !== undefined;
       const applyState =
         describesState &&
         (stateUpdatedAt != null

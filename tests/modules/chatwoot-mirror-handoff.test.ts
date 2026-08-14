@@ -374,6 +374,41 @@ describe.skipIf(!dbUp)(
       expect(row.assigneeType).toBe("User");
     });
 
+    // Same rule on the CREATE branch: a row seeded from a degraded event would carry a version
+    // nothing honored, and the complete event that follows with a lower one would lose the assignee
+    // for good.
+    test("a row created from a degraded payload stores no version", async () => {
+      const T = 1_786_500_000;
+      const degraded = convPayload(45, {
+        status: "pending",
+        lastActivityAt: T,
+        updatedAt: T + 0.9,
+      }) as Record<string, unknown>;
+      degraded.meta = undefined;
+      await mirror({ event: "conversation_updated", ...degraded });
+      expect(
+        (
+          await suDb.conversation.findFirstOrThrow({
+            where: { tenantId, chatwootConversationId: 45 },
+            select: { chatwootUpdatedAt: true },
+          })
+        ).chatwootUpdatedAt,
+      ).toBeNull();
+      // Serialized EARLIER than the degraded payload, delivered after it.
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(45, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.5,
+          assignee: HUMAN,
+        }),
+      });
+      const row = await mirrored(45);
+      expect(row.status).toBe("open");
+      expect(row.assigneeType).toBe("User");
+    });
+
     // Chatwoot emits several events for ONE write to the conversation (conversation_updated +
     // conversation_status_changed), all carrying that write's version. They must not fight: the one
     // that arrives second is frequently the one carrying `meta`, so rejecting an equal version

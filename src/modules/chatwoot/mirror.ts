@@ -190,27 +190,33 @@ export async function mirrorChatwootEvent(
       const updatedLastEventAt = newLastEventAt ?? new Date();
       // NOTE: A MESSAGE event's conversation snapshot is frozen at enqueue time (AgentBots::WebhookJob
       // serializes the payload before delivery, and failed deliveries retry with the stale copy), so
-      // a message delivered AFTER the conversation_resolved must not drag the mirror back to
-      // pending/open — that stale "pending" is what made follow-ups fire on conversations the
-      // operator had already resolved. Only a BRAND-NEW incoming message (message_created) may
-      // reopen — Chatwoot's ReopenService reopens exclusively on new customer messages. A
-      // message_updated of an INCOMING message (our own STT/vision write-back re-dispatches one)
-      // carries the same frozen snapshot and must not reopen either; conversation_* events stay
-      // authoritative. The whole frozen snapshot is suspect, so the ASSIGNEE fields are preserved
-      // too (and the handoff edge below is suppressed) — a pre-resolve snapshot must not resurrect
-      // a cleared assignee.
-      const staleMessageReopen =
-        n.message !== undefined &&
-        !isNewIncomingMessage(n) &&
-        (existing.status === "resolved" || existing.status === "snoozed") &&
-        (n.status === "pending" || n.status === "open");
-      const appliedStatus = staleMessageReopen ? null : n.status;
+      // it describes the MESSAGE's moment, not the delivery's. It is therefore not authoritative for
+      // conversation-level state at all: `status` and the assignee trio are mirrored only from
+      // conversation_* events (and from creation), while message events keep updating lastEventAt,
+      // lastInboundAt and contact data.
+      //
+      // The one exception is a BRAND-NEW incoming message, because Chatwoot's ReopenService really
+      // does reopen on a new customer message, so that snapshot's status is a fact about the
+      // conversation. A message_updated of an incoming message (our own STT/vision write-back
+      // re-dispatches one) carries the same frozen copy without that meaning.
+      //
+      // This started as a narrow fence for one symptom (a message delivered after a
+      // conversation_resolved dragging the mirror back to pending, which fired follow-ups on
+      // conversations the operator had already closed), and the narrowness was the bug: the fence
+      // only covered `resolved`/`snoozed`, so a handoff — which leaves the conversation `open` —
+      // walked straight through it, and the stale tail cleared a real human assignee (issue #61).
+      // Whether it corrupted the row came down to whether the burst's events shared a wall-clock
+      // second, since `last_activity_at` has one-second resolution and does not advance on a
+      // status or assignee change, so the monotonic guard above cannot order them.
+      const frozenSnapshot =
+        n.message !== undefined && !isNewIncomingMessage(n);
+      const appliedStatus = frozenSnapshot ? null : n.status;
       const nextStatus = appliedStatus ?? existing.status;
       // NOTE: The assignee trio travels together and applies only when BOTH hold: the payload
       // actually spoke about the assignee (`meta` present — undefined means "said nothing", and a
       // degraded event must NOT wipe a stored 'AgentBot'/'User', the intermittent self-wipe behind
       // issue #27) AND the snapshot is not the frozen stale one fenced above.
-      const assigneeKnown = n.assigneeType !== undefined && !staleMessageReopen;
+      const assigneeKnown = n.assigneeType !== undefined && !frozenSnapshot;
       const nextAssigneeId = assigneeKnown
         ? (n.assigneeId ?? null)
         : existing.assigneeId;
@@ -262,7 +268,7 @@ export async function mirrorChatwootEvent(
       // fires it — its assignee was not applied above. (An undefined trio — degraded payload —
       // never equals "User" either, so it can neither fire nor mask the edge.)
       if (
-        !staleMessageReopen &&
+        !frozenSnapshot &&
         existing.assigneeType !== "User" &&
         n.assigneeType === "User"
       ) {

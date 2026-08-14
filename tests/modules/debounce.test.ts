@@ -25,7 +25,10 @@ import {
   enqueueJob,
 } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
-import { ResolveThenReplyModel } from "../utils/scripted-models";
+import {
+  EmptyThenReplyModel,
+  ResolveThenReplyModel,
+} from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -750,6 +753,42 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([[807, REPLY]]); // one reply, to the new request only
     expect(await watermarkOf(807)).toBe(9);
+  });
+
+  // NOTE: Issue #63, the half a retry cannot cover. When both attempts come back empty the turn is
+  // lost for good and the operator becomes the fallback, so what lands on the conversation badge has
+  // to name the fault. Before this change that row read `undefined is not an object (evaluating
+  // '(await this.generatePrompt(…)).generations[0][0].message')` — JS entrails that tell whoever
+  // picks up the conversation nothing about what happened or what to do.
+  test("issue #63: a provider that never completes leaves the operator a readable reason", async () => {
+    await seedConversation(812);
+    const sent: Array<[number, string]> = [];
+    const calls = { getMessages: 0 };
+    const model = new EmptyThenReplyModel(REPLY, 2);
+    await expect(
+      flushDebounceJob({
+        job: jobFor(812),
+        base: appDb,
+        deps: {
+          makeModel: () => model,
+          makeClient: makeStub({
+            pages: [page([{ id: 1, content: "oi" }])],
+            sent,
+            calls,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      }),
+    ).rejects.toThrow("no completion");
+    expect(model.calls).toBe(2); // the retry ran, and the provider failed it too
+    expect(sent).toEqual([]);
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 812 },
+      select: { lastError: true, lastErrorAt: true },
+    });
+    expect(row.lastError).toContain("no completion");
+    expect(row.lastError).not.toContain("generations[0][0]");
+    expect(row.lastErrorAt).not.toBeNull();
   });
 
   test("issue #49: a newer attachment-only message (voice note) supersedes the flush", async () => {

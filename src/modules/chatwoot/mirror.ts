@@ -374,13 +374,14 @@ export async function mirrorChatwootEvent(
           // so the version is the only thing left that can. Splitting the marks is what makes this
           // safe: it moves the STATUS mark only, so a handoff event still in flight is still ordered
           // by an assignee mark this snapshot never touched.
-          // NOTE: Strictly when the status CHANGED, for a message. Every message bumps `updated_at`
-          // through set_conversation_activity, so one that moved nothing still arrives with a fresh
-          // version, and letting that claim the mark would reject the status of a conversation event
-          // still in flight. A conversation event claims either way — an equal value re-applied is
-          // still the version the row now reflects.
+          // NOTE: Unconditionally, not "only if the value changed". The mirror frequently has not SEEN
+          // the change: when the resolve is itself delayed, the row still reads `open` as the reopen
+          // lands, and withholding the version on that basis leaves the delayed resolve looking
+          // newer than the mark. What keeps that safe is the comparison below — a message serialized
+          // BEFORE a conversation event carries a lower version and cannot push the mark past it,
+          // and the reverse cannot happen: the snapshot is read from the row at dispatch
+          // (set_conversation_activity runs first), so a newer message always saw the newer state.
           ...(appliedStatus != null &&
-          (statusOrdered || appliedStatus !== existing.status) &&
           stateUpdatedAt != null &&
           (existing.chatwootStatusAt == null ||
             stateUpdatedAt > existing.chatwootStatusAt)

@@ -660,42 +660,77 @@ describe.skipIf(!dbUp)(
       expect((await mirrored(47)).status).toBe("open");
     });
 
-    // The other half of that claim, and the reason it is conditional: every message bumps
-    // `updated_at` through set_conversation_activity, so one that moved NOTHING still arrives with a
-    // version newer than a conversation event in flight. If it claimed the mark on that alone, the
-    // delayed handoff would land with its assignee and lose its status — the mirror left saying
-    // `pending` about a conversation Chatwoot has open.
-    test("a message that changes nothing does not outrank a conversation event in flight", async () => {
+    // The claim needs no "only if it changed" guard, and cannot have one: the mirror often has not
+    // SEEN the change yet. Here the resolve is itself delayed, so the row still says `open` when the
+    // customer's message reopens — nothing looks different, and withholding the version on that
+    // basis leaves the delayed resolve looking newer than the mark. Inside one whole second the
+    // last_activity_at fence cannot separate them either.
+    test("a reopen claims its version even when the row already looked open", async () => {
       const T = 1_786_503_600;
       await mirror({
         event: "conversation_updated",
         ...convPayload(48, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.1,
+        }),
+      });
+      // Chatwoot resolved at T+0.5 and that event is still being retried; the mirror never saw it.
+      await mirror(
+        messageEvent(48, "message_created", {
+          messageId: 977,
+          messageType: "incoming",
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.7,
+        }),
+      );
+      await mirror({
+        event: "conversation_resolved",
+        ...convPayload(48, {
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 0.5,
+        }),
+      });
+      expect((await mirrored(48)).status).toBe("open");
+    });
+
+    // And the other direction, which is what makes the unconditional claim safe: a message serialized
+    // BEFORE a conversation event carries a lower version, so it cannot push the mark past it. The
+    // reverse — a message with a HIGHER version whose snapshot predates that event — cannot happen:
+    // the snapshot is read from the row at dispatch (`set_conversation_activity` runs first), so a
+    // newer message always sees the newer state.
+    test("a message serialized before a conversation event does not outrank it", async () => {
+      const T = 1_786_504_100;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(49, {
           status: "pending",
           lastActivityAt: T,
           updatedAt: T + 0.1,
         }),
       });
-      // The customer writes while the handoff event is still being retried. Its snapshot is the
-      // pre-handoff copy, so it says `pending` — which is what the row already holds.
       await mirror(
-        messageEvent(48, "message_created", {
-          messageId: 977,
+        messageEvent(49, "message_created", {
+          messageId: 978,
           messageType: "incoming",
           status: "pending",
-          lastActivityAt: T + 5,
-          updatedAt: T + 5.4,
+          lastActivityAt: T,
+          updatedAt: T + 0.2,
         }),
       );
+      // The handoff, serialized after that message and delivered after it.
       await mirror({
         event: "conversation_updated",
-        ...convPayload(48, {
+        ...convPayload(49, {
           status: "open",
           lastActivityAt: T,
           updatedAt: T + 0.5,
           assignee: HUMAN,
         }),
       });
-      const row = await mirrored(48);
+      const row = await mirrored(49);
       expect(row.assigneeType).toBe("User");
       expect(row.status).toBe("open");
     });

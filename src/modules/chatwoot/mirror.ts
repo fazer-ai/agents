@@ -367,13 +367,20 @@ export async function mirrorChatwootEvent(
           // whole rule, and it is what keeps the two independent: a degraded payload writes the
           // status and moves the status mark, while the assignee mark stays where the last payload
           // that actually spoke about the assignee left it.
-          // NOTE: Only a conversation event claims a version, and this is the half of the rule that
-          // makes the other half work: a snapshot riding along with a message moves no state, so it
-          // must not move a mark either. If it did, it would push one past a conversation event
-          // still in flight and that event would arrive already "stale" — precisely how a delayed
-          // handoff used to be lost.
+          // NOTE: Which is why the reopen carried by a message claims the status version too. It is
+          // the one place a MESSAGE writes state, and leaving the mark behind would put the row
+          // ahead of it: inside a single second the last_activity_at fence cannot tell the resolve's
+          // companion from the reopen that overrode it — that one-second resolution is this issue —
+          // so the version is the only thing left that can. Splitting the marks is what makes this
+          // safe: it moves the STATUS mark only, so a handoff event still in flight is still ordered
+          // by an assignee mark this snapshot never touched.
+          // NOTE: Strictly when the status CHANGED, for a message. Every message bumps `updated_at`
+          // through set_conversation_activity, so one that moved nothing still arrives with a fresh
+          // version, and letting that claim the mark would reject the status of a conversation event
+          // still in flight. A conversation event claims either way — an equal value re-applied is
+          // still the version the row now reflects.
           ...(appliedStatus != null &&
-          statusOrdered &&
+          (statusOrdered || appliedStatus !== existing.status) &&
           stateUpdatedAt != null &&
           (existing.chatwootStatusAt == null ||
             stateUpdatedAt > existing.chatwootStatusAt)

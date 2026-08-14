@@ -623,6 +623,83 @@ describe.skipIf(!dbUp)(
       expect(row.status).toBe("resolved");
     });
 
+    // The reopen is the one place a MESSAGE writes state, so it is the one place a message claims a
+    // version — and with the marks split it can, because it moves the STATUS mark and leaves the
+    // assignee's alone. Inside a single second the `last_activity_at` fence cannot separate the
+    // resolve's companion from the reopen (that one-second resolution is the whole issue), so the
+    // version is the only thing left that can.
+    test("a reopen in the same second as the resolve still outranks its companion", async () => {
+      const T = 1_786_503_100;
+      await mirror({
+        event: "conversation_resolved",
+        ...convPayload(47, {
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 0.2,
+        }),
+      });
+      await mirror(
+        messageEvent(47, "message_created", {
+          messageId: 976,
+          messageType: "incoming",
+          status: "open",
+          // Same whole second, a later fraction: exactly the burst this issue is about.
+          lastActivityAt: T,
+          updatedAt: T + 0.45,
+        }),
+      );
+      expect((await mirrored(47)).status).toBe("open");
+      await mirror({
+        event: "conversation_status_changed",
+        ...convPayload(47, {
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 0.2,
+        }),
+      });
+      expect((await mirrored(47)).status).toBe("open");
+    });
+
+    // The other half of that claim, and the reason it is conditional: every message bumps
+    // `updated_at` through set_conversation_activity, so one that moved NOTHING still arrives with a
+    // version newer than a conversation event in flight. If it claimed the mark on that alone, the
+    // delayed handoff would land with its assignee and lose its status — the mirror left saying
+    // `pending` about a conversation Chatwoot has open.
+    test("a message that changes nothing does not outrank a conversation event in flight", async () => {
+      const T = 1_786_503_600;
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(48, {
+          status: "pending",
+          lastActivityAt: T,
+          updatedAt: T + 0.1,
+        }),
+      });
+      // The customer writes while the handoff event is still being retried. Its snapshot is the
+      // pre-handoff copy, so it says `pending` — which is what the row already holds.
+      await mirror(
+        messageEvent(48, "message_created", {
+          messageId: 977,
+          messageType: "incoming",
+          status: "pending",
+          lastActivityAt: T + 5,
+          updatedAt: T + 5.4,
+        }),
+      );
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(48, {
+          status: "open",
+          lastActivityAt: T,
+          updatedAt: T + 0.5,
+          assignee: HUMAN,
+        }),
+      });
+      const row = await mirrored(48);
+      expect(row.assigneeType).toBe("User");
+      expect(row.status).toBe("open");
+    });
+
     test("a payload that says nothing about the assignee claims no version", async () => {
       const T = 1_786_499_000;
       await mirror({

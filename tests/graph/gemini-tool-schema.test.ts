@@ -507,6 +507,33 @@ describe("Gemini tool declarations", () => {
     expect(declared.required).toEqual(["additionalItems"]);
   });
 
+  // `enum`/`const`/`default`/`examples` hold instance DATA. Rewriting an `items` array inside one of
+  // them changes which values the model is allowed to send, which is a different contract, not a
+  // translation.
+  test("instance data is never rewritten as if it were a schema", () => {
+    const dataTool = tool(async () => "ok", {
+      name: "mcp__legacy__data",
+      description: "d",
+      schema: {
+        type: "object",
+        properties: {
+          shape: {
+            type: "object",
+            enum: [{ items: ["a", "b"], additionalItems: false }],
+            default: { items: ["a", "b"], additionalItems: false },
+          },
+        },
+      } as never,
+    });
+    const [entry] = toGeminiTools([dataTool]) as GeminiFunctionTool[];
+    const declared = entry?.functionDeclarations[0]?.parametersJsonSchema as {
+      properties: { shape: { enum: unknown[]; default: unknown } };
+    };
+    const preserved = { items: ["a", "b"], additionalItems: false };
+    expect(declared.properties.shape.enum).toEqual([preserved]);
+    expect(declared.properties.shape.default).toEqual(preserved);
+  });
+
   // Built through JSON.parse on purpose: an object literal would set the prototype instead of
   // creating the key, which is exactly the trap on the output side.
   test("a parameter named __proto__ still reaches the wire", () => {

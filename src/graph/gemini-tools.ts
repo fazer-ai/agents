@@ -52,20 +52,39 @@ const MAX_DEPTH = 64;
 // on every call, so editing in place would corrupt what the other providers declare for the rest of
 // the process.
 //
-// Keywords whose value is a MAP OF SCHEMAS keyed by a name the tool author chose, not a schema. The
-// walk has to change mode there: inside `properties` the key `additionalItems` is a parameter called
-// "additionalItems", and translating it as the draft-07 keyword deletes the parameter while
-// `required` goes on demanding it — a declaration the model cannot satisfy.
+// Where a schema may legally sit. The walk descends ONLY into these, because "every object is a
+// schema" is wrong three different ways: inside `properties` the keys are parameter NAMES chosen by
+// the tool author (a parameter called "additionalItems" would be translated away while `required`
+// still demanded it), and `enum`/`const`/`default`/`examples` hold INSTANCE DATA, so an enum value
+// that happens to contain `items: [...]` would be rewritten into a different allowed value. Anything
+// not listed here travels verbatim, which is also the safe default for a keyword we do not know.
 const SCHEMA_MAP_KEYWORDS = new Set([
   "properties",
   "patternProperties",
   "$defs",
   "definitions",
+  "dependentSchemas",
+]);
+const SCHEMA_LIST_KEYWORDS = new Set([
+  "prefixItems",
+  "allOf",
+  "anyOf",
+  "oneOf",
+]);
+const SCHEMA_KEYWORDS = new Set([
+  "not",
+  "if",
+  "then",
+  "else",
+  "contains",
+  "propertyNames",
+  "additionalProperties",
+  "unevaluatedItems",
+  "unevaluatedProperties",
 ]);
 
 function normalizeSchemaMap(node: unknown, depth: number): unknown {
-  if (!node || typeof node !== "object" || Array.isArray(node))
-    return normalizeTupleItems(node, depth);
+  if (!node || typeof node !== "object" || Array.isArray(node)) return node;
   const out: Record<string, unknown> = Object.create(null);
   for (const [name, schema] of Object.entries(
     node as Record<string, unknown>,
@@ -77,9 +96,7 @@ function normalizeSchemaMap(node: unknown, depth: number): unknown {
 
 function normalizeTupleItems(node: unknown, depth = 0): unknown {
   if (depth > MAX_DEPTH) return node;
-  if (Array.isArray(node))
-    return node.map((v) => normalizeTupleItems(v, depth + 1));
-  if (!node || typeof node !== "object") return node;
+  if (!node || typeof node !== "object" || Array.isArray(node)) return node;
   const source = node as Record<string, unknown>;
   const isTuple = Array.isArray(source.items);
   const hasPrefixItems = "prefixItems" in source;
@@ -92,7 +109,21 @@ function normalizeTupleItems(node: unknown, depth = 0): unknown {
       out[key] = normalizeSchemaMap(value, depth + 1);
       continue;
     }
-    if (key === "items" && Array.isArray(value)) {
+    if (SCHEMA_LIST_KEYWORDS.has(key)) {
+      out[key] = Array.isArray(value)
+        ? value.map((v) => normalizeTupleItems(v, depth + 1))
+        : normalizeTupleItems(value, depth + 1);
+      continue;
+    }
+    if (SCHEMA_KEYWORDS.has(key)) {
+      out[key] = normalizeTupleItems(value, depth + 1);
+      continue;
+    }
+    if (key === "items") {
+      if (!Array.isArray(value)) {
+        out.items = normalizeTupleItems(value, depth + 1);
+        continue;
+      }
       if (!hasPrefixItems) {
         out.prefixItems = value.map((v) => normalizeTupleItems(v, depth + 1));
       }
@@ -111,7 +142,9 @@ function normalizeTupleItems(node: unknown, depth = 0): unknown {
       }
       continue;
     }
-    out[key] = normalizeTupleItems(value, depth + 1);
+    // Not a schema position: instance data (`enum`, `const`, `default`, `examples`) or a plain
+    // annotation. Copied by reference, never walked — and never mutated, here or downstream.
+    out[key] = value;
   }
   return out;
 }

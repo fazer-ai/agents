@@ -3359,7 +3359,7 @@
     "/v1/conversations": {
       "get": {
         "summary": "List conversations",
-        "description": "Returns a page of the tenant's conversations (newest first), optionally filtered by status and free-text search; use nextCursor to page.",
+        "description": "Returns a page of the tenant's conversations (newest first), optionally filtered by status, free-text search, and non-actionable group traffic; use nextCursor to page.",
         "tags": [
           "Conversations"
         ],
@@ -3398,6 +3398,15 @@
             "schema": {
               "description": "Optional free-text search matched against the contact name or the Chatwoot conversation id.",
               "type": "string"
+            }
+          },
+          {
+            "name": "excludeGroups",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Exclude WhatsApp group conversations from projections that treat group traffic as non-actionable.",
+              "type": "boolean"
             }
           },
           {

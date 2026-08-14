@@ -91,6 +91,19 @@ describe.skipIf(!dbUp)("listConversations", () => {
         lastEventAt: new Date("2026-05-02T10:00:00Z"),
       },
     });
+    await suDb.conversation.create({
+      data: {
+        tenantId: tenantA,
+        chatwootInstanceId: instA,
+        chatwootConversationId: 102,
+        inboxId: inbox.id,
+        contactId: contact.id,
+        status: "pending",
+        isGroup: true,
+        threadId: `${tenantA}:${instA}:102`,
+        lastEventAt: new Date("2026-05-03T10:00:00Z"),
+      },
+    });
     const instB = await seedChatwootInstance(suDb, {
       tenantId: tenantB,
       accountId: 2,
@@ -136,12 +149,12 @@ describe.skipIf(!dbUp)("listConversations", () => {
       {},
       appDb,
     );
-    expect(items).toHaveLength(2);
+    expect(items).toHaveLength(3);
     // A small result (under the page size) is the last page.
     expect(nextCursor).toBeNull();
     // Newest lastEventAt first.
-    expect(items[0]?.chatwootConversationId).toBe(101);
-    expect(items[1]?.chatwootConversationId).toBe(100);
+    expect(items[0]?.chatwootConversationId).toBe(102);
+    expect(items[1]?.chatwootConversationId).toBe(101);
     // BigInts are strings on the wire.
     expect(typeof items[0]?.id).toBe("string");
     expect(typeof items[0]?.inbox?.id).toBe("string");
@@ -149,14 +162,14 @@ describe.skipIf(!dbUp)("listConversations", () => {
     expect(items[0]?.inbox?.name).toBe("Support");
     expect(items[0]?.contact?.name).toBe("Alice");
     // Assignment fields drive the IA-vs-human badge.
-    expect(items[0]?.assigneeType).toBe("User");
-    expect(items[0]?.assigneeId).toBe(7);
+    expect(items[1]?.assigneeType).toBe("User");
+    expect(items[1]?.assigneeId).toBe(7);
   });
 
   test("paginates with a keyset cursor (one item per page)", async () => {
     const first = await listConversations(ctx(tenantA), { limit: 1 }, appDb);
     expect(first.items).toHaveLength(1);
-    expect(first.items[0]?.chatwootConversationId).toBe(101);
+    expect(first.items[0]?.chatwootConversationId).toBe(102);
     expect(first.nextCursor).toBe(first.items[0]?.id ?? null);
     const second = await listConversations(
       ctx(tenantA),
@@ -165,7 +178,7 @@ describe.skipIf(!dbUp)("listConversations", () => {
     );
     expect(second.items).toHaveLength(1);
     // The next page continues past the cursor — no overlap with the first.
-    expect(second.items[0]?.chatwootConversationId).toBe(100);
+    expect(second.items[0]?.chatwootConversationId).toBe(101);
   });
 
   test("filters by status", async () => {
@@ -184,7 +197,25 @@ describe.skipIf(!dbUp)("listConversations", () => {
       { status: "bogus" },
       appDb,
     );
-    expect(all.items).toHaveLength(2);
+    expect(all.items).toHaveLength(3);
+  });
+
+  test("excludes groups before pagination only when requested", async () => {
+    const all = await listConversations(ctx(tenantA), {}, appDb);
+    expect(all.items.some((item) => item.chatwootConversationId === 102)).toBe(
+      true,
+    );
+
+    const web = await listConversations(
+      ctx(tenantA),
+      { excludeGroups: true, limit: 1 },
+      appDb,
+    );
+    expect(web.items).toHaveLength(1);
+    expect(web.items[0]?.chatwootConversationId).toBe(101);
+    expect(web.items.some((item) => item.chatwootConversationId === 102)).toBe(
+      false,
+    );
   });
 
   test("tenant isolation: A never sees B's conversations", async () => {

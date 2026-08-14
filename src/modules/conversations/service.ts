@@ -53,6 +53,9 @@ export interface ListConversationsFilter {
   // Free-text search: matches the contact display name or the Chatwoot conversation id (see
   // buildConversationsWhere). No message-body search — the mirror holds metadata only.
   q?: string;
+  // Opt-in projection filter. Defaults to false so MCP and other shared-service consumers retain
+  // the complete mirror; the web conversation list enables it explicitly.
+  excludeGroups?: boolean;
 }
 
 export interface ConversationListItem {
@@ -110,8 +113,11 @@ function parseCursor(cursor: string | undefined): bigint | null {
 function buildConversationsWhere(
   status: string | undefined,
   q: string | undefined,
+  excludeGroups: boolean | undefined,
 ): Prisma.ConversationWhereInput {
-  const where: Prisma.ConversationWhereInput = {};
+  const where: Prisma.ConversationWhereInput = excludeGroups
+    ? { isGroup: false }
+    : {};
   if (status) where.status = status;
   const term = q?.trim();
   if (term) {
@@ -135,7 +141,7 @@ export async function listConversations(
   const take = clampLimit(filter.limit);
   const status = normalizeStatus(filter.status);
   const cursorId = parseCursor(filter.cursor);
-  const where = buildConversationsWhere(status, filter.q);
+  const where = buildConversationsWhere(status, filter.q, filter.excludeGroups);
   const rows = await runScopedOn(base, ctx, (db) =>
     db.conversation.findMany({
       where,

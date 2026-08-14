@@ -260,6 +260,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         limit: query.limit ? Number(query.limit) : undefined,
         cursor: query.cursor,
         q: query.q,
+        excludeGroups: query.excludeGroups,
       });
       return {
         instance: instanceIdentity,
@@ -293,12 +294,18 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
               "Optional free-text search matched against the contact name or the Chatwoot conversation id.",
           }),
         ),
+        excludeGroups: t.Optional(
+          t.Boolean({
+            description:
+              "Exclude WhatsApp group conversations from projections that treat group traffic as non-actionable.",
+          }),
+        ),
       }),
       requireAuth: true,
       detail: {
         ...doc(
           "List conversations",
-          "Returns a page of the tenant's conversations (newest first), optionally filtered by status and free-text search; use nextCursor to page.",
+          "Returns a page of the tenant's conversations (newest first), optionally filtered by status, free-text search, and non-actionable group traffic; use nextCursor to page.",
         ),
         tags: ["Conversations"],
       },

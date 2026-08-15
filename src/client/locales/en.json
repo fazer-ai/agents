@@ -1228,11 +1228,6 @@
       "UNINDEXED": "Not indexed",
       "UNINDEXED_BLOCKED": "Not indexed: blocked"
     },
-    "embeddingBlock": {
-      "empty": "The embedding credential is empty. Fill it in, then index again.",
-      "notConfigured": "The embedding credential is not configured for this workspace. Set it under Components, then index again.",
-      "pending": "The embedding credential was never filled in. Fill it under Components, then index again."
-    },
     "docTitle": "Title",
     "docTitleLabel": "Title",
     "documents": "Documents",
@@ -1243,6 +1238,11 @@
     "docUpdateError": "Could not update the document.",
     "dropHint": "Arraste e solte um arquivo aqui, ou clique para escolher",
     "editTitle": "Edit knowledge base",
+    "embeddingBlock": {
+      "empty": "The embedding credential is empty. Fill it in, then index again.",
+      "notConfigured": "The embedding credential is not configured for this workspace. Set it under Components, then index again.",
+      "pending": "The embedding credential was never filled in. Fill it under Components, then index again."
+    },
     "emptyDesc": "Create one and ingest your FAQs, docs or product info.",
     "emptyTitle": "No knowledge bases yet",
     "fileHint": "PDF, DOCX, TXT, MD, CSV",

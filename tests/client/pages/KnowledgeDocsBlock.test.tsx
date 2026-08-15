@@ -101,31 +101,36 @@ mock.module("@/client/hooks/useTenantEvents", () => ({
   },
 }));
 
-mock.module("@/client/lib/api", () => ({
-  api: {
-    api: {
-      v1: {
-        knowledge: {
-          "embedding-block": {
-            get: async () => ({ data: await nextBlock(), error: null }),
-          },
-          bases: Object.assign(
-            (_: { id: string }) => ({
-              documents: {
-                get: async () => ({ data: await nextDocs(), error: null }),
-              },
-              reindex: { post: async () => ({ data: reindexResponse }) },
-            }),
-            { get: async () => ({ data: { bases: [] }, error: null }) },
-          ),
-          documents: (_: { id: string }) => ({
-            get: async () => ({ data: null, error: null }),
-          }),
-        },
-      },
-    },
-  },
-}));
+// The api module is NOT mocked: `mock.module` is global to the process and leaks into every other
+// file sharing the worker, which is how this file first broke `vaultCache` in CI while passing
+// locally. The Eden treaty calls `globalThis.fetch`, so stubbing that reaches the same code with no
+// spill (the same reasoning, and the same shape, as tests/client/lib/vaultCache.test.ts).
+const realFetch = globalThis.fetch;
+
+function installFetchStub() {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    const method =
+      init?.method ?? (input instanceof Request ? input.method : "GET");
+    if (url.includes("/knowledge/embedding-block")) {
+      return json(await nextBlock());
+    }
+    if (url.includes("/reindex")) {
+      return json(reindexResponse);
+    }
+    if (url.includes("/documents") && method === "GET") {
+      return json(await nextDocs());
+    }
+    return realFetch(input as RequestInfo | URL, init);
+  }) as typeof fetch;
+}
+
+function json(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
 
 mock.module("react-i18next", () => ({
   useTranslation: () => ({
@@ -230,14 +235,17 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     gateOnCall = null;
     gatedDocsCalls = [];
     docsReleasers.clear();
+    installFetchStub();
   });
 
   afterEach(() => {
     cleanup();
   });
 
-  // mock.module is global to the process and leaks across files in the same worker.
+  // The two module mocks left are for hooks nothing else under test imports; the fetch stub is
+  // handed back either way.
   afterAll(() => {
+    globalThis.fetch = realFetch;
     mock.restore();
   });
 

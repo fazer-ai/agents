@@ -1232,11 +1232,6 @@
       "UNINDEXED": "Não indexado",
       "UNINDEXED_BLOCKED": "Não indexado: bloqueado"
     },
-    "embeddingBlock": {
-      "empty": "A credencial de embedding está vazia. Preencha-a e indexe novamente.",
-      "notConfigured": "A credencial de embedding não está configurada neste workspace. Configure em Componentes e indexe novamente.",
-      "pending": "A credencial de embedding existe mas nunca foi preenchida. Preencha em Componentes e indexe novamente."
-    },
     "docTitle": "Título",
     "docTitleLabel": "Título",
     "documents": "Documentos",
@@ -1248,6 +1243,11 @@
     "docUpdateError": "Não foi possível atualizar o documento.",
     "dropHint": "Arraste e solte arquivos aqui, ou clique para escolher",
     "editTitle": "Editar base de conhecimento",
+    "embeddingBlock": {
+      "empty": "A credencial de embedding está vazia. Preencha-a e indexe novamente.",
+      "notConfigured": "A credencial de embedding não está configurada neste workspace. Configure em Componentes e indexe novamente.",
+      "pending": "A credencial de embedding existe mas nunca foi preenchida. Preencha em Componentes e indexe novamente."
+    },
     "emptyDesc": "Crie uma e adicione seus FAQs, documentos ou informações de produto.",
     "emptyTitle": "Nenhuma base de conhecimento ainda",
     "fileHint": "PDF, DOCX, TXT, MD, CSV",

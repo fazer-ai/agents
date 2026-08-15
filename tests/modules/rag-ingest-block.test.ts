@@ -1,14 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import {
-  type ServerEvent,
-  setPublisher,
-} from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   createDocument,
+  readEmbeddingBlock,
   registerRagIngestHandler,
   resolveEmbeddingConfig,
 } from "@/modules/rag/documents";
@@ -19,14 +16,14 @@ import {
   createVaultEntry,
 } from "@/modules/vault/service";
 
-// Issue #80: a document uploaded before the embedding credential exists lands UNINDEXED with the
-// reason DISCARDED (`error: null`), so "I still have to click index" and "this will never index
-// until someone fills a credential" render identically. The job knows which of the three it is —
-// it branches on `resolveEmbeddingStatus` and then throws the answer away.
+// Issue #80: a document uploaded before the embedding credential exists lands UNINDEXED, and the
+// console showed the same neutral badge whether it was waiting for a click or would never index
+// until a credential was sorted out. The job knows which of the three reasons applies.
 //
-// Reverting PENDING → UNINDEXED instead of failing the document is deliberate and stays: a missing
-// prerequisite is not a document failure. What these tests pin is that the REASON survives, both on
-// the row the console reads and on the realtime event it re-renders from.
+// The reason is NOT stamped on the document. One embedding credential serves the whole workspace, so
+// the block belongs to the configuration, not to the row: a token written when the block happened
+// would still be telling the operator to fill a credential they have since filled, with nothing to
+// recompute it. `readEmbeddingBlock` answers the same question at the moment the console asks.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -51,11 +48,13 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
+const MODEL = "text-embedding-3-small";
+
 function ctx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// One tenant per embedding state: the block is resolved from tenant-level settings, so sharing a
+// One tenant per embedding state: the block is resolved from workspace-level settings, so sharing a
 // tenant between cases would make each test depend on the previous one's credential.
 const tenants: bigint[] = [];
 
@@ -65,18 +64,14 @@ async function seedTenant(slug: string): Promise<{ id: bigint; kb: bigint }> {
   });
   tenants.push(t.id);
   const kb = await suDb.knowledgeBase.create({
-    data: {
-      tenantId: t.id,
-      name: `${slug}-kb`,
-      embeddingModel: "text-embedding-3-small",
-    },
+    data: { tenantId: t.id, name: `${slug}-kb`, embeddingModel: MODEL },
   });
   return { id: t.id, kb: kb.id };
 }
 
 // Runs the REAL job handler, the same entry point the scheduler uses. The block path returns before
-// any embedding call, so it needs no provider — which is exactly why it is testable here even though
-// the rest of the ingest job is not.
+// any embedding call, so it needs no provider — which is why it is testable here even though the
+// rest of the ingest job is not.
 async function runIngest(tenantId: bigint, documentId: bigint) {
   registerRagIngestHandler();
   const handler = getJobHandler("RAG_INGEST");
@@ -102,54 +97,63 @@ async function readDoc(tenantId: bigint, documentId: bigint) {
   );
 }
 
+async function seedDoc(tenantId: bigint, kb: bigint) {
+  return createDocument({
+    tenantId,
+    knowledgeBaseId: kb,
+    title: "T",
+    text: "conteudo",
+    sourceType: "text",
+    base: appDb,
+  });
+}
+
 describe.skipIf(!dbUp)(
-  "rag ingest: the embedding block keeps its reason",
+  "rag: the embedding block is read, not remembered",
   () => {
     afterAll(async () => {
-      setPublisher(() => undefined);
       for (const t of tenants) {
-        await suDb.$executeRawUnsafe(
-          `DELETE FROM knowledge_chunks WHERE tenant_id = ${t}`,
-        );
-        await suDb.$executeRawUnsafe(
-          `DELETE FROM knowledge_documents WHERE tenant_id = ${t}`,
-        );
-        await suDb.$executeRawUnsafe(
-          `DELETE FROM knowledge_bases WHERE tenant_id = ${t}`,
-        );
-        await suDb.$executeRawUnsafe(
-          `DELETE FROM vault_entries WHERE tenant_id = ${t}`,
-        );
-        await suDb.$executeRawUnsafe(
-          `DELETE FROM scheduler_jobs WHERE tenant_id = ${t}`,
-        );
+        for (const table of [
+          "knowledge_chunks",
+          "knowledge_documents",
+          "knowledge_bases",
+          "vault_entries",
+          "scheduler_jobs",
+        ]) {
+          await suDb.$executeRawUnsafe(
+            `DELETE FROM ${table} WHERE tenant_id = ${t}`,
+          );
+        }
         await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${t}`);
       }
       await suDb.$disconnect();
       await appDb.$disconnect();
     });
 
-    test("no embedding credential at all: the document says so", async () => {
+    // Reverting PENDING → UNINDEXED instead of failing the document is deliberate and stays: a missing
+    // prerequisite is not a document failure, and the row carries no reason of its own.
+    test("a blocked ingest leaves the document unindexed with no error of its own", async () => {
       const { id, kb } = await seedTenant("blk-none");
-      const doc = await createDocument({
-        tenantId: id,
-        knowledgeBaseId: kb,
-        title: "T",
-        text: "conteudo",
-        sourceType: "text",
-        base: appDb,
-      });
+      const doc = await seedDoc(id, kb);
       await runIngest(id, doc.id);
       const row = await readDoc(id, doc.id);
       expect(row?.status).toBe("UNINDEXED");
       expect(row?.chunkCount).toBe(0);
-      expect(row?.error).toBe("errors.embeddingNotConfigured");
+      expect(row?.error).toBeNull();
     });
 
-    // The distinction that matters most to the operator: a ref EXISTS, so "not configured" would send
-    // them to create a credential they already created. What they have to do is fill it.
-    test("the credential exists but was never filled: a distinct reason", async () => {
-      const { id, kb } = await seedTenant("blk-pend");
+    test("no credential at all reads as not configured", async () => {
+      const { id } = await seedTenant("blk-unset");
+      expect(await readEmbeddingBlock(id, MODEL, appDb)).toEqual({
+        reason: "embedding_not_configured",
+      });
+    });
+
+    // The distinction that matters most: a ref EXISTS, so "not configured" would send the operator to
+    // create a credential they already created. What they have to do is fill it — and the vault id
+    // rides along so the console can deeplink straight at it.
+    test("a credential that was never filled reads as pending, with its ref", async () => {
+      const { id } = await seedTenant("blk-pend");
       const entry = await createPendingVaultEntry(
         ctx(id),
         { name: "embed-ref", kind: "generic" },
@@ -160,65 +164,21 @@ describe.skipIf(!dbUp)(
         { credentialRef: entry.ref },
         appDb,
       );
-      const doc = await createDocument({
-        tenantId: id,
-        knowledgeBaseId: kb,
-        title: "T",
-        text: "conteudo",
-        sourceType: "text",
-        base: appDb,
-      });
-      await runIngest(id, doc.id);
-      const row = await readDoc(id, doc.id);
-      expect(row?.status).toBe("UNINDEXED");
-      expect(row?.error).toBe("errors.embeddingPending");
+      const block = await readEmbeddingBlock(id, MODEL, appDb);
+      expect(block?.reason).toBe("credential_pending");
+      expect(block?.credentialRef).toBe(entry.ref);
+      expect(block?.vaultId).toBe(entry.ref.slice("vault:".length));
     });
 
-    // Seeded by a direct write on purpose: `createVaultEntry` refuses an empty secret in every shape
-    // (`errors.emptyVaultSecret` for a bare string, `errors.invalidVaultValue` for an object with a
-    // blank field), so today this state can only come from a row written before that validation
-    // existed. The branch is in `resolveEmbeddingStatus` regardless, and a reason it resolves must not
-    // be the one it flattens to.
-    test("the credential resolved to a blank secret: its own reason", async () => {
-      const { id, kb } = await seedTenant("blk-empty");
-      const blank = await suDb.vaultEntry.create({
-        data: {
-          tenantId: id,
-          name: "embed-blank",
-          kind: "generic",
-          status: "active",
-          secret: encryptJson({ apiKey: "" }),
-        },
-      });
-      const entry = { ref: `vault:${blank.id}` };
-      await updateEmbeddingSettings(
-        ctx(id),
-        { credentialRef: entry.ref },
-        appDb,
-      );
-      const doc = await createDocument({
-        tenantId: id,
-        knowledgeBaseId: kb,
-        title: "T",
-        text: "conteudo",
-        sourceType: "text",
-        base: appDb,
-      });
-      await runIngest(id, doc.id);
-      const row = await readDoc(id, doc.id);
-      expect(row?.status).toBe("UNINDEXED");
-      expect(row?.error).toBe("errors.embeddingEmpty");
-    });
-
-    // Review finding, round 2: an ACTIVE row whose secret is a bare empty string also fails to
-    // resolve. Answering that with a second "does the row exist" query called it not_found, which is
-    // the one thing it is not. State and value now come from the same read.
-    test("an active credential holding a blank string is empty, not missing", async () => {
-      const { id, kb } = await seedTenant("blk-blankstr");
+    // Review finding, round 2: an ACTIVE row whose secret is a blank string also fails to resolve.
+    // Answering that with a second "does the row exist" query called it not_found, which is the one
+    // thing it is not — state and value now come from the same read.
+    test("an active credential holding a blank secret reads as empty", async () => {
+      const { id } = await seedTenant("blk-blank");
       const row = await suDb.vaultEntry.create({
         data: {
           tenantId: id,
-          name: "embed-blankstr",
+          name: "embed-blank",
           kind: "generic",
           status: "active",
           secret: encryptJson(""),
@@ -229,23 +189,16 @@ describe.skipIf(!dbUp)(
         { credentialRef: `vault:${row.id}` },
         appDb,
       );
-      const doc = await createDocument({
-        tenantId: id,
-        knowledgeBaseId: kb,
-        title: "T",
-        text: "conteudo",
-        sourceType: "text",
-        base: appDb,
-      });
-      await runIngest(id, doc.id);
-      expect((await readDoc(id, doc.id))?.error).toBe("errors.embeddingEmpty");
+      expect((await readEmbeddingBlock(id, MODEL, appDb))?.reason).toBe(
+        "credential_empty",
+      );
     });
 
-    // Review finding: `tryResolveVaultSecret` answers null for a DELETED entry exactly as it does for
-    // an unfilled one, so a dangling ref used to be reported as "pending" — telling the operator to
-    // fill a credential that is not there.
+    // Review finding, round 2: `tryResolveVaultSecret` answers null for a DELETED entry exactly as it
+    // does for an unfilled one, so a dangling ref used to be reported as "pending" — telling the
+    // operator to fill a credential that is not there.
     test("a ref whose credential was deleted is not reported as pending", async () => {
-      const { id, kb } = await seedTenant("blk-gone");
+      const { id } = await seedTenant("blk-gone");
       const entry = await createPendingVaultEntry(
         ctx(id),
         { name: "embed-doomed", kind: "generic" },
@@ -259,28 +212,45 @@ describe.skipIf(!dbUp)(
       await suDb.$executeRawUnsafe(
         `DELETE FROM vault_entries WHERE tenant_id = ${id}`,
       );
-      const doc = await createDocument({
-        tenantId: id,
-        knowledgeBaseId: kb,
-        title: "T",
-        text: "conteudo",
-        sourceType: "text",
-        base: appDb,
-      });
-      await runIngest(id, doc.id);
-      expect((await readDoc(id, doc.id))?.error).toBe(
-        "errors.embeddingNotConfigured",
+      expect((await readEmbeddingBlock(id, MODEL, appDb))?.reason).toBe(
+        "embedding_not_configured",
       );
     });
 
-    // Review finding: MCP hands `AppError.message` to the caller verbatim and none of these tokens has
-    // a server-side locale entry, so the message is the only thing that names the reason off-console.
-    test("the thrown message names the reason, not just the token", async () => {
+    // Review finding, round 3, and the reason the reason is not stored: after the operator fixes the
+    // credential the documents are still UNINDEXED (nothing re-indexes them on its own), so a
+    // remembered token would go on explaining a block that no longer exists.
+    test("filling the credential clears the block, with the documents untouched", async () => {
+      const { id, kb } = await seedTenant("blk-fixed");
+      const doc = await seedDoc(id, kb);
+      await runIngest(id, doc.id);
+      expect((await readEmbeddingBlock(id, MODEL, appDb))?.reason).toBe(
+        "embedding_not_configured",
+      );
+      const entry = await createVaultEntry(
+        ctx(id),
+        "embed-real",
+        "sk-test-key",
+        "generic",
+        appDb,
+      );
+      await updateEmbeddingSettings(
+        ctx(id),
+        { credentialRef: entry.ref },
+        appDb,
+      );
+      expect(await readEmbeddingBlock(id, MODEL, appDb)).toBeNull();
+      // The document did not move — it is still waiting for someone to index it, which is exactly the
+      // state the badge must now describe instead of "blocked".
+      expect((await readDoc(id, doc.id))?.status).toBe("UNINDEXED");
+    });
+
+    // MCP hands `AppError.message` to the caller verbatim and the key has no server-side locale entry,
+    // so off-console the message is the only thing that names the reason.
+    test("the thrown message names the reason, not just the key", async () => {
       const { id } = await seedTenant("blk-msg");
       const notConfigured = await runScopedOn(appDb, ctx(id), (db) =>
-        resolveEmbeddingConfig(db, id, "text-embedding-3-small").catch(
-          (e: Error) => e,
-        ),
+        resolveEmbeddingConfig(db, id, MODEL).catch((e: Error) => e),
       );
       expect(String((notConfigured as Error).message)).toContain(
         "not configured",
@@ -297,81 +267,12 @@ describe.skipIf(!dbUp)(
         appDb,
       );
       const pending = await runScopedOn(appDb, ctx(id), (db) =>
-        resolveEmbeddingConfig(db, id, "text-embedding-3-small").catch(
-          (e: Error) => e,
-        ),
+        resolveEmbeddingConfig(db, id, MODEL).catch((e: Error) => e),
       );
       expect(String((pending as Error).message)).toContain("not filled in");
       expect(String((pending as Error).message)).not.toBe(
         String((notConfigured as Error).message),
       );
-    });
-
-    // The console re-renders the row from this event without re-fetching, so a reason that reaches the
-    // column but not the event leaves the open screen showing the old, mute badge until a reload.
-    test("the realtime event carries the reason too", async () => {
-      const { id, kb } = await seedTenant("blk-evt");
-      const seen: ServerEvent[] = [];
-      setPublisher((_topic, data) => {
-        seen.push(JSON.parse(data) as ServerEvent);
-      });
-      try {
-        const doc = await createDocument({
-          tenantId: id,
-          knowledgeBaseId: kb,
-          title: "T",
-          text: "conteudo",
-          sourceType: "text",
-          base: appDb,
-        });
-        await runIngest(id, doc.id);
-        const blocked = seen.find(
-          (e) =>
-            e.type === "knowledge-document" &&
-            (e as { status?: string }).status === "UNINDEXED",
-        );
-        expect(blocked).toBeDefined();
-        expect((blocked as { error?: string }).error).toBe(
-          "errors.embeddingNotConfigured",
-        );
-      } finally {
-        setPublisher(() => undefined);
-      }
-    });
-
-    // A reason that outlives the block would be worse than no reason: the operator fills the
-    // credential, re-indexes, and the row still explains why it could not be indexed.
-    test("a later re-index clears the reason", async () => {
-      const { id, kb } = await seedTenant("blk-clear");
-      const doc = await createDocument({
-        tenantId: id,
-        knowledgeBaseId: kb,
-        title: "T",
-        text: "conteudo",
-        sourceType: "text",
-        base: appDb,
-      });
-      await runIngest(id, doc.id);
-      expect((await readDoc(id, doc.id))?.error).toBe(
-        "errors.embeddingNotConfigured",
-      );
-      const entry = await createVaultEntry(
-        ctx(id),
-        "embed-real",
-        "sk-test-key",
-        "generic",
-        appDb,
-      );
-      await updateEmbeddingSettings(
-        ctx(id),
-        { credentialRef: entry.ref },
-        appDb,
-      );
-      const { reindexKnowledgeBase } = await import("@/modules/rag/documents");
-      await reindexKnowledgeBase(id, kb, appDb);
-      const row = await readDoc(id, doc.id);
-      expect(row?.status).toBe("PENDING");
-      expect(row?.error).toBeNull();
     });
   },
 );

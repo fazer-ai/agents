@@ -45,6 +45,7 @@ type DocumentsData = Awaited<
   ReturnType<ReturnType<typeof api.api.v1.knowledge.bases>["documents"]["get"]>
 >["data"];
 type KnowledgeDoc = NonNullable<DocumentsData>["documents"][number];
+type EmbeddingBlock = NonNullable<DocumentsData>["embeddingBlock"];
 type DocDetailData = Awaited<
   ReturnType<ReturnType<typeof api.api.v1.knowledge.documents>["get"]>
 >["data"];
@@ -180,6 +181,10 @@ export function useKnowledgeManager(opts: {
 
   // Docs list
   const [docs, setDocs] = useState<KnowledgeDoc[] | null>(null);
+  // The tenant's embedding block as of the last read, or null when indexing would work. Comes from
+  // the list response rather than from any document row: the block belongs to the configuration, so
+  // a value remembered per document would keep naming a credential the operator has since filled.
+  const [embeddingBlock, setEmbeddingBlock] = useState<EmbeddingBlock>(null);
 
   // Doc preview
   const [docPreview, setDocPreview] = useState<string | null>(null);
@@ -511,7 +516,10 @@ export function useKnowledgeManager(opts: {
     const { data } = await api.api.v1.knowledge
       .bases({ id: b.id })
       .documents.get();
-    if (data) setDocs(data.documents);
+    if (data) {
+      setDocs(data.documents);
+      setEmbeddingBlock(data.embeddingBlock ?? null);
+    }
   }
 
   // Refetch the open documents modal's list in place (after an edit, so the new title/status shows).
@@ -519,7 +527,10 @@ export function useKnowledgeManager(opts: {
     const { data } = await api.api.v1.knowledge
       .bases({ id: baseId })
       .documents.get();
-    if (data) setDocs(data.documents);
+    if (data) {
+      setDocs(data.documents);
+      setEmbeddingBlock(data.embeddingBlock ?? null);
+    }
   }
 
   async function saveDocEdit() {
@@ -707,12 +718,6 @@ export function useKnowledgeManager(opts: {
         "The embedding credential is not configured for this workspace. Set it under Components, then index again.",
       );
     }
-    if (error === "errors.embeddingPending") {
-      return t(
-        "knowledge.docError.embeddingPending",
-        "The embedding credential was never filled in. Fill it under Components, then index again.",
-      );
-    }
     if (error === "errors.embeddingEmpty") {
       return t(
         "knowledge.docError.embeddingEmpty",
@@ -722,13 +727,29 @@ export function useKnowledgeManager(opts: {
     return error;
   }
 
-  // The base's banner otherwise tells the operator to index, which is the wrong instruction while a
-  // block is recorded: indexing cannot succeed until a credential is filled. One reason is enough
-  // for the whole banner because the block is tenant-level (a single embedding credential serves
-  // every base), so each blocked document in the list carries the same one.
-  function unindexedBlockText(list: KnowledgeDoc[]): string | null {
-    const blocked = list.find((d) => d.status === "UNINDEXED" && d.error);
-    return blocked?.error ? docErrorText(blocked.error) : null;
+  // Operator-facing text for the tenant's CURRENT embedding block, or null when there is none. The
+  // three reasons need different instructions: create a credential, fill the one that exists, or
+  // replace one whose secret is blank — sending someone to the wrong one is the whole complaint.
+  function embeddingBlockText(): string | null {
+    switch (embeddingBlock?.reason) {
+      case "embedding_not_configured":
+        return t(
+          "knowledge.embeddingBlock.notConfigured",
+          "The embedding credential is not configured for this workspace. Set it under Components, then index again.",
+        );
+      case "credential_pending":
+        return t(
+          "knowledge.embeddingBlock.pending",
+          "The embedding credential was never filled in. Fill it under Components, then index again.",
+        );
+      case "credential_empty":
+        return t(
+          "knowledge.embeddingBlock.empty",
+          "The embedding credential is empty. Fill it in, then index again.",
+        );
+      default:
+        return null;
+    }
   }
 
   function docStatusBadge(doc: KnowledgeDoc) {
@@ -777,27 +798,28 @@ export function useKnowledgeManager(opts: {
     }
     if (doc.status === "UNINDEXED") {
       // Imported-but-never-indexed: a deliberate waiting state (warning tint), not an error (no red).
-      // With a recorded block reason it is NOT merely waiting: nothing the operator does on this
-      // screen will index it until a credential is filled, so the badge says which of the two this
-      // is (issue #80) instead of reading identically in both cases.
-      const blockReason = doc.error;
+      // While the workspace is blocked it is NOT merely waiting — nothing the operator does on this
+      // screen will index it until a credential is sorted out — so the badge says which of the two
+      // this is (issue #80) instead of reading identically in both cases. Keyed off the CURRENT
+      // block, so it stops saying "blocked" the moment the block is gone.
+      const blockText = embeddingBlockText();
       const badge = (
         <span
           className={cn(
             "rounded-full bg-warning-soft px-2 py-0.5 text-warning text-xs",
             {
               "cursor-help underline decoration-dotted underline-offset-2":
-                !!blockReason,
+                !!blockText,
             },
           )}
         >
-          {blockReason
+          {blockText
             ? t("knowledge.docStatus.UNINDEXED_BLOCKED", "Not indexed: blocked")
             : t("knowledge.docStatus.UNINDEXED", "Not indexed")}
         </span>
       );
-      return blockReason ? (
-        <Tooltip content={docErrorText(blockReason)} side="top">
+      return blockText ? (
+        <Tooltip content={blockText} side="top">
           {badge}
         </Tooltip>
       ) : (
@@ -1208,7 +1230,7 @@ export function useKnowledgeManager(opts: {
               {docs.some((d) => d.status === "UNINDEXED") && (
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning bg-warning-soft px-3 py-2">
                   <span className="text-text-secondary text-xs">
-                    {unindexedBlockText(docs) ??
+                    {embeddingBlockText() ??
                       t(
                         "knowledge.unindexedNote",
                         "Some documents aren't indexed yet and won't be searchable until you index them.",

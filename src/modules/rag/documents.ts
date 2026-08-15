@@ -73,26 +73,10 @@ export async function resolveEmbeddingStatus(
   };
 }
 
-// The one place a block reason becomes the stable token every surface renders from: the `error`
-// column, the realtime event, and the AppError thrown deeper in. Three reasons, three tokens — a
-// credential that EXISTS but was never filled has to read differently from one that was never
-// created, or the operator is sent to create a second credential instead of filling the first.
-//
-// NOTE: These are tokens, not translation keys — none of the three has an entry under `errors.*` in
-// any locale. The console matches on them and renders its own `knowledge.docError.*` text, which is
-// where the operator-facing wording lives.
-export function embeddingBlockKey(
-  status: Exclude<EmbeddingStatus, { ok: true }>,
-): string {
-  if (status.reason === "credential_pending") return "errors.embeddingPending";
-  if (status.reason === "credential_empty") return "errors.embeddingEmpty";
-  return "errors.embeddingNotConfigured";
-}
-
-// NOTE: The English message carries the reason too, and is not allowed to collapse into one generic
-// sentence. The token above is only useful to a surface that maps it; MCP hands `AppError.message`
-// to the caller verbatim, and none of these tokens has a server-side locale entry, so the message is
-// the only thing that says which of the three happened outside the console.
+// NOTE: The English message carries the reason, and is not allowed to collapse into one generic
+// sentence. MCP hands `AppError.message` to the caller verbatim and the translation key has no
+// server-side locale entry, so outside the console the message is the only thing that says which of
+// the three happened.
 function embeddingBlockMessage(
   status: Exclude<EmbeddingStatus, { ok: true }>,
 ): string {
@@ -113,7 +97,7 @@ export async function resolveEmbeddingConfig(
   throw new AppError(
     embeddingBlockMessage(status),
     400,
-    embeddingBlockKey(status),
+    `errors.embedding.${embeddingBlock(status).reason}`,
   );
 }
 
@@ -382,30 +366,56 @@ export async function retryDocument(
 // tenant's embedding credential is unconfigured or its secret is not filled yet — so nothing is queued
 // and the docs are left where they are (a missing prerequisite is not an ingestion failure). Callers
 // surface the block at the KB/tenant level (config health / a fill deeplink), not as red documents.
+// The one vocabulary for "embedding is not usable", shared by the reindex result and by the live
+// read the console renders from. `credential_empty` joined it so all three resolvable reasons have a
+// name here instead of two of them collapsing into one.
+export interface EmbeddingBlock {
+  reason:
+    | "embedding_not_configured"
+    | "credential_pending"
+    | "credential_empty";
+  credentialRef?: string;
+  vaultId?: string;
+}
+
 export interface ReindexResult {
   queued: number;
-  blocked?: {
-    reason: "embedding_not_configured" | "credential_pending";
-    credentialRef?: string;
-    vaultId?: string;
-  };
+  blocked?: EmbeddingBlock;
 }
 
 // Maps a non-ok embedding status to the reindex `blocked` shape. A pending/empty credential parses the
 // `vault:<id>` ref into `vaultId` so a transport can build the fill deeplink.
 function embeddingBlock(
   status: Exclude<EmbeddingStatus, { ok: true }>,
-): NonNullable<ReindexResult["blocked"]> {
+): EmbeddingBlock {
   if (status.reason === "not_configured")
     return { reason: "embedding_not_configured" };
   const vaultId = status.credentialRef.startsWith("vault:")
     ? status.credentialRef.slice("vault:".length)
     : undefined;
   return {
-    reason: "credential_pending",
+    reason:
+      status.reason === "credential_empty"
+        ? "credential_empty"
+        : "credential_pending",
     credentialRef: status.credentialRef,
     vaultId,
   };
+}
+
+// The tenant's CURRENT embedding block, or null when indexing would work. Read at the moment the
+// console asks rather than stamped on a document when the block happened: one credential serves
+// every base, so this is a property of the configuration and it changes when the configuration
+// changes — the row that failed under it has no way to know.
+export async function readEmbeddingBlock(
+  tenantId: bigint,
+  model: string,
+  base: PrismaClient = basePrisma,
+): Promise<EmbeddingBlock | null> {
+  const status = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    resolveEmbeddingStatus(db, tenantId, model),
+  );
+  return status.ok ? null : embeddingBlock(status);
 }
 
 // Queues ingestion for every UNINDEXED document in a knowledge base — the bulk "index all" after an
@@ -514,22 +524,21 @@ async function runIngestJobForTenant(
     resolveEmbeddingStatus(db, tenantId, kb.embeddingModel),
   );
   if (!emb.ok) {
-    // NOTE: The reason is recorded, not discarded (issue #80). UNINDEXED alone reads identically to
-    // "imported, still waiting for someone to click index", so a document blocked on a credential
-    // was mute until an operator went looking. `error` carries the same kind of stable token a
-    // genuine ingestion failure stores, and a later reindex clears it along with the status.
-    const reason = embeddingBlockKey(emb);
+    // NOTE: The reason is NOT written onto the document. The block is a property of the tenant's
+    // embedding configuration at a point in time — one credential serves every base — so a token
+    // stamped here would still be claiming "fill the credential" after the operator filled it, with
+    // nothing to recompute it (issue #80). `readEmbeddingBlock` answers the same question live, at
+    // the moment the console asks. The row stays what it is: not indexed, no failure of its own.
     await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.knowledgeDocument.updateMany({
         where: { id: documentId, status: "PENDING" },
-        data: { status: "UNINDEXED", error: reason },
+        data: { status: "UNINDEXED", error: null },
       }),
     );
     broadcastDocumentEvent(tenantId, {
       knowledgeBaseId: String(doc.knowledgeBaseId),
       documentId: String(documentId),
       status: "UNINDEXED",
-      error: reason,
     });
     return { outcome: "done" };
   }

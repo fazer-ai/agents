@@ -1222,8 +1222,7 @@
     "docEditTitle": "Editar: {{title}}",
     "docError": {
       "embeddingEmpty": "A credencial de embedding está vazia. Preencha-a e indexe novamente.",
-      "embeddingNotConfigured": "A credencial de embedding não está configurada neste workspace. Configure em Componentes e indexe novamente.",
-      "embeddingPending": "A credencial de embedding existe mas nunca foi preenchida. Preencha em Componentes e indexe novamente."
+      "embeddingNotConfigured": "A credencial de embedding não está configurada neste workspace. Configure em Componentes e indexe novamente."
     },
     "docStatus": {
       "FAILED": "Falhou",
@@ -1232,6 +1231,11 @@
       "READY": "{{n}} trechos",
       "UNINDEXED": "Não indexado",
       "UNINDEXED_BLOCKED": "Não indexado: bloqueado"
+    },
+    "embeddingBlock": {
+      "empty": "A credencial de embedding está vazia. Preencha-a e indexe novamente.",
+      "notConfigured": "A credencial de embedding não está configurada neste workspace. Configure em Componentes e indexe novamente.",
+      "pending": "A credencial de embedding existe mas nunca foi preenchida. Preencha em Componentes e indexe novamente."
     },
     "docTitle": "Título",
     "docTitleLabel": "Título",

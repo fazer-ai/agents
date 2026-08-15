@@ -9,6 +9,7 @@ import {
   deleteDocument,
   getDocument,
   listDocuments,
+  readEmbeddingBlock,
   reindexKnowledgeBase,
   retryDocument,
   updateDocument,
@@ -213,12 +214,18 @@ export const knowledgeController = new Elysia({
   .get(
     "/bases/:id/documents",
     async ({ tenantContext, params }) => {
-      const docs = await listDocuments(
-        tenantId(tenantContext),
-        BigInt(params.id),
-      );
+      const tid = tenantId(tenantContext);
+      const kbase = await getKnowledgeBase({
+        tenantId: tid,
+        id: BigInt(params.id),
+      });
+      const docs = await listDocuments(tid, BigInt(params.id));
       return {
         instance: instanceIdentity,
+        // The tenant's CURRENT embedding block (null when indexing would work). Resolved per read,
+        // not stamped on the rows when they were blocked: a token stored back then would still be
+        // telling the operator to fill a credential they have since filled (issue #80).
+        embeddingBlock: await readEmbeddingBlock(tid, kbase.embeddingModel),
         documents: docs.map((d) => ({
           ...d,
           id: String(d.id),

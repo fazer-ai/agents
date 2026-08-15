@@ -55,8 +55,17 @@ let releaseGate: () => void = () => undefined;
 async function nextDocs(): Promise<DocsPayload> {
   const answer = docsQueue[Math.min(docsCalls, docsQueue.length - 1)];
   docsCalls += 1;
+  if (gateDocsOnCall === docsCalls) {
+    await new Promise<void>((r) => {
+      releaseDocsGate = r;
+    });
+  }
   return answer as DocsPayload;
 }
+
+// Holds one of the LIST reads open, so a block read can start and finish inside it.
+let gateDocsOnCall: number | null = null;
+let releaseDocsGate: () => void = () => undefined;
 
 // Successive answers of the workspace's embedding-block endpoint. The point of these tests is that
 // the console asks again, so each answer has to be allowed to differ from the one before.
@@ -213,6 +222,7 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     reindexResponse = {};
     onKnowledgeDocument = null;
     gateOnCall = null;
+    gateDocsOnCall = null;
   });
 
   afterEach(() => {
@@ -456,6 +466,43 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     // Still what the list said, and the modal is still alive.
     expect(shows(PENDING_TEXT)).toBe(true);
     expect(shows("Doc")).toBe(true);
+  });
+
+  // Review finding, round 13: a read that FAILS answers nothing, so it must not disqualify a good
+  // response that was already travelling when it started. Comparing against the newest request
+  // STARTED did exactly that, and the catch then kept the older state — the list's answer thrown
+  // away because a later recheck happened to fail.
+  test("a failed read does not discard a good answer already in flight", async () => {
+    docsQueue = [
+      {
+        documents: [doc(), doc({ id: "d2", title: "Outro" })],
+        embeddingBlock: { reason: "credential_pending" },
+      },
+    ];
+    gateDocsOnCall = 1;
+    blockThrows = true;
+
+    render(
+      <TooltipProvider>
+        <ToastProvider>
+          <Harness />
+        </ToastProvider>
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() => expect(docsCalls).toBe(1));
+
+    // A job reports back while the list is still travelling, and that recheck fails.
+    onKnowledgeDocument?.({
+      knowledgeBaseId: "b1",
+      documentId: "d1",
+      status: "UNINDEXED",
+    });
+    await waitFor(() => expect(blockCalls).toBe(1));
+
+    releaseDocsGate();
+    await screen.findByText("Doc");
+    expect(shows(PENDING_TEXT)).toBe(true);
   });
 
   // An event for another base is not this modal's business at all.

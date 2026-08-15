@@ -248,11 +248,14 @@ export function useKnowledgeManager(opts: {
 
   const blockRecheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Ticket taken by every answer about the block, so a read can tell whether it is still the newest
-  // one: two reads can be open at once (a burst re-arms the window while an earlier one is still
-  // travelling), and the older one landing last would undo the newer answer with nothing afterwards
-  // to correct it.
+  // Tickets order the answers about the block: two reads can be open at once (a burst re-arms the
+  // window while an earlier one is still travelling), and the older one landing last would undo the
+  // newer answer with nothing afterwards to correct it.
   const blockAnswerSeq = useRef(0);
+  // The newest ticket that actually ARRIVED. Compared against this rather than against the newest
+  // ticket ISSUED, because a read that fails answers nothing: it must not disqualify a good response
+  // that was already travelling when it started.
+  const blockCommitted = useRef(0);
 
   // Take the ticket BEFORE starting the request, never on arrival: a response that claims its number
   // when it lands is by definition the newest one, so the ticket would certify exactly the write it
@@ -262,9 +265,10 @@ export function useKnowledgeManager(opts: {
     return blockAnswerSeq.current;
   }
 
-  // Writes the block only if nothing took a ticket after this one did.
+  // Writes the block only if no NEWER answer has already arrived.
   function commitBlock(ticket: number, next: EmbeddingBlock) {
-    if (blockAnswerSeq.current !== ticket) return;
+    if (ticket <= blockCommitted.current) return;
+    blockCommitted.current = ticket;
     setEmbeddingBlock(next);
   }
 

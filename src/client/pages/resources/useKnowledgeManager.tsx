@@ -265,11 +265,13 @@ export function useKnowledgeManager(opts: {
     return blockAnswerSeq.current;
   }
 
-  // Writes the block only if no NEWER answer has already arrived.
-  function commitBlock(ticket: number, next: EmbeddingBlock) {
-    if (ticket <= blockCommitted.current) return;
+  // Writes the block only if no NEWER answer has already arrived. Reports whether it did, so a
+  // caller carrying more than the block in the same response can discard all of it together.
+  function commitBlock(ticket: number, next: EmbeddingBlock): boolean {
+    if (ticket <= blockCommitted.current) return false;
     blockCommitted.current = ticket;
     setEmbeddingBlock(next);
+    return true;
   }
 
   // Trailing window rather than a suppress-while-in-flight guard: the scheduler awaits its claimed
@@ -610,13 +612,17 @@ export function useKnowledgeManager(opts: {
   async function openDocs(b: BaseRef) {
     setDocs(null);
     docsModal.open({ id: b.id, name: b.name });
+    // Everything issued for the previous session is void, answered or not: this is a different
+    // modal now, possibly on a different base, and an old response landing into it would show the
+    // documents and the block of a screen the operator already closed (docs/modals.md).
+    blockCommitted.current = blockAnswerSeq.current;
     const ticket = claimBlockAnswer();
     const { data } = await api.api.v1.knowledge
       .bases({ id: b.id })
       .documents.get();
-    if (data) {
+    // The rows travel with the block, so they live or die by the same clock.
+    if (data && commitBlock(ticket, data.embeddingBlock ?? null)) {
       setDocs(data.documents);
-      commitBlock(ticket, data.embeddingBlock ?? null);
     }
   }
 
@@ -626,9 +632,8 @@ export function useKnowledgeManager(opts: {
     const { data } = await api.api.v1.knowledge
       .bases({ id: baseId })
       .documents.get();
-    if (data) {
+    if (data && commitBlock(ticket, data.embeddingBlock ?? null)) {
       setDocs(data.documents);
-      commitBlock(ticket, data.embeddingBlock ?? null);
     }
   }
 

@@ -55,17 +55,23 @@ let releaseGate: () => void = () => undefined;
 async function nextDocs(): Promise<DocsPayload> {
   const answer = docsQueue[Math.min(docsCalls, docsQueue.length - 1)];
   docsCalls += 1;
-  if (gateDocsOnCall === docsCalls) {
+  if (gatedDocsCalls.includes(docsCalls)) {
+    const n = docsCalls;
     await new Promise<void>((r) => {
-      releaseDocsGate = r;
+      docsReleasers.set(n, r);
     });
   }
   return answer as DocsPayload;
 }
 
-// Holds one of the LIST reads open, so a block read can start and finish inside it.
-let gateDocsOnCall: number | null = null;
-let releaseDocsGate: () => void = () => undefined;
+// Holds any number of the LIST reads open (1-based call numbers), so two sessions can be in flight
+// at once and be answered in either order.
+let gatedDocsCalls: number[] = [];
+const docsReleasers = new Map<number, () => void>();
+
+function releaseDocs(call: number) {
+  docsReleasers.get(call)?.();
+}
 
 // Successive answers of the workspace's embedding-block endpoint. The point of these tests is that
 // the console asks again, so each answer has to be allowed to differ from the one before.
@@ -222,7 +228,8 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     reindexResponse = {};
     onKnowledgeDocument = null;
     gateOnCall = null;
-    gateDocsOnCall = null;
+    gatedDocsCalls = [];
+    docsReleasers.clear();
   });
 
   afterEach(() => {
@@ -479,7 +486,7 @@ describe("knowledge documents modal — the embedding block is never stale", () 
         embeddingBlock: { reason: "credential_pending" },
       },
     ];
-    gateDocsOnCall = 1;
+    gatedDocsCalls = [1];
     blockThrows = true;
 
     render(
@@ -500,9 +507,55 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     });
     await waitFor(() => expect(blockCalls).toBe(1));
 
-    releaseDocsGate();
+    releaseDocs(1);
     await screen.findByText("Doc");
     expect(shows(PENDING_TEXT)).toBe(true);
+  });
+
+  // Review finding, round 14: a response issued for a session the operator has already closed must
+  // not land in the next one. `blockCommitted` alone cannot see that — it only knows what arrived,
+  // so an old response that arrives BEFORE the new session's own is the newest thing yet and paints
+  // the closed screen's block onto the open one.
+  test("a response for a closed session does not land in the next one", async () => {
+    docsQueue = [
+      // 1: the first session, blocked. Held open across the close.
+      {
+        documents: [doc(), doc({ id: "d2", title: "Outro" })],
+        embeddingBlock: { reason: "credential_pending" },
+      },
+      // 2: the session the operator is looking at. The credential was filled in between, and this
+      // one is held too, so the stale answer is the first to arrive.
+      {
+        documents: [doc(), doc({ id: "d2", title: "Outro" })],
+        embeddingBlock: null,
+      },
+    ];
+    gatedDocsCalls = [1, 2];
+
+    render(
+      <TooltipProvider>
+        <ToastProvider>
+          <Harness />
+        </ToastProvider>
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() => expect(docsCalls).toBe(1));
+
+    fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
+    await waitFor(() => expect(screen.queryAllByRole("dialog").length).toBe(0));
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() => expect(docsCalls).toBe(2));
+
+    // The closed session answers first, and must be ignored on its way in.
+    releaseDocs(1);
+    await waitFor(() => expect(shows("Doc")).toBe(false));
+    expect(shows(PENDING_TEXT)).toBe(false);
+
+    releaseDocs(2);
+    await screen.findByText("Doc");
+    expect(shows(NEUTRAL_TEXT)).toBe(true);
+    expect(shows(PENDING_TEXT)).toBe(false);
   });
 
   // An event for another base is not this modal's business at all.

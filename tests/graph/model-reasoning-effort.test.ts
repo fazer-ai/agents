@@ -54,6 +54,24 @@ function fakeOpenAI(): FakeOpenAI {
     urls.push(String(url));
     const model = String(body.model ?? "");
     if (String(url).includes("/responses")) {
+      // Measured: a model with no reasoning to constrain refuses the parameter by name
+      // ("Unsupported parameter: 'reasoning.effort' is not supported with this model." on gpt-4o).
+      // The fake rejects it too, so a test can tell "the operator was told" apart from "the
+      // parameter never left".
+      if (body.reasoning !== undefined && /^gpt-4o/.test(model)) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message:
+                "Unsupported parameter: 'reasoning.effort' is not supported with this model.",
+              type: "invalid_request_error",
+              param: "reasoning.effort",
+              code: "unsupported_parameter",
+            },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
       return new Response(
         JSON.stringify({
           id: "resp_test",
@@ -494,5 +512,41 @@ describe("the config schema fences the knob to the provider that has the endpoin
         reasoningEffort: "minimal",
       }),
     ).toThrow();
+  });
+});
+
+// @langchain/openai decides whether to send the typed `reasoning` field by testing the model NAME
+// (isReasoningModel: /^o\d/ or startsWith("gpt-5") minus gpt-5-chat). Anything it does not
+// recognise loses the field, so the turn would still move to /v1/responses and arrive with no
+// effort at all: the operator's choice silently discarded, which is the one outcome worse than a
+// rejection. A fine-tuned id of a model that DOES reason is the case that makes this concrete —
+// "ft:gpt-5.6-luna:…" is a legitimate choice and the name test drops it. Carrying the effort in
+// modelKwargs, which is spread into the request unconditionally, is the same fix the completions
+// branch already needed for routed OpenRouter ids, and for the same reason.
+describe("the chosen effort is not silently dropped by a name test", () => {
+  test("a fine-tuned id of a reasoning model still carries it", async () => {
+    const { sent, url } = await turn(
+      "ft:gpt-5.6-luna:acme::x1",
+      "openai",
+      "high",
+    );
+    expect(url).toContain("/responses");
+    expect(sent.reasoning).toEqual({ effort: "high" });
+  });
+
+  test("a model the adapter does not classify still carries it", async () => {
+    for (const model of ["gpt-5-chat-latest", "my-org/custom-reasoner"]) {
+      const { sent } = await turn(model, "openai", "medium");
+      expect(sent.reasoning).toEqual({ effort: "medium" });
+      fake?.restore();
+    }
+  });
+
+  // The observable difference: the operator learns the model refuses the setting, instead of
+  // reading "saved" and getting no reasoning forever.
+  test("a model with no reasoning to constrain answers with a legible rejection", async () => {
+    await expect(turn("gpt-4o", "openai", "high")).rejects.toThrow(
+      /reasoning\.effort/,
+    );
   });
 });

@@ -52,9 +52,6 @@ function openaiTemperature(
 }
 
 type OpenAIChatFields = ConstructorParameters<typeof ChatOpenAI>[0];
-type ReasoningEffortField = NonNullable<
-  NonNullable<NonNullable<OpenAIChatFields>["reasoning"]>["effort"]
->;
 
 // Builds an OpenAI-shaped client from the transport plan (see ./openai-reasoning for what was
 // measured and why the endpoint, not the model family, is what decides).
@@ -69,10 +66,21 @@ type ReasoningEffortField = NonNullable<
 // nothing required it. An effort the operator DID choose is about the agent, so it goes on the
 // constructor and covers those calls too.
 //
-// NOTE: on completions the effort travels via `modelKwargs` rather than the typed `reasoning`
-// field because @langchain/openai gates that field behind its own isReasoningModel(), which tests
-// `model.startsWith("gpt-5")` and therefore DROPS it for a routed id like "openai/gpt-5.6-luna"
-// (OpenRouter). modelKwargs is spread into the request params unconditionally.
+// NOTE: the effort travels via `modelKwargs` on BOTH endpoints rather than the typed fields,
+// because @langchain/openai decides whether to send those by testing the model NAME
+// (isReasoningModel: /^o\d/, or startsWith("gpt-5") minus gpt-5-chat). Any id it does not
+// recognise loses the parameter: a routed "openai/gpt-5.6-luna" (OpenRouter), and — worse, because
+// it is a legitimate choice of a model that really does reason — a fine-tuned "ft:gpt-5.6-luna:…".
+// The request would still go to /v1/responses and arrive with no effort, discarding the operator's
+// choice in silence. modelKwargs is spread into the params unconditionally, and the typed path
+// overwrites it with the same value when it does fire, so the two can never disagree. A model with
+// no reasoning to constrain then answers 400 naming the parameter, which is the outcome the
+// operator can act on.
+//
+// NOTE: this also sidesteps the installed openai SDK typing `ReasoningEffort` without "max", which
+// the live API accepts on the gpt-5.6 family (measured 200 with function tools) and names in its
+// own rejection message elsewhere. Same shape of gap as issue #64: the measurement is what the
+// request has to satisfy, not the SDK's snapshot of it.
 //
 // NOTE: `zdrEnabled` only sends `store: false` (it does not enable zero data retention on the
 // OpenAI account, despite the name). Chat Completions stores nothing unless asked; the Responses
@@ -89,12 +97,10 @@ function makeOpenAIChat(
       ? {
           useResponsesApi: true,
           zdrEnabled: true,
-          // NOTE: cast because the installed openai SDK types `ReasoningEffort` without "max",
-          // while the live API accepts it on the gpt-5.6 family (measured 200 with function tools)
-          // and names it in its own rejection message for the values it does not take. Same shape
-          // of gap as issue #64, where the field that fixed it was documented but untyped: the
-          // measurement is what the request has to satisfy, not the SDK's snapshot of it.
-          reasoning: { effort: plan.effort as ReasoningEffortField },
+          modelKwargs: {
+            ...fields?.modelKwargs,
+            reasoning: { effort: plan.effort },
+          },
         }
       : plan.effort
         ? {

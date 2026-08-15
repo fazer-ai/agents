@@ -55,6 +55,20 @@ export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 const DEFAULT_EFFORT_REJECTS_TOOLS_RE =
   /^(?:ft:)?(?:[\w.-]+\/)?gpt-5\.6(?:-|$)/i;
 
+// @langchain/openai sends some ids to /v1/responses on its own, whatever we ask of it
+// (_modelPrefersResponsesAPI in utils/misc: "codex" anywhere in the id, or gpt-5.2-pro /
+// gpt-5.4-pro / gpt-5.5-pro). Only the first arm is transcribed here, because this predicate exists
+// for exactly one job — withholding the completions-spelled pin — and the pin only ever fires on a
+// gpt-5.6 id, which no "-pro" id can also be. Carrying the other arms would be a branch nothing can
+// reach.
+//
+// NOTE: "codex" matching ANYWHERE is what creates the overlap: the last segments of a fine-tune
+// ("ft:<base>:<org>:<name>:<id>") are free text the operator writes, so a gpt-5.6 fine-tune named
+// "codex-support" is routed away from completions. The invariant test "no turn ever carries the
+// completions spelling to the responses endpoint" is what holds this to the real adapter, so a
+// drift in their list fails a test instead of a turn.
+const PIN_ROUTED_AWAY_RE = /codex/i;
+
 export interface OpenAITransportPlan {
   // The Responses endpoint instead of Chat Completions. Carries reasoning together with function
   // tools, which is the only combination the completions endpoint refuses.
@@ -64,9 +78,8 @@ export interface OpenAITransportPlan {
   // Effort to pin ONLY on the tool-bound model. Reserved for the case where nobody asked for an
   // effort and the provider's own default is what breaks: pinning it on the constructor would
   // switch reasoning off on the calls that never carried tools and never failed. This is the one
-  // effort still spelled for completions, which is sound because it only fires for the gpt-5.6
-  // family and no gpt-5.6 id is on the adapter's forced-Responses list — the only overlap would be
-  // a "gpt-5.6-codex", which the API answers does not exist.
+  // effort still spelled for completions, so it is withheld from any id the adapter routes to
+  // /v1/responses on its own.
   toolEffort?: ReasoningEffort;
 }
 
@@ -76,8 +89,14 @@ export function planOpenAITransport(
   model: string,
   requested: ReasoningEffort | undefined,
 ): OpenAITransportPlan {
+  const m = model.trim();
   if (requested === undefined) {
-    return DEFAULT_EFFORT_REJECTS_TOOLS_RE.test(model.trim())
+    // The pin is spelled for completions, and it exists only because completions rejects the
+    // provider's default effort next to function tools. On an id the adapter routes to
+    // /v1/responses that rejection does not exist (measured: absent effort + tools answers 200
+    // there), so the pin would be both unnecessary and, in the wrong spelling, fatal.
+    if (PIN_ROUTED_AWAY_RE.test(m)) return { responses: false };
+    return DEFAULT_EFFORT_REJECTS_TOOLS_RE.test(m)
       ? { responses: false, toolEffort: "none" }
       : { responses: false };
   }

@@ -602,3 +602,82 @@ describe("a fine-tuned id is read through to its base model", () => {
     });
   });
 });
+
+// @langchain/openai routes some ids to /v1/responses on its own, whatever we ask
+// (_modelPrefersResponsesAPI). The issue #66 pin is spelled for completions, so it must not fire
+// on those — and the ft: match added above is what makes the overlap reachable, because the last
+// segments of "ft:<base>:<org>:<name>:<id>" are free text the operator writes: a support agent
+// fine-tuned as "codex-support" contains "codex" and gets routed away.
+describe("the completions-spelled pin stays off the adapter's own route", () => {
+  test("a fine-tuned gpt-5.6 whose name contains codex is left alone", () => {
+    expect(
+      planOpenAITransport("ft:gpt-5.6-luna:acme:codex-support:x1", undefined),
+    ).toEqual({ responses: false });
+  });
+
+  test("the same fine-tune under any other name still gets the pin", () => {
+    expect(
+      planOpenAITransport("ft:gpt-5.6-luna:acme:suporte:x1", undefined),
+    ).toEqual({ responses: false, toolEffort: "none" });
+  });
+
+  test("a turn on that id carries no completions-only parameter", async () => {
+    const { sent, url } = await turn("ft:gpt-5.6-luna:acme:codex-support:x1");
+    expect(url).toContain("/responses");
+    expect(sent).not.toHaveProperty("reasoning_effort");
+  });
+});
+
+// Reading another library's routing rule is a copy that can drift, so the guard is stated as the
+// invariant the copy exists to protect rather than as the copy itself: whatever @langchain/openai
+// decides, and for whatever reason, a request that leaves for /v1/responses must never carry the
+// completions spelling. That holds for ids nobody has thought of yet, which a transcribed list
+// cannot do.
+describe("the completions spelling never leaves for the responses endpoint", () => {
+  const IDS = [
+    "gpt-5.6-luna",
+    "gpt-5.6-sol",
+    "gpt-5.4-mini",
+    "gpt-5.5",
+    "gpt-4o",
+    "gpt-5.2-pro",
+    "gpt-5.4-pro",
+    "gpt-5.5-pro",
+    "gpt-5.6-codex",
+    "codex-mini-latest",
+    "ft:gpt-5.6-luna:acme:codex-support:x1",
+    "ft:gpt-5.6-luna:acme:suporte:x1",
+    "ft:gpt-5.4-mini:acme::x1",
+    "my-org/custom-reasoner",
+  ];
+
+  test.each(IDS)("%s, with nothing asked of it", async (model) => {
+    fake = fakeOpenAI();
+    const chat = createChatModel({ provider: "openai", model, apiKey: "test" });
+    await chat
+      .bindTools?.([getCurrentTime])
+      .invoke([{ role: "user", content: "oi" }]);
+    if (fake.urls[0]?.includes("/responses")) {
+      expect(fake.requests[0]).not.toHaveProperty("reasoning_effort");
+    }
+  });
+
+  // Inspected on the captured request rather than on the return value: an id the model refuses the
+  // parameter on (gpt-4o) answers 400, and what this asserts is what LEFT, not whether it landed.
+  test.each(IDS)("%s, at an explicit effort", async (model) => {
+    fake = fakeOpenAI();
+    const chat = createChatModel({
+      provider: "openai",
+      model,
+      apiKey: "test",
+      reasoningEffort: "medium",
+    });
+    await chat
+      .bindTools?.([getCurrentTime])
+      .invoke([{ role: "user", content: "oi" }])
+      .catch(() => undefined);
+    expect(fake.urls[0]).toContain("/responses");
+    expect(fake.requests[0]).not.toHaveProperty("reasoning_effort");
+    expect(fake.requests[0]?.reasoning).toEqual({ effort: "medium" });
+  });
+});

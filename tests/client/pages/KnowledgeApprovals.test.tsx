@@ -246,6 +246,53 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     await waitFor(() => expect(patchCalls.length).toBe(1));
   });
 
+  // Review finding, round 3: `busyId` holds ONE id, so a per-card `busyId === a.id` guard leaves
+  // every other card live. Approving a second card mid-save hands the token over, the first card's
+  // editor unlocks with its PATCH still open, and the response that lands later overwrites whatever
+  // was typed or cancelled in between.
+  test("a save in flight locks the other cards' actions too", async () => {
+    approvalsPayload = [
+      { ...approvalsPayload[0], id: "7" },
+      { ...approvalsPayload[0], id: "8", proposedTitle: "Outro" },
+    ];
+    let release: () => void = () => undefined;
+    patchGate = new Promise<void>((r) => {
+      release = r;
+    });
+    renderQueue();
+    await screen.findByText("Outro");
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /edit/i })[0] as HTMLElement,
+    );
+    const box = (await screen.findByLabelText(
+      /content/i,
+    )) as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: CLEAN } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(box.disabled).toBe(true));
+
+    // The open editor replaced this card's own Approve/Reject, so everything matched here belongs to
+    // the other card.
+    const others = [
+      ...screen.getAllByRole("button", { name: /^approve$/i }),
+      ...screen.getAllByRole("button", { name: /reject/i }),
+    ];
+    expect(others.length).toBeGreaterThan(0);
+    // Counts, never the elements themselves: an assertion that fails while holding a DOM node makes
+    // the runner serialize a cyclic happy-dom tree, and the run stops producing output.
+    expect(
+      others.filter((b) => !(b as HTMLButtonElement).disabled).length,
+    ).toBe(0);
+
+    // The damage, not just the attribute: pressing one must not unlock the editor whose request is
+    // still open.
+    for (const b of others) fireEvent.click(b);
+    expect(box.disabled).toBe(true);
+
+    release();
+    await waitFor(() => expect(patchCalls.length).toBe(1));
+  });
+
   // Approve is the destructive step here: it copies the text verbatim into the base. It must act on
   // what the reviewer is looking at, so it cannot stay live under an open editor.
   test("approve is not reachable while the editor is open", async () => {

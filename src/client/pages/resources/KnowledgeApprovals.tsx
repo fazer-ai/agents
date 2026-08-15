@@ -42,7 +42,12 @@ export function KnowledgeApprovals({
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  // Holds the card whose request is open, and there is only ever one: every action that mutates is
+  // disabled while ANY card is busy. A per-card `busyId === a.id` guard is not enough, because
+  // approving a second card mid-save hands the token over, which unlocks the first card's editor
+  // while its PATCH is still in flight — the late response then overwrites what was typed after.
   const [busyId, setBusyId] = useState<string | null>(null);
+  const busy = busyId !== null;
   // The card being revised, if any. One at a time: the queue is a review surface, and two open
   // editors invite approving the card the reviewer was not reading.
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -311,7 +316,7 @@ export function KnowledgeApprovals({
                   <Button
                     size="sm"
                     loading={busyId === a.id}
-                    disabled={busyId === a.id || !draft.content.trim()}
+                    disabled={busy || !draft.content.trim()}
                     onClick={() => void saveEdit(a)}
                   >
                     <Check className="h-4 w-4" aria-hidden="true" />
@@ -323,7 +328,7 @@ export function KnowledgeApprovals({
                   <Button
                     variant="secondary"
                     size="sm"
-                    disabled={busyId === a.id}
+                    disabled={busy}
                     onClick={() => act(a.id, "reject")}
                   >
                     <X className="h-4 w-4" aria-hidden="true" />
@@ -335,7 +340,7 @@ export function KnowledgeApprovals({
                   <Button
                     variant="secondary"
                     size="sm"
-                    disabled={busyId === a.id || editingId !== null}
+                    disabled={busy || editingId !== null}
                     onClick={() => startEdit(a)}
                   >
                     <Pencil className="h-4 w-4" aria-hidden="true" />
@@ -343,7 +348,7 @@ export function KnowledgeApprovals({
                   </Button>
                   <Button
                     size="sm"
-                    disabled={busyId === a.id}
+                    disabled={busy}
                     onClick={() => act(a.id, "approve")}
                   >
                     <Check className="h-4 w-4" aria-hidden="true" />

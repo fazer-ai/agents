@@ -20,6 +20,7 @@ import {
 } from "@/client/lib/providerLabels";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import { REASONING_EFFORTS } from "@/graph/openai-reasoning";
 import { CapabilityMap } from "./CapabilityMap";
 import { PromptPanel } from "./PromptPanel";
 import { TabActionBar } from "./TabActionBar";
@@ -40,6 +41,8 @@ interface ModelState {
   credentialRef: string;
   baseURL: string;
   temperature: string;
+  // Empty = never chosen, which is not the same as "none": the provider's own default stays.
+  reasoningEffort: string;
 }
 
 interface GeneralTabProps {
@@ -246,6 +249,31 @@ export function GeneralTab({
             />
           </FormField>
         </div>
+        {model.provider === "openai" && (
+          <FormField
+            label={t("editor.reasoningEffort", "Reasoning effort")}
+            description={t(
+              "editor.reasoningEffortHint",
+              "How much the model thinks before answering. Reasoning models only (o-series, gpt-5); more effort means slower, costlier answers.",
+            )}
+          >
+            <Select
+              value={model.reasoningEffort}
+              onChange={(e) =>
+                setModel({ ...model, reasoningEffort: e.target.value })
+              }
+            >
+              <option value="">
+                {t("editor.reasoningEffortDefault", "Provider default")}
+              </option>
+              {REASONING_EFFORTS.map((e) => (
+                <option key={e} value={e}>
+                  {e}
+                </option>
+              ))}
+            </Select>
+          </FormField>
+        )}
         {model.provider === "openai-compatible" && (
           <FormField
             label={t("editor.baseURL", "Base URL")}

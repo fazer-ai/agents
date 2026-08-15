@@ -290,7 +290,7 @@ export const agentsController = new Elysia({
         modelConfig: t.Optional(
           t.Record(t.String(), t.Unknown(), {
             description:
-              "Model settings (provider, model, credentialRef, etc.); secrets are referenced, never inlined.",
+              "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
           }),
         ),
         settings: t.Optional(
@@ -376,7 +376,7 @@ export const agentsController = new Elysia({
         modelConfig: t.Optional(
           t.Record(t.String(), t.Unknown(), {
             description:
-              "Model settings (provider, model, credentialRef, etc.); secrets are referenced, never inlined.",
+              "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
           }),
         ),
         settings: t.Optional(

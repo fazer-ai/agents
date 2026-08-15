@@ -602,6 +602,11 @@ export async function runLoadedTurn(
             apiKey: loaded.apiKey,
             baseURL: loaded.credentialBaseUrl ?? loaded.mc.baseURL,
             temperature: 0,
+            // NOTE: dropped for the same reason temperature is pinned to 0 — this pass rewrites the
+            // agent's own reply for speech (strip markdown, spell out symbols), and the effort the
+            // operator chose is about how the agent THINKS, not about a mechanical rewrite the
+            // customer is waiting on. Reasoning here would only add latency to the audio reply.
+            reasoningEffort: undefined,
           });
           normalizeSpeech = (t) => llmNormalizeForSpeech(normModel, t);
         }

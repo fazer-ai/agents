@@ -5096,7 +5096,7 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -5167,7 +5167,7 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -5238,7 +5238,7 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -5526,7 +5526,7 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -5598,7 +5598,7 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -5670,7 +5670,7 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}

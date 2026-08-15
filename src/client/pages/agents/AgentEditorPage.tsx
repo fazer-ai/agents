@@ -239,6 +239,7 @@ function readModelState(a: Agent) {
     credentialRef: str(mc.credentialRef),
     baseURL: str(mc.baseURL),
     temperature: num(mc.temperature),
+    reasoningEffort: str(mc.reasoningEffort),
   };
 }
 
@@ -675,6 +676,7 @@ export function AgentEditorPage() {
     credentialRef: "",
     baseURL: "",
     temperature: "",
+    reasoningEffort: "",
   });
   // Base URL from the selected model credential (locks the input when set).
   const [modelCredBaseUrl, setModelCredBaseUrl] = useState<string | null>(null);
@@ -956,6 +958,11 @@ export function AgentEditorPage() {
     if (model.credentialRef) cfg.credentialRef = model.credentialRef;
     if (model.baseURL.trim()) cfg.baseURL = model.baseURL.trim();
     if (model.temperature !== "") cfg.temperature = Number(model.temperature);
+    // Only openai has the endpoint that carries reasoning together with tools, and the backend
+    // schema rejects the field on every other provider — so a leftover value from a provider swap
+    // must not be serialized.
+    if (model.reasoningEffort && model.provider === "openai")
+      cfg.reasoningEffort = model.reasoningEffort;
     return cfg;
   }
 

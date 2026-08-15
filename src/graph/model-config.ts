@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AppError } from "@/lib/errors";
+import { REASONING_EFFORTS } from "./openai-reasoning";
 
 // Per-agent/per-node model config SCHEMA — deliberately LangChain-free so the config/HTTP layer
 // can validate a modelConfig without importing the provider SDKs (those live in ./models, which
@@ -25,6 +26,9 @@ export const modelConfigSchema = z
     credentialRef: z.string().min(1).optional(),
     baseURL: z.string().url().optional(),
     temperature: z.number().min(0).max(2).optional(),
+    // How much the model may reason before answering. Absent = whatever the provider does today.
+    // See ./openai-reasoning for the measured table behind the values and the transport.
+    reasoningEffort: z.enum(REASONING_EFFORTS).optional(),
   })
   .superRefine((cfg, ctx) => {
     if (!cfg.model.trim() && cfg.provider !== "openai-compatible") {
@@ -32,6 +36,17 @@ export const modelConfigSchema = z
         code: "custom",
         path: ["model"],
         message: "model is required for this provider",
+      });
+    }
+    // Any effort above "none" needs /v1/responses, which is OpenAI's own endpoint: OpenAI-shaped
+    // servers (openrouter, openai-compatible) mostly do not implement it, and the other providers
+    // spell reasoning differently altogether (Anthropic thinking budgets, Google thinkingBudget).
+    // Accepting the field there would be a control that either does nothing or fails every turn.
+    if (cfg.reasoningEffort !== undefined && cfg.provider !== "openai") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["reasoningEffort"],
+        message: `reasoningEffort is only supported on the "openai" provider, not "${cfg.provider}"`,
       });
     }
   });

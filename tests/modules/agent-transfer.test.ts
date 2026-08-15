@@ -145,6 +145,41 @@ describe.skipIf(!dbUp)("agent export/import", () => {
     expect(JSON.stringify(exp)).not.toContain("vault:");
   });
 
+  // A hand-written export is operator input like any other, and it lands through a third write path.
+  // The host list is reduced to hosts there too, or an imported bundle reintroduces exactly what the
+  // editor and the update path were taught not to store.
+  test("an imported host list is reduced to hosts before it is stored", async () => {
+    const exp = await exportAgent(ctx(), agentId, appDb);
+    const imported = {
+      ...exp,
+      agent: {
+        ...exp.agent,
+        name: "Vendedora importada",
+        settings: {
+          ...exp.agent.settings,
+          sendImage: {
+            allowedHosts: [
+              "https://usuario:senha-secreta@cdn.loja.com.br/x.png?sig=deadbeef",
+            ],
+          },
+        },
+      },
+    };
+    const { agent } = await importAgent(ctx(), imported, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    expect(
+      (
+        (row.settings as Record<string, unknown>).sendImage as {
+          allowedHosts: string[];
+        }
+      ).allowedHosts,
+    ).toEqual(["cdn.loja.com.br"]);
+    expect(JSON.stringify(row.settings)).not.toContain("senha-secreta");
+  });
+
   test("round-trip import recreates the agent DISABLED with resolved refs", async () => {
     const exp = await exportAgent(ctx(), agentId, appDb);
     const imported = { ...exp, agent: { ...exp.agent, name: "Vendedora 2" } };

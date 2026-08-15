@@ -21,6 +21,7 @@ import { isOutOfHoursNow, parseWindows } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
+import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
 import {
   getToolpackToolNames,
@@ -353,6 +354,10 @@ export async function updateAgent(
       }
     }
     const updateData: Record<string, unknown> = { ...rest };
+    // NOTE: See normalizeSettingsForStorage — the host list is reduced to hosts on the way IN, on
+    // every write path, not only when it is read back.
+    const normalizedSettings = normalizeSettingsForStorage(rest.settings);
+    if (normalizedSettings) updateData.settings = normalizedSettings;
     if (hasBh) updateData.businessHoursId = bhId;
     if (hasFuh) updateData.followUpHoursId = fuhId;
     // NOTE: Arm the follow-up backlog fence on the OFF→ON transition of the effective state. The row
@@ -531,7 +536,8 @@ export async function createAgent(
         transferWithSummary: data.transferWithSummary ?? true,
         modelConfig: (data.modelConfig ??
           DEFAULT_MODEL_CONFIG) as Prisma.InputJsonValue,
-        settings: createShape.settings,
+        settings: (normalizeSettingsForStorage(createShape.settings) ??
+          createShape.settings) as Prisma.InputJsonValue,
         businessHoursId: bhId,
         followUpHoursId: fuhId,
         // NOTE: Born already effectively follow-up-ON (enabled + followUp.enabled, any mode: the

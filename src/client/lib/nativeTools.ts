@@ -5,6 +5,7 @@ import {
   Calculator,
   CheckCircle2,
   Clock,
+  Image as ImageIcon,
   LayoutGrid,
   type LucideIcon,
   Mic,
@@ -29,6 +30,7 @@ export const NATIVE_TOOL_ICONS: Record<string, LucideIcon> = {
   update_kanban_task: SquarePen,
   set_voice_preference: Mic,
   react_to_message: Smile,
+  send_image: ImageIcon,
   skip_reply: BellOff,
   calculator: Calculator,
   get_current_time: Clock,
@@ -123,6 +125,15 @@ export function nativeToolMeta(name: string, t: TFunction): NativeToolMeta {
         description: t(
           "nativeTools.react_to_message.desc",
           "React to the customer's last message with an emoji (WhatsApp reaction).",
+        ),
+      };
+    case "send_image":
+      return {
+        icon,
+        label: t("nativeTools.send_image.label", "Send image"),
+        description: t(
+          "nativeTools.send_image.desc",
+          "Deliver an image to the customer from its URL, limited to the hosts you allow.",
         ),
       };
     case "skip_reply":

@@ -5,6 +5,7 @@ import { readDebounceConfig } from "@/modules/debounce/settings";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readGuardrailsConfig } from "@/modules/guardrails/settings";
 import { readHandoffConfig } from "@/modules/handoff/settings";
+import { readSendImageConfig } from "@/modules/images/settings";
 import { readServiceWindowConfig } from "@/modules/service-window/service";
 import { readSplitConfig } from "@/modules/split/service";
 import { readSttConfig } from "@/modules/stt/settings";
@@ -41,6 +42,7 @@ export interface BehaviorSettings {
   grounding: { maxDistance: number | null };
   followUp: ReturnType<typeof readFollowUpConfig>;
   handoff: ReturnType<typeof readHandoffConfig>;
+  sendImage: ReturnType<typeof readSendImageConfig>;
   limits: ReturnType<typeof readLimitsConfig>;
   channelRedirect: ReturnType<typeof readChannelRedirectConfig>;
   guardrails: ReturnType<typeof readGuardrailsConfig>;
@@ -60,6 +62,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "grounding",
   "followUp",
   "handoff",
+  "sendImage",
   "limits",
   "channelRedirect",
   "guardrails",
@@ -79,6 +82,7 @@ export function readBehaviorSettings(settings: unknown): BehaviorSettings {
     grounding: readGrounding(settings),
     followUp: readFollowUpConfig(settings),
     handoff: readHandoffConfig(settings),
+    sendImage: readSendImageConfig(settings),
     limits: readLimitsConfig(settings),
     channelRedirect: readChannelRedirectConfig(settings),
     guardrails: readGuardrailsConfig(settings),
@@ -98,6 +102,7 @@ export interface BehaviorSettingsPatch {
   grounding?: Record<string, unknown>;
   followUp?: Record<string, unknown>;
   handoff?: Record<string, unknown>;
+  sendImage?: Record<string, unknown>;
   limits?: Record<string, unknown>;
   channelRedirect?: Record<string, unknown>;
   guardrails?: Record<string, unknown>;
@@ -140,6 +145,7 @@ export function mergeBehaviorSettings(
   next.serviceWindow = normalized.serviceWindow;
   next.followUp = normalized.followUp;
   next.handoff = normalized.handoff;
+  next.sendImage = normalized.sendImage;
   next.limits = normalized.limits;
   next.channelRedirect = normalized.channelRedirect;
   next.guardrails = normalized.guardrails;

@@ -28,6 +28,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { analyzeGuardrail } from "@/modules/guardrails/analyze";
+import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { deliverReply } from "@/modules/split/service";
 import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
 import { synthesizeReply } from "@/modules/tts/service";
@@ -83,6 +84,8 @@ export interface RuntimeDeps {
   mcp?: McpLoadDeps;
   // Injectable fetch for the TTS provider (tests); real fetch in production.
   ttsFetch?: typeof fetch;
+  // Injectable download + SSRF assertion for send_image (tests); the real ones in production.
+  imageDeps?: ImageFetchDeps;
   // Injectable LLM speech normalizer (tests); production builds one from the agent's model when the
   // agent enables tts.normalize. Best-effort — synthesizeReply falls back to raw text on failure.
   normalizeSpeech?: (text: string) => Promise<string>;
@@ -155,6 +158,57 @@ async function applyDeferredResolve(
   }
 }
 
+// Delivers the images the agent queued this turn, AFTER the same gates the reply passes. Best-effort
+// per image: one failed attachment must not cost the customer the reply that follows it. Invariant:
+// called only on the "posted" and "empty" outcomes — a superseded, taken-over or blocked turn drops
+// the queue, exactly like the deferred resolve intent. Returns whether the customer actually received
+// something, which is what makes an image-only turn count as answered.
+async function deliverPendingImages(
+  client: ChatwootClient,
+  conversationId: number,
+  turnState: TurnState,
+  flow: FlowContext,
+): Promise<boolean> {
+  // NOTE: Sorted by the model's tool-call order, not by the order the downloads finished in — the
+  // batch runs concurrently, and a caption only makes sense next to the picture it was written for.
+  const queued = turnState.pendingImages
+    .splice(0)
+    .sort((a, b) => a.order - b.order);
+  let sent = false;
+  for (const img of queued) {
+    try {
+      await client.sendFileAttachment(
+        conversationId,
+        img.bytes,
+        img.fileName,
+        img.mime,
+        { caption: img.caption },
+      );
+      sent = true;
+      emitFlowEvent(flow, {
+        stage: "tool",
+        status: "ok",
+        detail: { tool: "send_image", outcome: "sent" },
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      logger.warn(
+        "send_image delivery failed (conv=%s): %s",
+        String(conversationId),
+        msg,
+      );
+      emitFlowEvent(flow, {
+        stage: "tool",
+        level: "warn",
+        status: "error",
+        detail: { tool: "send_image", outcome: "failed" },
+        errorMessage: msg,
+      });
+    }
+  }
+  return sent;
+}
+
 // Builds the client + tools + graph from an already-loaded AgentConfig, invokes the thread, re-checks
 // the live assignee, optionally consults `shouldPost`, then posts via the bot token.
 export async function runLoadedTurn(
@@ -192,7 +246,12 @@ export async function runLoadedTurn(
     botToken: loaded.agentBotToken ?? undefined,
   });
   // Per-turn mutable state shared with the native tools (deferred resolve intent).
-  const turnState: TurnState = { resolveRequested: false };
+  const turnState: TurnState = {
+    resolveRequested: false,
+    pendingImages: [],
+    imagesInFlight: 0,
+    imagesSeq: 0,
+  };
   const tools = await buildToolset(
     loaded,
     {
@@ -203,6 +262,7 @@ export async function runLoadedTurn(
       conversationId,
       threadId,
       messageId: params.messageId,
+      imageDeps: params.deps?.imageDeps,
       turnState,
     },
     { buildNativeTools, mcp: params.deps?.mcp, flow },
@@ -466,25 +526,58 @@ export async function runLoadedTurn(
     // AND any deferred resolve intent (the re-armed flush re-decides over the full burst).
     if (params.shouldPost && !(await params.shouldPost())) return "superseded";
 
-    // Empty reply: nothing to post, but a deferred resolve intent still applies (resolve with no
-    // final text is a legitimate shape). This runs AFTER the recheck and the supersede gate on
-    // purpose: resolving under a takeover belongs to the human, and resolving under a superseded
-    // turn would make the next flush's gate read "resolved" and swallow the customer's newest
-    // message via the watermark.
-    if (!reply) {
-      await applyDeferredResolve(client, conversationId, turnState, flow);
-      return "empty";
-    }
-
     // OUTPUT guardrail: screen the model's reply BEFORE delivery. On a violation, replace it with the
     // template / a guardrails-generated safe reply, or suppress the send entirely ("silent"). A
     // suppressed send also discards the deferred resolve intent — resolving a conversation whose
     // goodbye was blocked would strand the customer with no reply and no human.
-    const outGuard = await runGuardrail("output", reply);
+    // NOTE: The captions ride along into the screening: they are model-written text the customer
+    // reads, so moderating the reply while a caption goes out unread would be a hole. A trip drops
+    // the queue — the safe reply replaces what the model wrote, images included. This sits ABOVE the
+    // empty-reply branch because a caption is customer-facing text even when the model produced no
+    // final message of its own (skip_reply with an image is a legitimate shape).
+    const captions = turnState.pendingImages
+      .map((i) => i.caption?.trim())
+      .filter((c): c is string => !!c);
+    const screened = [reply, ...captions].filter(Boolean).join("\n");
+    const outGuard = screened ? await runGuardrail("output", screened) : null;
     if (outGuard) {
+      turnState.pendingImages.length = 0;
       if (outGuard.reply === null) return "blocked";
       reply = outGuard.reply;
     }
+
+    // Empty reply: no text to post, but the queued images and a deferred resolve intent still apply
+    // (both are legitimate shapes with no final text). This runs AFTER the recheck and the supersede
+    // gate on purpose: resolving under a takeover belongs to the human, and resolving under a
+    // superseded turn would make the next flush's gate read "resolved" and swallow the customer's
+    // newest message via the watermark.
+    // NOTE: An image that reached the customer IS an answer, so the turn reports "posted" — the
+    // callers key the error-cleared/answered bookkeeping off that word, and an image-only turn that
+    // reported "empty" would leave a stale turn error on a conversation that was just answered.
+    if (!reply) {
+      const queued = turnState.pendingImages.length;
+      const sent = await deliverPendingImages(
+        client,
+        conversationId,
+        turnState,
+        flow,
+      );
+      // NOTE: The images WERE the turn and none of them reached the customer. That is a failed turn,
+      // not a silent one: returning "empty" here would let the deferred resolve close a conversation
+      // nobody answered, and the callers only record a turn error (private note, lastError, alert)
+      // when the turn THROWS. Best-effort per image still holds where a reply carries the turn.
+      if (queued > 0 && !sent) {
+        throw new Error(
+          "send_image: nenhuma imagem foi entregue e o turno não tinha resposta em texto",
+        );
+      }
+      await applyDeferredResolve(client, conversationId, turnState, flow);
+      return sent ? "posted" : "empty";
+    }
+
+    // The image lands before the text that talks about it, and before the TTS branch: an audio
+    // reply must not swallow the attachment.
+    await deliverPendingImages(client, conversationId, turnState, flow);
 
     // Reply modality: audio (TTS) per the agent's mode + the customer's modality/preference, else
     // text. TTS is best-effort — any synthesis failure falls back to a text reply, never drops it.

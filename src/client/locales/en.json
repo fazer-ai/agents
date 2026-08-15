@@ -883,6 +883,10 @@
     "saveTools": "Save tools",
     "sectionsNav": "Sections",
     "selectProvider": "Select…",
+    "sendImage": "Sending images",
+    "sendImageHint": "Hosts the agent may fetch an image from when it uses the \"Send image\" tool. The agent chooses the URL, so this list is what decides where it can actually go: leave it empty and every attempt is refused. Output guardrails read text and never the picture itself, so this list is the only control over what an image may show. It has no effect unless the tool is granted on the Tools tab.",
+    "sendImageHosts": "Allowed hosts",
+    "sendImageHostsHint": "One per line, e.g. cdn.minhaloja.com.br. Start with \"*.\" to cover a domain and its subdomains (*.minhaloja.com.br). Paste a full URL and only its host is kept.",
     "split": "Reply in multiple messages",
     "splitEnabled": "Split replies into several messages with a typing delay",
     "splitHint": "Break long replies into smaller messages, with a typing pause between them (feels more human).",
@@ -1481,6 +1485,10 @@
     "resolve_conversation": {
       "desc": "Mark the conversation as resolved when the request is fully handled.",
       "label": "Resolve"
+    },
+    "send_image": {
+      "desc": "Deliver an image to the customer from its URL, limited to the hosts you allow.",
+      "label": "Send image"
     },
     "set_custom_attribute": {
       "desc": "Set a custom attribute on the conversation, the contact, or the kanban card (e.g. lead stage, qualification flag).",

@@ -53,3 +53,109 @@ export class ResolveThenReplyModel {
     };
   }
 }
+
+// Calls send_image once (a product photo the agent already has the URL for), then answers with text.
+// Mirrors ResolveThenReplyModel: the point is the ORDER of what reaches Chatwoot, not the content.
+export class SendImageThenReplyModel {
+  constructor(
+    private reply: string,
+    private url: string,
+    private caption?: string,
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(this.reply);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "send_image",
+                  args: { url: self.url, caption: self.caption },
+                  id: "call_send_image",
+                },
+              ],
+            })
+          : new AIMessage(self.reply);
+      },
+    };
+  }
+}
+
+// Sends an image and then ends the turn with NO final text — the skip_reply shape, where the caption
+// is the only thing the customer reads.
+export class SendImageOnlyModel extends SendImageThenReplyModel {
+  constructor(url: string, caption?: string) {
+    super("", url, caption);
+  }
+}
+
+// Several images in ONE response, which is how a model answers "show me the three colours". LangGraph
+// runs the batch with Promise.all, so what the customer receives is only in the model's order if
+// something remembers that order.
+export class SendImageBatchModel {
+  constructor(
+    private reply: string,
+    private images: { url: string; caption?: string }[],
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(this.reply);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: self.images.map((img, i) => ({
+                name: "send_image",
+                args: { url: img.url, caption: img.caption },
+                id: `call_send_image_${i}`,
+                type: "tool_call" as const,
+              })),
+            })
+          : new AIMessage(self.reply);
+      },
+    };
+  }
+}
+
+// The picture IS the answer, and the agent closes the conversation in the same breath: both calls in
+// one response, no final text. The pair the turn has to get right when the delivery fails.
+export class SendImageAndResolveModel {
+  constructor(private url: string) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage("");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: "send_image",
+                  args: { url: self.url },
+                  id: "call_send_image",
+                },
+                { name: "resolve_conversation", args: {}, id: "call_resolve" },
+              ],
+            })
+          : new AIMessage("");
+      },
+    };
+  }
+}

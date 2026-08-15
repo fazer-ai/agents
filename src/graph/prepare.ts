@@ -47,6 +47,11 @@ import {
   type HandoffTargets,
   loadHandoffTargets,
 } from "@/modules/handoff/targets";
+import type { ImageFetchDeps } from "@/modules/images/fetch";
+import {
+  readSendImageConfig,
+  type SendImageConfig,
+} from "@/modules/images/settings";
 import {
   buildToolpackTools,
   type IntegrationSelection,
@@ -187,6 +192,8 @@ export interface AgentConfig {
   // WhatsApp 24h service-window gate for proactive sends + the contact name for template params.
   serviceWindowConfig: ServiceWindowConfig;
   handoffConfig: HandoffConfig;
+  // Hosts the send_image tool may fetch an image from (operator-set; empty = the tool refuses).
+  sendImageConfig: SendImageConfig;
   // Per-agent kanban guidance (operator funnel note), surfaced in the kanban_move_card description.
   kanbanConfig: KanbanConfig;
   // Operator-authored guidance for tools whose only config is the note (set_custom_attribute,
@@ -539,6 +546,7 @@ export async function loadAgentConfig(
     splitConfig: readSplitConfig(effSettings),
     serviceWindowConfig: readServiceWindowConfig(effSettings),
     handoffConfig: readHandoffConfig(effSettings),
+    sendImageConfig: readSendImageConfig(effSettings),
     kanbanConfig: readKanbanConfig(effSettings),
     toolGuidance: readToolGuidance(effSettings),
     httpToolContext: {
@@ -575,7 +583,24 @@ export interface ToolsetCtx {
   // Mutable per-turn state shared between runLoadedTurn and the native tools (deferred resolve).
   // Only runLoadedTurn passes it; nudge/playground omit it on purpose (structural mirror of
   // TurnState in tools/native.ts — this module deliberately does not import that file).
-  turnState?: { resolveRequested: boolean };
+  // Injectable for tests: the download + SSRF assertion send_image performs before queueing
+  // (defaults are the real ones). The assertion resolves DNS, so a hermetic test has to stub it —
+  // same convention as ToolpackCtx.assertSafe.
+  imageDeps?: ImageFetchDeps;
+  turnState?: {
+    resolveRequested: boolean;
+    // Mirror of TurnState.pendingImages: send_image queues here and the runtime delivers after the
+    // turn's gates.
+    pendingImages: {
+      bytes: ArrayBuffer;
+      mime: string;
+      fileName: string;
+      caption?: string;
+      order: number;
+    }[];
+    imagesInFlight: number;
+    imagesSeq: number;
+  };
 }
 
 export interface ToolBuildDeps {
@@ -583,7 +608,20 @@ export interface ToolBuildDeps {
     ctx: {
       client: ChatwootClient;
       conversationId: number;
-      turnState?: { resolveRequested: boolean };
+      turnState?: {
+        resolveRequested: boolean;
+        // Mirror of TurnState.pendingImages: send_image queues here and the runtime delivers after the
+        // turn's gates.
+        pendingImages: {
+          bytes: ArrayBuffer;
+          mime: string;
+          fileName: string;
+          caption?: string;
+          order: number;
+        }[];
+        imagesInFlight: number;
+        imagesSeq: number;
+      };
       transferWithSummary?: boolean;
       handoff?: HandoffConfig;
       handoffTargets?: HandoffTargets;
@@ -595,6 +633,9 @@ export interface ToolBuildDeps {
       timezone?: string;
       vocab?: ChatwootVocab;
       kanban?: KanbanContext;
+      sendImage?: SendImageConfig;
+      fetchImpl?: typeof fetch;
+      assertSafe?: ImageFetchDeps["assertSafe"];
       toolInstructions?: Partial<Record<NativeToolName, string>>;
       onSideEffectError?: SideEffectErrorReporter;
     },
@@ -896,6 +937,9 @@ export async function buildToolset(
         timezone: cfg.timezone,
         vocab,
         kanban,
+        sendImage: cfg.sendImageConfig,
+        fetchImpl: ctx.imageDeps?.fetchImpl,
+        assertSafe: ctx.imageDeps?.assertSafe,
         toolInstructions,
         onSideEffectError,
       },

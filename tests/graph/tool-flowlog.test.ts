@@ -88,6 +88,7 @@ class ToolCallThenReplyModel {
   constructor(
     private toolName: string,
     private reply: string,
+    private args: Record<string, unknown> = { fail: true },
   ) {}
   async invoke(): Promise<AIMessage> {
     return new AIMessage(this.reply);
@@ -103,7 +104,7 @@ class ToolCallThenReplyModel {
           ? new AIMessage({
               content: "",
               tool_calls: [
-                { name: self.toolName, args: { fail: true }, id: "call_f1" },
+                { name: self.toolName, args: self.args, id: "call_f1" },
               ],
             })
           : new AIMessage(self.reply);
@@ -278,5 +279,105 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     }
     expect(delivery).not.toBeNull();
     expect(delivery?.level).toBe("warn");
+  });
+  // Issue #65 review: a tool's ARGUMENTS land in ExecutionLog.detail, which docs/logs.md states never
+  // carries message text or PII. send_image adds two shapes the secret redactor does not catch: a URL
+  // whose credential rides in the query (a presigned link — `redactSecretsDeep` keys off names like
+  // `api_key`, not off `X-Amz-Signature`), and a caption, which is text written for the customer.
+  describe("tool args reaching storage", () => {
+    async function argsLoggedFor(args: Record<string, unknown>) {
+      const probe = failableTool(async () => "ok", {
+        name: "probe_image",
+        description: "probe",
+        schema: z.object({
+          url: z.string().optional(),
+          caption: z.string().optional(),
+        }),
+      });
+      const model = new ToolCallThenReplyModel("probe_image", "pronto", args);
+      const graph = buildAgentGraph({
+        model: model as unknown as BaseChatModel,
+        systemPrompt: "Você é prestativa.",
+        checkpointer: new MemorySaver(),
+        tools: [probe],
+      });
+      const flow = flowCtx();
+      await graph.invoke(
+        { messages: [new HumanMessage("oi")] },
+        {
+          configurable: { thread_id: `tfl-args-${crypto.randomUUID()}` },
+          callbacks: [new ToolFlowLogger(flow)],
+        },
+      );
+      const rows = await pollToolRows(flow.turnId, 1);
+      const detail = rows[0]?.detail as { args?: Record<string, unknown> };
+      return detail?.args;
+    }
+
+    test("a URL is replaced, not trimmed down to something still readable", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://bucket.s3.amazonaws.com/fotos/camiseta.png?X-Amz-Signature=deadbeefcafe0000&X-Amz-Credential=CRED",
+      });
+      expect(logged?.url).toBe("[url]");
+      expect(JSON.stringify(logged)).not.toContain("deadbeefcafe0000");
+    });
+
+    // Everything past the scheme is model-written free text: an order number, a document, a person's
+    // name in a filename — and the HOST too, because an operator who allows `*.loja.com.br` has handed
+    // the model the subdomain. `detail` is documented to hold ids/counts/enums and to be exportable.
+    test("an identifying path does not survive into storage", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://cdn.loja.com.br/pedidos/48213/nota-fiscal-maria-silva.png",
+      });
+      expect(logged?.url).toBe("[url]");
+      expect(JSON.stringify(logged)).not.toContain("maria-silva");
+      expect(JSON.stringify(logged)).not.toContain("48213");
+    });
+
+    test("a subdomain the model chose under a wildcard host is gone too", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://pedido-48213.loja.com.br/foto.png",
+      });
+      expect(logged?.url).toBe("[url]");
+      expect(JSON.stringify(logged)).not.toContain("48213");
+    });
+
+    test("credentials embedded in the URL itself are dropped too", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://usuario:senha-secreta@cdn.loja.com.br/fotos/x.png",
+      });
+      expect(logged?.url).toBe("[url]");
+      expect(JSON.stringify(logged)).not.toContain("senha-secreta");
+      expect(JSON.stringify(logged)).not.toContain("usuario");
+    });
+
+    // WHATWG ignores leading spaces and control characters, so this is a working URL to `new URL()`
+    // and to `fetch` — and was ordinary text to a `^https?` prefix check, which stored it whole.
+    test("whitespace in front of a URL does not smuggle it past the sanitizer", async () => {
+      const logged = await argsLoggedFor({
+        url: " \thttps://cdn.loja.com.br/fotos/x.png?token=segredo-escondido",
+      });
+      expect(logged?.url).toBe("[url]");
+      expect(JSON.stringify(logged)).not.toContain("segredo-escondido");
+    });
+
+    // A string that announces itself as http(s) and then does not parse is exactly the case where we
+    // cannot tell which part of it is host and which is payload, so none of it is kept.
+    test("a URL that does not parse is replaced, not passed through", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://cdn.loja.com.br:99999/x.png?token=segredo-em-voo",
+      });
+      expect(logged?.url).toBe("[url]");
+      expect(JSON.stringify(logged)).not.toContain("segredo-em-voo");
+    });
+
+    test("a caption never reaches storage at all", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://cdn.loja.com.br/x.png",
+        caption: "Oi Maria, aqui está o modelo que você pediu",
+      });
+      expect(logged).not.toHaveProperty("caption");
+      expect(JSON.stringify(logged)).not.toContain("Maria");
+    });
   });
 });

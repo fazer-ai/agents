@@ -20,6 +20,18 @@ import {
   type HandoffTargets,
   matchHandoffTarget,
 } from "@/modules/handoff/targets";
+import {
+  fetchImageForDelivery,
+  type ImageFetchDeps,
+  type ImageFetchFailure,
+} from "@/modules/images/fetch";
+import {
+  SEND_IMAGE_DEFAULTS,
+  SEND_IMAGE_MAX_CAPTION_CHARS,
+  SEND_IMAGE_MAX_PER_TURN,
+  SEND_IMAGE_MAX_TURN_BYTES,
+  type SendImageConfig,
+} from "@/modules/images/settings";
 import type { SideEffectErrorReporter } from "@/modules/integrations/toolpacks";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import {
@@ -52,6 +64,30 @@ function sysCtx(tenantId: bigint): TenantContext {
 // takeover and discard the reply — and the reply would reopen the conversation anyway).
 export interface TurnState {
   resolveRequested: boolean;
+  // Images the agent asked to send this turn, fetched and validated but NOT yet delivered. They ride
+  // the same post-time pipeline as the reply (ownership recheck, supersede gate, output guardrail),
+  // because a tool that posts from inside the graph invocation can message a customer whose turn is
+  // then discarded — the same reason resolve_conversation is deferred.
+  pendingImages: PendingImage[];
+  // Downloads accepted but not yet queued. LangGraph's ToolNode runs one response's tool calls with
+  // Promise.all, so a batch of send_image calls all reach the ceiling check before any of them has
+  // queued anything: without a reservation taken BEFORE the await, every call in the batch reads the
+  // same empty queue, passes, and the ceiling means nothing.
+  imagesInFlight: number;
+  // Monotonic ticket, taken before the download for the same reason: the batch runs concurrently, so
+  // the queue fills in COMPLETION order and the customer would receive the pictures — and the
+  // captions written for them — in whatever order the hosts happened to answer. The order the model
+  // asked for is the one that matches the words around them.
+  imagesSeq: number;
+}
+
+export interface PendingImage {
+  bytes: ArrayBuffer;
+  mime: string;
+  fileName: string;
+  caption?: string;
+  // Position in the model's tool-call order, not in download-completion order.
+  order: number;
 }
 
 export interface ToolCtx {
@@ -94,6 +130,14 @@ export interface ToolCtx {
   // model can't know ids), surface the funnel state, and set_custom_attribute target the task. Absent ⇒
   // no linked card / not granted.
   kanban?: KanbanContext;
+  // For send_image: the hosts the operator allows an image to be fetched from. Absent ⇒ none, and
+  // the tool refuses every call — the URL is model-supplied, so an unconfigured allowlist must fail
+  // closed rather than open.
+  sendImage?: SendImageConfig;
+  // Injectable for tests (the image download); default real fetch + assertSafeOutboundUrl. Same
+  // convention as ToolpackCtx: the SSRF assertion resolves DNS, so a hermetic test has to stub it.
+  fetchImpl?: typeof fetch;
+  assertSafe?: ImageFetchDeps["assertSafe"];
   // Per-agent, per-tool operator guidance (keyed by native tool name), appended to that tool's
   // model-facing description so transfer/funnel logic lives WITH the tool instead of buried in the
   // prompt. Populated at turn prep from agent.settings (handoff.instructions / kanban.instructions).
@@ -975,6 +1019,146 @@ function skipReplyTool(_ctx: ToolCtx) {
   );
 }
 
+// Sends an image the agent already has a URL for (a product photo from an HTTP tool, an MCP tool or
+// a catalog integration) as a real attachment, instead of pasting a link the customer has to open.
+//
+// The URL is MODEL-supplied, so the hosts it may be fetched from are an operator decision that lives
+// in the agent's config, never in a tool argument: a prompt injection can write any URL it likes and
+// still not reach a host the operator did not list. See modules/images/fetch for the rest of the
+// fence (SSRF assertion, no redirects, byte cap on the body, type read from the file's signature).
+// The model-facing refusal when a turn has already taken all the images it may carry. Same wording
+// for the count and the byte budget: from the model's side both mean "not this turn".
+function limitReached(): string {
+  return `Limite de imagens deste turno atingido (${SEND_IMAGE_MAX_PER_TURN}). Envie as demais em outra mensagem ou responda com o link em texto.`;
+}
+
+function sendImageTool(ctx: ToolCtx) {
+  const cfg = ctx.sendImage ?? SEND_IMAGE_DEFAULTS;
+  const hosts = cfg.allowedHosts;
+  const guidance = ctx.toolInstructions?.send_image;
+  const description =
+    "Send an IMAGE to the customer as an attachment, given its URL. Use it whenever you have the URL of a picture the customer would rather see than read about (a product photo, a plan, a receipt). The URL must come from data you actually received — another tool's result, the knowledge base, the conversation — never one you compose or guess. Optionally include a short caption. Only the hosts listed below can be reached; anything else is refused, so if the image you have is elsewhere, describe it or send the page link as text instead." +
+    (guidance ? `\n\n${guidance}` : "") +
+    `\n<imagens-permitidas>${
+      hosts.length
+        ? hosts.map((h) => `\n  <host>${xmlEscape(h)}</host>`).join("")
+        : "\n  <nenhum>Nenhum host liberado: a ferramenta vai recusar qualquer URL até o operador configurar a lista.</nenhum>"
+    }\n</imagens-permitidas>`;
+  return failableTool(
+    async ({ url, caption }: { url: string; caption?: string }) => {
+      // NOTE: Both refusals below are decided BEFORE the fetch. Downloading megabytes over ten
+      // seconds only to throw the result away is work a model can ask for repeatedly, and the DNS
+      // lookup alone is a signal leaving the box for a call whose answer is already "no".
+      //
+      // Queued, not sent: delivery happens after the turn's gates, so a turn that is superseded,
+      // taken over or blocked must not have already messaged the customer. Without a turn to queue
+      // into (a proactive nudge, where the 24h service window decides the send mode) the tool
+      // declines rather than posting behind that gate's back.
+      const turnState = ctx.turnState;
+      if (!turnState) {
+        return "Não é possível enviar imagem neste momento (mensagem proativa). Responda com o link em texto.";
+      }
+      // One model response can carry a whole batch of tool calls, and the graph's tool-call limit is
+      // only re-checked between responses, so the queue needs its own ceiling: every accepted image
+      // is held in memory until the turn ends and then uploaded one by one. The slot is taken here,
+      // BEFORE the await, because the batch runs concurrently — a check that spans the download
+      // would be read by every call while the queue is still empty. Bytes are enforced at the other
+      // end, where the real size is known; the count keeps the in-flight total bounded meanwhile.
+      const tooManyQueued =
+        turnState.pendingImages.length + turnState.imagesInFlight >=
+        SEND_IMAGE_MAX_PER_TURN;
+      if (tooManyQueued) {
+        return limitReached();
+      }
+      turnState.imagesInFlight++;
+      const order = turnState.imagesSeq++;
+      try {
+        const res = await fetchImageForDelivery(url, cfg, {
+          fetchImpl: ctx.fetchImpl,
+          assertSafe: ctx.assertSafe,
+        });
+        if (!res.ok) {
+          // NOTE: A refusal the OPERATOR has to fix (no hosts configured, host not listed) is normal
+          // operation for the model — it should answer with a link instead — but it is not normal
+          // for the operator, so only the transport failures are marked as integration failures.
+          const message = sendImageRefusal(res.reason, res.detail);
+          return res.reason === "unreachable" || res.reason === "http_error"
+            ? toolFailure(message)
+            : message;
+        }
+        // NOTE: Re-read the queue and count THIS image in: the batch's other calls may have queued
+        // while this one downloaded, and a budget that excludes the candidate lets the last accepted
+        // image carry the total past the ceiling. No await between the read and the push, so the
+        // pair is atomic.
+        const queuedBytes = turnState.pendingImages.reduce(
+          (n, i) => n + i.bytes.byteLength,
+          0,
+        );
+        if (queuedBytes + res.bytes.byteLength > SEND_IMAGE_MAX_TURN_BYTES) {
+          return limitReached();
+        }
+        turnState.pendingImages.push({
+          bytes: res.bytes,
+          mime: res.mime,
+          fileName: res.fileName,
+          caption: caption?.trim() || undefined,
+          order,
+        });
+        // NOTE: No file name here. This string is the tool's OUTPUT, and `ToolFlowLogger` stores tool
+        // outputs verbatim in `ExecutionLog.detail` — a name derived from the URL path would put back
+        // exactly what the argument sanitizer strips out of that column.
+        return "Imagem pronta para envio; ela vai junto com a sua resposta deste turno.";
+      } finally {
+        turnState.imagesInFlight--;
+      }
+    },
+    {
+      name: "send_image",
+      description,
+      schema: z.object({
+        url: z
+          .string()
+          .min(1)
+          .describe(
+            "Direct https URL of the image file itself (not the page that shows it). Its host must be one of the allowed ones.",
+          ),
+        caption: z
+          .string()
+          .max(SEND_IMAGE_MAX_CAPTION_CHARS)
+          .optional()
+          .describe(
+            "Optional short text delivered with the image, in the customer's language.",
+          ),
+      }),
+    },
+  );
+}
+
+// Model-facing explanation of a refusal. Each one tells the agent what to do INSTEAD, so a blocked
+// image degrades into a useful answer rather than into an apology loop.
+function sendImageRefusal(reason: ImageFetchFailure, detail?: string): string {
+  switch (reason) {
+    case "no_hosts_configured":
+      return "Não posso enviar imagens: nenhum host foi liberado para esta configuração. Responda com o link em texto.";
+    case "host_not_allowed":
+      // NOTE: The rejected host is deliberately NOT echoed. It is a value the model composed — a
+      // wildcard allowlist means it picks the subdomain — and this string is the tool's OUTPUT,
+      // which `ToolFlowLogger` stores verbatim in `ExecutionLog.detail`. The model already knows
+      // which URL it asked for, and the hosts it MAY use are in the tool's own description.
+      return "Esse host não está na lista de hosts liberados, então a imagem não foi enviada. Responda com o link em texto.";
+    case "invalid_url":
+      return "Essa URL não é válida para envio de imagem. Confira o endereço ou responda com o link em texto.";
+    case "too_large":
+      return "A imagem é grande demais para enviar. Responda com o link em texto.";
+    case "not_an_image":
+      return "O endereço não devolveu uma imagem (só PNG, JPEG, GIF e WebP são aceitos). Responda com o link em texto.";
+    case "http_error":
+      return `O servidor da imagem respondeu ${detail ?? "com erro"}. Responda com o link em texto.`;
+    default:
+      return "Não consegui baixar a imagem agora. Responda com o link em texto.";
+  }
+}
+
 // Utility tool: exact arithmetic without a model round-trip. Context-free, so it is also exposed
 // in the playground (where there is no conversation to act on).
 function calculatorTool(_ctx: ToolCtx) {
@@ -1046,6 +1230,7 @@ export function buildNativeTools(
     updateKanbanTaskTool(ctx),
     setVoicePreferenceTool(ctx),
     reactToMessageTool(ctx),
+    sendImageTool(ctx),
     skipReplyTool(ctx),
     calculatorTool(ctx),
     getCurrentTimeTool(ctx),

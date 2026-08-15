@@ -24,6 +24,7 @@ import {
   stdioCommandLauncher,
 } from "@/lib/mcp-launchers";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
 import { assertNoSecrets } from "@/modules/n8n-export/n8n";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
@@ -897,7 +898,8 @@ export async function importAgent(
         name: exp.name,
         systemPrompt: exp.systemPrompt,
         modelConfig: modelConfig as Prisma.InputJsonValue,
-        settings: settings as Prisma.InputJsonValue,
+        settings: (normalizeSettingsForStorage(settings) ??
+          settings) as Prisma.InputJsonValue,
         transferWithSummary: exp.transferWithSummary,
         businessHoursId,
         followUpHoursId,

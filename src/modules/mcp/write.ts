@@ -512,9 +512,10 @@ export async function agentSettingsSet(
     patch.channelRedirect = args.channelRedirect;
   if (args.attributeContext !== undefined)
     patch.attributeContext = args.attributeContext;
+  if (args.sendImage !== undefined) patch.sendImage = args.sendImage;
   if (Object.keys(patch).length === 0) {
     return err(
-      "no updatable fields provided (debounce, stt, tts, vision, split, serviceWindow, followUp, handoff, limits, channelRedirect, attributeContext and/or grounding)",
+      "no updatable fields provided (debounce, stt, tts, vision, split, serviceWindow, followUp, handoff, limits, channelRedirect, attributeContext, sendImage and/or grounding)",
     );
   }
 

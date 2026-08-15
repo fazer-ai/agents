@@ -4,6 +4,7 @@ import {
   CalendarClock,
   Gauge,
   Image,
+  ImagePlus,
   Layers,
   ListChecks,
   Megaphone,
@@ -132,6 +133,13 @@ interface LimitsState {
   maxToolCalls: string;
 }
 
+// NOTE: The allowed-host list is edited as raw textarea text (one per line) and only turns into an
+// array on save — the runtime reader normalizes and drops what does not resolve to a hostname, so
+// the operator's half-typed line survives editing instead of vanishing under them.
+export interface SendImageState {
+  allowedHosts: string;
+}
+
 // NOTE: Which Chatwoot custom attributes the agent sees the CURRENT VALUES of (one key list per
 // scope). Mirrors agent.settings.attributeContext / readAttributeContextConfig.
 interface AttributeContextState {
@@ -186,6 +194,8 @@ interface BehaviorTabProps {
   onVisionEntryChange: (entry: VaultEntry | null) => void;
   limits: LimitsState;
   setLimits: React.Dispatch<React.SetStateAction<LimitsState>>;
+  sendImage: SendImageState;
+  setSendImage: React.Dispatch<React.SetStateAction<SendImageState>>;
   attributeContext: AttributeContextState;
   setAttributeContext: React.Dispatch<
     React.SetStateAction<AttributeContextState>
@@ -743,6 +753,8 @@ export function BehaviorTab({
   onVisionEntryChange,
   limits,
   setLimits,
+  sendImage,
+  setSendImage,
   attributeContext,
   setAttributeContext,
   serviceWindow,
@@ -822,6 +834,11 @@ export function BehaviorTab({
       id: "attributeContext",
       icon: ListChecks,
       label: t("editor.attributeContext", "Data in context"),
+    },
+    {
+      id: "sendImage",
+      icon: ImagePlus,
+      label: t("editor.sendImage", "Sending images"),
     },
     {
       id: "limits",
@@ -1444,6 +1461,31 @@ export function BehaviorTab({
               attributeContext={attributeContext}
               setAttributeContext={setAttributeContext}
             />
+          </Section>
+
+          <Section
+            id="sendImage"
+            icon={ImagePlus}
+            title={t("editor.sendImage", "Sending images")}
+            description={t(
+              "editor.sendImageHint",
+              'Hosts the agent may fetch an image from when it uses the "Send image" tool. The agent chooses the URL, so this list is what decides where it can actually go: leave it empty and every attempt is refused. Output guardrails read text and never the picture itself, so this list is the only control over what an image may show. It has no effect unless the tool is granted on the Tools tab.',
+            )}
+          >
+            <FormField
+              label={t("editor.sendImageHosts", "Allowed hosts")}
+              description={t(
+                "editor.sendImageHostsHint",
+                'One per line, e.g. cdn.minhaloja.com.br. Start with "*." to cover a domain and its subdomains (*.minhaloja.com.br). Paste a full URL and only its host is kept.',
+              )}
+            >
+              <Textarea
+                value={sendImage.allowedHosts}
+                onChange={(e) => setSendImage({ allowedHosts: e.target.value })}
+                rows={4}
+                placeholder="cdn.minhaloja.com.br"
+              />
+            </FormField>
           </Section>
 
           <Section

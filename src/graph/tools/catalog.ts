@@ -13,6 +13,7 @@ export const NATIVE_TOOL_NAMES = [
   "update_kanban_task",
   "set_voice_preference",
   "react_to_message",
+  "send_image",
   "skip_reply",
   "calculator",
   "get_current_time",
@@ -35,6 +36,7 @@ export const NATIVE_TOOL_CATEGORY: Record<NativeToolName, NativeToolCategory> =
     update_kanban_task: "conversation",
     set_voice_preference: "conversation",
     react_to_message: "conversation",
+    send_image: "conversation",
     skip_reply: "conversation",
     calculator: "utility",
     get_current_time: "utility",
@@ -69,6 +71,9 @@ export const NATIVE_TOOL_RISK: Record<NativeToolName, RiskTier> = {
   update_kanban_task: "medium",
   set_voice_preference: "low",
   react_to_message: "low",
+  // NOTE: The only native tool that reaches OUTSIDE, on a URL the model chose, and delivers the
+  // result to the customer. The operator's host allowlist is what bounds it.
+  send_image: "medium",
   skip_reply: "low",
   calculator: "low",
   get_current_time: "low",

@@ -871,8 +871,12 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     );
     expect(d.followUp?.nextStep).toBeNull();
     expect(d.followUp?.nextRunAt).toBeNull();
-    // Not the appointment's doing, and the sequence is not "complete" either — nothing is coming.
+    // Not the appointment's doing, and not a finished sequence either: `lastFollowUpAt` is set and
+    // nothing is pending, which is exactly the shape the console draws the "sequence complete" marker
+    // for. `live: false` is what keeps it from doing that.
     expect(d.followUp?.pausedByAppointment).toBe(false);
+    expect(d.followUp?.lastFollowUpAt).not.toBeNull();
+    expect(d.followUp?.live).toBe(false);
   });
 
   test("the agent was disabled with a job already armed → no countdown", async () => {
@@ -894,5 +898,12 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.enabled).toBe(false);
     expect(d.followUp?.nextStep).toBeNull();
     expect(d.followUp?.nextRunAt).toBeNull();
+    expect(d.followUp?.live).toBe(false);
+  });
+
+  test("a conversation the bot still owns reports the sequence as live", async () => {
+    const d = await getConversationDetail(ctx(tenant), convNewEpisode, appDb);
+    expect(d.followUp?.live).toBe(true);
+    expect(d.followUp?.nextStep).toBe(1);
   });
 });

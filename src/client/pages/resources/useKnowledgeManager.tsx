@@ -265,9 +265,18 @@ export function useKnowledgeManager(opts: {
   // those rows go on to READY without another UNINDEXED.
   const blockAnswerSeq = useRef(0);
 
+  // Take the ticket BEFORE starting the request, never on arrival: a response that claims its number
+  // when it lands is by definition the newest one, so the ticket would certify exactly the write it
+  // exists to prevent — an answer that a faster event has already overtaken.
   function claimBlockAnswer(): number {
     blockAnswerSeq.current += 1;
     return blockAnswerSeq.current;
+  }
+
+  // Writes the block only if nothing took a ticket after this one did.
+  function commitBlock(ticket: number, next: EmbeddingBlock) {
+    if (blockAnswerSeq.current !== ticket) return;
+    setEmbeddingBlock(next);
   }
 
   // Trailing window rather than a suppress-while-in-flight guard: the scheduler awaits its claimed
@@ -293,8 +302,7 @@ export function useKnowledgeManager(opts: {
     // with an answer fetched for something else (docs/modals.md). And anything that took a ticket
     // after this one knows more than this response does, whether it is a newer read or an event.
     if (!data || openDocsBaseId.current !== baseId) return;
-    if (blockAnswerSeq.current !== ticket) return;
-    setEmbeddingBlock(data.embeddingBlock ?? null);
+    commitBlock(ticket, data.embeddingBlock ?? null);
   }
 
   useOnModalOpen(createModal, () => {
@@ -583,25 +591,25 @@ export function useKnowledgeManager(opts: {
   async function openDocs(b: BaseRef) {
     setDocs(null);
     docsModal.open({ id: b.id, name: b.name });
+    const ticket = claimBlockAnswer();
     const { data } = await api.api.v1.knowledge
       .bases({ id: b.id })
       .documents.get();
     if (data) {
       setDocs(data.documents);
-      claimBlockAnswer();
-      setEmbeddingBlock(data.embeddingBlock ?? null);
+      commitBlock(ticket, data.embeddingBlock ?? null);
     }
   }
 
   // Refetch the open documents modal's list in place (after an edit, so the new title/status shows).
   async function reloadDocs(baseId: string) {
+    const ticket = claimBlockAnswer();
     const { data } = await api.api.v1.knowledge
       .bases({ id: baseId })
       .documents.get();
     if (data) {
       setDocs(data.documents);
-      claimBlockAnswer();
-      setEmbeddingBlock(data.embeddingBlock ?? null);
+      commitBlock(ticket, data.embeddingBlock ?? null);
     }
   }
 
@@ -695,6 +703,7 @@ export function useKnowledgeManager(opts: {
           )
         : null,
     );
+    const ticket = claimBlockAnswer();
     try {
       const { data, error: err } = await api.api.v1.knowledge
         .bases({ id: baseId })
@@ -707,8 +716,10 @@ export function useKnowledgeManager(opts: {
       // a block, or the toast fades and the badges go back to a neutral "Not indexed" the server
       // just contradicted; without one, or the snapshot goes on explaining a block that the queued
       // jobs just disproved.
-      claimBlockAnswer();
-      setEmbeddingBlock(data?.blocked ? { reason: data.blocked.reason } : null);
+      commitBlock(
+        ticket,
+        data?.blocked ? { reason: data.blocked.reason } : null,
+      );
       if (data?.blocked) {
         revert();
         // Same text as the banner, from the same function: two wordings for one reason is how the

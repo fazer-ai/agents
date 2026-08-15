@@ -376,6 +376,44 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     expect(shows(PENDING_TEXT)).toBe(false);
   });
 
+  // Review finding, round 8: the ticket only orders answers if it is taken BEFORE the request. Taken
+  // after the await, a delayed response claims the newest number on arrival and wins over the event
+  // that overtook it — the ticket then certifies exactly the write it was added to prevent.
+  test("a slow list read cannot outrank an event that overtook it", async () => {
+    docsQueue = [
+      // 1: the base opens blocked.
+      {
+        documents: [doc()],
+        embeddingBlock: { reason: "credential_pending" },
+      },
+      // 2: reopened, and this read is held. Its answer is already out of date when it lands.
+      {
+        documents: [doc()],
+        embeddingBlock: { reason: "credential_pending" },
+      },
+    ];
+    await openModal();
+    expect(shows(PENDING_TEXT)).toBe(true);
+
+    fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
+    await waitFor(() => expect(screen.queryAllByRole("dialog").length).toBe(0));
+
+    gateOnCall = 2;
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() => expect(docsCalls).toBe(2));
+
+    // The credential was filled elsewhere and a job got through while the list was still loading.
+    onKnowledgeDocument?.({
+      knowledgeBaseId: "b1",
+      documentId: "d1",
+      status: "PROCESSING",
+    });
+
+    releaseGate();
+    await screen.findByText("Doc");
+    expect(shows(PENDING_TEXT)).toBe(false);
+  });
+
   // A bulk index that hits the block emits one event per document, and the answer is identical for
   // all of them: the block is the workspace's, not the row's.
   test("a burst of blocked documents does not become a burst of reads", async () => {

@@ -609,10 +609,13 @@ describe("a fine-tuned id is read through to its base model", () => {
 // segments of "ft:<base>:<org>:<name>:<id>" are free text the operator writes: a support agent
 // fine-tuned as "codex-support" contains "codex" and gets routed away.
 describe("the completions-spelled pin stays off the adapter's own route", () => {
-  test("a fine-tuned gpt-5.6 whose name contains codex is left alone", () => {
-    expect(
-      planOpenAITransport("ft:gpt-5.6-luna:acme:codex-support:x1", undefined),
-    ).toEqual({ responses: false });
+  test.each([
+    "ft:gpt-5.6-luna:acme:codex-support:x1",
+    "ft:gpt-5.6-luna:acme:gpt-5.2-pro-migration:x1",
+    "ft:gpt-5.6-luna:acme:gpt-5.4-pro-migration:x1",
+    "ft:gpt-5.6-luna:acme:gpt-5.5-pro-migration:x1",
+  ])("a fine-tuned gpt-5.6 named %s is left alone", (model) => {
+    expect(planOpenAITransport(model, undefined)).toEqual({ responses: false });
   });
 
   test("the same fine-tune under any other name still gets the pin", () => {
@@ -645,7 +648,12 @@ describe("the completions spelling never leaves for the responses endpoint", () 
     "gpt-5.5-pro",
     "gpt-5.6-codex",
     "codex-mini-latest",
+    // One per routing substring, carried in the free-text part of a fine-tune. The adapter tests
+    // ALL FOUR with `includes`, so any of them can ride a suffix the operator wrote.
     "ft:gpt-5.6-luna:acme:codex-support:x1",
+    "ft:gpt-5.6-luna:acme:gpt-5.2-pro-migration:x1",
+    "ft:gpt-5.6-luna:acme:gpt-5.4-pro-migration:x1",
+    "ft:gpt-5.6-luna:acme:gpt-5.5-pro-migration:x1",
     "ft:gpt-5.6-luna:acme:suporte:x1",
     "ft:gpt-5.4-mini:acme::x1",
     "my-org/custom-reasoner",

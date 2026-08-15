@@ -56,18 +56,18 @@ const DEFAULT_EFFORT_REJECTS_TOOLS_RE =
   /^(?:ft:)?(?:[\w.-]+\/)?gpt-5\.6(?:-|$)/i;
 
 // @langchain/openai sends some ids to /v1/responses on its own, whatever we ask of it
-// (_modelPrefersResponsesAPI in utils/misc: "codex" anywhere in the id, or gpt-5.2-pro /
-// gpt-5.4-pro / gpt-5.5-pro). Only the first arm is transcribed here, because this predicate exists
-// for exactly one job — withholding the completions-spelled pin — and the pin only ever fires on a
-// gpt-5.6 id, which no "-pro" id can also be. Carrying the other arms would be a branch nothing can
-// reach.
+// (_modelPrefersResponsesAPI in utils/misc). All four of its arms are `model.includes(...)`, i.e.
+// they match ANYWHERE in the id — which is what lets any of them collide with the pin below, since
+// the last segments of a fine-tune ("ft:<base>:<org>:<name>:<id>") are free text the operator
+// writes: a gpt-5.6 fine-tune named "codex-support", or one named "gpt-5.4-pro-migration", is
+// routed away from completions while still being a gpt-5.6 id.
 //
-// NOTE: "codex" matching ANYWHERE is what creates the overlap: the last segments of a fine-tune
-// ("ft:<base>:<org>:<name>:<id>") are free text the operator writes, so a gpt-5.6 fine-tune named
-// "codex-support" is routed away from completions. The invariant test "no turn ever carries the
-// completions spelling to the responses endpoint" is what holds this to the real adapter, so a
-// drift in their list fails a test instead of a turn.
-const PIN_ROUTED_AWAY_RE = /codex/i;
+// NOTE: none of these arms is reachable through the BASE model name — a bare "-pro" id can never
+// also be gpt-5.6 — which is exactly why an earlier mutation of the "-pro" arms killed no test and
+// read as dead code. It was uncovered, not unreachable. The invariant test "the completions
+// spelling never leaves for the responses endpoint" now carries one fine-tune id per arm, so each
+// one is held to the real adapter.
+const PIN_ROUTED_AWAY_RE = /codex|gpt-5\.[245]-pro/i;
 
 export interface OpenAITransportPlan {
   // The Responses endpoint instead of Chat Completions. Carries reasoning together with function

@@ -4,13 +4,23 @@ import {
   Database,
   FlaskConical,
   MessageSquare,
+  Pencil,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
-import { Badge, Button, Card, useToast } from "@/client/components";
+import {
+  Badge,
+  Button,
+  Card,
+  FormField,
+  Input,
+  Textarea,
+  useToast,
+} from "@/client/components";
 import { api } from "@/client/lib/api";
+import { approvalEditPatch } from "@/client/lib/approvalEdit";
 
 // Types derived from the Eden treaty — never hand-declared (see docs/eden-treaty.md).
 type ApprovalsData = Awaited<
@@ -33,6 +43,10 @@ export function KnowledgeApprovals({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // The card being revised, if any. One at a time: the queue is a review surface, and two open
+  // editors invite approving the card the reviewer was not reading.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ title: "", content: "" });
 
   useEffect(() => {
     let active = true;
@@ -88,6 +102,55 @@ export function KnowledgeApprovals({
     }
   }
 
+  function startEdit(a: Approval) {
+    setEditingId(a.id);
+    setDraft({
+      title: a.proposedTitle ?? "",
+      content: a.proposedContent,
+    });
+  }
+
+  async function saveEdit(a: Approval) {
+    const patch = approvalEditPatch(a, draft);
+    // Nothing to send: close the editor without touching the item. Calling PATCH anyway would stamp
+    // it EDITED, which claims a revision that did not happen (see lib/approvalEdit).
+    if (!patch) {
+      setEditingId(null);
+      return;
+    }
+    setBusyId(a.id);
+    try {
+      const { error: err } = await api.api.v1.knowledge
+        .approvals({ id: a.id })
+        .patch(patch);
+      if (err) {
+        showToast(
+          t("approvals.editError", "Could not save the edit."),
+          "error",
+        );
+        return;
+      }
+      setApprovals((prev) =>
+        prev.map((it) =>
+          it.id === a.id
+            ? {
+                ...it,
+                status: "EDITED",
+                proposedTitle: patch.title ?? it.proposedTitle,
+                proposedContent: patch.content ?? it.proposedContent,
+              }
+            : it,
+        ),
+      );
+      setEditingId(null);
+      showToast(t("approvals.edited", "Suggestion updated."), "success");
+    } catch {
+      showToast(t("approvals.editError", "Could not save the edit."), "error");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   // Quiet section: nothing to show while loading the secondary queue, and nothing once it's empty.
   if (loading) return null;
   if (error) {
@@ -128,9 +191,37 @@ export function KnowledgeApprovals({
                 {t(`approvals.status.${a.status}`, a.status)}
               </Badge>
             </div>
-            <p className="whitespace-pre-wrap text-sm text-text-secondary">
-              {a.proposedContent}
-            </p>
+            {editingId === a.id ? (
+              <div className="flex flex-col gap-3">
+                <FormField label={t("approvals.editTitle", "Title")}>
+                  <Input
+                    value={draft.title}
+                    onChange={(e) =>
+                      setDraft({ ...draft, title: e.target.value })
+                    }
+                  />
+                </FormField>
+                <FormField
+                  label={t("approvals.editContent", "Content")}
+                  description={t(
+                    "approvals.editContentHint",
+                    "This text is stored in the knowledge base exactly as written. Make it a standalone statement, with no caveats about checking it.",
+                  )}
+                >
+                  <Textarea
+                    rows={6}
+                    value={draft.content}
+                    onChange={(e) =>
+                      setDraft({ ...draft, content: e.target.value })
+                    }
+                  />
+                </FormField>
+              </div>
+            ) : (
+              <p className="whitespace-pre-wrap text-sm text-text-secondary">
+                {a.proposedContent}
+              </p>
+            )}
             {a.rationale ? (
               <p className="text-text-muted text-xs italic">
                 {t("approvals.rationale", "Rationale: {{text}}", {
@@ -178,24 +269,60 @@ export function KnowledgeApprovals({
                 </Link>
               ) : null}
             </div>
+            {/* Approve copies the text verbatim into the base, so it is deliberately absent while
+                the editor is open: the reviewer decides on the text in front of them, and an approve
+                that fired mid-revision would publish the version they were replacing. */}
             <div className="flex justify-end gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={busyId === a.id}
-                onClick={() => act(a.id, "reject")}
-              >
-                <X className="h-4 w-4" aria-hidden="true" />
-                {t("approvals.reject", "Reject")}
-              </Button>
-              <Button
-                size="sm"
-                disabled={busyId === a.id}
-                onClick={() => act(a.id, "approve")}
-              >
-                <Check className="h-4 w-4" aria-hidden="true" />
-                {t("approvals.approve", "Approve")}
-              </Button>
+              {editingId === a.id ? (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={busyId === a.id}
+                    onClick={() => setEditingId(null)}
+                  >
+                    <X className="h-4 w-4" aria-hidden="true" />
+                    {t("common.cancel", "Cancel")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={busyId === a.id || !draft.content.trim()}
+                    onClick={() => void saveEdit(a)}
+                  >
+                    <Check className="h-4 w-4" aria-hidden="true" />
+                    {t("common.save", "Save")}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={busyId === a.id}
+                    onClick={() => act(a.id, "reject")}
+                  >
+                    <X className="h-4 w-4" aria-hidden="true" />
+                    {t("approvals.reject", "Reject")}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={busyId === a.id}
+                    onClick={() => startEdit(a)}
+                  >
+                    <Pencil className="h-4 w-4" aria-hidden="true" />
+                    {t("approvals.edit", "Edit")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={busyId === a.id}
+                    onClick={() => act(a.id, "approve")}
+                  >
+                    <Check className="h-4 w-4" aria-hidden="true" />
+                    {t("approvals.approve", "Approve")}
+                  </Button>
+                </>
+              )}
             </div>
           </Card>
         ))}

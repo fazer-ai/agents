@@ -40,33 +40,41 @@ let patchResult = "updated";
 // Lets a test hold the PATCH open, so the in-flight state is observable.
 let patchGate: Promise<void> | null = null;
 
-mock.module("@/client/lib/api", () => ({
-  api: {
-    api: {
-      v1: {
-        knowledge: {
-          approvals: Object.assign(
-            ({ id }: { id: string }) => ({
-              approve: { post: async () => ({ data: {}, error: null }) },
-              reject: { post: async () => ({ data: {}, error: null }) },
-              patch: async (body: Record<string, unknown>) => {
-                if (patchGate) await patchGate;
-                patchCalls.push({ id, body });
-                return { data: { result: patchResult }, error: null };
-              },
-            }),
-            {
-              get: async () => ({
-                data: { approvals: approvalsPayload },
-                error: null,
-              }),
-            },
-          ),
-        },
-      },
-    },
-  },
-}));
+// The api module is NOT mocked: `mock.module` is global to the process and leaks into every other
+// file sharing the worker — this file broke `vaultCache` in CI while passing locally, because that
+// suite stubs `globalThis.fetch` and our module mock meant its code never reached it. The Eden
+// treaty calls fetch, so stubbing that reaches the same paths with no spill (same shape as
+// tests/client/lib/vaultCache.test.ts).
+const realFetch = globalThis.fetch;
+
+function json(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function installFetchStub() {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input instanceof Request ? input.url : input);
+    const method =
+      init?.method ?? (input instanceof Request ? input.method : "GET");
+    const approval = /\/knowledge\/approvals\/([^/?]+)/.exec(url);
+    if (approval && method === "PATCH") {
+      if (patchGate) await patchGate;
+      patchCalls.push({
+        id: approval[1] as string,
+        body: JSON.parse(String(init?.body ?? "{}")),
+      });
+      return json({ result: patchResult });
+    }
+    if (approval && method === "POST") return json({});
+    if (url.includes("/knowledge/approvals")) {
+      return json({ approvals: approvalsPayload });
+    }
+    return realFetch(input as RequestInfo | URL, init);
+  }) as typeof fetch;
+}
 
 mock.module("react-i18next", () => ({
   useTranslation: () => ({
@@ -133,15 +141,15 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     patchResult = "updated";
     patchGate = null;
     seed();
+    installFetchStub();
   });
 
   afterEach(() => {
     cleanup();
   });
 
-  // mock.module is global to the process and leaks across files in the same worker, so the api stub
-  // is handed back at the end of this file rather than left installed for whoever runs next.
   afterAll(() => {
+    globalThis.fetch = realFetch;
     mock.restore();
   });
 

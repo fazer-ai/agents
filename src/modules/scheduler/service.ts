@@ -231,6 +231,11 @@ export async function rescheduleJob(
 }
 
 // Failure: attempts++; retry with backoff until the cap, then DEAD.
+// Returns whether this call is the one that DEAD-LETTERED the job — the attempt count alone does not
+// say so. The CAS is on `status = 'CLAIMED'`, and a job re-armed mid-run (`armDebounce` upserts the
+// claimed row back to PENDING) no longer matches it: the row survives with another run already
+// queued, so a caller reading `attempts` would call a live job dead. Anything hanging off "this work
+// is definitively lost" has to hang off this, not off the failure (issue #71).
 export async function failJob(
   tenantId: bigint,
   id: bigint,
@@ -238,10 +243,10 @@ export async function failJob(
   error: string,
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
-): Promise<void> {
+): Promise<{ deadLettered: boolean }> {
   const next = attempts + 1;
   const dead = next >= MAX_ATTEMPTS;
-  await runScopedOn(base, sysCtx(tenantId), (db) =>
+  const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
       where: { id, status: "CLAIMED" },
       data: dead
@@ -254,6 +259,7 @@ export async function failJob(
           },
     }),
   );
+  return { deadLettered: dead && count > 0 };
 }
 
 // Reaper: a CLAIMED row older than `staleMs` is presumed crashed → back to PENDING (attempts++ so

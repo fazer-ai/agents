@@ -462,6 +462,12 @@ model Conversation {
   // NULL = the last turn was fine (or none ran yet).
   lastError              String?   @map("last_error")
   lastErrorAt            DateTime? @map("last_error_at")
+  // When the "the agent could not answer, a human has to take over" private note was last posted for
+  // this conversation. Distinct from lastErrorAt, which is stamped on EVERY failed attempt including
+  // the ones a retry will fix: this one is only stamped when the turn is definitively lost, and it is
+  // the coalescing anchor + the concurrency claim (the conditional write that sets it is what elects
+  // the single announcer). NULL = never announced.
+  failureNoticeSentAt    DateTime? @map("failure_notice_sent_at")
   // When the customer activated test mode in this conversation by sending /teste (item 1). NULL =
   // not activated; a "test" agent stays silent until this is set. /reset deliberately does NOT clear
   // it (the conversation keeps answering after a reset).

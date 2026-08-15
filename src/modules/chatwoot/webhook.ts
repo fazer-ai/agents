@@ -38,6 +38,10 @@ import {
   clearConversationError,
   recordConversationError,
 } from "@/modules/conversations/error";
+import {
+  announceFailedTurn,
+  readDirectFence,
+} from "@/modules/conversations/failure-note";
 import { armDebounce, resolveDebounceConfig } from "@/modules/debounce/service";
 import { advanceHandledWatermark } from "@/modules/debounce/watermark";
 import { cancelPendingJob } from "@/modules/scheduler/service";
@@ -1308,6 +1312,26 @@ export async function processChatwootDelivery(
               tenantId: params.tenantId,
               instanceId: params.instanceId,
               chatwootConversationId: n.conversationId,
+              error: err,
+              base,
+            });
+            // And, when nothing else is coming, say so INSIDE Chatwoot (issue #71). There is no
+            // retry on this path, so the only thing that can still answer is a newer message's own
+            // turn — the same fence the success path applies at `shouldPost`.
+            await announceFailedTurn({
+              tenantId: params.tenantId,
+              instanceId: params.instanceId,
+              chatwootConversationId: n.conversationId,
+              failure: {
+                path: "direct",
+                fence: await readDirectFence({
+                  tenantId: params.tenantId,
+                  instanceId: params.instanceId,
+                  chatwootConversationId: n.conversationId,
+                  triggerId: n.message?.id ?? null,
+                  base,
+                }),
+              },
               error: err,
               base,
             });

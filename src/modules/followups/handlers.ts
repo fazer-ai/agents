@@ -5,7 +5,6 @@ import { isTurnInFlight } from "@/graph/inflight";
 import { parseThreadId, runAgentNudge } from "@/graph/nudge";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { isTestSilenced } from "@/modules/agents/test-mode";
 import { hasLiveAppointment } from "@/modules/appointments/reminders";
 import {
   isOpenAt,
@@ -13,7 +12,7 @@ import {
   parseWindows,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
-import { shouldBotHandle } from "@/modules/chatwoot/normalize";
+import { isFollowUpLive } from "@/modules/followups/eligibility";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
@@ -255,25 +254,34 @@ export async function followUpHandler(
         followUpArmedAt: true,
       },
     });
-    if (!agent?.enabled) return null;
-    // Test-mode gate: a "test" agent must not send proactive follow-ups in a conversation that
-    // hasn't been activated with /teste (defense in depth — the sweep's SQL already filters these).
-    if (isTestSilenced(agent.mode, conv.testActivatedAt)) return null;
-    // Anti double follow-up: this conversation is managed by a channelRedirect this agent runs — its
-    // WIDGET inbox gets the dedicated REDIRECT_FOLLOWUP job, and its WhatsApp ENTRY inbox is owned by
-    // the redirect's own re-send + cross-channel stage. Either way the generic follow-up stays out.
-    // Defense in depth — the sweep's SQL already filters these; this catches a FOLLOWUP job enqueued
-    // BEFORE the redirect config changed underneath it.
+    if (!agent) return null;
+    // Everything that can have changed since the job was armed: the agent disabled, follow-up switched
+    // off, the conversation taken by a human or resolved, a test agent's conversation never activated,
+    // or a channelRedirect taking over re-engagement (its WIDGET inbox gets the dedicated
+    // REDIRECT_FOLLOWUP job and its ENTRY inbox is owned by the redirect's own stage, so the generic
+    // follow-up stays out of both). The sweep's SQL already filters most of these; this catches a job
+    // enqueued BEFORE the config changed underneath it.
+    //
+    // Shared with the console's follow-up indicator, which must promise a countdown only for a job
+    // that would survive this check — see the predicate's header and issue #72.
     const redirectCfg = readChannelRedirectConfig(agent.settings);
+    const followUpCfg = readFollowUpConfig(agent.settings);
     if (
-      redirectCfg.enabled &&
-      (redirectCfg.widgetInboxId === inbox.chatwootInboxId ||
-        redirectCfg.entryInboxId === inbox.chatwootInboxId)
+      !isFollowUpLive({
+        agentEnabled: agent.enabled,
+        followUpEnabled: followUpCfg.enabled,
+        managedByRedirect:
+          redirectCfg.enabled &&
+          (redirectCfg.widgetInboxId === inbox.chatwootInboxId ||
+            redirectCfg.entryInboxId === inbox.chatwootInboxId),
+        agentMode: agent.mode,
+        testActivatedAt: conv.testActivatedAt,
+        status: conv.status,
+        assigneeType: conv.assigneeType,
+      })
     ) {
       return null;
     }
-    const followUpCfg = readFollowUpConfig(agent.settings);
-    if (!followUpCfg.enabled) return null;
 
     // Business hours gate: prefer followUpHoursId; fall back to businessHoursId; neither → no gate.
     const hoursId = agent.followUpHoursId ?? agent.businessHoursId;
@@ -342,16 +350,6 @@ export async function followUpHandler(
   } else if (newEpisode) {
     // A later step but the client spoke (or the watermark vanished): the episode is over. The inbound
     // webhook already cancels the PENDING job; a new period of silence restarts at step 0.
-    return { outcome: "done" };
-  }
-
-  // Gate: only follow up while the bot still owns the conversation (pending, no human).
-  if (
-    !shouldBotHandle({
-      assigneeType: ctx.conv.assigneeType,
-      status: ctx.conv.status,
-    })
-  ) {
     return { outcome: "done" };
   }
 

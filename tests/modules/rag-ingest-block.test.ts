@@ -10,6 +10,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   createDocument,
   registerRagIngestHandler,
+  resolveEmbeddingConfig,
 } from "@/modules/rag/documents";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import { updateEmbeddingSettings } from "@/modules/tenant-settings/service";
@@ -207,6 +208,72 @@ describe.skipIf(!dbUp)(
       const row = await readDoc(id, doc.id);
       expect(row?.status).toBe("UNINDEXED");
       expect(row?.error).toBe("errors.embeddingEmpty");
+    });
+
+    // Review finding: `tryResolveVaultSecret` answers null for a DELETED entry exactly as it does for
+    // an unfilled one, so a dangling ref used to be reported as "pending" — telling the operator to
+    // fill a credential that is not there.
+    test("a ref whose credential was deleted is not reported as pending", async () => {
+      const { id, kb } = await seedTenant("blk-gone");
+      const entry = await createPendingVaultEntry(
+        ctx(id),
+        { name: "embed-doomed", kind: "generic" },
+        appDb,
+      );
+      await updateEmbeddingSettings(
+        ctx(id),
+        { credentialRef: entry.ref },
+        appDb,
+      );
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM vault_entries WHERE tenant_id = ${id}`,
+      );
+      const doc = await createDocument({
+        tenantId: id,
+        knowledgeBaseId: kb,
+        title: "T",
+        text: "conteudo",
+        sourceType: "text",
+        base: appDb,
+      });
+      await runIngest(id, doc.id);
+      expect((await readDoc(id, doc.id))?.error).toBe(
+        "errors.embeddingNotConfigured",
+      );
+    });
+
+    // Review finding: MCP hands `AppError.message` to the caller verbatim and none of these tokens has
+    // a server-side locale entry, so the message is the only thing that names the reason off-console.
+    test("the thrown message names the reason, not just the token", async () => {
+      const { id } = await seedTenant("blk-msg");
+      const notConfigured = await runScopedOn(appDb, ctx(id), (db) =>
+        resolveEmbeddingConfig(db, id, "text-embedding-3-small").catch(
+          (e: Error) => e,
+        ),
+      );
+      expect(String((notConfigured as Error).message)).toContain(
+        "not configured",
+      );
+
+      const entry = await createPendingVaultEntry(
+        ctx(id),
+        { name: "embed-unfilled", kind: "generic" },
+        appDb,
+      );
+      await updateEmbeddingSettings(
+        ctx(id),
+        { credentialRef: entry.ref },
+        appDb,
+      );
+      const pending = await runScopedOn(appDb, ctx(id), (db) =>
+        resolveEmbeddingConfig(db, id, "text-embedding-3-small").catch(
+          (e: Error) => e,
+        ),
+      );
+      expect(String((pending as Error).message)).toContain("not filled in");
+      expect(String((pending as Error).message)).not.toBe(
+        String((notConfigured as Error).message),
+      );
     });
 
     // The console re-renders the row from this event without re-fetching, so a reason that reaches the

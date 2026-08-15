@@ -7,7 +7,10 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
-import { tryResolveVaultSecret } from "@/modules/vault/service";
+import {
+  missingVaultRefReason,
+  tryResolveVaultSecret,
+} from "@/modules/vault/service";
 import { chunkText } from "./chunk";
 import { type EmbeddingConfig, embedTexts } from "./embeddings";
 import { toVectorLiteral } from "./sql";
@@ -43,12 +46,19 @@ export async function resolveEmbeddingStatus(
   const raw = await tryResolveVaultSecret<
     string | { apiKey: string; baseURL?: string }
   >(db, settings.credentialRef);
-  if (!raw)
+  if (!raw) {
+    // NOTE: `tryResolveVaultSecret` answers null both for an unfilled entry and for a ref whose row
+    // is gone (deleted credential, settings never updated). Only the first is "pending": reporting it
+    // for a dangling ref would send the operator to fill a credential that no longer exists, so that
+    // case falls back to the same reason as a workspace that never configured one.
+    const why = await missingVaultRefReason(db, settings.credentialRef);
+    if (why === "not_found") return { ok: false, reason: "not_configured" };
     return {
       ok: false,
       reason: "credential_pending",
       credentialRef: settings.credentialRef,
     };
+  }
   const { apiKey, baseURL: secretBaseURL } =
     typeof raw === "string" ? { apiKey: raw, baseURL: undefined } : raw;
   if (!apiKey)
@@ -79,6 +89,20 @@ export function embeddingBlockKey(
   return "errors.embeddingNotConfigured";
 }
 
+// NOTE: The English message carries the reason too, and is not allowed to collapse into one generic
+// sentence. The token above is only useful to a surface that maps it; MCP hands `AppError.message`
+// to the caller verbatim, and none of these tokens has a server-side locale entry, so the message is
+// the only thing that says which of the three happened outside the console.
+function embeddingBlockMessage(
+  status: Exclude<EmbeddingStatus, { ok: true }>,
+): string {
+  if (status.reason === "credential_pending")
+    return "embedding credential is not filled in yet";
+  if (status.reason === "credential_empty")
+    return "embedding credential is empty";
+  return "embedding credential not configured";
+}
+
 export async function resolveEmbeddingConfig(
   db: ScopedDb,
   tenantId: bigint,
@@ -87,7 +111,7 @@ export async function resolveEmbeddingConfig(
   const status = await resolveEmbeddingStatus(db, tenantId, model);
   if (status.ok) return status.config;
   throw new AppError(
-    "embedding credential is not usable",
+    embeddingBlockMessage(status),
     400,
     embeddingBlockKey(status),
   );

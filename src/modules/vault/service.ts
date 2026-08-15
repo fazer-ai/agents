@@ -88,6 +88,23 @@ export async function tryResolveVaultSecret<T = unknown>(
   return decryptJson<T>(entry.secret);
 }
 
+// Why a ref did not resolve, for callers that turn the failure into operator-facing advice.
+// `tryResolveVaultSecret` collapses both cases into null, which is right for "can I use this?" and
+// wrong for "what should the operator do?": telling someone to fill a credential that was deleted
+// sends them looking for a row that is not there.
+export type MissingVaultRefReason = "not_found" | "pending";
+
+export async function missingVaultRefReason(
+  db: ScopedDb,
+  ref: string,
+): Promise<MissingVaultRefReason> {
+  const entry = await db.vaultEntry.findFirst({
+    where: vaultRefWhere(ref),
+    select: { status: true },
+  });
+  return entry?.status === "pending" ? "pending" : "not_found";
+}
+
 // Resolved vault entry including metadata needed at the call site (secret, kind, baseUrl, paramName).
 export interface ResolvedVaultEntry<T = unknown> {
   secret: T;

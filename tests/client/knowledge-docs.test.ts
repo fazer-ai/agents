@@ -57,6 +57,33 @@ describe("mergeDocumentEvent", () => {
     expect(row.chunkCount).toBe(12);
   });
 
+  // The review finding this rule was rewritten for: a title-only PATCH leaves `error` untouched in
+  // the database and broadcasts the SAME status with no error, so clearing on it would drop a live
+  // failure from every open modal.
+  test("an event repeating the status does not clear a live reason", () => {
+    const failed: DocumentRowState = {
+      status: "FAILED",
+      chunkCount: 0,
+      error: "boom",
+    };
+    expect(mergeDocumentEvent(failed, { status: "FAILED" }).error).toBe("boom");
+    expect(mergeDocumentEvent(blocked, { status: "UNINDEXED" }).error).toBe(
+      "errors.embeddingNotConfigured",
+    );
+  });
+
+  test("a restated status still takes a NEW reason when the event carries one", () => {
+    const failed: DocumentRowState = {
+      status: "FAILED",
+      chunkCount: 0,
+      error: "boom",
+    };
+    expect(
+      mergeDocumentEvent(failed, { status: "FAILED", error: "outra falha" })
+        .error,
+    ).toBe("outra falha");
+  });
+
   test("fields the event does not describe are left alone", () => {
     const row = mergeDocumentEvent(
       { status: "READY", chunkCount: 3, error: null, title: "Contrato" },

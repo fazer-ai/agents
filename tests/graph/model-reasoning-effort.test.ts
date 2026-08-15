@@ -58,6 +58,22 @@ function fakeOpenAI(): FakeOpenAI {
       // ("Unsupported parameter: 'reasoning.effort' is not supported with this model." on gpt-4o).
       // The fake rejects it too, so a test can tell "the operator was told" apart from "the
       // parameter never left".
+      // Measured: the endpoint rejects the completions spelling by name, and says where it moved.
+      // This is what a model the ADAPTER routes here would have hit.
+      if (body.reasoning_effort !== undefined) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message:
+                "Unsupported parameter: 'reasoning_effort'. In the Responses API, this parameter has moved to 'reasoning.effort'.",
+              type: "invalid_request_error",
+              param: "reasoning_effort",
+              code: "unsupported_parameter",
+            },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        );
+      }
       if (body.reasoning !== undefined && /^gpt-4o/.test(model)) {
         return new Response(
           JSON.stringify({
@@ -358,20 +374,25 @@ describe("planOpenAITransport", () => {
     });
   });
 
-  test("an explicit none stays on completions and travels on every call", () => {
+  // "none" is a choice like any other, so it takes the same endpoint. The parameter is spelled
+  // differently on each one (`reasoning_effort` vs `reasoning.effort`, and neither endpoint accepts
+  // the other's spelling), and the adapter routes some models to /v1/responses on its own — so a
+  // plan that kept "none" on completions would have to PREDICT the endpoint to pick the spelling.
+  // One endpoint for every explicit choice removes the prediction entirely.
+  test("an explicit none is a choice of endpoint too", () => {
     expect(planOpenAITransport("gpt-5.6-luna", "none")).toEqual({
-      responses: false,
+      responses: true,
       effort: "none",
     });
     expect(planOpenAITransport("gpt-5.4-mini", "none")).toEqual({
-      responses: false,
+      responses: true,
       effort: "none",
     });
   });
 
   // The one that catches a family-scoped implementation: gpt-5.4-mini works fine with tools today,
   // yet it too rejects an effort on completions, so it needs the same transport.
-  test("any effort above none moves to responses, whatever the family", () => {
+  test("every effort moves to responses, whatever the family", () => {
     for (const model of ["gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.5", "gpt-4o"]) {
       for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
         expect(planOpenAITransport(model, effort)).toEqual({
@@ -416,11 +437,25 @@ describe("createChatModel with an explicit effort", () => {
     expect(sent.store).toBe(false);
   });
 
-  test("an explicit none keeps the turn on completions", async () => {
+  test("an explicit none travels in the endpoint's own spelling", async () => {
     const { reply, sent, url } = await turn("gpt-5.6-luna", "openai", "none");
-    expect(url).toContain("/chat/completions");
-    expect(sent.reasoning_effort).toBe("none");
+    expect(url).toContain("/responses");
+    expect(sent.reasoning).toEqual({ effort: "none" });
+    expect(sent).not.toHaveProperty("reasoning_effort");
     expect(reply.tool_calls?.[0]?.name).toBe("get_current_time");
+  });
+
+  // gpt-5.2-pro, gpt-5.4-pro, gpt-5.5-pro and any id containing "codex" are routed to
+  // /v1/responses by @langchain/openai itself (_modelPrefersResponsesAPI), whatever we ask for.
+  // A plan that sent the completions spelling for "none" would 400 every turn of those agents.
+  test("a model the adapter routes on its own gets the right spelling", async () => {
+    for (const model of ["gpt-5.4-pro", "gpt-5.5-pro", "gpt-5.2-pro"]) {
+      const { sent, url } = await turn(model, "openai", "none");
+      expect(url).toContain("/responses");
+      expect(sent.reasoning).toEqual({ effort: "none" });
+      expect(sent).not.toHaveProperty("reasoning_effort");
+      fake?.restore();
+    }
   });
 
   // The issue #66 pin exists only because nobody chose an effort. Once the operator does choose,
@@ -458,7 +493,7 @@ describe("createChatModel with an explicit effort", () => {
       reasoningEffort: "none",
     });
     await chat.invoke([{ role: "user", content: "oi" }]);
-    expect(fake.requests[0]?.reasoning_effort).toBe("none");
+    expect(fake.requests[0]?.reasoning).toEqual({ effort: "none" });
   });
 });
 

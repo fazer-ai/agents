@@ -69,7 +69,7 @@ type OpenAIChatFields = ConstructorParameters<typeof ChatOpenAI>[0];
 // nothing required it. An effort the operator DID choose is about the agent, so it goes on the
 // constructor and covers those calls too.
 //
-// NOTE: the effort travels via `modelKwargs` on BOTH endpoints rather than the typed fields,
+// NOTE: both efforts travel via `modelKwargs` rather than the typed fields,
 // because @langchain/openai decides whether to send those by testing the model NAME
 // (isReasoningModel: /^o\d/, or startsWith("gpt-5") minus gpt-5-chat). Any id it does not
 // recognise loses the parameter: a routed "openai/gpt-5.6-luna" (OpenRouter), and — worse, because
@@ -105,14 +105,7 @@ function makeOpenAIChat(
             reasoning: { effort: plan.effort },
           },
         }
-      : plan.effort
-        ? {
-            modelKwargs: {
-              ...fields?.modelKwargs,
-              reasoning_effort: plan.effort,
-            },
-          }
-        : {}),
+      : {}),
   };
   const chat = new ChatOpenAI(withPlan);
   if (!plan.toolEffort) return chat;

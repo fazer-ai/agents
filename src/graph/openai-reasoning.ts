@@ -19,6 +19,16 @@
 // server-side default is not "none" (which is what issue #66 hit). Any effort above "none" is
 // therefore a transport decision, and that is the single rule this module encodes.
 //
+// "none" takes the same endpoint as every other explicit choice, even though completions accepts it
+// (measured 200 there, with and without tools). The two endpoints spell the parameter differently
+// and neither takes the other's spelling ("Unknown parameter: 'reasoning'" on completions,
+// "Unsupported parameter: 'reasoning_effort'. In the Responses API, this parameter has moved to
+// 'reasoning.effort'" on responses), while @langchain/openai routes some models to /v1/responses on
+// its own regardless of what we ask (_modelPrefersResponsesAPI: gpt-5.2-pro, gpt-5.4-pro,
+// gpt-5.5-pro, and any id containing "codex"). Keeping "none" on completions would therefore mean
+// PREDICTING the adapter's routing in order to pick the spelling, i.e. maintaining a copy of its
+// model list. Sending every explicit choice to one endpoint removes the prediction.
+//
 // "minimal" is deliberately absent from the vocabulary: every model measured rejects it
 // ("Unsupported value: 'minimal' is not supported with the '<model>' model"). "max" is present
 // because the API's own error message advertises it on the gpt-5.6 family and it answered 200
@@ -53,7 +63,10 @@ export interface OpenAITransportPlan {
   effort?: ReasoningEffort;
   // Effort to pin ONLY on the tool-bound model. Reserved for the case where nobody asked for an
   // effort and the provider's own default is what breaks: pinning it on the constructor would
-  // switch reasoning off on the calls that never carried tools and never failed.
+  // switch reasoning off on the calls that never carried tools and never failed. This is the one
+  // effort still spelled for completions, which is sound because it only fires for the gpt-5.6
+  // family and no gpt-5.6 id is on the adapter's forced-Responses list — the only overlap would be
+  // a "gpt-5.6-codex", which the API answers does not exist.
   toolEffort?: ReasoningEffort;
 }
 
@@ -68,9 +81,5 @@ export function planOpenAITransport(
       ? { responses: false, toolEffort: "none" }
       : { responses: false };
   }
-  // An explicit "none" is a statement about the agent, not about its tools, so it travels on every
-  // call — measured 200 on completions with and without tools, on both generations. Staying on
-  // completions also keeps the request shape (and OpenAI-side storage) exactly as it is today.
-  if (requested === "none") return { responses: false, effort: "none" };
   return { responses: true, effort: requested };
 }

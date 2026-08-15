@@ -32,7 +32,9 @@ function sysCtx(tenantId: bigint): TenantContext {
 //
 //   * `state` is the row AFTER the call, so an optimistic broadcast announces what is stored rather
 //     than what the click intended — the two differ whenever the snapshot lost, or whenever Chatwoot
-//     answered with something other than what was asked for;
+//     answered with something other than what was asked for. It carries `lastEventAt` for the same
+//     reason as the rest: the snapshot can bring a message the mirror had not seen, this call
+//     advances the stored recency, and the conversations list SORTS by the value it is handed;
 //   * `outrankedByVersion` says WHY a field did not land. Losing to a stored VERSION is evidence that
 //     something strictly newer is in the row, and the caller must leave it alone. Losing to the coarse
 //     activity comparison is not evidence of anything (see the fence note below), so a caller that
@@ -43,6 +45,7 @@ export interface ReconcileResult {
     assigneeId: number | null;
     assigneeType: string | null;
     assigneeName: string | null;
+    lastEventAt: Date | null;
   } | null;
   applied: boolean;
   outrankedByVersion: boolean;
@@ -103,6 +106,7 @@ export async function reconcileMirrorFromLive(
           assigneeId: current.assigneeId,
           assigneeType: current.assigneeType,
           assigneeName: current.assigneeName,
+          lastEventAt: current.lastEventAt,
         };
         // Second-granular like the mirror's monotonic guard (last_activity_at is epoch
         // seconds); a strict > on raw ms would false-skip same-second states.
@@ -140,6 +144,14 @@ export async function reconcileMirrorFromLive(
           ((!statusOrdered && current.chatwootStatusAt !== null) ||
             (!assigneeOrdered && current.chatwootAssigneeAt !== null));
         result.applied = statusOrdered && assigneeOrdered;
+        // NOTE: The recency this write leaves in the row, computed once so the caller announces the
+        // same value the row holds. It is NOT gated by the ordering marks: those order status and
+        // assignee, while activity is monotonic on its own terms.
+        const advancesActivity =
+          liveAt !== null &&
+          (current.lastEventAt === null ||
+            sec(liveAt) > sec(current.lastEventAt));
+        const nextEventAt = advancesActivity ? liveAt : current.lastEventAt;
         // NOTE: Only what actually differs. The probe runs on every proactive send, and the
         // common outcome is "nothing changed" — writing the same values back would be two
         // updates per follow-up and would advance the row's `updatedAt` for nothing.
@@ -157,11 +169,7 @@ export async function reconcileMirrorFromLive(
                 assigneeName: live.assigneeName,
               }
             : {}),
-          ...(liveAt !== null &&
-          (current.lastEventAt === null ||
-            sec(liveAt) > sec(current.lastEventAt))
-            ? { lastEventAt: liveAt }
-            : {}),
+          ...(advancesActivity ? { lastEventAt: nextEventAt } : {}),
           ...(statusOrdered &&
           liveVersion !== null &&
           (current.chatwootStatusAt === null ||
@@ -186,6 +194,7 @@ export async function reconcileMirrorFromLive(
           assigneeName: assigneeOrdered
             ? live.assigneeName
             : current.assigneeName,
+          lastEventAt: nextEventAt,
         };
       },
     ),

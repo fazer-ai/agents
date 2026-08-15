@@ -112,7 +112,12 @@ async function mirror(payload: unknown) {
 async function mirrored(convId: number) {
   return suDb.conversation.findFirstOrThrow({
     where: { tenantId, chatwootConversationId: convId },
-    select: { status: true, assigneeType: true, assigneeId: true },
+    select: {
+      status: true,
+      assigneeType: true,
+      assigneeId: true,
+      lastEventAt: true,
+    },
   });
 }
 
@@ -124,6 +129,7 @@ interface ServerEventLike {
   status?: string;
   assigneeId?: number | null;
   assigneeType?: string | null;
+  lastEventAt?: string | null;
 }
 
 // The burst as delivered, in order. `t` is the burst's shared last_activity_at (the agent's message);
@@ -1487,6 +1493,50 @@ describe.skipIf(!dbUp)(
         const row = await mirrored(66);
         expect(row.status).toBe("resolved");
         expect(row.assigneeId).toBeNull();
+      });
+
+      // Same rule, applied to the field the list SORTS by. The read after the write is the first
+      // sight of a message the mirror had not processed yet, so this call is what advances the
+      // stored recency — and a publish of the timestamp loaded before the action puts the row back
+      // where it was in the ordering, against a mirror that already moved it.
+      test("the optimistic publish carries the recency the reconcile stored", async () => {
+        const T = 1_786_510_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(67, {
+            status: "pending",
+            lastActivityAt: T,
+            updatedAt: T + 1,
+          }),
+        });
+        // A customer message landed while the operator was clicking, and the GET is where we see it.
+        const stub = stubClient({
+          status: "open",
+          assignee: HUMAN,
+          lastActivityAt: T + 120,
+          updatedAt: T + 2,
+        });
+        const published: ServerEventLike[] = [];
+        setPublisher((_topic, data) => {
+          published.push(JSON.parse(data) as ServerEventLike);
+        });
+        try {
+          await handoffConversation(
+            opCtx(),
+            await rowIdOf(67),
+            HUMAN.id,
+            { makeClient: stub.makeClient },
+            appDb,
+          );
+        } finally {
+          setPublisher(() => undefined);
+        }
+        const row = await mirrored(67);
+        expect(row.lastEventAt?.getTime()).toBe((T + 120) * 1000);
+        const event = published.find((e) => e.type === "conversation");
+        expect(event?.lastEventAt).toBe(
+          new Date((T + 120) * 1000).toISOString(),
+        );
       });
     });
   },

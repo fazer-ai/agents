@@ -602,6 +602,7 @@ interface ConsoleWriteState {
   assigneeId: number | null;
   assigneeType: string | null;
   assigneeName: string | null;
+  lastEventAt: Date | null;
 }
 
 // Writes the mirror after a console action, claiming the version Chatwoot produced for it.
@@ -1206,7 +1207,8 @@ export async function handoffConversation(
     status: state?.status ?? "open",
     assigneeId: state ? state.assigneeId : (assigneeId ?? conv.assigneeId),
     assigneeType: state ? state.assigneeType : "User",
-    lastEventAt: conv.lastEventAt ? conv.lastEventAt.toISOString() : null,
+    lastEventAt:
+      (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
   });
 }
 
@@ -1244,7 +1246,8 @@ export async function returnConversationToAgent(
     status: state?.status ?? "pending",
     assigneeId: state ? state.assigneeId : null,
     assigneeType: state ? state.assigneeType : null,
-    lastEventAt: conv.lastEventAt ? conv.lastEventAt.toISOString() : null,
+    lastEventAt:
+      (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
   });
 }
 
@@ -1273,6 +1276,7 @@ export async function setConversationStatus(
     status: state?.status ?? status,
     assigneeId: state ? state.assigneeId : conv.assigneeId,
     assigneeType: state ? state.assigneeType : conv.assigneeType,
-    lastEventAt: conv.lastEventAt ? conv.lastEventAt.toISOString() : null,
+    lastEventAt:
+      (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
   });
 }

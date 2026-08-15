@@ -51,6 +51,10 @@ let convAppointmentCancelled = 0n;
 let convAppointmentOptOut = 0n;
 let convAppointmentResolved = 0n;
 let convAppointmentDone = 0n;
+let convHandedOffMidSequence = 0n;
+let convDisabledAgentArmed = 0n;
+let convFollowUpOffArmed = 0n;
+let convFinishedByResolve = 0n;
 
 // The redirect follow-up job's run time, asserted verbatim as the widget conversation's redirectNext.
 const REDIRECT_JOB_RUN_AT = new Date("2026-06-18T23:30:00Z");
@@ -74,6 +78,9 @@ const BH_WINDOWS = Array.from({ length: 7 }, (_, day) => ({
 }));
 const BH_LAST_EVENT_AT = new Date("2026-06-15T20:00:00Z"); // dueAt = +2min = 20:02 UTC (closed)
 const BH_EXPECTED_RUN_AT = "2026-06-16T09:00:00.000Z";
+
+// A step-1 job armed two days out — the window in which the ground can shift under it.
+const ARMED_STEP1_RUN_AT = new Date("2026-06-20T23:18:45Z");
 
 describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
   beforeAll(async () => {
@@ -463,6 +470,139 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     convAppointmentOptOut = await seedAppointmentConv(313, optOutInbox.id, {
       startISO: new Date(Date.now() + 2 * 3_600_000).toISOString(),
     });
+
+    // ── A PENDING job the handler will drop at claim time (issue #72). A multi-step sequence leaves
+    //    one armed between steps with runAt days out, and nothing cancels it when the ground shifts.
+    const twoStepSettings = {
+      followUp: {
+        enabled: true,
+        steps: [
+          { delayValue: 2, delayUnit: "minutes", instructions: "" },
+          { delayValue: 2, delayUnit: "days", instructions: "" },
+        ],
+      },
+    };
+    const armedAgent = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "FU Armed",
+        systemPrompt: "x",
+        followUpArmedAt: new Date("2026-01-01T00:00:00Z"),
+        mode: "production",
+        settings: twoStepSettings,
+      },
+    });
+    const armedInbox = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        chatwootInboxId: 90,
+        name: "Sup armado",
+        agentId: armedAgent.id,
+      },
+    });
+    const disabledAgent = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "FU Disabled",
+        systemPrompt: "x",
+        enabled: false,
+        followUpArmedAt: new Date("2026-01-01T00:00:00Z"),
+        mode: "production",
+        settings: twoStepSettings,
+      },
+    });
+    const disabledInbox = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        chatwootInboxId: 91,
+        name: "Sup desligado",
+        agentId: disabledAgent.id,
+      },
+    });
+    const offAgent = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "FU Off",
+        systemPrompt: "x",
+        followUpArmedAt: new Date("2026-01-01T00:00:00Z"),
+        mode: "production",
+        settings: {
+          followUp: { enabled: false, steps: twoStepSettings.followUp.steps },
+        },
+      },
+    });
+    const offInbox = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        chatwootInboxId: 92,
+        name: "Sup sem follow-up",
+        agentId: offAgent.id,
+      },
+    });
+
+    // Mid-sequence: step 0 fired, the job was rescheduled for step 1, and only THEN a human took the
+    // conversation. The row is still PENDING with runAt two days out.
+    async function seedArmedConv(
+      chatwootId: number,
+      inboxId: bigint,
+      conv: { assigneeType?: string | null; assigneeId?: number } = {},
+    ): Promise<bigint> {
+      const c = await suDb.conversation.create({
+        data: {
+          tenantId: tenant,
+          chatwootInstanceId: inst,
+          chatwootConversationId: chatwootId,
+          inboxId,
+          status: "pending",
+          assigneeType: conv.assigneeType ?? null,
+          ...(conv.assigneeId != null ? { assigneeId: conv.assigneeId } : {}),
+          threadId: `${tenant}:${inst}:${chatwootId}`,
+          lastEventAt: LAST_EVENT_AT,
+          lastInboundAt: REPLY_AT,
+          lastFollowUpAt: FOLLOW_UP_AT,
+        },
+      });
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId: tenant,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${tenant}:${inst}:${chatwootId}`,
+          status: "PENDING",
+          runAt: ARMED_STEP1_RUN_AT,
+          payload: {
+            threadId: `${tenant}:${inst}:${chatwootId}`,
+            stepIndex: 1,
+          },
+        },
+      });
+      return c.id;
+    }
+    convHandedOffMidSequence = await seedArmedConv(320, armedInbox.id, {
+      assigneeType: "User",
+      assigneeId: 5,
+    });
+    convDisabledAgentArmed = await seedArmedConv(321, disabledInbox.id);
+    convFollowUpOffArmed = await seedArmedConv(322, offInbox.id);
+    // The sequence ran to its end and its last step resolved the conversation: no job left, the bot
+    // no longer owns it, and it is COMPLETE.
+    const finished = await suDb.conversation.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        chatwootConversationId: 323,
+        inboxId: armedInbox.id,
+        status: "resolved",
+        assigneeType: null,
+        threadId: `${tenant}:${inst}:323`,
+        lastEventAt: LAST_EVENT_AT,
+        lastInboundAt: REPLY_AT,
+        lastFollowUpAt: FOLLOW_UP_AT,
+      },
+    });
+    convFinishedByResolve = finished.id;
   });
 
   // A live appointment is the sweep's own fence (followUp.pauseWhileAppointment, on by default): it
@@ -736,5 +876,66 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     );
     expect(d.followUp?.pausedByAppointment).toBe(false);
     expect(d.followUp?.nextStep).toBe(1);
+  });
+
+  // Issue #72: the pending-job branch reported whatever the row said, while the handler re-checks all
+  // of this at claim time and drops the job. The countdown told the operator the customer would be
+  // re-engaged when nobody was going to be.
+  test("a human took the conversation mid-sequence → no countdown for a job that will be dropped", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convHandedOffMidSequence,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.nextRunAt).toBeNull();
+    // Not the appointment's doing, and not a finished sequence either: `lastFollowUpAt` is set and
+    // nothing is pending, which is exactly the shape the console draws the "sequence complete" marker
+    // for. `live: false` is what keeps it from doing that.
+    expect(d.followUp?.pausedByAppointment).toBe(false);
+    expect(d.followUp?.lastFollowUpAt).not.toBeNull();
+    expect(d.followUp?.abandoned).toBe(true);
+  });
+
+  test("the agent was disabled with a job already armed → no countdown", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convDisabledAgentArmed,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.nextRunAt).toBeNull();
+  });
+
+  test("follow-up was switched off with a job already armed → no countdown", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convFollowUpOffArmed,
+      appDb,
+    );
+    expect(d.followUp?.enabled).toBe(false);
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.nextRunAt).toBeNull();
+    expect(d.followUp?.abandoned).toBe(true);
+  });
+
+  test("a conversation the bot still owns is not abandoned", async () => {
+    const d = await getConversationDetail(ctx(tenant), convNewEpisode, appDb);
+    expect(d.followUp?.abandoned).toBe(false);
+    expect(d.followUp?.nextStep).toBe(1);
+  });
+
+  // The distinction the flag exists for: a sequence whose last step is configured to resolve the
+  // conversation ends with the bot no longer owning it. That is a COMPLETED sequence, and the console
+  // still has to draw its completion marker — liveness alone cannot tell it from an abandoned one.
+  test("a sequence that finished by resolving the conversation is complete, not abandoned", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convFinishedByResolve,
+      appDb,
+    );
+    expect(d.followUp?.abandoned).toBe(false);
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.lastFollowUpAt).not.toBeNull();
   });
 });

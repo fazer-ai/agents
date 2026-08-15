@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   ChatwootApiError,
+  ChatwootMissingTokenError,
   createChatwootClient,
 } from "@/modules/chatwoot/client";
+import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 
 interface Captured {
   url: string;
@@ -372,15 +374,128 @@ describe("ChatwootClient", () => {
     });
   });
 
-  test("throws ChatwootApiError (without body) on non-2xx", async () => {
-    const { fetchImpl } = stub(403, { error: "nope" });
+  test("throws ChatwootApiError (without body) on a non-auth non-2xx", async () => {
+    const { fetchImpl } = stub(422, { error: "message content here" });
     const client = await createChatwootClient(baseConfig, {
       fetchImpl,
       assertSafe: passthroughSafe,
     });
     const err = await client.sendMessage(42, "x").catch((e) => e);
     expect(err).toBeInstanceOf(ChatwootApiError);
-    expect((err as ChatwootApiError).status).toBe(403);
-    expect((err as ChatwootApiError).message).not.toContain("nope");
+    expect((err as ChatwootApiError).status).toBe(422);
+    expect((err as ChatwootApiError).message).not.toContain(
+      "message content here",
+    );
+  });
+
+  // Chatwoot answers BOTH "the token is blank/wrong" and "this endpoint is not open to bots" with
+  // 401 + a fixed string, so without the reason the two are one identical log line and two very
+  // different operator actions.
+  describe("auth failures name the reason", () => {
+    const authError = async (status: number, payload: unknown) => {
+      const { fetchImpl } = stub(status, payload);
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+      return (await client
+        .sendMessage(42, "x")
+        .catch((e) => e)) as ChatwootApiError;
+    };
+
+    test("401 carries Chatwoot's error string", async () => {
+      const err = await authError(401, { error: "Invalid Access Token" });
+      expect(err.status).toBe(401);
+      expect(err.message).toContain("Invalid Access Token");
+    });
+
+    test("403 carries it too", async () => {
+      const err = await authError(403, {
+        error: "API access is not enabled for this account",
+      });
+      expect(err.message).toContain("API access is not enabled");
+    });
+
+    test("a body that is not the expected shape is dropped, not guessed at", async () => {
+      const err = await authError(401, { detail: { nested: "shape" } });
+      expect(err.message).toBe(
+        "Chatwoot API 401 for POST /conversations/42/messages",
+      );
+    });
+
+    test("a body that is not JSON at all never reaches the message", async () => {
+      // A proxy in front of Chatwoot can answer anything; whatever it is, it did not come from
+      // Chatwoot's renderer, so nothing is known about what is inside it.
+      const raw = "<html>token 4b3a9f customer Maria</html>";
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl: (async () =>
+          ({
+            ok: false,
+            status: 401,
+            text: async () => raw,
+          }) as unknown as Response) as unknown as typeof fetch,
+        assertSafe: passthroughSafe,
+      });
+      const err = (await client
+        .sendMessage(42, "x")
+        .catch((e) => e)) as ChatwootApiError;
+      expect(err.message).not.toContain("Maria");
+      expect(err.message).not.toContain("4b3a9f");
+      expect(err.message).toContain("unrecognized reason");
+    });
+
+    // Parsing as JSON does not prove the answer came from Chatwoot: the base URL is tenant-configured
+    // and whatever sits in front of it can answer `{"error": <anything>}`.
+    test("a reason that is not one of Chatwoot's own is never repeated", async () => {
+      const err = await authError(403, {
+        error: "customer Maria Souza, cpf 123.456.789-00",
+      });
+      expect(err.message).not.toContain("Maria");
+      expect(err.message).not.toContain("123.456");
+      expect(err.message).toContain("unrecognized reason");
+    });
+  });
+
+  // A client built without the token a call needs used to send the empty string and read Chatwoot's
+  // 401 back, which reported a local wiring mistake as a remote rejection (issue #79).
+  test("refuses to call with an empty token instead of sending it", async () => {
+    const { fetchImpl, calls } = stub(200, {});
+    const client = await createChatwootClient(
+      { ...baseConfig, botToken: "" },
+      { fetchImpl, assertSafe: passthroughSafe },
+    );
+    const err = await client.sendMessage(42, "x").catch((e) => e);
+    expect(err).toBeInstanceOf(ChatwootMissingTokenError);
+    expect(calls).toHaveLength(0);
+  });
+
+  // The multipart senders build their own fetch instead of going through request(), so the guard has
+  // to be on both of them too — otherwise the empty token still goes out on the wire.
+  test("the multipart senders refuse an empty token as well", async () => {
+    const { fetchImpl, calls } = stub(200, {});
+    const client = await createChatwootClient(
+      { ...baseConfig, botToken: "" },
+      { fetchImpl, assertSafe: passthroughSafe },
+    );
+    const audioErr = await client
+      .sendAudioMessage(42, new ArrayBuffer(4), "a.ogg", "audio/ogg")
+      .catch((e) => e);
+    const fileErr = await client
+      .sendFileAttachment(42, new ArrayBuffer(4), "a.pdf", "application/pdf")
+      .catch((e) => e);
+    expect(audioErr).toBeInstanceOf(ChatwootMissingTokenError);
+    expect(fileErr).toBeInstanceOf(ChatwootMissingTokenError);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("an admin-token call on that same client still works", async () => {
+    const { fetchImpl, calls } = stub(200, { payload: [] });
+    const client = await createChatwootClient(
+      { ...baseConfig, botToken: "" },
+      { fetchImpl, assertSafe: passthroughSafe },
+    );
+    await client.getConversationLabels(42);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
   });
 });

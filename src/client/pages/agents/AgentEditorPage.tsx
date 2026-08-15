@@ -67,6 +67,7 @@ import {
   type ChannelRedirectConfig,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
+import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import {
   GUARDRAILS_DEFAULTS,
@@ -273,6 +274,7 @@ function readBehaviorState(a: Agent) {
   const li = (s.limits ?? {}) as Record<string, unknown>;
   const ac = (s.attributeContext ?? {}) as Record<string, unknown>;
   const si = (s.sendImage ?? {}) as Record<string, unknown>;
+
   // NOTE: Attribute keys per scope: plain string lists (the runtime reader trims/dedups/caps them).
   const attrKeys = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : [];
@@ -360,6 +362,11 @@ function readBehaviorState(a: Agent) {
       task: attrKeys(ac.task),
     },
     sendImage: { allowedHosts: attrKeys(si.allowedHosts).join("\n") },
+    // NOTE: through the SAME reader the runtime uses, not a hand-rolled check: a bag that came from
+    // REST or an import can carry the string "true", which the runtime honors — reading it stricter
+    // here would show the switch off while values were being logged, and would then persist that lie
+    // on the next save.
+    observability: readObservabilityConfig(s),
   };
 }
 
@@ -606,6 +613,9 @@ export function AgentEditorPage() {
   });
   // Runtime limits. Mirrors agent.settings.limits (modules/agents/limits): the per-turn tool-call cap.
   const [limits, setLimits] = useState({ maxToolCalls: "10" });
+  // Whether this agent's tool lines log the values the model sent instead of their shape. Mirrors
+  // agent.settings.observability (modules/flowlog/settings).
+  const [observability, setObservability] = useState({ logToolValues: false });
   // NOTE: Hosts the send_image tool may fetch from. Mirrors agent.settings.sendImage
   // (modules/images/settings), edited as one host per line.
   const [sendImage, setSendImage] = useState<SendImageState>({
@@ -774,6 +784,7 @@ export function AgentEditorPage() {
     setFollowUp(b.followUp);
     setVision(b.vision);
     setLimits(b.limits);
+    setObservability(b.observability);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
     setChannelRedirect(readChannelRedirectState(a));
@@ -806,6 +817,7 @@ export function AgentEditorPage() {
     setFollowUp(b.followUp);
     setVision(b.vision);
     setLimits(b.limits);
+    setObservability(b.observability);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
   }, []);
@@ -1062,6 +1074,7 @@ export function AgentEditorPage() {
       limits: {
         maxToolCalls: Number(limits.maxToolCalls) || 10,
       },
+      observability: { logToolValues: observability.logToolValues },
       attributeContext: {
         conversation: attributeContext.conversation,
         contact: attributeContext.contact,
@@ -1104,6 +1117,7 @@ export function AgentEditorPage() {
       limits,
       attributeContext,
       sendImage,
+      observability,
     }),
     // The WhatsApp→website-chat redirect (own Save button). widgetInboxId is excluded (server-owned,
     // persisted on provision), so provisioning the widget never lights up this tab's unsaved-changes dot.
@@ -1594,6 +1608,7 @@ export function AgentEditorPage() {
     setFollowUp(b.followUp);
     setVision(b.vision);
     setLimits(b.limits);
+    setObservability(b.observability);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
   };
@@ -2499,6 +2514,8 @@ export function AgentEditorPage() {
                 onVisionEntryChange={onVisionEntryChange}
                 limits={limits}
                 setLimits={setLimits}
+                observability={observability}
+                setObservability={setObservability}
                 sendImage={sendImage}
                 setSendImage={setSendImage}
                 attributeContext={attributeContext}

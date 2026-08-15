@@ -35,6 +35,7 @@ import {
 } from "@/modules/chatwoot/vocab";
 import { resolveVariantOverride } from "@/modules/experiments/service";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
+import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import {
   type GuardrailsConfig,
   readGuardrailsConfig,
@@ -209,6 +210,9 @@ export interface AgentConfig {
   timezone: string;
   // Soft+hard cap on tool executions within one turn (agent.settings.limits.maxToolCalls).
   maxToolCalls: number;
+  // Whether this agent's tool lines log the VALUES the model sent instead of their shape
+  // (agent.settings.observability.logToolValues; off by default — see src/modules/flowlog/shape.ts).
+  logToolValues: boolean;
 }
 
 export interface LoadAgentArgs {
@@ -566,6 +570,7 @@ export async function loadAgentConfig(
     contactName: conv?.contact?.name ?? null,
     timezone,
     maxToolCalls: readLimitsConfig(effSettings).maxToolCalls,
+    logToolValues: readObservabilityConfig(effSettings).logToolValues,
   };
 }
 

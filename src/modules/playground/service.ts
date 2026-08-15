@@ -50,6 +50,7 @@ import {
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
+import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import {
   readFollowUpConfig,
   stepDelayMinutes,
@@ -276,7 +277,7 @@ async function buildPlaygroundGraph(params: {
     turnId: params.turnId,
     tools,
   });
-  return { graph, callbacks, loaded, traceLabels };
+  return { graph, callbacks, loaded, tools, traceLabels };
 }
 
 export type PlaygroundToolCategory =
@@ -407,22 +408,23 @@ export async function runPlaygroundTurn(
     threadId,
     base,
   };
-  const { graph, callbacks, loaded, traceLabels } = await buildPlaygroundGraph({
-    tenantId,
-    agentId,
-    threadId,
-    base,
-    deps: params.deps,
-    overrides: params.overrides,
-    turnId,
-    onModelRetry: ({ attempt }) =>
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "warn",
-        status: "ok",
-        detail: { retriedEmptyResponse: attempt },
-      }),
-  });
+  const { graph, callbacks, loaded, tools, traceLabels } =
+    await buildPlaygroundGraph({
+      tenantId,
+      agentId,
+      threadId,
+      base,
+      deps: params.deps,
+      overrides: params.overrides,
+      turnId,
+      onModelRetry: ({ attempt }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          detail: { retriedEmptyResponse: attempt },
+        }),
+    });
 
   // Give the human message an explicit id when we have media to link to it (so reopening the
   // session can re-attach the recorded audio / uploaded file to this exact turn).
@@ -444,7 +446,13 @@ export async function runPlaygroundTurn(
             configurable: { thread_id: threadId },
             // ToolFlowLogger so playground tool calls land in the Logs page (item 3), same as a
             // real turn does in runLoadedTurn.
-            callbacks: [...callbacks, new ToolFlowLogger(flow)],
+            callbacks: [
+              ...callbacks,
+              new ToolFlowLogger(flow, {
+                logValues: loaded.logToolValues,
+                tools,
+              }),
+            ],
           },
         ),
     );
@@ -581,7 +589,7 @@ export async function runPlaygroundFollowup(
     threadId,
     base,
   };
-  const { graph, callbacks, traceLabels } = await buildPlaygroundGraph({
+  const { graph, callbacks, tools, traceLabels } = await buildPlaygroundGraph({
     tenantId,
     agentId,
     threadId,
@@ -603,9 +611,8 @@ export async function runPlaygroundFollowup(
   const agent = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.agent.findUnique({ where: { id: agentId }, select: { settings: true } }),
   );
-  const followUp = readFollowUpConfig(
-    params.overrides?.settings ?? agent?.settings,
-  );
+  const settings = params.overrides?.settings ?? agent?.settings;
+  const followUp = readFollowUpConfig(settings);
   // The playground previews the FIRST step's message (the simulation has no real schedule). Post
   // actions (label/resolve) are NOT applied here — there is no real conversation to act on.
   const firstStep = followUp.steps[0];
@@ -629,7 +636,13 @@ export async function runPlaygroundFollowup(
       { messages: [new HumanMessage(renderNudge(nudge, true))] },
       {
         configurable: { thread_id: threadId },
-        callbacks: [...callbacks, new ToolFlowLogger(flow)],
+        callbacks: [
+          ...callbacks,
+          new ToolFlowLogger(flow, {
+            logValues: readObservabilityConfig(settings).logToolValues,
+            tools,
+          }),
+        ],
       },
     );
   } catch (e) {

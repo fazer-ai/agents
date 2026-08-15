@@ -54,6 +54,7 @@ function makeConfig(
     contactName: null,
     timezone: "America/Sao_Paulo",
     maxToolCalls: 10,
+    logToolValues: false,
     ...over,
   } as AgentConfig;
 }

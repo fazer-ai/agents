@@ -1381,8 +1381,11 @@ export function ConversationDetailPage() {
     conv.followUp.lastFollowUpAt != null &&
     conv.followUp.nextStep == null &&
     // NOTE: a paused sequence also has no next step, and it is not complete — it resumes once the
-    // appointment passes.
-    conv.followUp.pausedByAppointment !== true;
+    // appointment passes. Neither is a sequence with a step still queued that the handler is going to
+    // drop (a human took the conversation, the agent was disabled, follow-up was switched off):
+    // nothing is pending, but nothing completed either.
+    conv.followUp.pausedByAppointment !== true &&
+    conv.followUp.abandoned !== true;
 
   // Caller passes the already-translated success message (static t() at the call
   // site, so the extractor sees the key).

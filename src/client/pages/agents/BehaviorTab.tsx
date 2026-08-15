@@ -11,6 +11,7 @@ import {
   Mic,
   Plus,
   Scissors,
+  ScrollText,
   Trash2,
   Volume2,
 } from "lucide-react";
@@ -193,6 +194,10 @@ interface BehaviorTabProps {
   visionCredBaseUrl: string | null;
   onVisionEntryChange: (entry: VaultEntry | null) => void;
   limits: LimitsState;
+  observability: { logToolValues: boolean };
+  setObservability: React.Dispatch<
+    React.SetStateAction<{ logToolValues: boolean }>
+  >;
   setLimits: React.Dispatch<React.SetStateAction<LimitsState>>;
   sendImage: SendImageState;
   setSendImage: React.Dispatch<React.SetStateAction<SendImageState>>;
@@ -752,6 +757,8 @@ export function BehaviorTab({
   visionCredBaseUrl,
   onVisionEntryChange,
   limits,
+  observability,
+  setObservability,
   setLimits,
   sendImage,
   setSendImage,
@@ -844,6 +851,11 @@ export function BehaviorTab({
       id: "limits",
       icon: Gauge,
       label: t("editor.limits", "Execution limits"),
+    },
+    {
+      id: "observability",
+      icon: ScrollText,
+      label: t("editor.observability", "Logs"),
     },
     {
       id: "proactive",
@@ -1516,6 +1528,25 @@ export function BehaviorTab({
                 />
               </FormField>
             </div>
+          </Section>
+
+          <Section
+            id="observability"
+            icon={ScrollText}
+            title={t("editor.observability", "Logs")}
+            description={t(
+              "editor.observabilityHint",
+              'By default a tool line on the Logs page records the SHAPE of each argument and result ({ cpf: "string(11)" }): enough to see which arguments the agent sent, which it left out and whether a format is wrong, with no customer data. Turning the switch on records the values themselves, which is what answers which record it actually looked up, and keeps those values for the whole log retention window, including in every log export. Turn it on while investigating, off afterwards.',
+            )}
+          >
+            <SwitchField
+              checked={observability.logToolValues}
+              onCheckedChange={(v) => setObservability({ logToolValues: v })}
+              label={t(
+                "editor.observabilityLogToolValues",
+                "Log the values sent to tools",
+              )}
+            />
           </Section>
 
           <Section

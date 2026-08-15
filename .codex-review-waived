@@ -70,3 +70,18 @@ src/modules/chatwoot/mirror.ts: Guard the watermark during rolling deploys
 # message stays bot-owned until the next conversation event repairs it. The supported deployments
 # ship our fork (4.11.x), where the version exists and decides.
 src/modules/chatwoot/mirror.ts: Preserve human-message handoffs without a version stamp
+
+# PR #83 (issue #72), round 3. Real, and it predates this PR: once the scheduler claims the dead job
+# and the handler drops it, `abandoned` goes back to false and the console draws its completion
+# marker. That is exactly what it drew in the same state BEFORE this change (with no pending row the
+# estimate branch already yielded nextStep null, and the marker only needs lastFollowUpAt). What this
+# PR removes is the window where a LIVE COUNTDOWN was displayed for a follow-up that was going to be
+# dropped, which is the defect #72 reports.
+#
+# Telling "the sequence finished" from "the sequence was cut short" after the job is gone needs a fact
+# nothing stores: which step last fired, against the configured total. `Conversation.lastFollowUpAt`
+# is a timestamp, not an index, and the job row that carried `stepIndex` is precisely what just
+# disappeared. So the honest fix is a persisted marker (an aborted-at stamp, or the last step index),
+# a schema change with its own migration and its own UI copy — a separate change, not a round of this
+# one.
+src/modules/conversations/service.ts: Persist abandonment after the scheduler consumes the job

@@ -244,6 +244,7 @@ export function useKnowledgeManager(opts: {
         // request needed. It matters because retrying a single row goes PENDING → PROCESSING →
         // READY and never comes back UNINDEXED: without this, the other rows and the banner would
         // go on explaining a block the worker just disproved.
+        claimBlockAnswer();
         setEmbeddingBlock(null);
       }
     },
@@ -256,6 +257,18 @@ export function useKnowledgeManager(opts: {
   openDocsBaseId.current = docsModal.payload?.id ?? null;
 
   const blockRecheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Ticket taken by every answer about the block, so a read can tell whether it is still the newest
+  // one. The base fence below is not enough on its own: within the SAME base, a PROCESSING event or
+  // a successful reindex can clear the block while a read started earlier is still open, and that
+  // older answer would put the cleared block back — with nothing to correct it afterwards, since
+  // those rows go on to READY without another UNINDEXED.
+  const blockAnswerSeq = useRef(0);
+
+  function claimBlockAnswer(): number {
+    blockAnswerSeq.current += 1;
+    return blockAnswerSeq.current;
+  }
 
   // Trailing window rather than a suppress-while-in-flight guard: the scheduler awaits its claimed
   // jobs one after another, so a blocked batch produces events that need not overlap a short GET at
@@ -271,13 +284,16 @@ export function useKnowledgeManager(opts: {
   // Re-reads ONLY the block. Adopting the list's rows here would clobber an optimistic PROCESSING
   // mid-flight; the rows are what the event stream is already keeping current.
   async function recheckBlock(baseId: string) {
+    const ticket = claimBlockAnswer();
     const { data } = await api.api.v1.knowledge
       .bases({ id: baseId })
       .documents.get();
     // The block is per workspace, but the REQUEST is per base: if the modal closed or moved to
     // another base while this was open, writing this answer would label whatever is on screen now
-    // with an answer fetched for something else (docs/modals.md).
+    // with an answer fetched for something else (docs/modals.md). And anything that took a ticket
+    // after this one knows more than this response does, whether it is a newer read or an event.
     if (!data || openDocsBaseId.current !== baseId) return;
+    if (blockAnswerSeq.current !== ticket) return;
     setEmbeddingBlock(data.embeddingBlock ?? null);
   }
 
@@ -572,6 +588,7 @@ export function useKnowledgeManager(opts: {
       .documents.get();
     if (data) {
       setDocs(data.documents);
+      claimBlockAnswer();
       setEmbeddingBlock(data.embeddingBlock ?? null);
     }
   }
@@ -583,6 +600,7 @@ export function useKnowledgeManager(opts: {
       .documents.get();
     if (data) {
       setDocs(data.documents);
+      claimBlockAnswer();
       setEmbeddingBlock(data.embeddingBlock ?? null);
     }
   }
@@ -689,6 +707,7 @@ export function useKnowledgeManager(opts: {
       // a block, or the toast fades and the badges go back to a neutral "Not indexed" the server
       // just contradicted; without one, or the snapshot goes on explaining a block that the queued
       // jobs just disproved.
+      claimBlockAnswer();
       setEmbeddingBlock(data?.blocked ? { reason: data.blocked.reason } : null);
       if (data?.blocked) {
         revert();

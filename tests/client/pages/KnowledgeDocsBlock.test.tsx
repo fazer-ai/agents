@@ -337,6 +337,45 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     expect(shows(PENDING_TEXT)).toBe(false);
   });
 
+  // Review finding, round 7: the base fence is not enough on its own. Within the SAME base, a
+  // PROCESSING event can clear the block while a read started earlier is still open, and that older
+  // answer would put the cleared block back — with nothing to correct it afterwards, since the rows
+  // go on to READY without another UNINDEXED.
+  test("a read that resolves after a newer answer does not undo it", async () => {
+    docsQueue = [
+      {
+        documents: [doc(), doc({ id: "d2", title: "Outro" })],
+        embeddingBlock: { reason: "credential_pending" },
+      },
+      // The recheck, held open. By the time it lands its answer is out of date.
+      {
+        documents: [doc(), doc({ id: "d2", title: "Outro" })],
+        embeddingBlock: { reason: "credential_pending" },
+      },
+    ];
+    gateOnCall = 2;
+    await openModal();
+    onKnowledgeDocument?.({
+      knowledgeBaseId: "b1",
+      documentId: "d1",
+      status: "UNINDEXED",
+    });
+    await waitFor(() => expect(docsCalls).toBe(2));
+
+    // The credential was filled elsewhere and a job got through, which is newer than what the open
+    // read is about to say.
+    onKnowledgeDocument?.({
+      knowledgeBaseId: "b1",
+      documentId: "d1",
+      status: "PROCESSING",
+    });
+    await waitFor(() => expect(shows(NEUTRAL_TEXT)).toBe(true));
+
+    releaseGate();
+    await waitFor(() => expect(shows(NEUTRAL_TEXT)).toBe(true));
+    expect(shows(PENDING_TEXT)).toBe(false);
+  });
+
   // A bulk index that hits the block emits one event per document, and the answer is identical for
   // all of them: the block is the workspace's, not the row's.
   test("a burst of blocked documents does not become a burst of reads", async () => {

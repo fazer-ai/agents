@@ -451,6 +451,7 @@ export interface ToolWriteArgs {
   credential_ref?: string | null;
   enabled?: boolean;
   risk_tier?: "low" | "medium" | "high";
+  expected_statuses?: number[];
   ack_enabled?: boolean;
   ack_message?: string | null;
 }
@@ -475,6 +476,8 @@ async function buildToolPatch(
   if (args.body !== undefined) patch.body = args.body;
   if (args.enabled !== undefined) patch.enabled = args.enabled;
   if (args.risk_tier !== undefined) patch.riskTier = args.risk_tier;
+  if (args.expected_statuses !== undefined)
+    patch.expectedStatuses = args.expected_statuses;
   if (args.ack_enabled !== undefined) patch.ackEnabled = args.ack_enabled;
   if (args.ack_message !== undefined) patch.ackMessage = args.ack_message;
   if (args.credential_ref !== undefined) {

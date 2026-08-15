@@ -1,6 +1,10 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
+import {
+  isExpectedResult,
+  normalizeExpectedStatuses,
+} from "@/graph/tools/http-status";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
@@ -35,6 +39,9 @@ export interface HttpToolDef {
   // "kv" assembles JSON from explicit rows (a lone {{aiField}} value keeps the AI's type); "raw" sends
   // the interpolated template; legacy "fields"/absent assembles JSON from the non-path input fields.
   body?: unknown;
+  // HTTP statuses this tool declares as RESULTS rather than integration failures (issue #59).
+  // Empty/absent keeps issue #40's default, where every non-2xx is a failure. See ./http-status.
+  expectedStatuses?: number[] | null;
   credentialRef?: string | null;
   // Predefined secret type of the credential (item 8). When set (non-generic), the resolved secret is
   // auto-injected per the type (header/bearer/basic/query) — the operator need not write {{secret}}.
@@ -287,6 +294,7 @@ export function buildHttpTool(
   const doFetch = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? 10_000;
   const maxChars = deps.maxResponseChars ?? 4000;
+  const expectedStatuses = normalizeExpectedStatuses(def.expectedStatuses);
 
   // Schema = the AI-filled fields. When an ack is configured, the model MUST write the holding message
   // itself (__wait_message is required, not optional): the operator's ackMessage is only a TONE example,
@@ -588,11 +596,12 @@ export function buildHttpTool(
         text.length > maxChars
           ? `${text.slice(0, maxChars)}…[truncated]`
           : text;
-      // NOTE: For an operator-authored tool EVERY non-2xx is an integration failure worth alerting
-      // on (broken credential, provider outage, rejected payload) — the model still sees the same
-      // "HTTP <status>" body either way (issue #40).
+      // NOTE: By default every non-2xx is an integration failure worth alerting on — a broken
+      // credential, a provider outage, a rejected payload (issue #40) — unless the operator declared
+      // this status a result for this tool (issue #59). The model sees the same "HTTP <status>" body
+      // in both cases; only the failure marking moves.
       const resultText = `HTTP ${res.status}\n${trimmed}`;
-      return res.status >= 200 && res.status < 300
+      return isExpectedResult(res.status, expectedStatuses)
         ? resultText
         : toolFailure(resultText);
     },

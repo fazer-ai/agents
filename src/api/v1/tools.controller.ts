@@ -110,6 +110,12 @@ export const writeBody = t.Object({
         "Risk tier; higher tiers can require an acknowledgement before the call runs.",
     }),
   ),
+  expectedStatuses: t.Optional(
+    t.Array(t.Integer(), {
+      description:
+        "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+    }),
+  ),
   ackEnabled: t.Optional(
     t.Boolean({
       description:

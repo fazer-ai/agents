@@ -1908,7 +1908,9 @@
     "varsCredential": "Credencial",
     "varsNative": "Variáveis de contexto",
     "varsSecret": "Credencial selecionada",
-    "varsSecretDesc": "Insere a credencial onde a injeção automática não alcança."
+    "varsSecretDesc": "Insere a credencial onde a injeção automática não alcança.",
+    "expectedStatuses": "Status que significam \"sem resultado\"",
+    "expectedStatusesHint": "Separados por vírgula, por exemplo 404. Use quando esta API responde com status de erro para uma resposta comum: uma consulta que devolve 404 para \"não encontrado\". Essas respostas deixam de contar como falha de integração, então param de gerar alerta. A IA lê a mesma resposta nos dois casos. Deixe vazio e todo não-2xx é tratado como falha."
   },
   "updates": {
     "newVersionAvailable": "Versão {{version}} disponível",

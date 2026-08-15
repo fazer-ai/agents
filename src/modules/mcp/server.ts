@@ -1375,6 +1375,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           credential_ref: z.string().nullable().optional(),
           enabled: z.boolean().optional(),
           risk_tier: z.enum(["low", "medium", "high"]).optional(),
+          expected_statuses: z
+            .array(z.number().int())
+            .optional()
+            .describe(
+              "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty keeps every non-2xx a failure.",
+            ),
           ack_enabled: z.boolean().optional(),
           ack_message: z.string().nullable().optional(),
           dry_run: z.boolean().optional(),
@@ -1396,6 +1402,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           credential_ref?: string | null;
           enabled?: boolean;
           risk_tier?: "low" | "medium" | "high";
+          expected_statuses?: number[];
           ack_enabled?: boolean;
           ack_message?: string | null;
           dry_run?: boolean;
@@ -1427,6 +1434,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           credential_ref: z.string().nullable().optional(),
           enabled: z.boolean().optional(),
           risk_tier: z.enum(["low", "medium", "high"]).optional(),
+          expected_statuses: z
+            .array(z.number().int())
+            .optional()
+            .describe(
+              "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty keeps every non-2xx a failure.",
+            ),
           ack_enabled: z.boolean().optional(),
           ack_message: z.string().nullable().optional(),
           dry_run: z.boolean().optional(),
@@ -1449,6 +1462,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           credential_ref?: string | null;
           enabled?: boolean;
           risk_tier?: "low" | "medium" | "high";
+          expected_statuses?: number[];
           ack_enabled?: boolean;
           ack_message?: string | null;
           dry_run?: boolean;

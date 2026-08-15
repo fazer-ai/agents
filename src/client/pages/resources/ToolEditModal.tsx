@@ -193,6 +193,7 @@ function emptyForm() {
     bodyMode: "kv" as "kv" | "raw",
     bodyRaw: "",
     credentialRef: "",
+    expectedStatuses: "",
     ackEnabled: false,
     ackMessage: "",
   };
@@ -202,6 +203,17 @@ function emptyForm() {
 // fixed values + body assembly inside inputSchema/body.mode==="fields"; we reconstruct them as explicit
 // rows so the operator sees what was previously assembled by magic. Saving then writes the new shape.
 // NOTE: exported for the load/save regression tests (pure over its argument).
+// Parses the operator's comma/space separated list into the numbers the API takes. Deliberately
+// permissive: the server normalizes (dedupes, sorts, drops 2xx and out-of-range values), so a stray
+// separator or a repeated entry is not something to reject a save over.
+// NOTE: exported for the tests.
+export function parseExpectedStatuses(raw: string): number[] {
+  return raw
+    .split(/[\s,;]+/)
+    .map((part) => Number(part))
+    .filter((n) => Number.isInteger(n) && n > 0);
+}
+
 export function formFromTool(tool: Tool) {
   // NOTE: legacy rows authored programmatically may still carry pre-normalization shapes
   // (JSON-Schema inputSchema, single-brace {var}); render the canonical form so the real AI
@@ -292,6 +304,7 @@ export function formFromTool(tool: Tool) {
     bodyMode,
     bodyRaw,
     credentialRef: tool.credentialRef ?? "",
+    expectedStatuses: (tool.expectedStatuses ?? []).join(", "),
     ackEnabled: tool.ackEnabled,
     ackMessage: tool.ackMessage ?? "",
   };
@@ -660,6 +673,7 @@ export function ToolEditModal({
             }
         : { mode: "kv", rows: [] },
       credentialRef: form.credentialRef || null,
+      expectedStatuses: parseExpectedStatuses(form.expectedStatuses),
       ackEnabled: form.ackEnabled,
       ackMessage: form.ackEnabled ? form.ackMessage.trim() || null : null,
     };
@@ -1079,6 +1093,25 @@ export function ToolEditModal({
               )}
             </FormField>
           )}
+
+          <FormField
+            label={t(
+              "tools.expectedStatuses",
+              "Statuses that mean 'no result'",
+            )}
+            description={t(
+              "tools.expectedStatusesHint",
+              "Comma-separated, e.g. 404. Use it when this API answers with an error status for an ordinary answer — a lookup that returns 404 for 'no record'. Those responses stop counting as integration failures, so they no longer raise alerts. The AI reads the same reply either way. Leave empty and every non-2xx is treated as a failure.",
+            )}
+          >
+            <Input
+              value={form.expectedStatuses}
+              onChange={(e) =>
+                setForm({ ...form, expectedStatuses: e.target.value })
+              }
+              placeholder="404"
+            />
+          </FormField>
 
           <div className="flex flex-col gap-3 rounded-md border border-border p-3">
             <div className="flex items-center justify-between gap-3">

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { normalizeToolShapes } from "./normalize";
@@ -29,6 +30,7 @@ export interface ToolDefinitionDto {
   credentialRef: string | null;
   enabled: boolean;
   riskTier: string;
+  expectedStatuses: number[];
   ackEnabled: boolean;
   ackMessage: string | null;
   createdAt: Date;
@@ -51,6 +53,7 @@ const SELECT = {
   credentialRef: true,
   enabled: true,
   riskTier: true,
+  expectedStatuses: true,
   ackEnabled: true,
   ackMessage: true,
   createdAt: true,
@@ -73,6 +76,7 @@ function toDto(r: {
   credentialRef: string | null;
   enabled: boolean;
   riskTier: string;
+  expectedStatuses: number[];
   ackEnabled: boolean;
   ackMessage: string | null;
   createdAt: Date;
@@ -94,6 +98,7 @@ function toDto(r: {
     credentialRef: r.credentialRef,
     enabled: r.enabled,
     riskTier: r.riskTier,
+    expectedStatuses: r.expectedStatuses,
     ackEnabled: r.ackEnabled,
     ackMessage: r.ackMessage,
     createdAt: r.createdAt,
@@ -122,6 +127,9 @@ export const toolDefinitionCreateSchema = z
     credentialRef: z.string().min(1).max(128).nullish(),
     enabled: z.boolean().optional(),
     riskTier: z.enum(["low", "medium", "high"]).optional(),
+    // Normalized (deduped/sorted, 2xx and out-of-range dropped) rather than rejected: see
+    // graph/tools/http-status. Accepts numeric strings, which a JSON body from REST/MCP often carries.
+    expectedStatuses: z.array(z.union([z.number(), z.string()])).optional(),
     // Optional "I'll look into that for you…" ack posted to the customer (with a typing indicator)
     // BEFORE this — typically slow — tool runs. Opt-in per tool.
     ackEnabled: z.boolean().optional(),
@@ -214,6 +222,7 @@ export async function createToolDefinition(
         credentialRef: data.credentialRef ?? null,
         enabled: data.enabled ?? true,
         riskTier: data.riskTier ?? "medium",
+        expectedStatuses: normalizeExpectedStatuses(data.expectedStatuses),
         ackEnabled: data.ackEnabled ?? false,
         ackMessage: data.ackMessage ?? null,
       },
@@ -292,6 +301,10 @@ export async function updateToolDefinition(
       patchData.credentialRef = data.credentialRef ?? null;
     if (data.enabled !== undefined) patchData.enabled = data.enabled;
     if (data.riskTier !== undefined) patchData.riskTier = data.riskTier;
+    if (data.expectedStatuses !== undefined)
+      patchData.expectedStatuses = normalizeExpectedStatuses(
+        data.expectedStatuses,
+      );
     if (data.ackEnabled !== undefined) patchData.ackEnabled = data.ackEnabled;
     if (data.ackMessage !== undefined)
       patchData.ackMessage = data.ackMessage ?? null;

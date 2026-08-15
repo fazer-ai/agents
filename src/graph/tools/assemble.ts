@@ -53,6 +53,8 @@ export interface LoadedHttpToolDef {
   query: unknown;
   // Request body shape: { mode: "kv", rows } | { mode: "raw", raw } | legacy { mode: "fields" }.
   body: unknown;
+  // HTTP statuses this tool declares as results rather than integration failures (issue #59).
+  expectedStatuses?: number[] | null;
 }
 
 export interface AgentToolSelections {
@@ -314,6 +316,7 @@ export function buildHttpTools(
       ackMessage: d.ackEnabled ? d.ackMessage : null,
       query: d.query,
       body: d.body,
+      expectedStatuses: d.expectedStatuses,
     };
     return buildHttpTool(def, deps);
   });

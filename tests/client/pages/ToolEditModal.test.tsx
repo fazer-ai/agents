@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   formFromTool,
+  parseExpectedStatuses,
   type Tool,
 } from "@/client/pages/resources/ToolEditModal";
 
@@ -73,5 +74,31 @@ describe("formFromTool — legacy fixed URL bindings", () => {
       "https://api.example.com/accounts/{{tenant}}",
     );
     expect(form.aiFields.map((f) => f.name)).toEqual(["tenant"]);
+  });
+});
+
+// Issue #59: the operator types a list; the server normalizes it (dedupe, sort, drop 2xx and
+// out-of-range). The field is permissive on purpose — a stray separator is not worth failing a save.
+describe("parseExpectedStatuses", () => {
+  test("an empty field declares nothing, which is the fail-closed default", () => {
+    expect(parseExpectedStatuses("")).toEqual([]);
+    expect(parseExpectedStatuses("   ")).toEqual([]);
+  });
+
+  test("a comma list becomes numbers", () => {
+    expect(parseExpectedStatuses("404, 409")).toEqual([404, 409]);
+  });
+
+  test("spaces, semicolons and trailing separators are all accepted", () => {
+    expect(parseExpectedStatuses("404 409; 410,")).toEqual([404, 409, 410]);
+  });
+
+  test("what is not a whole positive number is dropped rather than rejected", () => {
+    expect(parseExpectedStatuses("404, abc, 4.5, -1")).toEqual([404]);
+  });
+
+  // Round-trip: the stored list is rendered back into the field as a comma list.
+  test("the rendered value parses back to itself", () => {
+    expect(parseExpectedStatuses([404, 409].join(", "))).toEqual([404, 409]);
   });
 });

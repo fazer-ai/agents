@@ -779,6 +779,12 @@ model ToolDefinition {
   // NOTE: low|medium|high. Surfaced in the tool-selection UI so granting a write/financial tool
   // is a deliberate, visible act; default medium for a custom HTTP tool of unknown impact.
   riskTier      String   @default("medium") @map("risk_tier")
+  // HTTP statuses this tool declares as RESULTS rather than integration failures. Empty (the
+  // default) keeps issue #40's behavior, where every non-2xx is logged warn and reaches the alert
+  // channels. A declarative lookup that answers 404 for "no record" lists it here so a healthy turn
+  // stops emitting an alert; the model-facing text is unchanged either way. See
+  // src/graph/tools/http-status.ts for why this is a list and not a range.
+  expectedStatuses Int[] @default([]) @map("expected_statuses")
   // Optional "I'll look into that for you…" acknowledgement: when ackEnabled is true, the agent
   // posts ackMessage to the customer (with a typing indicator) BEFORE invoking this — typically
   // slow — tool. Per-tool, opt-in; only fires on a real conversation, never in the playground.

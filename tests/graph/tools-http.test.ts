@@ -1025,6 +1025,58 @@ describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_sch
   });
 });
 
+// NOTE: A tool may DECLARE the statuses that are results rather than failures (issue #59). The
+// model-facing text is identical either way — same "HTTP <status>" with the same body — so only the
+// failure marking, and therefore the log level and the alert dispatch, moves.
+describe("buildHttpTool — declared expected statuses (issue #59)", () => {
+  async function callWith(status: number, expectedStatuses?: number[]) {
+    const tool = buildHttpTool(
+      { ...def(), ...(expectedStatuses ? { expectedStatuses } : {}) },
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch({}, status, '{"found":false}'),
+      },
+    );
+    return (await tool.invoke({
+      type: "tool_call",
+      id: `call_es_${status}`,
+      name: "thing",
+      args: {},
+    })) as ToolMessage;
+  }
+
+  test("a declared 404 stops being an integration failure", async () => {
+    const out = await callWith(404, [404]);
+    expect(out.status).toBe("success");
+  });
+
+  test("the model sees exactly the same text either way", async () => {
+    const declared = await callWith(404, [404]);
+    const undeclared = await callWith(404);
+    expect(String(declared.content)).toContain("HTTP 404");
+    expect(String(declared.content)).toBe(String(undeclared.content));
+  });
+
+  test("an undeclared status on the same tool is still a failure", async () => {
+    const out = await callWith(500, [404]);
+    expect(out.status).toBe("error");
+  });
+
+  // The reason this is a list and not a range: an operator declaring "not found is data" must not
+  // silently stop hearing about the credential failures next to it.
+  test("declaring 404 does not cover 401 or 403", async () => {
+    for (const s of [401, 403]) {
+      const out = await callWith(s, [404]);
+      expect(out.status).toBe("error");
+    }
+  });
+
+  test("an empty declaration leaves issue #40 exactly as it was", async () => {
+    const out = await callWith(404, []);
+    expect(out.status).toBe("error");
+  });
+});
+
 // NOTE: For operator-authored HTTP tools EVERY non-2xx is an integration failure (issue #40):
 // invoked as a tool_call it returns a ToolMessage with status "error" carrying the same
 // "HTTP <status>" body the model already saw; 2xx stays a plain success.

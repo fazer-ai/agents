@@ -9944,6 +9944,22 @@
                       "high"
                     ]
                   },
+                  "expectedStatuses": {
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "format": "integer",
+                          "default": 0,
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    }
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -10064,6 +10080,22 @@
                       "high"
                     ]
                   },
+                  "expectedStatuses": {
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "format": "integer",
+                          "default": 0,
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    }
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -10183,6 +10215,22 @@
                       "medium",
                       "high"
                     ]
+                  },
+                  "expectedStatuses": {
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "format": "integer",
+                          "default": 0,
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    }
                   },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
@@ -10540,6 +10588,22 @@
                       "high"
                     ]
                   },
+                  "expectedStatuses": {
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "format": "integer",
+                          "default": 0,
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    }
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -10660,6 +10724,22 @@
                       "high"
                     ]
                   },
+                  "expectedStatuses": {
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "format": "integer",
+                          "default": 0,
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    }
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -10779,6 +10859,22 @@
                       "medium",
                       "high"
                     ]
+                  },
+                  "expectedStatuses": {
+                    "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "format": "integer",
+                          "default": 0,
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    }
                   },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",

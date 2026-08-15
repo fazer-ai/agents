@@ -27,7 +27,8 @@ import {
 //   * a job that will be retried is not lost, so the announcement hangs off the DEAD-LETTER event
 //     rather than off the failure. `failJob` reports whether its CAS actually dead-lettered, which
 //     also covers the flush that was re-armed mid-run (`armDebounce` upserts the CLAIMED row back to
-//     PENDING, the CAS then matches nothing, and another flush is already queued);
+//     PENDING, the CAS then matches nothing, and another flush is already queued). The DEAD row can
+//     be re-armed AFTER that too, so the state is re-read at announce time (see `assess` below);
 //   * on the direct webhook path there is no job and no retry, so what has to be excluded is a NEWER
 //     message whose own turn may still answer — the same supersede fence the success path applies at
 //     `shouldPost`. A fence that cannot be read is `unknown`, and unknown does not announce: the cost
@@ -166,18 +167,27 @@ function noteText(reason: string): string {
 }
 
 // Best-effort from end to end: a Chatwoot that is down must never turn one failed turn into two.
+//
+// `assess` is deliberately a callback rather than a value. The failure and the announcement are
+// separated by database and network work, and a message arriving in that gap starts a direct turn or
+// re-arms the DEAD debounce row back to PENDING — so a snapshot taken at failure time can announce
+// over work that is already live, which is the one outcome this whole module exists to avoid. It is
+// therefore called as late as it can be, right before the claim, and after the reads that could fail
+// for their own reasons (resolving the persona bot burns nothing when it comes back empty).
+//
+// What remains is the claim→post gap, which is irreducible: Chatwoot is the source of truth for
+// "another message arrived" and we cannot hold a lock across it.
 export async function announceFailedTurn(params: {
   tenantId: bigint;
   instanceId: bigint;
   chatwootConversationId: number;
-  failure: TurnFailure;
+  assess: () => Promise<TurnFailure>;
   error: unknown;
   now?: Date;
   cooldownMs?: number;
   base?: PrismaClient;
   deps?: LoadChatwootClientDeps;
 }): Promise<"posted" | "not-lost" | "coalesced" | "failed"> {
-  if (!isTurnLost(params.failure)) return "not-lost";
   const base = params.base ?? basePrisma;
   const {
     tenantId,
@@ -185,18 +195,6 @@ export async function announceFailedTurn(params: {
     chatwootConversationId: conversationId,
   } = params;
   try {
-    if (
-      !(await claimFailureNotice({
-        tenantId,
-        instanceId,
-        chatwootConversationId: conversationId,
-        now: params.now,
-        cooldownMs: params.cooldownMs,
-        base,
-      }))
-    ) {
-      return "coalesced";
-    }
     const botToken = await personaBotToken(
       tenantId,
       instanceId,
@@ -209,6 +207,19 @@ export async function announceFailedTurn(params: {
         String(conversationId),
       );
       return "failed";
+    }
+    if (!isTurnLost(await params.assess())) return "not-lost";
+    if (
+      !(await claimFailureNotice({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conversationId,
+        now: params.now,
+        cooldownMs: params.cooldownMs,
+        base,
+      }))
+    ) {
+      return "coalesced";
     }
     const client = await loadChatwootClient(tenantId, instanceId, {
       ...params.deps,

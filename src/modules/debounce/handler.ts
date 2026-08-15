@@ -401,7 +401,19 @@ export async function announceDeadDebounceFlush(
     tenantId: job.tenantId,
     instanceId: parsed.instanceId,
     chatwootConversationId: parsed.conversationId,
-    failure: { path: "job", deadLettered: true },
+    // NOTE: Re-read rather than trust the dead-letter that got us here: `armDebounce` upserts this
+    // very row back to PENDING on the next inbound message, and a row that is queued again is a turn
+    // that is coming — announcing over it is what would make an operator take over and close the
+    // gate that queued flush depends on.
+    assess: async () => {
+      const row = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
+        db.schedulerJob.findUnique({
+          where: { id: job.id },
+          select: { status: true },
+        }),
+      );
+      return { path: "job", deadLettered: row?.status === "DEAD" };
+    },
     error,
     base,
   });

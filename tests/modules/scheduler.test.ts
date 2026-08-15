@@ -238,7 +238,11 @@ describe.skipIf(!dbUp)("scheduler", () => {
       data: { status: "CLAIMED", claimedAt: new Date(Date.now() - 600_000) },
     });
     const reaped = await reapStaleJobs(5 * 60_000, appDb, new Date(), tenantId);
-    expect(reaped).toBeGreaterThanOrEqual(1);
+    expect(reaped.length).toBeGreaterThanOrEqual(1);
+    // The reaper reports what it touched: it is the other road to DEAD, and a caller reacting to a
+    // definitively lost job has to hear about those too.
+    expect(reaped.map((r) => r.id)).toContain(id);
+    expect(reaped.find((r) => r.id === id)?.status).toBe("PENDING");
     const s = await statusOf(id);
     expect(s.status).toBe("PENDING");
     expect(s.attempts).toBe(1);

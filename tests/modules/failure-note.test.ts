@@ -29,6 +29,7 @@ import {
   registerDeadLetterHandler,
   registerJobHandler,
   runClaimed,
+  runSchedulerTick,
 } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -355,7 +356,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       tenantId,
       instanceId,
       chatwootConversationId: conv,
-      failure: { path: "job", deadLettered: true },
+      assess: async () => ({ path: "job", deadLettered: true }),
       error: new Error("model provider returned 503"),
       base: appDb,
     });
@@ -374,7 +375,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       tenantId,
       instanceId,
       chatwootConversationId: conv,
-      failure: { path: "job", deadLettered: false },
+      assess: async () => ({ path: "job", deadLettered: false }),
       error: new Error("transient"),
       base: appDb,
     });
@@ -433,7 +434,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       tenantId,
       instanceId,
       chatwootConversationId: conv,
-      failure: { path: "direct", fence },
+      assess: async () => ({ path: "direct", fence }),
       error: new Error("boom"),
       base: appDb,
     });
@@ -527,6 +528,65 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(after.status).toBe("PENDING");
   });
 
+  test("a DEAD row re-armed before the note is posted is a live turn again", async () => {
+    const conv = await seedConversation();
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: KIND,
+        dedupeKey: `failnote-rearmed-after-${process.pid}`,
+        payload: { threadId: `${tenantId}:${instanceId}:${conv}` },
+        runAt: new Date(),
+        // Dead when the hook fired, PENDING by the time the note would be posted: armDebounce upserts
+        // this very row on the next inbound message, and that queued flush will answer.
+        status: "PENDING",
+        attempts: 5,
+      },
+      select: { id: true },
+    });
+    await announceDeadDebounceFlush(
+      {
+        id: row.id,
+        tenantId,
+        kind: KIND,
+        payload: { threadId: `${tenantId}:${instanceId}:${conv}` },
+        attempts: 4,
+      },
+      "model provider returned 503",
+      appDb,
+    );
+    expect(posted).toHaveLength(0);
+    expect(await noticeAt(conv)).toBeNull();
+  });
+
+  test("a job the reaper kills is announced too", async () => {
+    const conv = await seedConversation();
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: KIND,
+        dedupeKey: `failnote-reaped-${process.pid}`,
+        payload: { threadId: `${tenantId}:${instanceId}:${conv}` },
+        runAt: new Date(),
+        // A claim that hung: the reaper, not failJob, is what ends it, and this is its last attempt.
+        status: "CLAIMED",
+        claimedAt: new Date(Date.now() - 600_000),
+        attempts: 4,
+      },
+      select: { id: true },
+    });
+    registerDebounceHandler();
+    await runSchedulerTick(appDb, { staleMs: 5 * 60_000, batchSize: 20 });
+    const after = await suDb.schedulerJob.findUniqueOrThrow({
+      where: { id: row.id },
+      select: { status: true },
+    });
+    expect(after.status).toBe("DEAD");
+    const note = posted.find((p) => p.conversationId === conv);
+    expect(note).toBeDefined();
+    expect(note?.token).toBe(BOT_TOKEN);
+  });
+
   test("the debounce flush registers its dead-letter hook", () => {
     registerDebounceHandler();
     expect(getDeadLetterHandler("DEBOUNCE")).toBe(announceDeadDebounceFlush);
@@ -589,12 +649,60 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
     expect(await noticeAt(conv)).not.toBeNull();
   });
 
+  // Same window on the direct path: the fence is read by the announcer, so a message that lands while
+  // the failure is being recorded is seen, and the turn it will start is left alone.
+  test("a message that arrives before the note does cancels the note", async () => {
+    const conv = await seedConversation();
+    let announced = 0;
+    const outcome = await announceFailedTurn({
+      tenantId,
+      instanceId,
+      chatwootConversationId: conv,
+      assess: async () => {
+        announced += 1;
+        // The customer wrote again between the failure and this point.
+        inbound = [
+          { id: 4242, message_type: 0, content: "oi" },
+          { id: 4243, message_type: 0, content: "alo?" },
+        ];
+        return {
+          path: "direct",
+          fence: await readDirectFence({
+            tenantId,
+            instanceId,
+            chatwootConversationId: conv,
+            triggerId: 4242,
+            base: appDb,
+          }),
+        };
+      },
+      error: new Error("boom"),
+      base: appDb,
+    });
+    expect(announced).toBe(1);
+    expect(outcome).toBe("not-lost");
+    expect(posted).toHaveLength(0);
+    expect(await noticeAt(conv)).toBeNull();
+  });
+
   test("the dead debounce flush announces on the conversation its thread names", async () => {
     const conv = await seedConversation();
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: KIND,
+        dedupeKey: `failnote-flush-${process.pid}`,
+        payload: { threadId: `${tenantId}:${instanceId}:${conv}` },
+        runAt: new Date(),
+        status: "DEAD",
+        attempts: 5,
+      },
+      select: { id: true },
+    });
     const job: ClaimedJob = {
-      id: 1n,
+      id: row.id,
       tenantId,
-      kind: "DEBOUNCE",
+      kind: KIND,
       payload: { threadId: `${tenantId}:${instanceId}:${conv}` },
       attempts: 4,
     };

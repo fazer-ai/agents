@@ -13,12 +13,17 @@ import {
   parseWindows,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   type LoadChatwootClientDeps,
   loadAgentBot,
   loadChatwootClient,
 } from "@/modules/chatwoot/instance";
-import { shouldBotHandle } from "@/modules/chatwoot/normalize";
+import {
+  parseLiveConversation,
+  shouldBotHandle,
+} from "@/modules/chatwoot/normalize";
+import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import type { FollowUpDelayUnit } from "@/modules/followups/settings";
 import {
   isNewFollowUpEpisode,
@@ -589,6 +594,63 @@ async function updateMirror(
   );
 }
 
+// Writes the mirror after a console action, claiming the version Chatwoot produced for it.
+//
+// The two write endpoints do not serialize the conversation's `updated_at` (assignments renders the
+// agent, toggle_status a status blob), so a write applied straight from what we asked for lands with
+// no version at all. An event Chatwoot serialized BEFORE the click and is still retrying then arrives
+// carrying a higher version and the pre-click truth, and the mirror accepts it — undoing the handoff
+// or the resolve until Chatwoot's own event for the action arrives, or permanently if that delivery
+// is lost. While the row is wrong the runtime's ownership recheck reads it, so the bot can answer on
+// top of the human (issue #77).
+//
+// Reading the conversation back is what closes it: the REST show DOES render the same
+// `updated_at.to_f` the webhook carries, so the local write can be ordered by the same key everything
+// else uses, with no clock of ours involved. The cost is one extra GET per console action.
+//
+// The version is an improvement on the write, not a precondition for it: when the read fails or the
+// payload does not parse, fall back to the blind write so the console still reflects what the
+// operator just did — exactly the behavior that preceded this.
+async function mirrorConsoleWrite(
+  ctx: TenantContext,
+  base: PrismaClient,
+  id: bigint,
+  conv: { chatwootInstanceId: bigint; chatwootConversationId: number },
+  client: ChatwootClient,
+  fallback: {
+    status?: string;
+    assigneeId?: number | null;
+    assigneeType?: string | null;
+  },
+): Promise<void> {
+  const tenantId = requireTenant(ctx);
+  try {
+    const live = parseLiveConversation(
+      await client.getConversation(conv.chatwootConversationId),
+    );
+    if (live) {
+      await reconcileMirrorFromLive({
+        tenantId,
+        instanceId: conv.chatwootInstanceId,
+        conversationId: conv.chatwootConversationId,
+        live,
+        base,
+      });
+      return;
+    }
+    logger.warn(
+      "conversations: live read after a console write did not parse (conv=%s) — writing unversioned",
+      String(conv.chatwootConversationId),
+    );
+  } catch (err) {
+    logger.warn(
+      { err, conversationId: String(conv.chatwootConversationId) },
+      "conversations: live read after a console write failed — writing unversioned",
+    );
+  }
+  await updateMirror(ctx, base, id, fallback);
+}
+
 // Metadata only — fast scoped DB read, NO network. The UI renders the shell from this immediately.
 export async function getConversationDetail(
   ctx: TenantContext,
@@ -1104,7 +1166,7 @@ export async function handoffConversation(
   await client.toggleStatus(conv.chatwootConversationId, "open", {
     asAdmin: true,
   });
-  await updateMirror(ctx, base, id, {
+  await mirrorConsoleWrite(ctx, base, id, conv, client, {
     status: "open",
     assigneeType: "User",
     ...(assigneeId !== null ? { assigneeId } : {}),
@@ -1143,7 +1205,7 @@ export async function returnConversationToAgent(
   await client.toggleStatus(conv.chatwootConversationId, "pending", {
     asAdmin: true,
   });
-  await updateMirror(ctx, base, id, {
+  await mirrorConsoleWrite(ctx, base, id, conv, client, {
     status: "pending",
     assigneeId: null,
     assigneeType: null,
@@ -1174,7 +1236,7 @@ export async function setConversationStatus(
   await client.toggleStatus(conv.chatwootConversationId, status, {
     asAdmin: true,
   });
-  await updateMirror(ctx, base, id, { status });
+  await mirrorConsoleWrite(ctx, base, id, conv, client, { status });
   broadcastConversationEvent(tenantId, {
     conversationId: String(id),
     status,

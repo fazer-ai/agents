@@ -2,7 +2,6 @@ import { HumanMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
@@ -10,6 +9,7 @@ import {
   parseLiveConversation,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
+import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   buildTemplatePayload,
@@ -361,124 +361,24 @@ export async function runAgentNudge(
     // back with. On a row migrated before those columns existed the marks are null, so the next
     // delayed conversation event would be accepted as the first versioned word on a conversation
     // this GET just verified. The write below no-ops when there is genuinely nothing to store.
-    if (
-      live.status !== loaded.status ||
-      live.assigneeType !== loaded.assigneeType ||
-      live.assigneeId !== loaded.assigneeId ||
-      live.assigneeName !== loaded.assigneeName ||
-      live.updatedAt !== null
-    ) {
-      try {
-        // NOTE: Serialize with mirrorChatwootEvent: same per-conversation withEntityLock, and a
-        // freshness guard — a webhook committed between our GET and this write is NEWER than the
-        // probe snapshot, so the reconcile must not restore stale status/assignee over it. The
-        // stored monotonic lastEventAt vs the live payload's last_activity_at decides; when the
-        // live is fresher it also advances lastEventAt so later frozen retries stay fenced.
-        const liveState = live;
-        await runScopedOn(base, sysCtx(tenantId), (db) =>
-          withEntityLock(
-            db,
-            `${tenantId}:${instanceId}:${conversationId}`,
-            async () => {
-              const where = {
-                tenantId_chatwootInstanceId_chatwootConversationId: {
-                  tenantId,
-                  chatwootInstanceId: instanceId,
-                  chatwootConversationId: conversationId,
-                },
-              };
-              const current = await db.conversation.findUnique({
-                where,
-                select: {
-                  status: true,
-                  assigneeType: true,
-                  assigneeId: true,
-                  assigneeName: true,
-                  lastEventAt: true,
-                  chatwootStatusAt: true,
-                  chatwootAssigneeAt: true,
-                },
-              });
-              if (!current) return;
-              // Second-granular like the mirror's monotonic guard (last_activity_at is epoch
-              // seconds); a strict > on raw ms would false-skip same-second states.
-              const sec = (d: Date) => Math.floor(d.getTime() / 1000);
-              const liveAt = liveState.lastActivityAt;
-              if (
-                liveAt !== null &&
-                current.lastEventAt !== null &&
-                sec(current.lastEventAt) > sec(liveAt)
-              ) {
-                return;
-              }
-              // NOTE: The same rule the mirror applies, because this is the same kind of payload:
-              // a field is written when the version carrying it is at least as new as the mark that
-              // orders that field, and the mark moves with it. Writing state without checking would
-              // leave fields from the GET under marks from a webhook that landed after it — a stale
-              // assignment surviving a live unassignment, with the equal-version rule then keeping
-              // the redelivery from clearing it. The REST show renders the same `updated_at.to_f`
-              // the webhook does. With no version at all (older Chatwoot) the last_activity_at guard
-              // above is all there is, and the write stays unconditional, as it was.
-              const liveVersion = liveState.updatedAt;
-              const statusOrdered =
-                liveVersion === null ||
-                current.chatwootStatusAt === null ||
-                liveVersion >= current.chatwootStatusAt;
-              const assigneeOrdered =
-                liveVersion === null ||
-                current.chatwootAssigneeAt === null ||
-                liveVersion >= current.chatwootAssigneeAt;
-              // NOTE: Only what actually differs. The probe runs on every proactive send, and the
-              // common outcome is "nothing changed" — writing the same values back would be two
-              // updates per follow-up and would advance the row's `updatedAt` for nothing.
-              const data = {
-                ...(statusOrdered && liveState.status !== current.status
-                  ? { status: liveState.status }
-                  : {}),
-                ...(assigneeOrdered &&
-                (liveState.assigneeType !== current.assigneeType ||
-                  liveState.assigneeId !== current.assigneeId ||
-                  liveState.assigneeName !== current.assigneeName)
-                  ? {
-                      assigneeType: liveState.assigneeType,
-                      assigneeId: liveState.assigneeId,
-                      assigneeName: liveState.assigneeName,
-                    }
-                  : {}),
-                ...(liveAt !== null &&
-                (current.lastEventAt === null ||
-                  sec(liveAt) > sec(current.lastEventAt))
-                  ? { lastEventAt: liveAt }
-                  : {}),
-                ...(statusOrdered &&
-                liveVersion !== null &&
-                (current.chatwootStatusAt === null ||
-                  liveVersion > current.chatwootStatusAt)
-                  ? { chatwootStatusAt: liveVersion }
-                  : {}),
-                ...(assigneeOrdered &&
-                liveVersion !== null &&
-                (current.chatwootAssigneeAt === null ||
-                  liveVersion > current.chatwootAssigneeAt)
-                  ? { chatwootAssigneeAt: liveVersion }
-                  : {}),
-              };
-              if (Object.keys(data).length === 0) return;
-              await db.conversation.update({ where, data });
-            },
-          ),
-        );
-        // NOTE: Keep the in-memory snapshot in step so a second probe only re-writes on a NEW divergence.
-        loaded.status = live.status;
-        loaded.assigneeType = live.assigneeType;
-        loaded.assigneeId = live.assigneeId;
-        loaded.assigneeName = live.assigneeName;
-      } catch (err) {
-        logger.warn(
-          { err, conversationId: String(conversationId) },
-          "agentNudge: mirror reconcile failed",
-        );
-      }
+    try {
+      await reconcileMirrorFromLive({
+        tenantId,
+        instanceId,
+        conversationId,
+        live,
+        base,
+      });
+      // NOTE: Keep the in-memory snapshot in step so a second probe only re-writes on a NEW divergence.
+      loaded.status = live.status;
+      loaded.assigneeType = live.assigneeType;
+      loaded.assigneeId = live.assigneeId;
+      loaded.assigneeName = live.assigneeName;
+    } catch (err) {
+      logger.warn(
+        { err, conversationId: String(conversationId) },
+        "agentNudge: mirror reconcile failed",
+      );
     }
     const owned = shouldBotHandle(
       {

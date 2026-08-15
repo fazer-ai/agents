@@ -352,6 +352,47 @@ export type ApproveResult =
 // Approve = CAS-claim PENDING/EDITED→APPROVED, then create a KnowledgeDocument and enqueue
 // RAG_INGEST (async embed+chunk). Concurrent approvers both attempt the CAS; only one wins and
 // creates the document. The ingest happens asynchronously via the scheduler worker.
+// Claims an approval and returns the text it held AT THE MOMENT OF THE CLAIM. One statement, so no
+// edit can slip between reading the content and taking ownership of the row. Returns null when the
+// item was already approved or rejected by someone else.
+export interface ClaimedApproval {
+  knowledgeBaseId: bigint;
+  proposedTitle: string | null;
+  proposedContent: string;
+}
+
+export async function claimApprovalForStorage(
+  tenantId: bigint,
+  id: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<ClaimedApproval | null> {
+  const rows = await runScopedOn(
+    base,
+    sysCtx(tenantId),
+    (db) =>
+      db.$queryRaw<
+        {
+          knowledge_base_id: bigint;
+          proposed_title: string | null;
+          proposed_content: string;
+        }[]
+      >`
+      UPDATE approval_queue_items
+         SET status = 'APPROVED', updated_at = now()
+       WHERE id = ${id}
+         AND status IN ('PENDING', 'EDITED')
+      RETURNING knowledge_base_id, proposed_title, proposed_content
+    `,
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    knowledgeBaseId: row.knowledge_base_id,
+    proposedTitle: row.proposed_title,
+    proposedContent: row.proposed_content,
+  };
+}
+
 export async function approveApprovalItem(params: {
   tenantId: bigint;
   id: bigint;
@@ -361,17 +402,18 @@ export async function approveApprovalItem(params: {
   const base = params.base ?? basePrisma;
   const tenantId = params.tenantId;
 
-  // Phase 1 (scoped read): load the item + verify KB exists.
+  // Phase 1 (scoped read): does this item exist, is it still claimable, and does its base still
+  // exist — the checks that decide WHETHER to claim.
+  //
+  // NOTE: The text is deliberately NOT selected here. It used to be, and phase 3 stored that copy,
+  // which is a lost update the moment a second reviewer can edit: the revision lands between this
+  // read and the claim, the claim accepts it (EDITED is claimable) and the stale copy is what gets
+  // embedded. Not reading it here is what makes that impossible to reintroduce — the only text in
+  // scope is the one the claim itself returns.
   const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const item = await db.approvalQueueItem.findUnique({
       where: { id: params.id },
-      select: {
-        id: true,
-        status: true,
-        knowledgeBaseId: true,
-        proposedContent: true,
-        proposedTitle: true,
-      },
+      select: { id: true, status: true, knowledgeBaseId: true },
     });
     if (!item) return { kind: "not-found" as const };
     if (item.status !== "PENDING" && item.status !== "EDITED") {
@@ -387,22 +429,23 @@ export async function approveApprovalItem(params: {
   if (loaded.kind === "not-found") return { outcome: "not-found" };
   if (loaded.kind === "not-pending") return { outcome: "not-pending" };
 
-  // Phase 2: CAS-claim the approval (exactly-once).
-  const claimed = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const claim = await db.approvalQueueItem.updateMany({
-      where: { id: params.id, status: { in: ["PENDING", "EDITED"] } },
-      data: { status: "APPROVED" },
-    });
-    return claim.count > 0;
-  });
+  // Phase 2: CAS-claim the approval (exactly-once) AND read the text in the same statement.
+  //
+  // NOTE: The content used to come from the phase-1 snapshot, which is a lost update as soon as a
+  // second reviewer can edit: A starts approving and reads the hedged text, B saves a revision (the
+  // row becomes EDITED, which the claim still accepts), A claims and stores its stale snapshot. Both
+  // are told it worked and the un-revised text is what got embedded — precisely the outcome this
+  // issue is about. `RETURNING` makes the claim and the read one operation, so whatever the row
+  // holds at claim time is what is approved.
+  const claimed = await claimApprovalForStorage(tenantId, params.id, base);
   if (!claimed) return { outcome: "not-pending" };
 
   // Phase 3: Create a KnowledgeDocument and enqueue RAG_INGEST (or skip in demo mode).
   const doc = await createDocument({
     tenantId,
-    knowledgeBaseId: loaded.item.knowledgeBaseId,
-    title: loaded.item.proposedTitle ?? "Conteúdo aprovado",
-    text: loaded.item.proposedContent,
+    knowledgeBaseId: claimed.knowledgeBaseId,
+    title: claimed.proposedTitle ?? "Conteúdo aprovado",
+    text: claimed.proposedContent,
     sourceType: "approval",
     base,
   });

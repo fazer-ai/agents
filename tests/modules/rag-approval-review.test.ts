@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   approveApprovalItem,
+  claimApprovalForStorage,
   createSuggestion,
   editApprovalItem,
 } from "@/modules/rag/service";
@@ -156,6 +157,45 @@ describe.skipIf(!dbUp)("approval review before approval", () => {
     const text = await lastApprovedText();
     expect(text).toBe(REVISED);
     expect(text).not.toContain("Não consegui confirmar");
+  });
+
+  // Review finding, round 2 (P1): approval used the text read in its FIRST phase, so a revision
+  // saved between that read and the claim was accepted by the CAS and then thrown away — the
+  // un-revised text was what got embedded, with both reviewers told it worked. The claim now
+  // returns the row's text in the same statement, so there is no window to lose an update in.
+  test("the claim returns the text the row holds at claim time, not an earlier read", async () => {
+    await seed();
+    const item = await createSuggestion({
+      tenantId,
+      knowledgeBaseId: kbId,
+      proposedContent: HEDGED,
+      proposedTitle: "Prazo 3",
+      base: appDb,
+    });
+    // Stands in for the concurrent reviewer: the edit lands before the claim runs.
+    await editApprovalItem({
+      tenantId,
+      id: item.id,
+      proposedContent: REVISED,
+      base: appDb,
+    });
+    const claimed = await claimApprovalForStorage(tenantId, item.id, appDb);
+    expect(claimed?.proposedContent).toBe(REVISED);
+    expect(claimed?.knowledgeBaseId).toBe(kbId);
+  });
+
+  test("a second claim on the same item gets nothing", async () => {
+    await seed();
+    const item = await createSuggestion({
+      tenantId,
+      knowledgeBaseId: kbId,
+      proposedContent: REVISED,
+      base: appDb,
+    });
+    expect(
+      await claimApprovalForStorage(tenantId, item.id, appDb),
+    ).not.toBeNull();
+    expect(await claimApprovalForStorage(tenantId, item.id, appDb)).toBeNull();
   });
 
   // Editing is a review step, so it must be closed once the item leaves review — otherwise a second

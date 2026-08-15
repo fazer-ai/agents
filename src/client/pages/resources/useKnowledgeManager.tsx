@@ -62,6 +62,11 @@ type UploadStatus = "idle" | "uploading" | "done" | "error";
 // swallow a batch the scheduler is working through one job at a time.
 const BLOCK_RECHECK_MS = 500;
 
+// How often an open documents modal re-asks on its own, for the configuration changes no document
+// event announces (a credential filled, deleted or replaced in another tab). Slow on purpose: this
+// is a safety net for a screen someone left open, not the path that keeps the banner current.
+const BLOCK_POLL_MS = 30_000;
+
 // A file staged in the add-content modal. Carries its own upload status so a batch shows per-file
 // progress and a partial failure stays visible (the failed ones can be retried without re-picking).
 interface PickedFile {
@@ -282,6 +287,22 @@ export function useKnowledgeManager(opts: {
     },
     [],
   );
+
+  // The events above only fire when a job runs. Filling, deleting or replacing the credential is a
+  // configuration change with no job attached, so nothing would tell an open modal about it, and the
+  // banner would go on describing a block that was resolved — or stay silent about one that appeared
+  // — until the operator reopened it or tried to index. A slow poll closes that without a new
+  // realtime channel: the read is one workspace-scoped question, and the window above already
+  // collapses it against the event-driven reads.
+  // `recheckBlock` reads only refs and the api client, so the closure captured here behaves the same
+  // on every render; listing it would tear the interval down and rebuild it on each one, which never
+  // reaches 30s and so never polls at all.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: explained directly above
+  useEffect(() => {
+    if (!docsModal.isOpen) return;
+    const id = setInterval(() => void recheckBlock(), BLOCK_POLL_MS);
+    return () => clearInterval(id);
+  }, [docsModal.isOpen]);
 
   // Asks the workspace-scoped endpoint, not a base's document list: the question has nothing to do
   // with which base is open, and answering it by re-downloading a list was what forced every caller

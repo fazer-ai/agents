@@ -7,10 +7,7 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
-import {
-  missingVaultRefReason,
-  tryResolveVaultSecret,
-} from "@/modules/vault/service";
+import { resolveVaultRefState } from "@/modules/vault/service";
 import { chunkText } from "./chunk";
 import { type EmbeddingConfig, embedTexts } from "./embeddings";
 import { toVectorLiteral } from "./sql";
@@ -43,24 +40,27 @@ export async function resolveEmbeddingStatus(
 ): Promise<EmbeddingStatus> {
   const settings = await readEmbeddingSettings(db, tenantId);
   if (!settings.credentialRef) return { ok: false, reason: "not_configured" };
-  const raw = await tryResolveVaultSecret<
+  // NOTE: The three failures are distinguished from ONE read (see resolveVaultRefState). A ref whose
+  // row is gone is not "pending": telling the operator to fill a credential that no longer exists
+  // sends them looking for a row that is not there, so it falls back to the reason a workspace that
+  // never configured one gets. An ACTIVE row holding a blank secret is neither — it is `empty`, and
+  // that only stays distinguishable because the state and the value came from the same query.
+  const resolved = await resolveVaultRefState<
     string | { apiKey: string; baseURL?: string }
   >(db, settings.credentialRef);
-  if (!raw) {
-    // NOTE: `tryResolveVaultSecret` answers null both for an unfilled entry and for a ref whose row
-    // is gone (deleted credential, settings never updated). Only the first is "pending": reporting it
-    // for a dangling ref would send the operator to fill a credential that no longer exists, so that
-    // case falls back to the same reason as a workspace that never configured one.
-    const why = await missingVaultRefReason(db, settings.credentialRef);
-    if (why === "not_found") return { ok: false, reason: "not_configured" };
+  if (resolved.state === "not_found")
+    return { ok: false, reason: "not_configured" };
+  if (resolved.state === "pending")
     return {
       ok: false,
       reason: "credential_pending",
       credentialRef: settings.credentialRef,
     };
-  }
+  const raw = resolved.value;
   const { apiKey, baseURL: secretBaseURL } =
-    typeof raw === "string" ? { apiKey: raw, baseURL: undefined } : raw;
+    typeof raw === "string" || !raw
+      ? { apiKey: typeof raw === "string" ? raw : "", baseURL: undefined }
+      : raw;
   if (!apiKey)
     return {
       ok: false,

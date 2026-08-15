@@ -88,21 +88,31 @@ export async function tryResolveVaultSecret<T = unknown>(
   return decryptJson<T>(entry.secret);
 }
 
-// Why a ref did not resolve, for callers that turn the failure into operator-facing advice.
-// `tryResolveVaultSecret` collapses both cases into null, which is right for "can I use this?" and
-// wrong for "what should the operator do?": telling someone to fill a credential that was deleted
-// sends them looking for a row that is not there.
-export type MissingVaultRefReason = "not_found" | "pending";
+// A ref resolved WITH the reason it failed, for callers that turn the failure into operator-facing
+// advice. `tryResolveVaultSecret` collapses "no such row" and "row not filled yet" into the same
+// null, which is right for "can I use this?" and wrong for "what should the operator do?": telling
+// someone to fill a credential that was deleted sends them looking for a row that is not there.
+//
+// One query on purpose. Asking a second time whether the row exists reads a database that may have
+// moved (a pending entry filled in between), and it cannot tell an ACTIVE row holding an empty
+// secret from a row that is gone — both would answer "not filled". The state and the value have to
+// come from the same read.
+export type VaultRefResolution<T> =
+  | { state: "filled"; value: T }
+  | { state: "pending" }
+  | { state: "not_found" };
 
-export async function missingVaultRefReason(
+export async function resolveVaultRefState<T = unknown>(
   db: ScopedDb,
   ref: string,
-): Promise<MissingVaultRefReason> {
+): Promise<VaultRefResolution<T>> {
   const entry = await db.vaultEntry.findFirst({
     where: vaultRefWhere(ref),
-    select: { status: true },
+    select: { secret: true, status: true },
   });
-  return entry?.status === "pending" ? "pending" : "not_found";
+  if (!entry) return { state: "not_found" };
+  if (entry.status === "pending") return { state: "pending" };
+  return { state: "filled", value: decryptJson<T>(entry.secret) };
 }
 
 // Resolved vault entry including metadata needed at the call site (secret, kind, baseUrl, paramName).

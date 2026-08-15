@@ -210,6 +210,37 @@ describe.skipIf(!dbUp)(
       expect(row?.error).toBe("errors.embeddingEmpty");
     });
 
+    // Review finding, round 2: an ACTIVE row whose secret is a bare empty string also fails to
+    // resolve. Answering that with a second "does the row exist" query called it not_found, which is
+    // the one thing it is not. State and value now come from the same read.
+    test("an active credential holding a blank string is empty, not missing", async () => {
+      const { id, kb } = await seedTenant("blk-blankstr");
+      const row = await suDb.vaultEntry.create({
+        data: {
+          tenantId: id,
+          name: "embed-blankstr",
+          kind: "generic",
+          status: "active",
+          secret: encryptJson(""),
+        },
+      });
+      await updateEmbeddingSettings(
+        ctx(id),
+        { credentialRef: `vault:${row.id}` },
+        appDb,
+      );
+      const doc = await createDocument({
+        tenantId: id,
+        knowledgeBaseId: kb,
+        title: "T",
+        text: "conteudo",
+        sourceType: "text",
+        base: appDb,
+      });
+      await runIngest(id, doc.id);
+      expect((await readDoc(id, doc.id))?.error).toBe("errors.embeddingEmpty");
+    });
+
     // Review finding: `tryResolveVaultSecret` answers null for a DELETED entry exactly as it does for
     // an unfilled one, so a dangling ref used to be reported as "pending" — telling the operator to
     // fill a credential that is not there.

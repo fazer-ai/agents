@@ -608,26 +608,24 @@ describe("a fine-tuned id is read through to its base model", () => {
 // on those — and the ft: match added above is what makes the overlap reachable, because the last
 // segments of "ft:<base>:<org>:<name>:<id>" are free text the operator writes: a support agent
 // fine-tuned as "codex-support" contains "codex" and gets routed away.
-describe("the completions-spelled pin stays off the adapter's own route", () => {
-  test.each([
-    "ft:gpt-5.6-luna:acme:codex-support:x1",
-    "ft:gpt-5.6-luna:acme:gpt-5.2-pro-migration:x1",
-    "ft:gpt-5.6-luna:acme:gpt-5.4-pro-migration:x1",
-    "ft:gpt-5.6-luna:acme:gpt-5.5-pro-migration:x1",
-  ])("a fine-tuned gpt-5.6 named %s is left alone", (model) => {
-    expect(planOpenAITransport(model, undefined)).toEqual({ responses: false });
-  });
-
-  test("the same fine-tune under any other name still gets the pin", () => {
-    expect(
-      planOpenAITransport("ft:gpt-5.6-luna:acme:suporte:x1", undefined),
-    ).toEqual({ responses: false, toolEffort: "none" });
-  });
-
-  test("a turn on that id carries no completions-only parameter", async () => {
+describe("the completions-spelled pin follows the endpoint, not a guess about it", () => {
+  // Lowercase suffix: the adapter routes it away, so the pin must not travel.
+  test("a fine-tuned gpt-5.6 the adapter routes away carries no pin", async () => {
     const { sent, url } = await turn("ft:gpt-5.6-luna:acme:codex-support:x1");
     expect(url).toContain("/responses");
     expect(sent).not.toHaveProperty("reasoning_effort");
+  });
+
+  // Uppercase suffix: `_modelPrefersResponsesAPI` uses case-SENSITIVE `includes`, so the very same
+  // agent stays on completions — where dropping the pin is the issue #66 400 all over again.
+  test.each([
+    "ft:gpt-5.6-luna:acme:Codex-support:x1",
+    "ft:gpt-5.6-luna:acme:GPT-5.4-PRO-migration:x1",
+    "ft:gpt-5.6-luna:acme:suporte:x1",
+  ])("%s stays on completions and keeps the pin", async (model) => {
+    const { sent, url } = await turn(model);
+    expect(url).toContain("/chat/completions");
+    expect(sent.reasoning_effort).toBe("none");
   });
 });
 
@@ -654,6 +652,10 @@ describe("the completions spelling never leaves for the responses endpoint", () 
     "ft:gpt-5.6-luna:acme:gpt-5.2-pro-migration:x1",
     "ft:gpt-5.6-luna:acme:gpt-5.4-pro-migration:x1",
     "ft:gpt-5.6-luna:acme:gpt-5.5-pro-migration:x1",
+    // The same two suffixes in the case the adapter does NOT match: still gpt-5.6, still on
+    // completions, so still owed the pin.
+    "ft:gpt-5.6-luna:acme:Codex-support:x1",
+    "ft:gpt-5.6-luna:acme:GPT-5.4-PRO-migration:x1",
     "ft:gpt-5.6-luna:acme:suporte:x1",
     "ft:gpt-5.4-mini:acme::x1",
     "my-org/custom-reasoner",
@@ -669,6 +671,29 @@ describe("the completions spelling never leaves for the responses endpoint", () 
       expect(fake.requests[0]).not.toHaveProperty("reasoning_effort");
     }
   });
+
+  // The other half of the same seam, and the half a case-insensitive guess broke: whenever a
+  // gpt-5.6 model DOES leave for completions with tools attached, the issue #66 pin has to be on
+  // it. Stated as an invariant so neither direction can be fixed at the other's expense —
+  // withholding the pin too eagerly reopens #66 exactly as sending it too eagerly breaks the
+  // Responses route.
+  test.each(IDS.filter((m) => m.includes("gpt-5.6")))(
+    "%s, when a gpt-5.6 stays on completions",
+    async (model) => {
+      fake = fakeOpenAI();
+      const chat = createChatModel({
+        provider: "openai",
+        model,
+        apiKey: "test",
+      });
+      await chat
+        .bindTools?.([getCurrentTime])
+        .invoke([{ role: "user", content: "oi" }]);
+      if (fake.urls[0]?.includes("/chat/completions")) {
+        expect(fake.requests[0]?.reasoning_effort).toBe("none");
+      }
+    },
+  );
 
   // Inspected on the captured request rather than on the return value: an id the model refuses the
   // parameter on (gpt-4o) answers 400, and what this asserts is what LEFT, not whether it landed.

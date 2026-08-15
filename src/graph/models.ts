@@ -90,6 +90,22 @@ type OpenAIChatFields = ConstructorParameters<typeof ChatOpenAI>[0];
 // API stores for 30 days by default. Without this, choosing a reasoning effort would silently
 // change what OpenAI keeps of the customer's conversation. Measured: the two-turn tool round-trip
 // still works with storage off.
+// Whether this instance will talk to /v1/responses. @langchain/openai decides that on its own for
+// some models (_modelPrefersResponsesAPI), and the rule is not exported: it tests four substrings
+// with case-SENSITIVE `includes`, anywhere in the id — so the free-text suffix of a fine-tune
+// ("ft:<base>:<org>:<name>:<id>") can flip a plain gpt-5.6 agent onto the other endpoint, and
+// "Codex-support" does not flip it while "codex-support" does. Predicting that is a copy of their
+// list plus a copy of its case rules, and every round of getting it slightly wrong costs a turn.
+//
+// NOTE: so the instance is asked instead of guessed. `invocationParams` is public and returns the
+// parameter set that will actually be sent, and the two endpoints name the token cap differently
+// (`max_output_tokens` on Responses, `max_completion_tokens` on Completions). This also covers the
+// triggers that have nothing to do with the model name — a built-in tool, a Responses-only option —
+// which no model-name predicate could have seen.
+function usesResponsesEndpoint(chat: ChatOpenAI): boolean {
+  return "max_output_tokens" in chat.invocationParams({} as never);
+}
+
 function makeOpenAIChat(
   fields: OpenAIChatFields,
   plan: OpenAITransportPlan,
@@ -108,7 +124,7 @@ function makeOpenAIChat(
       : {}),
   };
   const chat = new ChatOpenAI(withPlan);
-  if (!plan.toolEffort) return chat;
+  if (!plan.toolEffort || usesResponsesEndpoint(chat)) return chat;
   const withEffort = new ChatOpenAI({
     ...withPlan,
     modelKwargs: {

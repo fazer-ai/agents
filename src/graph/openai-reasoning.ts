@@ -55,20 +55,6 @@ export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 const DEFAULT_EFFORT_REJECTS_TOOLS_RE =
   /^(?:ft:)?(?:[\w.-]+\/)?gpt-5\.6(?:-|$)/i;
 
-// @langchain/openai sends some ids to /v1/responses on its own, whatever we ask of it
-// (_modelPrefersResponsesAPI in utils/misc). All four of its arms are `model.includes(...)`, i.e.
-// they match ANYWHERE in the id — which is what lets any of them collide with the pin below, since
-// the last segments of a fine-tune ("ft:<base>:<org>:<name>:<id>") are free text the operator
-// writes: a gpt-5.6 fine-tune named "codex-support", or one named "gpt-5.4-pro-migration", is
-// routed away from completions while still being a gpt-5.6 id.
-//
-// NOTE: none of these arms is reachable through the BASE model name — a bare "-pro" id can never
-// also be gpt-5.6 — which is exactly why an earlier mutation of the "-pro" arms killed no test and
-// read as dead code. It was uncovered, not unreachable. The invariant test "the completions
-// spelling never leaves for the responses endpoint" now carries one fine-tune id per arm, so each
-// one is held to the real adapter.
-const PIN_ROUTED_AWAY_RE = /codex|gpt-5\.[245]-pro/i;
-
 export interface OpenAITransportPlan {
   // The Responses endpoint instead of Chat Completions. Carries reasoning together with function
   // tools, which is the only combination the completions endpoint refuses.
@@ -78,8 +64,9 @@ export interface OpenAITransportPlan {
   // Effort to pin ONLY on the tool-bound model. Reserved for the case where nobody asked for an
   // effort and the provider's own default is what breaks: pinning it on the constructor would
   // switch reasoning off on the calls that never carried tools and never failed. This is the one
-  // effort still spelled for completions, so it is withheld from any id the adapter routes to
-  // /v1/responses on its own.
+  // effort still spelled for completions, so the factory drops it when the adapter is not taking
+  // the request there — which is a fact about a built instance, not a policy, and so is decided in
+  // ./models rather than guessed here.
   toolEffort?: ReasoningEffort;
 }
 
@@ -91,11 +78,6 @@ export function planOpenAITransport(
 ): OpenAITransportPlan {
   const m = model.trim();
   if (requested === undefined) {
-    // The pin is spelled for completions, and it exists only because completions rejects the
-    // provider's default effort next to function tools. On an id the adapter routes to
-    // /v1/responses that rejection does not exist (measured: absent effort + tools answers 200
-    // there), so the pin would be both unnecessary and, in the wrong spelling, fatal.
-    if (PIN_ROUTED_AWAY_RE.test(m)) return { responses: false };
     return DEFAULT_EFFORT_REJECTS_TOOLS_RE.test(m)
       ? { responses: false, toolEffort: "none" }
       : { responses: false };

@@ -188,8 +188,11 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(rows[0]?.errorMessage).toContain(
       "Google Calendar returned HTTP 500.",
     );
+    // The failure text lives in errorMessage, which has its own sanitizer and its own contract.
+    // `detail` keeps only the shape of what came back (issue #78): a tool result is a provider's
+    // response body, which is no more allowlisted than the arguments that produced it.
     expect((rows[0]?.detail as Record<string, unknown> | null)?.output).toBe(
-      "Google Calendar returned HTTP 500.",
+      "string(34)",
     );
   });
 
@@ -318,7 +321,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       const logged = await argsLoggedFor({
         url: "https://bucket.s3.amazonaws.com/fotos/camiseta.png?X-Amz-Signature=deadbeefcafe0000&X-Amz-Credential=CRED",
       });
-      expect(logged?.url).toBe("[url]");
+      expect(logged?.url).toMatch(/^string\(\d+\)$/);
       expect(JSON.stringify(logged)).not.toContain("deadbeefcafe0000");
     });
 
@@ -329,7 +332,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       const logged = await argsLoggedFor({
         url: "https://cdn.loja.com.br/pedidos/48213/nota-fiscal-maria-silva.png",
       });
-      expect(logged?.url).toBe("[url]");
+      expect(logged?.url).toMatch(/^string\(\d+\)$/);
       expect(JSON.stringify(logged)).not.toContain("maria-silva");
       expect(JSON.stringify(logged)).not.toContain("48213");
     });
@@ -338,7 +341,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       const logged = await argsLoggedFor({
         url: "https://pedido-48213.loja.com.br/foto.png",
       });
-      expect(logged?.url).toBe("[url]");
+      expect(logged?.url).toMatch(/^string\(\d+\)$/);
       expect(JSON.stringify(logged)).not.toContain("48213");
     });
 
@@ -346,7 +349,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       const logged = await argsLoggedFor({
         url: "https://usuario:senha-secreta@cdn.loja.com.br/fotos/x.png",
       });
-      expect(logged?.url).toBe("[url]");
+      expect(logged?.url).toMatch(/^string\(\d+\)$/);
       expect(JSON.stringify(logged)).not.toContain("senha-secreta");
       expect(JSON.stringify(logged)).not.toContain("usuario");
     });
@@ -357,7 +360,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       const logged = await argsLoggedFor({
         url: " \thttps://cdn.loja.com.br/fotos/x.png?token=segredo-escondido",
       });
-      expect(logged?.url).toBe("[url]");
+      expect(logged?.url).toMatch(/^string\(\d+\)$/);
       expect(JSON.stringify(logged)).not.toContain("segredo-escondido");
     });
 
@@ -367,7 +370,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       const logged = await argsLoggedFor({
         url: "https://cdn.loja.com.br:99999/x.png?token=segredo-em-voo",
       });
-      expect(logged?.url).toBe("[url]");
+      expect(logged?.url).toMatch(/^string\(\d+\)$/);
       expect(JSON.stringify(logged)).not.toContain("segredo-em-voo");
     });
 
@@ -376,7 +379,9 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
         url: "https://cdn.loja.com.br/x.png",
         caption: "Oi Maria, aqui está o modelo que você pediu",
       });
-      expect(logged).not.toHaveProperty("caption");
+      // The caption used to be dropped by NAME; now it is described like anything else, and the
+      // text is gone either way — without a list of key names to keep adding to.
+      expect(logged?.caption).toMatch(/^string\(\d+\)$/);
       expect(JSON.stringify(logged)).not.toContain("Maria");
     });
   });

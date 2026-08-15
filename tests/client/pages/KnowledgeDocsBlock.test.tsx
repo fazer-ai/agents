@@ -62,11 +62,14 @@ async function nextDocs(): Promise<DocsPayload> {
 // the console asks again, so each answer has to be allowed to differ from the one before.
 let blockQueue: ({ reason: string } | null)[] = [];
 let blockCalls = 0;
+// Eden rejects rather than returning empty data when the network is down.
+let blockThrows = false;
 
 async function nextBlock(): Promise<{ block: { reason: string } | null }> {
   const answer =
     blockQueue[Math.min(blockCalls, blockQueue.length - 1)] ?? null;
   blockCalls += 1;
+  if (blockThrows) throw new Error("network down");
   if (gateOnCall === blockCalls) {
     await new Promise<void>((r) => {
       releaseGate = r;
@@ -206,6 +209,7 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     docsQueue = [];
     blockCalls = 0;
     blockQueue = [];
+    blockThrows = false;
     reindexResponse = {};
     onKnowledgeDocument = null;
     gateOnCall = null;
@@ -426,6 +430,32 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     await waitFor(() => expect(blockCalls).toBe(1));
     await waitFor(() => expect(shows("Doc")).toBe(true));
     expect(blockCalls).toBe(1);
+  });
+
+  // Review finding, round 12: this read runs on a timer, so a failure is not a one-off. An offline
+  // browser makes Eden reject, and an unhandled rejection would repeat every 30s for as long as the
+  // modal is open — while the banner is the one thing that must not start guessing.
+  test("a failed read keeps the last answer instead of throwing", async () => {
+    docsQueue = [
+      {
+        documents: [doc(), doc({ id: "d2", title: "Outro" })],
+        embeddingBlock: { reason: "credential_pending" },
+      },
+    ];
+    blockThrows = true;
+    await openModal();
+    expect(shows(PENDING_TEXT)).toBe(true);
+
+    onKnowledgeDocument?.({
+      knowledgeBaseId: "b1",
+      documentId: "d1",
+      status: "UNINDEXED",
+    });
+    await waitFor(() => expect(blockCalls).toBe(1));
+
+    // Still what the list said, and the modal is still alive.
+    expect(shows(PENDING_TEXT)).toBe(true);
+    expect(shows("Doc")).toBe(true);
   });
 
   // An event for another base is not this modal's business at all.

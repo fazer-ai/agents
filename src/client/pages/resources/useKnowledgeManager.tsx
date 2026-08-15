@@ -309,8 +309,15 @@ export function useKnowledgeManager(opts: {
   // to remember that the answer's scope and the request's scope were different things.
   async function recheckBlock() {
     const ticket = claimBlockAnswer();
-    const { data } = await api.api.v1.knowledge["embedding-block"].get();
-    if (data) commitBlock(ticket, data.block ?? null);
+    try {
+      const { data } = await api.api.v1.knowledge["embedding-block"].get();
+      if (data) commitBlock(ticket, data.block ?? null);
+    } catch {
+      // A failed read is not news about the configuration, so the last answer stands. Swallowed
+      // rather than surfaced: this runs on a timer, so an offline browser would otherwise raise the
+      // same rejection every 30s for as long as the modal is open, and the operator already has the
+      // console's own signals for being offline.
+    }
   }
 
   useOnModalOpen(createModal, () => {

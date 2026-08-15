@@ -7,6 +7,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import {
   createDocument,
   deleteDocument,
+  type EmbeddingBlock,
   getDocument,
   listDocuments,
   readEmbeddingBlock,
@@ -45,6 +46,17 @@ function tenantId(ctx: TenantContext | null): bigint {
   if (!ctx) throw new ForbiddenError();
   if (ctx.tenantId === null) throw new TenantTargetRequiredError();
   return ctx.tenantId;
+}
+
+// What the documents endpoint may say about an embedding block. `reason` ONLY: the block also
+// carries the credentialRef and its vault id, which the reindex endpoint returns so a TENANT_ADMIN
+// can be deeplinked to the entry to fill. This endpoint is open to ANY authenticated role, so
+// passing those through would tell an AGENT which vault record backs the workspace's embedding
+// settings. Nothing on the screen reads them.
+export function readerSafeBlock(
+  block: EmbeddingBlock | null,
+): { reason: EmbeddingBlock["reason"] } | null {
+  return block ? { reason: block.reason } : null;
 }
 
 export const knowledgeController = new Elysia({
@@ -215,17 +227,15 @@ export const knowledgeController = new Elysia({
     "/bases/:id/documents",
     async ({ tenantContext, params }) => {
       const tid = tenantId(tenantContext);
-      const kbase = await getKnowledgeBase({
-        tenantId: tid,
-        id: BigInt(params.id),
-      });
       const docs = await listDocuments(tid, BigInt(params.id));
+      const block = await readEmbeddingBlock(tid);
       return {
         instance: instanceIdentity,
         // The tenant's CURRENT embedding block (null when indexing would work). Resolved per read,
         // not stamped on the rows when they were blocked: a token stored back then would still be
         // telling the operator to fill a credential they have since filled (issue #80).
-        embeddingBlock: await readEmbeddingBlock(tid, kbase.embeddingModel),
+        //
+        embeddingBlock: readerSafeBlock(block),
         documents: docs.map((d) => ({
           ...d,
           id: String(d.id),

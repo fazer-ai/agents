@@ -407,13 +407,16 @@ function embeddingBlock(
 // console asks rather than stamped on a document when the block happened: one credential serves
 // every base, so this is a property of the configuration and it changes when the configuration
 // changes — the row that failed under it has no way to know.
+//
+// NOTE: No model argument. `resolveEmbeddingStatus` only echoes the model back on the OK path, so a
+// block never depends on which base is being looked at — which is also why the caller does not have
+// to load a knowledge base (and pay its chunk count) to ask this question.
 export async function readEmbeddingBlock(
   tenantId: bigint,
-  model: string,
   base: PrismaClient = basePrisma,
 ): Promise<EmbeddingBlock | null> {
   const status = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    resolveEmbeddingStatus(db, tenantId, model),
+    resolveEmbeddingStatus(db, tenantId, ""),
   );
   return status.ok ? null : embeddingBlock(status);
 }

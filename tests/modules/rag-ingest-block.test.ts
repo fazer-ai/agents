@@ -48,8 +48,6 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
-const MODEL = "text-embedding-3-small";
-
 function ctx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
@@ -64,7 +62,11 @@ async function seedTenant(slug: string): Promise<{ id: bigint; kb: bigint }> {
   });
   tenants.push(t.id);
   const kb = await suDb.knowledgeBase.create({
-    data: { tenantId: t.id, name: `${slug}-kb`, embeddingModel: MODEL },
+    data: {
+      tenantId: t.id,
+      name: `${slug}-kb`,
+      embeddingModel: "text-embedding-3-small",
+    },
   });
   return { id: t.id, kb: kb.id };
 }
@@ -144,7 +146,7 @@ describe.skipIf(!dbUp)(
 
     test("no credential at all reads as not configured", async () => {
       const { id } = await seedTenant("blk-unset");
-      expect(await readEmbeddingBlock(id, MODEL, appDb)).toEqual({
+      expect(await readEmbeddingBlock(id, appDb)).toEqual({
         reason: "embedding_not_configured",
       });
     });
@@ -164,7 +166,7 @@ describe.skipIf(!dbUp)(
         { credentialRef: entry.ref },
         appDb,
       );
-      const block = await readEmbeddingBlock(id, MODEL, appDb);
+      const block = await readEmbeddingBlock(id, appDb);
       expect(block?.reason).toBe("credential_pending");
       expect(block?.credentialRef).toBe(entry.ref);
       expect(block?.vaultId).toBe(entry.ref.slice("vault:".length));
@@ -189,7 +191,7 @@ describe.skipIf(!dbUp)(
         { credentialRef: `vault:${row.id}` },
         appDb,
       );
-      expect((await readEmbeddingBlock(id, MODEL, appDb))?.reason).toBe(
+      expect((await readEmbeddingBlock(id, appDb))?.reason).toBe(
         "credential_empty",
       );
     });
@@ -212,7 +214,7 @@ describe.skipIf(!dbUp)(
       await suDb.$executeRawUnsafe(
         `DELETE FROM vault_entries WHERE tenant_id = ${id}`,
       );
-      expect((await readEmbeddingBlock(id, MODEL, appDb))?.reason).toBe(
+      expect((await readEmbeddingBlock(id, appDb))?.reason).toBe(
         "embedding_not_configured",
       );
     });
@@ -224,7 +226,7 @@ describe.skipIf(!dbUp)(
       const { id, kb } = await seedTenant("blk-fixed");
       const doc = await seedDoc(id, kb);
       await runIngest(id, doc.id);
-      expect((await readEmbeddingBlock(id, MODEL, appDb))?.reason).toBe(
+      expect((await readEmbeddingBlock(id, appDb))?.reason).toBe(
         "embedding_not_configured",
       );
       const entry = await createVaultEntry(
@@ -239,10 +241,29 @@ describe.skipIf(!dbUp)(
         { credentialRef: entry.ref },
         appDb,
       );
-      expect(await readEmbeddingBlock(id, MODEL, appDb)).toBeNull();
+      expect(await readEmbeddingBlock(id, appDb)).toBeNull();
       // The document did not move — it is still waiting for someone to index it, which is exactly the
       // state the badge must now describe instead of "blocked".
       expect((await readDoc(id, doc.id))?.status).toBe("UNINDEXED");
+    });
+
+    // Review finding, round 4: this shape also rides on the documents list, which any authenticated
+    // role can read, while the reindex endpoint that needs the deeplink is TENANT_ADMIN. The ref is
+    // still resolved here — the controller is what drops it — so the split has to stay visible.
+    test("the block carries the vault ref for the admin path that needs it", async () => {
+      const { id } = await seedTenant("blk-ref");
+      const entry = await createPendingVaultEntry(
+        ctx(id),
+        { name: "embed-ref2", kind: "generic" },
+        appDb,
+      );
+      await updateEmbeddingSettings(
+        ctx(id),
+        { credentialRef: entry.ref },
+        appDb,
+      );
+      const block = await readEmbeddingBlock(id, appDb);
+      expect(block?.credentialRef).toBe(entry.ref);
     });
 
     // MCP hands `AppError.message` to the caller verbatim and the key has no server-side locale entry,
@@ -250,7 +271,9 @@ describe.skipIf(!dbUp)(
     test("the thrown message names the reason, not just the key", async () => {
       const { id } = await seedTenant("blk-msg");
       const notConfigured = await runScopedOn(appDb, ctx(id), (db) =>
-        resolveEmbeddingConfig(db, id, MODEL).catch((e: Error) => e),
+        resolveEmbeddingConfig(db, id, "text-embedding-3-small").catch(
+          (e: Error) => e,
+        ),
       );
       expect(String((notConfigured as Error).message)).toContain(
         "not configured",
@@ -267,7 +290,9 @@ describe.skipIf(!dbUp)(
         appDb,
       );
       const pending = await runScopedOn(appDb, ctx(id), (db) =>
-        resolveEmbeddingConfig(db, id, MODEL).catch((e: Error) => e),
+        resolveEmbeddingConfig(db, id, "text-embedding-3-small").catch(
+          (e: Error) => e,
+        ),
       );
       expect(String((pending as Error).message)).toContain("not filled in");
       expect(String((pending as Error).message)).not.toBe(

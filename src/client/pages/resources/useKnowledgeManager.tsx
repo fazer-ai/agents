@@ -632,6 +632,10 @@ export function useKnowledgeManager(opts: {
       // nothing and leaves the docs UNINDEXED. Surface the reason + the fix instead of faking progress.
       if (data?.blocked) {
         revert();
+        // The reindex answer IS a fresh read of the block, and it may be newer than the one the
+        // modal opened with (a credential deleted meanwhile). Adopt it, or the toast fades and the
+        // badges go back to a neutral "Not indexed" the server just contradicted.
+        setEmbeddingBlock({ reason: data.blocked.reason });
         showToast(
           data.blocked.reason === "embedding_not_configured"
             ? t(

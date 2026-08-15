@@ -121,14 +121,20 @@ export function decideConversationWrites(
   const eventAt = payload.activityAt ?? now;
 
   // A payload can only be behind a row that exists. With no row there is nothing to protect and
-  // nothing to order against, so everything the payload states is applied and claims its version.
+  // nothing to order against, so everything the payload STATES is applied and claims its version.
+  //
+  // NOTE: Stated, which is why both marks are conditional. `mirrorChatwootEvent` defaults a created
+  // row to `open` when the payload carried no status, and that default is a fabrication, not a
+  // reading of the source. Claiming a version for it would protect it: a complete event delivered
+  // afterwards but serialized before, carrying the real `pending` or `resolved`, would lose on
+  // `olderThanStatus` and the invented `open` would stand until something newer arrived.
   if (row === null) {
     return {
       stale: false,
       status: payload.status,
       assignee: payload.assigneeStated,
       unversioned: true,
-      statusAt: payload.version,
+      statusAt: payload.status != null ? payload.version : null,
       assigneeAt: payload.assigneeStated ? payload.version : null,
       activityAt: eventAt,
     };

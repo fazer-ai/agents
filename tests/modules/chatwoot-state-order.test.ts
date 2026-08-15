@@ -236,6 +236,12 @@ const CASES: Case[] = [
     row: null,
     want: { statusAt: V_NEW, assigneeAt: null },
   },
+  {
+    name: "with no row a payload that states no status claims no status mark (the created `open` is a default, not a reading)",
+    payload: conversationEvent({ status: null }),
+    row: null,
+    want: { status: null, statusAt: null, assigneeAt: V_NEW },
+  },
 ];
 
 describe("decideConversationWrites", () => {

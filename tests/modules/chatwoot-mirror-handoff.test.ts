@@ -901,6 +901,37 @@ describe.skipIf(!dbUp)(
       expect(row.status).toBe("pending");
     });
 
+    // The mirror defaults a created row to `open` when the payload carried no status. That default
+    // is ours, not a reading of the source, so it must claim no version: claiming one would protect
+    // an invented status against the event that carries the real one.
+    test("the created row's default status claims no version, so the real status still lands", async () => {
+      const T = 1_786_505_000;
+      const noStatus = convPayload(52, {
+        status: "open",
+        lastActivityAt: T,
+        updatedAt: T + 0.9,
+      }) as Record<string, unknown>;
+      noStatus.status = undefined;
+      await mirror({ event: "conversation_updated", ...noStatus });
+      const created = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 52 },
+        select: { status: true, chatwootStatusAt: true },
+      });
+      expect(created.status).toBe("open");
+      expect(created.chatwootStatusAt).toBeNull();
+      // Serialized EARLIER than the one that created the row, delivered after it, and carrying the
+      // status the source actually holds.
+      await mirror({
+        event: "conversation_updated",
+        ...convPayload(52, {
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 0.5,
+        }),
+      });
+      expect((await mirrored(52)).status).toBe("resolved");
+    });
+
     // Chatwoot emits several events for ONE write to the conversation (conversation_updated +
     // conversation_status_changed), all carrying that write's version. They must not fight: the one
     // that arrives second is frequently the one carrying `meta`, so rejecting an equal version

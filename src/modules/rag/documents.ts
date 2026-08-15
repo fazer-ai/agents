@@ -63,6 +63,22 @@ export async function resolveEmbeddingStatus(
   };
 }
 
+// The one place a block reason becomes the stable token every surface renders from: the `error`
+// column, the realtime event, and the AppError thrown deeper in. Three reasons, three tokens — a
+// credential that EXISTS but was never filled has to read differently from one that was never
+// created, or the operator is sent to create a second credential instead of filling the first.
+//
+// NOTE: These are tokens, not translation keys — none of the three has an entry under `errors.*` in
+// any locale. The console matches on them and renders its own `knowledge.docError.*` text, which is
+// where the operator-facing wording lives.
+export function embeddingBlockKey(
+  status: Exclude<EmbeddingStatus, { ok: true }>,
+): string {
+  if (status.reason === "credential_pending") return "errors.embeddingPending";
+  if (status.reason === "credential_empty") return "errors.embeddingEmpty";
+  return "errors.embeddingNotConfigured";
+}
+
 export async function resolveEmbeddingConfig(
   db: ScopedDb,
   tenantId: bigint,
@@ -70,16 +86,10 @@ export async function resolveEmbeddingConfig(
 ): Promise<EmbeddingConfig> {
   const status = await resolveEmbeddingStatus(db, tenantId, model);
   if (status.ok) return status.config;
-  if (status.reason === "credential_empty")
-    throw new AppError(
-      "embedding credential is empty",
-      400,
-      "errors.embeddingEmpty",
-    );
   throw new AppError(
-    "embedding credential not configured",
+    "embedding credential is not usable",
     400,
-    "errors.embeddingNotConfigured",
+    embeddingBlockKey(status),
   );
 }
 
@@ -480,16 +490,22 @@ async function runIngestJobForTenant(
     resolveEmbeddingStatus(db, tenantId, kb.embeddingModel),
   );
   if (!emb.ok) {
+    // NOTE: The reason is recorded, not discarded (issue #80). UNINDEXED alone reads identically to
+    // "imported, still waiting for someone to click index", so a document blocked on a credential
+    // was mute until an operator went looking. `error` carries the same kind of stable token a
+    // genuine ingestion failure stores, and a later reindex clears it along with the status.
+    const reason = embeddingBlockKey(emb);
     await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.knowledgeDocument.updateMany({
         where: { id: documentId, status: "PENDING" },
-        data: { status: "UNINDEXED", error: null },
+        data: { status: "UNINDEXED", error: reason },
       }),
     );
     broadcastDocumentEvent(tenantId, {
       knowledgeBaseId: String(doc.knowledgeBaseId),
       documentId: String(documentId),
       status: "UNINDEXED",
+      error: reason,
     });
     return { outcome: "done" };
   }

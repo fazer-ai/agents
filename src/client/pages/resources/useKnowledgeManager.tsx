@@ -34,6 +34,7 @@ import {
 import { Tooltip } from "@/client/components/Tooltip";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
+import { mergeDocumentEvent } from "@/client/lib/knowledgeDocs";
 import { cn } from "@/client/lib/utils";
 
 type BasesData = Awaited<
@@ -214,14 +215,7 @@ export function useKnowledgeManager(opts: {
       setDocs((prev) =>
         prev
           ? prev.map((d) =>
-              d.id === event.documentId
-                ? {
-                    ...d,
-                    status: event.status,
-                    chunkCount: event.chunkCount ?? d.chunkCount,
-                    error: event.error ?? d.error,
-                  }
-                : d,
+              d.id === event.documentId ? mergeDocumentEvent(d, event) : d,
             )
           : null,
       );
@@ -713,6 +707,12 @@ export function useKnowledgeManager(opts: {
         "The embedding credential is not configured for this workspace. Set it under Components, then index again.",
       );
     }
+    if (error === "errors.embeddingPending") {
+      return t(
+        "knowledge.docError.embeddingPending",
+        "The embedding credential was never filled in. Fill it under Components, then index again.",
+      );
+    }
     if (error === "errors.embeddingEmpty") {
       return t(
         "knowledge.docError.embeddingEmpty",
@@ -720,6 +720,15 @@ export function useKnowledgeManager(opts: {
       );
     }
     return error;
+  }
+
+  // The base's banner otherwise tells the operator to index, which is the wrong instruction while a
+  // block is recorded: indexing cannot succeed until a credential is filled. One reason is enough
+  // for the whole banner because the block is tenant-level (a single embedding credential serves
+  // every base), so each blocked document in the list carries the same one.
+  function unindexedBlockText(list: KnowledgeDoc[]): string | null {
+    const blocked = list.find((d) => d.status === "UNINDEXED" && d.error);
+    return blocked?.error ? docErrorText(blocked.error) : null;
   }
 
   function docStatusBadge(doc: KnowledgeDoc) {
@@ -768,10 +777,31 @@ export function useKnowledgeManager(opts: {
     }
     if (doc.status === "UNINDEXED") {
       // Imported-but-never-indexed: a deliberate waiting state (warning tint), not an error (no red).
-      return (
-        <span className="rounded-full bg-warning-soft px-2 py-0.5 text-warning text-xs">
-          {t("knowledge.docStatus.UNINDEXED", "Not indexed")}
+      // With a recorded block reason it is NOT merely waiting: nothing the operator does on this
+      // screen will index it until a credential is filled, so the badge says which of the two this
+      // is (issue #80) instead of reading identically in both cases.
+      const blockReason = doc.error;
+      const badge = (
+        <span
+          className={cn(
+            "rounded-full bg-warning-soft px-2 py-0.5 text-warning text-xs",
+            {
+              "cursor-help underline decoration-dotted underline-offset-2":
+                !!blockReason,
+            },
+          )}
+        >
+          {blockReason
+            ? t("knowledge.docStatus.UNINDEXED_BLOCKED", "Not indexed: blocked")
+            : t("knowledge.docStatus.UNINDEXED", "Not indexed")}
         </span>
+      );
+      return blockReason ? (
+        <Tooltip content={docErrorText(blockReason)} side="top">
+          {badge}
+        </Tooltip>
+      ) : (
+        badge
       );
     }
     return (
@@ -1178,10 +1208,11 @@ export function useKnowledgeManager(opts: {
               {docs.some((d) => d.status === "UNINDEXED") && (
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning bg-warning-soft px-3 py-2">
                   <span className="text-text-secondary text-xs">
-                    {t(
-                      "knowledge.unindexedNote",
-                      "Some documents aren't indexed yet and won't be searchable until you index them.",
-                    )}
+                    {unindexedBlockText(docs) ??
+                      t(
+                        "knowledge.unindexedNote",
+                        "Some documents aren't indexed yet and won't be searchable until you index them.",
+                      )}
                   </span>
                   <Button
                     size="sm"

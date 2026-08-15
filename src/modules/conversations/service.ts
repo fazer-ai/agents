@@ -354,12 +354,16 @@ export interface ConversationDetail {
     // an indicator that promises a follow-up the sweep suppresses is indistinguishable from a broken
     // scheduler, which is the worst failure mode for an indicator whose whole job is to be trusted.
     pausedByAppointment: boolean;
-    // Whether a follow-up is alive AT ALL for this conversation, by the same predicate the handler
-    // re-checks when it claims a job (isFollowUpLive): agent enabled, follow-up on, not redirect-
-    // managed, not test-silenced, bot still owns the conversation. False suppresses the countdown —
-    // and has to be distinguishable from a finished sequence, because "nothing is pending" reads as
-    // "the sequence completed" otherwise, which is a different wrong answer for the same shape.
-    live: boolean;
+    // A follow-up job IS armed for this conversation and the handler will drop it when it claims it
+    // (isFollowUpLive: agent enabled, follow-up on, not redirect-managed, not test-silenced, bot
+    // still owns the conversation). Nothing is coming, but nothing completed either — so the console
+    // must show neither a countdown nor the "sequence complete" marker.
+    //
+    // It is keyed on a job EXISTING, not on liveness alone, because the two look identical from the
+    // outside and mean opposite things: a sequence whose last step is configured to resolve the
+    // conversation ends with the bot no longer owning it, which is a completed sequence, not an
+    // abandoned one. What separates them is whether a step is still queued.
+    abandoned: boolean;
   } | null;
   // Pending appointment reminders for THIS conversation (deterministic Calendar-booked reminders), for
   // an operator-facing "a reminder is scheduled" indicator. One entry per pending scheduler job, soonest
@@ -836,7 +840,7 @@ export async function getConversationDetail(
       managedByRedirect,
       redirectNext,
       pausedByAppointment,
-      live: followUpLive,
+      abandoned: job !== null && !followUpLive,
     };
   }
 

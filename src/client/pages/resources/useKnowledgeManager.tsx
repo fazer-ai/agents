@@ -13,7 +13,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -233,20 +233,22 @@ export function useKnowledgeManager(opts: {
       );
       // The block belongs to the workspace's embedding configuration, which another tab or another
       // administrator can change while this modal stays open, and these events carry no reason of
-      // their own (the reason belongs to that configuration, not to the row). So the two statuses
-      // that say something about it are read as answers about it:
-      if (event.status === "UNINDEXED") {
-        // The worker refused to index, and the configuration is the only thing that makes it refuse.
-        // Whether it is STILL refusing is a separate question, and only the server can answer it.
-        scheduleBlockRecheck(baseId);
-      } else if (event.status === "PROCESSING") {
-        // The job only gets here after the prerequisite check passed, so this IS the answer, no
-        // request needed. It matters because retrying a single row goes PENDING → PROCESSING →
-        // READY and never comes back UNINDEXED: without this, the other rows and the banner would
-        // go on explaining a block the worker just disproved.
-        claimBlockAnswer();
-        setEmbeddingBlock(null);
-      }
+      // their own (the reason belongs to that configuration, not to the row). Two statuses say
+      // something about it, and NEITHER is the last word: each describes the configuration as the
+      // job found it, which can have been replaced since, and that job runs on to READY without
+      // emitting anything else. So both ask the server, which is the only thing that knows the
+      // configuration as it is now.
+      //
+      // UNINDEXED means the worker refused, and the configuration is the only thing that makes it
+      // refuse. PROCESSING means it did NOT refuse — which matters because retrying a single row
+      // goes PENDING → PROCESSING → READY and never comes back UNINDEXED, so without it a block
+      // that has been resolved would go on being explained.
+      const saysSomethingAboutConfig =
+        event.status === "UNINDEXED" ||
+        // ...but only while something is being claimed. With no block on screen there is nothing to
+        // confirm or contradict, and every healthy batch would otherwise buy a request.
+        (event.status === "PROCESSING" && blockOnScreen.current);
+      if (saysSomethingAboutConfig) scheduleBlockRecheck(baseId);
     },
   });
 
@@ -255,6 +257,11 @@ export function useKnowledgeManager(opts: {
   // is exactly the value that must not be trusted here.
   const openDocsBaseId = useRef<string | null>(null);
   openDocsBaseId.current = docsModal.payload?.id ?? null;
+
+  // Same reason: the event callback must read whether a block is being shown NOW, not whichever
+  // value was current when the callback was created.
+  const blockOnScreen = useRef(false);
+  blockOnScreen.current = embeddingBlock !== null;
 
   const blockRecheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -289,6 +296,15 @@ export function useKnowledgeManager(opts: {
       void recheckBlock(baseId);
     }, BLOCK_RECHECK_MS);
   }
+
+  // A pending window outlives the component otherwise, and fires a request for a screen that is
+  // gone.
+  useEffect(
+    () => () => {
+      if (blockRecheckTimer.current) clearTimeout(blockRecheckTimer.current);
+    },
+    [],
+  );
 
   // Re-reads ONLY the block. Adopting the list's rows here would clobber an optimistic PROCESSING
   // mid-flight; the rows are what the event stream is already keeping current.

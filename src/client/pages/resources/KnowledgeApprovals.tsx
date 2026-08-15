@@ -212,9 +212,13 @@ export function KnowledgeApprovals({
             </div>
             {editingId === a.id ? (
               <div className="flex flex-col gap-3">
+                {/* Disabled while the save is in flight: `saveEdit` captured the draft when it was
+                    clicked, so anything typed after that would be dropped by the response that
+                    closes the editor. */}
                 <FormField label={t("approvals.editTitle", "Title")}>
                   <Input
                     value={draft.title}
+                    disabled={busyId === a.id}
                     onChange={(e) =>
                       setDraft({ ...draft, title: e.target.value })
                     }
@@ -230,6 +234,7 @@ export function KnowledgeApprovals({
                   <Textarea
                     rows={6}
                     value={draft.content}
+                    disabled={busyId === a.id}
                     onChange={(e) =>
                       setDraft({ ...draft, content: e.target.value })
                     }
@@ -305,6 +310,7 @@ export function KnowledgeApprovals({
                   </Button>
                   <Button
                     size="sm"
+                    loading={busyId === a.id}
                     disabled={busyId === a.id || !draft.content.trim()}
                     onClick={() => void saveEdit(a)}
                   >

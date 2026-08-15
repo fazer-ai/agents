@@ -37,6 +37,8 @@ let approvalsPayload: Record<string, unknown>[] = [];
 // What the PATCH reports back. The endpoint answers "not-pending" INSIDE a 200 when someone else
 // already approved or rejected the item, so the result is data, not an error.
 let patchResult = "updated";
+// Lets a test hold the PATCH open, so the in-flight state is observable.
+let patchGate: Promise<void> | null = null;
 
 mock.module("@/client/lib/api", () => ({
   api: {
@@ -48,6 +50,7 @@ mock.module("@/client/lib/api", () => ({
               approve: { post: async () => ({ data: {}, error: null }) },
               reject: { post: async () => ({ data: {}, error: null }) },
               patch: async (body: Record<string, unknown>) => {
+                if (patchGate) await patchGate;
                 patchCalls.push({ id, body });
                 return { data: { result: patchResult }, error: null };
               },
@@ -128,6 +131,7 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
   beforeEach(() => {
     patchCalls.length = 0;
     patchResult = "updated";
+    patchGate = null;
     seed();
   });
 
@@ -220,6 +224,26 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
       .getAllByRole("button", { name: /edit/i })
       .filter((b) => !(b as HTMLButtonElement).disabled);
     expect(stillOffered.length).toBe(0);
+  });
+
+  // Review finding: the draft was captured when Save was clicked, so anything typed while the
+  // request was in flight would be dropped by the response that closes the editor.
+  test("the fields are locked while the save is in flight", async () => {
+    let release: () => void = () => undefined;
+    patchGate = new Promise<void>((r) => {
+      release = r;
+    });
+    renderQueue();
+    await screen.findByText(HEDGED);
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    const box = (await screen.findByLabelText(
+      /content/i,
+    )) as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: CLEAN } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(box.disabled).toBe(true));
+    release();
+    await waitFor(() => expect(patchCalls.length).toBe(1));
   });
 
   // Approve is the destructive step here: it copies the text verbatim into the base. It must act on

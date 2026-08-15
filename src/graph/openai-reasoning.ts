@@ -38,9 +38,12 @@ export const REASONING_EFFORTS = [
 
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
-// NOTE: matches a bare id ("gpt-5.6-luna") and a routed one ("openai/gpt-5.6-luna", OpenRouter).
-// "gpt-5.60", "gpt-5.6x" and "not-gpt-5.6-luna" deliberately do not match.
-const DEFAULT_EFFORT_REJECTS_TOOLS_RE = /^(?:[\w.-]+\/)?gpt-5\.6(?:-|$)/i;
+// NOTE: matches a bare id ("gpt-5.6-luna"), a routed one ("openai/gpt-5.6-luna", OpenRouter) and a
+// fine-tuned one ("ft:gpt-5.6-luna:acme::x1"), which inherits the base model's server-side default
+// and so inherits the rejection too. "gpt-5.60", "gpt-5.6x" and "not-gpt-5.6-luna" deliberately do
+// not match.
+const DEFAULT_EFFORT_REJECTS_TOOLS_RE =
+  /^(?:ft:)?(?:[\w.-]+\/)?gpt-5\.6(?:-|$)/i;
 
 export interface OpenAITransportPlan {
   // The Responses endpoint instead of Chat Completions. Carries reasoning together with function

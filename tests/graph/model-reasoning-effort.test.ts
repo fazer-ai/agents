@@ -550,3 +550,20 @@ describe("the chosen effort is not silently dropped by a name test", () => {
     );
   });
 });
+
+// Same blind spot on the other rule: a fine-tune of gpt-5.6 inherits the server-side default that
+// breaks function tools, so it needs the issue #66 pin just as much as the bare id does.
+describe("a fine-tuned id is read through to its base model", () => {
+  test("the pin follows the base family", () => {
+    expect(planOpenAITransport("ft:gpt-5.6-luna:acme::x1", undefined)).toEqual({
+      responses: false,
+      toolEffort: "none",
+    });
+  });
+
+  test("and does not spread to a fine-tune of anything else", () => {
+    expect(planOpenAITransport("ft:gpt-5.4-mini:acme::x1", undefined)).toEqual({
+      responses: false,
+    });
+  });
+});

@@ -85,3 +85,21 @@ src/modules/chatwoot/mirror.ts: Preserve human-message handoffs without a versio
 # a schema change with its own migration and its own UI copy — a separate change, not a round of this
 # one.
 src/modules/conversations/service.ts: Persist abandonment after the scheduler consumes the job
+
+# PR #87 (issue #74). The mechanism is real, the consequence is not. @langchain/openai only replays
+# a reasoning item under ZDR when `reasoning.encrypted_content` came back
+# (converters/responses.js:976), so with `store: false` the item is sometimes dropped from the
+# replay — but that is what makes the follow-up VALID, not what breaks it: nothing carries an id the
+# stateless request cannot resolve. Measured live, not argued. One tool round, capturing the second
+# request's input: gpt-5.6-luna/high and gpt-5.4-mini/medium replay
+# [message, reasoning, function_call, function_call_output], gpt-5.6-luna/low replays
+# [message, function_call, function_call_output], and all three return the correct final answer. And
+# through the real buildAgentGraph loop with a tool the agent must call three times, both
+# gpt-5.6-luna/high and gpt-5.4-mini/medium complete with the right reply. So "OpenAI rejects the
+# function-call output follow-up and no final reply is produced" does not happen.
+#
+# Requesting encrypted reasoning would preserve reasoning CONTINUITY across turns, which is a
+# quality argument with no measurement behind it, and it would persist an opaque blob per turn in
+# our own checkpointer. That is a mechanism justified by a hypothesis; if a measurable quality gap
+# shows up on multi-step tool loops, it earns its own change.
+src/graph/models.ts: Include encrypted reasoning in stateless tool loops

@@ -81,3 +81,27 @@ describe("createChatModel temperature on reasoning models", () => {
     expect(m.temperature).toBe(0.3);
   });
 });
+
+// A fine-tuned model inherits its base model's parameter rules, and OpenAI spells those ids
+// "ft:<base>:<org>:<name>:<id>". The prefix hid the base from this rule, so a fine-tune of a
+// reasoning model kept a temperature the base rejects — and DEFAULT_MODEL_CONFIG ships
+// temperature 0.7, so the default agent was the broken case rather than an exotic one.
+describe("createChatModel temperature on fine-tuned ids", () => {
+  const openai = (model: string, temperature?: number) =>
+    createChatModel({
+      provider: "openai",
+      model,
+      apiKey: "test",
+      temperature,
+    }) as ChatOpenAI;
+
+  test("dropped when the base model reasons", () => {
+    expect(openai("ft:gpt-5.6-luna:acme::x1", 0.7).temperature).toBeUndefined();
+    expect(openai("ft:o4-mini:acme::x1", 0.3).temperature).toBeUndefined();
+  });
+
+  test("kept when the base model does not", () => {
+    expect(openai("ft:gpt-4o:acme::x1", 0.3).temperature).toBe(0.3);
+    expect(openai("ft:gpt-5-chat:acme::x1", 0.3).temperature).toBe(0.3);
+  });
+});

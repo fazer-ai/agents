@@ -41,8 +41,11 @@ const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 // one ("openai/o4-mini", OpenRouter); "gpt-4o" and "omni-…" deliberately do not match. gpt-5-chat* is
 // exempted: it is the non-reasoning chat family and accepts `temperature` (same carve-out as
 // @langchain/openai's isReasoningModel), so dropping it there would silently discard the operator's
-// preference.
-const REASONING_MODEL_RE = /^(?:[\w.-]+\/)?(?:o\d+(?:-|$)|gpt-5(?!-chat))/i;
+// preference. The optional "ft:" reads through a fine-tune to its base model ("ft:<base>:<org>:<name>:<id>"),
+// which is what actually decides the parameter rules — and since DEFAULT_MODEL_CONFIG ships a
+// temperature, a fine-tune of a reasoning model was the DEFAULT config, not an exotic one.
+const REASONING_MODEL_RE =
+  /^(?:ft:)?(?:[\w.-]+\/)?(?:o\d+(?:-|$)|gpt-5(?!-chat))/i;
 
 function openaiTemperature(
   model: string,

@@ -231,50 +231,27 @@ export function useKnowledgeManager(opts: {
             )
           : null,
       );
-      // The block belongs to the workspace's embedding configuration, which another tab or another
-      // administrator can change while this modal stays open, and these events carry no reason of
-      // their own (the reason belongs to that configuration, not to the row). Two statuses say
-      // something about it, and NEITHER is the last word: each describes the configuration as the
-      // job found it, which can have been replaced since, and that job runs on to READY without
-      // emitting anything else. So both ask the server, which is the only thing that knows the
-      // configuration as it is now.
-      //
-      // UNINDEXED means the worker refused, and the configuration is the only thing that makes it
-      // refuse. PROCESSING means it did NOT refuse — which matters because retrying a single row
-      // goes PENDING → PROCESSING → READY and never comes back UNINDEXED, so without it a block
-      // that has been resolved would go on being explained.
-      const saysSomethingAboutConfig =
-        event.status === "UNINDEXED" ||
-        // ...but only while something is being claimed. With no block on screen there is nothing to
-        // confirm or contradict, and every healthy batch would otherwise buy a request.
-        (event.status === "PROCESSING" && blockOnScreen.current);
-      if (saysSomethingAboutConfig) scheduleBlockRecheck(baseId);
+      // Any of these events may mean the workspace's embedding configuration changed — another tab
+      // or another administrator can fill, delete or replace the credential while this modal stays
+      // open — and none of them says WHAT it changed to. UNINDEXED means the worker refused;
+      // PROCESSING means it did not; but each describes the configuration as that job found it, and
+      // the job runs on to READY without emitting anything else. So an event is a reason to ask,
+      // never an answer: the server is the only thing that knows the configuration as it is now.
+      scheduleBlockRecheck();
     },
   });
-
-  // The base the documents modal is currently showing, readable from a callback that was scheduled
-  // under a previous one. A closure would capture the base that was open when it was created, which
-  // is exactly the value that must not be trusted here.
-  const openDocsBaseId = useRef<string | null>(null);
-  openDocsBaseId.current = docsModal.payload?.id ?? null;
-
-  // Same reason: the event callback must read whether a block is being shown NOW, not whichever
-  // value was current when the callback was created.
-  const blockOnScreen = useRef(false);
-  blockOnScreen.current = embeddingBlock !== null;
 
   const blockRecheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Ticket taken by every answer about the block, so a read can tell whether it is still the newest
-  // one. The base fence below is not enough on its own: within the SAME base, a PROCESSING event or
-  // a successful reindex can clear the block while a read started earlier is still open, and that
-  // older answer would put the cleared block back — with nothing to correct it afterwards, since
-  // those rows go on to READY without another UNINDEXED.
+  // one: two reads can be open at once (a burst re-arms the window while an earlier one is still
+  // travelling), and the older one landing last would undo the newer answer with nothing afterwards
+  // to correct it.
   const blockAnswerSeq = useRef(0);
 
   // Take the ticket BEFORE starting the request, never on arrival: a response that claims its number
   // when it lands is by definition the newest one, so the ticket would certify exactly the write it
-  // exists to prevent — an answer that a faster event has already overtaken.
+  // exists to prevent — an answer something faster has already overtaken.
   function claimBlockAnswer(): number {
     blockAnswerSeq.current += 1;
     return blockAnswerSeq.current;
@@ -287,13 +264,13 @@ export function useKnowledgeManager(opts: {
   }
 
   // Trailing window rather than a suppress-while-in-flight guard: the scheduler awaits its claimed
-  // jobs one after another, so a blocked batch produces events that need not overlap a short GET at
+  // jobs one after another, so a batch produces events that need not overlap a short request at
   // all, and a guard would let each one through — one request per document, from every open tab.
-  function scheduleBlockRecheck(baseId: string) {
+  function scheduleBlockRecheck() {
     if (blockRecheckTimer.current) clearTimeout(blockRecheckTimer.current);
     blockRecheckTimer.current = setTimeout(() => {
       blockRecheckTimer.current = null;
-      void recheckBlock(baseId);
+      void recheckBlock();
     }, BLOCK_RECHECK_MS);
   }
 
@@ -306,19 +283,13 @@ export function useKnowledgeManager(opts: {
     [],
   );
 
-  // Re-reads ONLY the block. Adopting the list's rows here would clobber an optimistic PROCESSING
-  // mid-flight; the rows are what the event stream is already keeping current.
-  async function recheckBlock(baseId: string) {
+  // Asks the workspace-scoped endpoint, not a base's document list: the question has nothing to do
+  // with which base is open, and answering it by re-downloading a list was what forced every caller
+  // to remember that the answer's scope and the request's scope were different things.
+  async function recheckBlock() {
     const ticket = claimBlockAnswer();
-    const { data } = await api.api.v1.knowledge
-      .bases({ id: baseId })
-      .documents.get();
-    // The block is per workspace, but the REQUEST is per base: if the modal closed or moved to
-    // another base while this was open, writing this answer would label whatever is on screen now
-    // with an answer fetched for something else (docs/modals.md). And anything that took a ticket
-    // after this one knows more than this response does, whether it is a newer read or an event.
-    if (!data || openDocsBaseId.current !== baseId) return;
-    commitBlock(ticket, data.embeddingBlock ?? null);
+    const { data } = await api.api.v1.knowledge["embedding-block"].get();
+    if (data) commitBlock(ticket, data.block ?? null);
   }
 
   useOnModalOpen(createModal, () => {

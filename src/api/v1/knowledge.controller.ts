@@ -224,6 +224,26 @@ export const knowledgeController = new Elysia({
     },
   )
   .get(
+    "/embedding-block",
+    async ({ tenantContext }) => ({
+      instance: instanceIdentity,
+      // The question is about the WORKSPACE — one embedding credential serves every base — so it
+      // gets an endpoint of its own rather than riding on a per-base document list. A console
+      // watching a live modal asks this repeatedly; making it re-download a base's documents to
+      // learn whether a credential is filled is the wrong trade, and pairing a workspace answer with
+      // a base-scoped request means every caller has to remember they are not the same scope.
+      block: readerSafeBlock(await readEmbeddingBlock(tenantId(tenantContext))),
+    }),
+    {
+      requireAuth: true,
+      detail: doc(
+        "Read the embedding block",
+        "Whether anything is preventing this workspace from indexing, and which of the reasons it is. Null when indexing would work.",
+      ),
+      response: errors(401, 403),
+    },
+  )
+  .get(
     "/bases/:id/documents",
     async ({ tenantContext, params }) => {
       const tid = tenantId(tenantContext);

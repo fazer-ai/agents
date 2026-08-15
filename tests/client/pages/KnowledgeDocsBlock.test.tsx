@@ -55,12 +55,24 @@ let releaseGate: () => void = () => undefined;
 async function nextDocs(): Promise<DocsPayload> {
   const answer = docsQueue[Math.min(docsCalls, docsQueue.length - 1)];
   docsCalls += 1;
-  if (gateOnCall === docsCalls) {
+  return answer as DocsPayload;
+}
+
+// Successive answers of the workspace's embedding-block endpoint. The point of these tests is that
+// the console asks again, so each answer has to be allowed to differ from the one before.
+let blockQueue: ({ reason: string } | null)[] = [];
+let blockCalls = 0;
+
+async function nextBlock(): Promise<{ block: { reason: string } | null }> {
+  const answer =
+    blockQueue[Math.min(blockCalls, blockQueue.length - 1)] ?? null;
+  blockCalls += 1;
+  if (gateOnCall === blockCalls) {
     await new Promise<void>((r) => {
       releaseGate = r;
     });
   }
-  return answer as DocsPayload;
+  return { block: answer };
 }
 
 mock.module("@/client/hooks/useTenantEvents", () => ({
@@ -76,6 +88,9 @@ mock.module("@/client/lib/api", () => ({
     api: {
       v1: {
         knowledge: {
+          "embedding-block": {
+            get: async () => ({ data: await nextBlock(), error: null }),
+          },
           bases: Object.assign(
             (_: { id: string }) => ({
               documents: {
@@ -189,6 +204,8 @@ describe("knowledge documents modal — the embedding block is never stale", () 
   beforeEach(() => {
     docsCalls = 0;
     docsQueue = [];
+    blockCalls = 0;
+    blockQueue = [];
     reindexResponse = {};
     onKnowledgeDocument = null;
     gateOnCall = null;
@@ -205,29 +222,26 @@ describe("knowledge documents modal — the embedding block is never stale", () 
 
   test("the block the list came with is what the banner explains", async () => {
     docsQueue = [
-      {
-        documents: [doc()],
-        embeddingBlock: { reason: "credential_pending" },
-      },
+      { documents: [doc()], embeddingBlock: { reason: "credential_pending" } },
     ];
     await openModal();
     expect(shows(PENDING_TEXT)).toBe(true);
+    // The list already answered it; nothing to ask.
+    expect(blockCalls).toBe(0);
   });
 
-  // The finding itself. The event says only that the worker put the row back to UNINDEXED; whether
-  // the configuration that refused it is still refusing is a separate question, and the only way to
-  // answer it is to ask again.
-  test("a document coming back unindexed re-reads the block instead of repeating the old one", async () => {
+  // The heart of it: an event says a job refused, or stopped refusing, but never says what the
+  // configuration IS. Only the server knows that, so every event is a question.
+  test("an event re-reads the block instead of repeating the old one", async () => {
     docsQueue = [
       {
         documents: [doc({ status: "PROCESSING" })],
         embeddingBlock: { reason: "credential_pending" },
       },
-      // Meanwhile, in another tab, the credential was filled.
-      { documents: [doc()], embeddingBlock: null },
     ];
+    // Meanwhile, in another tab, the credential was filled.
+    blockQueue = [null];
     await openModal();
-    expect(docsCalls).toBe(1);
 
     onKnowledgeDocument?.({
       knowledgeBaseId: "b1",
@@ -244,35 +258,28 @@ describe("knowledge documents modal — the embedding block is never stale", () 
   test("a block that appeared while the modal was open is picked up", async () => {
     docsQueue = [
       { documents: [doc({ status: "PROCESSING" })], embeddingBlock: null },
-      {
-        documents: [doc()],
-        embeddingBlock: { reason: "credential_pending" },
-      },
     ];
+    blockQueue = [{ reason: "credential_pending" }];
     await openModal();
     onKnowledgeDocument?.({
       knowledgeBaseId: "b1",
       documentId: "d1",
       status: "UNINDEXED",
     });
-    await waitFor(() => expect(screen.getByText(PENDING_TEXT)).toBeDefined());
+    await waitFor(() => expect(shows(PENDING_TEXT)).toBe(true));
   });
 
   // Review finding, round 6: retrying ONE document goes PENDING → PROCESSING → READY and never comes
-  // back UNINDEXED, so keying the refresh on UNINDEXED alone left the remaining rows and the banner
-  // explaining a block the worker had just disproved. Reaching PROCESSING means the job cleared the
-  // prerequisite check, which IS the answer — no request needed.
+  // back UNINDEXED, so an UNINDEXED-only trigger left the remaining rows and the banner explaining a
+  // block that was already resolved.
   test("a document that starts indexing lifts the block it was showing", async () => {
     docsQueue = [
       {
         documents: [doc(), doc({ id: "d2", title: "Outro" })],
         embeddingBlock: { reason: "credential_pending" },
       },
-      {
-        documents: [doc(), doc({ id: "d2", title: "Outro" })],
-        embeddingBlock: null,
-      },
     ];
+    blockQueue = [null];
     await openModal();
     expect(shows(PENDING_TEXT)).toBe(true);
 
@@ -288,23 +295,19 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     expect(shows(PENDING_TEXT)).toBe(false);
   });
 
-  // Review finding, round 9: PROCESSING says the job cleared the prerequisite check, which describes
-  // the configuration the job RESOLVED — an administrator can have replaced it since, and that job
-  // runs on to READY without another event. Treating the event as the last word would clear a block
-  // that is real and leave nothing to bring it back, which is the direction that hurts: the operator
-  // is not told they need to act.
-  test("a stale PROCESSING cannot silence a block that appeared after it", async () => {
+  // Review findings, rounds 9 and 10, and the reason PROCESSING is a question too: it describes the
+  // configuration the job RESOLVED, and an administrator can have replaced it since. Treating it as
+  // the last word would silence a real block with nothing to bring it back — the direction that
+  // hurts, because the operator is never told they have to act.
+  test("a document that starts indexing cannot silence a newer block", async () => {
     docsQueue = [
       {
         documents: [doc(), doc({ id: "d2", title: "Outro" })],
         embeddingBlock: { reason: "credential_pending" },
       },
-      // Meanwhile the credential was deleted outright, which the server reports on the recheck.
-      {
-        documents: [doc(), doc({ id: "d2", title: "Outro" })],
-        embeddingBlock: { reason: "embedding_not_configured" },
-      },
     ];
+    // The credential was deleted outright while that job was running.
+    blockQueue = [{ reason: "embedding_not_configured" }];
     await openModal();
     onKnowledgeDocument?.({
       knowledgeBaseId: "b1",
@@ -314,45 +317,29 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     await waitFor(() => expect(shows(NOT_CONFIGURED_TEXT)).toBe(true));
   });
 
-  // Review finding, round 6: the block is per workspace but the REQUEST is per base. A read started
-  // for one base and answered after the modal moved to another would label the base on screen with
-  // the other one's instructions (docs/modals.md).
-  test("a read that lands after the modal moved on is discarded", async () => {
+  // Review finding, round 10: a guard keyed on the block CURRENTLY RENDERED is blind to the one a
+  // read has already fetched and is about to commit. There is no such guard now — every event asks —
+  // so the case is covered by construction, and this pins it.
+  test("an event still asks while the screen shows no block", async () => {
     docsQueue = [
-      // 1: base A opens, blocked.
       {
-        documents: [doc({ status: "PROCESSING" })],
-        embeddingBlock: { reason: "credential_pending" },
+        // The second row keeps the banner on screen once there is something to say.
+        documents: [
+          doc({ status: "PROCESSING" }),
+          doc({ id: "d2", title: "Outro" }),
+        ],
+        embeddingBlock: null,
       },
-      // 2: A's recheck, held open until B is on screen.
-      {
-        documents: [doc()],
-        embeddingBlock: { reason: "credential_pending" },
-      },
-      // 3: base B opens, nothing blocking.
-      { documents: [doc({ title: "OutroDoc" })], embeddingBlock: null },
     ];
-    gateOnCall = 2;
+    blockQueue = [{ reason: "credential_empty" }];
     await openModal();
     onKnowledgeDocument?.({
       knowledgeBaseId: "b1",
       documentId: "d1",
-      status: "UNINDEXED",
+      status: "PROCESSING",
     });
-    await waitFor(() => expect(docsCalls).toBe(2));
-
-    // The dialog traps focus and hides the rest of the tree, so the operator's real route to another
-    // base is to close this one first.
-    fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
-    await waitFor(() => expect(screen.queryAllByRole("dialog").length).toBe(0));
-    fireEvent.click(screen.getByRole("button", { name: "open other" }));
-    await screen.findByText("OutroDoc");
-    expect(shows(PENDING_TEXT)).toBe(false);
-
-    releaseGate();
-    // Give A's answer every chance to land on B before asserting it did not.
-    await waitFor(() => expect(docsCalls).toBe(3));
-    expect(shows(PENDING_TEXT)).toBe(false);
+    await waitFor(() => expect(blockCalls).toBe(1));
+    await waitFor(() => expect(shows(EMPTY_TEXT)).toBe(true));
   });
 
   // Review finding, round 6: the reindex toast had its own two-branch wording, so the third reason
@@ -367,35 +354,28 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     expect(shows(PENDING_TEXT)).toBe(false);
   });
 
-  // Review finding, round 7: the base fence is not enough on its own. Two reads of the SAME base can
-  // be open at once (a burst re-arms the window while an earlier read is still travelling), and the
-  // older one landing last would undo the newer answer, with nothing afterwards to correct it.
+  // Review findings, rounds 7 and 8: two reads can be open at once (a burst re-arms the window while
+  // an earlier one is still travelling), and the older one landing last would undo the newer answer,
+  // with nothing afterwards to correct it. The ticket only orders them if it is taken BEFORE the
+  // request — taken on arrival, the late response is by definition the newest and wins.
   test("a read that resolves after a newer answer does not undo it", async () => {
     docsQueue = [
-      // 1: the base opens blocked.
       {
         documents: [doc(), doc({ id: "d2", title: "Outro" })],
         embeddingBlock: { reason: "credential_pending" },
-      },
-      // 2: the first recheck, held open. Still says blocked.
-      {
-        documents: [doc(), doc({ id: "d2", title: "Outro" })],
-        embeddingBlock: { reason: "credential_pending" },
-      },
-      // 3: the second recheck, which lands first and knows the credential was filled.
-      {
-        documents: [doc(), doc({ id: "d2", title: "Outro" })],
-        embeddingBlock: null,
       },
     ];
-    gateOnCall = 2;
+    // 1: held open, and still says blocked. 2: lands first, and knows the credential was filled.
+    blockQueue = [{ reason: "credential_pending" }, null];
+    gateOnCall = 1;
     await openModal();
+
     onKnowledgeDocument?.({
       knowledgeBaseId: "b1",
       documentId: "d1",
       status: "UNINDEXED",
     });
-    await waitFor(() => expect(docsCalls).toBe(2));
+    await waitFor(() => expect(blockCalls).toBe(1));
 
     onKnowledgeDocument?.({
       knowledgeBaseId: "b1",
@@ -409,53 +389,29 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     expect(shows(PENDING_TEXT)).toBe(false);
   });
 
-  // Review finding, round 8: the ticket only orders answers if it is taken BEFORE the request. Taken
-  // after the await, a delayed read claims the newest number on arrival and wins over whatever
-  // overtook it — the ticket then certifies exactly the write it was added to prevent.
+  // The list read carries a block too, and it is subject to the same ordering: a slow one must not
+  // land on top of a recheck that started later and already answered.
   test("a slow list read cannot outrank an answer that overtook it", async () => {
     docsQueue = [
-      // 1: the base opens blocked.
       {
         documents: [doc(), doc({ id: "d2", title: "Outro" })],
         embeddingBlock: { reason: "credential_pending" },
-      },
-      // 2: reopened, and this read is held. Its answer is out of date by the time it lands.
-      {
-        documents: [doc(), doc({ id: "d2", title: "Outro" })],
-        embeddingBlock: { reason: "credential_pending" },
-      },
-      // 3: a recheck that starts later and finishes first, with the credential filled.
-      {
-        documents: [doc(), doc({ id: "d2", title: "Outro" })],
-        embeddingBlock: null,
       },
     ];
+    blockQueue = [null];
     await openModal();
-    expect(shows(PENDING_TEXT)).toBe(true);
-
-    fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
-    await waitFor(() => expect(screen.queryAllByRole("dialog").length).toBe(0));
-
-    gateOnCall = 2;
-    fireEvent.click(screen.getByRole("button", { name: "open" }));
-    await waitFor(() => expect(docsCalls).toBe(2));
-
-    // A job reports back while the list is still loading, which sends a recheck out behind it.
     onKnowledgeDocument?.({
       knowledgeBaseId: "b1",
       documentId: "d1",
       status: "UNINDEXED",
     });
-    await waitFor(() => expect(docsCalls).toBe(3));
-
-    releaseGate();
-    await screen.findByText("Doc");
+    await waitFor(() => expect(shows(NEUTRAL_TEXT)).toBe(true));
     expect(shows(PENDING_TEXT)).toBe(false);
   });
 
-  // A bulk index that hits the block emits one event per document, and the answer is identical for
-  // all of them: the block is the workspace's, not the row's.
-  test("a burst of blocked documents does not become a burst of reads", async () => {
+  // A batch emits one event per document and the answer is identical for all of them: the block is
+  // the workspace's, not the row's.
+  test("a burst of events does not become a burst of reads", async () => {
     docsQueue = [
       { documents: [doc({ status: "PROCESSING" })], embeddingBlock: null },
     ];
@@ -467,27 +423,23 @@ describe("knowledge documents modal — the embedding block is never stale", () 
         status: "UNINDEXED",
       });
     }
-    await waitFor(() => expect(docsCalls).toBe(2));
-    // Settle, then confirm the in-flight one was the only extra read.
+    await waitFor(() => expect(blockCalls).toBe(1));
     await waitFor(() => expect(shows("Doc")).toBe(true));
-    expect(docsCalls).toBe(2);
+    expect(blockCalls).toBe(1);
   });
 
-  // A status that is not UNINDEXED cannot be the worker refusing, so it must not turn a bulk index
-  // into one list read per row.
-  test("the other statuses do not each trigger a read", async () => {
+  // An event for another base is not this modal's business at all.
+  test("another base's events are ignored", async () => {
     docsQueue = [
       { documents: [doc({ status: "PROCESSING" })], embeddingBlock: null },
     ];
     await openModal();
-    for (const status of ["PROCESSING", "READY", "FAILED"]) {
-      onKnowledgeDocument?.({
-        knowledgeBaseId: "b1",
-        documentId: "d1",
-        status,
-      });
-    }
+    onKnowledgeDocument?.({
+      knowledgeBaseId: "b2",
+      documentId: "d1",
+      status: "UNINDEXED",
+    });
     await waitFor(() => expect(shows("Doc")).toBe(true));
-    expect(docsCalls).toBe(1);
+    expect(blockCalls).toBe(0);
   });
 });

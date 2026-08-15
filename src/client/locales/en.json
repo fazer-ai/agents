@@ -1254,8 +1254,6 @@
     "index": "Index",
     "indexAll": "Index all ({{n}})",
     "indexAllError": "Could not start indexing.",
-    "indexBlockedCredentialPending": "The embedding credential isn't filled yet. Fill its secret in the vault, then try again.",
-    "indexBlockedNotConfigured": "Embedding is not configured. Set the tenant's embedding (provider/model/credential) before indexing.",
     "indexing": "Indexing…",
     "loadError": "Could not load this base.",
     "name": "Name",

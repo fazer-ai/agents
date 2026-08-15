@@ -3,6 +3,7 @@ import { AppError } from "@/lib/errors";
 import {
   createDocument,
   deleteDocument,
+  type EmbeddingBlock,
   getDocument,
   reindexKnowledgeBase,
   retryDocument,
@@ -46,6 +47,19 @@ function parseId(raw: string, label: string): bigint | WriteResult {
     return err(`invalid ${label}`);
   }
 }
+
+// What an MCP caller is told to do about each embedding block, one entry per reason. A Record rather
+// than a chain of comparisons: the key type is the block's own vocabulary, so a reason added to the
+// core is a compile error here instead of quietly collapsing into whichever branch came last — which
+// is how `credential_empty` came to be announced as "never filled in" (review finding, round 6).
+const EMBEDDING_BLOCK_NOTES: Record<EmbeddingBlock["reason"], string> = {
+  embedding_not_configured:
+    "Embedding is not configured for this tenant. Set tenant embedding settings (provider/model/credential) via tenant_settings_update, then re-run.",
+  credential_pending:
+    "The embedding credential's secret is not filled yet. Open fillAt in the console to paste it, then re-run.",
+  credential_empty:
+    "The embedding credential exists and is active, but its secret is blank. Open fillAt in the console and replace it, then re-run.",
+};
 
 // ── knowledge bases ──
 
@@ -388,10 +402,7 @@ export async function knowledgeReindex(
         blocked: result.blocked.reason,
         credentialRef: result.blocked.credentialRef,
         fillAt,
-        note:
-          result.blocked.reason === "embedding_not_configured"
-            ? "Embedding is not configured for this tenant. Set tenant embedding settings (provider/model/credential) via tenant_settings_update, then re-run."
-            : "The embedding credential's secret is not filled yet. Open fillAt in the console to paste it, then re-run.",
+        note: EMBEDDING_BLOCK_NOTES[result.blocked.reason],
       });
     }
     if (dryRun) {

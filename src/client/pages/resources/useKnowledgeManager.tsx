@@ -46,6 +46,7 @@ type DocumentsData = Awaited<
 >["data"];
 type KnowledgeDoc = NonNullable<DocumentsData>["documents"][number];
 type EmbeddingBlock = NonNullable<DocumentsData>["embeddingBlock"];
+type BlockReason = NonNullable<EmbeddingBlock>["reason"];
 type DocDetailData = Awaited<
   ReturnType<ReturnType<typeof api.api.v1.knowledge.documents>["get"]>
 >["data"];
@@ -55,6 +56,11 @@ type DocDetail = NonNullable<DocDetailData>["document"];
 type BaseRef = { id: string; name: string };
 
 type UploadStatus = "idle" | "uploading" | "done" | "error";
+
+// How long a burst of blocked documents is allowed to keep pushing the block re-read back. Short
+// enough that the banner corrects itself while the operator is still looking at it, long enough to
+// swallow a batch the scheduler is working through one job at a time.
+const BLOCK_RECHECK_MS = 500;
 
 // A file staged in the add-content modal. Carries its own upload status so a batch shows per-file
 // progress and a partial failure stays visible (the failed ones can be retried without re-picking).
@@ -225,32 +231,54 @@ export function useKnowledgeManager(opts: {
             )
           : null,
       );
-      // A row coming back UNINDEXED is the worker reporting it refused to index, and the only thing
-      // that makes it refuse is the workspace's embedding configuration — which another tab or
-      // another administrator can change while this modal stays open. The event carries no reason
-      // (the reason belongs to the configuration, not to the row), so the block has to be asked for
-      // again instead of replayed from the snapshot the list arrived with.
-      if (event.status === "UNINDEXED") void recheckBlock(baseId);
+      // The block belongs to the workspace's embedding configuration, which another tab or another
+      // administrator can change while this modal stays open, and these events carry no reason of
+      // their own (the reason belongs to that configuration, not to the row). So the two statuses
+      // that say something about it are read as answers about it:
+      if (event.status === "UNINDEXED") {
+        // The worker refused to index, and the configuration is the only thing that makes it refuse.
+        // Whether it is STILL refusing is a separate question, and only the server can answer it.
+        scheduleBlockRecheck(baseId);
+      } else if (event.status === "PROCESSING") {
+        // The job only gets here after the prerequisite check passed, so this IS the answer, no
+        // request needed. It matters because retrying a single row goes PENDING → PROCESSING →
+        // READY and never comes back UNINDEXED: without this, the other rows and the banner would
+        // go on explaining a block the worker just disproved.
+        setEmbeddingBlock(null);
+      }
     },
   });
 
-  // One re-read at a time: a bulk index that hits the block emits one event per document, and each
-  // would otherwise start its own request for an answer that is identical for all of them.
-  const blockRecheckInFlight = useRef(false);
+  // The base the documents modal is currently showing, readable from a callback that was scheduled
+  // under a previous one. A closure would capture the base that was open when it was created, which
+  // is exactly the value that must not be trusted here.
+  const openDocsBaseId = useRef<string | null>(null);
+  openDocsBaseId.current = docsModal.payload?.id ?? null;
+
+  const blockRecheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Trailing window rather than a suppress-while-in-flight guard: the scheduler awaits its claimed
+  // jobs one after another, so a blocked batch produces events that need not overlap a short GET at
+  // all, and a guard would let each one through — one request per document, from every open tab.
+  function scheduleBlockRecheck(baseId: string) {
+    if (blockRecheckTimer.current) clearTimeout(blockRecheckTimer.current);
+    blockRecheckTimer.current = setTimeout(() => {
+      blockRecheckTimer.current = null;
+      void recheckBlock(baseId);
+    }, BLOCK_RECHECK_MS);
+  }
 
   // Re-reads ONLY the block. Adopting the list's rows here would clobber an optimistic PROCESSING
   // mid-flight; the rows are what the event stream is already keeping current.
   async function recheckBlock(baseId: string) {
-    if (blockRecheckInFlight.current) return;
-    blockRecheckInFlight.current = true;
-    try {
-      const { data } = await api.api.v1.knowledge
-        .bases({ id: baseId })
-        .documents.get();
-      if (data) setEmbeddingBlock(data.embeddingBlock ?? null);
-    } finally {
-      blockRecheckInFlight.current = false;
-    }
+    const { data } = await api.api.v1.knowledge
+      .bases({ id: baseId })
+      .documents.get();
+    // The block is per workspace, but the REQUEST is per base: if the modal closed or moved to
+    // another base while this was open, writing this answer would label whatever is on screen now
+    // with an answer fetched for something else (docs/modals.md).
+    if (!data || openDocsBaseId.current !== baseId) return;
+    setEmbeddingBlock(data.embeddingBlock ?? null);
   }
 
   useOnModalOpen(createModal, () => {
@@ -664,18 +692,9 @@ export function useKnowledgeManager(opts: {
       setEmbeddingBlock(data?.blocked ? { reason: data.blocked.reason } : null);
       if (data?.blocked) {
         revert();
-        showToast(
-          data.blocked.reason === "embedding_not_configured"
-            ? t(
-                "knowledge.indexBlockedNotConfigured",
-                "Embedding is not configured. Set the tenant's embedding (provider/model/credential) before indexing.",
-              )
-            : t(
-                "knowledge.indexBlockedCredentialPending",
-                "The embedding credential isn't filled yet. Fill its secret in the vault, then try again.",
-              ),
-          "warning",
-        );
+        // Same text as the banner, from the same function: two wordings for one reason is how the
+        // third one ended up described as the second (review finding, round 6).
+        showToast(blockTextFor(data.blocked.reason), "warning");
         return;
       }
       // Refetch the consumer's catalog so surfaces derived from unindexed counts
@@ -759,11 +778,13 @@ export function useKnowledgeManager(opts: {
     return error;
   }
 
-  // Operator-facing text for the tenant's CURRENT embedding block, or null when there is none. The
-  // three reasons need different instructions: create a credential, fill the one that exists, or
-  // replace one whose secret is blank — sending someone to the wrong one is the whole complaint.
-  function embeddingBlockText(): string | null {
-    switch (embeddingBlock?.reason) {
+  // Operator-facing text for one block reason. The three need different instructions: create a
+  // credential, fill the one that exists, or replace one whose secret is blank — sending someone to
+  // the wrong one is the whole complaint. Exhaustive on purpose, with no `default`: the return type
+  // makes a fourth reason a compile error here rather than a branch that quietly falls into one of
+  // the other two.
+  function blockTextFor(reason: BlockReason): string {
+    switch (reason) {
       case "embedding_not_configured":
         return t(
           "knowledge.embeddingBlock.notConfigured",
@@ -779,9 +800,12 @@ export function useKnowledgeManager(opts: {
           "knowledge.embeddingBlock.empty",
           "The embedding credential is empty. Fill it in, then index again.",
         );
-      default:
-        return null;
     }
+  }
+
+  // The tenant's CURRENT block as text, or null when there is none.
+  function embeddingBlockText(): string | null {
+    return embeddingBlock ? blockTextFor(embeddingBlock.reason) : null;
   }
 
   function docStatusBadge(doc: KnowledgeDoc) {

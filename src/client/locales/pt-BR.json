@@ -1259,8 +1259,6 @@
     "index": "Indexar",
     "indexAll": "Indexar todos ({{n}})",
     "indexAllError": "Não foi possível iniciar a indexação.",
-    "indexBlockedCredentialPending": "A credencial de embedding ainda não foi preenchida. Preencha o segredo no vault e tente de novo.",
-    "indexBlockedNotConfigured": "Embedding não configurado. Configure o embedding do tenant (provedor/modelo/credencial) antes de indexar.",
     "indexing": "Indexando…",
     "loadError": "Não foi possível carregar esta base.",
     "name": "Nome",

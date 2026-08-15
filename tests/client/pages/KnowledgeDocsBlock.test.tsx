@@ -47,9 +47,19 @@ let onKnowledgeDocument:
     }) => void)
   | null = null;
 
-function nextDocs(): DocsPayload {
+// Holds ONE of the documents reads open (1-based), so a test can interleave another base's read
+// with it. Set by the test that needs it; null otherwise.
+let gateOnCall: number | null = null;
+let releaseGate: () => void = () => undefined;
+
+async function nextDocs(): Promise<DocsPayload> {
   const answer = docsQueue[Math.min(docsCalls, docsQueue.length - 1)];
   docsCalls += 1;
+  if (gateOnCall === docsCalls) {
+    await new Promise<void>((r) => {
+      releaseGate = r;
+    });
+  }
   return answer as DocsPayload;
 }
 
@@ -69,7 +79,7 @@ mock.module("@/client/lib/api", () => ({
           bases: Object.assign(
             (_: { id: string }) => ({
               documents: {
-                get: async () => ({ data: nextDocs(), error: null }),
+                get: async () => ({ data: await nextDocs(), error: null }),
               },
               reindex: { post: async () => ({ data: reindexResponse }) },
             }),
@@ -137,12 +147,19 @@ function Harness() {
       >
         open
       </button>
+      {/* A second base, so a test can swap the modal's subject while a read for the first is open. */}
+      <button
+        type="button"
+        onClick={() => m.openDocs({ id: "b2", name: "Outra base" })}
+      >
+        open other
+      </button>
       {m.modals}
     </>
   );
 }
 
-async function openModal() {
+async function openModal(firstDocTitle = "Doc") {
   render(
     // The blocked badge is wrapped in a <Tooltip>, which is a Radix consumer: without the provider
     // the App normally supplies, rendering the row throws.
@@ -153,10 +170,18 @@ async function openModal() {
     </TooltipProvider>,
   );
   fireEvent.click(screen.getByRole("button", { name: "open" }));
-  await screen.findByText("Doc");
+  await screen.findByText(firstDocTitle);
+}
+
+// Every assertion about what is on screen goes through this, never through a raw element: an
+// expectation that fails while HOLDING a happy-dom node makes the runner serialize a cyclic tree,
+// and the run stops producing output instead of reporting a failure.
+function shows(text: string | RegExp): boolean {
+  return screen.queryAllByText(text).length > 0;
 }
 
 const PENDING_TEXT = /credential was never filled in/i;
+const EMPTY_TEXT = /credential is empty/i;
 const NEUTRAL_TEXT = /aren't indexed yet/i;
 
 describe("knowledge documents modal — the embedding block is never stale", () => {
@@ -165,6 +190,7 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     docsQueue = [];
     reindexResponse = {};
     onKnowledgeDocument = null;
+    gateOnCall = null;
   });
 
   afterEach(() => {
@@ -184,7 +210,7 @@ describe("knowledge documents modal — the embedding block is never stale", () 
       },
     ];
     await openModal();
-    expect(screen.getByText(PENDING_TEXT)).toBeDefined();
+    expect(shows(PENDING_TEXT)).toBe(true);
   });
 
   // The finding itself. The event says only that the worker put the row back to UNINDEXED; whether
@@ -208,8 +234,8 @@ describe("knowledge documents modal — the embedding block is never stale", () 
       status: "UNINDEXED",
     });
 
-    await waitFor(() => expect(screen.getByText(NEUTRAL_TEXT)).toBeDefined());
-    expect(screen.queryByText(PENDING_TEXT)).toBeNull();
+    await waitFor(() => expect(shows(NEUTRAL_TEXT)).toBe(true));
+    expect(shows(PENDING_TEXT)).toBe(false);
   });
 
   // The mirror case: nothing was blocking when the modal opened, and something is now. Silence would
@@ -231,6 +257,86 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     await waitFor(() => expect(screen.getByText(PENDING_TEXT)).toBeDefined());
   });
 
+  // Review finding, round 6: retrying ONE document goes PENDING → PROCESSING → READY and never comes
+  // back UNINDEXED, so keying the refresh on UNINDEXED alone left the remaining rows and the banner
+  // explaining a block the worker had just disproved. Reaching PROCESSING means the job cleared the
+  // prerequisite check, which IS the answer — no request needed.
+  test("a document that starts indexing proves the block is gone", async () => {
+    docsQueue = [
+      {
+        documents: [doc(), doc({ id: "d2", title: "Outro" })],
+        embeddingBlock: { reason: "credential_pending" },
+      },
+    ];
+    await openModal();
+    expect(shows(PENDING_TEXT)).toBe(true);
+
+    onKnowledgeDocument?.({
+      knowledgeBaseId: "b1",
+      documentId: "d1",
+      status: "PROCESSING",
+    });
+
+    // The second row is still UNINDEXED, so the banner is still there — now saying the ordinary
+    // thing instead of naming a credential.
+    await waitFor(() => expect(shows(NEUTRAL_TEXT)).toBe(true));
+    expect(shows(PENDING_TEXT)).toBe(false);
+    expect(docsCalls).toBe(1);
+  });
+
+  // Review finding, round 6: the block is per workspace but the REQUEST is per base. A read started
+  // for one base and answered after the modal moved to another would label the base on screen with
+  // the other one's instructions (docs/modals.md).
+  test("a read that lands after the modal moved on is discarded", async () => {
+    docsQueue = [
+      // 1: base A opens, blocked.
+      {
+        documents: [doc({ status: "PROCESSING" })],
+        embeddingBlock: { reason: "credential_pending" },
+      },
+      // 2: A's recheck, held open until B is on screen.
+      {
+        documents: [doc()],
+        embeddingBlock: { reason: "credential_pending" },
+      },
+      // 3: base B opens, nothing blocking.
+      { documents: [doc({ title: "OutroDoc" })], embeddingBlock: null },
+    ];
+    gateOnCall = 2;
+    await openModal();
+    onKnowledgeDocument?.({
+      knowledgeBaseId: "b1",
+      documentId: "d1",
+      status: "UNINDEXED",
+    });
+    await waitFor(() => expect(docsCalls).toBe(2));
+
+    // The dialog traps focus and hides the rest of the tree, so the operator's real route to another
+    // base is to close this one first.
+    fireEvent.keyDown(document.body, { key: "Escape", code: "Escape" });
+    await waitFor(() => expect(screen.queryAllByRole("dialog").length).toBe(0));
+    fireEvent.click(screen.getByRole("button", { name: "open other" }));
+    await screen.findByText("OutroDoc");
+    expect(shows(PENDING_TEXT)).toBe(false);
+
+    releaseGate();
+    // Give A's answer every chance to land on B before asserting it did not.
+    await waitFor(() => expect(docsCalls).toBe(3));
+    expect(shows(PENDING_TEXT)).toBe(false);
+  });
+
+  // Review finding, round 6: the reindex toast had its own two-branch wording, so the third reason
+  // was announced as the second — the operator would be told to fill a credential that IS filled,
+  // with a blank secret, while the banner two lines up said the right thing.
+  test("a blocked reindex names the reason the server actually gave", async () => {
+    docsQueue = [{ documents: [doc()], embeddingBlock: null }];
+    reindexResponse = { blocked: { reason: "credential_empty" } };
+    await openModal();
+    fireEvent.click(screen.getByRole("button", { name: /index all/i }));
+    await waitFor(() => expect(shows(EMPTY_TEXT)).toBe(true));
+    expect(shows(PENDING_TEXT)).toBe(false);
+  });
+
   // A bulk index that hits the block emits one event per document, and the answer is identical for
   // all of them: the block is the workspace's, not the row's.
   test("a burst of blocked documents does not become a burst of reads", async () => {
@@ -247,7 +353,7 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     }
     await waitFor(() => expect(docsCalls).toBe(2));
     // Settle, then confirm the in-flight one was the only extra read.
-    await waitFor(() => expect(screen.queryByText("Doc")).not.toBeNull());
+    await waitFor(() => expect(shows("Doc")).toBe(true));
     expect(docsCalls).toBe(2);
   });
 
@@ -265,7 +371,7 @@ describe("knowledge documents modal — the embedding block is never stale", () 
         status,
       });
     }
-    await waitFor(() => expect(screen.queryByText("Doc")).not.toBeNull());
+    await waitFor(() => expect(shows("Doc")).toBe(true));
     expect(docsCalls).toBe(1);
   });
 });

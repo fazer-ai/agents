@@ -423,6 +423,27 @@ describe("ChatwootClient", () => {
       );
     });
 
+    test("a body that is not JSON at all never reaches the message", async () => {
+      // A proxy in front of Chatwoot can answer anything; whatever it is, it did not come from
+      // Chatwoot's renderer, so nothing is known about what is inside it.
+      const raw = "<html>token 4b3a9f customer Maria</html>";
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl: (async () =>
+          ({
+            ok: false,
+            status: 401,
+            text: async () => raw,
+          }) as unknown as Response) as unknown as typeof fetch,
+        assertSafe: passthroughSafe,
+      });
+      const err = (await client
+        .sendMessage(42, "x")
+        .catch((e) => e)) as ChatwootApiError;
+      expect(err.message).not.toContain("Maria");
+      expect(err.message).not.toContain("4b3a9f");
+      expect(err.message).toContain("unparseable body");
+    });
+
     test("the reason is truncated", async () => {
       const err = await authError(403, { error: "x".repeat(500) });
       expect(err.message.length).toBeLessThan(300);
@@ -439,6 +460,25 @@ describe("ChatwootClient", () => {
     );
     const err = await client.sendMessage(42, "x").catch((e) => e);
     expect(err).toBeInstanceOf(ChatwootMissingTokenError);
+    expect(calls).toHaveLength(0);
+  });
+
+  // The multipart senders build their own fetch instead of going through request(), so the guard has
+  // to be on both of them too — otherwise the empty token still goes out on the wire.
+  test("the multipart senders refuse an empty token as well", async () => {
+    const { fetchImpl, calls } = stub(200, {});
+    const client = await createChatwootClient(
+      { ...baseConfig, botToken: "" },
+      { fetchImpl, assertSafe: passthroughSafe },
+    );
+    const audioErr = await client
+      .sendAudioMessage(42, new ArrayBuffer(4), "a.ogg", "audio/ogg")
+      .catch((e) => e);
+    const fileErr = await client
+      .sendFileAttachment(42, new ArrayBuffer(4), "a.pdf", "application/pdf")
+      .catch((e) => e);
+    expect(audioErr).toBeInstanceOf(ChatwootMissingTokenError);
+    expect(fileErr).toBeInstanceOf(ChatwootMissingTokenError);
     expect(calls).toHaveLength(0);
   });
 

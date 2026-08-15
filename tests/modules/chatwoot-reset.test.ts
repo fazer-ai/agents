@@ -302,6 +302,126 @@ describe.skipIf(!dbUp)(
       ).toMatch(/kanban/i);
     });
 
+    // Building the persona client reads the DB and resolves DNS through the SSRF guard, so it throws on
+    // its own during an outage. Outside the best-effort boundary that abandoned the whole reset after
+    // the memory had already been wiped, leaving no acknowledgement at all.
+    test("a client that cannot even be built does not abandon the local cleanups", async () => {
+      const other = await suDb.tenant.create({
+        data: { name: "ResetBlocked", slug: `reset-blocked-${process.pid}` },
+      });
+      try {
+        const { token, hash } = generateRouteToken();
+        // http + loopback: refused by the SSRF guard before any request is attempted.
+        const inst = await seedChatwootInstance(suDb, {
+          tenantId: other.id,
+          accountId: 1,
+          baseUrl: "http://127.0.0.1:9",
+          adminToken: encryptJson(ADMIN_TOKEN),
+        });
+        const agent = await suDb.agent.create({
+          data: {
+            tenantId: other.id,
+            name: "Atendente",
+            systemPrompt: "x",
+            mode: "test",
+          },
+        });
+        const inbox = await suDb.inbox.create({
+          data: {
+            tenantId: other.id,
+            chatwootInstanceId: inst.id,
+            chatwootInboxId: INBOX_ID,
+            name: "WhatsApp",
+            agentId: agent.id,
+          },
+        });
+        await suDb.chatwootAgentBot.create({
+          data: {
+            tenantId: other.id,
+            chatwootInstanceId: inst.id,
+            agentId: agent.id,
+            chatwootAgentBotId: 9,
+            accessToken: encryptJson(BOT_TOKEN),
+            webhookSecret: encryptJson(SECRET),
+            webhookRouteTokenHash: hash,
+            name: "Atendente",
+          },
+        });
+        await suDb.conversation.create({
+          data: {
+            tenantId: other.id,
+            chatwootInstanceId: inst.id,
+            inboxId: inbox.id,
+            chatwootConversationId: CONV_ID,
+            contactInboxId: 302,
+            status: "pending",
+            threadId: `${other.id}:${inst.id}:${CONV_ID}`,
+            testActivatedAt: new Date(),
+            testNoticeSentAt: new Date(),
+            lastFollowUpAt: new Date(),
+          },
+        });
+
+        const cw = fakeChatwoot();
+        globalThis.fetch = cw.impl;
+        const nowSeconds = Math.floor(Date.now() / 1000);
+        const body = JSON.stringify({
+          event: "message_created",
+          id: 9500,
+          content: "/reset",
+          message_type: "incoming",
+          private: false,
+          conversation: {
+            id: CONV_ID,
+            inbox_id: INBOX_ID,
+            status: "pending",
+            contact_inbox: { id: 302 },
+            meta: { assignee_type: null, assignee: null },
+          },
+        });
+        const r = await receiveChatwootWebhook({
+          routeToken: token,
+          rawBody: body,
+          getHeader: (name: string) =>
+            ({
+              "x-chatwoot-signature": `sha256=${createHmac("sha256", SECRET)
+                .update(`${nowSeconds}.${body}`)
+                .digest("hex")}`,
+              "x-chatwoot-timestamp": String(nowSeconds),
+              "x-chatwoot-delivery": "reset-blocked",
+            })[name.toLowerCase()] ?? null,
+          nowSeconds,
+          base: appDb,
+        });
+        await processChatwootDelivery({
+          tenantId: other.id,
+          instanceId: r.instanceId as bigint,
+          deliveryRowId: r.deliveryRowId as bigint,
+          agentBotId: r.agentBotId ?? null,
+          normalized: r.normalized as NonNullable<typeof r.normalized>,
+          base: appDb,
+        });
+
+        // Nothing could be sent (the ack shares the same blocked base URL), but the local slate is
+        // still clean and the run reached the end instead of dying halfway.
+        expect(cw.calls).toHaveLength(0);
+        const conv = await suDb.conversation.findUniqueOrThrow({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId: other.id,
+              chatwootInstanceId: inst.id,
+              chatwootConversationId: CONV_ID,
+            },
+          },
+          select: { testNoticeSentAt: true, lastFollowUpAt: true },
+        });
+        expect(conv.testNoticeSentAt).toBeNull();
+        expect(conv.lastFollowUpAt).toBeNull();
+      } finally {
+        await suDb.tenant.delete({ where: { id: other.id } }).catch(() => {});
+      }
+    });
+
     test("a partial reset is not announced as a full one", async () => {
       const cw = fakeChatwoot(/\/custom_attributes$/);
       globalThis.fetch = cw.impl;

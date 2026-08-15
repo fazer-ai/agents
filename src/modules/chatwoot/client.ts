@@ -83,16 +83,17 @@ async function authFailureDetail(res: Response): Promise<string | undefined> {
   try {
     const text = (await res.text()).trim();
     if (!text) return undefined;
-    let message = text;
+    let message: string;
     try {
       const parsed = JSON.parse(text) as { error?: unknown; message?: unknown };
       const field = parsed?.error ?? parsed?.message;
       if (typeof field !== "string") return undefined;
       message = field;
     } catch {
-      // NOTE: a non-JSON body on an auth failure is an HTML error page from a proxy in front of
-      // Chatwoot, not Chatwoot itself. Naming it beats a bare status.
-      if (text.startsWith("<")) message = "non-JSON response (proxy?)";
+      // NOTE: a body that does not parse did not come from Chatwoot's renderer, so nothing is known
+      // about what is in it. Report only THAT, never the text: an intermediary's error page is the
+      // benign case, and the hostile one would smuggle whatever it likes into our logs.
+      return "unparseable body (an intermediary, not Chatwoot?)";
     }
     return message.slice(0, AUTH_DETAIL_MAX_CHARS);
   } catch {
@@ -197,6 +198,15 @@ export class ChatwootClient {
     this.accountBase = `${root}/api/v1/accounts/${config.accountId}`;
   }
 
+  // A client can legitimately be built with only the admin token (callers that never act as the
+  // persona). Sending the empty one anyway is what issue #79 was: Chatwoot answers 401 and a
+  // best-effort catch reports it as if the remote had rejected a real credential. Refusing here names
+  // the actual fault — this process built a client without the token this call needs. Called by
+  // `request` AND by the multipart senders, which build their own fetch and would otherwise slip past.
+  private assertToken(token: string, endpoint: string): void {
+    if (token === "") throw new ChatwootMissingTokenError(endpoint);
+  }
+
   private async request(
     token: string,
     method: string,
@@ -204,13 +214,7 @@ export class ChatwootClient {
     body?: unknown,
     timeoutMs: number = REQUEST_TIMEOUT_MS,
   ): Promise<unknown> {
-    // A client can legitimately be built with only the admin token (callers that never act as the
-    // persona). Sending the empty one anyway is what issue #79 was: Chatwoot answers 401 and a
-    // best-effort catch reports it as if the remote had rejected a real credential. Refusing here
-    // names the actual fault — this process built a client without the token this call needs.
-    if (token === "") {
-      throw new ChatwootMissingTokenError(`${method} ${path}`);
-    }
+    this.assertToken(token, `${method} ${path}`);
     const res = await this.fetchImpl(`${this.accountBase}${path}`, {
       method,
       headers: {
@@ -268,6 +272,7 @@ export class ChatwootClient {
     mime: string,
     opts: { transcribedText?: string } = {},
   ): Promise<unknown> {
+    this.assertToken(this.config.botToken, "POST audio message");
     const form = new FormData();
     form.append("attachments[]", new Blob([audio], { type: mime }), fileName);
     form.append("message_type", "outgoing");
@@ -310,6 +315,7 @@ export class ChatwootClient {
     mime: string,
     opts: { caption?: string } = {},
   ): Promise<unknown> {
+    this.assertToken(this.config.botToken, "POST file attachment");
     const form = new FormData();
     form.append("attachments[]", new Blob([bytes], { type: mime }), fileName);
     form.append("message_type", "outgoing");

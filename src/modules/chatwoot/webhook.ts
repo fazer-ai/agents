@@ -783,13 +783,13 @@ async function maybeConsumeCommandOrGate(params: {
     // did not get cleared, so the confirmation below can stop claiming a full reset after a partial
     // one. `label` is what the customer-visible ack names; `what` is the English log wording.
     const failed: string[] = [];
-    const step = async (
+    const step = async <T>(
       what: string,
       label: string,
-      run: () => Promise<unknown>,
-    ): Promise<void> => {
+      run: () => Promise<T>,
+    ): Promise<T | null> => {
       try {
-        await run();
+        return await run();
       } catch (err) {
         failed.push(label);
         logger.warn(
@@ -798,6 +798,7 @@ async function maybeConsumeCommandOrGate(params: {
           String(conversationId),
           errMsg(err),
         );
+        return null;
       }
     };
 
@@ -833,26 +834,35 @@ async function maybeConsumeCommandOrGate(params: {
       );
     }
     // Custom attributes and the kanban card are BOT-token calls, so this client must carry the
-    // persona's token; labels are admin-token and would work either way.
-    const client = await personaClient();
-    await step("clear labels", "etiquetas", () =>
-      client.setConversationLabels(conversationId, []),
+    // persona's token; labels are admin-token and would work either way. Building it is itself a step:
+    // it reads the DB and resolves DNS through the SSRF guard, so during an outage it throws, and
+    // outside the boundary that would abandon the whole reset — including the local cleanups below
+    // and the acknowledgement — after the memory was already wiped.
+    const client = await step(
+      "build the persona client",
+      "etiquetas, atributos e card do kanban",
+      personaClient,
     );
-    await step("clear custom attributes", "atributos", () =>
-      client.setConversationCustomAttributes(conversationId, {}),
-    );
-    // Clear the linked kanban card's scheduled dates too (item 17): a reset is a clean slate, so a
-    // stale start/due date from the prior episode must not linger. Title/description/step are kept
-    // (they identify the card / hold operator notes). Best-effort — no card ⇒ skip.
-    await step("clear kanban card dates", "card do kanban", async () => {
-      const taskId = await client.kanbanTaskIdForConversation(conversationId);
-      if (taskId != null) {
-        await client.updateKanbanTask(taskId, {
-          startDate: null,
-          dueDate: null,
-        });
-      }
-    });
+    if (client) {
+      await step("clear labels", "etiquetas", () =>
+        client.setConversationLabels(conversationId, []),
+      );
+      await step("clear custom attributes", "atributos", () =>
+        client.setConversationCustomAttributes(conversationId, {}),
+      );
+      // Clear the linked kanban card's scheduled dates too (item 17): a reset is a clean slate, so a
+      // stale start/due date from the prior episode must not linger. Title/description/step are kept
+      // (they identify the card / hold operator notes). Best-effort — no card ⇒ skip.
+      await step("clear kanban card dates", "card do kanban", async () => {
+        const taskId = await client.kanbanTaskIdForConversation(conversationId);
+        if (taskId != null) {
+          await client.updateKanbanTask(taskId, {
+            startDate: null,
+            dueDate: null,
+          });
+        }
+      });
+    }
     // Cancel any pending inactivity follow-up: a reset is an explicit "start over", so a queued
     // proactive nudge from the prior episode is moot.
     await step("cancel follow-up", "follow-up pendente", () =>

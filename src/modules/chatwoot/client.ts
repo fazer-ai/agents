@@ -39,12 +39,64 @@ const realSleep = (ms: number): Promise<void> =>
 export class ChatwootApiError extends Error {
   readonly status: number;
   readonly endpoint: string;
-  constructor(status: number, endpoint: string) {
-    // NOTE: never capture the response body — it carries customer PII / message content.
-    super(`Chatwoot API ${status} for ${endpoint}`);
+  constructor(status: number, endpoint: string, detail?: string) {
+    // NOTE: `detail` is ONLY ever an auth failure's reason (see authFailureDetail) — the response body
+    // of any other status carries customer PII / message content and must never reach this message.
+    super(
+      detail
+        ? `Chatwoot API ${status} for ${endpoint}: ${detail}`
+        : `Chatwoot API ${status} for ${endpoint}`,
+    );
     this.name = "ChatwootApiError";
     this.status = status;
     this.endpoint = endpoint;
+  }
+}
+
+// Raised INSTEAD of dialing Chatwoot when the client holds no token for the call it was asked to
+// make. Distinct from ChatwootApiError on purpose: nothing was sent, so there is no status, and the
+// fault is local (a caller that built the client without the token) rather than remote.
+export class ChatwootMissingTokenError extends Error {
+  readonly endpoint: string;
+  constructor(endpoint: string) {
+    super(`Chatwoot client has no token for ${endpoint}`);
+    this.name = "ChatwootMissingTokenError";
+    this.endpoint = endpoint;
+  }
+}
+
+// An auth failure names three very different operator actions under ONE status. Checked against the
+// fork's source (chatwoot-pro at 4.16.2): `render_unauthorized(message)` answers `{error: message}`
+// with **401** for both "Invalid Access Token" (the token is absent or wrong) and "Access to this
+// endpoint is not authorized for bots" (the endpoint is outside BOT_ACCESSIBLE_ENDPOINTS), so the
+// status alone cannot tell a missing credential from a forbidden endpoint. Every `status: :forbidden`
+// in that tree renders a fixed English string the same way ("API access is not enabled for this
+// account", "Access Denied", …), and none of those bodies carries conversation or contact data.
+//
+// That is why reading the body is safe HERE and only here: 401/403 exclusively, only the `error` /
+// `message` field, truncated, and dropped when the shape is anything else. Every other status can
+// echo message content, which this error must never carry.
+const AUTH_DETAIL_MAX_CHARS = 200;
+
+async function authFailureDetail(res: Response): Promise<string | undefined> {
+  if (res.status !== 401 && res.status !== 403) return undefined;
+  try {
+    const text = (await res.text()).trim();
+    if (!text) return undefined;
+    let message = text;
+    try {
+      const parsed = JSON.parse(text) as { error?: unknown; message?: unknown };
+      const field = parsed?.error ?? parsed?.message;
+      if (typeof field !== "string") return undefined;
+      message = field;
+    } catch {
+      // NOTE: a non-JSON body on an auth failure is an HTML error page from a proxy in front of
+      // Chatwoot, not Chatwoot itself. Naming it beats a bare status.
+      if (text.startsWith("<")) message = "non-JSON response (proxy?)";
+    }
+    return message.slice(0, AUTH_DETAIL_MAX_CHARS);
+  } catch {
+    return undefined;
   }
 }
 
@@ -152,6 +204,13 @@ export class ChatwootClient {
     body?: unknown,
     timeoutMs: number = REQUEST_TIMEOUT_MS,
   ): Promise<unknown> {
+    // A client can legitimately be built with only the admin token (callers that never act as the
+    // persona). Sending the empty one anyway is what issue #79 was: Chatwoot answers 401 and a
+    // best-effort catch reports it as if the remote had rejected a real credential. Refusing here
+    // names the actual fault — this process built a client without the token this call needs.
+    if (token === "") {
+      throw new ChatwootMissingTokenError(`${method} ${path}`);
+    }
     const res = await this.fetchImpl(`${this.accountBase}${path}`, {
       method,
       headers: {
@@ -163,7 +222,13 @@ export class ChatwootClient {
       redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) throw new ChatwootApiError(res.status, `${method} ${path}`);
+    if (!res.ok) {
+      throw new ChatwootApiError(
+        res.status,
+        `${method} ${path}`,
+        await authFailureDetail(res),
+      );
+    }
     const text = await res.text();
     return text ? JSON.parse(text) : null;
   }
@@ -223,7 +288,13 @@ export class ChatwootClient {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },
     );
-    if (!res.ok) throw new ChatwootApiError(res.status, "POST audio message");
+    if (!res.ok) {
+      throw new ChatwootApiError(
+        res.status,
+        "POST audio message",
+        await authFailureDetail(res),
+      );
+    }
     const text = await res.text();
     return text ? JSON.parse(text) : null;
   }
@@ -253,7 +324,13 @@ export class ChatwootClient {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       },
     );
-    if (!res.ok) throw new ChatwootApiError(res.status, "POST file attachment");
+    if (!res.ok) {
+      throw new ChatwootApiError(
+        res.status,
+        "POST file attachment",
+        await authFailureDetail(res),
+      );
+    }
     const text = await res.text();
     return text ? JSON.parse(text) : null;
   }
@@ -1122,7 +1199,13 @@ export async function fetchChatwootProfile(
     redirect: "error",
     signal: AbortSignal.timeout(INTERACTIVE_TIMEOUT_MS),
   });
-  if (!res.ok) throw new ChatwootApiError(res.status, "GET /profile");
+  if (!res.ok) {
+    throw new ChatwootApiError(
+      res.status,
+      "GET /profile",
+      await authFailureDetail(res),
+    );
+  }
   const text = await res.text();
   return text ? JSON.parse(text) : null;
 }

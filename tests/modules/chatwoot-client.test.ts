@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   ChatwootApiError,
+  ChatwootMissingTokenError,
   createChatwootClient,
 } from "@/modules/chatwoot/client";
+import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 
 interface Captured {
   url: string;
@@ -372,15 +374,82 @@ describe("ChatwootClient", () => {
     });
   });
 
-  test("throws ChatwootApiError (without body) on non-2xx", async () => {
-    const { fetchImpl } = stub(403, { error: "nope" });
+  test("throws ChatwootApiError (without body) on a non-auth non-2xx", async () => {
+    const { fetchImpl } = stub(422, { error: "message content here" });
     const client = await createChatwootClient(baseConfig, {
       fetchImpl,
       assertSafe: passthroughSafe,
     });
     const err = await client.sendMessage(42, "x").catch((e) => e);
     expect(err).toBeInstanceOf(ChatwootApiError);
-    expect((err as ChatwootApiError).status).toBe(403);
-    expect((err as ChatwootApiError).message).not.toContain("nope");
+    expect((err as ChatwootApiError).status).toBe(422);
+    expect((err as ChatwootApiError).message).not.toContain(
+      "message content here",
+    );
+  });
+
+  // Chatwoot answers BOTH "the token is blank/wrong" and "this endpoint is not open to bots" with
+  // 401 + a fixed string, so without the reason the two are one identical log line and two very
+  // different operator actions.
+  describe("auth failures name the reason", () => {
+    const authError = async (status: number, payload: unknown) => {
+      const { fetchImpl } = stub(status, payload);
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+      return (await client
+        .sendMessage(42, "x")
+        .catch((e) => e)) as ChatwootApiError;
+    };
+
+    test("401 carries Chatwoot's error string", async () => {
+      const err = await authError(401, { error: "Invalid Access Token" });
+      expect(err.status).toBe(401);
+      expect(err.message).toContain("Invalid Access Token");
+    });
+
+    test("403 carries it too", async () => {
+      const err = await authError(403, {
+        error: "API access is not enabled for this account",
+      });
+      expect(err.message).toContain("API access is not enabled");
+    });
+
+    test("a body that is not the expected shape is dropped, not guessed at", async () => {
+      const err = await authError(401, { detail: { nested: "shape" } });
+      expect(err.message).toBe(
+        "Chatwoot API 401 for POST /conversations/42/messages",
+      );
+    });
+
+    test("the reason is truncated", async () => {
+      const err = await authError(403, { error: "x".repeat(500) });
+      expect(err.message.length).toBeLessThan(300);
+    });
+  });
+
+  // A client built without the token a call needs used to send the empty string and read Chatwoot's
+  // 401 back, which reported a local wiring mistake as a remote rejection (issue #79).
+  test("refuses to call with an empty token instead of sending it", async () => {
+    const { fetchImpl, calls } = stub(200, {});
+    const client = await createChatwootClient(
+      { ...baseConfig, botToken: "" },
+      { fetchImpl, assertSafe: passthroughSafe },
+    );
+    const err = await client.sendMessage(42, "x").catch((e) => e);
+    expect(err).toBeInstanceOf(ChatwootMissingTokenError);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("an admin-token call on that same client still works", async () => {
+    const { fetchImpl, calls } = stub(200, { payload: [] });
+    const client = await createChatwootClient(
+      { ...baseConfig, botToken: "" },
+      { fetchImpl, assertSafe: passthroughSafe },
+    );
+    await client.getConversationLabels(42);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
   });
 });

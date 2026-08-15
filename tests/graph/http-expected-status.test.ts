@@ -38,6 +38,22 @@ describe("normalizeExpectedStatuses", () => {
 
   // Almost always the wrong choice, and still the operator's to make: refusing it would buy a
   // special case in the validator, and some APIs really do answer 503 for "temporarily no data".
+  // Review finding, round 2: the tool fetches with `redirect: "error"`, so a redirect status
+  // arriving with a Location rejects before any status is looked at. Accepting the declaration would
+  // store a promise the runtime cannot keep, and one that would seem to work on the responses that
+  // happened to carry no Location.
+  test("the statuses fetch treats as redirects are refused, not stored", () => {
+    expect(normalizeExpectedStatuses([301, 302, 303, 307, 308, 404])).toEqual([
+      404,
+    ]);
+  });
+
+  // Only the five the standard calls redirect statuses. The rest of 3xx is delivered like any other
+  // response, and 304 for "nothing changed" is a genuine "no result".
+  test("the 3xx codes that are not redirects stay declarable", () => {
+    expect(normalizeExpectedStatuses([300, 304])).toEqual([300, 304]);
+  });
+
   test("5xx is allowed", () => {
     expect(normalizeExpectedStatuses([503])).toEqual([503]);
   });

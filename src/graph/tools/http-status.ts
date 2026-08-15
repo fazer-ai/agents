@@ -21,6 +21,19 @@
 const MIN_STATUS = 100;
 const MAX_STATUS = 599;
 
+// The five statuses the Fetch standard calls "redirect statuses". The tool calls `fetch` with
+// `redirect: "error"`, so one of these arriving with a `Location` rejects the request before any
+// status is inspected: declaring it would be a promise the runtime cannot keep, and one that would
+// appear to work whenever the provider happened to omit the header. Refused at the door instead, so
+// the stored list means the same thing on all three surfaces that show it back.
+//
+// The alternative — switching the tool to `redirect: "manual"` — is a change to every tool's network
+// policy, made for the sake of a status declaration. `redirect: "error"` is also load-bearing for
+// SSRF: `assertSafeOutboundUrl` vets the URL the operator wrote, not wherever a provider points
+// next. 3xx codes the standard does NOT call redirects (300, 304 and friends) are delivered
+// normally, so they stay declarable — 304 for "nothing changed" is a real "no result".
+const FETCH_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 // A list, not a range and not a "treat 4xx as data" switch. A range is one keystroke away from
 // swallowing 401 and 403, which are the two failures an operator most needs to hear about, and it
 // hides them for exactly the tools that carry a credential. Enumerating is more typing, once, in
@@ -48,6 +61,7 @@ export function normalizeExpectedStatuses(raw: unknown): number[] {
     if (!Number.isInteger(n)) continue;
     if (n < MIN_STATUS || n > MAX_STATUS) continue;
     if (n >= 200 && n < 300) continue;
+    if (FETCH_REDIRECT_STATUSES.has(n)) continue;
     out.add(n);
   }
   return [...out].sort((a, b) => a - b);

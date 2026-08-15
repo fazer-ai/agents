@@ -628,7 +628,11 @@ async function mirrorConsoleWrite(
     const live = parseLiveConversation(
       await client.getConversation(conv.chatwootConversationId),
     );
-    if (live) {
+    // A snapshot with no version buys nothing here and can cost: without one, the reconcile applies
+    // the WHOLE snapshot, so a status click could carry back an assignee that a webhook has since
+    // changed. The fallback writes exactly the fields this action meant to change, which is what the
+    // console did before any of this.
+    if (live && live.updatedAt !== null) {
       await reconcileMirrorFromLive({
         tenantId,
         instanceId: conv.chatwootInstanceId,
@@ -639,7 +643,7 @@ async function mirrorConsoleWrite(
       return;
     }
     logger.warn(
-      "conversations: live read after a console write did not parse (conv=%s) — writing unversioned",
+      "conversations: live read after a console write carried no usable version (conv=%s) — writing unversioned",
       String(conv.chatwootConversationId),
     );
   } catch (err) {

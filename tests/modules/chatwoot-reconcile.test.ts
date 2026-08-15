@@ -158,6 +158,26 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     expect(row.chatwootStatusAt).toBeNull();
   });
 
+  // The activity clock is coarse (one-second, and unmoved by a status or assignee change) and the
+  // stored `lastEventAt` may have been synthesized from receipt time. When the snapshot carries a
+  // version and the mark holds one, that pair decides — otherwise the coarse key would veto the
+  // precise one, and on an inflated `lastEventAt` it would keep vetoing it.
+  test("a versioned snapshot is not rejected by an activity time that looks older", async () => {
+    const id = await seedRow({
+      lastEventAt: new Date((T + 30) * 1000),
+      chatwootStatusAt: T,
+      chatwootAssigneeAt: T,
+    });
+    await apply(id, {
+      status: "resolved",
+      lastActivitySec: T,
+      updatedAt: T + 50,
+    });
+    const row = await readRow(id);
+    expect(row.status).toBe("resolved");
+    expect(row.chatwootStatusAt).toBe(T + 50);
+  });
+
   test("a snapshot older than the mark that orders a field does not write that field", async () => {
     const id = await seedRow({
       status: "resolved",

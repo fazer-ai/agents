@@ -1111,7 +1111,7 @@ describe.skipIf(!dbUp)(
           status: string;
           assignee?: { id: number; name: string } | null;
           lastActivityAt: number;
-          updatedAt: number;
+          updatedAt: number | null;
         } | null,
       ) {
         const calls: string[] = [];
@@ -1140,7 +1140,9 @@ describe.skipIf(!dbUp)(
                 assignee: live.assignee ?? null,
               },
               last_activity_at: live.lastActivityAt,
-              updated_at: live.updatedAt,
+              ...(live.updatedAt === null
+                ? {}
+                : { updated_at: live.updatedAt }),
             };
           },
         };
@@ -1302,6 +1304,41 @@ describe.skipIf(!dbUp)(
           }),
         });
         expect((await mirrored(45)).status).toBe("resolved");
+      });
+
+      // A snapshot with no version buys nothing and can cost: the reconcile applies the WHOLE snapshot,
+      // so a status click would carry back an assignee a webhook has since changed. Without a version
+      // the console writes exactly the fields its own action meant to change.
+      test("an unversioned snapshot does not let a status change touch the assignee", async () => {
+        const T = 1_786_507_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(47, {
+            status: "open",
+            assignee: HUMAN,
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        // The GET answers without `updated_at` (a Chatwoot too old to serialize it) AND with a stale
+        // assignee: unassigned, as it was before the human took it.
+        const stub = stubClient({
+          status: "resolved",
+          assignee: null,
+          lastActivityAt: T,
+          updatedAt: null,
+        });
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(47),
+          "resolved",
+          { makeClient: stub.makeClient },
+          appDb,
+        );
+        const row = await mirrored(47);
+        expect(row.status).toBe("resolved");
+        expect(row.assigneeType).toBe("User");
+        expect(row.assigneeId).toBe(HUMAN.id);
       });
 
       // The version is an improvement on the write, not a precondition for it: when the extra read

@@ -74,30 +74,31 @@ export async function reconcileMirrorFromLive(
         // seconds); a strict > on raw ms would false-skip same-second states.
         const sec = (d: Date) => Math.floor(d.getTime() / 1000);
         const liveAt = live.lastActivityAt;
-        if (
+        const liveVersion = live.updatedAt;
+        // NOTE: A webhook can commit BETWEEN the caller's GET and this write, which makes the
+        // snapshot in hand the older truth even though it was read later. Two keys can order that,
+        // and they are not interchangeable:
+        //
+        //   * the conversation's own version, which is exact and is what the mirror uses — available
+        //     for a field only when BOTH the snapshot carries one and the mark that orders that field
+        //     already holds one;
+        //   * `last_activity_at`, which is all there is otherwise, and is coarse: one-second
+        //     resolution, unmoved by a status or assignee change, and compared against a stored
+        //     `lastEventAt` that a payload without it may have synthesized from receipt time.
+        //
+        // So the activity comparison is the FALLBACK, per field, not a veto over the whole snapshot:
+        // letting it reject a versioned write would discard the precise key in favour of the coarse
+        // one, and on an inflated `lastEventAt` it would keep discarding it (issue #77, round 1).
+        const activityStale =
           liveAt !== null &&
           current.lastEventAt !== null &&
-          sec(current.lastEventAt) > sec(liveAt)
-        ) {
-          return;
-        }
-        // NOTE: The same rule the mirror applies, because this is the same kind of payload:
-        // a field is written when the version carrying it is at least as new as the mark that
-        // orders that field, and the mark moves with it. Writing state without checking would
-        // leave fields from the GET under marks from a webhook that landed after it — a stale
-        // assignment surviving a live unassignment, with the equal-version rule then keeping
-        // the redelivery from clearing it. The REST show renders the same `updated_at.to_f`
-        // the webhook does. With no version at all (older Chatwoot) the last_activity_at guard
-        // above is all there is, and the write stays unconditional, as it was.
-        const liveVersion = live.updatedAt;
-        const statusOrdered =
-          liveVersion === null ||
-          current.chatwootStatusAt === null ||
-          liveVersion >= current.chatwootStatusAt;
-        const assigneeOrdered =
-          liveVersion === null ||
-          current.chatwootAssigneeAt === null ||
-          liveVersion >= current.chatwootAssigneeAt;
+          sec(current.lastEventAt) > sec(liveAt);
+        const orderedBy = (mark: number | null): boolean =>
+          liveVersion !== null && mark !== null
+            ? liveVersion >= mark
+            : !activityStale;
+        const statusOrdered = orderedBy(current.chatwootStatusAt);
+        const assigneeOrdered = orderedBy(current.chatwootAssigneeAt);
         // NOTE: Only what actually differs. The probe runs on every proactive send, and the
         // common outcome is "nothing changed" — writing the same values back would be two
         // updates per follow-up and would advance the row's `updatedAt` for nothing.

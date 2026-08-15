@@ -441,12 +441,18 @@ describe("ChatwootClient", () => {
         .catch((e) => e)) as ChatwootApiError;
       expect(err.message).not.toContain("Maria");
       expect(err.message).not.toContain("4b3a9f");
-      expect(err.message).toContain("unparseable body");
+      expect(err.message).toContain("unrecognized reason");
     });
 
-    test("the reason is truncated", async () => {
-      const err = await authError(403, { error: "x".repeat(500) });
-      expect(err.message.length).toBeLessThan(300);
+    // Parsing as JSON does not prove the answer came from Chatwoot: the base URL is tenant-configured
+    // and whatever sits in front of it can answer `{"error": <anything>}`.
+    test("a reason that is not one of Chatwoot's own is never repeated", async () => {
+      const err = await authError(403, {
+        error: "customer Maria Souza, cpf 123.456.789-00",
+      });
+      expect(err.message).not.toContain("Maria");
+      expect(err.message).not.toContain("123.456");
+      expect(err.message).toContain("unrecognized reason");
     });
   });
 

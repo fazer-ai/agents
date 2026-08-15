@@ -73,10 +73,22 @@ export class ChatwootMissingTokenError extends Error {
 // in that tree renders a fixed English string the same way ("API access is not enabled for this
 // account", "Access Denied", …), and none of those bodies carries conversation or contact data.
 //
-// That is why reading the body is safe HERE and only here: 401/403 exclusively, only the `error` /
-// `message` field, truncated, and dropped when the shape is anything else. Every other status can
-// echo message content, which this error must never carry.
-const AUTH_DETAIL_MAX_CHARS = 200;
+// That is why the body is read HERE and only here, and even here nothing from it is ever repeated:
+// the parsed reason has to MATCH one of the strings below to be named. Parsing as JSON does not prove
+// the response came from Chatwoot — the base URL is tenant-configured and a proxy in front of it can
+// answer whatever it likes, including `{"error":"<customer data>"}`, which would land in shared logs
+// through the callers' `errMsg(err)`. An allowlist keeps the three cases this exists to separate and
+// gives up on everything else, which is exactly the old behavior for anything unrecognized.
+const KNOWN_AUTH_REASONS: ReadonlySet<string> = new Set([
+  // access_token_auth_helper.rb: the token is blank or matches no user.
+  "Invalid Access Token",
+  // access_token_auth_helper.rb: the endpoint is outside BOT_ACCESSIBLE_ENDPOINTS.
+  "Access to this endpoint is not authorized for bots",
+  // ensure_current_account_helper.rb: the bot belongs to another account.
+  "Bot is not authorized to access this account",
+  // accounts/base_controller.rb, on a 403.
+  "API access is not enabled for this account",
+]);
 
 async function authFailureDetail(res: Response): Promise<string | undefined> {
   if (res.status !== 401 && res.status !== 403) return undefined;
@@ -90,12 +102,10 @@ async function authFailureDetail(res: Response): Promise<string | undefined> {
       if (typeof field !== "string") return undefined;
       message = field;
     } catch {
-      // NOTE: a body that does not parse did not come from Chatwoot's renderer, so nothing is known
-      // about what is in it. Report only THAT, never the text: an intermediary's error page is the
-      // benign case, and the hostile one would smuggle whatever it likes into our logs.
-      return "unparseable body (an intermediary, not Chatwoot?)";
+      // NOTE: a body that does not parse did not come from Chatwoot's renderer at all.
+      return "unrecognized reason (an intermediary, not Chatwoot?)";
     }
-    return message.slice(0, AUTH_DETAIL_MAX_CHARS);
+    return KNOWN_AUTH_REASONS.has(message) ? message : "unrecognized reason";
   } catch {
     return undefined;
   }

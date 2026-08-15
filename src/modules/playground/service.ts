@@ -277,7 +277,7 @@ async function buildPlaygroundGraph(params: {
     turnId: params.turnId,
     tools,
   });
-  return { graph, callbacks, loaded, traceLabels };
+  return { graph, callbacks, loaded, tools, traceLabels };
 }
 
 export type PlaygroundToolCategory =
@@ -408,22 +408,23 @@ export async function runPlaygroundTurn(
     threadId,
     base,
   };
-  const { graph, callbacks, loaded, traceLabels } = await buildPlaygroundGraph({
-    tenantId,
-    agentId,
-    threadId,
-    base,
-    deps: params.deps,
-    overrides: params.overrides,
-    turnId,
-    onModelRetry: ({ attempt }) =>
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "warn",
-        status: "ok",
-        detail: { retriedEmptyResponse: attempt },
-      }),
-  });
+  const { graph, callbacks, loaded, tools, traceLabels } =
+    await buildPlaygroundGraph({
+      tenantId,
+      agentId,
+      threadId,
+      base,
+      deps: params.deps,
+      overrides: params.overrides,
+      turnId,
+      onModelRetry: ({ attempt }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          detail: { retriedEmptyResponse: attempt },
+        }),
+    });
 
   // Give the human message an explicit id when we have media to link to it (so reopening the
   // session can re-attach the recorded audio / uploaded file to this exact turn).
@@ -447,7 +448,10 @@ export async function runPlaygroundTurn(
             // real turn does in runLoadedTurn.
             callbacks: [
               ...callbacks,
-              new ToolFlowLogger(flow, { logValues: loaded.logToolValues }),
+              new ToolFlowLogger(flow, {
+                logValues: loaded.logToolValues,
+                tools,
+              }),
             ],
           },
         ),
@@ -585,7 +589,7 @@ export async function runPlaygroundFollowup(
     threadId,
     base,
   };
-  const { graph, callbacks, traceLabels } = await buildPlaygroundGraph({
+  const { graph, callbacks, tools, traceLabels } = await buildPlaygroundGraph({
     tenantId,
     agentId,
     threadId,
@@ -636,6 +640,7 @@ export async function runPlaygroundFollowup(
           ...callbacks,
           new ToolFlowLogger(flow, {
             logValues: readObservabilityConfig(settings).logToolValues,
+            tools,
           }),
         ],
       },

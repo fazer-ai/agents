@@ -196,6 +196,34 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     );
   });
 
+  // A result is authored end to end by whatever answered the call, so no key in it has a declaration
+  // behind it and none is ever named.
+  test("a tool result never contributes key names, only its size", async () => {
+    const flow = flowCtx();
+    const logger = new ToolFlowLogger(flow, { tools: [] });
+    logger.handleToolStart(
+      {} as never,
+      "{}",
+      "run-obj",
+      undefined,
+      undefined,
+      undefined,
+      "probe",
+    );
+    // The ToolMessage-like shape the callback receives, with a structured content — which is where a
+    // provider's own keys would arrive.
+    logger.handleToolEnd(
+      { content: { cpf: "12345678900", nome: "Maria Souza" } },
+      "run-obj",
+    );
+    const rows = await pollToolRows(flow.turnId, 1);
+    const detail = rows[0]?.detail as Record<string, unknown> | null;
+    expect(JSON.stringify(detail)).not.toContain("Maria");
+    expect(JSON.stringify(detail)).not.toContain("12345678900");
+    expect(JSON.stringify(detail)).not.toContain("cpf");
+    expect(detail?.output).toBe("object(2 keys)");
+  });
+
   test("e2e through the graph: one warn line AND the model sees the exact friendly string", async () => {
     const MSG = "The payment provider rejected the request (HTTP 503).";
     const probe = failableTool(async () => toolFailure(MSG), {
@@ -288,7 +316,10 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
   // whose credential rides in the query (a presigned link — `redactSecretsDeep` keys off names like
   // `api_key`, not off `X-Amz-Signature`), and a caption, which is text written for the customer.
   describe("tool args reaching storage", () => {
-    async function argsLoggedFor(args: Record<string, unknown>) {
+    async function argsLoggedFor(
+      args: Record<string, unknown>,
+      opts: { logValues?: boolean } = {},
+    ) {
       const probe = failableTool(async () => "ok", {
         name: "probe_image",
         description: "probe",
@@ -309,7 +340,9 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
         { messages: [new HumanMessage("oi")] },
         {
           configurable: { thread_id: `tfl-args-${crypto.randomUUID()}` },
-          callbacks: [new ToolFlowLogger(flow)],
+          // Same as production: the logger gets the toolset, which is where the declared parameter
+          // names come from. Without it no key is ever named (issue #78, round 1).
+          callbacks: [new ToolFlowLogger(flow, { ...opts, tools: [probe] })],
         },
       );
       const rows = await pollToolRows(flow.turnId, 1);
@@ -372,6 +405,31 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       });
       expect(logged?.url).toMatch(/^string\(\d+\)$/);
       expect(JSON.stringify(logged)).not.toContain("segredo-em-voo");
+    });
+
+    // A key the model invented (a free-form record parameter, or any provider-authored result) has no
+    // declaration behind it, so it is counted rather than logged. The identifier-looking shortcut this
+    // replaced would have logged `Maria` verbatim.
+    test("a key that no schema declared is counted, not named", async () => {
+      const logged = await argsLoggedFor({
+        url: "https://cdn.loja.com.br/x.png",
+        Maria: "cliente vip",
+      });
+      expect(logged).not.toHaveProperty("Maria");
+      expect(JSON.stringify(logged)).not.toContain("Maria");
+      expect(logged?.["[unnamed keys]"]).toBe(1);
+    });
+
+    // The escape hatch (agent.settings.observability.logToolValues). An operator who owns the data
+    // governance of their instance can trade the column's promise for the answer to "which record did
+    // it look up"; the default is the promise.
+    test("with the switch on, the values are stored as sent", async () => {
+      const logged = await argsLoggedFor(
+        { url: "https://cdn.loja.com.br/x.png", caption: "Oi Maria" },
+        { logValues: true },
+      );
+      expect(logged?.url).toBe("https://cdn.loja.com.br/x.png");
+      expect(logged?.caption).toBe("Oi Maria");
     });
 
     test("a caption never reaches storage at all", async () => {

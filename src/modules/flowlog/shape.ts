@@ -23,20 +23,26 @@
 // `caption` key dropped by name. Both were special cases of "the value is model-written text", and a
 // shape covers them without an ever-growing list of key names to remember.
 //
-// KEYS are kept, because they come from the tool's schema rather than from the model — with one
-// exception that does not: an object parameter typed as a free-form record (`z.record(...)`) lets the
-// model choose the keys too, so a key can carry data. A key is kept only while it LOOKS like a schema
-// field (an identifier-ish token); anything else is counted, not named.
-
-const MAX_DEPTH = 4;
-
-// An identifier as a schema would spell it: `cpf`, `due_date`, `orderId`, `X-Custom-Header`. A key
-// carrying data ("Maria Souza", "12345678900", a sentence) does not match, and is counted instead.
-const SCHEMA_KEY = /^[A-Za-z_][A-Za-z0-9_.-]{0,39}$/;
+// KEYS are named only where their provenance is KNOWN: the top level of a tool's arguments, matched
+// against the parameter names that tool actually declared. Nothing else is named.
+//
+// The obvious shortcut — keeping keys that LOOK like schema fields — does not hold. `{ Maria: … }`
+// and a UUID starting with a letter both look like identifiers, an object parameter typed as a
+// free-form record (`z.record(...)`, which is what every HTTP tool with an object parameter uses)
+// lets the model choose its keys, and a tool RESULT is authored end to end by whatever answered the
+// call. A guarantee that rests on the shape of a string is not a guarantee, so keys are named from
+// the declaration or not at all.
 
 const UNNAMED_KEYS = "[unnamed keys]";
 
-export function describeShape(value: unknown, depth = 0): unknown {
+// The declared parameter names of a tool, or null when they are unknown (an unregistered tool, a
+// schema that is not an object). Only these are ever named.
+export type DeclaredKeys = ReadonlySet<string> | null;
+
+export function describeShape(
+  value: unknown,
+  declared: DeclaredKeys = null,
+): unknown {
   if (value === null) return "null";
   if (typeof value === "string") return `string(${value.length})`;
   if (typeof value === "number") return "number";
@@ -48,15 +54,17 @@ export function describeShape(value: unknown, depth = 0): unknown {
   }
   if (typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>);
-    if (depth >= MAX_DEPTH) return `object(${entries.length} keys)`;
+    // NOTE: `declared` is only ever supplied for the top level of an arguments object, so nesting
+    // stops here: a nested object reports how many keys it had, and none of their names.
+    if (declared === null) return `object(${entries.length} keys)`;
     const out: Record<string, unknown> = {};
     let unnamed = 0;
     for (const [k, v] of entries) {
-      if (!SCHEMA_KEY.test(k)) {
+      if (!declared.has(k)) {
         unnamed += 1;
         continue;
       }
-      out[k] = describeShape(v, depth + 1);
+      out[k] = describeShape(v);
     }
     if (unnamed > 0) out[UNNAMED_KEYS] = unnamed;
     return out;

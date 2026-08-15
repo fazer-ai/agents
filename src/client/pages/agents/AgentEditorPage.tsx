@@ -67,6 +67,7 @@ import {
   type ChannelRedirectConfig,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
+import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import {
   GUARDRAILS_DEFAULTS,
@@ -273,7 +274,7 @@ function readBehaviorState(a: Agent) {
   const li = (s.limits ?? {}) as Record<string, unknown>;
   const ac = (s.attributeContext ?? {}) as Record<string, unknown>;
   const si = (s.sendImage ?? {}) as Record<string, unknown>;
-  const ob = (s.observability ?? {}) as Record<string, unknown>;
+
   // NOTE: Attribute keys per scope: plain string lists (the runtime reader trims/dedups/caps them).
   const attrKeys = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : [];
@@ -361,7 +362,11 @@ function readBehaviorState(a: Agent) {
       task: attrKeys(ac.task),
     },
     sendImage: { allowedHosts: attrKeys(si.allowedHosts).join("\n") },
-    observability: { logToolValues: ob.logToolValues === true },
+    // NOTE: through the SAME reader the runtime uses, not a hand-rolled check: a bag that came from
+    // REST or an import can carry the string "true", which the runtime honors — reading it stricter
+    // here would show the switch off while values were being logged, and would then persist that lie
+    // on the next save.
+    observability: readObservabilityConfig(s),
   };
 }
 

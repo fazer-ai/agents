@@ -368,6 +368,7 @@ export async function runLoadedTurn(
   // Logs each tool call (name/status/duration) under this turn's flow group.
   const toolLogger = new ToolFlowLogger(flow, {
     logValues: loaded.logToolValues,
+    tools,
   });
 
   // Guardrails (input/output moderation): build the guardrails agent's model once (its OWN

@@ -1,4 +1,5 @@
 import basePrisma from "@/api/lib/prisma";
+import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import {
@@ -476,8 +477,10 @@ async function buildToolPatch(
   if (args.body !== undefined) patch.body = args.body;
   if (args.enabled !== undefined) patch.enabled = args.enabled;
   if (args.risk_tier !== undefined) patch.riskTier = args.risk_tier;
+  // Normalized HERE and not only in the service: this patch is also what a dry run shows as the
+  // preview, and a preview that echoes the raw argument promises a shape the apply would not write.
   if (args.expected_statuses !== undefined)
-    patch.expectedStatuses = args.expected_statuses;
+    patch.expectedStatuses = normalizeExpectedStatuses(args.expected_statuses);
   if (args.ack_enabled !== undefined) patch.ackEnabled = args.ack_enabled;
   if (args.ack_message !== undefined) patch.ackMessage = args.ack_message;
   if (args.credential_ref !== undefined) {

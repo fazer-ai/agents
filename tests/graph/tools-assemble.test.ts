@@ -131,6 +131,7 @@ describe("buildHttpTools — credentialParamName propagation", () => {
           allowedHosts: ["8.8.8.8"],
           headers: {},
           inputSchema: {},
+          expectedStatuses: [],
           credentialRef: "vault:1",
           credentialKind: "header",
           credentialParamName: "X-Token",

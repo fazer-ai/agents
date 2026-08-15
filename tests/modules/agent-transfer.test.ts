@@ -437,6 +437,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
         urlTemplate: "https://api.example.com/o/{{id}}",
         allowedHosts: ["api.example.com"],
         credentialRef: `vault:${key.id}`,
+        // A lookup that answers 404 for "no such order" is the canonical case of issue #59, and it
+        // is exactly the sort of tool an operator moves between instances.
+        expectedStatuses: [404],
       },
     });
     const mcp = await suDb.mcpServerConnection.create({
@@ -574,6 +577,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       where: { tenantId: dstTenant, name: "lookup_order" },
     });
     expect(td?.label).toBe("Buscar pedido");
+    // Review finding, round 1: a declaration dropped in transfer makes the destination resume
+    // alerting on a status the operator had already ruled a result, with nothing to point at.
+    expect(td?.expectedStatuses).toEqual([404]);
     // credential absent on the destination ⇒ re-created as a PENDING entry with the ref kept wired
     // (the operator only fills the secret), not dropped.
     expect(td?.credentialRef).toMatch(/^vault:/);

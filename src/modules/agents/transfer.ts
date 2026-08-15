@@ -17,6 +17,7 @@ import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError, NotFoundError } from "@/lib/errors";
 import {
   hasSafeStdioCommandChars,
@@ -94,6 +95,9 @@ const exportedHttpToolSchema = z.object({
   ackEnabled: z.boolean(),
   ackMessage: z.string().nullable().optional(),
   credentialRef: z.string().nullable().optional(),
+  // Optional so bundles exported before issue #59 still import (defaults to [], which is today's
+  // "every non-2xx is a failure").
+  expectedStatuses: z.array(z.number()).optional(),
 });
 const exportedMcpServerSchema = z.object({
   name: z.string(),
@@ -580,6 +584,7 @@ export async function exportAgent(
           ackEnabled: r.ackEnabled,
           ackMessage: r.ackMessage,
           credentialRef: r.credentialRef,
+          expectedStatuses: r.expectedStatuses,
         })),
         mcpServers: mcpRows.map((r) => ({
           name: r.name,
@@ -1084,6 +1089,9 @@ async function createMissingComponents(
         query: shapes.query as Prisma.InputJsonValue,
         body: shapes.body as Prisma.InputJsonValue,
         riskTier: tdef.riskTier,
+        // Normalized like the shapes above, and for the same reason: the import writes straight to
+        // the DB, so a hand-edited bundle would otherwise store a list the service would refuse.
+        expectedStatuses: normalizeExpectedStatuses(tdef.expectedStatuses),
         ackEnabled: tdef.ackEnabled,
         ackMessage: tdef.ackMessage ?? null,
         credentialRef: resolveCredName(tdef.credentialRef),

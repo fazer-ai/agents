@@ -216,7 +216,8 @@ export function useKnowledgeManager(opts: {
   useTenantEvents({
     enabled: docsModal.isOpen,
     onKnowledgeDocument: (event) => {
-      if (event.knowledgeBaseId !== docsModal.payload?.id) return;
+      const baseId = docsModal.payload?.id;
+      if (event.knowledgeBaseId !== baseId) return;
       setDocs((prev) =>
         prev
           ? prev.map((d) =>
@@ -224,8 +225,33 @@ export function useKnowledgeManager(opts: {
             )
           : null,
       );
+      // A row coming back UNINDEXED is the worker reporting it refused to index, and the only thing
+      // that makes it refuse is the workspace's embedding configuration — which another tab or
+      // another administrator can change while this modal stays open. The event carries no reason
+      // (the reason belongs to the configuration, not to the row), so the block has to be asked for
+      // again instead of replayed from the snapshot the list arrived with.
+      if (event.status === "UNINDEXED") void recheckBlock(baseId);
     },
   });
+
+  // One re-read at a time: a bulk index that hits the block emits one event per document, and each
+  // would otherwise start its own request for an answer that is identical for all of them.
+  const blockRecheckInFlight = useRef(false);
+
+  // Re-reads ONLY the block. Adopting the list's rows here would clobber an optimistic PROCESSING
+  // mid-flight; the rows are what the event stream is already keeping current.
+  async function recheckBlock(baseId: string) {
+    if (blockRecheckInFlight.current) return;
+    blockRecheckInFlight.current = true;
+    try {
+      const { data } = await api.api.v1.knowledge
+        .bases({ id: baseId })
+        .documents.get();
+      if (data) setEmbeddingBlock(data.embeddingBlock ?? null);
+    } finally {
+      blockRecheckInFlight.current = false;
+    }
+  }
 
   useOnModalOpen(createModal, () => {
     setName("");
@@ -630,12 +656,14 @@ export function useKnowledgeManager(opts: {
       if (err) throw err;
       // A missing prerequisite (embedding not configured, or its credential not filled yet) queues
       // nothing and leaves the docs UNINDEXED. Surface the reason + the fix instead of faking progress.
+      // The reindex answer IS a fresh read of the block, and it may be newer than the one the modal
+      // opened with (a credential deleted, or filled, meanwhile). Adopt it in BOTH directions: with
+      // a block, or the toast fades and the badges go back to a neutral "Not indexed" the server
+      // just contradicted; without one, or the snapshot goes on explaining a block that the queued
+      // jobs just disproved.
+      setEmbeddingBlock(data?.blocked ? { reason: data.blocked.reason } : null);
       if (data?.blocked) {
         revert();
-        // The reindex answer IS a fresh read of the block, and it may be newer than the one the
-        // modal opened with (a credential deleted meanwhile). Adopt it, or the toast fades and the
-        // badges go back to a neutral "Not indexed" the server just contradicted.
-        setEmbeddingBlock({ reason: data.blocked.reason });
         showToast(
           data.blocked.reason === "embedding_not_configured"
             ? t(

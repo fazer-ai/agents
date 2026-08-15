@@ -181,6 +181,7 @@
     "editError": "Could not save the edit.",
     "editTitle": "Title",
     "edited": "Suggestion updated.",
+    "editGone": "Someone else already reviewed this suggestion.",
     "error": "Could not load the approval queue.",
     "fromConversation": "From the conversation: {{label}}",
     "fromPlayground": "From the playground of {{name}}",

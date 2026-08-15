@@ -34,6 +34,9 @@ interface PatchCall {
 
 const patchCalls: PatchCall[] = [];
 let approvalsPayload: Record<string, unknown>[] = [];
+// What the PATCH reports back. The endpoint answers "not-pending" INSIDE a 200 when someone else
+// already approved or rejected the item, so the result is data, not an error.
+let patchResult = "updated";
 
 mock.module("@/client/lib/api", () => ({
   api: {
@@ -46,7 +49,7 @@ mock.module("@/client/lib/api", () => ({
               reject: { post: async () => ({ data: {}, error: null }) },
               patch: async (body: Record<string, unknown>) => {
                 patchCalls.push({ id, body });
-                return { data: { result: "updated" }, error: null };
+                return { data: { result: patchResult }, error: null };
               },
             }),
             {
@@ -124,6 +127,7 @@ function renderQueue() {
 describe("KnowledgeApprovals — reviewing before approving", () => {
   beforeEach(() => {
     patchCalls.length = 0;
+    patchResult = "updated";
     seed();
   });
 
@@ -183,6 +187,39 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
     await screen.findByText(HEDGED);
     expect(patchCalls.length).toBe(0);
+  });
+
+  // Review finding: the endpoint reports a lost race inside a 200. Checking only `error` left the
+  // card marked EDITED and reported success over a revision that was never stored.
+  test("a suggestion reviewed elsewhere meanwhile leaves the queue instead of claiming EDITED", async () => {
+    patchResult = "not-pending";
+    renderQueue();
+    await screen.findByText(HEDGED);
+    fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+    const box = await screen.findByLabelText(/content/i);
+    fireEvent.change(box, { target: { value: CLEAN } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(screen.queryByText(CLEAN)).toBeNull());
+    expect(screen.queryByText("Edited")).toBeNull();
+    expect(screen.queryByText(HEDGED)).toBeNull();
+  });
+
+  // Review finding: the draft is single, so a second Edit would replace it and the first card's
+  // unsaved rewrite would vanish with no warning.
+  test("with an editor open, the other cards cannot start one", async () => {
+    approvalsPayload = [
+      { ...approvalsPayload[0], id: "7" },
+      { ...approvalsPayload[0], id: "8", proposedTitle: "Outro" },
+    ];
+    renderQueue();
+    await screen.findByText("Outro");
+    const editButtons = screen.getAllByRole("button", { name: /edit/i });
+    expect(editButtons.length).toBe(2);
+    fireEvent.click(editButtons[0] as HTMLElement);
+    const stillOffered = screen
+      .getAllByRole("button", { name: /edit/i })
+      .filter((b) => !(b as HTMLButtonElement).disabled);
+    expect(stillOffered.length).toBe(0);
   });
 
   // Approve is the destructive step here: it copies the text verbatim into the base. It must act on

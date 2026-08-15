@@ -181,6 +181,7 @@
     "editError": "Não foi possível salvar a edição.",
     "editTitle": "Título",
     "edited": "Sugestão atualizada.",
+    "editGone": "Outra pessoa já revisou esta sugestão.",
     "error": "Não foi possível carregar a fila de aprovação.",
     "fromConversation": "Da conversa: {{label}}",
     "fromPlayground": "Do playground de {{name}}",

@@ -120,12 +120,31 @@ export function KnowledgeApprovals({
     }
     setBusyId(a.id);
     try {
-      const { error: err } = await api.api.v1.knowledge
+      const { data, error: err } = await api.api.v1.knowledge
         .approvals({ id: a.id })
         .patch(patch);
       if (err) {
         showToast(
           t("approvals.editError", "Could not save the edit."),
+          "error",
+        );
+        return;
+      }
+      // The endpoint reports a lost race INSIDE a 200: another reviewer approved or rejected this
+      // item while the editor was open, so the revision was never stored. Checking only `error`
+      // would leave the card claiming EDITED over text that no longer exists in the queue.
+      if (data?.result === "not-pending") {
+        setApprovals((prev) => {
+          const next = prev.filter((it) => it.id !== a.id);
+          onCountChange?.(next.length);
+          return next;
+        });
+        setEditingId(null);
+        showToast(
+          t(
+            "approvals.editGone",
+            "Someone else already reviewed this suggestion.",
+          ),
           "error",
         );
         return;
@@ -304,10 +323,13 @@ export function KnowledgeApprovals({
                     <X className="h-4 w-4" aria-hidden="true" />
                     {t("approvals.reject", "Reject")}
                   </Button>
+                  {/* Disabled while ANOTHER card is being revised: the draft is single, so a
+                      second Edit would replace it and the first card's unsaved rewrite would
+                      vanish with no warning. */}
                   <Button
                     variant="secondary"
                     size="sm"
-                    disabled={busyId === a.id}
+                    disabled={busyId === a.id || editingId !== null}
                     onClick={() => startEdit(a)}
                   >
                     <Pencil className="h-4 w-4" aria-hidden="true" />

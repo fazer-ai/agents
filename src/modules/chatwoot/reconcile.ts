@@ -27,6 +27,27 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
+// What the reconcile did, for a caller that has to act on it. The nudge only needs the write to have
+// happened; the console needs both halves of this:
+//
+//   * `state` is the row AFTER the call, so an optimistic broadcast announces what is stored rather
+//     than what the click intended — the two differ whenever the snapshot lost, or whenever Chatwoot
+//     answered with something other than what was asked for;
+//   * `outrankedByVersion` says WHY a field did not land. Losing to a stored VERSION is evidence that
+//     something strictly newer is in the row, and the caller must leave it alone. Losing to the coarse
+//     activity comparison is not evidence of anything (see the fence note below), so a caller that
+//     just wrote to Chatwoot and knows what it asked for may still apply its own fields.
+export interface ReconcileResult {
+  state: {
+    status: string;
+    assigneeId: number | null;
+    assigneeType: string | null;
+    assigneeName: string | null;
+  } | null;
+  applied: boolean;
+  outrankedByVersion: boolean;
+}
+
 export interface ReconcileFromLiveParams {
   tenantId: bigint;
   instanceId: bigint;
@@ -38,8 +59,13 @@ export interface ReconcileFromLiveParams {
 
 export async function reconcileMirrorFromLive(
   params: ReconcileFromLiveParams,
-): Promise<void> {
+): Promise<ReconcileResult> {
   const { tenantId, instanceId, conversationId, live, base } = params;
+  const result: ReconcileResult = {
+    state: null,
+    applied: false,
+    outrankedByVersion: false,
+  };
   // NOTE: Serialize with mirrorChatwootEvent: same per-conversation withEntityLock, and a
   // freshness guard — a webhook committed between our GET and this write is NEWER than the
   // probe snapshot, so the reconcile must not restore stale status/assignee over it. The
@@ -70,6 +96,14 @@ export async function reconcileMirrorFromLive(
           },
         });
         if (!current) return;
+        // NOTE: The row as it stands BEFORE any write, so a caller still gets an answer on the paths
+        // that write nothing (already in agreement, or outranked).
+        result.state = {
+          status: current.status,
+          assigneeId: current.assigneeId,
+          assigneeType: current.assigneeType,
+          assigneeName: current.assigneeName,
+        };
         // Second-granular like the mirror's monotonic guard (last_activity_at is epoch
         // seconds); a strict > on raw ms would false-skip same-second states.
         const sec = (d: Date) => Math.floor(d.getTime() / 1000);
@@ -99,6 +133,13 @@ export async function reconcileMirrorFromLive(
             : !activityStale;
         const statusOrdered = orderedBy(current.chatwootStatusAt);
         const assigneeOrdered = orderedBy(current.chatwootAssigneeAt);
+        // NOTE: A field the snapshot LOST while a version could rank it — the row holds a strictly
+        // newer write, which a caller must not paper over.
+        result.outrankedByVersion =
+          liveVersion !== null &&
+          ((!statusOrdered && current.chatwootStatusAt !== null) ||
+            (!assigneeOrdered && current.chatwootAssigneeAt !== null));
+        result.applied = statusOrdered && assigneeOrdered;
         // NOTE: Only what actually differs. The probe runs on every proactive send, and the
         // common outcome is "nothing changed" — writing the same values back would be two
         // updates per follow-up and would advance the row's `updatedAt` for nothing.
@@ -136,7 +177,18 @@ export async function reconcileMirrorFromLive(
         };
         if (Object.keys(data).length === 0) return;
         await db.conversation.update({ where, data });
+        result.state = {
+          status: statusOrdered ? live.status : current.status,
+          assigneeId: assigneeOrdered ? live.assigneeId : current.assigneeId,
+          assigneeType: assigneeOrdered
+            ? live.assigneeType
+            : current.assigneeType,
+          assigneeName: assigneeOrdered
+            ? live.assigneeName
+            : current.assigneeName,
+        };
       },
     ),
   );
+  return result;
 }

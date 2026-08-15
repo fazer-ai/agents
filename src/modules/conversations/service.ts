@@ -594,6 +594,16 @@ async function updateMirror(
   );
 }
 
+// The conversation state as it stands after a console write, when the live read decided it. null =
+// the read did not decide (it failed, carried no version, or was rejected by activity alone), so the
+// caller's own intent is what was written and what it should announce.
+interface ConsoleWriteState {
+  status: string;
+  assigneeId: number | null;
+  assigneeType: string | null;
+  assigneeName: string | null;
+}
+
 // Writes the mirror after a console action, claiming the version Chatwoot produced for it.
 //
 // The two write endpoints do not serialize the conversation's `updated_at` (assignments renders the
@@ -622,7 +632,7 @@ async function mirrorConsoleWrite(
     assigneeId?: number | null;
     assigneeType?: string | null;
   },
-): Promise<void> {
+): Promise<ConsoleWriteState | null> {
   const tenantId = requireTenant(ctx);
   try {
     const live = parseLiveConversation(
@@ -633,19 +643,30 @@ async function mirrorConsoleWrite(
     // changed. The fallback writes exactly the fields this action meant to change, which is what the
     // console did before any of this.
     if (live && live.updatedAt !== null) {
-      await reconcileMirrorFromLive({
+      const outcome = await reconcileMirrorFromLive({
         tenantId,
         instanceId: conv.chatwootInstanceId,
         conversationId: conv.chatwootConversationId,
         live,
         base,
       });
-      return;
+      // Applied, or beaten by a stored version: either way the row now holds the newest thing known,
+      // and the caller must announce THAT rather than what the click asked for.
+      if (outcome.applied || outcome.outrankedByVersion) return outcome.state;
+      // Nothing landed and no version decided it — the coarse activity comparison rejected a
+      // conversation this process just wrote to Chatwoot, which is not evidence of anything newer.
+      // Falling through leaves the operator's action absent from the mirror, and the runtime's
+      // ownership recheck reads this row.
+      logger.warn(
+        "conversations: live read after a console write was rejected by activity alone (conv=%s) — writing unversioned",
+        String(conv.chatwootConversationId),
+      );
+    } else {
+      logger.warn(
+        "conversations: live read after a console write carried no usable version (conv=%s) — writing unversioned",
+        String(conv.chatwootConversationId),
+      );
     }
-    logger.warn(
-      "conversations: live read after a console write carried no usable version (conv=%s) — writing unversioned",
-      String(conv.chatwootConversationId),
-    );
   } catch (err) {
     logger.warn(
       { err, conversationId: String(conv.chatwootConversationId) },
@@ -653,6 +674,7 @@ async function mirrorConsoleWrite(
     );
   }
   await updateMirror(ctx, base, id, fallback);
+  return null;
 }
 
 // Metadata only — fast scoped DB read, NO network. The UI renders the shell from this immediately.
@@ -1170,17 +1192,20 @@ export async function handoffConversation(
   await client.toggleStatus(conv.chatwootConversationId, "open", {
     asAdmin: true,
   });
-  await mirrorConsoleWrite(ctx, base, id, conv, client, {
+  const state = await mirrorConsoleWrite(ctx, base, id, conv, client, {
     status: "open",
     assigneeType: "User",
     ...(assigneeId !== null ? { assigneeId } : {}),
   });
-  // Optimistic realtime feedback (the inbound webhook reconciles canonically).
+  // Optimistic realtime feedback (the inbound webhook reconciles canonically). It announces the row
+  // as STORED, not as asked for: the two differ when the live read came back with something else
+  // (an assignment Chatwoot resolved differently, or a webhook that outranked this write), and a
+  // publication of the intent would arrive last and leave the console showing a state nobody holds.
   broadcastConversationEvent(tenantId, {
     conversationId: String(id),
-    status: "open",
-    assigneeId: assigneeId ?? conv.assigneeId,
-    assigneeType: "User",
+    status: state?.status ?? "open",
+    assigneeId: state ? state.assigneeId : (assigneeId ?? conv.assigneeId),
+    assigneeType: state ? state.assigneeType : "User",
     lastEventAt: conv.lastEventAt ? conv.lastEventAt.toISOString() : null,
   });
 }
@@ -1209,16 +1234,16 @@ export async function returnConversationToAgent(
   await client.toggleStatus(conv.chatwootConversationId, "pending", {
     asAdmin: true,
   });
-  await mirrorConsoleWrite(ctx, base, id, conv, client, {
+  const state = await mirrorConsoleWrite(ctx, base, id, conv, client, {
     status: "pending",
     assigneeId: null,
     assigneeType: null,
   });
   broadcastConversationEvent(tenantId, {
     conversationId: String(id),
-    status: "pending",
-    assigneeId: null,
-    assigneeType: null,
+    status: state?.status ?? "pending",
+    assigneeId: state ? state.assigneeId : null,
+    assigneeType: state ? state.assigneeType : null,
     lastEventAt: conv.lastEventAt ? conv.lastEventAt.toISOString() : null,
   });
 }
@@ -1240,12 +1265,14 @@ export async function setConversationStatus(
   await client.toggleStatus(conv.chatwootConversationId, status, {
     asAdmin: true,
   });
-  await mirrorConsoleWrite(ctx, base, id, conv, client, { status });
+  const state = await mirrorConsoleWrite(ctx, base, id, conv, client, {
+    status,
+  });
   broadcastConversationEvent(tenantId, {
     conversationId: String(id),
-    status,
-    assigneeId: conv.assigneeId,
-    assigneeType: conv.assigneeType,
+    status: state?.status ?? status,
+    assigneeId: state ? state.assigneeId : conv.assigneeId,
+    assigneeType: state ? state.assigneeType : conv.assigneeType,
     lastEventAt: conv.lastEventAt ? conv.lastEventAt.toISOString() : null,
   });
 }

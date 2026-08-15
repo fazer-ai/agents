@@ -81,7 +81,7 @@ async function readRow(conversationId: number) {
   });
 }
 
-async function apply(
+async function applyFor(
   conversationId: number,
   live: {
     status: string;
@@ -90,8 +90,8 @@ async function apply(
     lastActivitySec?: number;
     updatedAt: number | null;
   },
-): Promise<void> {
-  await reconcileMirrorFromLive({
+) {
+  return reconcileMirrorFromLive({
     tenantId,
     instanceId,
     conversationId,
@@ -131,7 +131,7 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
 
   test("applies the snapshot and stamps both marks with its version", async () => {
     const id = await seedRow();
-    await apply(id, {
+    await applyFor(id, {
       status: "open",
       assigneeType: "User",
       assigneeId: 7,
@@ -148,7 +148,7 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
   test("a webhook that landed after the read wins: nothing is applied over it", async () => {
     // The stored row moved past the snapshot's activity time, so this snapshot is the older truth.
     const id = await seedRow({ lastEventAt: new Date((T + 30) * 1000) });
-    await apply(id, {
+    await applyFor(id, {
       status: "resolved",
       lastActivitySec: T,
       updatedAt: T + 50,
@@ -168,7 +168,7 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       chatwootStatusAt: T,
       chatwootAssigneeAt: T,
     });
-    await apply(id, {
+    await applyFor(id, {
       status: "resolved",
       lastActivitySec: T,
       updatedAt: T + 50,
@@ -178,13 +178,69 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     expect(row.chatwootStatusAt).toBe(T + 50);
   });
 
+  // The verdict a caller acts on. Losing to a stored VERSION is evidence of something newer in the
+  // row; losing to the coarse activity comparison is not evidence of anything, and a caller that just
+  // wrote to Chatwoot needs to tell the two apart.
+  test("reports what it did: applied, and the row as it now stands", async () => {
+    const id = await seedRow();
+    const out = await applyFor(id, {
+      status: "open",
+      assigneeType: "User",
+      assigneeId: 7,
+      updatedAt: T + 1,
+    });
+    expect(out.applied).toBe(true);
+    expect(out.outrankedByVersion).toBe(false);
+    expect(out.state).toMatchObject({
+      status: "open",
+      assigneeType: "User",
+      assigneeId: 7,
+    });
+  });
+
+  test("a loss to a stored version is reported as such, with the row that won", async () => {
+    const id = await seedRow({
+      status: "resolved",
+      chatwootStatusAt: T + 9,
+      chatwootAssigneeAt: T + 9,
+    });
+    const out = await applyFor(id, { status: "pending", updatedAt: T + 5 });
+    expect(out.applied).toBe(false);
+    expect(out.outrankedByVersion).toBe(true);
+    expect(out.state).toMatchObject({ status: "resolved" });
+  });
+
+  test("a loss to the activity comparison alone is NOT reported as outranked", async () => {
+    // No marks: nothing can be ordered by version, and `lastEventAt` may have been synthesized from
+    // receipt time. The caller is told the write did not land and that no version decided it.
+    const id = await seedRow({ lastEventAt: new Date((T + 30) * 1000) });
+    const out = await applyFor(id, {
+      status: "resolved",
+      lastActivitySec: T,
+      updatedAt: T + 50,
+    });
+    expect(out.applied).toBe(false);
+    expect(out.outrankedByVersion).toBe(false);
+  });
+
+  test("nothing to write because the row already agrees counts as applied", async () => {
+    const id = await seedRow({
+      status: "open",
+      chatwootStatusAt: T,
+      chatwootAssigneeAt: T,
+    });
+    const out = await applyFor(id, { status: "open", updatedAt: T + 1 });
+    expect(out.applied).toBe(true);
+    expect(out.state).toMatchObject({ status: "open" });
+  });
+
   test("a snapshot older than the mark that orders a field does not write that field", async () => {
     const id = await seedRow({
       status: "resolved",
       chatwootStatusAt: T + 9,
       chatwootAssigneeAt: T + 9,
     });
-    await apply(id, { status: "pending", updatedAt: T + 5 });
+    await applyFor(id, { status: "pending", updatedAt: T + 5 });
     const row = await readRow(id);
     expect(row.status).toBe("resolved");
     expect(row.chatwootStatusAt).toBe(T + 9);
@@ -193,7 +249,7 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
   test("a mark never walks backwards, even when the field is written", async () => {
     const id = await seedRow({ status: "pending", chatwootStatusAt: T + 5 });
     // Equal version: new enough to be applied, not new enough to move the mark.
-    await apply(id, { status: "open", updatedAt: T + 5 });
+    await applyFor(id, { status: "open", updatedAt: T + 5 });
     const row = await readRow(id);
     expect(row.status).toBe("open");
     expect(row.chatwootStatusAt).toBe(T + 5);
@@ -208,7 +264,7 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       chatwootAssigneeAt: T + 1,
     });
     const before = await readRow(id);
-    await apply(id, {
+    await applyFor(id, {
       status: "open",
       assigneeType: "User",
       assigneeId: 7,
@@ -220,7 +276,7 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
 
   test("a Chatwoot too old to send a version still applies, ordered by activity alone", async () => {
     const id = await seedRow();
-    await apply(id, { status: "resolved", updatedAt: null });
+    await applyFor(id, { status: "resolved", updatedAt: null });
     const row = await readRow(id);
     expect(row.status).toBe("resolved");
     expect(row.chatwootStatusAt).toBeNull();

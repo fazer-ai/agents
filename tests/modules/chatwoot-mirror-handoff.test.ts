@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { setPublisher } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
@@ -116,6 +117,14 @@ async function mirrored(convId: number) {
 }
 
 const HUMAN = { id: 3, name: "Atendente Humana" };
+
+// The realtime envelope, as the console's socket receives it.
+interface ServerEventLike {
+  type: string;
+  status?: string;
+  assigneeId?: number | null;
+  assigneeType?: string | null;
+}
 
 // The burst as delivered, in order. `t` is the burst's shared last_activity_at (the agent's message);
 // `u` is when each event was serialized. The tail carries the snapshot from BEFORE the status change,
@@ -1237,7 +1246,7 @@ describe.skipIf(!dbUp)(
         const T = 1_786_504_000;
         await mirror({
           event: "conversation_updated",
-          ...convPayload(44, {
+          ...convPayload(60, {
             status: "pending",
             lastActivityAt: T,
             updatedAt: T + 0.1,
@@ -1253,7 +1262,7 @@ describe.skipIf(!dbUp)(
         });
         await handoffConversation(
           opCtx(),
-          await rowIdOf(44),
+          await rowIdOf(60),
           HUMAN.id,
           { makeClient: stub.makeClient },
           appDb,
@@ -1261,13 +1270,13 @@ describe.skipIf(!dbUp)(
         expect(stub.calls).toContain("getConversation");
         await mirror({
           event: "conversation_updated",
-          ...convPayload(44, {
+          ...convPayload(60, {
             status: "pending",
             lastActivityAt: T,
             updatedAt: T + 0.3,
           }),
         });
-        const row = await mirrored(44);
+        const row = await mirrored(60);
         expect(row.assigneeType).toBe("User");
         expect(row.assigneeId).toBe(HUMAN.id);
         expect(row.status).toBe("open");
@@ -1277,7 +1286,7 @@ describe.skipIf(!dbUp)(
         const T = 1_786_505_000;
         await mirror({
           event: "conversation_updated",
-          ...convPayload(45, {
+          ...convPayload(61, {
             status: "open",
             lastActivityAt: T,
             updatedAt: T + 0.1,
@@ -1290,20 +1299,20 @@ describe.skipIf(!dbUp)(
         });
         await setConversationStatus(
           opCtx(),
-          await rowIdOf(45),
+          await rowIdOf(61),
           "resolved",
           { makeClient: stub.makeClient },
           appDb,
         );
         await mirror({
           event: "conversation_updated",
-          ...convPayload(45, {
+          ...convPayload(61, {
             status: "open",
             lastActivityAt: T,
             updatedAt: T + 0.3,
           }),
         });
-        expect((await mirrored(45)).status).toBe("resolved");
+        expect((await mirrored(61)).status).toBe("resolved");
       });
 
       // A snapshot with no version buys nothing and can cost: the reconcile applies the WHOLE snapshot,
@@ -1313,7 +1322,7 @@ describe.skipIf(!dbUp)(
         const T = 1_786_507_000;
         await mirror({
           event: "conversation_updated",
-          ...convPayload(47, {
+          ...convPayload(63, {
             status: "open",
             assignee: HUMAN,
             lastActivityAt: T,
@@ -1330,15 +1339,46 @@ describe.skipIf(!dbUp)(
         });
         await setConversationStatus(
           opCtx(),
-          await rowIdOf(47),
+          await rowIdOf(63),
           "resolved",
           { makeClient: stub.makeClient },
           appDb,
         );
-        const row = await mirrored(47);
+        const row = await mirrored(63);
         expect(row.status).toBe("resolved");
         expect(row.assigneeType).toBe("User");
         expect(row.assigneeId).toBe(HUMAN.id);
+      });
+
+      // A row with no marks cannot be ordered by version, so the coarse activity comparison decides —
+      // and `lastEventAt` may have been synthesized from receipt time, which makes it reject a
+      // snapshot that is actually newer. Treating that no-op as success left the operator's action
+      // absent from the mirror, and the runtime's ownership recheck reads this row.
+      test("a read rejected by activity alone still leaves the console's write applied", async () => {
+        const T = 1_786_508_000;
+        // Mirrored WITHOUT a version (a Chatwoot too old to send one), so the row keeps null marks
+        // and a lastEventAt this test then pushes ahead of the snapshot's activity time.
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(64, { status: "pending", lastActivityAt: T + 30 }),
+        });
+        const stub = stubClient({
+          status: "open",
+          assignee: HUMAN,
+          lastActivityAt: T,
+          updatedAt: T + 50,
+        });
+        await handoffConversation(
+          opCtx(),
+          await rowIdOf(64),
+          HUMAN.id,
+          { makeClient: stub.makeClient },
+          appDb,
+        );
+        const row = await mirrored(64);
+        expect(row.assigneeType).toBe("User");
+        expect(row.assigneeId).toBe(HUMAN.id);
+        expect(row.status).toBe("open");
       });
 
       // The version is an improvement on the write, not a precondition for it: when the extra read
@@ -1347,7 +1387,7 @@ describe.skipIf(!dbUp)(
         const T = 1_786_506_000;
         await mirror({
           event: "conversation_updated",
-          ...convPayload(46, {
+          ...convPayload(62, {
             status: "pending",
             lastActivityAt: T,
             updatedAt: T + 0.1,
@@ -1356,12 +1396,12 @@ describe.skipIf(!dbUp)(
         const stub = stubClient(null);
         await handoffConversation(
           opCtx(),
-          await rowIdOf(46),
+          await rowIdOf(62),
           HUMAN.id,
           { makeClient: stub.makeClient },
           appDb,
         );
-        const row = await mirrored(46);
+        const row = await mirrored(62);
         expect(row.assigneeType).toBe("User");
         expect(row.assigneeId).toBe(HUMAN.id);
         expect(row.status).toBe("open");
@@ -1397,6 +1437,56 @@ describe.skipIf(!dbUp)(
           }),
         );
         expect((await mirrored(43)).status).toBe("open");
+      });
+
+      // The console renders the click optimistically off this publish and only reconciles when the
+      // inbound webhook arrives, which may be seconds later or (on a conversation Chatwoot has
+      // nothing more to say about) never. So a publish of the INTENT after a write that did not land
+      // is the last word the operator gets, and it shows a state nobody holds.
+      test("the optimistic publish announces the row as stored, not as clicked", async () => {
+        const T = 1_786_509_000;
+        // A webhook already carried this conversation past the version our own write can claim: it
+        // was resolved and unassigned at T+90, and the GET after the handoff still answers with the
+        // older T+50 snapshot.
+        await mirror({
+          event: "conversation_resolved",
+          ...convPayload(66, {
+            status: "resolved",
+            lastActivityAt: T,
+            updatedAt: T + 90,
+          }),
+        });
+        const stub = stubClient({
+          status: "open",
+          assignee: HUMAN,
+          lastActivityAt: T,
+          updatedAt: T + 50,
+        });
+        const published: ServerEventLike[] = [];
+        setPublisher((_topic, data) => {
+          published.push(JSON.parse(data) as ServerEventLike);
+        });
+        try {
+          await handoffConversation(
+            opCtx(),
+            await rowIdOf(66),
+            HUMAN.id,
+            { makeClient: stub.makeClient },
+            appDb,
+          );
+        } finally {
+          setPublisher(() => undefined);
+        }
+        const event = published.find((e) => e.type === "conversation");
+        expect(event).toBeDefined();
+        expect(event?.status).toBe("resolved");
+        expect(event?.assigneeId).toBeNull();
+        expect(event?.assigneeType).toBeNull();
+        // And the row agrees with what was announced: the reconcile wrote nothing over the newer
+        // version, and the unversioned fallback did not run behind its back.
+        const row = await mirrored(66);
+        expect(row.status).toBe("resolved");
+        expect(row.assigneeId).toBeNull();
       });
     });
   },

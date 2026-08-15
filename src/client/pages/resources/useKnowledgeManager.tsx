@@ -265,14 +265,19 @@ export function useKnowledgeManager(opts: {
     return blockAnswerSeq.current;
   }
 
-  // Writes the block only if no NEWER answer has already arrived. Reports whether it did, so a
-  // caller carrying more than the block in the same response can discard all of it together.
-  function commitBlock(ticket: number, next: EmbeddingBlock): boolean {
-    if (ticket <= blockCommitted.current) return false;
+  // Writes the block only if no NEWER answer has already arrived.
+  function commitBlock(ticket: number, next: EmbeddingBlock) {
+    if (ticket <= blockCommitted.current) return;
     blockCommitted.current = ticket;
     setEmbeddingBlock(next);
-    return true;
   }
+
+  // Which documents modal a list response belongs to. Separate from the block's clock on purpose:
+  // the two arrive in one response but answer different questions. The rows are this base's, and
+  // only a newer OPENING makes them wrong; the block is the workspace's, and a dedicated read that
+  // is faster than the list makes it wrong. Judging the rows by the block's clock let a list
+  // response be refused outright, which left the modal on its skeleton with nothing to retry it.
+  const docsSession = useRef(0);
 
   // Trailing window rather than a suppress-while-in-flight guard: the scheduler awaits its claimed
   // jobs one after another, so a batch produces events that need not overlap a short request at
@@ -616,25 +621,26 @@ export function useKnowledgeManager(opts: {
     // modal now, possibly on a different base, and an old response landing into it would show the
     // documents and the block of a screen the operator already closed (docs/modals.md).
     blockCommitted.current = blockAnswerSeq.current;
+    const session = ++docsSession.current;
     const ticket = claimBlockAnswer();
     const { data } = await api.api.v1.knowledge
       .bases({ id: b.id })
       .documents.get();
-    // The rows travel with the block, so they live or die by the same clock.
-    if (data && commitBlock(ticket, data.embeddingBlock ?? null)) {
-      setDocs(data.documents);
-    }
+    if (!data || session !== docsSession.current) return;
+    setDocs(data.documents);
+    commitBlock(ticket, data.embeddingBlock ?? null);
   }
 
   // Refetch the open documents modal's list in place (after an edit, so the new title/status shows).
   async function reloadDocs(baseId: string) {
+    const session = docsSession.current;
     const ticket = claimBlockAnswer();
     const { data } = await api.api.v1.knowledge
       .bases({ id: baseId })
       .documents.get();
-    if (data && commitBlock(ticket, data.embeddingBlock ?? null)) {
-      setDocs(data.documents);
-    }
+    if (!data || session !== docsSession.current) return;
+    setDocs(data.documents);
+    commitBlock(ticket, data.embeddingBlock ?? null);
   }
 
   async function saveDocEdit() {

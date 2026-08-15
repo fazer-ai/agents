@@ -518,9 +518,10 @@ describe("knowledge documents modal — the embedding block is never stale", () 
   // the closed screen's block onto the open one.
   test("a response for a closed session does not land in the next one", async () => {
     docsQueue = [
-      // 1: the first session, blocked. Held open across the close.
+      // 1: the first session, blocked. Held open across the close. Its rows are named differently so
+      // the test can tell whose documents landed, not just whose block.
       {
-        documents: [doc(), doc({ id: "d2", title: "Outro" })],
+        documents: [doc({ title: "DocAntigo" })],
         embeddingBlock: { reason: "credential_pending" },
       },
       // 2: the session the operator is looking at. The credential was filled in between, and this
@@ -547,12 +548,53 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     fireEvent.click(screen.getByRole("button", { name: "open" }));
     await waitFor(() => expect(docsCalls).toBe(2));
 
-    // The closed session answers first, and must be ignored on its way in.
+    // The closed session answers first, and must be ignored on its way in — neither its block nor
+    // its rows.
     releaseDocs(1);
-    await waitFor(() => expect(shows("Doc")).toBe(false));
+    await waitFor(() => expect(blockCalls).toBe(0));
+    expect(shows("DocAntigo")).toBe(false);
     expect(shows(PENDING_TEXT)).toBe(false);
 
     releaseDocs(2);
+    await screen.findByText("Doc");
+    expect(shows(NEUTRAL_TEXT)).toBe(true);
+    expect(shows(PENDING_TEXT)).toBe(false);
+  });
+
+  // Review finding, round 15, and a defect the previous round introduced: the rows and the block
+  // arrive together but do not share a clock. The block can be superseded by a dedicated read that
+  // is faster than the list; tying `setDocs` to that same check meant a list response could be
+  // refused entirely, leaving the modal on its skeleton with no way out.
+  test("rows still render when a faster recheck outran their block", async () => {
+    docsQueue = [
+      {
+        documents: [doc(), doc({ id: "d2", title: "Outro" })],
+        embeddingBlock: { reason: "credential_pending" },
+      },
+    ];
+    blockQueue = [null];
+    gatedDocsCalls = [1];
+
+    render(
+      <TooltipProvider>
+        <ToastProvider>
+          <Harness />
+        </ToastProvider>
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "open" }));
+    await waitFor(() => expect(docsCalls).toBe(1));
+
+    // A job reports back before the list arrives, and its block read answers first.
+    onKnowledgeDocument?.({
+      knowledgeBaseId: "b1",
+      documentId: "d1",
+      status: "UNINDEXED",
+    });
+    await waitFor(() => expect(blockCalls).toBe(1));
+
+    releaseDocs(1);
+    // The rows belong to this session and must render; the block stays the newer answer's.
     await screen.findByText("Doc");
     expect(shows(NEUTRAL_TEXT)).toBe(true);
     expect(shows(PENDING_TEXT)).toBe(false);

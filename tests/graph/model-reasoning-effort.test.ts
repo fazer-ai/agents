@@ -609,6 +609,31 @@ describe("a fine-tuned id is read through to its base model", () => {
 // segments of "ft:<base>:<org>:<name>:<id>" are free text the operator writes: a support agent
 // fine-tuned as "codex-support" contains "codex" and gets routed away.
 describe("the completions-spelled pin follows the endpoint, not a guess about it", () => {
+  // The endpoint is not settled at construction: @langchain/openai also switches to Responses when
+  // the CALL carries an OpenAI built-in tool or a Responses-only option. A gpt-5.6 model that stays
+  // on completions bare is routed away the moment such a tool is bound, so the pin has to be
+  // decided where the tools are, not where the client is built.
+  test("a built-in tool bound later moves the turn, and the pin does not follow", async () => {
+    fake = fakeOpenAI();
+    const chat = createChatModel({
+      provider: "openai",
+      model: "gpt-5.6-luna",
+      apiKey: "test",
+    });
+    await chat
+      .bindTools?.([getCurrentTime, { type: "web_search_preview" } as never])
+      .invoke([{ role: "user", content: "oi" }])
+      .catch(() => undefined);
+    expect(fake.urls[0]).toContain("/responses");
+    expect(fake.requests[0]).not.toHaveProperty("reasoning_effort");
+  });
+
+  test("and plain function tools on the same model keep it", async () => {
+    const { sent, url } = await turn("gpt-5.6-luna");
+    expect(url).toContain("/chat/completions");
+    expect(sent.reasoning_effort).toBe("none");
+  });
+
   // Lowercase suffix: the adapter routes it away, so the pin must not travel.
   test("a fine-tuned gpt-5.6 the adapter routes away carries no pin", async () => {
     const { sent, url } = await turn("ft:gpt-5.6-luna:acme:codex-support:x1");

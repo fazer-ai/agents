@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import { describeShape } from "@/modules/flowlog/shape";
 
 // Decision table for what a tool call may leave in ExecutionLog.detail (issue #78). Each row is a
@@ -97,4 +98,39 @@ describe("describeShape", () => {
       url: "string(60)",
     });
   });
+});
+
+// The escape hatch: `agent.settings.observability.logToolValues`. Off by default, and only a literal
+// true (or its string form, since a settings bag can come from JSON) turns it on.
+describe("readObservabilityConfig", () => {
+  const rows: Array<{ name: string; settings: unknown; want: boolean }> = [
+    { name: "no settings at all", settings: null, want: false },
+    { name: "no observability block", settings: {}, want: false },
+    { name: "an empty block", settings: { observability: {} }, want: false },
+    {
+      name: "explicitly on",
+      settings: { observability: { logToolValues: true } },
+      want: true,
+    },
+    {
+      name: "on as the string a JSON bag may carry",
+      settings: { observability: { logToolValues: "true" } },
+      want: true,
+    },
+    {
+      name: "anything else is off, not truthy",
+      settings: { observability: { logToolValues: 1 } },
+      want: false,
+    },
+    {
+      name: "explicitly off",
+      settings: { observability: { logToolValues: false } },
+      want: false,
+    },
+  ];
+  for (const r of rows) {
+    test(`${r.want ? "on" : "off"}: ${r.name}`, () => {
+      expect(readObservabilityConfig(r.settings).logToolValues).toBe(r.want);
+    });
+  }
 });

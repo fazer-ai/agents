@@ -97,3 +97,23 @@ describe("behavior-settings — attributeContext", () => {
     });
   });
 });
+
+// The per-agent switch for logging tool VALUES instead of their shape rides the same surface, so the
+// editor, REST and MCP all project the one normalized value (issue #78).
+describe("behavior-settings — observability", () => {
+  test("it is an owned key and defaults to off", () => {
+    expect(BEHAVIOR_SETTINGS_KEYS).toContain("observability");
+    expect(readBehaviorSettings({}).observability).toEqual({
+      logToolValues: false,
+    });
+  });
+
+  test("a patch is normalized on write and leaves other blocks alone", () => {
+    const next = mergeBehaviorSettings(
+      { limits: { maxToolCalls: 7 } },
+      { observability: { logToolValues: "true" } },
+    );
+    expect(next.observability).toEqual({ logToolValues: true });
+    expect(next.limits).toEqual({ maxToolCalls: 7 });
+  });
+});

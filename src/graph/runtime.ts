@@ -366,7 +366,9 @@ export async function runLoadedTurn(
     conversationDbId: loaded.conversationDbId,
   });
   // Logs each tool call (name/status/duration) under this turn's flow group.
-  const toolLogger = new ToolFlowLogger(flow);
+  const toolLogger = new ToolFlowLogger(flow, {
+    logValues: loaded.logToolValues,
+  });
 
   // Guardrails (input/output moderation): build the guardrails agent's model once (its OWN
   // credential, resolved in loadAgentConfig). runGuardrail returns null when nothing tripped,

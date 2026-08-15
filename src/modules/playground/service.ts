@@ -50,6 +50,7 @@ import {
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
+import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import {
   readFollowUpConfig,
   stepDelayMinutes,
@@ -444,7 +445,10 @@ export async function runPlaygroundTurn(
             configurable: { thread_id: threadId },
             // ToolFlowLogger so playground tool calls land in the Logs page (item 3), same as a
             // real turn does in runLoadedTurn.
-            callbacks: [...callbacks, new ToolFlowLogger(flow)],
+            callbacks: [
+              ...callbacks,
+              new ToolFlowLogger(flow, { logValues: loaded.logToolValues }),
+            ],
           },
         ),
     );
@@ -603,9 +607,8 @@ export async function runPlaygroundFollowup(
   const agent = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.agent.findUnique({ where: { id: agentId }, select: { settings: true } }),
   );
-  const followUp = readFollowUpConfig(
-    params.overrides?.settings ?? agent?.settings,
-  );
+  const settings = params.overrides?.settings ?? agent?.settings;
+  const followUp = readFollowUpConfig(settings);
   // The playground previews the FIRST step's message (the simulation has no real schedule). Post
   // actions (label/resolve) are NOT applied here — there is no real conversation to act on.
   const firstStep = followUp.steps[0];
@@ -629,7 +632,12 @@ export async function runPlaygroundFollowup(
       { messages: [new HumanMessage(renderNudge(nudge, true))] },
       {
         configurable: { thread_id: threadId },
-        callbacks: [...callbacks, new ToolFlowLogger(flow)],
+        callbacks: [
+          ...callbacks,
+          new ToolFlowLogger(flow, {
+            logValues: readObservabilityConfig(settings).logToolValues,
+          }),
+        ],
       },
     );
   } catch (e) {

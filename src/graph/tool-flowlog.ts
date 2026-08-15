@@ -4,16 +4,23 @@ import { sanitizeErrorMessage } from "@/lib/redact";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { describeShape } from "@/modules/flowlog/shape";
 
+// What a tool call leaves in `detail`. `describeShape` by default — values replaced by their shape,
+// which is what keeps the column's documented promise — or the value as sent when the agent has
+// `observability.logToolValues` on. Resolved ONCE per logger, so a turn cannot log both ways.
+type Describe = (value: unknown) => unknown;
+
+const passThrough: Describe = (value) => value;
+
 // LangChain passes the tool input as a string on the callback. Parse it back to the structured args
-// when possible, so the shape summary can describe each argument by name; an input that is not JSON
-// is summarized as the string it is. Empty → null.
-function parseToolInput(input: string): unknown {
+// when possible, so each argument can be described by name; an input that is not JSON is described as
+// the string it is. Empty → null.
+function parseToolInput(input: string, describe: Describe): unknown {
   const s = (input ?? "").trim();
   if (!s) return null;
   try {
-    return describeShape(JSON.parse(s));
+    return describe(JSON.parse(s));
   } catch {
-    return describeShape(s);
+    return describe(s);
   }
 }
 
@@ -51,14 +58,16 @@ export class ToolFlowLogger extends BaseCallbackHandler {
   name = "secv4-tool-flowlog";
 
   private readonly flow: FlowContext;
+  private readonly describe: Describe;
   private readonly starts = new Map<
     string,
     { tool: string; at: number; args: unknown }
   >();
 
-  constructor(flow: FlowContext) {
+  constructor(flow: FlowContext, opts: { logValues?: boolean } = {}) {
     super();
     this.flow = flow;
+    this.describe = opts.logValues === true ? passThrough : describeShape;
   }
 
   override handleToolStart(
@@ -73,7 +82,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     this.starts.set(runId, {
       tool: runName && runName.length > 0 ? runName : "tool",
       at: Date.now(),
-      args: parseToolInput(input),
+      args: parseToolInput(input, this.describe),
     });
   }
 
@@ -90,7 +99,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
       level: failed ? "warn" : "info",
       status: failed ? "error" : "ok",
       durationMs: Date.now() - s.at,
-      detail: { tool: s.tool, args: s.args, output: describeShape(value) },
+      detail: { tool: s.tool, args: s.args, output: this.describe(value) },
       ...(failed
         ? {
             errorMessage: sanitizeErrorMessage(

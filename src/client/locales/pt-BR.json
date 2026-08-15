@@ -1848,6 +1848,8 @@
     "emptyDesc": "Defina uma ferramenta uma vez e depois conceda-a aos agentes que precisarem.",
     "emptyTitle": "Nenhuma ferramenta HTTP ainda",
     "enumValuePlaceholder": "valor",
+    "expectedStatuses": "Status que significam \"sem resultado\"",
+    "expectedStatusesHint": "Separados por vírgula, por exemplo 404. Use quando esta API responde com status de erro para uma resposta comum: uma consulta que devolve 404 para \"não encontrado\". Essas respostas deixam de contar como falha de integração, então param de gerar alerta. A IA lê a mesma resposta nos dois casos. Deixe vazio e todo não-2xx é tratado como falha.",
     "formatJson": "Formatar",
     "headerKey": "Cabeçalho",
     "headers": "Cabeçalhos",
@@ -1908,9 +1910,7 @@
     "varsCredential": "Credencial",
     "varsNative": "Variáveis de contexto",
     "varsSecret": "Credencial selecionada",
-    "varsSecretDesc": "Insere a credencial onde a injeção automática não alcança.",
-    "expectedStatuses": "Status que significam \"sem resultado\"",
-    "expectedStatusesHint": "Separados por vírgula, por exemplo 404. Use quando esta API responde com status de erro para uma resposta comum: uma consulta que devolve 404 para \"não encontrado\". Essas respostas deixam de contar como falha de integração, então param de gerar alerta. A IA lê a mesma resposta nos dois casos. Deixe vazio e todo não-2xx é tratado como falha."
+    "varsSecretDesc": "Insere a credencial onde a injeção automática não alcança."
   },
   "updates": {
     "newVersionAvailable": "Versão {{version}} disponível",

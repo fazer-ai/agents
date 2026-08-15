@@ -38,6 +38,12 @@ describe("normalizeExpectedStatuses", () => {
 
   // Almost always the wrong choice, and still the operator's to make: refusing it would buy a
   // special case in the validator, and some APIs really do answer 503 for "temporarily no data".
+  // Review finding, round 3, same class as the one below: `fetch` consumes informational responses
+  // and exposes only the final one, so a declared 1xx could never be matched against anything.
+  test("informational statuses are refused, not stored", () => {
+    expect(normalizeExpectedStatuses([100, 102, 199, 404])).toEqual([404]);
+  });
+
   // Review finding, round 2: the tool fetches with `redirect: "error"`, so a redirect status
   // arriving with a Location rejects before any status is looked at. Accepting the declaration would
   // store a promise the runtime cannot keep, and one that would seem to work on the responses that

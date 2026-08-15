@@ -18,7 +18,10 @@
 // Empty list = today's behavior, so this is fail-closed: an existing tool changes nothing until an
 // operator declares a status.
 
-const MIN_STATUS = 100;
+// The floor is 200, not 100: `fetch` consumes informational responses itself and exposes only the
+// final one, so a 1xx never reaches the status this rule inspects. Storing one would promise alert
+// suppression that can never happen — the same dead declaration as the redirect statuses below.
+const MIN_STATUS = 200;
 const MAX_STATUS = 599;
 
 // The five statuses the Fetch standard calls "redirect statuses". The tool calls `fetch` with

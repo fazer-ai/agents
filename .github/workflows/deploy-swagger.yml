@@ -5,17 +5,21 @@ name: Deploy Swagger UI to GitHub Pages
 # tooling drops THIS WORKFLOW from the Pro tree (openapi.json itself ships in both), and the job is
 # additionally guarded to the public Free repo so it no-ops if it ever reaches the master or a fork.
 #
+# It publishes from the RELEASE TAG, not from main. Publishing on every push to main documented
+# endpoints nobody could call yet: the newest image an operator can run is the last release, so the
+# page ran ahead of every deployed instance. Publishing from the tag also makes the version real:
+# the committed spec carries the 0.0.0 placeholder (info.version reads package.json, which this repo
+# keeps at 0.0.0 by design), so the number is stamped here from the tag, exactly like
+# publish_github_package.yml does to package.json when it builds the image.
+#
 # NOTE: Pages must be enabled on the repo with "GitHub Actions" as the source, or `configure-pages`
 # fails with "Get Pages site failed". It cannot self-enable: the action's `enablement` input needs a
 # token other than GITHUB_TOKEN. Pages on a private repo also requires a paid plan, which is why
 # this job only ever succeeded after fazer-ai/agents went public.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "openapi.json"
-      - ".github/workflows/deploy-swagger.yml"
+  release:
+    types: [published]
+  # Republishes the latest release: use it to repair the page without cutting a release.
   workflow_dispatch:
 
 # Serialize Pages deploys; never cancel an in-flight publish.
@@ -26,7 +30,9 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: github.repository == 'fazer-ai/agents'
+    # A prerelease (rc/beta) is not what operators run, so it must not become the public docs.
+    # On workflow_dispatch there is no release payload and the expression reads null, i.e. falsy.
+    if: github.repository == 'fazer-ai/agents' && !github.event.release.prerelease
 
     permissions:
       contents: read
@@ -38,8 +44,26 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
+      - name: Resolve the release to publish
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # workflow_dispatch carries no release payload: republish whatever the latest release is.
+          TAG="${TAG:-}"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "Publishing the spec from $TAG as ${TAG#v}"
+
       - name: Checkout repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.tag }}
 
       - name: Create Swagger UI index.html
         run: |
@@ -85,7 +109,13 @@ jobs:
           </body>
           </html>
           EOL
-          cp openapi.json ./public/openapi.json
+
+      - name: Stamp the released version into the spec
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          jq --arg v "$VERSION" '.info.version = $v' openapi.json > ./public/openapi.json
 
       - name: Setup Pages
         uses: actions/configure-pages@v6

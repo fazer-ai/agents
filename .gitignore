@@ -53,3 +53,7 @@ tmp/*
 # Python bytecode cache (the onboarding skill ships .py helpers)
 __pycache__/
 *.pyc
+
+# Local review-loop adjudications (findings reviewed and rejected, with the reason).
+# Read from the repo root by the review tooling; kept out of version control.
+.codex-review-waived

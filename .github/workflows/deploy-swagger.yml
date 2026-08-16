@@ -17,8 +17,13 @@ name: Deploy Swagger UI to GitHub Pages
 # token other than GITHUB_TOKEN. Pages on a private repo also requires a paid plan, which is why
 # this job only ever succeeded after fazer-ai/agents went public.
 on:
+  # The same event publish_github_package.yml uses to build the image this documents. `released`
+  # fires when a release is published as stable AND when a prerelease is promoted in place, and
+  # never for a prerelease on its own, so the reference and the image always move together.
+  # `published` would miss the promotion (no second `published` event is emitted for it) and would
+  # need a prerelease guard of its own.
   release:
-    types: [published]
+    types: [released]
   # Republishes the latest release: use it to repair the page without cutting a release.
   workflow_dispatch:
 
@@ -30,9 +35,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # A prerelease (rc/beta) is not what operators run, so it must not become the public docs.
-    # On workflow_dispatch there is no release payload and the expression reads null, i.e. falsy.
-    if: github.repository == 'fazer-ai/agents' && !github.event.release.prerelease
+    if: github.repository == 'fazer-ai/agents'
 
     permissions:
       contents: read
@@ -51,10 +54,12 @@ jobs:
           TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          # workflow_dispatch carries no release payload: republish whatever the latest release is.
+          # workflow_dispatch carries no release payload: republish the latest release. The REST
+          # `releases/latest` is the most recent non-prerelease, non-draft release, which is the
+          # same thing the `released` trigger above would have published.
           TAG="${TAG:-}"
           if [ -z "$TAG" ]; then
-            TAG=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+            TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"

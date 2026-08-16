@@ -117,3 +117,21 @@ src/graph/models.ts: Include encrypted reasoning in stateless tool loops
 # never builds is a broken release: repair the build or cut another tag. `workflow_dispatch` already
 # covers repairing the page by hand.
 .github/workflows/deploy-swagger.yml: Wait for image publication before deploying the docs
+
+# PR #93. The mechanism is real: `bun dev` is `bun --hot`, the holder lives on `globalThis` precisely
+# to survive a reload, and a reloaded module looking under the new key cannot see the timer parked
+# under the old one — so a developer who hot-loads this commit gets a second scheduler tick until the
+# process restarts. Two things bound it. It cannot reach production: a deploy is a new process with an
+# empty `globalThis`, so there is no old holder to orphan. And in dev the doubled tick is benign by
+# design, not by luck — the claim is `FOR UPDATE SKIP LOCKED` and `worker.ts` already states the
+# invariant ("still correct if briefly doubled"): the singleton avoids a ghost timer, it is not what
+# makes the claim correct. So the cost is some wasted polling in one dev process, cleared by the
+# restart that pulling a structural change already implies.
+#
+# The remedy is what settles it. Both forms the finding offers reintroduce `secv4` into the code:
+# keeping the keys stable is declining the change, and migrating the old holders means shipping
+# `Symbol.for("secv4.…")` (or a sweep over `globalThis` symbols matching the old prefix) to be read
+# forever, or as scheduled debt nobody deletes. That trades a transient dev inconvenience for the
+# permanent presence of the exact string this change exists to remove. The PR body tells developers
+# to restart `bun dev`, which closes the only real gap here (not knowing) at no cost in code.
+src/modules/scheduler/worker.ts: Keep the legacy Symbol key during hot reloads

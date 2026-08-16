@@ -24,8 +24,16 @@ on:
   # need a prerelease guard of its own.
   release:
     types: [released]
-  # Republishes the latest release: use it to repair the page without cutting a release.
+  # Repairs the page without cutting a release. `tag` is worth naming explicitly whenever the
+  # intended release is not the latest one: `releases/latest` sorts by the TAGGED COMMIT's date,
+  # not by publication time, so a release cut from an older commit (a promoted prerelease, a
+  # late-published draft) is not the one it returns, and a blind repair could move the page back.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish. Defaults to the latest release."
+        required: false
+        type: string
 
 # Serialize Pages deploys; never cancel an in-flight publish.
 concurrency:
@@ -51,12 +59,12 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
           set -euo pipefail
-          # workflow_dispatch carries no release payload: republish the latest release. The REST
-          # `releases/latest` is the most recent non-prerelease, non-draft release, which is the
-          # same thing the `released` trigger above would have published.
+          # A release carries its own tag; a dispatch may name one. With neither, fall back to the
+          # latest release: REST `releases/latest` is the most recent non-prerelease, non-draft
+          # release, the same thing the `released` trigger above would have published.
           TAG="${TAG:-}"
           if [ -z "$TAG" ]; then
             TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)

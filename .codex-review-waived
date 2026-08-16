@@ -103,3 +103,17 @@ src/modules/conversations/service.ts: Persist abandonment after the scheduler co
 # our own checkpointer. That is a mechanism justified by a hypothesis; if a measurable quality gap
 # shows up on multi-step tool loops, it earns its own change.
 src/graph/models.ts: Include encrypted reasoning in stateless tool loops
+
+# PR #91. The window is real and can be long (the image job is a multi-arch matrix and its runner
+# queue has held a job for hours), but the conclusion does not follow. At the instant `released`
+# fires, the version is already public: the GitHub Release exists, with its notes and its source
+# tarball. The reference tracks the RELEASE, which is the announcement of the version, not the
+# container artifact, so a GHCR image lagging its own release is a gap between the image and the
+# release, and putting the docs inside that gap does not close it. The remedy costs real mechanism:
+# `workflow_run` runs in the default branch's context and carries none of the release payload (the
+# tag would have to be re-resolved from the triggering run), `publish_github_package.yml` also has a
+# `workflow_dispatch` trigger so the docs would fire on builds that are not releases, and it adds a
+# failure mode that does not exist today (image published, docs silently not). A release whose image
+# never builds is a broken release: repair the build or cut another tag. `workflow_dispatch` already
+# covers repairing the page by hand.
+.github/workflows/deploy-swagger.yml: Wait for image publication before deploying the docs

@@ -1654,5 +1654,136 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(sent).toEqual([]);
       expect(toggles).toEqual([]);
     });
+
+    // The SHIPPED DEFAULT is the broken case: provider "openai" with an empty model is what the
+    // editor persists when the operator enables guardrails and never opens the provider select (the
+    // per-provider default is applied only on that select's change), while the model field shows a
+    // model name it never saved. Measured on the dependency we ship: `new ChatOpenAI({ model: "" })`
+    // puts `model: ""` on the wire verbatim, so the provider refuses the call and `analyzeGuardrail`
+    // fails open. What the operator sees is a guardrail that is on and never trips.
+    test("an enabled guardrail with no model configured still screens the reply", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: "",
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NO-MODEL",
+        },
+      });
+      await seedConv(951);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "rude",
+        suggestedReply: null,
+      });
+      // Stands in for the PROVIDER, not for a generic model: a request that carries an empty model
+      // name is refused instead of being quietly answered, which is the behaviour that turns a
+      // misconfigured guardrail into a silent one.
+      const providerLike = (cfg: ResolvedModelConfig): BaseChatModel =>
+        cfg.model === "gpt-4o-mini"
+          ? new FakeListChatModel({ responses: [REPLY] })
+          : ({
+              invoke: async () => {
+                if (!cfg.model.trim()) {
+                  throw new Error("400 invalid value for 'model': ''");
+                }
+                return { content: verdict };
+              },
+            } as unknown as BaseChatModel);
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 951, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: providerLike,
+          makeClient: guardStub(sent, notes),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(sent).toEqual([[951, "TEMPLATE-NO-MODEL"]]);
+    });
+
+    // Fail-open stays fail-open: a guardrail that cannot run must never cost the customer the reply.
+    // But it also must not be indistinguishable from a guardrail that ran and approved, or an
+    // operator whose credential expired reads "no violations" forever. Same argument that put
+    // `retriedEmptyResponse` in the trail on #63.
+    test("a guardrail that cannot run leaves a line in the turn trail", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-UNREACHABLE",
+        },
+      });
+      await seedConv(952);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const unreachable = (cfg: ResolvedModelConfig): BaseChatModel =>
+        cfg.model === GUARD_MODEL
+          ? ({
+              invoke: async () => {
+                throw new Error("401 incorrect api key provided");
+              },
+            } as unknown as BaseChatModel)
+          : new FakeListChatModel({ responses: [REPLY] });
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 952, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: unreachable,
+          makeClient: guardStub(sent, notes),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      // The customer still gets answered: moderation failing is not the customer's problem.
+      expect(sent).toEqual([[952, REPLY]]);
+
+      // emitFlowEvent is fire-and-forget, so poll briefly.
+      let failureLogged = false;
+      for (let i = 0; i < 30 && !failureLogged; i++) {
+        const rows = await suDb.executionLog.findMany({
+          where: { tenantId: gTenantId, stage: "guardrail", level: "warn" },
+          select: { detail: true },
+        });
+        failureLogged = rows.some(
+          (r) =>
+            (r.detail as Record<string, unknown> | null)?.outcome ===
+            "analysis_failed",
+        );
+        if (!failureLogged) await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(failureLogged).toBe(true);
+    });
   });
 });

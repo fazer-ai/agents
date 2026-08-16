@@ -75,6 +75,57 @@ describe("readGuardrailsConfig", () => {
     });
     expect(c.input.generationPrompt).toBe("be warm");
   });
+
+  // An empty model is what the editor persists when the operator enables guardrails and never
+  // touches the provider select (the per-provider default is only applied on that select's change),
+  // and the model field then SHOWS a model name it never saved. Reaching the provider with `model: ""`
+  // fails the call, and `analyzeGuardrail` fails open, so the guardrail reads as enabled and silently
+  // screens nothing. Resolved here because this reader is the single source of defaults + clamping.
+  // The literals are deliberately spelled out instead of imported: a test that reads the same table
+  // as the code proves nothing about which model is actually sent.
+  test("an empty model resolves to the provider's default", () => {
+    const cases: [string, string][] = [
+      ["openai", "gpt-5.4-mini"],
+      ["anthropic", "claude-sonnet-4-6"],
+      ["google", "gemini-3.5-flash"],
+      ["deepseek", "deepseek-chat"],
+      ["openrouter", "openai/gpt-5.4-mini"],
+    ];
+    for (const [provider, expected] of cases) {
+      const c = readGuardrailsConfig({
+        guardrails: { enabled: true, provider, model: "" },
+      });
+      expect([provider, c.model]).toEqual([provider, expected]);
+    }
+  });
+
+  test("whitespace counts as empty", () => {
+    const c = readGuardrailsConfig({
+      guardrails: { enabled: true, provider: "openai", model: "   " },
+    });
+    expect(c.model).toBe("gpt-5.4-mini");
+  });
+
+  test("openai-compatible keeps the empty model, where it means the server's own", () => {
+    const c = readGuardrailsConfig({
+      guardrails: { enabled: true, provider: "openai-compatible", model: "" },
+    });
+    expect(c.model).toBe("");
+  });
+
+  test("an explicit model is never replaced", () => {
+    const c = readGuardrailsConfig({
+      guardrails: { enabled: true, provider: "openai", model: "gpt-4o-mini" },
+    });
+    expect(c.model).toBe("gpt-4o-mini");
+  });
+
+  // The default provider is already "openai", so the default config is the broken case: nothing in
+  // the editor has to be misused for it to happen.
+  test("the shipped default provider resolves to a usable model", () => {
+    const c = readGuardrailsConfig({ guardrails: { enabled: true } });
+    expect([c.provider, c.model]).toEqual(["openai", "gpt-5.4-mini"]);
+  });
 });
 
 describe("buildGuardrailSystemPrompt", () => {
@@ -158,5 +209,47 @@ describe("analyzeGuardrail", () => {
   test("fail-open on unparseable output", async () => {
     const v = await analyzeGuardrail(fakeModel("not json at all"), base);
     expect(v.violated).toBe(false);
+  });
+
+  // Fail-open is the right policy and it is also indistinguishable, from the outside, from a
+  // guardrail that ran and approved. The verdict has to say which one happened, or an operator whose
+  // credential expired keeps reading "no violations" forever. Same argument as `onModelRetry` (#63).
+  test("a model error is reported as a failure to analyze, not as approval", async () => {
+    const v = await analyzeGuardrail(throwingModel, base);
+    expect(v.error).toContain("boom");
+  });
+
+  // Two different ways the output can be unusable, and they leave by different branches: no JSON
+  // object at all never reaches the parser, while a malformed one throws inside it. A single case
+  // covers only the first, which is how the second branch stayed untested (caught by mutation).
+  test("output with no JSON object at all is reported", async () => {
+    const v = await analyzeGuardrail(fakeModel("not json at all"), base);
+    expect(typeof v.error).toBe("string");
+  });
+
+  test("output with a malformed JSON object is reported", async () => {
+    const v = await analyzeGuardrail(
+      fakeModel('Sure: {"violated": true, categories: [oops}'),
+      base,
+    );
+    expect([v.violated, typeof v.error]).toEqual([false, "string"]);
+  });
+
+  test("a genuine clean verdict is not reported as a failure", async () => {
+    const v = await analyzeGuardrail(
+      fakeModel('{"violated": false, "categories": [], "rationale": ""}'),
+      base,
+    );
+    expect(v.error).toBeUndefined();
+  });
+
+  test("a violation is not reported as a failure", async () => {
+    const v = await analyzeGuardrail(
+      fakeModel(
+        '{"violated": true, "categories": ["toxicity"], "rationale": "x", "suggestedReply": null}',
+      ),
+      base,
+    );
+    expect(v.error).toBeUndefined();
   });
 });

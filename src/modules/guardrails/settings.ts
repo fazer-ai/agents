@@ -1,4 +1,5 @@
 import { MODEL_PROVIDERS, type ModelConfig } from "@/graph/model-config";
+import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 
 // Per-agent guardrails (input/output moderation) config, read from `agent.settings.guardrails`. A
 // dedicated LLM "guardrails agent" (its OWN selectable chat model, separate from the main agent's)
@@ -42,7 +43,9 @@ export interface GuardrailsConfig {
   enabled: boolean;
   // The guardrails agent's own chat model (separate from the main agent's model).
   provider: ModelConfig["provider"];
-  model: string; // "" → provider default (only valid for openai-compatible)
+  // Always a usable model name after the reader: an empty stored value resolves to
+  // PROVIDER_DEFAULT_MODEL, and stays "" only for openai-compatible, where the server picks.
+  model: string;
   credentialRef: string | null; // `vault:<id>` ref of the entry holding the API key
   baseURL: string | null; // for openai-compatible / self-hosted endpoints
   // Configurable competitor names for the competitorMentions check.
@@ -158,14 +161,26 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
       : undefined;
   if (!s || typeof s !== "object") return structuredClone(GUARDRAILS_DEFAULTS);
   const bag = s as Record<string, unknown>;
-  const provider = str(bag.provider);
+  const rawProvider = str(bag.provider);
+  const provider =
+    rawProvider && (MODEL_PROVIDERS as readonly string[]).includes(rawProvider)
+      ? (rawProvider as ModelConfig["provider"])
+      : GUARDRAILS_DEFAULTS.provider;
   return {
     enabled: bool(bag.enabled, GUARDRAILS_DEFAULTS.enabled),
-    provider:
-      provider && (MODEL_PROVIDERS as readonly string[]).includes(provider)
-        ? (provider as ModelConfig["provider"])
-        : GUARDRAILS_DEFAULTS.provider,
-    model: str(bag.model) ?? "",
+    provider,
+    // NOTE: An empty model is stored by the editor whenever the operator enables guardrails without
+    // opening the provider select, and the model field shows the provider default anyway. Sending it
+    // through is not a soft failure: the name goes on the wire verbatim, the provider refuses the
+    // call, and analyzeGuardrail fails open, so the guardrail reads as enabled and screens nothing.
+    // Resolving it here is what makes the runtime send the model the editor displayed.
+    //
+    // The agent's own model answers the same question the other way (`guardModelBeforeSave` refuses
+    // to save it empty), and the asymmetry is deliberate. That one is the operator's core choice and
+    // has no defensible default; this one is a supporting choice whose default the editor already
+    // shows. A save-time refusal here would also leave every already-saved empty value broken, and
+    // those are exactly the installs running unprotected today.
+    model: str(bag.model) ?? PROVIDER_DEFAULT_MODEL[provider] ?? "",
     credentialRef: str(bag.credentialRef),
     baseURL: str(bag.baseURL),
     competitors: readCompetitors(bag.competitors),

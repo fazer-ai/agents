@@ -856,6 +856,7 @@
     "mode": "Mode",
     "modeHint": "A test agent stays silent in a conversation until the customer sends /teste; production answers normally.",
     "model": "Model",
+    "modelPickerProviderDefault": "Provider default",
     "modelPickerSearch": "Search models…",
     "modelRequired": "Pick a model for this provider before saving.",
     "modelSection": "Model",

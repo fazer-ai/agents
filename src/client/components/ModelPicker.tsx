@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "@/client/lib/api";
+import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { ComboBox, type ComboItem } from "./ComboBox";
 
 interface ProviderModel {
@@ -73,12 +74,19 @@ export function ModelPicker({
   credentialRef,
   baseURL,
   capability = "chat",
-  placeholder = "gpt-5.4-mini",
+  placeholder,
   disabled,
   "aria-label": ariaLabel,
 }: Props) {
   const { t } = useTranslation();
   const key = cacheKey(provider, credentialRef, baseURL, capability);
+  // An empty field still shows this text, so it has to be the model the runtime would actually use.
+  // It used to be the literal "gpt-5.4-mini" for every provider, which read as "Anthropic will run
+  // gpt-5.4-mini". Only chat has a per-provider default; elsewhere the honest hint is that nobody
+  // picked, and the provider's own default applies.
+  const shown =
+    placeholder ??
+    (capability === "chat" ? PROVIDER_DEFAULT_MODEL[provider] : undefined);
 
   const loader = useCallback(async (): Promise<ComboItem[]> => {
     const cached = readCache(key);
@@ -106,7 +114,9 @@ export function ModelPicker({
       loaderKey={key}
       eager
       needsCredential={!credentialRef}
-      placeholder={placeholder}
+      placeholder={
+        shown || t("editor.modelPickerProviderDefault", "Provider default")
+      }
       searchPlaceholder={t("editor.modelPickerSearch", "Search models…")}
       disabled={disabled}
       aria-label={ariaLabel ?? t("editor.model", "Model")}

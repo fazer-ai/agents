@@ -14,12 +14,10 @@ import {
 } from "@/client/components";
 import { useActiveTenantName } from "@/client/hooks/useActiveTenantName";
 import { credentialCompat } from "@/client/lib/credentialCompat";
-import {
-  PROVIDER_DEFAULT_MODEL,
-  providerLabel,
-} from "@/client/lib/providerLabels";
+import { providerLabel } from "@/client/lib/providerLabels";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { REASONING_EFFORTS } from "@/graph/openai-reasoning";
 import { CapabilityMap } from "./CapabilityMap";
 import { PromptPanel } from "./PromptPanel";

@@ -9,10 +9,8 @@ import {
   Textarea,
 } from "@/client/components";
 import { credentialCompat } from "@/client/lib/credentialCompat";
-import {
-  PROVIDER_DEFAULT_MODEL,
-  providerLabel,
-} from "@/client/lib/providerLabels";
+import { providerLabel } from "@/client/lib/providerLabels";
+import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import type {
   GuardrailAction,
   GuardrailChecks,

@@ -404,6 +404,18 @@ export async function runLoadedTurn(
       generationPrompt:
         dir.action === "generated" ? dir.generationPrompt : undefined,
     });
+    // A guardrail that could not run reads exactly like one that ran and approved, so without this
+    // line an expired credential is silent moderation for as long as nobody notices. The turn is
+    // NOT blocked (fail-open stays), only recorded.
+    if (verdict.error) {
+      emitFlowEvent(flow, {
+        stage: "guardrail",
+        status: "error",
+        level: "warn",
+        detail: { direction, outcome: "analysis_failed" },
+        errorMessage: verdict.error,
+      });
+    }
     if (!verdict.violated) return null;
     emitFlowEvent(flow, {
       stage: "guardrail",

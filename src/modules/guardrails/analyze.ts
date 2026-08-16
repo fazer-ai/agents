@@ -19,6 +19,10 @@ export interface GuardrailVerdict {
   rationale: string;
   // A safe replacement reply the model proposed (used when the direction's action is "generated").
   suggestedReply: string | null;
+  // Set when the analysis could not be performed (model error, timeout, unusable output). The
+  // verdict is still non-violating — fail-open is the policy — but the caller must be able to tell
+  // "screened and approved" from "never screened", which are the same value without this.
+  error?: string;
 }
 
 const CLEAN: GuardrailVerdict = {
@@ -44,11 +48,14 @@ function messageText(content: BaseMessage["content"]): string {
   return "";
 }
 
+const unanalyzed = (error: string): GuardrailVerdict => ({ ...CLEAN, error });
+
 // Extract the first balanced JSON object from a model response (tolerates ```json fences / prose).
 function parseVerdict(raw: string): GuardrailVerdict {
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
-  if (start < 0 || end <= start) return CLEAN;
+  if (start < 0 || end <= start)
+    return unanalyzed("no JSON object in response");
   try {
     const obj = JSON.parse(raw.slice(start, end + 1)) as Record<
       string,
@@ -68,7 +75,7 @@ function parseVerdict(raw: string): GuardrailVerdict {
           : null,
     };
   } catch {
-    return CLEAN;
+    return unanalyzed("unparseable verdict JSON");
   }
 }
 
@@ -92,6 +99,6 @@ export async function analyzeGuardrail(
       { err },
       "guardrails analysis failed (fail-open, message not blocked)",
     );
-    return CLEAN;
+    return unanalyzed(err instanceof Error ? err.message : String(err));
   }
 }

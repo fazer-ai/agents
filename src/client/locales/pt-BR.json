@@ -858,6 +858,7 @@
     "mode": "Modo",
     "modeHint": "Um agente em teste fica em silêncio na conversa até o cliente enviar /teste; em produção responde normalmente.",
     "model": "Modelo",
+    "modelPickerProviderDefault": "Padrão do provedor",
     "modelPickerSearch": "Buscar modelos…",
     "modelRequired": "Escolha um modelo para este provedor antes de salvar.",
     "modelSection": "Modelo",

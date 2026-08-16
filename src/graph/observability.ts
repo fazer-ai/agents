@@ -72,7 +72,7 @@ export async function resolveLangfuseConfig(
   };
 }
 
-const REDACTED = "[redacted by secv4 PII policy]";
+const REDACTED = "[redacted by fazer.ai PII policy]";
 
 // When content must not leave the process, replace every I/O payload with a marker. The trace
 // keeps its shape (spans, timings, usage); only the text is gone.
@@ -85,7 +85,7 @@ interface ClientHolder {
   clients: Map<string, Langfuse>;
 }
 
-const CACHE_KEY = Symbol.for("secv4.langfuse.clients");
+const CACHE_KEY = Symbol.for("fazerai.langfuse.clients");
 
 function clientCache(): Map<string, Langfuse> {
   const g = globalThis as unknown as Record<symbol, ClientHolder>;

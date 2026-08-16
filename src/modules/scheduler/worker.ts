@@ -162,7 +162,7 @@ interface Holder {
   running: boolean;
 }
 
-const KEY = Symbol.for("secv4.scheduler.worker");
+const KEY = Symbol.for("fazerai.scheduler.worker");
 
 function holder(): Holder {
   const g = globalThis as unknown as Record<symbol, Holder>;

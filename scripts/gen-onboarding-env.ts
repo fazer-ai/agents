@@ -61,9 +61,9 @@ export function buildOnboardingEnv(opts: OnboardingEnvOptions): OnboardingEnv {
   }
   const dbHost = opts.dbHost ?? "postgres";
   const dbPort = opts.dbPort ?? 5432;
-  const dbName = opts.dbName ?? "secretaria_v4_db";
+  const dbName = opts.dbName ?? "fazerai_agents_db";
   const pgUser = opts.pgUser ?? "postgres";
-  const appUser = opts.appUser ?? "secv4_app";
+  const appUser = opts.appUser ?? "fazerai_app";
   // db-bootstrap.ts interpolates the runtime role name into DDL as a quoted identifier; keep both
   // role names to the safe charset it accepts so a generated .env can never break that out.
   for (const [label, name] of [
@@ -141,7 +141,7 @@ async function main() {
   if (!publicUrl) {
     console.error(
       "usage: bun scripts/gen-onboarding-env.ts --public-url https://agents.example.com [--out .env] [--force]\n" +
-        "       [--db-host postgres] [--db-port 5432] [--db-name secretaria_v4_db] [--pg-user postgres] [--app-user secv4_app]\n" +
+        "       [--db-host postgres] [--db-port 5432] [--db-name fazerai_agents_db] [--pg-user postgres] [--app-user fazerai_app]\n" +
         "       [--caddy-domain agents.example.com] [--acme-email you@example.com]  # for docker-compose.portainer.yml",
     );
     process.exit(1);

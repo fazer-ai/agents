@@ -36,9 +36,9 @@ services:
       # container's owner) runs migrations + bootstrap. The app role (SERVICE_USER_APPDBUSER,
       # created by db-bootstrap.ts) is NON-superuser/NON-bypassrls so RLS isolation holds — the
       # boot guard refuses to start the server on a privileged runtime role.
-      - 'MIGRATION_DATABASE_URL=postgres://${SERVICE_USER_DBUSER}:${SERVICE_PASSWORD_64_DBPASSWORD}@${DATABASE_HOST:-postgres}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-secretaria_v4_db}'
-      - 'DATABASE_URL=postgres://${SERVICE_USER_APPDBUSER}:${SERVICE_PASSWORD_64_APPDBPASSWORD}@${DATABASE_HOST:-postgres}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-secretaria_v4_db}'
-      - 'LANGGRAPH_DATABASE_URL=postgres://${SERVICE_USER_APPDBUSER}:${SERVICE_PASSWORD_64_APPDBPASSWORD}@${DATABASE_HOST:-postgres}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-secretaria_v4_db}'
+      - 'MIGRATION_DATABASE_URL=postgres://${SERVICE_USER_DBUSER}:${SERVICE_PASSWORD_64_DBPASSWORD}@${DATABASE_HOST:-postgres}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-fazerai_agents_db}'
+      - 'DATABASE_URL=postgres://${SERVICE_USER_APPDBUSER}:${SERVICE_PASSWORD_64_APPDBPASSWORD}@${DATABASE_HOST:-postgres}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-fazerai_agents_db}'
+      - 'LANGGRAPH_DATABASE_URL=postgres://${SERVICE_USER_APPDBUSER}:${SERVICE_PASSWORD_64_APPDBPASSWORD}@${DATABASE_HOST:-postgres}:${DATABASE_PORT:-5432}/${DATABASE_NAME:-fazerai_agents_db}'
     # NOTE: the boot sequence (provision runtime role -> migrate as owner -> run the interpreted
     # server) is the image CMD in the Dockerfile. Do NOT override `command` here: it once drifted to
     # a stale `./server` (from the pre-interpreted `bun build --compile` era) and crash-looped on
@@ -62,7 +62,7 @@ services:
     volumes:
       - 'postgres:/var/lib/postgresql/data'
     environment:
-      - POSTGRES_DB=${DATABASE_NAME:-secretaria_v4_db}
+      - POSTGRES_DB=${DATABASE_NAME:-fazerai_agents_db}
       - POSTGRES_USER=${SERVICE_USER_DBUSER}
       - POSTGRES_PASSWORD=${SERVICE_PASSWORD_64_DBPASSWORD}
     healthcheck:

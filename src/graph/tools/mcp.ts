@@ -276,7 +276,7 @@ function cachedInstructions(tenantId: bigint, connId: bigint): string | null {
   return clientCache().get(`${tenantId}:${connId}`)?.instructions ?? null;
 }
 
-const CACHE_KEY = Symbol.for("secv4.mcp.clients");
+const CACHE_KEY = Symbol.for("fazerai.mcp.clients");
 
 function clientCache(): Map<string, ClientEntry> {
   const g = globalThis as unknown as Record<symbol, Map<string, ClientEntry>>;

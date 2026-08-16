@@ -43,7 +43,7 @@ async function probe({ launcher, command, args }: Probe): Promise<boolean> {
     stderr: "inherit",
   });
   const client = new Client(
-    { name: "secv4-smoke", version: "0.0.0" },
+    { name: "fazerai-smoke", version: "0.0.0" },
     { capabilities: {} },
   );
   try {

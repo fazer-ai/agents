@@ -23,7 +23,7 @@ if (suUrl) {
 }
 const suDb = su as PrismaClient;
 
-const SAFE_ROLE = `secv4_guard_safe_${process.pid}`;
+const SAFE_ROLE = `fazerai_guard_safe_${process.pid}`;
 let tmp: PrismaClient | undefined;
 
 // NOTE: roles and database grants live in CLUSTER-WIDE catalogs (pg_authid, pg_database), which

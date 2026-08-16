@@ -21,7 +21,7 @@ export interface StatusTarget {
 }
 
 export class AgentStatusReporter extends BaseCallbackHandler {
-  name = "secv4-agent-status";
+  name = "fazerai-agent-status";
 
   private readonly tenantId: bigint;
   private readonly conversationDbId: bigint | null;

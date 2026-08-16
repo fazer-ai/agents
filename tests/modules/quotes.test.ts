@@ -56,7 +56,7 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
-const DIR = `/tmp/secv4-quotes-${process.pid}`;
+const DIR = `/tmp/fazerai-quotes-${process.pid}`;
 let tenantA = 0n;
 let tenantB = 0n;
 function ctx(t: bigint): TenantContext {

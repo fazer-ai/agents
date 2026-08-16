@@ -14,7 +14,7 @@
 --
 -- Usage:
 --   psql "$MIGRATION_DATABASE_URL" \
---     -v app_role=secv4_app -v app_password='...' -f scripts/db-bootstrap.sql
+--     -v app_role=fazerai_app -v app_password='...' -f scripts/db-bootstrap.sql
 
 \set ON_ERROR_STOP on
 
@@ -22,14 +22,14 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 -- psql variable substitution does not reach inside dollar-quoted DO blocks, so the
 -- role name and password are handed to the block via session GUCs set out here.
-SELECT set_config('secv4.app_role', :'app_role', false);
-SELECT set_config('secv4.app_password', :'app_password', false);
+SELECT set_config('fazerai.app_role', :'app_role', false);
+SELECT set_config('fazerai.app_password', :'app_password', false);
 
 -- Runtime role: explicit NOSUPERUSER + NOBYPASSRLS is load-bearing.
 DO $$
 DECLARE
-  v_role text := current_setting('secv4.app_role');
-  v_pw   text := current_setting('secv4.app_password');
+  v_role text := current_setting('fazerai.app_role');
+  v_pw   text := current_setting('fazerai.app_password');
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role) THEN
     EXECUTE format(

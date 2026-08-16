@@ -32,7 +32,7 @@ describe("mask", () => {
   test("redacts everything by default (privacy-by-default)", () => {
     const mask = makeMask(undefined);
     expect(mask).toBeDefined();
-    expect(mask?.()).toBe("[redacted by secv4 PII policy]");
+    expect(mask?.()).toBe("[redacted by fazer.ai PII policy]");
   });
 
   test("no mask when the tenant opts into raw content", () => {

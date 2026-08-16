@@ -58,17 +58,17 @@ async function main() {
 
     // Role + password handed to the DO block via session GUCs so the password is never spliced
     // into a SQL string we build (and never logged).
-    await client.query("SELECT set_config('secv4.app_role', $1, false)", [
+    await client.query("SELECT set_config('fazerai.app_role', $1, false)", [
       role,
     ]);
-    await client.query("SELECT set_config('secv4.app_password', $1, false)", [
+    await client.query("SELECT set_config('fazerai.app_password', $1, false)", [
       password,
     ]);
     await client.query(`
       DO $$
       DECLARE
-        v_role text := current_setting('secv4.app_role');
-        v_pw   text := current_setting('secv4.app_password');
+        v_role text := current_setting('fazerai.app_role');
+        v_pw   text := current_setting('fazerai.app_password');
       BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role) THEN
           EXECUTE format(

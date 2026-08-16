@@ -8,7 +8,7 @@ import config from "@/config";
 // later phase. setup() is memoized on globalThis so `bun --hot` reloads reuse the one pool and
 // don't re-run CREATE TABLE concurrently.
 
-const KEY = Symbol.for("secv4.langgraph.checkpointer");
+const KEY = Symbol.for("fazerai.langgraph.checkpointer");
 
 interface Holder {
   promise?: Promise<PostgresSaver>;

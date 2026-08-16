@@ -171,7 +171,7 @@ export interface UsageCaptureParams {
 }
 
 export class UsageCapture extends BaseCallbackHandler {
-  name = "secv4-usage-capture";
+  name = "fazerai-usage-capture";
   // Bias toward the handler being awaited so the row is durable before the turn returns.
   override awaitHandlers = true;
 

@@ -4,7 +4,7 @@ fazer.ai agents is multi-tenant. Isolation is **hybrid and defense-in-depth**: a
 
 ## The non-negotiables
 
-1. **Runtime connects as a NON-SUPERUSER, NON-BYPASSRLS role.** Superusers and table owners bypass RLS, so a superuser runtime connection makes the entire isolation model a no-op. `DATABASE_URL` must point at `secv4_app` (provisioned by [`scripts/db-bootstrap.sql`](../scripts/db-bootstrap.sql)); `MIGRATION_DATABASE_URL` is the superuser/owner used only for DDL/migrations. The two MUST differ in production.
+1. **Runtime connects as a NON-SUPERUSER, NON-BYPASSRLS role.** Superusers and table owners bypass RLS, so a superuser runtime connection makes the entire isolation model a no-op. `DATABASE_URL` must point at `fazerai_app` (provisioned by [`scripts/db-bootstrap.sql`](../scripts/db-bootstrap.sql)); `MIGRATION_DATABASE_URL` is the superuser/owner used only for DDL/migrations. The two MUST differ in production.
 2. **Tenant scope is transaction-local.** `runScoped` opens a `$transaction` and issues `set_config('app.tenant_id', <id>, true)` as the first statement. The `true` makes it reset on commit/rollback, so it cannot leak to the next request on a pooled connection. A missing GUC yields NULL in the policy → **fail-closed (zero rows)**.
 3. **No network/LLM `await` inside a scoped transaction.** It pins a pooled connection; long I/O exhausts the pool. Do network I/O outside; keep the tx to DB work.
 4. **Never read the tenant from AsyncLocalStorage at query time.** The `$extends` is *closure-bound* to a fixed `tenantId` (reading ALS inside the extension callback is unreliable on `create`). ALS is plumbing for carrying context to nodes/workers, not the source of truth for a query's tenant.

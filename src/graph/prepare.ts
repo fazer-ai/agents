@@ -64,6 +64,7 @@ import {
   type ServiceWindowConfig,
 } from "@/modules/service-window/service";
 import { readSplitConfig, type SplitConfig } from "@/modules/split/service";
+import { buildSpeechContextSection } from "@/modules/tts/service";
 import { readTtsConfig, type TtsConfig } from "@/modules/tts/settings";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
 import { ensureFreshMcpAccessToken } from "@/modules/vault/mcp-oauth";
@@ -1037,10 +1038,21 @@ export interface GraphBuildDeps {
   onModelRetry?: (info: { attempt: number; error: unknown }) => void;
 }
 
+// Per-turn facts that are NOT part of the agent's saved config and are only known once the turn is
+// assembled. Kept out of GraphBuildDeps (that bag is dependency injection) and out of LoadAgentArgs:
+// the debounce flush loads the config in flushDebounceJob, BEFORE coalesceAndRunTurn selects the
+// burst, so the audio flag simply does not exist yet at load time.
+export interface GraphTurnContext {
+  // The customer's turn included a voice note, so this reply will be synthesized (see the tts mode
+  // gate in shouldReplyWithAudio). Drives the write-for-the-ear prompt section.
+  userSentAudio?: boolean;
+}
+
 export async function buildModelAndGraph(
   cfg: AgentConfig,
   tools: StructuredToolInterface[],
   deps: GraphBuildDeps = {},
+  turn: GraphTurnContext = {},
 ) {
   const makeModel = deps.makeModel ?? createChatModel;
   const effectiveBaseUrl = cfg.credentialBaseUrl ?? cfg.mc.baseURL;
@@ -1054,8 +1066,14 @@ export async function buildModelAndGraph(
   // namespaced tool names) so the agent understands what an `mcp__<server>__<tool>` call operates on.
   // Built from the assembled toolset metadata here so turn / nudge / playground all get it uniformly.
   const mcpContext = buildMcpContextSection(tools);
-  const systemPrompt = mcpContext
-    ? `${cfg.systemPrompt}\n\n${mcpContext}`
+  // NOTE: same additive shape as loadAgentConfig's promptSections — each block is optional and only
+  // the present ones are appended, so a turn with neither keeps the operator's prompt byte-identical.
+  const sections = [
+    mcpContext,
+    turn.userSentAudio ? buildSpeechContextSection() : null,
+  ].filter((s): s is string => s !== null);
+  const systemPrompt = sections.length
+    ? `${cfg.systemPrompt}\n\n${sections.join("\n\n")}`
     : cfg.systemPrompt;
   return buildAgentGraph({
     model,

@@ -112,6 +112,13 @@ interface TtsState {
   voice: string;
   credentialRef: string;
   normalize: boolean;
+  // Delivery knobs, kept as strings like every other numeric field in this form; "" = leave it to the
+  // provider. Only ElevenLabs consumes them today.
+  stability: string;
+  similarityBoost: string;
+  style: string;
+  speed: string;
+  speakerBoost: boolean | null;
 }
 
 interface SplitState {
@@ -1380,6 +1387,102 @@ export function BehaviorTab({
                     )}
                   </p>
                 </div>
+                {tts.provider === "elevenlabs" && (
+                  <div className="flex flex-col gap-3">
+                    <div>
+                      <p className="font-medium text-sm">
+                        {t("editor.ttsDelivery", "Voice delivery")}
+                      </p>
+                      <p className="text-text-muted text-xs">
+                        {t(
+                          "editor.ttsDeliveryHint",
+                          "Leave a field blank to use the voice's own saved setting. Lower stability makes the delivery more expressive; high stability sounds monotone.",
+                        )}
+                      </p>
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField
+                        label={t("editor.ttsStability", "Stability")}
+                        description={t(
+                          "editor.ttsStabilityHint",
+                          "0 = expressive, 1 = monotone (0-1).",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={tts.stability}
+                          onChange={(e) =>
+                            setTts({ ...tts, stability: e.target.value })
+                          }
+                        />
+                      </FormField>
+                      <FormField
+                        label={t("editor.ttsSimilarity", "Similarity")}
+                        description={t(
+                          "editor.ttsSimilarityHint",
+                          "How closely to match the original voice (0-1).",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={tts.similarityBoost}
+                          onChange={(e) =>
+                            setTts({ ...tts, similarityBoost: e.target.value })
+                          }
+                        />
+                      </FormField>
+                      <FormField
+                        label={t("editor.ttsStyle", "Style")}
+                        description={t(
+                          "editor.ttsStyleHint",
+                          "Extra emphasis. Costs latency and can destabilize (0-1).",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={tts.style}
+                          onChange={(e) =>
+                            setTts({ ...tts, style: e.target.value })
+                          }
+                        />
+                      </FormField>
+                      <FormField
+                        label={t("editor.ttsSpeed", "Speed")}
+                        description={t(
+                          "editor.ttsSpeedHint",
+                          "Speaking rate (0.7-1.2).",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={0.7}
+                          max={1.2}
+                          step={0.05}
+                          value={tts.speed}
+                          onChange={(e) =>
+                            setTts({ ...tts, speed: e.target.value })
+                          }
+                        />
+                      </FormField>
+                    </div>
+                    <SwitchField
+                      checked={tts.speakerBoost === true}
+                      onCheckedChange={(v) =>
+                        setTts({ ...tts, speakerBoost: v })
+                      }
+                      label={t("editor.ttsSpeakerBoost", "Speaker boost")}
+                    />
+                  </div>
+                )}
               </>
             )}
           </Section>

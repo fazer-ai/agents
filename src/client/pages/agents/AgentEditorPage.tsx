@@ -194,6 +194,12 @@ function str(v: unknown): string {
 function num(v: unknown): string {
   return typeof v === "number" ? String(v) : "";
 }
+// The inverse of num() for an optional numeric field: a blank input means "unset", which the settings
+// readers store as null, NOT as 0 (Number("") === 0 would silently pin the knob to its minimum).
+function numOrNull(v: string): number | null {
+  const n = Number(v.trim());
+  return v.trim() && Number.isFinite(n) ? n : null;
+}
 // Read the follow-up step's labels: the new `assignLabels` array, falling back to the legacy single
 // `assignLabel` string so an agent saved before multi-label keeps its label in the editor.
 function stepLabels(st: Record<string, unknown>): string[] {
@@ -309,6 +315,12 @@ function readBehaviorState(a: Agent) {
       voice: str(tt.voice),
       credentialRef: str(tt.credentialRef),
       normalize: typeof tt.normalize === "boolean" ? tt.normalize : false,
+      stability: num(tt.stability),
+      similarityBoost: num(tt.similarityBoost),
+      style: num(tt.style),
+      speed: num(tt.speed),
+      speakerBoost:
+        typeof tt.speakerBoost === "boolean" ? tt.speakerBoost : null,
     },
     split: {
       enabled: typeof sp.enabled === "boolean" ? sp.enabled : true,
@@ -580,6 +592,13 @@ export function AgentEditorPage() {
     voice: "",
     credentialRef: "",
     normalize: false,
+    // Delivery knobs (ElevenLabs voice_settings). Empty string = leave it to the provider, which is
+    // what an install that never opens this section keeps sending.
+    stability: "",
+    similarityBoost: "",
+    style: "",
+    speed: "",
+    speakerBoost: null as boolean | null,
   });
   // Reply in multiple messages (split + typing delay). Mirrors modules/split
   // (on by default, wpm 250 — matches SPLIT_DEFAULTS).
@@ -1021,6 +1040,13 @@ export function AgentEditorPage() {
         voice: tts.voice.trim(),
         credentialRef: tts.credentialRef || null,
         normalize: tts.normalize,
+        // NOTE: blank clears the knob (null), so the operator can hand a field back to the provider
+        // after having set it. readTtsConfig clamps whatever number survives.
+        stability: numOrNull(tts.stability),
+        similarityBoost: numOrNull(tts.similarityBoost),
+        style: numOrNull(tts.style),
+        speed: numOrNull(tts.speed),
+        speakerBoost: tts.speakerBoost,
       },
       split: {
         enabled: split.enabled,

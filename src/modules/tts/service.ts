@@ -13,7 +13,7 @@ import {
   type TtsResult,
 } from "@/modules/tts/providers";
 import { tryResolveVaultEntry } from "@/modules/vault/service";
-import type { TtsConfig } from "./settings";
+import { type TtsConfig, voiceSettingsOf } from "./settings";
 
 // Text-to-speech orchestration: normalize the reply for speech, synthesize via the configured
 // provider (key from the vault), and return the audio for the Chatwoot voice-note upload. The
@@ -43,6 +43,30 @@ export function prepareSpeechText(input: string): string {
     .replace(/[ \t]+/g, " ")
     .replace(/\n{2,}/g, "\n")
     .trim();
+}
+
+// Prompt section injected for the turns that will ANSWER with a voice note. `userSentAudio` is known
+// before generation on both real paths (direct: firstAudioAttachment; flush: pending.some(audio)) but
+// used to be read only AFTER the reply existed, to pick text vs audio — so the model wrote for the eye
+// and the reply was spoken anyway. prepareSpeechText strips the markup and llmNormalizeForSpeech fixes
+// the numbers, but neither restructures a sentence: a clipped, list-shaped reply still sounds like a
+// machine reading a form. Telling the model up front is the only thing that changes the WORDING.
+// NOTE: no SSML and no language pinning here on purpose (see docs/tts.md) — the reply language comes
+// from the agent's own prompt, and this section must not fight it.
+export function buildSpeechContextSection(): string {
+  return [
+    "## This reply will be spoken",
+    "",
+    "The customer sent a voice note, so this turn's reply is synthesized to audio and HEARD, never read.",
+    "Write it for the ear, in the SAME language you would otherwise answer in:",
+    "",
+    "- No markdown, no bullet or numbered lists, no emoji. They are stripped before synthesis, so the",
+    "  structure they imply is lost and only the bare words are spoken.",
+    "- Say numbers, times, dates and money the way they are spoken, not the way they are written.",
+    "- Connect the sentences. Clipped one-line statements read fine on a screen and sound robotic aloud.",
+    "- Offer options the way a person would say them out loud, not as a comma-separated list.",
+    "- Keep it to a few sentences, and ask at most one question, at the end.",
+  ].join("\n");
 }
 
 export interface SynthesizeReplyParams {
@@ -180,6 +204,7 @@ export async function synthesizeReply(
         baseURL: effectiveBaseURL,
         fetchImpl: params.deps?.fetchImpl ?? fetch,
         format,
+        voiceSettings: voiceSettingsOf(cfg),
       }),
   );
 }

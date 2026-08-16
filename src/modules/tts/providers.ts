@@ -10,6 +10,9 @@
 // not a transcode); openrouter only emits mp3 and therefore cannot serve Instagram at all (the
 // service falls back to a text reply there).
 
+// NOTE: type-only import — settings.ts imports TTS_PROVIDER_NAMES from here, and erasing this at
+// compile time keeps that from becoming a runtime require cycle.
+import type { TtsVoiceSettings } from "./settings";
 import { pcmToWav } from "./wav";
 
 const TTS_TIMEOUT_MS = 60_000;
@@ -28,6 +31,9 @@ export interface TtsRequest {
   // NOTE: delivery container for the destination channel (see pickTtsFormat). Adapters map it onto their
   // provider parameter and return the matching mime/fileName.
   format: TtsOutputFormat;
+  // NOTE: how the words are delivered (see TtsVoiceSettings). Omitted/null = the operator set nothing,
+  // so the adapter drops the field entirely instead of sending its own idea of a default.
+  voiceSettings?: TtsVoiceSettings | null;
 }
 
 export interface TtsResult {
@@ -210,6 +216,27 @@ function elevenlabsOutput(format: TtsOutputFormat): string {
   return ELEVENLABS_OUTPUT[format] ?? "opus_48000_64";
 }
 
+// Maps our provider-neutral delivery knobs onto ElevenLabs' `voice_settings`, dropping every field the
+// operator left unset so the payload never asserts a default we invented. Returns undefined when
+// nothing was set, which keeps the body identical to what we sent before this existed — ElevenLabs
+// then falls back to the settings saved on the voice itself.
+function elevenlabsVoiceSettings(
+  v: TtsVoiceSettings | null | undefined,
+): Record<string, number | boolean> | undefined {
+  if (!v) return undefined;
+  const out: Record<string, number | boolean> = {};
+  // NOTE: typeof rather than a null check — the fields are optional on the type, so an absent knob is
+  // undefined, and `undefined !== null` would put an undefined into the payload.
+  if (typeof v.stability === "number") out.stability = v.stability;
+  if (typeof v.similarityBoost === "number")
+    out.similarity_boost = v.similarityBoost;
+  if (typeof v.style === "number") out.style = v.style;
+  if (typeof v.speed === "number") out.speed = v.speed;
+  if (typeof v.speakerBoost === "boolean")
+    out.use_speaker_boost = v.speakerBoost;
+  return Object.keys(out).length ? out : undefined;
+}
+
 async function elevenlabsSynthesize(req: TtsRequest): Promise<TtsResult> {
   const base = (req.baseURL ?? "https://api.elevenlabs.io/v1").replace(
     /\/+$/,
@@ -225,7 +252,13 @@ async function elevenlabsSynthesize(req: TtsRequest): Promise<TtsResult> {
         "content-type": "application/json",
         ...(req.format === "ogg_opus" ? { accept: "audio/ogg" } : {}),
       },
-      body: JSON.stringify({ text: req.text, model_id: req.model }),
+      body: JSON.stringify({
+        text: req.text,
+        model_id: req.model,
+        // NOTE: JSON.stringify drops an undefined value, so an agent with no knobs set sends exactly
+        // the two fields it always sent.
+        voice_settings: elevenlabsVoiceSettings(req.voiceSettings),
+      }),
       redirect: "error",
       signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
     },

@@ -51,6 +51,8 @@ import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 import {
   type TtsFormState,
+  ttsNormalizerBaseUrlInvalid,
+  ttsNormalizerEffectiveSource,
   ttsNormalizerNeedsOwnCredential,
   ttsNormalizerProviderChanged,
 } from "./ttsFormState";
@@ -186,9 +188,14 @@ interface BehaviorTabProps {
   tts: TtsFormState;
   setTts: React.Dispatch<React.SetStateAction<TtsFormState>>;
   // The agent's own model, to render the speech rewrite's inherited default honestly (blank there
-  // means "the agent's model" while the provider is unchanged).
+  // means "the agent's model" while the provider is unchanged) and to let the rewrite's model picker
+  // authenticate with the key the rewrite will actually run on.
   agentModelProvider: string;
   agentModelName: string;
+  agentModelCredentialRef: string;
+  agentModelBaseUrl: string;
+  ttsNormalizeCredBaseUrl: string | null;
+  onTtsNormalizeEntryChange: (entry: VaultEntry | null) => void;
   split: SplitState;
   setSplit: React.Dispatch<React.SetStateAction<SplitState>>;
   vision: VisionState;
@@ -754,6 +761,10 @@ export function BehaviorTab({
   setTts,
   agentModelProvider,
   agentModelName,
+  agentModelCredentialRef,
+  agentModelBaseUrl,
+  ttsNormalizeCredBaseUrl,
+  onTtsNormalizeEntryChange,
   split,
   setSplit,
   vision,
@@ -791,6 +802,26 @@ export function BehaviorTab({
     vision.provider === "openai-compatible" &&
     !visionCredBaseUrl &&
     !isValidHttpUrl(vision.baseURL);
+
+  // The speech rewrite's model, resolved the way the RUNTIME will resolve it (inherited field by
+  // field while the provider is the agent's own), so the picker queries with a key that works and
+  // the endpoint check covers the inherited case too.
+  const agentModel = {
+    provider: agentModelProvider,
+    credentialRef: agentModelCredentialRef,
+    baseURL: agentModelBaseUrl,
+  };
+  const normalizeSource = ttsNormalizerEffectiveSource(
+    tts,
+    agentModel,
+    ttsNormalizeCredBaseUrl,
+  );
+  const normalizeBaseUrlInvalid = ttsNormalizerBaseUrlInvalid(
+    tts,
+    agentModel,
+    ttsNormalizeCredBaseUrl,
+    isValidHttpUrl,
+  );
 
   // Transcription language: a curated dropdown with an "other" escape to a free-text ISO code.
   const sttLangKnown = (STT_LANGUAGES as readonly string[]).includes(
@@ -1438,6 +1469,7 @@ export function BehaviorTab({
                               tts.normalizeProvider,
                               agentModelProvider,
                             )}
+                            onEntryChange={onTtsNormalizeEntryChange}
                             compatibleTypes={credentialCompat.model(
                               tts.normalizeProvider,
                             )}
@@ -1454,10 +1486,13 @@ export function BehaviorTab({
                               setTts({ ...tts, normalizeModel: v })
                             }
                             provider={tts.normalizeProvider}
+                            // The picker lists models by CALLING the provider, so it has to use the
+                            // credential the rewrite will actually run on: the agent's own, while
+                            // the provider is unchanged and no dedicated key was picked.
                             credentialRef={
-                              tts.normalizeCredentialRef || undefined
+                              normalizeSource.credentialRef || undefined
                             }
-                            baseURL={tts.normalizeBaseURL || undefined}
+                            baseURL={normalizeSource.baseURL || undefined}
                             // NOTE: blank inherits the AGENT's model while the provider is unchanged,
                             // and only falls back to the provider default once it differs (see
                             // resolveNormalizeModel). The placeholder has to say the same thing, or
@@ -1479,19 +1514,38 @@ export function BehaviorTab({
                         {tts.normalizeProvider === "openai-compatible" && (
                           <FormField
                             label={t("editor.baseURL", "Base URL")}
-                            description={t(
-                              "editor.ttsNormalizeBaseURLHint",
-                              "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
-                            )}
+                            description={
+                              ttsNormalizeCredBaseUrl
+                                ? t(
+                                    "editor.baseURLFromCredential",
+                                    "Defined by the selected credential.",
+                                  )
+                                : t(
+                                    "editor.ttsNormalizeBaseURLHint",
+                                    "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+                                  )
+                            }
+                            error={
+                              normalizeBaseUrlInvalid &&
+                              tts.normalizeBaseURL.trim()
+                                ? t(
+                                    "common.invalidUrl",
+                                    "Must be a valid http(s) URL.",
+                                  )
+                                : null
+                            }
                           >
                             <Input
-                              value={tts.normalizeBaseURL}
+                              value={
+                                ttsNormalizeCredBaseUrl ?? tts.normalizeBaseURL
+                              }
                               onChange={(e) =>
                                 setTts({
                                   ...tts,
                                   normalizeBaseURL: e.target.value,
                                 })
                               }
+                              disabled={!!ttsNormalizeCredBaseUrl}
                               placeholder="https://api.groq.com/openai/v1"
                             />
                           </FormField>
@@ -2013,7 +2067,9 @@ export function BehaviorTab({
         saving={saving}
         onSave={onSave}
         onDiscard={onDiscard}
-        saveDisabled={sttBaseUrlInvalid || visionBaseUrlInvalid}
+        saveDisabled={
+          sttBaseUrlInvalid || visionBaseUrlInvalid || normalizeBaseUrlInvalid
+        }
         onOpenPlayground={onOpenPlayground}
       />
     </div>

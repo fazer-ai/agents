@@ -122,3 +122,58 @@ export function ttsNormalizerNeedsOwnCredential(
   const named = normalizeProvider.trim();
   return named !== "" && named !== agentProvider;
 }
+
+// The agent's own model, as the editor holds it. `baseURL` is the EFFECTIVE one (the selected
+// credential's, when it carries one, else the typed field), which is what the runtime ends up using.
+export interface AgentModelSource {
+  provider: string;
+  credentialRef: string;
+  baseURL: string;
+}
+
+// Which credential and endpoint the rewrite actually runs on, mirroring `resolveNormalizeModel`
+// field by field. The model picker lists models by CALLING the provider, so handing it only the
+// rewrite's own fields left it with nothing to authenticate with on the one change this feature
+// exists for ("same account, cheaper model"): the operator names the agent's provider, leaves the
+// key inherited, and the model list came back empty with "select a credential".
+//
+// A DIFFERENT provider inherits nothing, for the same reason the resolver refuses it: everything the
+// agent holds belongs to the other vendor.
+export function ttsNormalizerEffectiveSource(
+  tts: TtsFormState,
+  agent: AgentModelSource,
+  ownCredBaseUrl: string | null,
+): { credentialRef: string; baseURL: string } {
+  const switched = ttsNormalizerNeedsOwnCredential(
+    tts.normalizeProvider,
+    agent.provider,
+  );
+  const ownBaseUrl = ownCredBaseUrl ?? tts.normalizeBaseURL.trim();
+  if (switched) {
+    return {
+      credentialRef: tts.normalizeCredentialRef,
+      baseURL: ownBaseUrl,
+    };
+  }
+  return {
+    credentialRef: tts.normalizeCredentialRef || agent.credentialRef,
+    baseURL: ownBaseUrl || agent.baseURL,
+  };
+}
+
+// An openai-compatible endpoint is nothing without its base URL: `createChatModel` rejects the
+// configuration, the build throws, and the rewrite is skipped as `model_not_runnable` on every audio
+// reply, silently. The agent's own model field is guarded the same way (GeneralTab's
+// `modelBaseUrlInvalid`), and this is the same guard for the rewrite's — including the inherited
+// case, where the endpoint comes from the agent and is already guaranteed by that other check.
+export function ttsNormalizerBaseUrlInvalid(
+  tts: TtsFormState,
+  agent: AgentModelSource,
+  ownCredBaseUrl: string | null,
+  isValidUrl: (raw: string) => boolean,
+): boolean {
+  if (!tts.normalize) return false;
+  if (tts.normalizeProvider.trim() !== "openai-compatible") return false;
+  const { baseURL } = ttsNormalizerEffectiveSource(tts, agent, ownCredBaseUrl);
+  return !isValidUrl(baseURL);
+}

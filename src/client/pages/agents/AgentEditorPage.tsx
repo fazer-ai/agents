@@ -567,6 +567,12 @@ export function AgentEditorPage() {
   );
   // User's own vision base URL value preserved while a credential with baseUrl is selected.
   const visionUserBaseUrlRef = useRef("");
+  // Base URL from the credential selected for the speech rewrite (locks the input when set).
+  const [ttsNormalizeCredBaseUrl, setTtsNormalizeCredBaseUrl] = useState<
+    string | null
+  >(null);
+  // User's own rewrite base URL value preserved while a credential with baseUrl is selected.
+  const ttsNormalizeUserBaseUrlRef = useRef("");
   // Text-to-speech (audio replies). Mode + provider mirror modules/tts.
   // Same reader the saved agent goes through, so a new field can never exist in one and not the
   // other: the Behavior save REPLACES this block wholesale.
@@ -2081,6 +2087,21 @@ export function AgentEditorPage() {
     }
   };
 
+  // Closed-over callback for the speech rewrite's credential (mirror of onSttEntryChange).
+  const onTtsNormalizeEntryChange = (entry: VaultEntry | null) => {
+    const credUrl = entry?.baseUrl ?? null;
+    const restore = shouldRestoreUserBaseUrl(ttsNormalizeCredBaseUrl, credUrl);
+    setTtsNormalizeCredBaseUrl(credUrl);
+    if (credUrl) {
+      ttsNormalizeUserBaseUrlRef.current = tts.normalizeBaseURL;
+    } else if (restore) {
+      setTts((prev) => ({
+        ...prev,
+        normalizeBaseURL: ttsNormalizeUserBaseUrlRef.current,
+      }));
+    }
+  };
+
   // Shared onScheduleSaved handler: re-fetches hours then sets the saved id.
   const onScheduleSaved = (savedId: string, setter: (v: string) => void) => {
     void loadHours().then(() => setter(savedId));
@@ -2496,6 +2517,12 @@ export function AgentEditorPage() {
                 setTts={setTts}
                 agentModelProvider={model.provider}
                 agentModelName={model.model}
+                agentModelCredentialRef={model.credentialRef}
+                // The EFFECTIVE endpoint: a credential that carries its own wins over the typed
+                // field, exactly as the runtime resolves it.
+                agentModelBaseUrl={modelCredBaseUrl ?? model.baseURL}
+                ttsNormalizeCredBaseUrl={ttsNormalizeCredBaseUrl}
+                onTtsNormalizeEntryChange={onTtsNormalizeEntryChange}
                 split={split}
                 setSplit={setSplit}
                 serviceWindow={serviceWindow}

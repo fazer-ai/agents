@@ -1,3 +1,5 @@
+import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
+
 // Live configuration-health checks for the agent editor (item 1): detect features that are turned on
 // but missing the credential they need to actually run. The common trigger is importing an agent —
 // the import never carries secrets, so every credential ref comes back unset. Each issue carries a
@@ -35,16 +37,20 @@ export interface ConfigIssue {
 export interface ConfigHealthInput {
   modelProvider: string;
   modelCredentialRef: string;
+  // The agent model's EFFECTIVE endpoint, which the rewrite inherits while its provider is the
+  // agent's own.
+  modelBaseURL?: string;
   sttEnabled: boolean;
   sttCredentialRef: string;
   // TTS has no boolean toggle — any mode other than "never" means audio replies are on.
   ttsMode: string;
   ttsCredentialRef: string;
-  // The speech rewrite and the model the operator pointed it at. Empty provider = the agent's own
-  // model, which needs no credential of its own.
+  // The speech rewrite's four overrides, passed WHOLE because the question they answer is answered
+  // by the shared resolver, not re-derived here: which provider, whose key, which endpoint.
   ttsNormalize?: boolean;
   ttsNormalizeProvider?: string;
   ttsNormalizeCredentialRef?: string;
+  ttsNormalizeBaseURL?: string;
   visionEnabled: boolean;
   visionCredentialRef: string;
   // Refs (`vault:<id>`) whose vault entry exists but is still pending (secret not filled in yet). A
@@ -117,20 +123,34 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     { key: "tts", tab: "behavior", sectionId: "tts" },
     credIssue(input.ttsMode !== "never", input.ttsCredentialRef, pending),
   );
-  // The speech rewrite on a provider of its own. Two ways it cannot run, and both are silent at
-  // runtime (the rewrite is best-effort, so the audio still goes out, unrewritten): a DIFFERENT
-  // provider with no key of its own, which is refused outright so the agent's key is never
-  // transmitted to another vendor; and a key that is referenced but never filled. A same-provider
-  // override needs nothing, and raises nothing.
+  // The speech rewrite. Both ways it fails are SILENT at runtime (best-effort: the audio still goes
+  // out, unrewritten), so the editor is the only place they surface.
+  //
+  // Which configurations need a key of their own is not decided here: it is asked of the same
+  // resolver the runtime uses, or the two drift. They already had, twice — a keyless
+  // openai-compatible endpoint authenticates by its URL and needs no credential at all, and an
+  // unsupported provider name needs a fix rather than a key.
+  const normalizeOn = Boolean(input.ttsNormalize) && input.ttsMode !== "never";
+  const normalizeResolution = normalizeOn
+    ? resolveNormalizeModel(
+        {
+          normalizeProvider: input.ttsNormalizeProvider,
+          normalizeCredentialRef: input.ttsNormalizeCredentialRef,
+          normalizeBaseURL: input.ttsNormalizeBaseURL,
+        },
+        {
+          provider: input.modelProvider,
+          model: "",
+          baseURL: input.modelBaseURL ?? null,
+        },
+      )
+    : null;
   const normalizeNeedsOwnKey =
-    Boolean(input.ttsNormalize) &&
-    input.ttsMode !== "never" &&
-    // Either the operator pointed it at a credential of its own (which then has to resolve, whether
-    // or not the provider was also overridden: REST and MCP accept the credential alone), or they
-    // switched provider without one, which the resolver refuses rather than run on the agent's key.
-    (Boolean(input.ttsNormalizeCredentialRef) ||
-      (Boolean(input.ttsNormalizeProvider) &&
-        input.ttsNormalizeProvider !== input.modelProvider));
+    normalizeResolution !== null &&
+    // Either the resolver refuses it for want of a credential, or one is configured and has to
+    // resolve (REST and MCP accept a credential with no provider: same vendor, another account).
+    (normalizeResolution.reason === "provider_without_credential" ||
+      Boolean(input.ttsNormalizeCredentialRef));
   push(
     { key: "ttsNormalize", tab: "behavior", sectionId: "tts" },
     credIssue(

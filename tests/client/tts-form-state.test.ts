@@ -329,4 +329,19 @@ describe("the rewrite's endpoint has to be usable before saving", () => {
       ),
     ).toBe(false);
   });
+
+  // The block is HIDDEN with audio replies off, so blocking Save on it would freeze the whole
+  // Behavior tab with nothing on screen to explain it — including the save that turns audio off.
+  test("audio replies turned off is never flagged, whatever is left in the fields", () => {
+    expect(
+      ttsNormalizerBaseUrlInvalid(
+        {
+          ...form({ normalizeProvider: "openai-compatible" }),
+          mode: "never",
+        },
+        OPENAI,
+        null,
+      ),
+    ).toBe(false);
+  });
 });

@@ -180,7 +180,10 @@ export function ttsNormalizerBaseUrlInvalid(
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
 ): boolean {
-  if (!tts.normalize) return false;
+  // A rewrite that cannot run is not a misconfiguration to block the save on: with audio replies off
+  // the whole block is hidden, so blocking Save here would freeze the Behavior tab with nothing on
+  // screen to explain it, including the save that turns audio off in the first place.
+  if (tts.mode === "never" || !tts.normalize) return false;
   const r = ttsNormalizerResolution(tts, agent, ownCredBaseUrl);
   return !r.runnable && r.reason === "endpoint_missing";
 }

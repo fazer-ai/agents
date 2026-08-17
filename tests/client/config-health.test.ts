@@ -294,5 +294,46 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
         }),
       ).toEqual([]);
     });
+
+    // An openai-compatible endpoint authenticates by its URL: the resolver runs it with no key at
+    // all, so a permanent "missing credential" warning here would be the editor contradicting the
+    // runtime about a configuration that works.
+    test("a keyless openai-compatible endpoint with a URL raises nothing", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "openai-compatible",
+          ttsNormalizeBaseURL: "http://llama:8080/v1",
+        }),
+      ).toEqual([]);
+    });
+
+    // Same provider, no endpoint of its own: it inherits the agent's, so there is nothing to warn
+    // about here either.
+    test("an openai-compatible agent lending its endpoint raises nothing", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          modelProvider: "openai-compatible",
+          modelBaseURL: "http://llama:8080/v1",
+          ttsNormalize: true,
+          ttsNormalizeProvider: "openai-compatible",
+        }),
+      ).toEqual([]);
+    });
+
+    // A provider name REST or MCP stored that we do not support. It is refused for a reason that is
+    // NOT a missing key, so telling the operator to add a credential would send them down the wrong
+    // path entirely.
+    test("an unsupported provider name is not reported as a missing credential", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "anthropik",
+        }),
+      ).toEqual([]);
+    });
   });
 });

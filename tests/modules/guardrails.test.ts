@@ -279,6 +279,30 @@ describe("analyzeGuardrail", () => {
     expect([v.violated, v.error]).toEqual([false, undefined]);
   });
 
+  // A model that answers twice has not answered: picking the first ignores a self-correction, and
+  // picking the last would approve a real violation whenever the trailing object is the stale one.
+  test("two conflicting verdicts are unanalyzed, not resolved by guessing", async () => {
+    const v = await analyzeGuardrail(
+      fakeModel(
+        '{"violated": true, "categories": ["toxicity"], "rationale": "x", "suggestedReply": null}\n' +
+          'Correction: {"violated": false, "categories": [], "rationale": "", "suggestedReply": null}',
+      ),
+      base,
+    );
+    expect([v.violated, typeof v.error]).toEqual([false, "string"]);
+  });
+
+  // A nested object belongs to its parent and must not read as a second answer.
+  test("a nested object is not a second verdict", async () => {
+    const v = await analyzeGuardrail(
+      fakeModel(
+        '{"violated": true, "categories": ["toxicity"], "rationale": "x", "suggestedReply": null, "meta": {"score": 1}}',
+      ),
+      base,
+    );
+    expect([v.violated, v.error]).toEqual([true, undefined]);
+  });
+
   test("output with a malformed JSON object is reported", async () => {
     const v = await analyzeGuardrail(
       fakeModel('Sure: {"violated": true, categories: [oops}'),

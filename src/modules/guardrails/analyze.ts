@@ -50,17 +50,15 @@ function messageText(content: BaseMessage["content"]): string {
 
 const unanalyzed = (error: string): GuardrailVerdict => ({ ...CLEAN, error });
 
-// The first BALANCED object, not everything up to the last "}": a verdict followed by prose that
-// happens to contain a brace ("...}, as required.") would otherwise be sliced together with that
-// prose and fail to parse, discarding a perfectly good verdict — which, for a violation, means
-// silently approving it. Braces inside strings don't count, and \" doesn't close one.
-function firstJsonObject(raw: string): string | null {
-  const start = raw.indexOf("{");
-  if (start < 0) return null;
+// Every TOP-LEVEL balanced object in the response, in order. Nested objects are not returned (they
+// belong to their parent), braces inside strings do not count, and \" does not close one.
+function topLevelObjects(raw: string): string[] {
+  const out: string[] = [];
+  let start = -1;
   let depth = 0;
   let inString = false;
   let escaped = false;
-  for (let i = start; i < raw.length; i++) {
+  for (let i = 0; i < raw.length; i++) {
     const c = raw[i];
     if (escaped) {
       escaped = false;
@@ -75,40 +73,58 @@ function firstJsonObject(raw: string): string | null {
       continue;
     }
     if (inString) continue;
-    if (c === "{") depth++;
-    else if (c === "}" && --depth === 0) return raw.slice(start, i + 1);
+    if (c === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (c === "}" && depth > 0 && --depth === 0) {
+      out.push(raw.slice(start, i + 1));
+    }
   }
-  return null;
+  return out;
 }
 
-// Extract the verdict object from a model response (tolerates ```json fences / prose around it).
+// The response must contain EXACTLY ONE verdict, and anything else is "we did not get an answer".
+// One rule, because three rounds of review found three ways to read a non-answer as an approval, and
+// they were all the same mistake: for a moderation feature, ambiguity has to fail towards "unknown",
+// never towards "clean". What it settles, in order of how they were found:
+//
+//   * a verdict followed by prose that carries braces ("the policy {toxicity} applies") — the prose
+//     is not a parseable verdict, so it drops out and the real one is still found;
+//   * `{}` or `{"violated": "true"}` — parseable and unusable, so neither of them is a candidate;
+//   * a self-correction (`{"violated": true}` … `Correction: {"violated": false}`) — two candidates,
+//     and picking either one is a guess about which the model meant.
+//
+// The alternative for the last case, taking the last object, is a guess in the other direction: the
+// same shape would silently approve a real violation whenever the trailing object is the stale one.
 function parseVerdict(raw: string): GuardrailVerdict {
-  const slice = firstJsonObject(raw);
-  if (slice === null) return unanalyzed("no JSON object in response");
-  try {
-    const obj = JSON.parse(slice) as Record<string, unknown>;
-    // Only a literal boolean is a verdict. `{}` or `{"violated":"true"}` are parseable and unusable,
-    // and reading them as `false` is the same silent approval this whole path exists to end: the
-    // guardrail would report neither a violation nor a failure to analyze.
-    if (obj.violated === false) return CLEAN;
-    if (obj.violated !== true) {
-      return unanalyzed("verdict has no boolean `violated` field");
+  const candidates: Record<string, unknown>[] = [];
+  for (const slice of topLevelObjects(raw)) {
+    try {
+      const obj = JSON.parse(slice) as Record<string, unknown>;
+      if (typeof obj.violated === "boolean") candidates.push(obj);
+    } catch {
+      // Not a verdict; prose and half-written objects are expected here.
     }
-    const categories = Array.isArray(obj.categories)
-      ? obj.categories.filter((c): c is string => typeof c === "string")
-      : [];
-    return {
-      violated: true,
-      categories,
-      rationale: typeof obj.rationale === "string" ? obj.rationale : "",
-      suggestedReply:
-        typeof obj.suggestedReply === "string" && obj.suggestedReply.trim()
-          ? obj.suggestedReply.trim()
-          : null,
-    };
-  } catch {
-    return unanalyzed("unparseable verdict JSON");
   }
+  if (candidates.length === 0)
+    return unanalyzed("no usable verdict in response");
+  if (candidates.length > 1) {
+    return unanalyzed(`${candidates.length} conflicting verdicts in response`);
+  }
+  const obj = candidates[0] as Record<string, unknown>;
+  if (obj.violated === false) return CLEAN;
+  const categories = Array.isArray(obj.categories)
+    ? obj.categories.filter((c): c is string => typeof c === "string")
+    : [];
+  return {
+    violated: true,
+    categories,
+    rationale: typeof obj.rationale === "string" ? obj.rationale : "",
+    suggestedReply:
+      typeof obj.suggestedReply === "string" && obj.suggestedReply.trim()
+        ? obj.suggestedReply.trim()
+        : null,
+  };
 }
 
 // Run the guardrails agent over `text`. Best-effort and FAIL-OPEN: any model/timeout/parse error

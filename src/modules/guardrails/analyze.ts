@@ -105,7 +105,7 @@ function parseVerdict(raw: string): GuardrailVerdict {
       const obj = JSON.parse(slice) as Record<string, unknown>;
       if (typeof obj.violated === "boolean") candidates.push(obj);
     } catch {
-      // Not a verdict; prose and half-written objects are expected here.
+      // NOTE: Not a verdict; prose and half-written objects are expected here.
     }
   }
   if (candidates.length === 0)
@@ -148,7 +148,7 @@ export function splitAnalyses(p: AnalysisParams): {
   policies: AnalysisParams | null;
   relevance: AnalysisParams | null;
 } {
-  // Same predicate that decides whether the message travels at all: no message, no second call, and
+  // NOTE: Same predicate that decides whether the message travels at all: no message, no second call, and
   // the analysis is byte for byte the one that shipped before.
   if (customerMessageForReview(p) === null) {
     return { policies: p, relevance: null };
@@ -160,7 +160,7 @@ export function splitAnalyses(p: AnalysisParams): {
     policies: judgesTheReply
       ? { ...p, checks: otherChecks, customerMessage: undefined }
       : null,
-    // Everything that judges the reply is stripped from this one, the operator's own policy
+    // NOTE: Everything that judges the reply is stripped from this one, the operator's own policy
     // included. Built by dropping keys rather than listing them, so a check added later starts off
     // here instead of silently riding along with the customer's words.
     relevance: {
@@ -174,7 +174,7 @@ export function splitAnalyses(p: AnalysisParams): {
       competitors: [],
       customPolicy: "",
       systemPrompt: undefined,
-      // This half never writes a replacement, whatever the action is, and the runtime falls back to
+      // NOTE: This half never writes a replacement, whatever the action is, and the runtime falls back to
       // the configured template message. Two reasons, and the second is the one that settles it:
       //
       //   * the policies were stripped from this call so the customer's words cannot trip them, so
@@ -239,12 +239,12 @@ export async function analyzeGuardrail(
   if (policies === null) {
     return withoutReplacement(await runAnalysis(model, relevance));
   }
-  // In parallel: the operator is paying for a turn a customer is waiting on.
+  // NOTE: In parallel: the operator is paying for a turn a customer is waiting on.
   const [byPolicy, byRelevance] = await Promise.all([
     runAnalysis(model, policies),
     runAnalysis(model, relevance).then(withoutReplacement),
   ]);
-  // A rewrite from the policy half PRESERVES the substance of the reply and repairs its form, which
+  // NOTE: A rewrite from the policy half PRESERVES the substance of the reply and repairs its form, which
   // is the whole reason it is allowed to write one. When relevance also tripped, the substance is
   // what was wrong, so that rewrite is a polite version of a reply that still does not answer, and
   // it reads more like an answer than the original did. The template goes out instead.
@@ -259,7 +259,7 @@ async function runAnalysis(
   params: AnalysisParams,
 ): Promise<GuardrailVerdict> {
   const system = buildGuardrailSystemPrompt(params);
-  // The customer's message rides at USER level, fenced and named, never inside the system prompt:
+  // NOTE: The customer's message rides at USER level, fenced and named, never inside the system prompt:
   // there it would read as one more instruction from the operator, and the customer writes it. The
   // text under review keeps its bare shape, so a call with the check off is byte-identical to before.
   const customer = fenceCustomerMessage(params);

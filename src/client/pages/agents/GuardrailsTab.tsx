@@ -186,7 +186,7 @@ export function GuardrailsTab({
                 ))}
               </Select>
             </FormField>
-            {/* Shown for "generated" too, because that action falls back to this text whenever no
+            {/* NOTE: Shown for "generated" too, because that action falls back to this text whenever no
                 replacement is written: when the model returns none, and always when the relevance
                 check is what tripped. Hiding it here left the operator unable to see or edit the
                 message their customers actually receive. */}

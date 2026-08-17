@@ -218,15 +218,23 @@ describe("buildGuardrailSystemPrompt", () => {
   // "analyze this" as "analyze everything you were given". A customer asking "vocês trabalham com
   // <competitor>?" would then make a perfectly safe reply a competitor_mention, and the configured
   // action replaces that reply. The context has to be scoped to the check that asked for it.
-  test("scopes the customer message to answer_relevance only", () => {
+  // The operator's own policy is the one most likely to match a customer's words ("never discuss
+  // pricing"), and it is appended AFTER this instruction, so scoping by position ("the policies
+  // above") silently left it out.
+  test("scopes the customer message to answer_relevance only, custom policy included", () => {
     const p = buildGuardrailSystemPrompt({
       ...relevance,
       checks: { ...relevance.checks, competitorMentions: true },
       competitors: ["Concorrente X"],
-      customerMessage: "vocês trabalham com Concorrente X?",
+      customPolicy: "Never discuss pricing.",
+      customerMessage: "vocês trabalham com Concorrente X? qual o preço?",
     });
     expect(p).toContain("context for answer_relevance ONLY");
-    expect(p).toContain("applies to the assistant reply alone");
+    expect(p).toContain("the additional policy included");
+    expect(p).toContain("judge the assistant reply alone");
+    // Scoping by position is what broke: it has to hold wherever the sections land.
+    expect(p).not.toContain("policy above");
+    expect(p).toContain("Additional policy: Never discuss pricing.");
   });
 
   // The reply under review is a superset of the question far more often than it is off-topic, and

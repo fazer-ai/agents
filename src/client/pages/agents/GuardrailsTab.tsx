@@ -186,9 +186,21 @@ export function GuardrailsTab({
                 ))}
               </Select>
             </FormField>
-            {d.action === "template" && (
+            {/* Shown for "generated" too, because that action falls back to this text whenever no
+                replacement is written: when the model returns none, and always when the relevance
+                check is what tripped. Hiding it here left the operator unable to see or edit the
+                message their customers actually receive. */}
+            {d.action !== "silent" && (
               <FormField
                 label={t("editor.guardrails.template", "Template message")}
+                description={
+                  d.action === "generated"
+                    ? t(
+                        "editor.guardrails.templateFallbackHint",
+                        "Sent whenever no replacement gets written: when the model returns none, and always when the relevance check is the one that tripped, since there is no reply to rewrite.",
+                      )
+                    : undefined
+                }
               >
                 <Textarea
                   value={d.templateMessage}

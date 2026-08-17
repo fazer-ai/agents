@@ -792,7 +792,8 @@
       "outputDesc": "Screen the agent's reply before it is sent.",
       "policy": "Policy",
       "policyDesc": "Competitor list and extra instructions used by the checks.",
-      "template": "Template message"
+      "template": "Template message",
+      "templateFallbackHint": "Sent whenever no replacement gets written: when the model returns none, and always when the relevance check is the one that tripped, since there is no reply to rewrite."
     },
     "handoffAgentChoice": "Let the AI choose",
     "handoffAgentChoiceHint": "The AI automatically sees your Chatwoot agents and teams and picks one when handing off. Optionally steer it from the instructions (e.g. send billing questions to Finance).",

@@ -794,7 +794,8 @@
       "outputDesc": "Analisa a resposta do agente antes de enviá-la.",
       "policy": "Política",
       "policyDesc": "Lista de concorrentes e instruções extras usadas pelas checagens.",
-      "template": "Mensagem template"
+      "template": "Mensagem template",
+      "templateFallbackHint": "Enviada sempre que nenhuma resposta substituta é escrita: quando o modelo não devolve nenhuma, e sempre que a checagem de relevância for a que disparou, porque aí não há resposta para reescrever."
     },
     "handoffAgentChoice": "A IA escolhe",
     "handoffAgentChoiceHint": "A IA enxerga automaticamente seus agentes e times do Chatwoot e escolhe um ao transferir. Opcionalmente, oriente pela instrução (ex.: mande cobrança para o Financeiro).",

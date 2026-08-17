@@ -8,8 +8,7 @@ import logger from "@/api/lib/logger";
 import { runModelCall } from "@/graph/model-limit";
 import {
   buildGuardrailSystemPrompt,
-  CUSTOMER_MESSAGE_TAG,
-  customerMessageForReview,
+  fenceCustomerMessage,
   type GuardrailPromptParams,
 } from "./prompts";
 
@@ -140,15 +139,9 @@ export async function analyzeGuardrail(
   // The customer's message rides at USER level, fenced and named, never inside the system prompt:
   // there it would read as one more instruction from the operator, and the customer writes it. The
   // text under review keeps its bare shape, so a call with the check off is byte-identical to before.
-  const customer = customerMessageForReview(params);
+  const customer = fenceCustomerMessage(params);
   const messages: BaseMessage[] = [new SystemMessage(system)];
-  if (customer !== null) {
-    messages.push(
-      new HumanMessage(
-        `${CUSTOMER_MESSAGE_TAG}\n${customer}\n</customer_message>`,
-      ),
-    );
-  }
+  if (customer !== null) messages.push(new HumanMessage(customer));
   messages.push(new HumanMessage(params.text));
   try {
     const res = await runModelCall(() =>

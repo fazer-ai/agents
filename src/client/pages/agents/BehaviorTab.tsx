@@ -49,7 +49,10 @@ import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import { MODEL_PROVIDERS } from "./GeneralTab";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
-import type { TtsFormState } from "./ttsFormState";
+import {
+  type TtsFormState,
+  ttsNormalizerProviderChanged,
+} from "./ttsFormState";
 import type { Hours, VaultEntry } from "./types";
 
 // Transcription providers (mirror src/modules/stt/providers.ts).
@@ -1396,18 +1399,11 @@ export function BehaviorTab({
                     <FormField label={t("editor.provider", "Provider")}>
                       <Select
                         value={tts.normalizeProvider}
-                        onChange={(e) => {
-                          const provider = e.target.value;
-                          setTts({
-                            ...tts,
-                            normalizeProvider: provider,
-                            // Changing provider invalidates the model name AND the key, exactly as
-                            // in the guardrails block: a model id from another provider is refused,
-                            // and so is its API key.
-                            normalizeModel: "",
-                            normalizeCredentialRef: "",
-                          });
-                        }}
+                        onChange={(e) =>
+                          setTts(
+                            ttsNormalizerProviderChanged(tts, e.target.value),
+                          )
+                        }
                       >
                         <option value="">
                           {t(

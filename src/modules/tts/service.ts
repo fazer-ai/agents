@@ -99,8 +99,8 @@ export async function synthesizeReply(
     logger.warn("tts: provider %s requires a voice — skipping", cfg.provider);
     return skip("no_voice");
   }
-  // NOTE: container per destination channel, resolved BEFORE the LLM normalization below so an
-  // unsupported combination skips without burning a paid normalization call whose output would be
+  // NOTE: container per destination channel. Like every other check here it runs BEFORE the paid
+  // rewrite below, so an unsupported combination skips without burning a call whose output would be
   // discarded. null = the provider cannot emit anything this channel accepts (openrouter on
   // Instagram: mp3-only, and Meta refuses mp3) — synthesizing would produce a message Chatwoot shows
   // as sent and Meta then rejects, so degrade to a text reply with a visible skip.
@@ -112,22 +112,6 @@ export async function synthesizeReply(
       params.channelType,
     );
     return skip("channel_format_unsupported");
-  }
-
-  // Opt-in LLM normalization for natural speech (currency/dates/abbreviations → spoken words, in the
-  // reply's own language). Best-effort: any failure falls back to the raw speech text. Plain text still
-  // reaches the provider (no SSML), and the Chatwoot transcribedText keeps the ORIGINAL reply — only
-  // the synth input is normalized.
-  if (cfg.normalize && params.deps?.normalizeSpeech) {
-    try {
-      const normalized = (await params.deps.normalizeSpeech(speech)).trim();
-      if (normalized) speech = normalized;
-    } catch (e) {
-      logger.warn(
-        "tts: speech normalization failed, using raw text: %s",
-        e instanceof Error ? e.message : String(e),
-      );
-    }
   }
 
   if (!cfg.credentialRef) {
@@ -150,6 +134,24 @@ export async function synthesizeReply(
   if (provider.requiresBaseURL && !effectiveBaseURL) {
     logger.warn("tts: provider %s requires a baseURL — skipping", cfg.provider);
     return skip("no_base_url");
+  }
+
+  // The rewrite for speech, LAST of all: it is a billed model call, and every check above can still
+  // abort this synthesis. It used to run before the credential was even resolved, which was harmless
+  // while the rewrite was opt-in and is not now that it ships on: an agent set to mirror/preference
+  // with no TTS credential would pay for a rewrite on every audio-triggering turn and still fall back
+  // to text. Best-effort: any failure here keeps the raw speech text. The Chatwoot transcribedText
+  // keeps the ORIGINAL reply either way; only the synth input is rewritten.
+  if (cfg.normalize && params.deps?.normalizeSpeech) {
+    try {
+      const normalized = (await params.deps.normalizeSpeech(speech)).trim();
+      if (normalized) speech = normalized;
+    } catch (e) {
+      logger.warn(
+        "tts: speech normalization failed, using raw text: %s",
+        e instanceof Error ? e.message : String(e),
+      );
+    }
   }
 
   return withFlowStage(

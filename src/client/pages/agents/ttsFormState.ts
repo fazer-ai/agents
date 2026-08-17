@@ -89,3 +89,20 @@ export function ttsSettingsFrom(tts: TtsFormState): Record<string, unknown> {
     speakerBoost: tts.speakerBoost,
   };
 }
+
+// Switching the rewrite's provider invalidates everything that was picked FOR the old one: the model
+// id (another vendor refuses it), the API key (same), and the base URL, which is the dangerous one
+// because its field only renders for openai-compatible. Left behind, it keeps steering the new
+// provider's client at an endpoint the operator can no longer see, and the rewrite fails or hangs.
+export function ttsNormalizerProviderChanged(
+  tts: TtsFormState,
+  provider: string,
+): TtsFormState {
+  return {
+    ...tts,
+    normalizeProvider: provider,
+    normalizeModel: "",
+    normalizeCredentialRef: "",
+    normalizeBaseURL: "",
+  };
+}

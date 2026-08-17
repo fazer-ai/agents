@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   readTtsFormState,
+  ttsNormalizerProviderChanged,
   ttsSettingsFrom,
 } from "@/client/pages/agents/ttsFormState";
 import { readTtsConfig, TTS_DEFAULTS } from "@/modules/tts/settings";
@@ -59,5 +60,26 @@ describe("agent editor TTS round-trip", () => {
     expect(
       readTtsFormState({ mode: "mirror", normalize: false }, true).normalize,
     ).toBe(false);
+  });
+});
+
+describe("switching the rewrite provider", () => {
+  // The base URL is the one that bites: its field only renders for openai-compatible, so a leftover
+  // value keeps steering the new provider's client at an endpoint the operator can no longer see.
+  test("drops every field that belonged to the previous provider", () => {
+    const form = readTtsFormState(SAVED, true);
+    const next = ttsNormalizerProviderChanged(form, "openrouter");
+    expect(next.normalizeProvider).toBe("openrouter");
+    expect(next.normalizeModel).toBe("");
+    expect(next.normalizeCredentialRef).toBe("");
+    expect(next.normalizeBaseURL).toBe("");
+  });
+
+  test("leaves the rest of the block alone", () => {
+    const form = readTtsFormState(SAVED, true);
+    const next = ttsNormalizerProviderChanged(form, "openrouter");
+    expect(next.voice).toBe(form.voice);
+    expect(next.credentialRef).toBe(form.credentialRef);
+    expect(next.speed).toBe(form.speed);
   });
 });

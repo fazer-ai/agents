@@ -398,6 +398,61 @@ describe.skipIf(!dbUp)("tts", () => {
     expect(captured).toBe("cinquenta reais");
   });
 
+  // The rewrite is a BILLED call, and with it shipping on by default an agent set to mirror with no
+  // TTS credential would pay for one on every audio-triggering turn and still fall back to text. Every
+  // check that can abort the synthesis has to come first.
+  test("no credential → the paid rewrite is never called", async () => {
+    const cfg: TtsConfig = {
+      ...TTS_DEFAULTS,
+      mode: "mirror",
+      provider: "openai",
+      credentialRef: null,
+      normalize: true,
+    };
+    let called = 0;
+    const res = await synthesizeReply({
+      tenantId,
+      cfg,
+      text: "olá",
+      base: appDb,
+      deps: {
+        fetchImpl: audioFetch(),
+        normalizeSpeech: async (t) => {
+          called += 1;
+          return t;
+        },
+      },
+    });
+    expect(res).toBeNull();
+    expect(called).toBe(0);
+  });
+
+  test("a credential that no longer resolves → the paid rewrite is never called", async () => {
+    const cfg: TtsConfig = {
+      ...TTS_DEFAULTS,
+      mode: "mirror",
+      provider: "openai",
+      credentialRef: "vault:999999999999",
+      normalize: true,
+    };
+    let called = 0;
+    const res = await synthesizeReply({
+      tenantId,
+      cfg,
+      text: "olá",
+      base: appDb,
+      deps: {
+        fetchImpl: audioFetch(),
+        normalizeSpeech: async (t) => {
+          called += 1;
+          return t;
+        },
+      },
+    });
+    expect(res).toBeNull();
+    expect(called).toBe(0);
+  });
+
   test("normalize falls back to the raw text when the normalizer throws", async () => {
     const cfg: TtsConfig = {
       ...TTS_DEFAULTS,

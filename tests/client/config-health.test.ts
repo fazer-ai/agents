@@ -251,6 +251,40 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ]);
     });
 
+    // REST and MCP accept a credential with no provider (the same vendor, another account key), and
+    // the runtime SKIPS every rewrite when that credential does not resolve. Gating the check on the
+    // provider being set hid exactly that case.
+    test("a credential of its own with the provider inherited is still checked", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "",
+          ttsNormalizeCredentialRef: "vault:3",
+          pendingRefs: new Set(["vault:3"]),
+        }),
+      ).toEqual([
+        {
+          key: "ttsNormalize",
+          tab: "behavior",
+          sectionId: "tts",
+          pending: true,
+          vaultId: "3",
+        },
+      ]);
+    });
+
+    test("a resolvable credential with the provider inherited raises nothing", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "",
+          ttsNormalizeCredentialRef: "vault:3",
+        }),
+      ).toEqual([]);
+    });
+
     test("nothing is flagged while audio replies are off", () => {
       expect(
         computeConfigIssues({

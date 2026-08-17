@@ -124,9 +124,12 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   const normalizeNeedsOwnKey =
     Boolean(input.ttsNormalize) &&
     input.ttsMode !== "never" &&
-    Boolean(input.ttsNormalizeProvider) &&
-    (input.ttsNormalizeProvider !== input.modelProvider ||
-      Boolean(input.ttsNormalizeCredentialRef));
+    // Either the operator pointed it at a credential of its own (which then has to resolve, whether
+    // or not the provider was also overridden: REST and MCP accept the credential alone), or they
+    // switched provider without one, where the agent's key would be refused.
+    (Boolean(input.ttsNormalizeCredentialRef) ||
+      (Boolean(input.ttsNormalizeProvider) &&
+        input.ttsNormalizeProvider !== input.modelProvider));
   push(
     { key: "ttsNormalize", tab: "behavior", sectionId: "tts" },
     credIssue(

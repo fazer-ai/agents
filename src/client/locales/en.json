@@ -767,7 +767,7 @@
       "checkAdherence": "Adherence to the agent's instructions",
       "checkCompetitors": "Competitor mentions",
       "checkRelevance": "The reply answers what the customer asked",
-      "checkRelevanceHint": "Sends the customer's message to the guardrails agent so it can compare. Off by default: after a short message like “sim”, a correct answer can look like an answer to another question, and the action above would replace it.",
+      "checkRelevanceHint": "Sends the customer's message to the guardrails agent so it can compare. Off by default: after a short message like “sim”, a correct answer can look like an answer to another question, and the action above would replace it. Enabled alongside another check, it runs as a second call to the guardrails model: the output review then costs two calls per turn, made in parallel.",
       "checks": "Checks",
       "checkToxicity": "Toxicity / abuse",
       "checkUnsafe": "Unsafe content",

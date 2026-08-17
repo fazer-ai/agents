@@ -769,7 +769,7 @@
       "checkAdherence": "Aderência às instruções do agente",
       "checkCompetitors": "Menção a concorrentes",
       "checkRelevance": "A resposta responde o que o cliente perguntou",
-      "checkRelevanceHint": "Envia a mensagem do cliente para o agente de guardrails poder comparar. Desligado por padrão: depois de uma mensagem curta como “sim”, uma resposta correta pode parecer resposta a outra pergunta, e a ação acima trocaria ela.",
+      "checkRelevanceHint": "Envia a mensagem do cliente para o agente de guardrails poder comparar. Desligado por padrão: depois de uma mensagem curta como “sim”, uma resposta correta pode parecer resposta a outra pergunta, e a ação acima trocaria ela. Ligada junto de outra checagem, ela roda numa segunda chamada ao modelo de guardrails: a revisão de saída passa a custar duas chamadas por turno, feitas em paralelo.",
       "checks": "Checagens",
       "checkToxicity": "Toxicidade / abuso",
       "checkUnsafe": "Conteúdo inseguro",

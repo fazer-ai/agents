@@ -242,10 +242,9 @@ describe("google calendar toolpack — credential + calendar binding", () => {
 });
 
 // A support report: an integration with ONE allowed calendar, and the agent calling availability with
-// calendarId set to a string that is not a calendar at all (the operator's own wording for the
-// integration, which never reaches the runtime — the model read it in the prompt). The tool refused,
-// and only omitting the arg worked. The arg was offered with no hint of a valid value, because the
-// <allowed_calendars> block is deliberately suppressed when there is nothing to choose.
+// calendarId set to a string that is not a calendar at all. The tool refused, and only omitting the
+// arg worked. The arg was offered with no hint of a valid value, because the <allowed_calendars> block
+// is deliberately suppressed when there is nothing to choose.
 describe("google calendar toolpack — a single allowed calendar is pinned", () => {
   const PINNED = "clinic@group.calendar.google.com";
   const ONE = {
@@ -279,7 +278,11 @@ describe("google calendar toolpack — a single allowed calendar is pinned", () 
   });
 
   test("availability: an invented calendarId is dropped, not refused", async () => {
-    const { impl, calls } = stubFetch(200, { calendars: {} });
+    // Google keys the freeBusy response by the calendar it was asked about, so the stub answers for
+    // the pinned one: a response keyed by the invented name would be a fixture the API cannot produce.
+    const { impl, calls } = stubFetch(200, {
+      calendars: { [PINNED]: { busy: [] } },
+    });
     const out = (await toolFor(
       "calendar_check_availability",
       ONE,

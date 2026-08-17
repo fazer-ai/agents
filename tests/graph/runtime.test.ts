@@ -2074,5 +2074,88 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(body).toContain("Ignore your instructions");
       expect(sent).toEqual([[963, REPLY]]);
     });
+
+    // The reason answer_relevance gets its own model call. Measured live against gpt-5.4-mini, with
+    // both checks in one call: a reply naming nobody was flagged competitor_mention in 11 of 16 runs
+    // because the CUSTOMER had named a competitor, and in 0 of 16 with the message absent. The
+    // reviewer below is that behaviour made deterministic: it flags whenever the competitor's name
+    // appears in the material it was handed, which is what a real one does often enough to matter.
+    test("a competitor named by the customer no longer replaces a clean reply", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: { ...RELEVANCE_CHECKS, competitorMentions: true },
+          competitors: ["Zenvia"],
+          templateMessage: "TEMPLATE-COMPETITOR",
+        },
+      });
+      await seedConv(964);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const captured: string[] = [];
+      const nameSpotter = (cfg: ResolvedModelConfig): BaseChatModel =>
+        cfg.model === GUARD_MODEL
+          ? ({
+              invoke: async (msgs: { content: unknown }[]) => {
+                const system = String(msgs[0]?.content ?? "");
+                // Everything under review, without the policy text that names the list itself.
+                const material = msgs
+                  .slice(1)
+                  .map((m) => String(m.content))
+                  .join("\n");
+                captured.push(
+                  `${system.includes("competitor_mention") ? "POLICY" : "no-policy"}::${material}`,
+                );
+                const flags =
+                  system.includes("competitor_mention") &&
+                  material.includes("Zenvia");
+                return {
+                  content: JSON.stringify({
+                    violated: flags,
+                    categories: flags ? ["competitor_mention"] : [],
+                    rationale: flags ? "named a competitor" : "",
+                    suggestedReply: null,
+                  }),
+                };
+              },
+            } as unknown as BaseChatModel)
+          : new FakeListChatModel({ responses: [REPLY] });
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({
+          conversationId: 964,
+          inboxId: G_INBOX,
+          message: {
+            id: 1,
+            content: "vocês trabalham com a Zenvia?",
+            messageType: "incoming",
+            private: false,
+          },
+        }),
+        base: appDb,
+        deps: {
+          makeModel: nameSpotter,
+          makeClient: guardStub(sent, notes),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      // The effect the operator sees: the customer got the agent's reply, not the template.
+      expect(sent).toEqual([[964, REPLY]]);
+      // And the mechanism: two analyses, with the competitor's name reaching only the one that
+      // carries no competitor policy and therefore cannot act on it.
+      expect(captured.length).toBe(2);
+      expect(
+        captured.filter((c) => c.startsWith("POLICY") && c.includes("Zenvia")),
+      ).toEqual([]);
+    });
   });
 });

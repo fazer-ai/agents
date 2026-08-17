@@ -8,6 +8,7 @@ import logger from "@/api/lib/logger";
 import { runModelCall } from "@/graph/model-limit";
 import {
   buildGuardrailSystemPrompt,
+  customerMessageForReview,
   fenceCustomerMessage,
   type GuardrailPromptParams,
 } from "./prompts";
@@ -128,12 +129,96 @@ function parseVerdict(raw: string): GuardrailVerdict {
   };
 }
 
+type AnalysisParams = GuardrailPromptParams & { text: string };
+
+// answer_relevance is the only check whose input is the customer's own message, and putting that
+// message in the same call as the other policies CONTAMINATES them. Measured live against
+// gpt-5.4-mini, same reply and same checks, only the message differing: a reply naming nobody was
+// flagged competitor_mention in 11 of 16 runs because the CUSTOMER had named a competitor, against
+// 0 of 16 with the message absent. Prompt wording could not carry this: a sentence scoping the
+// message to one check took another configuration from 6/16 to 3/16, and the variant that named the
+// policies to ignore took it to 8/16 — telling a model not to consider something makes it consider
+// it. So the separation is structural. The policies keep exactly the call they had before this
+// feature existed, and answer_relevance gets its own, where there is nothing to contaminate.
+// Exported for its own test. What travels in each half is the property this whole change turns on,
+// and asserting it through the built prompt would pass for the wrong reason: `checks` already gates
+// the competitor list, the agent's instructions and the customer's message, so every strip below
+// looks redundant from the outside until the day one of those gates moves.
+export function splitAnalyses(p: AnalysisParams): {
+  policies: AnalysisParams | null;
+  relevance: AnalysisParams | null;
+} {
+  // Same predicate that decides whether the message travels at all: no message, no second call, and
+  // the analysis is byte for byte the one that shipped before.
+  if (customerMessageForReview(p) === null) {
+    return { policies: p, relevance: null };
+  }
+  const otherChecks = { ...p.checks, answerRelevance: false };
+  const judgesTheReply =
+    Object.values(otherChecks).some(Boolean) || p.customPolicy.trim() !== "";
+  return {
+    policies: judgesTheReply
+      ? { ...p, checks: otherChecks, customerMessage: undefined }
+      : null,
+    // Everything that judges the reply is stripped from this one, the operator's own policy
+    // included. Built by dropping keys rather than listing them, so a check added later starts off
+    // here instead of silently riding along with the customer's words.
+    relevance: {
+      ...p,
+      checks: Object.fromEntries(
+        (Object.keys(p.checks) as (keyof typeof p.checks)[]).map((k) => [
+          k,
+          k === "answerRelevance",
+        ]),
+      ) as unknown as typeof p.checks,
+      competitors: [],
+      customPolicy: "",
+      systemPrompt: undefined,
+    },
+  };
+}
+
+// Two analyses, one verdict. A violation on either side is a violation; an error on either side is
+// reported, because "one half never ran" must not read as "screened and approved".
+function mergeVerdicts(
+  a: GuardrailVerdict,
+  b: GuardrailVerdict,
+): GuardrailVerdict {
+  const errors = [a.error, b.error].filter((e): e is string => Boolean(e));
+  const rationale = [a, b]
+    .filter((v) => v.violated && v.rationale)
+    .map((v) => v.rationale)
+    .join("; ");
+  return {
+    violated: a.violated || b.violated,
+    categories: [...new Set([...a.categories, ...b.categories])],
+    rationale,
+    suggestedReply: a.suggestedReply ?? b.suggestedReply,
+    ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
+  };
+}
+
 // Run the guardrails agent over `text`. Best-effort and FAIL-OPEN: any model/timeout/parse error
 // returns a non-violating verdict, so a transient failure never blocks the conversation (the trip is
 // logged; the operator monitors via the flowlog). Mirrors llmNormalizeForSpeech's shape.
 export async function analyzeGuardrail(
   model: BaseChatModel,
-  params: GuardrailPromptParams & { text: string },
+  params: AnalysisParams,
+): Promise<GuardrailVerdict> {
+  const { policies, relevance } = splitAnalyses(params);
+  if (relevance === null) return runAnalysis(model, policies as AnalysisParams);
+  if (policies === null) return runAnalysis(model, relevance);
+  // In parallel: the operator is paying for a turn a customer is waiting on.
+  const [byPolicy, byRelevance] = await Promise.all([
+    runAnalysis(model, policies),
+    runAnalysis(model, relevance),
+  ]);
+  return mergeVerdicts(byPolicy, byRelevance);
+}
+
+async function runAnalysis(
+  model: BaseChatModel,
+  params: AnalysisParams,
 ): Promise<GuardrailVerdict> {
   const system = buildGuardrailSystemPrompt(params);
   // The customer's message rides at USER level, fenced and named, never inside the system prompt:

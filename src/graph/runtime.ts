@@ -390,17 +390,24 @@ export async function runLoadedTurn(
       : null;
   const runGuardrail = async (
     direction: "input" | "output",
-    text: string,
+    // NOTE: Named `subject` rather than `text` on purpose. As `text` it shadowed this function's
+    // enclosing `text` (the customer's message), and the answer_relevance check below needs BOTH:
+    // the reply under review and the message it is supposed to answer.
+    subject: string,
   ): Promise<{ reply: string | null } | null> => {
     const dir = gr[direction];
     if (!guardrailModel || !dir.enabled) return null;
     const verdict = await analyzeGuardrail(guardrailModel, {
       direction,
-      text,
+      text: subject,
       checks: dir.checks,
       competitors: gr.competitors,
       customPolicy: gr.customPolicy,
       systemPrompt: direction === "output" ? loaded.systemPrompt : undefined,
+      // The raw inbound text, not `turnText`: on the first turn of a new conversation the latter
+      // carries CONVERSATION_DIVIDER, and handing the guardrail a system marker as the customer's
+      // words would make it judge the reply against something nobody said.
+      customerMessage: direction === "output" ? text : undefined,
       generationPrompt:
         dir.action === "generated" ? dir.generationPrompt : undefined,
     });

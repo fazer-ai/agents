@@ -11,6 +11,9 @@ export interface GuardrailPromptParams {
   customPolicy: string;
   // The main agent's instructions (its system prompt), for the promptAdherence (output) check.
   systemPrompt?: string;
+  // The customer message this reply is answering, for the answerRelevance (output) check. Without
+  // it the check has nothing to compare against, so both travel under the same condition.
+  customerMessage?: string;
   // Steering for the generated replacement reply (action === "generated"); empty → generic safe reply.
   generationPrompt?: string;
 }
@@ -24,16 +27,26 @@ const CHECK_DEFINITIONS: Record<keyof GuardrailChecks, string> = {
     "competitor_mention — any mention, recommendation, or promotion of a competitor from the list below.",
   promptAdherence:
     "prompt_adherence — the assistant reply goes outside the scope, persona, or policy set by the agent's instructions (off-topic, contradicts those instructions, or leaks internal details).",
+  answerRelevance:
+    "answer_relevance — the assistant reply does not answer what the customer actually asked: it addresses a different question, or leaves the question the customer asked unanswered.",
 };
+
+// The checks that only mean something on an assistant reply, so they never enter an input prompt:
+// one compares the reply against the agent's instructions, the other against the customer's message.
+const OUTPUT_ONLY_CHECKS: (keyof GuardrailChecks)[] = [
+  "promptAdherence",
+  "answerRelevance",
+];
 
 export function buildGuardrailSystemPrompt(p: GuardrailPromptParams): string {
   const subject =
     p.direction === "input"
       ? "a message a CUSTOMER sent to a support assistant"
       : "a REPLY a support assistant is about to send to a customer";
-  // promptAdherence only applies to the output direction.
   const active = (Object.keys(p.checks) as (keyof GuardrailChecks)[]).filter(
-    (k) => p.checks[k] && (k !== "promptAdherence" || p.direction === "output"),
+    (k) =>
+      p.checks[k] &&
+      (!OUTPUT_ONLY_CHECKS.includes(k) || p.direction === "output"),
   );
   const lines: string[] = [
     `You are a content-moderation guardrail. Analyze ${subject} and decide whether it violates any of the ENABLED policies below.`,
@@ -51,6 +64,26 @@ export function buildGuardrailSystemPrompt(p: GuardrailPromptParams): string {
       '"""',
       p.systemPrompt,
       '"""',
+    );
+  }
+  // The customer message and the instruction to use it travel together: a review procedure that
+  // says "compare with the customer message" while no customer message was supplied is an invitation
+  // to invent one.
+  if (
+    p.direction === "output" &&
+    p.checks.answerRelevance &&
+    p.customerMessage?.trim()
+  ) {
+    lines.push(
+      "",
+      "The customer message this reply must answer:",
+      '"""',
+      p.customerMessage.trim(),
+      '"""',
+      "",
+      "For answer_relevance: a reply that gives MORE than was asked, or that continues an exchange" +
+        " already under way, is still an answer. Flag it only when the customer's question is left" +
+        " unanswered.",
     );
   }
   if (p.customPolicy.trim()) {

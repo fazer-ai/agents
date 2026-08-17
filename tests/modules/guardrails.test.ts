@@ -22,6 +22,7 @@ const INPUT_CHECKS = {
   unsafeContent: true,
   competitorMentions: false,
   promptAdherence: false,
+  answerRelevance: false,
 };
 
 describe("readGuardrailsConfig", () => {
@@ -136,6 +137,7 @@ describe("buildGuardrailSystemPrompt", () => {
       unsafeContent: false,
       competitorMentions: false,
       promptAdherence: true,
+      answerRelevance: false,
     },
     competitors: [],
     customPolicy: "",
@@ -148,6 +150,64 @@ describe("buildGuardrailSystemPrompt", () => {
     });
     expect(p).toContain("The agent's instructions");
     expect(p).not.toContain("system prompt");
+  });
+
+  // answer_relevance is the only check whose input is the customer's own message. It is also the
+  // only one that can trip on a CORRECT reply, so everything about it is conditional: the policy
+  // line, the message itself, and the instruction that reads it.
+  const relevance = {
+    ...base,
+    checks: { ...base.checks, answerRelevance: true },
+  };
+
+  test("carries the customer message when the check is on", () => {
+    const p = buildGuardrailSystemPrompt({
+      ...relevance,
+      customerMessage: "Quanto tempo dura a consulta?",
+    });
+    expect(p).toContain("The customer message this reply must answer");
+    expect(p).toContain("Quanto tempo dura a consulta?");
+    expect(p).toContain("answer_relevance");
+  });
+
+  test("says nothing about the customer message when the check is off", () => {
+    const p = buildGuardrailSystemPrompt({
+      ...base,
+      customerMessage: "Quanto tempo dura a consulta?",
+    });
+    expect(p).not.toContain("Quanto tempo dura a consulta?");
+    expect(p).not.toContain("answer_relevance");
+  });
+
+  // A "compare with the customer message" instruction with no customer message under it invites the
+  // model to supply one, which is the failure this check cannot afford.
+  test("omits the comparison instruction when there is no message to compare with", () => {
+    const p = buildGuardrailSystemPrompt({
+      ...relevance,
+      customerMessage: "  ",
+    });
+    expect(p).not.toContain("The customer message this reply must answer");
+    expect(p).toContain("answer_relevance");
+  });
+
+  // The reply under review is a superset of the question far more often than it is off-topic, and
+  // the configured action REPLACES the reply, so the expensive mistake is the false positive.
+  test("tells the reviewer that answering more than was asked is still an answer", () => {
+    const p = buildGuardrailSystemPrompt({
+      ...relevance,
+      customerMessage: "sim",
+    });
+    expect(p).toContain("is still an answer");
+  });
+
+  test("never reaches an input prompt, like the other reply-only check", () => {
+    const p = buildGuardrailSystemPrompt({
+      ...relevance,
+      direction: "input",
+      customerMessage: "context must stay output-only",
+    });
+    expect(p).not.toContain("context must stay output-only");
+    expect(p).not.toContain("answer_relevance");
   });
 
   test("includes the generation guidance when present", () => {

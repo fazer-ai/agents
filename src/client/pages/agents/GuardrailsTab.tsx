@@ -133,14 +133,36 @@ export function GuardrailsTab({
                   )}
                 />
                 {dir === "output" && (
-                  <SwitchField
-                    checked={d.checks.promptAdherence}
-                    onCheckedChange={(v) => setCheck(dir, "promptAdherence", v)}
-                    label={t(
-                      "editor.guardrails.checkAdherence",
-                      "Adherence to the agent's instructions",
-                    )}
-                  />
+                  <>
+                    <SwitchField
+                      checked={d.checks.promptAdherence}
+                      onCheckedChange={(v) =>
+                        setCheck(dir, "promptAdherence", v)
+                      }
+                      label={t(
+                        "editor.guardrails.checkAdherence",
+                        "Adherence to the agent's instructions",
+                      )}
+                    />
+                    <div className="flex flex-col gap-1">
+                      <SwitchField
+                        checked={d.checks.answerRelevance}
+                        onCheckedChange={(v) =>
+                          setCheck(dir, "answerRelevance", v)
+                        }
+                        label={t(
+                          "editor.guardrails.checkRelevance",
+                          "The reply answers what the customer asked",
+                        )}
+                      />
+                      <p className="text-text-muted text-xs">
+                        {t(
+                          "editor.guardrails.checkRelevanceHint",
+                          "Sends the customer's message to the guardrails agent so it can compare. Off by default: after a short message like “sim”, a correct answer can look like an answer to another question, and the action above would replace it.",
+                        )}
+                      </p>
+                    </div>
+                  </>
                 )}
               </div>
             </FormField>

@@ -767,6 +767,8 @@
       "checkAdherence": "Adherence to the agent's instructions",
       "checkCompetitors": "Competitor mentions",
       "checks": "Checks",
+      "checkRelevance": "The reply answers what the customer asked",
+      "checkRelevanceHint": "Sends the customer's message to the guardrails agent so it can compare. Off by default: after a short message like “sim”, a correct answer can look like an answer to another question, and the action above would replace it.",
       "checkToxicity": "Toxicity / abuse",
       "checkUnsafe": "Unsafe content",
       "competitors": "Competitors",

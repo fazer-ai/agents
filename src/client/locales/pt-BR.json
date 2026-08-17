@@ -769,6 +769,8 @@
       "checkAdherence": "Aderência às instruções do agente",
       "checkCompetitors": "Menção a concorrentes",
       "checks": "Checagens",
+      "checkRelevance": "A resposta responde o que o cliente perguntou",
+      "checkRelevanceHint": "Envia a mensagem do cliente para o agente de guardrails poder comparar. Desligado por padrão: depois de uma mensagem curta como “sim”, uma resposta correta pode parecer resposta a outra pergunta, e a ação acima trocaria ela.",
       "checkToxicity": "Toxicidade / abuso",
       "checkUnsafe": "Conteúdo inseguro",
       "competitors": "Concorrentes",

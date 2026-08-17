@@ -1785,5 +1785,224 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       }
       expect(failureLogged).toBe(true);
     });
+    // answer_relevance is the only check that needs the customer's own message: without it the
+    // reviewer can judge tone, scope and persona, but not whether the reply answered the question.
+    // The guardrail model here records the system prompt it was handed, which is the only place that
+    // context can be observed, and the assertion still ends at the customer: an off-topic reply is
+    // replaced by the configured template.
+    const capturingGuard =
+      (
+        captured: string[],
+        verdictJson: string,
+      ): ((cfg: ResolvedModelConfig) => BaseChatModel) =>
+      (cfg: ResolvedModelConfig): BaseChatModel =>
+        cfg.model === GUARD_MODEL
+          ? ({
+              invoke: async (msgs: { content: unknown }[]) => {
+                captured.push(String(msgs[0]?.content ?? ""));
+                return { content: verdictJson };
+              },
+            } as unknown as BaseChatModel)
+          : new FakeListChatModel({ responses: [REPLY] });
+
+    const RELEVANCE_CHECKS = {
+      toxicity: false,
+      unsafeContent: false,
+      competitorMentions: false,
+      promptAdherence: false,
+      answerRelevance: true,
+    };
+
+    test("answer_relevance screens the reply against the customer's message", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: RELEVANCE_CHECKS,
+          templateMessage: "TEMPLATE-OFF-TOPIC",
+        },
+      });
+      await seedConv(961);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const captured: string[] = [];
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["answer_relevance"],
+        rationale: "answers a different question",
+        suggestedReply: null,
+      });
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({
+          conversationId: 961,
+          inboxId: G_INBOX,
+          message: {
+            id: 1,
+            content: "Quanto tempo dura a consulta?",
+            messageType: "incoming",
+            private: false,
+          },
+        }),
+        base: appDb,
+        deps: {
+          makeModel: capturingGuard(captured, verdict),
+          makeClient: guardStub(sent, notes),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      // The question reached the reviewer...
+      expect(
+        captured.some((p) => p.includes("Quanto tempo dura a consulta?")),
+      ).toBe(true);
+      // ...and the customer got the template instead of the off-topic reply.
+      expect(sent).toEqual([[961, "TEMPLATE-OFF-TOPIC"]]);
+    });
+
+    // The first turn of a NEW conversation on an existing contact-inbox thread carries
+    // CONVERSATION_DIVIDER, a system marker the customer never wrote. Handed to the reviewer as "the
+    // customer message", it would have the reply judged against words nobody said, on the opening
+    // turn of every returning attendance. The guardrail must see the raw inbound text.
+    test("the new-conversation divider never travels as the customer's message", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: RELEVANCE_CHECKS,
+          templateMessage: "TEMPLATE-DIVIDER",
+        },
+      });
+      const contact = await suDb.contact.create({
+        data: { tenantId: gTenantId, chatwootContactId: 8555, name: "Volta" },
+        select: { id: true },
+      });
+      const contactInboxId = 8001;
+      for (const convId of [971, 972]) {
+        await suDb.conversation.create({
+          data: {
+            tenantId: gTenantId,
+            chatwootInstanceId: gInstanceId,
+            chatwootConversationId: convId,
+            contactInboxId,
+            status: "pending",
+            contactId: contact.id,
+            threadId: `${gTenantId}:${gInstanceId}:${convId}`,
+            lastEventAt: new Date(),
+          },
+        });
+      }
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const captured: string[] = [];
+      const clean = JSON.stringify({
+        violated: false,
+        categories: [],
+        rationale: "",
+        suggestedReply: null,
+      });
+      const saver = new MemorySaver();
+      const turn = (conversationId: number, content: string) =>
+        runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({
+            conversationId,
+            inboxId: G_INBOX,
+            message: {
+              id: 1,
+              content,
+              messageType: "incoming",
+              private: false,
+            },
+          }),
+          base: appDb,
+          deps: {
+            makeModel: capturingGuard(captured, clean),
+            makeClient: guardStub(sent, notes),
+            checkpointer: saver,
+          },
+        });
+      await turn(971, "oi");
+      captured.length = 0;
+      // Second conversation, same contact-inbox: this is the turn that gets the divider.
+      await turn(972, "Quanto tempo dura a consulta?");
+
+      const seen = captured.join("\n");
+      expect(seen).toContain("Quanto tempo dura a consulta?");
+      expect(seen).not.toContain("nova conversa");
+    });
+
+    // The check is off by default, and off has to mean the customer's message never travels: it is
+    // the operator's data, and a check nobody enabled must not quietly widen what is sent to the
+    // guardrails provider.
+    test("with the check off, the customer's message never reaches the guardrail", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            ...RELEVANCE_CHECKS,
+            answerRelevance: false,
+            toxicity: true,
+          },
+          templateMessage: "TEMPLATE-OFF",
+        },
+      });
+      await seedConv(962);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const captured: string[] = [];
+      const clean = JSON.stringify({
+        violated: false,
+        categories: [],
+        rationale: "",
+        suggestedReply: null,
+      });
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({
+          conversationId: 962,
+          inboxId: G_INBOX,
+          message: {
+            id: 1,
+            content: "Quanto tempo dura a consulta?",
+            messageType: "incoming",
+            private: false,
+          },
+        }),
+        base: appDb,
+        deps: {
+          makeModel: capturingGuard(captured, clean),
+          makeClient: guardStub(sent, notes),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(sent).toEqual([[962, REPLY]]);
+      expect(
+        captured.some((p) => p.includes("Quanto tempo dura a consulta?")),
+      ).toBe(false);
+    });
   });
 });

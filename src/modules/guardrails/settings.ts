@@ -24,6 +24,12 @@ export interface GuardrailChecks {
   competitorMentions: boolean;
   // (output only) the reply stays within the scope/persona set by the agent's instructions.
   promptAdherence: boolean;
+  // (output only) the reply addresses what the customer actually asked. Separate from
+  // promptAdherence, and OFF by default, because it is the only check whose input is the customer's
+  // own message and the only one that can trip on a correct reply: a short continuation ("sim")
+  // makes a complete answer look like an answer to a different question, and the configured action
+  // then replaces a good reply in front of the customer. Opting in is the point.
+  answerRelevance: boolean;
 }
 
 export interface GuardrailDirectionConfig {
@@ -73,6 +79,7 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
       unsafeContent: true,
       competitorMentions: false,
       promptAdherence: false,
+      answerRelevance: false,
     },
     action: "template",
     templateMessage: DEFAULT_TEMPLATE,
@@ -85,6 +92,7 @@ export const GUARDRAILS_DEFAULTS: GuardrailsConfig = {
       unsafeContent: true,
       competitorMentions: true,
       promptAdherence: true,
+      answerRelevance: false,
     },
     action: "template",
     templateMessage: DEFAULT_TEMPLATE,
@@ -113,6 +121,7 @@ function readChecks(v: unknown, d: GuardrailChecks): GuardrailChecks {
     unsafeContent: bool(b.unsafeContent, d.unsafeContent),
     competitorMentions: bool(b.competitorMentions, d.competitorMentions),
     promptAdherence: bool(b.promptAdherence, d.promptAdherence),
+    answerRelevance: bool(b.answerRelevance, d.answerRelevance),
   };
 }
 

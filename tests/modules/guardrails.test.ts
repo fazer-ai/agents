@@ -275,6 +275,26 @@ describe("buildGuardrailSystemPrompt", () => {
     expect(p).not.toContain("answer_relevance");
   });
 
+  // The replacement is what the CUSTOMER reads. Anchoring its language to the reply under review
+  // breaks in the one case where a replacement matters most: a reply that came out in the wrong
+  // language would be replaced by another reply in that same wrong language.
+  test("anchors the replacement's language to the customer, when there is one", () => {
+    const withCustomer = buildGuardrailSystemPrompt({
+      ...relevance,
+      customerMessage: "vocês atendem no sábado?",
+    });
+    expect(withCustomer).toContain(
+      "the SAME language as the customer's message",
+    );
+    expect(withCustomer).not.toContain("SAME language as the analyzed text");
+  });
+
+  test("falls back to the analyzed text when no customer message travels", () => {
+    const noCustomer = buildGuardrailSystemPrompt(base);
+    expect(noCustomer).toContain("the SAME language as the analyzed text");
+    expect(noCustomer).not.toContain("language as the customer's message");
+  });
+
   test("includes the generation guidance when present", () => {
     const p = buildGuardrailSystemPrompt({
       ...base,

@@ -49,6 +49,7 @@ import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import { MODEL_PROVIDERS } from "./GeneralTab";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
+import type { TtsFormState } from "./ttsFormState";
 import type { Hours, VaultEntry } from "./types";
 
 // Transcription providers (mirror src/modules/stt/providers.ts).
@@ -105,26 +106,6 @@ interface SttState {
   language: string;
   credentialRef: string;
   baseURL: string;
-}
-
-interface TtsState {
-  mode: string;
-  provider: string;
-  model: string;
-  voice: string;
-  credentialRef: string;
-  normalize: boolean;
-  // The rewrite model's own config; "" on all three = inherit the agent's (the default).
-  normalizeProvider: string;
-  normalizeModel: string;
-  normalizeCredentialRef: string;
-  // Delivery knobs, kept as strings like every other numeric field in this form; "" = leave it to the
-  // provider. Only ElevenLabs consumes them today.
-  stability: string;
-  similarityBoost: string;
-  style: string;
-  speed: string;
-  speakerBoost: boolean | null;
 }
 
 interface SplitState {
@@ -198,8 +179,12 @@ interface BehaviorTabProps {
   setStt: React.Dispatch<React.SetStateAction<SttState>>;
   sttCredBaseUrl: string | null;
   onSttEntryChange: (entry: VaultEntry | null) => void;
-  tts: TtsState;
-  setTts: React.Dispatch<React.SetStateAction<TtsState>>;
+  tts: TtsFormState;
+  setTts: React.Dispatch<React.SetStateAction<TtsFormState>>;
+  // The agent's own model, to render the speech rewrite's inherited default honestly (blank there
+  // means "the agent's model" while the provider is unchanged).
+  agentModelProvider: string;
+  agentModelName: string;
   split: SplitState;
   setSplit: React.Dispatch<React.SetStateAction<SplitState>>;
   vision: VisionState;
@@ -763,6 +748,8 @@ export function BehaviorTab({
   onSttEntryChange,
   tts,
   setTts,
+  agentModelProvider,
+  agentModelName,
   split,
   setSplit,
   vision,
@@ -1469,13 +1456,45 @@ export function BehaviorTab({
                             credentialRef={
                               tts.normalizeCredentialRef || undefined
                             }
+                            baseURL={tts.normalizeBaseURL || undefined}
+                            // NOTE: blank inherits the AGENT's model while the provider is unchanged,
+                            // and only falls back to the provider default once it differs (see
+                            // resolveNormalizeModel). The placeholder has to say the same thing, or
+                            // the operator reads one model here and another one runs.
                             placeholder={
-                              PROVIDER_DEFAULT_MODEL[tts.normalizeProvider] ??
-                              ""
+                              tts.normalizeProvider === agentModelProvider
+                                ? agentModelName ||
+                                  (PROVIDER_DEFAULT_MODEL[
+                                    tts.normalizeProvider
+                                  ] ??
+                                    "")
+                                : (PROVIDER_DEFAULT_MODEL[
+                                    tts.normalizeProvider
+                                  ] ?? "")
                             }
                             aria-label={t("editor.model", "Model")}
                           />
                         </FormField>
+                        {tts.normalizeProvider === "openai-compatible" && (
+                          <FormField
+                            label={t("editor.baseURL", "Base URL")}
+                            description={t(
+                              "editor.ttsNormalizeBaseURLHint",
+                              "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+                            )}
+                          >
+                            <Input
+                              value={tts.normalizeBaseURL}
+                              onChange={(e) =>
+                                setTts({
+                                  ...tts,
+                                  normalizeBaseURL: e.target.value,
+                                })
+                              }
+                              placeholder="https://api.groq.com/openai/v1"
+                            />
+                          </FormField>
+                        )}
                       </>
                     )}
                   </div>

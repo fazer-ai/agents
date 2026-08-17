@@ -40,9 +40,20 @@ describe("resolveNormalizeModel", () => {
       want: { provider: "openai", model: "gpt-4o-mini", baseURL: null },
     },
     {
-      // Inheriting "gpt-5" into anthropic would send an OpenAI model id to Anthropic, so an explicit
+      // Naming the same provider is what picking a separate credential on the same vendor looks
+      // like. Swapping the key is not a request to swap the model, so the agent's model still wins.
+      name: "the agent's OWN provider, named explicitly, still inherits the agent's model",
+      tts: {
+        normalize: true,
+        normalizeProvider: "openai",
+        normalizeCredentialRef: "vault:9",
+      },
+      want: { provider: "openai", model: "gpt-5", baseURL: null },
+    },
+    {
+      // Inheriting "gpt-5" into anthropic would send an OpenAI model id to Anthropic, so a CHANGED
       // provider with no model resolves to THAT provider's default instead.
-      name: "a provider alone resolves that provider's default model, never the agent's",
+      name: "a changed provider alone resolves that provider's default model, never the agent's",
       tts: { normalize: true, normalizeProvider: "anthropic" },
       want: {
         provider: "anthropic",

@@ -1100,10 +1100,10 @@ export function buildSpeechNormalizer(
     model: cfg.mc.model,
     baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
   });
-  // Its own credential was configured and did not resolve. Falling back to the AGENT's key here would
-  // be a silent substitution on a provider that may not even accept it, so skip the rewrite and say
-  // so: the reply still goes out as audio, synthesized from the raw text.
-  if (own && !cfg.ttsNormalizeApiKey) {
+  // Skipping the rewrite must never cost the customer the AUDIO: the caller wraps the whole TTS
+  // branch in one try/catch, so anything that throws out of here degrades the reply to text. Every
+  // way this builder can fail therefore returns undefined with a visible line instead.
+  const skip = (reason: string): undefined => {
     if (args.flow) {
       emitFlowEvent(args.flow, {
         stage: "normalize",
@@ -1111,11 +1111,14 @@ export function buildSpeechNormalizer(
         status: "skipped",
         provider: resolved.provider,
         model: resolved.model,
-        detail: { reason: "credential_not_found" },
+        detail: { reason },
       });
     }
     return undefined;
-  }
+  };
+  // Its own credential was configured and did not resolve. Falling back to the AGENT's key would be a
+  // silent substitution on a provider that may not even accept it.
+  if (own && !cfg.ttsNormalizeApiKey) return skip("credential_not_found");
   const makeModel = args.makeModel ?? createChatModel;
   const mc: ResolvedModelConfig = {
     ...cfg.mc,
@@ -1134,7 +1137,19 @@ export function buildSpeechNormalizer(
     // here would only add latency to an audio reply the customer is waiting on.
     reasoningEffort: undefined,
   };
-  const model = makeModel(mc);
+  // createChatModel REJECTS some configurations synchronously (openai-compatible with no effective
+  // base URL throws a 400), and this normalizer config is separately editable, so that throw is
+  // reachable without the agent's own model being broken. Uncaught it would cost the audio reply.
+  let model: BaseChatModel;
+  try {
+    model = makeModel(mc);
+  } catch (err) {
+    logger.warn(
+      { err, agentId: String(cfg.agentId) },
+      "tts normalize: model config is not runnable, skipping the speech rewrite",
+    );
+    return skip("model_not_runnable");
+  }
   const callbacks = args.callbacks
     ? buildCallbacks(cfg, {
         ...args.callbacks,

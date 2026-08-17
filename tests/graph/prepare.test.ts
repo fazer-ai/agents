@@ -203,6 +203,24 @@ describe("buildSpeechNormalizer", () => {
     expect(getCaptured().baseURL).toBe("https://normalizer.example.com/v1");
   });
 
+  // The runtime wraps the ENTIRE TTS branch in one try/catch, so anything thrown while building the
+  // normalizer costs the customer the voice note, not just the rewrite. createChatModel rejects some
+  // configurations synchronously (openai-compatible with no base URL), and this config is separately
+  // editable, so that throw is reachable with the agent's own model perfectly fine.
+  test("a model factory that throws skips the rewrite instead of propagating", () => {
+    const cfg = makeConfig({
+      ttsConfig: {
+        ...TTS_DEFAULTS,
+        normalize: true,
+        normalizeProvider: "openai-compatible",
+      },
+    });
+    const makeModel = () => {
+      throw new Error("openai-compatible provider requires baseURL");
+    };
+    expect(buildSpeechNormalizer(cfg, { makeModel })).toBeUndefined();
+  });
+
   // The operator pointed the rewrite at its own credential and that credential is gone. Reaching for
   // the AGENT's key would be a silent substitution onto a provider that may not even accept it, so
   // the rewrite is skipped and the audio goes out from the raw text.

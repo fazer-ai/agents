@@ -89,6 +89,7 @@ import { KnowledgeTab } from "./KnowledgeTab";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
 import { ToolsTab } from "./ToolsTab";
+import { readTtsFormState, ttsSettingsFrom } from "./ttsFormState";
 import type {
   GrantState,
   HandoffUiState,
@@ -194,12 +195,6 @@ function str(v: unknown): string {
 }
 function num(v: unknown): string {
   return typeof v === "number" ? String(v) : "";
-}
-// The inverse of num() for an optional numeric field: a blank input means "unset", which the settings
-// readers store as null, NOT as 0 (Number("") === 0 would silently pin the knob to its minimum).
-function numOrNull(v: string): number | null {
-  const n = Number(v.trim());
-  return v.trim() && Number.isFinite(n) ? n : null;
 }
 // Read the follow-up step's labels: the new `assignLabels` array, falling back to the legacy single
 // `assignLabel` string so an agent saved before multi-label keeps its label in the editor.
@@ -309,26 +304,7 @@ function readBehaviorState(a: Agent) {
       credentialRef: str(st.credentialRef),
       baseURL: str(st.baseURL),
     },
-    tts: {
-      mode: str(tt.mode) || "never",
-      provider: str(tt.provider) || "openai",
-      model: str(tt.model),
-      voice: str(tt.voice),
-      credentialRef: str(tt.credentialRef),
-      normalize:
-        typeof tt.normalize === "boolean"
-          ? tt.normalize
-          : TTS_NORMALIZE_DEFAULT,
-      normalizeProvider: str(tt.normalizeProvider),
-      normalizeModel: str(tt.normalizeModel),
-      normalizeCredentialRef: str(tt.normalizeCredentialRef),
-      stability: num(tt.stability),
-      similarityBoost: num(tt.similarityBoost),
-      style: num(tt.style),
-      speed: num(tt.speed),
-      speakerBoost:
-        typeof tt.speakerBoost === "boolean" ? tt.speakerBoost : null,
-    },
+    tts: readTtsFormState(tt, TTS_NORMALIZE_DEFAULT),
     split: {
       enabled: typeof sp.enabled === "boolean" ? sp.enabled : true,
       maxChars: num(sp.maxChars) || "600",
@@ -592,26 +568,11 @@ export function AgentEditorPage() {
   // User's own vision base URL value preserved while a credential with baseUrl is selected.
   const visionUserBaseUrlRef = useRef("");
   // Text-to-speech (audio replies). Mode + provider mirror modules/tts.
-  const [tts, setTts] = useState({
-    mode: "never",
-    provider: "openai",
-    model: "",
-    voice: "",
-    credentialRef: "",
-    normalize: TTS_NORMALIZE_DEFAULT,
-    // The rewrite model. Empty = the agent's own model and key, which is what an install that never
-    // opens this section keeps using.
-    normalizeProvider: "",
-    normalizeModel: "",
-    normalizeCredentialRef: "",
-    // Delivery knobs (ElevenLabs voice_settings). Empty string = leave it to the provider, which is
-    // what an install that never opens this section keeps sending.
-    stability: "",
-    similarityBoost: "",
-    style: "",
-    speed: "",
-    speakerBoost: null as boolean | null,
-  });
+  // Same reader the saved agent goes through, so a new field can never exist in one and not the
+  // other: the Behavior save REPLACES this block wholesale.
+  const [tts, setTts] = useState(() =>
+    readTtsFormState({}, TTS_NORMALIZE_DEFAULT),
+  );
   // Reply in multiple messages (split + typing delay). Mirrors modules/split
   // (on by default, wpm 250 — matches SPLIT_DEFAULTS).
   const [split, setSplit] = useState({
@@ -1045,24 +1006,7 @@ export function AgentEditorPage() {
           ? sttUserBaseUrlRef.current.trim() || null
           : stt.baseURL.trim() || null,
       },
-      tts: {
-        mode: tts.mode,
-        provider: tts.provider,
-        model: tts.model.trim(),
-        voice: tts.voice.trim(),
-        credentialRef: tts.credentialRef || null,
-        normalize: tts.normalize,
-        normalizeProvider: tts.normalizeProvider || null,
-        normalizeModel: tts.normalizeModel.trim() || null,
-        normalizeCredentialRef: tts.normalizeCredentialRef || null,
-        // NOTE: blank clears the knob (null), so the operator can hand a field back to the provider
-        // after having set it. readTtsConfig clamps whatever number survives.
-        stability: numOrNull(tts.stability),
-        similarityBoost: numOrNull(tts.similarityBoost),
-        style: numOrNull(tts.style),
-        speed: numOrNull(tts.speed),
-        speakerBoost: tts.speakerBoost,
-      },
+      tts: ttsSettingsFrom(tts),
       split: {
         enabled: split.enabled,
         maxChars: Number(split.maxChars) || 600,
@@ -2550,6 +2494,8 @@ export function AgentEditorPage() {
                 onSttEntryChange={onSttEntryChange}
                 tts={tts}
                 setTts={setTts}
+                agentModelProvider={model.provider}
+                agentModelName={model.model}
                 split={split}
                 setSplit={setSplit}
                 serviceWindow={serviceWindow}

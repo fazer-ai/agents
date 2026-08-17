@@ -255,6 +255,30 @@ describe("analyzeGuardrail", () => {
     expect([v.violated, v.rationale]).toEqual([true, 'said "} bye" rudely']);
   });
 
+  // Parseable is not the same as usable. A verdict with no boolean `violated` says nothing, and
+  // reading it as "false" is the same silent approval the error field exists to end.
+  test("an object with no boolean verdict is reported, not read as approval", async () => {
+    for (const body of [
+      "{}",
+      '{"violated": "false"}',
+      '{"violated": "true"}',
+      '{"violated": null}',
+      '{"categories": ["toxicity"]}',
+    ]) {
+      const v = await analyzeGuardrail(fakeModel(body), base);
+      expect([body, v.violated, typeof v.error]).toEqual([
+        body,
+        false,
+        "string",
+      ]);
+    }
+  });
+
+  test("an explicit false is a real approval, with no error", async () => {
+    const v = await analyzeGuardrail(fakeModel('{"violated": false}'), base);
+    expect([v.violated, v.error]).toEqual([false, undefined]);
+  });
+
   test("output with a malformed JSON object is reported", async () => {
     const v = await analyzeGuardrail(
       fakeModel('Sure: {"violated": true, categories: [oops}'),

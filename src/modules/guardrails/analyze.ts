@@ -87,7 +87,13 @@ function parseVerdict(raw: string): GuardrailVerdict {
   if (slice === null) return unanalyzed("no JSON object in response");
   try {
     const obj = JSON.parse(slice) as Record<string, unknown>;
-    if (obj.violated !== true) return CLEAN;
+    // Only a literal boolean is a verdict. `{}` or `{"violated":"true"}` are parseable and unusable,
+    // and reading them as `false` is the same silent approval this whole path exists to end: the
+    // guardrail would report neither a violation nor a failure to analyze.
+    if (obj.violated === false) return CLEAN;
+    if (obj.violated !== true) {
+      return unanalyzed("verdict has no boolean `violated` field");
+    }
     const categories = Array.isArray(obj.categories)
       ? obj.categories.filter((c): c is string => typeof c === "string")
       : [];

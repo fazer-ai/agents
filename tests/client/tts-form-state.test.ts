@@ -3,6 +3,7 @@ import {
   type AgentModelSource,
   readTtsFormState,
   type TtsFormState,
+  ttsNormalizerAgentProviderChanged,
   ttsNormalizerBaseUrlInvalid,
   ttsNormalizerNeedsOwnCredential,
   ttsNormalizerPickerSource,
@@ -86,6 +87,33 @@ describe("switching the rewrite provider", () => {
     expect(next.voice).toBe(form.voice);
     expect(next.credentialRef).toBe(form.credentialRef);
     expect(next.speed).toBe(form.speed);
+  });
+});
+
+// The agent's provider changing is the rewrite's provider changing too, whenever it inherits it.
+describe("when the AGENT's provider changes", () => {
+  test("an inherited rewrite drops what belonged to the old vendor", () => {
+    const next = ttsNormalizerAgentProviderChanged(
+      readTtsFormState({ ...SAVED, normalizeProvider: "" }, true),
+    );
+    expect(next.normalizeProvider).toBe("");
+    expect(next.normalizeModel).toBe("");
+    expect(next.normalizeCredentialRef).toBe("");
+    expect(next.normalizeBaseURL).toBe("");
+  });
+
+  // A rewrite that names its own provider never followed the agent, so nothing about it changed.
+  test("a rewrite with a provider of its own is untouched", () => {
+    const form = readTtsFormState(SAVED, true);
+    expect(ttsNormalizerAgentProviderChanged(form)).toEqual(form);
+  });
+
+  test("the rest of the TTS block is never touched", () => {
+    const form = readTtsFormState({ ...SAVED, normalizeProvider: "" }, true);
+    const next = ttsNormalizerAgentProviderChanged(form);
+    expect(next.voice).toBe(form.voice);
+    expect(next.credentialRef).toBe(form.credentialRef);
+    expect(next.mode).toBe(form.mode);
   });
 });
 

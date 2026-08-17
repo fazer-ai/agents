@@ -77,8 +77,55 @@ describe("resolveNormalizeModel", () => {
       want: {
         provider: "anthropic",
         runnable: false,
-        reason: "provider_without_credential",
+        reason: "credential_required",
         credential: "none",
+      },
+    },
+    {
+      // The same vendor but a DIFFERENT host. The agent's key was issued for the agent's endpoint,
+      // not for this one, so reusing it would be the same leak with a smaller radius. Reachable from
+      // the editor, which shows the endpoint field while leaving the key optional.
+      name: "an endpoint override on the agent's own provider does not reuse the agent's key",
+      tts: {
+        normalize: true,
+        normalizeProvider: "openai-compatible",
+        normalizeBaseURL: "https://unrelated-host.example.com/v1",
+      },
+      agent: {
+        provider: "openai-compatible",
+        model: "llama-3.1",
+        baseURL: "http://llama:8080/v1",
+      },
+      want: {
+        provider: "openai-compatible",
+        baseURL: "https://unrelated-host.example.com/v1",
+        runnable: true,
+        // Nothing secret travels: the endpoint IS the credential here.
+        credential: "none",
+      },
+    },
+    {
+      // Same, on a provider that cannot authenticate by URL: refused outright rather than run on a
+      // key that does not belong to that host.
+      name: "an endpoint override on a keyed provider is refused without a key of its own",
+      tts: {
+        normalize: true,
+        normalizeBaseURL: "https://unrelated-host.example.com/v1",
+      },
+      want: { runnable: false, reason: "credential_required" },
+    },
+    {
+      // Naming the credential (even the agent's own) is how that intent is made explicit.
+      name: "an endpoint override WITH a named credential is allowed",
+      tts: {
+        normalize: true,
+        normalizeBaseURL: "https://proxy.example.com/v1",
+        normalizeCredentialRef: "vault:1",
+      },
+      want: {
+        baseURL: "https://proxy.example.com/v1",
+        runnable: true,
+        credential: "own",
       },
     },
     {

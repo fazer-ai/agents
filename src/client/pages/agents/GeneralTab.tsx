@@ -17,7 +17,6 @@ import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
-import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { REASONING_EFFORTS } from "@/graph/openai-reasoning";
 import { CapabilityMap } from "./CapabilityMap";
 import { PromptPanel } from "./PromptPanel";
@@ -56,6 +55,9 @@ interface GeneralTabProps {
   setModel: React.Dispatch<React.SetStateAction<ModelState>>;
   modelCredBaseUrl: string | null;
   onModelEntryChange: (entry: VaultEntry | null) => void;
+  // Switching the agent's provider is not a plain setState: it invalidates the previous model id AND
+  // everything on OTHER tabs that inherits this provider (see AgentEditorPage).
+  onProviderChange: (provider: string) => void;
   dirty: boolean;
   saving: boolean;
   onSave: () => void;
@@ -86,6 +88,7 @@ export function GeneralTab({
   setModel,
   modelCredBaseUrl,
   onModelEntryChange,
+  onProviderChange,
   dirty,
   saving,
   onSave,
@@ -188,16 +191,7 @@ export function GeneralTab({
           <FormField label={t("editor.provider", "Provider")}>
             <Select
               value={model.provider}
-              onChange={(e) => {
-                const provider = e.target.value;
-                // Switching provider invalidates the previous model id, so jump to the new
-                // provider's default instead of carrying a foreign id (or clearing the form).
-                setModel({
-                  ...model,
-                  provider,
-                  model: PROVIDER_DEFAULT_MODEL[provider] ?? "",
-                });
-              }}
+              onChange={(e) => onProviderChange(e.target.value)}
             >
               <option value="">{t("editor.selectProvider", "Select…")}</option>
               {MODEL_PROVIDERS.map((p) => (

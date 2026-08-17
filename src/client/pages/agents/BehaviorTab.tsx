@@ -1462,109 +1462,102 @@ export function BehaviorTab({
                         ))}
                       </Select>
                     </FormField>
-                    <>
-                      <FormField
-                        label={t("editor.credential", "API key")}
-                        description={t(
-                          "editor.ttsNormalizeCredentialHint",
-                          "Required when the provider differs from the agent's: the agent's key is never sent to another vendor, so without a key of its own the rewrite is skipped and the audio goes out unrewritten.",
-                        )}
-                        group
-                      >
-                        <CredentialPicker
-                          value={tts.normalizeCredentialRef}
-                          onChange={(v) =>
-                            setTts({ ...tts, normalizeCredentialRef: v })
-                          }
-                          required={ttsNormalizerNeedsOwnCredential(
-                            tts,
-                            agentModel,
-                            ttsNormalizeCredBaseUrl,
-                          )}
-                          onEntryChange={onTtsNormalizeEntryChange}
-                          compatibleTypes={credentialCompat.model(
-                            normalizeEffectiveProvider,
-                          )}
-                          defaultCreateType={
-                            credentialCompat.model(
-                              normalizeEffectiveProvider,
-                            )[0]
-                          }
-                          ariaLabel={t("editor.credential", "API key")}
-                        />
-                      </FormField>
-                      <FormField label={t("editor.model", "Model")} group>
-                        <ModelPicker
-                          value={tts.normalizeModel}
-                          onChange={(v) =>
-                            setTts({ ...tts, normalizeModel: v })
-                          }
-                          provider={normalizeEffectiveProvider}
-                          // The picker lists models by CALLING the provider, so it has to use the
-                          // credential the rewrite will actually run on: the agent's own, while
-                          // the provider is unchanged and no dedicated key was picked.
-                          credentialRef={
-                            normalizeSource.credentialRef || undefined
-                          }
-                          baseURL={normalizeSource.baseURL || undefined}
-                          // NOTE: blank inherits the AGENT's model while the provider is unchanged,
-                          // and only falls back to the provider default once it differs (see
-                          // resolveNormalizeModel). The placeholder has to say the same thing, or
-                          // the operator reads one model here and another one runs.
-                          placeholder={
-                            normalizeEffectiveProvider === agentModelProvider
-                              ? agentModelName ||
-                                (PROVIDER_DEFAULT_MODEL[
-                                  normalizeEffectiveProvider
-                                ] ??
-                                  "")
-                              : (PROVIDER_DEFAULT_MODEL[
-                                  normalizeEffectiveProvider
-                                ] ?? "")
-                          }
-                          aria-label={t("editor.model", "Model")}
-                        />
-                      </FormField>
-                      {normalizeEffectiveProvider === "openai-compatible" && (
-                        <FormField
-                          label={t("editor.baseURL", "Base URL")}
-                          description={
-                            ttsNormalizeCredBaseUrl
-                              ? t(
-                                  "editor.baseURLFromCredential",
-                                  "Defined by the selected credential.",
-                                )
-                              : t(
-                                  "editor.ttsNormalizeBaseURLHint",
-                                  "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
-                                )
-                          }
-                          error={
-                            normalizeBaseUrlInvalid &&
-                            tts.normalizeBaseURL.trim()
-                              ? t(
-                                  "common.invalidUrl",
-                                  "Must be a valid http(s) URL.",
-                                )
-                              : null
-                          }
-                        >
-                          <Input
-                            value={
-                              ttsNormalizeCredBaseUrl ?? tts.normalizeBaseURL
-                            }
-                            onChange={(e) =>
-                              setTts({
-                                ...tts,
-                                normalizeBaseURL: e.target.value,
-                              })
-                            }
-                            disabled={!!ttsNormalizeCredBaseUrl}
-                            placeholder="https://api.groq.com/openai/v1"
-                          />
-                        </FormField>
+                    <FormField
+                      label={t("editor.credential", "API key")}
+                      description={t(
+                        "editor.ttsNormalizeCredentialHint",
+                        "Required when the provider differs from the agent's: the agent's key is never sent to another vendor, so without a key of its own the rewrite is skipped and the audio goes out unrewritten.",
                       )}
-                    </>
+                      group
+                    >
+                      <CredentialPicker
+                        value={tts.normalizeCredentialRef}
+                        onChange={(v) =>
+                          setTts({ ...tts, normalizeCredentialRef: v })
+                        }
+                        required={ttsNormalizerNeedsOwnCredential(
+                          tts,
+                          agentModel,
+                          ttsNormalizeCredBaseUrl,
+                        )}
+                        onEntryChange={onTtsNormalizeEntryChange}
+                        compatibleTypes={credentialCompat.model(
+                          normalizeEffectiveProvider,
+                        )}
+                        defaultCreateType={
+                          credentialCompat.model(normalizeEffectiveProvider)[0]
+                        }
+                        ariaLabel={t("editor.credential", "API key")}
+                      />
+                    </FormField>
+                    <FormField label={t("editor.model", "Model")} group>
+                      <ModelPicker
+                        value={tts.normalizeModel}
+                        onChange={(v) => setTts({ ...tts, normalizeModel: v })}
+                        provider={normalizeEffectiveProvider}
+                        // The picker lists models by CALLING the provider, so it has to use the
+                        // credential the rewrite will actually run on: the agent's own, while
+                        // the provider is unchanged and no dedicated key was picked.
+                        credentialRef={
+                          normalizeSource.credentialRef || undefined
+                        }
+                        baseURL={normalizeSource.baseURL || undefined}
+                        // NOTE: blank inherits the AGENT's model while the provider is unchanged,
+                        // and only falls back to the provider default once it differs (see
+                        // resolveNormalizeModel). The placeholder has to say the same thing, or
+                        // the operator reads one model here and another one runs.
+                        placeholder={
+                          normalizeEffectiveProvider === agentModelProvider
+                            ? agentModelName ||
+                              (PROVIDER_DEFAULT_MODEL[
+                                normalizeEffectiveProvider
+                              ] ??
+                                "")
+                            : (PROVIDER_DEFAULT_MODEL[
+                                normalizeEffectiveProvider
+                              ] ?? "")
+                        }
+                        aria-label={t("editor.model", "Model")}
+                      />
+                    </FormField>
+                    {normalizeEffectiveProvider === "openai-compatible" && (
+                      <FormField
+                        label={t("editor.baseURL", "Base URL")}
+                        description={
+                          ttsNormalizeCredBaseUrl
+                            ? t(
+                                "editor.baseURLFromCredential",
+                                "Defined by the selected credential.",
+                              )
+                            : t(
+                                "editor.ttsNormalizeBaseURLHint",
+                                "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+                              )
+                        }
+                        error={
+                          normalizeBaseUrlInvalid && tts.normalizeBaseURL.trim()
+                            ? t(
+                                "common.invalidUrl",
+                                "Must be a valid http(s) URL.",
+                              )
+                            : null
+                        }
+                      >
+                        <Input
+                          value={
+                            ttsNormalizeCredBaseUrl ?? tts.normalizeBaseURL
+                          }
+                          onChange={(e) =>
+                            setTts({
+                              ...tts,
+                              normalizeBaseURL: e.target.value,
+                            })
+                          }
+                          disabled={!!ttsNormalizeCredBaseUrl}
+                          placeholder="https://api.groq.com/openai/v1"
+                        />
+                      </FormField>
+                    )}
                   </div>
                 )}
                 {tts.provider === "elevenlabs" && (

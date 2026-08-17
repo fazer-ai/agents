@@ -113,6 +113,19 @@ export function ttsNormalizerProviderChanged(
   };
 }
 
+// The AGENT's provider changing is the rewrite's provider changing too, whenever the rewrite
+// inherits it. Everything picked for the old vendor dies with it: a model id the new vendor refuses
+// (every rewrite failing silently back to raw speech), and a key issued by the old vendor, which
+// would otherwise be SENT to the new one. A rewrite that names its own provider is untouched, since
+// nothing about it followed the agent in the first place.
+export function ttsNormalizerAgentProviderChanged(
+  tts: TtsFormState,
+): TtsFormState {
+  return tts.normalizeProvider === ""
+    ? ttsNormalizerProviderChanged(tts, "")
+    : tts;
+}
+
 // The editor's view of the SAME resolution the runtime will perform, so what the operator sees
 // before saving and what actually runs cannot drift apart. Everything below projects
 // `resolveNormalizeModel`; none of it re-derives the rule.
@@ -147,7 +160,7 @@ export function ttsNormalizerNeedsOwnCredential(
   ownCredBaseUrl: string | null,
 ): boolean {
   const r = ttsNormalizerResolution(tts, agent, ownCredBaseUrl);
-  return !r.runnable && r.reason === "provider_without_credential";
+  return !r.runnable && r.reason === "credential_required";
 }
 
 // What the model picker must authenticate with to list models: the credential the rewrite will

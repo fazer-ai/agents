@@ -22,12 +22,14 @@ import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 //   * DIFFERENT provider: nothing is inherited, because everything the agent holds belongs to the
 //     old vendor. The model would be an id the new one refuses, the endpoint would send the NEW key
 //     to the OLD gateway, and the KEY would hand one vendor's secret to another.
+//   * DIFFERENT endpoint on the SAME provider: the vendor matches but the host does not, and the
+//     agent's key was not issued for that host either. It is the same leak with a smaller radius.
 //
 // And the credential, which is the part that decides whether a switched provider runs at all:
 //
 //   * `own`   — a credential was configured for the rewrite. Always allowed.
-//   * `agent` — the agent's own key, allowed ONLY while the provider is unchanged (same vendor,
-//               same account).
+//   * `agent` — the agent's own key, allowed ONLY while the DESTINATION is unchanged: same vendor
+//               and same host.
 //   * `none`  — no key travels at all. Reachable only for `openai-compatible`, which authenticates
 //               through its base URL (a local llama.cpp-style server has no key). Without this the
 //               only way to run a local rewrite would be to invent a dummy vault entry.
@@ -54,8 +56,9 @@ export type NormalizeCredentialSource = "own" | "agent" | "none";
 export type NormalizeNotRunnableReason =
   // A provider name we do not support. Never falls back, never carries the credential.
   | "provider_unknown"
-  // A provider the agent does not use, with no key of its own and no endpoint to authenticate by.
-  | "provider_without_credential"
+  // The rewrite points somewhere the agent's key does not belong (another vendor, or another host),
+  // with no key of its own and no way to authenticate without one.
+  | "credential_required"
   // openai-compatible with no base URL anywhere: createChatModel refuses it, and an unguarded build
   // would throw inside the TTS branch and cost the customer the whole voice note.
   | "endpoint_missing";
@@ -112,9 +115,10 @@ export function resolveNormalizeModel(
   const switched = provider !== agent.provider;
   const own = str(tts.normalizeCredentialRef) !== null;
 
+  const agentBaseURL = str(agent.baseURL);
   const ownBaseURL =
     str(opts.ownCredentialBaseURL) ?? str(tts.normalizeBaseURL);
-  const baseURL = switched ? ownBaseURL : (ownBaseURL ?? str(agent.baseURL));
+  const baseURL = switched ? ownBaseURL : (ownBaseURL ?? agentBaseURL);
   const hasEndpoint = baseURL !== null && usable(baseURL);
 
   // An endpoint is not a courtesy for openai-compatible: it IS the address, and the credential can
@@ -123,16 +127,25 @@ export function resolveNormalizeModel(
     return NOT_RUNNABLE(provider, "endpoint_missing");
   }
 
+  // What makes the agent's key reusable is not "the same vendor", it is the same DESTINATION: the
+  // vendor AND the host. An overridden endpoint on the agent's own provider is still somewhere the
+  // agent's key was never issued for, and sending it there is the same leak as sending it to another
+  // vendor. (Reachable from the editor, which shows the endpoint field for openai-compatible while
+  // leaving the key optional.) Pointing the rewrite at a proxy on purpose is still supported: name
+  // the credential, even the same one, and the intent is explicit.
+  const sameDestination = !switched && baseURL === agentBaseURL;
+
   let credential: NormalizeCredentialSource;
   if (own) {
     credential = "own";
-  } else if (!switched) {
+  } else if (sameDestination) {
     credential = "agent";
   } else if (provider === "openai-compatible") {
-    // Guaranteed to have an endpoint by the check above, and that endpoint is the whole credential.
+    // Guaranteed to have an endpoint by the check above, and that endpoint is the whole credential:
+    // nothing secret travels, so an unrelated host receives nothing of the agent's.
     credential = "none";
   } else {
-    return NOT_RUNNABLE(provider, "provider_without_credential");
+    return NOT_RUNNABLE(provider, "credential_required");
   }
 
   return {

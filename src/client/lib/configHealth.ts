@@ -149,7 +149,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     normalizeResolution !== null &&
     // Either the resolver refuses it for want of a credential, or one is configured and has to
     // resolve (REST and MCP accept a credential with no provider: same vendor, another account).
-    (normalizeResolution.reason === "provider_without_credential" ||
+    (normalizeResolution.reason === "credential_required" ||
       Boolean(input.ttsNormalizeCredentialRef));
   push(
     { key: "ttsNormalize", tab: "behavior", sectionId: "tts" },

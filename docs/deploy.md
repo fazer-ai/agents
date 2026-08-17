@@ -35,6 +35,8 @@ bun scripts/db-bootstrap.ts && bun prisma migrate deploy && exec bun src/index.t
 
 > **Dev gotcha — grants do not survive a reset.** `prisma migrate reset` (and a `migrate dev` that decides to reset on drift) drops and recreates the `public` schema, wiping the runtime role's grants. The next boot then fails every query with Postgres `42501` (`permission denied for schema public`). Fix: re-run `bun db:bootstrap` (idempotent) and restart. Prefer `bun db:reset`, which chains both. The boot log detects `42501` and prints this exact hint.
 
+> **A DATA migration over a tenant-scoped table needs `SET app.is_super_admin = 'on'`.** Those tables carry `FORCE ROW LEVEL SECURITY`, which subjects even the table OWNER to the tenant policy, and `MIGRATION_DATABASE_URL` is only documented as "superuser **or** owner". On a self-hosted Postgres the migration role is usually a real superuser and the difference never shows; on managed Postgres (RDS/Neon/Supabase) the admin role is typically the owner WITHOUT `rolsuper`, and there a `UPDATE`/`DELETE` across tenants matches **zero rows and reports success**. Set the GUC around the statement (and `RESET` after), exactly as `asSuperAdmin` does at runtime. Schema DDL is unaffected.
+
 Destructive migrations (enum changes, `ACCESS EXCLUSIVE` on `users`) want a maintenance window: on platforms with rolling deploys, run `migrate deploy` as a pre-deploy/one-shot step rather than in every replica's start command.
 
 ### 4. Single replica (or one leader)

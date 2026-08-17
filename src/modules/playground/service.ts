@@ -18,6 +18,7 @@ import {
   type AgentConfigOverrides,
   buildCallbacks,
   buildModelAndGraph,
+  buildSpeechNormalizer,
   buildToolset,
   loadAgentConfig,
 } from "@/graph/prepare";
@@ -504,6 +505,24 @@ export async function runPlaygroundTurn(
         cfg: loaded.ttsConfig,
         text: reply,
         base,
+        // NOTE: the playground synthesized WITHOUT the speech normalizer until now, so the operator
+        // heard a different rendering of the same reply than the customer does, which is the one setting the
+        // playground exists to let them test. Its usage is tagged source=playground (out of the
+        // dashboard) and its flow lines never page an alert channel.
+        deps: {
+          normalizeSpeech: buildSpeechNormalizer(loaded, {
+            makeModel: params.deps?.makeModel,
+            callbacks: {
+              tenantId,
+              threadId,
+              base,
+              source: "playground",
+              turnId,
+            },
+            flow,
+          }),
+        },
+        flow,
       });
       const aiId = lastAiMessageId(result.messages);
       if (tts && aiId) {

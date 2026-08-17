@@ -16,6 +16,8 @@ export function flowStageLabel(stage: string, t: TFunction): string {
       return t("logs.stage.generate", "Generation");
     case "tool":
       return t("logs.stage.tool", "Tool call");
+    case "normalize":
+      return t("logs.stage.normalize", "Speech rewrite");
     case "tts":
       return t("logs.stage.tts", "Audio synthesis");
     case "split":

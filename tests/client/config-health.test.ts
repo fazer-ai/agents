@@ -184,4 +184,81 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       { key: "redirect", tab: "channelRedirect", sectionId: "cr-entry" },
     ]);
   });
+
+  // The speech rewrite fails SILENTLY when it cannot run (best-effort: the audio still goes out,
+  // just unrewritten), so the editor is the only place this can be caught.
+  describe("speech rewrite model", () => {
+    const audio = { ...base, ttsMode: "mirror", ttsCredentialRef: "vault:2" };
+
+    test("inheriting the agent's model needs no credential of its own", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "",
+        }),
+      ).toEqual([]);
+    });
+
+    test("the agent's own provider, picked explicitly, still needs no credential", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "openai",
+        }),
+      ).toEqual([]);
+    });
+
+    test("a different provider with no key of its own is flagged", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "anthropic",
+        }),
+      ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+    });
+
+    test("a different provider WITH its own key is fine", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "anthropic",
+          ttsNormalizeCredentialRef: "vault:3",
+        }),
+      ).toEqual([]);
+    });
+
+    test("its credential being a pending vault entry is flagged as pending", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "openai",
+          ttsNormalizeCredentialRef: "vault:3",
+          pendingRefs: new Set(["vault:3"]),
+        }),
+      ).toEqual([
+        {
+          key: "ttsNormalize",
+          tab: "behavior",
+          sectionId: "tts",
+          pending: true,
+          vaultId: "3",
+        },
+      ]);
+    });
+
+    test("nothing is flagged while audio replies are off", () => {
+      expect(
+        computeConfigIssues({
+          ...base,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "anthropic",
+        }),
+      ).toEqual([]);
+    });
+  });
 });

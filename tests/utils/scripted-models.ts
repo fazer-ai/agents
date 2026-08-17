@@ -1,5 +1,6 @@
+import type { BindToolsInput } from "@langchain/core/language_models/chat_models";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
 
 // A provider that answers 200 with no completion on its first N calls and then works. Extends the
@@ -22,6 +23,51 @@ export class EmptyThenReplyModel extends BaseChatModel {
     if (this.calls <= this.emptyCount) return { generations: [] };
     return {
       generations: [{ text: this.reply, message: new AIMessage(this.reply) }],
+    };
+  }
+}
+
+// Answers from a queue and REPORTS token usage on every call. Reporting is the point: UsageCapture
+// drops a call whose counts are all zero, so a model that reports nothing looks exactly like a call
+// that never happened, and a test for "this call is billed" would pass with the billing broken.
+// One queue, consumed in call order, is what lets a turn tell its own generation apart from a
+// secondary call that runs after it (the speech normalizer).
+export class UsageReportingModel extends BaseChatModel {
+  calls: string[] = [];
+  private i = 0;
+  constructor(
+    private readonly responses: string[],
+    private readonly tokens = { input: 11, output: 7 },
+  ) {
+    super({});
+  }
+  _llmType() {
+    return "fake-usage";
+  }
+  // The graph binds tools before invoking; the normalizer invokes the bare model. Returning `this`
+  // keeps both paths on the same queue.
+  override bindTools(_tools: BindToolsInput[]) {
+    return this;
+  }
+  async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+    const last = messages[messages.length - 1];
+    this.calls.push(typeof last?.content === "string" ? last.content : "");
+    const text = this.responses[Math.min(this.i, this.responses.length - 1)];
+    this.i += 1;
+    return {
+      generations: [
+        {
+          text: text ?? "",
+          message: new AIMessage({
+            content: text ?? "",
+            usage_metadata: {
+              input_tokens: this.tokens.input,
+              output_tokens: this.tokens.output,
+              total_tokens: this.tokens.input + this.tokens.output,
+            },
+          }),
+        },
+      ],
     };
   }
 }

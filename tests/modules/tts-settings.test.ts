@@ -44,6 +44,27 @@ describe("readTtsConfig", () => {
   });
 });
 
+// The speech rewrite ships ON. A stored value always wins over the default, which is precisely why
+// the migration DELETES the key instead of writing true over it: an agent that saved `false` before
+// the flip (which every editor save did, explicitly) must keep its choice, and an agent that never
+// carried the key must pick the new default up.
+describe("readTtsConfig — speech rewrite default", () => {
+  test("an agent with no stored flag gets the new default", () => {
+    expect(readTtsConfig({ tts: { mode: "mirror" } }).normalize).toBe(true);
+    expect(readTtsConfig(undefined).normalize).toBe(TTS_DEFAULTS.normalize);
+  });
+
+  test("a stored false still wins", () => {
+    expect(readTtsConfig({ tts: { normalize: false } }).normalize).toBe(false);
+  });
+
+  test("a non-boolean stored value is junk and falls back to the default", () => {
+    expect(readTtsConfig({ tts: { normalize: "yes" } }).normalize).toBe(
+      TTS_DEFAULTS.normalize,
+    );
+  });
+});
+
 describe("shouldReplyWithAudio", () => {
   test("never → always text", () => {
     expect(shouldReplyWithAudio("never", true, true)).toBe(false);

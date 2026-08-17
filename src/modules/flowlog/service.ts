@@ -101,6 +101,11 @@ export async function withFlowStage<T>(
     provider?: string | null;
     model?: string | null;
     detail?: Record<string, unknown>;
+    // Extra detail derived FROM the result, merged over `detail` on the success line, for a stage
+    // whose interesting numbers only exist once it returned (how much the speech normalizer rewrote,
+    // say). Same PII rule as `detail`: counts, ids and enums, never text. It runs on the hot path, so
+    // a throw here is swallowed rather than allowed to break the very work it was measuring.
+    detailOf?: (out: T) => Record<string, unknown>;
     // Severity for the throw line (default "error"). Best-effort stages whose failure the caller
     // RECOVERS from (e.g. TTS → text fallback) pass "warn" so the conversation/Logs show an advisory
     // rather than a red error. The status stays "error" (the stage itself did fail).
@@ -112,6 +117,14 @@ export async function withFlowStage<T>(
   const start = Date.now();
   try {
     const out = await fn();
+    let detail = meta.detail;
+    if (meta.detailOf) {
+      try {
+        detail = { ...detail, ...meta.detailOf(out) };
+      } catch (err) {
+        logger.warn({ err, stage }, "flow stage detailOf failed");
+      }
+    }
     emitFlowEvent(ctx, {
       stage,
       level: "info",
@@ -119,7 +132,7 @@ export async function withFlowStage<T>(
       provider: meta.provider ?? null,
       model: meta.model ?? null,
       durationMs: Date.now() - start,
-      detail: meta.detail,
+      detail,
     });
     return out;
   } catch (err) {

@@ -46,6 +46,30 @@ describe("buildLangfuseHandler", () => {
       buildLangfuseHandler(null, { tenantId: 1n, threadId: "1:1:1" }),
     ).toBeNull();
   });
+
+  // updateRoot lifts a run's name/input/output onto the ROOT trace, which is right for the turn's
+  // own generation and wrong for anything that runs after it under the same turnId: the handler
+  // treats a call with no parentRunId as the root, so a SECOND top-level call (the speech
+  // normalizer) would overwrite the turn's question and answer in the trace list with its own
+  // rewrite. Hence the opt-out, and the default has to stay true for every existing caller.
+  test("updateRoot defaults to true and a secondary call can turn it off", () => {
+    const cfg = {
+      publicKey: "pk-lf-fake",
+      secretKey: "sk-lf-fake",
+      // Unreachable on purpose: nothing here is meant to leave the process.
+      baseUrl: "http://127.0.0.1:9",
+    };
+    const ctx = { tenantId: 1n, threadId: "1:1:1", turnId: "turn-1" };
+    const root = buildLangfuseHandler(cfg, ctx) as unknown as {
+      updateRoot: boolean;
+    };
+    const nested = buildLangfuseHandler(cfg, {
+      ...ctx,
+      updateRoot: false,
+    }) as unknown as { updateRoot: boolean };
+    expect(root.updateRoot).toBe(true);
+    expect(nested.updateRoot).toBe(false);
+  });
 });
 
 describe("attachLangfuseDeliveryLogging", () => {

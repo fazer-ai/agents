@@ -199,6 +199,11 @@ export interface TraceContext {
   // The full OpenAI tool definitions (name + description + JSON-Schema params) — only set when the
   // tenant turns on Langfuse debug mode, since they are heavy.
   availableToolSchemas?: unknown[];
+  // Lift this run's name/input/output onto the ROOT trace (default true; see buildLangfuseHandler).
+  // A SECONDARY model call that shares the turn's trace id must pass false: with true it would
+  // overwrite the root's IO with its own, so the trace list would show the speech normalizer's
+  // rewrite where the turn's actual question and answer belong.
+  updateRoot?: boolean;
 }
 
 // Shapes the bound toolset for the trace metadata: names always, full schemas only in debug mode.
@@ -264,7 +269,7 @@ export function buildLangfuseHandler(
     // Content is still gated by the client `mask` (sendContent=false redacts the surfaced IO too).
     return new CallbackHandler({
       root: trace,
-      updateRoot: true,
+      updateRoot: ctx.updateRoot ?? true,
       metadata,
     }) as unknown as BaseCallbackHandler;
   } catch (err) {

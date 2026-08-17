@@ -3,10 +3,12 @@ import {
   STT_DEFAULT_MODEL,
   TTS_DEFAULT_MODEL,
   TTS_DEFAULT_VOICE,
+  TTS_NORMALIZE_DEFAULT,
   VISION_DEFAULT_MODEL,
 } from "@/client/lib/providerDefaults";
 import { getSttProvider, STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { getTtsProvider, TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
+import { TTS_DEFAULTS } from "@/modules/tts/settings";
 import {
   getVisionProvider,
   VISION_PROVIDER_NAMES,
@@ -35,5 +37,11 @@ describe("provider defaults mirror", () => {
       expect(TTS_DEFAULT_MODEL[name]).toBe(getTtsProvider(name)?.defaultModel);
       expect(TTS_DEFAULT_VOICE[name]).toBe(getTtsProvider(name)?.defaultVoice);
     }
+  });
+
+  // The editor decides from this whether an agent that never saved the flag shows the speech rewrite
+  // as on. Drift here means the screen and the runtime disagree about what an untouched agent does.
+  test("the speech-rewrite default matches the settings reader", () => {
+    expect(TTS_NORMALIZE_DEFAULT).toBe(TTS_DEFAULTS.normalize);
   });
 });

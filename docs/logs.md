@@ -4,7 +4,7 @@ Verbose, per-stage operational telemetry for agent turns, plus external alerting
 
 ## Model
 
-- **`ExecutionLog`** (`execution_logs`): one row per pipeline stage per turn (`stt`, `vision`, `embed`, `generate`, `tts`, `split`, `handoff`) plus errors. `turnId` correlates a turn's stages; `source` is `inbox` | `playground`. High-write, retention-bounded. **NEVER carries message text / PII** — `detail` is allowlisted ids/counts/enums and is passed through `redactSecretsDeep` on write; `errorMessage` through `sanitizeErrorMessage`.
+- **`ExecutionLog`** (`execution_logs`): one row per pipeline stage per turn (`stt`, `vision`, `embed`, `generate`, `normalize`, `tts`, `split`, `handoff`) plus errors. `turnId` correlates a turn's stages; `source` is `inbox` | `playground`. High-write, retention-bounded. **NEVER carries message text / PII** — `detail` is allowlisted ids/counts/enums and is passed through `redactSecretsDeep` on write; `errorMessage` through `sanitizeErrorMessage`.
 - **`AlertChannel`** (`alert_channels`): a Discord or generic-webhook sink. `url` is an `encryptJson` blob (a Discord URL embeds a token) — stored encrypted, returned only **masked** (`scheme://host/…`); the operator re-enters it to change it (like the vault). `secretRef` is an optional vault ref for the generic-webhook HMAC.
 - **`AlertDelivery`** (`alert_deliveries`): the dispatch ledger — **no PII**, only `stage`/`level`/`summary` + a coalesced burst `count`.
 

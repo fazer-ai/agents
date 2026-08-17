@@ -3,7 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { synthesizeReply } from "@/modules/tts/service";
-import type { TtsConfig } from "@/modules/tts/settings";
+import { TTS_DEFAULTS, type TtsConfig } from "@/modules/tts/settings";
 
 // Verifies that the vault entry's baseUrl takes precedence over cfg.baseURL when calling the provider.
 
@@ -87,6 +87,7 @@ describe.skipIf(!dbUp)("tts: vault entry baseUrl precedence", () => {
     }) as unknown as typeof fetch;
 
     const cfg: TtsConfig = {
+      ...TTS_DEFAULTS,
       mode: "mirror",
       provider: "openai",
       model: "tts-1",
@@ -117,6 +118,7 @@ describe.skipIf(!dbUp)("tts: vault entry baseUrl precedence", () => {
     }) as unknown as typeof fetch;
 
     const cfg: TtsConfig = {
+      ...TTS_DEFAULTS,
       mode: "mirror",
       provider: "openai",
       model: "tts-1",

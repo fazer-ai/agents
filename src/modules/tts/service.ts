@@ -13,7 +13,7 @@ import {
   type TtsResult,
 } from "@/modules/tts/providers";
 import { tryResolveVaultEntry } from "@/modules/vault/service";
-import type { TtsConfig } from "./settings";
+import { type TtsConfig, voiceSettingsOf } from "./settings";
 
 // Text-to-speech orchestration: normalize the reply for speech, synthesize via the configured
 // provider (key from the vault), and return the audio for the Chatwoot voice-note upload. The
@@ -180,6 +180,7 @@ export async function synthesizeReply(
         baseURL: effectiveBaseURL,
         fetchImpl: params.deps?.fetchImpl ?? fetch,
         format,
+        voiceSettings: voiceSettingsOf(cfg),
       }),
   );
 }

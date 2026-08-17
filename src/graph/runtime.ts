@@ -30,7 +30,6 @@ import {
 import { analyzeGuardrail } from "@/modules/guardrails/analyze";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { deliverReply } from "@/modules/split/service";
-import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { chatwootThreadId, resolveGraphThreadId } from "./checkpointer";
@@ -42,6 +41,7 @@ import {
   type AgentConfig,
   buildCallbacks,
   buildModelAndGraph,
+  buildSpeechNormalizer,
   buildToolset,
   loadAgentConfig,
 } from "./prepare";
@@ -610,25 +610,22 @@ export async function runLoadedTurn(
     );
     if (wantAudio) {
       try {
-        // Opt-in LLM speech normalization: build a temp-0 model from the agent's own model config
-        // (no extra credential), or use the injected normalizer in tests. Only when the agent enabled
-        // it — and synthesizeReply still falls back to raw text if it throws.
-        let normalizeSpeech = params.deps?.normalizeSpeech;
-        if (!normalizeSpeech && loaded.ttsConfig.normalize) {
-          const makeModel = params.deps?.makeModel ?? createChatModel;
-          const normModel = makeModel({
-            ...loaded.mc,
-            apiKey: loaded.apiKey,
-            baseURL: loaded.credentialBaseUrl ?? loaded.mc.baseURL,
-            temperature: 0,
-            // NOTE: dropped for the same reason temperature is pinned to 0 — this pass rewrites the
-            // agent's own reply for speech (strip markdown, spell out symbols), and the effort the
-            // operator chose is about how the agent THINKS, not about a mechanical rewrite the
-            // customer is waiting on. Reasoning here would only add latency to the audio reply.
-            reasoningEffort: undefined,
+        // Opt-in LLM speech normalization (or the injected normalizer in tests). Its callbacks are
+        // built fresh rather than reusing this turn's array: same usage/trace identity, different
+        // node and model, and a nested Langfuse generation instead of a second root update.
+        const normalizeSpeech =
+          params.deps?.normalizeSpeech ??
+          buildSpeechNormalizer(loaded, {
+            makeModel: params.deps?.makeModel,
+            callbacks: {
+              tenantId,
+              threadId,
+              base,
+              persistUsage: params.deps?.persistUsage,
+              turnId: flow.turnId,
+            },
+            flow,
           });
-          normalizeSpeech = (t) => llmNormalizeForSpeech(normModel, t);
-        }
         const tts = await synthesizeReply({
           tenantId,
           cfg: loaded.ttsConfig,

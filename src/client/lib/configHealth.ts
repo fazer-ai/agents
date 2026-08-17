@@ -7,6 +7,7 @@ export type ConfigIssueKey =
   | "model"
   | "stt"
   | "tts"
+  | "ttsNormalize"
   | "vision"
   | "knowledge"
   | "embedding"
@@ -39,6 +40,11 @@ export interface ConfigHealthInput {
   // TTS has no boolean toggle — any mode other than "never" means audio replies are on.
   ttsMode: string;
   ttsCredentialRef: string;
+  // The speech rewrite and the model the operator pointed it at. Empty provider = the agent's own
+  // model, which needs no credential of its own.
+  ttsNormalize?: boolean;
+  ttsNormalizeProvider?: string;
+  ttsNormalizeCredentialRef?: string;
   visionEnabled: boolean;
   visionCredentialRef: string;
   // Refs (`vault:<id>`) whose vault entry exists but is still pending (secret not filled in yet). A
@@ -110,6 +116,24 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   push(
     { key: "tts", tab: "behavior", sectionId: "tts" },
     credIssue(input.ttsMode !== "never", input.ttsCredentialRef, pending),
+  );
+  // The speech rewrite on a provider of its own. Two ways it cannot run, and both are silent at
+  // runtime (the rewrite is best-effort, so the audio still goes out, unrewritten): a DIFFERENT
+  // provider with no key of its own, where the agent's key is refused; and a key that is referenced
+  // but never filled. A same-provider override needs nothing, and raises nothing.
+  const normalizeNeedsOwnKey =
+    Boolean(input.ttsNormalize) &&
+    input.ttsMode !== "never" &&
+    Boolean(input.ttsNormalizeProvider) &&
+    (input.ttsNormalizeProvider !== input.modelProvider ||
+      Boolean(input.ttsNormalizeCredentialRef));
+  push(
+    { key: "ttsNormalize", tab: "behavior", sectionId: "tts" },
+    credIssue(
+      normalizeNeedsOwnKey,
+      input.ttsNormalizeCredentialRef ?? "",
+      pending,
+    ),
   );
   push(
     { key: "vision", tab: "behavior", sectionId: "vision" },

@@ -51,6 +51,7 @@ import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { computeConfigIssues } from "@/client/lib/configHealth";
 import { shouldRestoreUserBaseUrl } from "@/client/lib/credentialBaseUrl";
+import { TTS_NORMALIZE_DEFAULT } from "@/client/lib/providerDefaults";
 import type { ApiErrorPayload } from "@/client/lib/types";
 import { slugify } from "@/client/lib/utils";
 import {
@@ -194,6 +195,12 @@ function str(v: unknown): string {
 function num(v: unknown): string {
   return typeof v === "number" ? String(v) : "";
 }
+// The inverse of num() for an optional numeric field: a blank input means "unset", which the settings
+// readers store as null, NOT as 0 (Number("") === 0 would silently pin the knob to its minimum).
+function numOrNull(v: string): number | null {
+  const n = Number(v.trim());
+  return v.trim() && Number.isFinite(n) ? n : null;
+}
 // Read the follow-up step's labels: the new `assignLabels` array, falling back to the legacy single
 // `assignLabel` string so an agent saved before multi-label keeps its label in the editor.
 function stepLabels(st: Record<string, unknown>): string[] {
@@ -308,7 +315,19 @@ function readBehaviorState(a: Agent) {
       model: str(tt.model),
       voice: str(tt.voice),
       credentialRef: str(tt.credentialRef),
-      normalize: typeof tt.normalize === "boolean" ? tt.normalize : false,
+      normalize:
+        typeof tt.normalize === "boolean"
+          ? tt.normalize
+          : TTS_NORMALIZE_DEFAULT,
+      normalizeProvider: str(tt.normalizeProvider),
+      normalizeModel: str(tt.normalizeModel),
+      normalizeCredentialRef: str(tt.normalizeCredentialRef),
+      stability: num(tt.stability),
+      similarityBoost: num(tt.similarityBoost),
+      style: num(tt.style),
+      speed: num(tt.speed),
+      speakerBoost:
+        typeof tt.speakerBoost === "boolean" ? tt.speakerBoost : null,
     },
     split: {
       enabled: typeof sp.enabled === "boolean" ? sp.enabled : true,
@@ -579,7 +598,19 @@ export function AgentEditorPage() {
     model: "",
     voice: "",
     credentialRef: "",
-    normalize: false,
+    normalize: TTS_NORMALIZE_DEFAULT,
+    // The rewrite model. Empty = the agent's own model and key, which is what an install that never
+    // opens this section keeps using.
+    normalizeProvider: "",
+    normalizeModel: "",
+    normalizeCredentialRef: "",
+    // Delivery knobs (ElevenLabs voice_settings). Empty string = leave it to the provider, which is
+    // what an install that never opens this section keeps sending.
+    stability: "",
+    similarityBoost: "",
+    style: "",
+    speed: "",
+    speakerBoost: null as boolean | null,
   });
   // Reply in multiple messages (split + typing delay). Mirrors modules/split
   // (on by default, wpm 250 — matches SPLIT_DEFAULTS).
@@ -1021,6 +1052,16 @@ export function AgentEditorPage() {
         voice: tts.voice.trim(),
         credentialRef: tts.credentialRef || null,
         normalize: tts.normalize,
+        normalizeProvider: tts.normalizeProvider || null,
+        normalizeModel: tts.normalizeModel.trim() || null,
+        normalizeCredentialRef: tts.normalizeCredentialRef || null,
+        // NOTE: blank clears the knob (null), so the operator can hand a field back to the provider
+        // after having set it. readTtsConfig clamps whatever number survives.
+        stability: numOrNull(tts.stability),
+        similarityBoost: numOrNull(tts.similarityBoost),
+        style: numOrNull(tts.style),
+        speed: numOrNull(tts.speed),
+        speakerBoost: tts.speakerBoost,
       },
       split: {
         enabled: split.enabled,
@@ -1226,6 +1267,8 @@ export function AgentEditorPage() {
   // t('editor.configIssue.model', 'The model has no API key set, so the agent cannot reply.')
   // t('editor.configIssue.stt', 'Voice transcription is on but has no API key set.')
   // t('editor.configIssue.tts', 'Audio replies are on but have no API key set.')
+  // t('editor.configIssue.ttsNormalize', 'The speech rewrite points at another provider but has no API key of its own, so it will be skipped.')
+  // t('editor.configIssuePending.ttsNormalize', 'The speech-rewrite credential is referenced but not filled in yet.')
   // t('editor.configIssue.vision', 'Image/document reading is on but has no API key set.')
   // t('editor.configIssuePending.model', 'The model credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.stt', 'The transcription credential is referenced but not filled in yet.')
@@ -1248,6 +1291,9 @@ export function AgentEditorPage() {
     sttCredentialRef: stt.credentialRef,
     ttsMode: tts.mode,
     ttsCredentialRef: tts.credentialRef,
+    ttsNormalize: tts.normalize,
+    ttsNormalizeProvider: tts.normalizeProvider,
+    ttsNormalizeCredentialRef: tts.normalizeCredentialRef,
     visionEnabled: vision.enabled,
     visionCredentialRef: vision.credentialRef,
     pendingRefs,

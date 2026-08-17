@@ -734,6 +734,43 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     expect(stt.credentialRef).toBe(`vault:${credGenericId}`);
   });
 
+  // The tts block carries TWO credentials (the voice engine's, and the speech normalizer's own
+  // model). The name→ref translation is keyed by (block, field), so a loop that only knew
+  // "credentialRef" would store this one as a raw NAME, which resolves nowhere at turn time, and
+  // the operator would only find out from a missing rewrite in production.
+  test("agent_settings_set translates the tts normalizer credential name too, and get projects it back", async () => {
+    const p = principal({ tenantId: tenantA });
+    const r = await agentSettingsSet(
+      p,
+      {
+        agent_id: String(agentA),
+        tts: {
+          normalize: true,
+          normalizeCredentialRef: `vault:${credGenericId}`,
+        },
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    const row = await suDb.agent.findUnique({ where: { id: agentA } });
+    expect(blk(row?.settings, "tts").normalizeCredentialRef).toBe(
+      `vault:${credGenericId}`,
+    );
+    const got = await agentSettingsGet(
+      p,
+      { agent_id: String(agentA) },
+      { base: appDb },
+    );
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      const tts = (got.data.settings as Record<string, Record<string, unknown>>)
+        .tts;
+      // Back to the NAME, like every other credential the MCP contract exposes.
+      expect(tts?.normalizeCredentialRef).toBe("shared-cred");
+    }
+  });
+
   test("agent_settings_set with vault:<id> not in tenant returns not-found error", async () => {
     const p = principal({ tenantId: tenantA });
     // Use credBearerId from tenantA but pretend it belongs to a different tenant by using a

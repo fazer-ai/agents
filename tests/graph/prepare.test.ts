@@ -3,7 +3,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { MemorySaver } from "@langchain/langgraph";
 import type { ResolvedModelConfig } from "@/graph/models";
 import type { AgentConfig } from "@/graph/prepare";
-import { buildModelAndGraph } from "@/graph/prepare";
+import { buildModelAndGraph, buildSpeechNormalizer } from "@/graph/prepare";
 import { GUARDRAILS_DEFAULTS } from "@/modules/guardrails/settings";
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
@@ -14,7 +14,16 @@ import { TTS_DEFAULTS } from "@/modules/tts/settings";
 
 // Minimal AgentConfig stub for buildModelAndGraph — only fields it reads.
 function makeConfig(
-  over: Partial<Pick<AgentConfig, "mc" | "credentialBaseUrl">> = {},
+  over: Partial<
+    Pick<
+      AgentConfig,
+      | "mc"
+      | "credentialBaseUrl"
+      | "ttsConfig"
+      | "ttsNormalizeApiKey"
+      | "ttsNormalizeCredentialBaseUrl"
+    >
+  > = {},
 ): AgentConfig {
   return {
     agentId: 1n,
@@ -43,6 +52,8 @@ function makeConfig(
     ragConfig: undefined,
     langfuseCfg: null,
     ttsConfig: TTS_DEFAULTS,
+    ttsNormalizeApiKey: "",
+    ttsNormalizeCredentialBaseUrl: null,
     contactVoiceReply: null,
     splitConfig: SPLIT_DEFAULTS,
     serviceWindowConfig: SERVICE_WINDOW_DEFAULTS,
@@ -115,5 +126,97 @@ describe("buildModelAndGraph — effective baseURL resolution", () => {
       checkpointer: new MemorySaver(),
     });
     expect(getCaptured()?.baseURL).toBeUndefined();
+  });
+});
+
+describe("buildSpeechNormalizer", () => {
+  function captureModel() {
+    let captured: ResolvedModelConfig | null = null;
+    const makeModel = (cfg: ResolvedModelConfig): BaseChatModel => {
+      captured = cfg;
+      return {
+        invoke: async () => ({ content: "" }),
+      } as unknown as BaseChatModel;
+    };
+    return { makeModel, getCaptured: () => captured as ResolvedModelConfig };
+  }
+
+  test("returns undefined when the agent turned the rewrite off", () => {
+    const { makeModel } = captureModel();
+    const cfg = makeConfig({
+      ttsConfig: { ...TTS_DEFAULTS, normalize: false },
+    });
+    expect(buildSpeechNormalizer(cfg, { makeModel })).toBeUndefined();
+  });
+
+  test("inherits the agent's model, key and baseURL when nothing of its own is set", () => {
+    const { makeModel, getCaptured } = captureModel();
+    const cfg = makeConfig({
+      mc: { provider: "openai", model: "gpt-5", temperature: 0.7 },
+      credentialBaseUrl: "https://credential.example.com/v1",
+      ttsConfig: { ...TTS_DEFAULTS, normalize: true },
+    });
+    expect(buildSpeechNormalizer(cfg, { makeModel })).toBeDefined();
+    expect(getCaptured().provider).toBe("openai");
+    expect(getCaptured().model).toBe("gpt-5");
+    expect(getCaptured().apiKey).toBe("test-key");
+    expect(getCaptured().baseURL).toBe("https://credential.example.com/v1");
+  });
+
+  // A rewrite of an answer that already exists: deterministic, and not something to spend reasoning
+  // tokens (or the customer's waiting time) on, whatever the operator picked for the agent itself.
+  test("pins temperature to 0 and drops the agent's reasoning effort", () => {
+    const { makeModel, getCaptured } = captureModel();
+    const cfg = makeConfig({
+      mc: {
+        provider: "openai",
+        model: "gpt-5",
+        temperature: 0.9,
+        reasoningEffort: "high",
+      },
+      ttsConfig: { ...TTS_DEFAULTS, normalize: true },
+    });
+    buildSpeechNormalizer(cfg, { makeModel });
+    expect(getCaptured().temperature).toBe(0);
+    expect(getCaptured().reasoningEffort).toBeUndefined();
+  });
+
+  test("its own credential swaps the key and the baseURL, not just the model name", () => {
+    const { makeModel, getCaptured } = captureModel();
+    const cfg = makeConfig({
+      mc: { provider: "openai", model: "gpt-5" },
+      credentialBaseUrl: "https://agent.example.com/v1",
+      ttsConfig: {
+        ...TTS_DEFAULTS,
+        normalize: true,
+        normalizeProvider: "google",
+        normalizeModel: "gemini-2.5-flash",
+        normalizeCredentialRef: "vault:9",
+      },
+      ttsNormalizeApiKey: "normalizer-key",
+      ttsNormalizeCredentialBaseUrl: "https://normalizer.example.com/v1",
+    });
+    buildSpeechNormalizer(cfg, { makeModel });
+    expect(getCaptured().provider).toBe("google");
+    expect(getCaptured().model).toBe("gemini-2.5-flash");
+    expect(getCaptured().apiKey).toBe("normalizer-key");
+    expect(getCaptured().baseURL).toBe("https://normalizer.example.com/v1");
+  });
+
+  // The operator pointed the rewrite at its own credential and that credential is gone. Reaching for
+  // the AGENT's key would be a silent substitution onto a provider that may not even accept it, so
+  // the rewrite is skipped and the audio goes out from the raw text.
+  test("skips entirely when its own credential did not resolve", () => {
+    const { makeModel, getCaptured } = captureModel();
+    const cfg = makeConfig({
+      ttsConfig: {
+        ...TTS_DEFAULTS,
+        normalize: true,
+        normalizeCredentialRef: "vault:404",
+      },
+      ttsNormalizeApiKey: "",
+    });
+    expect(buildSpeechNormalizer(cfg, { makeModel })).toBeUndefined();
+    expect(getCaptured()).toBeNull();
   });
 });

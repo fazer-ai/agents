@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { getTtsProvider, TtsError } from "@/modules/tts/providers";
 import { prepareSpeechText } from "@/modules/tts/service";
+import { readTtsConfig, voiceSettingsOf } from "@/modules/tts/settings";
 
 interface Call {
   url: string;
@@ -66,6 +67,72 @@ describe("prepareSpeechText", () => {
     expect(out).toContain("Olá!");
     expect(out).toContain("aqui");
     expect(out).toContain("item");
+  });
+});
+
+describe("elevenlabs voice_settings", () => {
+  async function elevenBody(extra: Record<string, unknown>) {
+    const { calls, fetchImpl } = mockAudioFetch();
+    await getTtsProvider("elevenlabs")?.synthesize({
+      ...ELEVEN_REQ,
+      fetchImpl,
+      format: "ogg_opus",
+      ...extra,
+    });
+    return JSON.parse(String(calls[0]?.init.body));
+  }
+
+  test("omits voice_settings entirely when the operator set no knob", async () => {
+    const body = await elevenBody({});
+    expect(body).toEqual({ text: "olá", model_id: "eleven_flash_v2_5" });
+    expect("voice_settings" in body).toBe(false);
+  });
+
+  test("maps only the knobs that are set, onto ElevenLabs' names", async () => {
+    const body = await elevenBody({
+      voiceSettings: {
+        stability: 0.4,
+        similarityBoost: null,
+        style: null,
+        speed: 0.95,
+        speakerBoost: true,
+      },
+    });
+    expect(body.voice_settings).toEqual({
+      stability: 0.4,
+      speed: 0.95,
+      use_speaker_boost: true,
+    });
+  });
+});
+
+describe("readTtsConfig voice knobs", () => {
+  test("clamps out-of-range values instead of rejecting the write", () => {
+    const cfg = readTtsConfig({
+      tts: { stability: 5, similarityBoost: -2, speed: 9 },
+    });
+    expect(cfg.stability).toBe(1);
+    expect(cfg.similarityBoost).toBe(0);
+    expect(cfg.speed).toBe(4);
+  });
+
+  // The band the REST endpoint accepts, NOT the Agents Platform's narrower 0.7-1.2: clamping to that
+  // one turned a deliberate 1.5 into 1.2 with no error and no trace.
+  test("a speed the REST endpoint accepts survives the write", () => {
+    expect(readTtsConfig({ tts: { speed: 1.5 } }).speed).toBe(1.5);
+    expect(readTtsConfig({ tts: { speed: 0.3 } }).speed).toBe(0.3);
+  });
+
+  test("a config with no knobs yields no provider settings object", () => {
+    expect(voiceSettingsOf(readTtsConfig({ tts: { mode: "mirror" } }))).toBe(
+      null,
+    );
+  });
+
+  test("non-numeric junk is dropped, not coerced", () => {
+    const cfg = readTtsConfig({ tts: { stability: "0.4", speed: Number.NaN } });
+    expect(cfg.stability).toBe(null);
+    expect(cfg.speed).toBe(null);
   });
 });
 

@@ -11,6 +11,7 @@ export const FLOW_STAGES = [
   "generate", // the LLM turn (graph.invoke)
   "guardrail", // input/output moderation trip (a guardrails check fired)
   "tool", // a tool call the agent made during the turn (name + status + duration)
+  "normalize", // the reply rewritten for speech before synthesis (its own model call)
   "tts", // audio-reply synthesis
   "split", // humanized balloon delivery
   "handoff", // human takeover detected before posting

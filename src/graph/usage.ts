@@ -71,6 +71,10 @@ export function defaultUsagePersist(
         inbox_id: row.inboxId != null ? String(row.inboxId) : null,
         source: row.source,
         model: row.model,
+        // NOTE: the call type ("agent", "nudge", "tts_normalize", …). A fleet subscriber that only
+        // sums tokens now sees the same split the dashboard does, instead of one undifferentiated
+        // total in which a secondary call looks like a second customer turn.
+        node: row.node,
         prompt_tokens: row.promptTokens,
         completion_tokens: row.completionTokens,
         cached_read_tokens: row.cachedReadTokens,

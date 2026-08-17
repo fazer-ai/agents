@@ -42,9 +42,11 @@ import {
 import { providerLabel } from "@/client/lib/providerLabels";
 import { formatWindowsSummary } from "@/client/lib/schedulePreview";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
+import { MODEL_PROVIDERS } from "./GeneralTab";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 import type { Hours, VaultEntry } from "./types";
@@ -112,6 +114,17 @@ interface TtsState {
   voice: string;
   credentialRef: string;
   normalize: boolean;
+  // The rewrite model's own config; "" on all three = inherit the agent's (the default).
+  normalizeProvider: string;
+  normalizeModel: string;
+  normalizeCredentialRef: string;
+  // Delivery knobs, kept as strings like every other numeric field in this form; "" = leave it to the
+  // provider. Only ElevenLabs consumes them today.
+  stability: string;
+  similarityBoost: string;
+  style: string;
+  speed: string;
+  speakerBoost: boolean | null;
 }
 
 interface SplitState {
@@ -1370,16 +1383,229 @@ export function BehaviorTab({
                     onCheckedChange={(v) => setTts({ ...tts, normalize: v })}
                     label={t(
                       "editor.ttsNormalize",
-                      "Improve pronunciation (read numbers, dates and amounts naturally)",
+                      "Rewrite the reply to be spoken, not read",
                     )}
                   />
                   <p className="text-text-muted text-xs">
                     {t(
                       "editor.ttsNormalizeHint",
-                      "Uses the agent's model to rewrite the reply for clearer speech before generating the audio.",
+                      "One extra model call per audio reply: numbers, dates and amounts come out in words, and a list of options becomes a sentence a person would say out loud. It appears on the Logs as its own step and on the dashboard as its own usage.",
                     )}
                   </p>
                 </div>
+                {tts.normalize && (
+                  <div className="flex flex-col gap-3">
+                    <div>
+                      <p className="font-medium text-sm">
+                        {t("editor.ttsNormalizeModel", "Rewrite model")}
+                      </p>
+                      <p className="text-text-muted text-xs">
+                        {t(
+                          "editor.ttsNormalizeModelHint",
+                          "Leave it on the agent's model to change nothing. Rewriting an answer that already exists is a simpler job than writing it, so a cheaper model usually does it just as well, on every audio reply.",
+                        )}
+                      </p>
+                    </div>
+                    <FormField label={t("editor.provider", "Provider")}>
+                      <Select
+                        value={tts.normalizeProvider}
+                        onChange={(e) => {
+                          const provider = e.target.value;
+                          setTts({
+                            ...tts,
+                            normalizeProvider: provider,
+                            // Changing provider invalidates the model name AND the key, exactly as
+                            // in the guardrails block: a model id from another provider is refused,
+                            // and so is its API key.
+                            normalizeModel: "",
+                            normalizeCredentialRef: "",
+                          });
+                        }}
+                      >
+                        <option value="">
+                          {t(
+                            "editor.ttsNormalizeSameAsAgent",
+                            "Same as the agent",
+                          )}
+                        </option>
+                        {MODEL_PROVIDERS.map((p) => (
+                          <option key={p} value={p}>
+                            {providerLabel(p, t)}
+                          </option>
+                        ))}
+                      </Select>
+                    </FormField>
+                    {tts.normalizeProvider !== "" && (
+                      <>
+                        <FormField
+                          label={t("editor.credential", "API key")}
+                          description={t(
+                            "editor.ttsNormalizeCredentialHint",
+                            "Required when the provider differs from the agent's: the agent's key would be refused there.",
+                          )}
+                          group
+                        >
+                          <CredentialPicker
+                            value={tts.normalizeCredentialRef}
+                            onChange={(v) =>
+                              setTts({ ...tts, normalizeCredentialRef: v })
+                            }
+                            compatibleTypes={credentialCompat.model(
+                              tts.normalizeProvider,
+                            )}
+                            defaultCreateType={
+                              credentialCompat.model(tts.normalizeProvider)[0]
+                            }
+                            ariaLabel={t("editor.credential", "API key")}
+                          />
+                        </FormField>
+                        <FormField label={t("editor.model", "Model")} group>
+                          <ModelPicker
+                            value={tts.normalizeModel}
+                            onChange={(v) =>
+                              setTts({ ...tts, normalizeModel: v })
+                            }
+                            provider={tts.normalizeProvider}
+                            credentialRef={
+                              tts.normalizeCredentialRef || undefined
+                            }
+                            placeholder={
+                              PROVIDER_DEFAULT_MODEL[tts.normalizeProvider] ??
+                              ""
+                            }
+                            aria-label={t("editor.model", "Model")}
+                          />
+                        </FormField>
+                      </>
+                    )}
+                  </div>
+                )}
+                {tts.provider === "elevenlabs" && (
+                  <div className="flex flex-col gap-3">
+                    <div>
+                      <p className="font-medium text-sm">
+                        {t("editor.ttsDelivery", "Voice delivery")}
+                      </p>
+                      <p className="text-text-muted text-xs">
+                        {t(
+                          "editor.ttsDeliveryHint",
+                          "Leave a field blank to use the voice's own saved setting. Lower stability makes the delivery more expressive; high stability sounds monotone.",
+                        )}
+                      </p>
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <FormField
+                        label={t("editor.ttsStability", "Stability")}
+                        description={t(
+                          "editor.ttsStabilityHint",
+                          "0 = expressive, 1 = monotone (0-1).",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={tts.stability}
+                          onChange={(e) =>
+                            setTts({ ...tts, stability: e.target.value })
+                          }
+                        />
+                      </FormField>
+                      <FormField
+                        label={t("editor.ttsSimilarity", "Similarity")}
+                        description={t(
+                          "editor.ttsSimilarityHint",
+                          "How closely to match the original voice (0-1).",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={tts.similarityBoost}
+                          onChange={(e) =>
+                            setTts({ ...tts, similarityBoost: e.target.value })
+                          }
+                        />
+                      </FormField>
+                      <FormField
+                        label={t("editor.ttsStyle", "Style")}
+                        description={t(
+                          "editor.ttsStyleHint",
+                          "Extra emphasis. Costs latency and can destabilize (0-1).",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={tts.style}
+                          onChange={(e) =>
+                            setTts({ ...tts, style: e.target.value })
+                          }
+                        />
+                      </FormField>
+                      <FormField
+                        label={t("editor.ttsSpeed", "Speed")}
+                        description={t(
+                          "editor.ttsSpeedHint",
+                          "Speaking rate, 1 being natural speed (0.25-4).",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={0.25}
+                          max={4}
+                          step={0.05}
+                          value={tts.speed}
+                          onChange={(e) =>
+                            setTts({ ...tts, speed: e.target.value })
+                          }
+                        />
+                      </FormField>
+                      <FormField
+                        label={t("editor.ttsSpeakerBoost", "Speaker boost")}
+                        description={t(
+                          "editor.ttsSpeakerBoostHint",
+                          "The provider enables it by default; pick a value only to override that.",
+                        )}
+                      >
+                        {/* NOTE: a Select, not a Switch: this knob has THREE states, and a switch
+                            would render the untouched "leave it to the voice" as visibly off while
+                            the provider actually turns it on. */}
+                        <Select
+                          value={
+                            tts.speakerBoost === null
+                              ? ""
+                              : String(tts.speakerBoost)
+                          }
+                          onChange={(e) =>
+                            setTts({
+                              ...tts,
+                              speakerBoost:
+                                e.target.value === ""
+                                  ? null
+                                  : e.target.value === "true",
+                            })
+                          }
+                        >
+                          <option value="">
+                            {t("editor.ttsVoiceDefault", "Voice default")}
+                          </option>
+                          <option value="true">
+                            {t("common.enabled", "Enabled")}
+                          </option>
+                          <option value="false">
+                            {t("common.disabled", "Disabled")}
+                          </option>
+                        </Select>
+                      </FormField>
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </Section>

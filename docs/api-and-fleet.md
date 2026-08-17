@@ -28,7 +28,7 @@ Three parts: the **closed event set + envelope** (`events.ts`), the deterministi
 | `conversation.status_changed`  | `chatwoot/mirror.ts` (status differs)             | `conversation_id, inbox_id, status, previous_status, assignee_type`                      |
 | `conversation.handoff`         | `chatwoot/mirror.ts` (assignee → `User`)          | `conversation_id, inbox_id`                                                              |
 | `kanban.card_moved`            | `graph/tools/native.ts` (`kanban_move_card`)      | `card_id, to_step, conversation_id`                                                      |
-| `llm.usage`                    | `graph/usage.ts` (`defaultUsagePersist`)          | `agent_id, conversation_id, model, prompt_tokens, completion_tokens`                     |
+| `llm.usage`                    | `graph/usage.ts` (`defaultUsagePersist`)          | `agent_id, conversation_id, model, node, prompt_tokens, completion_tokens`               |
 | `tenant.created`               | `api/v1/tenants.service.ts` (`createTenant`)      | `tenant_id, slug`                                                                        |
 | `heartbeat`                    | `webhooks/outbound/heartbeat.ts` (periodic)       | `at, version`                                                                            |
 

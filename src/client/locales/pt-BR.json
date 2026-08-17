@@ -1001,7 +1001,7 @@
     "ttsModePreference": "Seguir a preferência do cliente",
     "ttsNormalize": "Reescrever a resposta para ser falada, não lida",
     "ttsNormalizeBaseURLHint": "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
-    "ttsNormalizeCredentialHint": "Obrigatória quando o provedor é diferente do agente: a chave do agente seria recusada lá.",
+    "ttsNormalizeCredentialHint": "Obrigatória quando o provedor é diferente do agente: a chave do agente nunca é enviada a outro fornecedor, então sem uma chave própria a reescrita não roda e o áudio sai sem ela.",
     "ttsNormalizeHint": "Uma chamada de modelo a mais por resposta em áudio: números, datas e valores saem por extenso, e uma lista de opções vira uma frase que uma pessoa diria em voz alta. Aparece nos Logs como etapa própria e no painel como uso próprio.",
     "ttsNormalizeModel": "Modelo da reescrita",
     "ttsNormalizeModelHint": "Deixe no modelo do agente para não mudar nada. Reescrever uma resposta que já existe é um trabalho mais simples do que escrevê-la, então um modelo mais barato costuma dar conta igual, em toda resposta em áudio.",

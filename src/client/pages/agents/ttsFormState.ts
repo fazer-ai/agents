@@ -106,3 +106,19 @@ export function ttsNormalizerProviderChanged(
     normalizeBaseURL: "",
   };
 }
+
+// Whether the rewrite's API key field is REQUIRED, mirroring what `resolveNormalizeModel` will do
+// with the saved settings: a provider the agent does not use inherits nothing, so without a key of
+// its own the rewrite is refused outright (the agent's key belongs to the other vendor and is never
+// transmitted there) and every audio reply goes out unrewritten, silently. Naming the agent's OWN
+// provider is how a separate key on the same vendor gets attached, and that is optional.
+//
+// Blank means "inherit", which is never a switch. The editor is the only place this is visible
+// before the fact, so a field that fails to demand the key is a defect, not a nicety.
+export function ttsNormalizerNeedsOwnCredential(
+  normalizeProvider: string,
+  agentProvider: string,
+): boolean {
+  const named = normalizeProvider.trim();
+  return named !== "" && named !== agentProvider;
+}

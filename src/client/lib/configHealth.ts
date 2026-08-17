@@ -119,14 +119,15 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   );
   // The speech rewrite on a provider of its own. Two ways it cannot run, and both are silent at
   // runtime (the rewrite is best-effort, so the audio still goes out, unrewritten): a DIFFERENT
-  // provider with no key of its own, where the agent's key is refused; and a key that is referenced
-  // but never filled. A same-provider override needs nothing, and raises nothing.
+  // provider with no key of its own, which is refused outright so the agent's key is never
+  // transmitted to another vendor; and a key that is referenced but never filled. A same-provider
+  // override needs nothing, and raises nothing.
   const normalizeNeedsOwnKey =
     Boolean(input.ttsNormalize) &&
     input.ttsMode !== "never" &&
     // Either the operator pointed it at a credential of its own (which then has to resolve, whether
     // or not the provider was also overridden: REST and MCP accept the credential alone), or they
-    // switched provider without one, where the agent's key would be refused.
+    // switched provider without one, which the resolver refuses rather than run on the agent's key.
     (Boolean(input.ttsNormalizeCredentialRef) ||
       (Boolean(input.ttsNormalizeProvider) &&
         input.ttsNormalizeProvider !== input.modelProvider));

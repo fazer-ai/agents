@@ -998,7 +998,7 @@
     "ttsModePreference": "Follow the customer's preference",
     "ttsNormalize": "Rewrite the reply to be spoken, not read",
     "ttsNormalizeBaseURLHint": "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
-    "ttsNormalizeCredentialHint": "Required when the provider differs from the agent's: the agent's key would be refused there.",
+    "ttsNormalizeCredentialHint": "Required when the provider differs from the agent's: the agent's key is never sent to another vendor, so without a key of its own the rewrite is skipped and the audio goes out unrewritten.",
     "ttsNormalizeHint": "One extra model call per audio reply: numbers, dates and amounts come out in words, and a list of options becomes a sentence a person would say out loud. It appears on the Logs as its own step and on the dashboard as its own usage.",
     "ttsNormalizeModel": "Rewrite model",
     "ttsNormalizeModelHint": "Leave it on the agent's model to change nothing. Rewriting an answer that already exists is a simpler job than writing it, so a cheaper model usually does it just as well, on every audio reply.",

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   readTtsFormState,
+  ttsNormalizerNeedsOwnCredential,
   ttsNormalizerProviderChanged,
   ttsSettingsFrom,
 } from "@/client/pages/agents/ttsFormState";
@@ -82,4 +83,32 @@ describe("switching the rewrite provider", () => {
     expect(next.credentialRef).toBe(form.credentialRef);
     expect(next.speed).toBe(form.speed);
   });
+});
+
+// Which configurations the editor must DEMAND a key for. It mirrors `resolveNormalizeModel`, which
+// refuses a switched provider without one rather than run it on the agent's key: the runtime failure
+// is silent (the audio still goes out, unrewritten), so the field marking is the only warning the
+// operator gets before saving.
+describe("does the rewrite need a credential of its own", () => {
+  const cases: Array<[string, string, boolean]> = [
+    // Inheriting outright: the block does not even render.
+    ["", "openai", false],
+    // The same vendor, named explicitly, which is how a separate key gets attached. Optional.
+    ["openai", "openai", false],
+    // A vendor the agent does not use: nothing is inherited, so the key decides whether it runs.
+    ["anthropic", "openai", true],
+    // Compared against the AGENT's provider, never a hardcoded one. Both rows fail if this is
+    // written as `!== "openai"`.
+    ["openai-compatible", "openai-compatible", false],
+    ["openai", "openai-compatible", true],
+    // What a cleared field actually stores.
+    ["   ", "openai", false],
+  ];
+  for (const [normalizeProvider, agentProvider, want] of cases) {
+    test(`${normalizeProvider || "(inherited)"} on a ${agentProvider} agent → ${want}`, () => {
+      expect(
+        ttsNormalizerNeedsOwnCredential(normalizeProvider, agentProvider),
+      ).toBe(want);
+    });
+  }
 });

@@ -51,6 +51,7 @@ import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 import {
   type TtsFormState,
+  ttsNormalizerNeedsOwnCredential,
   ttsNormalizerProviderChanged,
 } from "./ttsFormState";
 import type { Hours, VaultEntry } from "./types";
@@ -1424,7 +1425,7 @@ export function BehaviorTab({
                           label={t("editor.credential", "API key")}
                           description={t(
                             "editor.ttsNormalizeCredentialHint",
-                            "Required when the provider differs from the agent's: the agent's key would be refused there.",
+                            "Required when the provider differs from the agent's: the agent's key is never sent to another vendor, so without a key of its own the rewrite is skipped and the audio goes out unrewritten.",
                           )}
                           group
                         >
@@ -1433,6 +1434,10 @@ export function BehaviorTab({
                             onChange={(v) =>
                               setTts({ ...tts, normalizeCredentialRef: v })
                             }
+                            required={ttsNormalizerNeedsOwnCredential(
+                              tts.normalizeProvider,
+                              agentModelProvider,
+                            )}
                             compatibleTypes={credentialCompat.model(
                               tts.normalizeProvider,
                             )}

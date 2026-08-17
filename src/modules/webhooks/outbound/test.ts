@@ -6,12 +6,7 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { tryResolveVaultSecret } from "@/modules/vault/service";
 import { OUTBOUND_ENVELOPE_VERSION } from "./events";
-import {
-  DELIVERY_HEADER,
-  SIGNATURE_HEADER,
-  signOutbound,
-  TIMESTAMP_HEADER,
-} from "./signing";
+import { outboundHeaders } from "./signing";
 
 // On-demand "send a sample payload" for a subscription (the Test button). Unlike a real emit, this
 // is SYNCHRONOUS: it POSTs a clearly-marked test envelope to the subscription's URL through the SAME
@@ -113,14 +108,13 @@ export async function sendWebhookTest(
 
   const rawBody = JSON.stringify(buildTestEnvelope(tenantId, sub.events));
   const ts = Math.floor(Date.now() / 1000);
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-    [DELIVERY_HEADER]: "test",
-  };
-  if (secret) {
-    headers[SIGNATURE_HEADER] = signOutbound(secret, ts, rawBody);
-    headers[TIMESTAMP_HEADER] = String(ts);
-  }
+  const headers = outboundHeaders({
+    contentType: "application/json",
+    deliveryId: "test",
+    timestampSeconds: ts,
+    rawBody,
+    secret,
+  });
 
   try {
     const res = await fetch(sub.url, {

@@ -99,6 +99,54 @@ describe.skipIf(!dbUp)("mcp oauth access tokens", () => {
     expect(decodeJwt(token).aud).toBe(mcpResourceId());
   });
 
+  // Brand rename compatibility window. We SIGN only the current issuer, but verify accepts the
+  // pre-rename one so access tokens minted by the previous image do not 401 mid-deploy. The window
+  // that has to be covered is the 15-minute access TTL — refresh tokens are opaque (no issuer), so
+  // the first rotation after the upgrade already mints under the current one. Dropped at 2.0.
+  test("we sign the current issuer", async () => {
+    const { token } = await issue();
+    expect(decodeJwt(token).iss).toBe("fazerai:mcp");
+  });
+
+  test("a token carrying the pre-rename issuer still verifies", async () => {
+    // Reuse a real jti so the denylist lookup finds its row; only the `iss` claim differs from
+    // what we mint today.
+    const { jti } = await issue(["mcp:read"]);
+    const legacy = await new SignJWT({
+      tenant_id: tenantId.toString(),
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read"],
+    })
+      .setProtectedHeader({ alg: "HS256" })
+      .setSubject(String(userId))
+      .setJti(jti)
+      .setIssuer("secretaria-v4:mcp")
+      .setAudience(mcpResourceId())
+      .setExpirationTime("15m")
+      .sign(new TextEncoder().encode(config.mcpJwtSecret));
+    const v = await verifyAccessToken(legacy, suDb);
+    expect(v).not.toBeNull();
+    expect(v?.userId).toBe(userId);
+    expect(v?.jti).toBe(jti);
+  });
+
+  test("an unknown issuer is still rejected", async () => {
+    const { jti } = await issue(["mcp:read"]);
+    const foreign = await new SignJWT({
+      tenant_id: tenantId.toString(),
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read"],
+    })
+      .setProtectedHeader({ alg: "HS256" })
+      .setSubject(String(userId))
+      .setJti(jti)
+      .setIssuer("evil:mcp")
+      .setAudience(mcpResourceId())
+      .setExpirationTime("15m")
+      .sign(new TextEncoder().encode(config.mcpJwtSecret));
+    expect(await verifyAccessToken(foreign, suDb)).toBeNull();
+  });
+
   test("a token bound to a different audience is rejected (RFC 8707)", async () => {
     // Signed with OUR mcp secret, correct issuer/alg, but a foreign aud → must not verify.
     const forged = await new SignJWT({
@@ -109,7 +157,7 @@ describe.skipIf(!dbUp)("mcp oauth access tokens", () => {
       .setProtectedHeader({ alg: "HS256" })
       .setSubject(String(userId))
       .setJti("forged-aud")
-      .setIssuer("secretaria-v4:mcp")
+      .setIssuer("fazerai:mcp")
       .setAudience("https://evil.example.com/api/v1/mcp")
       .setExpirationTime("15m")
       .sign(new TextEncoder().encode(config.mcpJwtSecret));
@@ -124,7 +172,7 @@ describe.skipIf(!dbUp)("mcp oauth access tokens", () => {
       .setProtectedHeader({ alg: "HS256" })
       .setSubject(String(userId))
       .setJti("forged")
-      .setIssuer("secretaria-v4:mcp")
+      .setIssuer("fazerai:mcp")
       .setExpirationTime("15m")
       .sign(new TextEncoder().encode(config.jwtSecret));
     expect(await verifyAccessToken(appToken, suDb)).toBeNull();

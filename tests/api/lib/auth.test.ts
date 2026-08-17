@@ -3,6 +3,12 @@ import { Elysia } from "elysia";
 
 import { authPlugin } from "@/api/lib/auth";
 
+// happy-dom's Request drops `Cookie` (a forbidden request header), so a cookie built with the
+// global constructor never reaches the route. Bun's native Request is captured in tests/dom-setup.ts
+// before registration; use it for anything that has to carry a session cookie.
+const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
+  .BunRequest;
+
 const mockUser = {
   id: BigInt(1),
   tenantId: BigInt(1) as bigint | null,
@@ -165,6 +171,106 @@ describe("authPlugin", () => {
 
       const data = await response.json();
       expect(data.user).toBeNull();
+    });
+
+    // Brand rename compatibility window. Sessions minted by the previous image carry
+    // `secretaria_v4_auth_token`; the current one issues and reads `fazerai_auth_token`. Reading
+    // both is what keeps an upgrade from logging every operator out. Dropped at 2.0.
+    describe("session cookie name", () => {
+      // Mints a real session JWT through setAuthCookie, then replays it as a raw Cookie header
+      // under whichever name the caller wants to exercise.
+      async function mintToken(): Promise<string> {
+        const app = new Elysia()
+          .use(authPlugin)
+          .post("/mint", async ({ setAuthCookie }) => ({
+            token: await setAuthCookie(mockUser),
+          }));
+        const res = await app.handle(
+          new Request("http://localhost/mint", { method: "POST" }),
+        );
+        return (await res.json()).token;
+      }
+
+      function readerApp() {
+        return new Elysia()
+          .use(authPlugin)
+          .get("/whoami", async ({ getAuthUser }) => {
+            const user = await getAuthUser();
+            return { id: user ? user.id.toString() : null };
+          });
+      }
+
+      test("resolves a session sent under the current cookie name", async () => {
+        mockPrisma.user.findUnique.mockResolvedValueOnce(mockUser);
+        const token = await mintToken();
+        const res = await readerApp().handle(
+          new BunRequest("http://localhost/whoami", {
+            headers: { Cookie: `fazerai_auth_token=${token}` },
+          }),
+        );
+        expect((await res.json()).id).toBe(mockUser.id.toString());
+      });
+
+      test("resolves a session sent under the pre-rename cookie name", async () => {
+        mockPrisma.user.findUnique.mockResolvedValueOnce(mockUser);
+        const token = await mintToken();
+        const res = await readerApp().handle(
+          new BunRequest("http://localhost/whoami", {
+            headers: { Cookie: `secretaria_v4_auth_token=${token}` },
+          }),
+        );
+        expect((await res.json()).id).toBe(mockUser.id.toString());
+      });
+
+      test("prefers the current name when both cookies are present", async () => {
+        mockPrisma.user.findUnique.mockResolvedValueOnce(mockUser);
+        const token = await mintToken();
+        const res = await readerApp().handle(
+          new BunRequest("http://localhost/whoami", {
+            headers: {
+              Cookie: `fazerai_auth_token=${token}; secretaria_v4_auth_token=not.a.valid.jwt`,
+            },
+          }),
+        );
+        // A garbage legacy cookie must not shadow a good current one.
+        expect((await res.json()).id).toBe(mockUser.id.toString());
+      });
+
+      test("migrates a legacy cookie in place: rewrites it, clears the old name", async () => {
+        mockPrisma.user.findUnique.mockResolvedValueOnce(mockUser);
+        const token = await mintToken();
+        // happy-dom strips `Set-Cookie` off the Response, so assert on Elysia's cookie jar —
+        // the exact state it serializes into the header.
+        const app = new Elysia()
+          .use(authPlugin)
+          .get("/whoami", async ({ getAuthUser, cookie }) => {
+            await getAuthUser();
+            return {
+              current: cookie.fazerai_auth_token?.value ?? null,
+              legacyValue: cookie.secretaria_v4_auth_token?.value ?? null,
+              legacyMaxAge: cookie.secretaria_v4_auth_token?.maxAge ?? null,
+            };
+          });
+        const res = await app.handle(
+          new BunRequest("http://localhost/whoami", {
+            headers: { Cookie: `secretaria_v4_auth_token=${token}` },
+          }),
+        );
+        const jar = await res.json();
+        expect(jar.current).toBe(token);
+        // remove() → empty value + Max-Age 0, i.e. an expiry instruction for the browser.
+        expect(jar.legacyValue).toBe("");
+        expect(jar.legacyMaxAge).toBe(0);
+      });
+
+      test("a legacy cookie carrying garbage is still rejected", async () => {
+        const res = await readerApp().handle(
+          new BunRequest("http://localhost/whoami", {
+            headers: { Cookie: "secretaria_v4_auth_token=not.a.valid.jwt" },
+          }),
+        );
+        expect((await res.json()).id).toBeNull();
+      });
     });
   });
 

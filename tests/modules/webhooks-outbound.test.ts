@@ -4,7 +4,14 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type ScopedDb } from "@/lib/tenancy";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import {
+  DELIVERY_HEADER,
+  LEGACY_DELIVERY_HEADER,
+  LEGACY_SIGNATURE_HEADER,
+  LEGACY_TIMESTAMP_HEADER,
+  outboundHeaders,
+  SIGNATURE_HEADER,
   signOutbound,
+  TIMESTAMP_HEADER,
   verifyOutboundSignature,
 } from "@/modules/webhooks/outbound/signing";
 import { outboundUrl } from "../utils/outbound";
@@ -24,6 +31,66 @@ describe("outbound webhook signing", () => {
     expect(verifyOutboundSignature("wrong", ts, body, sig)).toBe(false);
     expect(verifyOutboundSignature("secret", ts + 1, body, sig)).toBe(false);
     expect(verifyOutboundSignature("secret", ts, `${body} `, sig)).toBe(false);
+  });
+});
+
+// Brand rename compatibility window. These headers are the only renamed identifiers consumed
+// OUTSIDE our code — an operator's receiver is already keyed on the pre-rename names — so every
+// delivery carries both sets with identical values. Dropped at 2.0.
+describe("outbound webhook headers", () => {
+  const ts = 1700000000;
+  const body = '{"event":"conversation.created"}';
+
+  test("emits the current names", () => {
+    const h = outboundHeaders({
+      contentType: "application/json",
+      deliveryId: "42",
+      timestampSeconds: ts,
+      rawBody: body,
+      secret: "s3cr3t",
+    });
+    expect(h[DELIVERY_HEADER]).toBe("42");
+    expect(h[TIMESTAMP_HEADER]).toBe(String(ts));
+    expect(
+      verifyOutboundSignature("s3cr3t", ts, body, h[SIGNATURE_HEADER] ?? ""),
+    ).toBe(true);
+    expect(DELIVERY_HEADER).toBe("x-fazerai-delivery");
+    expect(SIGNATURE_HEADER).toBe("x-fazerai-signature");
+    expect(TIMESTAMP_HEADER).toBe("x-fazerai-timestamp");
+  });
+
+  test("mirrors every header under its pre-rename name, byte for byte", () => {
+    const h = outboundHeaders({
+      contentType: "application/json",
+      deliveryId: "42",
+      timestampSeconds: ts,
+      rawBody: body,
+      secret: "s3cr3t",
+    });
+    expect(h[LEGACY_DELIVERY_HEADER]).toBe(h[DELIVERY_HEADER]);
+    expect(h[LEGACY_SIGNATURE_HEADER]).toBe(h[SIGNATURE_HEADER]);
+    expect(h[LEGACY_TIMESTAMP_HEADER]).toBe(h[TIMESTAMP_HEADER]);
+  });
+
+  test("an unsigned delivery carries no signature under either name", () => {
+    const h = outboundHeaders({
+      contentType: "application/json",
+      deliveryId: "42",
+      timestampSeconds: ts,
+      rawBody: body,
+      secret: null,
+    });
+    // The delivery id still goes out under both names — it is the dedupe key, not a credential.
+    expect(h[DELIVERY_HEADER]).toBe("42");
+    expect(h[LEGACY_DELIVERY_HEADER]).toBe("42");
+    for (const name of [
+      SIGNATURE_HEADER,
+      TIMESTAMP_HEADER,
+      LEGACY_SIGNATURE_HEADER,
+      LEGACY_TIMESTAMP_HEADER,
+    ]) {
+      expect(h[name]).toBeUndefined();
+    }
   });
 });
 

@@ -55,10 +55,18 @@ const DEFAULT_TIME_ZONE = "America/Sao_Paulo";
 
 // The private-event key carrying the owning contact's stamp. Keys in extendedProperties.private are
 // visible/queryable ONLY by our OAuth app, never by other apps or the customer.
+//
+// FROZEN through the brand rename, deliberately. These two keys are stamped on REAL events living
+// in customers' calendars, and the list fence filters server-side by
+// `privateExtendedProperty=secv4Contact=<stamp>` — Google takes ONE such filter per request, so
+// accepting a second key name would mean two listings plus a merge on every read, forever, or a
+// backfill we cannot run on self-hosted instances. They are also the only pre-rename identifiers
+// no human ever sees. Do NOT rename them outside the 2.0 cut.
 const SECV4_CONTACT_KEY = "secv4Contact";
 
 // The private-event key recording the attendance-confirmation timestamp (set by
-// calendar_confirm_appointment, injected from code, never surfaced to the model).
+// calendar_confirm_appointment, injected from code, never surfaced to the model). Frozen for the
+// same reason as SECV4_CONTACT_KEY above.
 const SECV4_CONFIRMED_KEY = "secv4Confirmed";
 // Title prefix that marks a confirmed appointment (applied idempotently).
 const CONFIRMED_PREFIX = "[CONFIRMADO] ";

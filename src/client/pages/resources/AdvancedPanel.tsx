@@ -22,7 +22,7 @@ const EMBEDDING_MODEL = "text-embedding-3-small";
 // Tenant-level feature config (TENANT_ADMIN): the RAG embedding credential and the Langfuse tracing
 // keys. The embedding provider/model are LOCKED to OpenAI + text-embedding-3-small for now (only the
 // credential is editable); the flexible-embeddings feature (configurable dimension + provider
-// registry, incl. Hugging Face) is deferred — see docs/roadmap.md.
+// registry, incl. Hugging Face) is deferred.
 export function AdvancedPanel() {
   const { t } = useTranslation();
   const tracingId = useId();

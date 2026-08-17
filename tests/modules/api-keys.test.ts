@@ -10,7 +10,9 @@ import {
 import {
   API_KEY_PREFIX,
   generateApiKey,
+  hasApiKeyPrefix,
   hashApiKey,
+  LEGACY_API_KEY_PREFIX,
   verifyApiKey,
 } from "@/modules/api-keys/verify";
 
@@ -26,6 +28,20 @@ describe("api key token generation", () => {
 
   test("two keys never collide", () => {
     expect(generateApiKey().token).not.toBe(generateApiKey().token);
+  });
+
+  // Brand rename compatibility window: new keys are minted `fazerai_`, keys minted before it carry
+  // `secv4_`. The prefix guard has to admit both; the DB lookup then decides. Dropped at 2.0.
+  test("the mint prefix is the current brand marker", () => {
+    expect(API_KEY_PREFIX).toBe("fazerai_");
+    expect(generateApiKey().token.startsWith("fazerai_")).toBe(true);
+  });
+
+  test("the prefix guard admits both markers and nothing else", () => {
+    expect(hasApiKeyPrefix(`${API_KEY_PREFIX}abc`)).toBe(true);
+    expect(hasApiKeyPrefix(`${LEGACY_API_KEY_PREFIX}abc`)).toBe(true);
+    expect(hasApiKeyPrefix("sk_live_abc")).toBe(false);
+    expect(hasApiKeyPrefix("")).toBe(false);
   });
 });
 
@@ -130,9 +146,36 @@ describe.skipIf(!dbUp)("api key service + verify (RLS)", () => {
     expect(principal?.userId).toBe(USER_A);
   });
 
+  // The load-bearing half of the compatibility window: a key an operator is already using was
+  // minted under the old marker and lives in their DB. It has to keep authenticating unchanged —
+  // we cannot reach a self-hosted instance to rewrite it.
+  test("verify still resolves a key minted under the pre-rename prefix", async () => {
+    const legacyToken = `${LEGACY_API_KEY_PREFIX}${"l".repeat(32)}`;
+    await su?.apiKey.create({
+      data: {
+        tenantId: tenantA,
+        displayName: "pre-rename key",
+        // The stored hash covers the WHOLE token, prefix included — this is why no data migration
+        // is needed for the rename.
+        keyHash: hashApiKey(legacyToken),
+        keyPrefix: legacyToken.slice(0, LEGACY_API_KEY_PREFIX.length + 6),
+        role: "TENANT_ADMIN",
+        createdByUserId: USER_A,
+      },
+    });
+    const principal = await verifyApiKey(legacyToken, appDb);
+    expect(principal).not.toBeNull();
+    expect(principal?.tenantId).toBe(tenantA);
+    expect(principal?.role).toBe("TENANT_ADMIN");
+    expect(principal?.userId).toBe(USER_A);
+  });
+
   test("verify rejects a malformed or unknown key", async () => {
     expect(await verifyApiKey("not-a-key", appDb)).toBeNull();
     expect(await verifyApiKey(`${API_KEY_PREFIX}deadbeef`, appDb)).toBeNull();
+    expect(
+      await verifyApiKey(`${LEGACY_API_KEY_PREFIX}deadbeef`, appDb),
+    ).toBeNull();
   });
 
   test("list is RLS-scoped: a tenant sees only its own keys", async () => {

@@ -236,7 +236,7 @@ export function McpPage() {
                 )}
               </p>
               <code className="block w-fit rounded bg-bg-tertiary px-2 py-1 font-mono text-text-secondary text-xs">
-                {"Authorization: Bearer secv4_…"}
+                {"Authorization: Bearer fazerai_…"}
               </code>
             </div>
           </section>

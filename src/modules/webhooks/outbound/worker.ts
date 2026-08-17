@@ -6,19 +6,14 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { tryResolveVaultSecret } from "@/modules/vault/service";
 import { nextBackoffMs } from "./service";
-import {
-  DELIVERY_HEADER,
-  SIGNATURE_HEADER,
-  signOutbound,
-  TIMESTAMP_HEADER,
-} from "./signing";
+import { outboundHeaders } from "./signing";
 
 // Outbound webhook delivery worker (claim + deliver side). A single-replica tick claims due
 // PENDING deliveries cross-tenant (asSuperAdmin / FOR UPDATE SKIP LOCKED), then for each:
 // resolves the per-tenant signing secret (RLS-scoped), POSTs the signed payload OUTSIDE any
 // transaction (SSRF-checked, no redirects, timeout), and records the outcome — DELIVERED,
 // back to PENDING with full-jitter backoff, or DEAD after MAX_ATTEMPTS. The delivery id is a
-// stable dedupe key (x-secretaria-delivery) so at-least-once retries are safe for receivers.
+// stable dedupe key (x-fazerai-delivery) so at-least-once retries are safe for receivers.
 //
 // Crash safety: the claim flips status to SENDING; a crash between claim and outcome would
 // strand the row, so each tick first reaps stale SENDING rows back to PENDING. The reentrancy
@@ -266,16 +261,15 @@ async function deliverClaimed(
   const ts = Math.floor(now() / 1000);
   // The stored payload IS the versioned envelope (built at emit time by buildOutboundEnvelope):
   // { version, instance_id, event, occurred_at, tenant_id, data }. POST it verbatim — the
-  // delivery id (retry dedupe key) travels in the x-secretaria-delivery header, not the body.
+  // delivery id (retry dedupe key) travels in the x-fazerai-delivery header, not the body.
   const rawBody = JSON.stringify(d.payload ?? {});
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-    [DELIVERY_HEADER]: String(d.id),
-  };
-  if (secret) {
-    headers[SIGNATURE_HEADER] = signOutbound(secret, ts, rawBody);
-    headers[TIMESTAMP_HEADER] = String(ts);
-  }
+  const headers = outboundHeaders({
+    contentType: "application/json",
+    deliveryId: String(d.id),
+    timestampSeconds: ts,
+    rawBody,
+    secret,
+  });
 
   let status: number;
   try {

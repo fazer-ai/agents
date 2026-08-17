@@ -39,7 +39,7 @@ Every emission is wrapped by `buildOutboundEnvelope(tenantId, event, data)` into
   "occurred_at": "2026-…Z", "tenant_id": "42", "data": { … } }
 ```
 
-`occurred_at` is stamped at emit time (when the event happened), not at delivery. The delivery id (retry dedupe key) is NOT in the envelope — it travels in the `x-secretaria-delivery` header.
+`occurred_at` is stamped at emit time (when the event happened), not at delivery. The delivery id (retry dedupe key) is NOT in the envelope — it travels in the `x-fazerai-delivery` header.
 
 **Emit is best-effort for the domain.** Each seam wraps `emitOutbound` in a try/catch and logs on failure: enqueueing a fan-out row must never break the primary effect (the mirror write, the usage row, the tenant create). When viable the emit runs inside the same scoped tx as that effect.
 
@@ -70,6 +70,8 @@ A single-replica tick (`WEBHOOK_WORKER_ENABLED`, `WEBHOOK_WORKER_INTERVAL_MS`) t
 3. For each, **outside any transaction**: `assertSafeOutboundUrl` (anti-SSRF, https-only, no redirects), resolves the per-tenant signing secret via a **tenant-scoped** read (`runScopedOn`, RLS active — least privilege, not the cross-tenant bypass), signs, and POSTs with a timeout.
 4. **Records the outcome** scoped to the row's tenant: `DELIVERED` (2xx); back to `PENDING` with `nextAttemptAt` from full-jitter backoff (`nextBackoffMs`); or `DEAD` after `MAX_ATTEMPTS`. An SSRF-blocked URL goes straight to `DEAD` (it can never succeed).
 
-Headers: `x-secretaria-delivery` (the delivery id — a **stable dedupe key**, so at-least-once retries are safe for receivers), and when a secret is configured `x-secretaria-signature` (`sha256=` + HMAC-SHA256 over `"{timestamp}.{rawBody}"`, hex) + `x-secretaria-timestamp` (unix seconds). Receivers verify the timestamp window (anti-replay) and recompute over the raw body. See `signing.ts` (`signOutbound`/`verifyOutboundSignature`).
+Headers: `x-fazerai-delivery` (the delivery id — a **stable dedupe key**, so at-least-once retries are safe for receivers), and when a secret is configured `x-fazerai-signature` (`sha256=` + HMAC-SHA256 over `"{timestamp}.{rawBody}"`, hex) + `x-fazerai-timestamp` (unix seconds). Receivers verify the timestamp window (anti-replay) and recompute over the raw body. See `signing.ts` (`signOutbound`/`verifyOutboundSignature`); every emit site builds its headers through `outboundHeaders`.
+
+> **Compatibility window.** These headers were named `x-secretaria-*` before the brand rename. Both sets go out on every delivery, carrying identical values, so a receiver configured against either name keeps working. The legacy trio is dropped at `2.0` — point your receivers at `x-fazerai-*` before then.
 
 **Single-replica invariant.** The worker holds a reentrancy guard (`running`) and an interval on `globalThis` (so `bun --hot` does not stack phantom timers); `stopOutboundWorker` runs on `SIGTERM`/`SIGINT`. `FOR UPDATE SKIP LOCKED` already future-proofs the claim, but scaling the app beyond one replica needs a leader election or durable claim before the worker is enabled on every instance. `WebhookSubscription.onDelete` is `Restrict` (never `Cascade`, which would drop in-flight deliveries).

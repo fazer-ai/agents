@@ -4,15 +4,26 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn } from "@/lib/tenancy";
 
-// Bearer API key for the REST v1 API and the MCP transport. The plaintext is `secv4_<base64url>`
+// Bearer API key for the REST v1 API and the MCP transport. The plaintext is `fazerai_<base64url>`
 // (256-bit); only its SHA-256 hash is stored (ApiKey.keyHash, unique), so a DB dump never yields a
 // usable key and lookup is a constant-time B-tree probe on the hash. Verified BEFORE the tenant is
 // known, so the hash lookup runs as super admin (the key row carries its own tenantId; RLS still
 // fences every downstream tenant query). `role` is fixed on the key (NOT re-derived from the
 // creator's current role); revocation is the soft `revokedAt`. Never log the plaintext.
 
-export const API_KEY_PREFIX = "secv4_";
+export const API_KEY_PREFIX = "fazerai_";
+// Compatibility window for the brand rename: keys minted before it carry `secv4_`. The stored hash
+// covers the WHOLE token, so an already-issued key keeps verifying byte for byte — only this
+// startsWith guard has to know the old marker. Dropped at 2.0.
+export const LEGACY_API_KEY_PREFIX = "secv4_";
 const LAST_USED_THROTTLE_MS = 60_000;
+
+// A token that carries neither marker cannot be one of ours: reject before touching the DB.
+export function hasApiKeyPrefix(token: string): boolean {
+  return (
+    token.startsWith(API_KEY_PREFIX) || token.startsWith(LEGACY_API_KEY_PREFIX)
+  );
+}
 
 export interface GeneratedApiKey {
   token: string;
@@ -49,7 +60,7 @@ export async function verifyApiKey(
   token: string,
   base: PrismaClient = basePrisma,
 ): Promise<ApiKeyPrincipal | null> {
-  if (!token.startsWith(API_KEY_PREFIX)) return null;
+  if (!hasApiKeyPrefix(token)) return null;
   const keyHash = hashApiKey(token);
   const resolved = await asSuperAdminOn(base, async (db) => {
     const k = await db.apiKey.findUnique({

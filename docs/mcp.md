@@ -16,7 +16,7 @@ Clients fetch `GET /.well-known/oauth-authorization-server` and `.../oauth-prote
 
 ## Access token (`oauth/tokens.ts`) — the security core
 
-- **Fixed algorithm + issuer.** Signed `HS256` with a check on issuer (`secretaria-v4:mcp`) and the `algorithms: ['HS256']` allowlist on verify → anti algorithm/key confusion.
+- **Fixed algorithm + issuer.** Signed `HS256` with a check on issuer (`fazerai:mcp`) and the `algorithms: ['HS256']` allowlist on verify → anti algorithm/key confusion. Verify also accepts the pre-rename issuer `secretaria-v4:mcp` so tokens minted by the previous image survive the deploy; we only ever sign the current one, and the acceptance is dropped at `2.0`.
 - **Separate key from the app cookie JWT** (`config.mcpJwtSecret`, default `${JWT_SECRET}:mcp`). An app-session JWT must not validate as an MCP token and vice-versa.
 - **Audience binding (RFC 8707), enforced.** Every token is minted with `aud` = our canonical resource id (`mcpResourceId()` = `${publicUrl}/api/v1/mcp`, the same `resource` the protected-resource metadata advertises), and `verifyAccessToken` passes `audience` to `jwtVerify`, so a token issued for a different audience does not validate (→ 401). The token is bound to us regardless of whatever `resource` a client sends; the raw `resource` is persisted only for audit. `mcpResourceId` lives in `oauth/metadata.ts` (single source, also used by `protectedResourceMetadata`).
 - **`jti` denylist is mandatory, not optional.** Every access token is persisted (`McpOAuthAccessToken` with `jti` + `revokedAt`). Revocation is **immediate** (a row flip), never "wait ≤15min for expiry" — unacceptable for cross-tenant write tools. Access TTL is 15 min.

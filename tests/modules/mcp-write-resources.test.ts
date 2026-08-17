@@ -103,7 +103,7 @@ describe.skipIf(!dbUp)("MCP resource-write tools (DB)", () => {
         tenantId: tenantA,
         displayName: "k1",
         keyHash: `hash-${process.pid}`,
-        keyPrefix: "secv4_aaa",
+        keyPrefix: "fazerai_aaa",
         role: "TENANT_ADMIN",
       },
       select: { id: true },

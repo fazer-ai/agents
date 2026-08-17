@@ -7,12 +7,7 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { tryResolveVaultSecret } from "@/modules/vault/service";
 import { nextBackoffMs } from "@/modules/webhooks/outbound/service";
-import {
-  DELIVERY_HEADER,
-  SIGNATURE_HEADER,
-  signOutbound,
-  TIMESTAMP_HEADER,
-} from "@/modules/webhooks/outbound/signing";
+import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
 
 // Alert delivery worker (claim + deliver). Mirrors the outbound-webhook worker: a single-replica
 // tick reaps stale SENDING rows, claims due PENDING deliveries cross-tenant (FOR UPDATE SKIP
@@ -293,14 +288,13 @@ async function deliverClaimed(
 
   const { rawBody, contentType } = buildBody(a);
   const ts = Math.floor(now() / 1000);
-  const headers: Record<string, string> = {
-    "content-type": contentType,
-    [DELIVERY_HEADER]: String(a.id),
-  };
-  if (secret) {
-    headers[SIGNATURE_HEADER] = signOutbound(secret, ts, rawBody);
-    headers[TIMESTAMP_HEADER] = String(ts);
-  }
+  const headers = outboundHeaders({
+    contentType,
+    deliveryId: String(a.id),
+    timestampSeconds: ts,
+    rawBody,
+    secret,
+  });
 
   let status: number;
   try {

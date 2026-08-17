@@ -142,7 +142,7 @@ const api = new Elysia()
             sessionCookie: {
               type: "apiKey",
               in: "cookie",
-              name: "secretaria_v4_auth_token",
+              name: "fazerai_auth_token",
               description:
                 "Session JWT set by /api/auth/login (HttpOnly cookie).",
             },
@@ -151,7 +151,7 @@ const api = new Elysia()
               scheme: "bearer",
               bearerFormat: "JWT",
               description:
-                "Bearer token for the API / MCP transport: an MCP OAuth access token, or a per-tenant API key (`secv4_…`) created at /api-keys.",
+                "Bearer token for the API / MCP transport: an MCP OAuth access token, or a per-tenant API key (`fazerai_…`) created at /api-keys.",
             },
           },
         },

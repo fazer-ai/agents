@@ -15,8 +15,8 @@ import { tryResolveVaultEntry } from "@/modules/vault/service";
 export const embeddingSettingsSchema = z.object({
   // NOTE: provider/model/baseURL are currently PINNED to EMBEDDING_DEFAULTS (OpenAI +
   // text-embedding-3-small) by updateEmbeddingSettings — only the credential is configurable. The
-  // fields stay in the schema so unlocking later (flexible dimensions + provider registry, see
-  // docs/roadmap.md) is purely additive. Dimensionality is the pgvector column width (1536).
+  // fields stay in the schema so unlocking later (flexible dimensions + provider registry) is
+  // purely additive. Dimensionality is the pgvector column width (1536).
   provider: z.enum(["openai", "openai_compatible"]),
   model: z.string().min(1).max(200),
   credentialRef: z.string().min(1).max(200).nullable(),
@@ -145,7 +145,7 @@ export async function updateEmbeddingSettings(
     readEmbeddingSettings(db, tenantId),
   );
   // LOCKED to EMBEDDING_DEFAULTS (OpenAI + text-embedding-3-small) until the flexible-embeddings
-  // feature ships (configurable dimension + provider registry — see docs/roadmap.md). Only the
+  // feature ships (configurable dimension + provider registry). Only the
   // credential is honored; provider/model/baseURL from the patch are ignored. Unlocking = restore
   // the `{ ...current, ...patch }` merge.
   const merged = embeddingSettingsSchema.parse({

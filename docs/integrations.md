@@ -67,6 +67,8 @@ After the deterministic core (resolve → PK correlation → status CAS → mech
 
 One clinic calendar serves MANY WhatsApp contacts, so every event the agent creates is stamped with `extendedProperties.private.secv4Contact = "<tenantId>:<contactDbId>"` — **injected from the trusted context, never a model arg**. Reads/writes are isolated three ways, **fail-closed**:
 
+> The `secv4*` key names predate the brand rename and are **frozen on purpose**: they live on real events in customers' calendars, and the list fence takes exactly one `privateExtendedProperty` filter per request, so a second name would double every listing forever or need a backfill we cannot run. Renaming them is part of the `2.0` cut.
+
 - **List** filters server-side by `privateExtendedProperty=secv4Contact=<stamp>` AND re-verifies each returned event's stamp client-side (`eventStamp(e) === stamp`). The re-verify is defense in depth; when it drops an event the server fence already should have excluded, it logs `gcal: list re-verify dropped events…` (a non-zero `dropped` count is a signal the fence is leaking). With no contact in scope (playground) the per-contact tools refuse outright.
 - **Update / cancel** re-fetch the event (`?fields=extendedProperties`) and refuse with `FOREIGN_EVENT` unless the stamp matches, so an id-guess can never touch another contact's (or a staff-created) appointment.
 - **Availability** is `freeBusy` (busy windows only, zero details) → another contact's bookings count as busy without leaking anything; it returns EVERY bookable slot in a range capped to 24h.

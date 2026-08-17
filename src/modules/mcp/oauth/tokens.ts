@@ -16,10 +16,14 @@ import { mcpResourceId } from "./metadata";
 // The mcp_oauth_* tables are GLOBAL (outside RLS); accessed via the base client, never scoped.
 
 const ALG = "HS256";
-// NOTE: wire-format identifier (the MCP OAuth `iss` claim). Kept as `secretaria-v4:mcp`
-// through the brand rename: renaming it invalidates every issued access/refresh token.
-// Rebrand it only as a deliberate, separate migration (with client re-auth).
-const ISSUER = "secretaria-v4:mcp";
+// NOTE: wire-format identifier (the MCP OAuth `iss` claim).
+const ISSUER = "fazerai:mcp";
+// Compatibility window for the brand rename: verify accepts the pre-rename issuer too, so access
+// tokens minted by the previous image survive the deploy instead of 401-ing in flight. We only ever
+// SIGN the new one. The window that has to be covered is the 15-minute access TTL, not the refresh
+// TTL: refresh tokens are opaque random strings with no issuer (see grant.ts), so a rotation
+// immediately mints under the new issuer. Dropped at 2.0.
+const LEGACY_ISSUER = "secretaria-v4:mcp";
 const ACCESS_TTL_S = 15 * 60;
 
 export const MCP_SCOPES = ["mcp:read", "mcp:write", "mcp:admin"] as const;
@@ -104,7 +108,7 @@ export async function verifyAccessToken(
   try {
     const { payload } = await jwtVerify(token, secretKey(), {
       algorithms: [ALG],
-      issuer: ISSUER,
+      issuer: [ISSUER, LEGACY_ISSUER],
       // RFC 8707: the token MUST have been issued for us (the MCP resource server). jose rejects a
       // missing or divergent `aud`, so an old token with aud=ISSUER no longer verifies (re-auth/refresh).
       audience: mcpResourceId(),

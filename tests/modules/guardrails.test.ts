@@ -227,6 +227,34 @@ describe("analyzeGuardrail", () => {
     expect(typeof v.error).toBe("string");
   });
 
+  // A verdict followed by prose that happens to carry a brace used to be sliced together with that
+  // prose and fail to parse, so a real violation came back as an approval. For a moderation feature
+  // that is the expensive direction of the mistake.
+  test("reads a verdict that is followed by prose containing braces", async () => {
+    const v = await analyzeGuardrail(
+      fakeModel(
+        '{"violated": true, "categories": ["toxicity"], "rationale": "x", "suggestedReply": null}\n' +
+          "I flagged it because the policy {toxicity} applies here.",
+      ),
+      base,
+    );
+    expect([v.violated, v.categories, v.error]).toEqual([
+      true,
+      ["toxicity"],
+      undefined,
+    ]);
+  });
+
+  test("a brace inside a string never ends the object early", async () => {
+    const v = await analyzeGuardrail(
+      fakeModel(
+        '{"violated": true, "categories": ["toxicity"], "rationale": "said \\"} bye\\" rudely", "suggestedReply": null}',
+      ),
+      base,
+    );
+    expect([v.violated, v.rationale]).toEqual([true, 'said "} bye" rudely']);
+  });
+
   test("output with a malformed JSON object is reported", async () => {
     const v = await analyzeGuardrail(
       fakeModel('Sure: {"violated": true, categories: [oops}'),

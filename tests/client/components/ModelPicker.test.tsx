@@ -15,6 +15,7 @@ import { ModelPicker } from "@/client/components/ModelPicker";
 function shownFor(
   provider: string,
   capability?: "chat" | "transcription" | "vision",
+  placeholder?: string,
 ): string {
   render(
     <ModelPicker
@@ -22,6 +23,7 @@ function shownFor(
       onChange={() => {}}
       provider={provider}
       capability={capability}
+      placeholder={placeholder}
       aria-label="model"
     />,
   );
@@ -52,5 +54,16 @@ describe("ModelPicker placeholder", () => {
     expect(shownFor("openai", "transcription").includes("gpt-5.4-mini")).toBe(
       false,
     );
+  });
+
+  // The vision and STT tabs pass `X_DEFAULT_MODEL[provider] ?? ""`, and for openai-compatible those
+  // tables hold "" on purpose: no default exists and the endpoint needs a named model. An empty
+  // placeholder from a caller is a decision, not an omission, so it must survive verbatim.
+  test("keeps a caller's empty placeholder instead of promising a default", () => {
+    expect(shownFor("openai-compatible", "vision", "")).toBe("");
+  });
+
+  test("keeps a caller's non-empty placeholder", () => {
+    expect(shownFor("openai", "vision", "gpt-4o")).toContain("gpt-4o");
   });
 });

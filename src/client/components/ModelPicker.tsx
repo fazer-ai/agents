@@ -82,11 +82,23 @@ export function ModelPicker({
   const key = cacheKey(provider, credentialRef, baseURL, capability);
   // An empty field still shows this text, so it has to be the model the runtime would actually use.
   // It used to be the literal "gpt-5.4-mini" for every provider, which read as "Anthropic will run
-  // gpt-5.4-mini". Only chat has a per-provider default; elsewhere the honest hint is that nobody
-  // picked, and the provider's own default applies.
+  // gpt-5.4-mini" under Anthropic. Only chat has a per-provider table here.
+  //
+  // NOTE: A caller's placeholder wins even when it is the empty string, which is a deliberate value
+  // and not an omission: the vision and STT tabs pass `X_DEFAULT_MODEL[provider] ?? ""`, and for
+  // openai-compatible those tables hold "" precisely because no default exists and the endpoint
+  // needs a named model. Promising "provider default" there would invite an empty field the request
+  // cannot satisfy. Hence `!== undefined` rather than a truthiness fallback.
+  const providerDefault = t(
+    "editor.modelPickerProviderDefault",
+    "Provider default",
+  );
   const shown =
-    placeholder ??
-    (capability === "chat" ? PROVIDER_DEFAULT_MODEL[provider] : undefined);
+    placeholder !== undefined
+      ? placeholder
+      : capability === "chat"
+        ? PROVIDER_DEFAULT_MODEL[provider] || providerDefault
+        : providerDefault;
 
   const loader = useCallback(async (): Promise<ComboItem[]> => {
     const cached = readCache(key);
@@ -114,9 +126,7 @@ export function ModelPicker({
       loaderKey={key}
       eager
       needsCredential={!credentialRef}
-      placeholder={
-        shown || t("editor.modelPickerProviderDefault", "Provider default")
-      }
+      placeholder={shown}
       searchPlaceholder={t("editor.modelPickerSearch", "Search models…")}
       disabled={disabled}
       aria-label={ariaLabel ?? t("editor.model", "Model")}

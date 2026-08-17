@@ -50,17 +50,43 @@ function messageText(content: BaseMessage["content"]): string {
 
 const unanalyzed = (error: string): GuardrailVerdict => ({ ...CLEAN, error });
 
-// Extract the first balanced JSON object from a model response (tolerates ```json fences / prose).
-function parseVerdict(raw: string): GuardrailVerdict {
+// The first BALANCED object, not everything up to the last "}": a verdict followed by prose that
+// happens to contain a brace ("...}, as required.") would otherwise be sliced together with that
+// prose and fail to parse, discarding a perfectly good verdict — which, for a violation, means
+// silently approving it. Braces inside strings don't count, and \" doesn't close one.
+function firstJsonObject(raw: string): string | null {
   const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start < 0 || end <= start)
-    return unanalyzed("no JSON object in response");
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < raw.length; i++) {
+    const c = raw[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (c === "\\") {
+      if (inString) escaped = true;
+      continue;
+    }
+    if (c === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return raw.slice(start, i + 1);
+  }
+  return null;
+}
+
+// Extract the verdict object from a model response (tolerates ```json fences / prose around it).
+function parseVerdict(raw: string): GuardrailVerdict {
+  const slice = firstJsonObject(raw);
+  if (slice === null) return unanalyzed("no JSON object in response");
   try {
-    const obj = JSON.parse(raw.slice(start, end + 1)) as Record<
-      string,
-      unknown
-    >;
+    const obj = JSON.parse(slice) as Record<string, unknown>;
     if (obj.violated !== true) return CLEAN;
     const categories = Array.isArray(obj.categories)
       ? obj.categories.filter((c): c is string => typeof c === "string")

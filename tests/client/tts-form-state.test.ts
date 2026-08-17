@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type AgentModelSource,
   readTtsFormState,
   type TtsFormState,
   ttsNormalizerBaseUrlInvalid,
-  ttsNormalizerEffectiveSource,
   ttsNormalizerNeedsOwnCredential,
+  ttsNormalizerPickerSource,
   ttsNormalizerProviderChanged,
   ttsSettingsFrom,
 } from "@/client/pages/agents/ttsFormState";
@@ -88,92 +89,149 @@ describe("switching the rewrite provider", () => {
   });
 });
 
-// Which configurations the editor must DEMAND a key for. It mirrors `resolveNormalizeModel`, which
-// refuses a switched provider without one rather than run it on the agent's key: the runtime failure
-// is silent (the audio still goes out, unrewritten), so the field marking is the only warning the
-// operator gets before saving.
-describe("does the rewrite need a credential of its own", () => {
-  const cases: Array<[string, string, boolean]> = [
-    // Inheriting outright: the block does not even render.
-    ["", "openai", false],
-    // The same vendor, named explicitly, which is how a separate key gets attached. Optional.
-    ["openai", "openai", false],
-    // A vendor the agent does not use: nothing is inherited, so the key decides whether it runs.
-    ["anthropic", "openai", true],
-    // Compared against the AGENT's provider, never a hardcoded one. Both rows fail if this is
-    // written as `!== "openai"`.
-    ["openai-compatible", "openai-compatible", false],
-    ["openai", "openai-compatible", true],
-    // What a cleared field actually stores.
-    ["   ", "openai", false],
-  ];
-  for (const [normalizeProvider, agentProvider, want] of cases) {
-    test(`${normalizeProvider || "(inherited)"} on a ${agentProvider} agent → ${want}`, () => {
-      expect(
-        ttsNormalizerNeedsOwnCredential(normalizeProvider, agentProvider),
-      ).toBe(want);
-    });
-  }
+// The editor's projections of `resolveNormalizeModel`. What they are worth is that they cannot
+// disagree with the runtime: every one of them asks the resolver rather than re-deriving the rule.
+// The exhaustive table for the rule itself lives in tests/modules/tts-normalize-model.test.ts.
+
+const OPENAI: AgentModelSource = {
+  provider: "openai",
+  credentialRef: "vault:1",
+  baseURL: "",
+};
+const LOCAL: AgentModelSource = {
+  provider: "openai-compatible",
+  credentialRef: "vault:1",
+  baseURL: "http://llama:8080/v1",
+};
+const form = (over: Partial<TtsFormState> = {}): TtsFormState => ({
+  ...readTtsFormState({ mode: "mirror" }, true),
+  ...over,
 });
 
-// What the rewrite's model picker authenticates with. It lists models by CALLING the provider, so a
-// picker handed only the rewrite's own (empty) fields shows "select a credential" and no models at
-// all — on the very change this feature exists for, where the key is inherited on purpose.
-describe("the rewrite's effective credential and endpoint", () => {
-  const AGENT = {
-    provider: "openai",
-    credentialRef: "vault:1",
-    baseURL: "",
-  };
-  const form = (over: Partial<TtsFormState> = {}) => ({
-    ...readTtsFormState({ mode: "mirror" }, true),
-    ...over,
-  });
+// Whether the API key field is marked required. The runtime failure it warns about is SILENT (the
+// audio still goes out, unrewritten), so this marking is the only warning before saving.
+describe("does the rewrite need a credential of its own", () => {
+  const cases: Array<[string, TtsFormState, AgentModelSource, boolean]> = [
+    // Inheriting outright: the block does not even render.
+    ["inherited", form(), OPENAI, false],
+    // The same vendor, named explicitly, which is how a separate key gets attached. Optional.
+    [
+      "the agent's own provider",
+      form({ normalizeProvider: "openai" }),
+      OPENAI,
+      false,
+    ],
+    // A vendor the agent does not use: nothing is inherited, so the key decides whether it runs.
+    [
+      "a switched provider",
+      form({ normalizeProvider: "anthropic" }),
+      OPENAI,
+      true,
+    ],
+    // Compared against the AGENT's provider, never a hardcoded one.
+    [
+      "openai-compatible on a local agent",
+      form({ normalizeProvider: "openai-compatible" }),
+      LOCAL,
+      false,
+    ],
+    [
+      "openai on a local agent",
+      form({ normalizeProvider: "openai" }),
+      LOCAL,
+      true,
+    ],
+    // A local endpoint authenticates by its URL, so no key is demanded even though the provider
+    // changed. Demanding one here would force a dummy vault entry for a keyless server.
+    [
+      "a switched openai-compatible WITH an endpoint",
+      form({
+        normalizeProvider: "openai-compatible",
+        normalizeBaseURL: "http://llama:8080/v1",
+      }),
+      OPENAI,
+      false,
+    ],
+    // Not "needs a credential": it needs an ENDPOINT, and that is a different message and a
+    // different field. The base-URL check below is what catches it.
+    [
+      "a switched openai-compatible with NO endpoint",
+      form({ normalizeProvider: "openai-compatible" }),
+      OPENAI,
+      false,
+    ],
+  ];
+  for (const [name, tts, agent, want] of cases) {
+    test(`${name} → ${want}`, () => {
+      expect(ttsNormalizerNeedsOwnCredential(tts, agent, null)).toBe(want);
+    });
+  }
 
-  test("the same provider with no key of its own inherits the agent's", () => {
+  test("a credential carried by the picker satisfies the demand", () => {
     expect(
-      ttsNormalizerEffectiveSource(
-        form({ normalizeProvider: "openai" }),
-        AGENT,
+      ttsNormalizerNeedsOwnCredential(
+        form({
+          normalizeProvider: "anthropic",
+          normalizeCredentialRef: "vault:9",
+        }),
+        OPENAI,
         null,
       ),
-    ).toEqual({ credentialRef: "vault:1", baseURL: "" });
+    ).toBe(false);
+  });
+});
+
+// What the model picker authenticates with to list models. It calls the provider, so being handed
+// only the rewrite's own (deliberately empty) fields left it with nothing on the one change this
+// feature exists for, and it answered "select a credential" with an empty list.
+describe("what the model picker queries with", () => {
+  test("the same provider with no key of its own borrows the agent's", () => {
+    expect(
+      ttsNormalizerPickerSource(
+        form({ normalizeProvider: "openai" }),
+        OPENAI,
+        null,
+      ),
+    ).toEqual({
+      credentialRef: "vault:1",
+      baseURL: "",
+    });
   });
 
-  test("its own key wins over the agent's on the same provider", () => {
+  test("its own key wins over the agent's", () => {
     expect(
-      ttsNormalizerEffectiveSource(
+      ttsNormalizerPickerSource(
         form({
           normalizeProvider: "openai",
           normalizeCredentialRef: "vault:9",
         }),
-        AGENT,
+        OPENAI,
         null,
       ).credentialRef,
     ).toBe("vault:9");
   });
 
-  // The mirror of the resolver's rule: a switched provider inherits NOTHING, so an empty result is
-  // correct here and the picker showing no models is the honest outcome.
-  test("a different provider never borrows the agent's key or endpoint", () => {
+  // The mirror of the resolver's refusal: nothing is inherited, so an empty result is the honest
+  // outcome and the picker saying "select a credential" is correct here.
+  test("a switched provider with no key of its own borrows nothing", () => {
     expect(
-      ttsNormalizerEffectiveSource(
+      ttsNormalizerPickerSource(
         form({ normalizeProvider: "anthropic" }),
-        { ...AGENT, baseURL: "https://gw.internal/v1" },
+        { ...OPENAI, baseURL: "https://gw.internal/v1" },
         null,
       ),
     ).toEqual({ credentialRef: "", baseURL: "" });
   });
 
-  test("the selected credential's own endpoint wins over the typed field", () => {
+  test("the credential's own endpoint is what the picker calls", () => {
     expect(
-      ttsNormalizerEffectiveSource(
+      ttsNormalizerPickerSource(
         form({
           normalizeProvider: "openai-compatible",
           normalizeCredentialRef: "vault:9",
-          normalizeBaseURL: "https://typed.example.com/v1",
+          normalizeBaseURL: "http://typed:8080/v1",
         }),
-        AGENT,
+        OPENAI,
         "https://from-credential.example.com/v1",
       ).baseURL,
     ).toBe("https://from-credential.example.com/v1");
@@ -181,13 +239,9 @@ describe("the rewrite's effective credential and endpoint", () => {
 
   test("the agent's endpoint is inherited on the same provider", () => {
     expect(
-      ttsNormalizerEffectiveSource(
+      ttsNormalizerPickerSource(
         form({ normalizeProvider: "openai-compatible" }),
-        {
-          provider: "openai-compatible",
-          credentialRef: "vault:1",
-          baseURL: "http://llama:8080/v1",
-        },
+        LOCAL,
         null,
       ).baseURL,
     ).toBe("http://llama:8080/v1");
@@ -195,23 +249,28 @@ describe("the rewrite's effective credential and endpoint", () => {
 });
 
 // An openai-compatible endpoint with no base URL is refused by createChatModel, and the rewrite is
-// then skipped as `model_not_runnable` on every audio reply, silently. The agent's own model field
-// is guarded the same way, so this is the guard the rewrite's field was missing.
+// then skipped as `model_not_runnable` on every audio reply, silently. The editor is stricter than
+// the runtime here on purpose: a half-typed URL is refused before the save.
 describe("the rewrite's endpoint has to be usable before saving", () => {
-  const valid = (raw: string) => /^https?:\/\/.+/.test(raw);
-  const form = (over: Partial<TtsFormState> = {}) => ({
-    ...readTtsFormState({ mode: "mirror" }, true),
-    ...over,
-  });
-  const AGENT = { provider: "openai", credentialRef: "vault:1", baseURL: "" };
-
   test("openai-compatible with nothing anywhere blocks the save", () => {
     expect(
       ttsNormalizerBaseUrlInvalid(
         form({ normalizeProvider: "openai-compatible" }),
-        AGENT,
+        OPENAI,
         null,
-        valid,
+      ),
+    ).toBe(true);
+  });
+
+  test("a half-typed endpoint blocks it too, where the runtime would have tried", () => {
+    expect(
+      ttsNormalizerBaseUrlInvalid(
+        form({
+          normalizeProvider: "openai-compatible",
+          normalizeBaseURL: "llama:8080",
+        }),
+        OPENAI,
+        null,
       ),
     ).toBe(true);
   });
@@ -223,9 +282,8 @@ describe("the rewrite's endpoint has to be usable before saving", () => {
           normalizeProvider: "openai-compatible",
           normalizeBaseURL: "http://llama:8080/v1",
         }),
-        AGENT,
+        OPENAI,
         null,
-        valid,
       ),
     ).toBe(false);
   });
@@ -234,9 +292,8 @@ describe("the rewrite's endpoint has to be usable before saving", () => {
     expect(
       ttsNormalizerBaseUrlInvalid(
         form({ normalizeProvider: "openai-compatible" }),
-        AGENT,
+        OPENAI,
         "https://from-credential.example.com/v1",
-        valid,
       ),
     ).toBe(false);
   });
@@ -247,13 +304,8 @@ describe("the rewrite's endpoint has to be usable before saving", () => {
     expect(
       ttsNormalizerBaseUrlInvalid(
         form({ normalizeProvider: "openai-compatible" }),
-        {
-          provider: "openai-compatible",
-          credentialRef: "vault:1",
-          baseURL: "http://llama:8080/v1",
-        },
+        LOCAL,
         null,
-        valid,
       ),
     ).toBe(false);
   });
@@ -262,9 +314,8 @@ describe("the rewrite's endpoint has to be usable before saving", () => {
     expect(
       ttsNormalizerBaseUrlInvalid(
         form({ normalizeProvider: "anthropic" }),
-        AGENT,
+        OPENAI,
         null,
-        valid,
       ),
     ).toBe(false);
   });
@@ -273,9 +324,8 @@ describe("the rewrite's endpoint has to be usable before saving", () => {
     expect(
       ttsNormalizerBaseUrlInvalid(
         form({ normalize: false, normalizeProvider: "openai-compatible" }),
-        AGENT,
+        OPENAI,
         null,
-        valid,
       ),
     ).toBe(false);
   });

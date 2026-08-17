@@ -1,3 +1,9 @@
+import { isValidHttpUrl } from "@/client/lib/validation";
+import {
+  type NormalizeModelResolution,
+  resolveNormalizeModel,
+} from "@/modules/tts/normalize-model";
+
 // The agent editor's TTS block, as a pair of pure functions: stored settings → form state → stored
 // settings. It lives outside the page because the Behavior save REPLACES the whole `tts` block with
 // what the form holds, so a field the form does not carry is not merely un-editable, it is DELETED on
@@ -107,73 +113,74 @@ export function ttsNormalizerProviderChanged(
   };
 }
 
-// Whether the rewrite's API key field is REQUIRED, mirroring what `resolveNormalizeModel` will do
-// with the saved settings: a provider the agent does not use inherits nothing, so without a key of
-// its own the rewrite is refused outright (the agent's key belongs to the other vendor and is never
-// transmitted there) and every audio reply goes out unrewritten, silently. Naming the agent's OWN
-// provider is how a separate key on the same vendor gets attached, and that is optional.
+// The editor's view of the SAME resolution the runtime will perform, so what the operator sees
+// before saving and what actually runs cannot drift apart. Everything below projects
+// `resolveNormalizeModel`; none of it re-derives the rule.
 //
-// Blank means "inherit", which is never a switch. The editor is the only place this is visible
-// before the fact, so a field that fails to demand the key is a defect, not a nicety.
-export function ttsNormalizerNeedsOwnCredential(
-  normalizeProvider: string,
-  agentProvider: string,
-): boolean {
-  const named = normalizeProvider.trim();
-  return named !== "" && named !== agentProvider;
-}
-
-// The agent's own model, as the editor holds it. `baseURL` is the EFFECTIVE one (the selected
-// credential's, when it carries one, else the typed field), which is what the runtime ends up using.
+// The editor is stricter about one thing only: an endpoint has to be a valid http(s) URL here, so a
+// half-typed one is refused before the save rather than at the first audio reply.
 export interface AgentModelSource {
   provider: string;
   credentialRef: string;
+  // The EFFECTIVE endpoint (the selected credential's, when it carries one, else the typed field).
   baseURL: string;
 }
 
-// Which credential and endpoint the rewrite actually runs on, mirroring `resolveNormalizeModel`
-// field by field. The model picker lists models by CALLING the provider, so handing it only the
-// rewrite's own fields left it with nothing to authenticate with on the one change this feature
-// exists for ("same account, cheaper model"): the operator names the agent's provider, leaves the
-// key inherited, and the model list came back empty with "select a credential".
-//
-// A DIFFERENT provider inherits nothing, for the same reason the resolver refuses it: everything the
-// agent holds belongs to the other vendor.
-export function ttsNormalizerEffectiveSource(
+export function ttsNormalizerResolution(
+  tts: TtsFormState,
+  agent: AgentModelSource,
+  ownCredBaseUrl: string | null,
+): NormalizeModelResolution {
+  return resolveNormalizeModel(
+    tts,
+    { provider: agent.provider, model: "", baseURL: agent.baseURL },
+    { ownCredentialBaseURL: ownCredBaseUrl, isUsableBaseURL: isValidHttpUrl },
+  );
+}
+
+// Whether the rewrite's API key field is REQUIRED. It is exactly "the resolution refuses to run for
+// want of a credential": naming the agent's own provider inherits the key and demands nothing, an
+// openai-compatible endpoint authenticates by its URL, and any other switch needs a key of its own.
+export function ttsNormalizerNeedsOwnCredential(
+  tts: TtsFormState,
+  agent: AgentModelSource,
+  ownCredBaseUrl: string | null,
+): boolean {
+  const r = ttsNormalizerResolution(tts, agent, ownCredBaseUrl);
+  return !r.runnable && r.reason === "provider_without_credential";
+}
+
+// What the model picker must authenticate with to list models: the credential the rewrite will
+// ACTUALLY run on. On the one change this feature exists for ("same account, cheaper model") that is
+// the agent's own, inherited on purpose, and a picker handed only the rewrite's empty fields showed
+// "select a credential" with no models at all.
+export function ttsNormalizerPickerSource(
   tts: TtsFormState,
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
 ): { credentialRef: string; baseURL: string } {
-  const switched = ttsNormalizerNeedsOwnCredential(
-    tts.normalizeProvider,
-    agent.provider,
-  );
-  const ownBaseUrl = ownCredBaseUrl ?? tts.normalizeBaseURL.trim();
-  if (switched) {
-    return {
-      credentialRef: tts.normalizeCredentialRef,
-      baseURL: ownBaseUrl,
-    };
-  }
+  const r = ttsNormalizerResolution(tts, agent, ownCredBaseUrl);
+  if (!r.runnable) return { credentialRef: "", baseURL: "" };
   return {
-    credentialRef: tts.normalizeCredentialRef || agent.credentialRef,
-    baseURL: ownBaseUrl || agent.baseURL,
+    credentialRef:
+      r.credential === "own"
+        ? tts.normalizeCredentialRef
+        : r.credential === "agent"
+          ? agent.credentialRef
+          : "",
+    baseURL: r.baseURL ?? "",
   };
 }
 
-// An openai-compatible endpoint is nothing without its base URL: `createChatModel` rejects the
-// configuration, the build throws, and the rewrite is skipped as `model_not_runnable` on every audio
-// reply, silently. The agent's own model field is guarded the same way (GeneralTab's
-// `modelBaseUrlInvalid`), and this is the same guard for the rewrite's — including the inherited
-// case, where the endpoint comes from the agent and is already guaranteed by that other check.
+// An openai-compatible endpoint is nothing without its base URL: createChatModel refuses the
+// configuration and the rewrite is skipped as `model_not_runnable` on every audio reply, silently.
+// The agent's own model field is guarded the same way (GeneralTab's `modelBaseUrlInvalid`).
 export function ttsNormalizerBaseUrlInvalid(
   tts: TtsFormState,
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
-  isValidUrl: (raw: string) => boolean,
 ): boolean {
   if (!tts.normalize) return false;
-  if (tts.normalizeProvider.trim() !== "openai-compatible") return false;
-  const { baseURL } = ttsNormalizerEffectiveSource(tts, agent, ownCredBaseUrl);
-  return !isValidUrl(baseURL);
+  const r = ttsNormalizerResolution(tts, agent, ownCredBaseUrl);
+  return !r.runnable && r.reason === "endpoint_missing";
 }

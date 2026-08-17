@@ -1094,12 +1094,16 @@ export function buildSpeechNormalizer(
   args: SpeechNormalizerArgs = {},
 ): ((text: string) => Promise<string>) | undefined {
   if (!cfg.ttsConfig.normalize) return undefined;
-  const resolved = resolveNormalizeModel(cfg.ttsConfig, {
-    provider: cfg.mc.provider,
-    model: cfg.mc.model,
-    baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
-  });
-  const own = resolved.useOwnCredential;
+  const resolved = resolveNormalizeModel(
+    cfg.ttsConfig,
+    {
+      provider: cfg.mc.provider,
+      model: cfg.mc.model,
+      baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
+    },
+    { ownCredentialBaseURL: cfg.ttsNormalizeCredentialBaseUrl },
+  );
+  const own = resolved.credential === "own";
   // Skipping the rewrite must never cost the customer the AUDIO: the caller wraps the whole TTS
   // branch in one try/catch, so anything that throws out of here degrades the reply to text. Every
   // way this builder can fail therefore returns undefined with a visible line instead.
@@ -1116,9 +1120,10 @@ export function buildSpeechNormalizer(
     }
     return undefined;
   };
-  // A provider the agent does not use, with no key of its own. Running it on the AGENT's key would
-  // transmit one vendor's secret to another before failing authentication, so it does not run at all.
-  // REST and MCP write the settings bag directly, so the editor's warning is not the guard here.
+  // Every configuration the resolver refuses: an unsupported provider name, a switched provider with
+  // no key of its own (running it on the AGENT's key would transmit one vendor's secret to another),
+  // and an openai-compatible endpoint that is missing. REST and MCP write the settings bag directly,
+  // so the editor's warning is not the guard here.
   if (!resolved.runnable) return skip(resolved.reason ?? "not_runnable");
   // Its own credential was configured and did not resolve. Falling back to the AGENT's key would be a
   // silent substitution on a provider that may not even accept it.
@@ -1128,13 +1133,16 @@ export function buildSpeechNormalizer(
     ...cfg.mc,
     provider: resolved.provider as ModelConfig["provider"],
     model: resolved.model,
-    apiKey: own ? cfg.ttsNormalizeApiKey : cfg.apiKey,
-    // Same precedence as everywhere else in the tree: a baseUrl stored ON the credential wins over
-    // the one typed in the config.
-    baseURL:
-      (own
-        ? (cfg.ttsNormalizeCredentialBaseUrl ?? resolved.baseURL)
-        : resolved.baseURL) ?? undefined,
+    // WHOSE key travels, decided by the resolver rather than here: the agent's is reachable only
+    // while the provider is unchanged, and `none` is an openai-compatible endpoint that authenticates
+    // by its URL, where sending the agent's key would be the leak this whole rule exists to prevent.
+    apiKey:
+      resolved.credential === "own"
+        ? cfg.ttsNormalizeApiKey
+        : resolved.credential === "agent"
+          ? cfg.apiKey
+          : "",
+    baseURL: resolved.baseURL ?? undefined,
     temperature: 0,
     // NOTE: dropped for the same reason temperature is pinned to 0: this pass rewrites an answer
     // that already exists, and the effort the operator chose is about how the agent THINKS. Reasoning

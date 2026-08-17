@@ -221,6 +221,43 @@ describe("buildSpeechNormalizer", () => {
     expect(buildSpeechNormalizer(cfg, { makeModel })).toBeUndefined();
   });
 
+  // A local llama.cpp-style endpoint authenticates by its URL and has no key at all. The resolution
+  // says `credential: "none"`, and what that has to mean on the wire is an EMPTY key: falling back
+  // to `cfg.apiKey` here would ship the agent's OpenAI secret to that endpoint, which is the exact
+  // leak the whole provider rule exists to prevent.
+  test("a keyless openai-compatible endpoint sends NO key, not the agent's", () => {
+    const { makeModel, getCaptured } = captureModel();
+    const cfg = makeConfig({
+      mc: { provider: "openai", model: "gpt-5" },
+      ttsConfig: {
+        ...TTS_DEFAULTS,
+        normalize: true,
+        normalizeProvider: "openai-compatible",
+        normalizeBaseURL: "http://llama:8080/v1",
+      },
+    });
+    expect(buildSpeechNormalizer(cfg, { makeModel })).toBeDefined();
+    expect(getCaptured().apiKey).toBe("");
+    expect(getCaptured().baseURL).toBe("http://llama:8080/v1");
+  });
+
+  // A provider name REST or MCP stored that we do not support. Falling back to the agent's provider
+  // while keeping the dedicated credential would hand that key to a vendor it does not belong to.
+  test("an unsupported provider name does not run, and no key travels", () => {
+    const { makeModel, getCaptured } = captureModel();
+    const cfg = makeConfig({
+      ttsConfig: {
+        ...TTS_DEFAULTS,
+        normalize: true,
+        normalizeProvider: "anthropik",
+        normalizeCredentialRef: "vault:9",
+      },
+      ttsNormalizeApiKey: "sk-ant-real-key",
+    });
+    expect(buildSpeechNormalizer(cfg, { makeModel })).toBeUndefined();
+    expect(getCaptured()).toBeNull();
+  });
+
   // The operator pointed the rewrite at its own credential and that credential is gone. Reaching for
   // the AGENT's key would be a silent substitution onto a provider that may not even accept it, so
   // the rewrite is skipped and the audio goes out from the raw text.

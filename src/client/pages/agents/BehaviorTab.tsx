@@ -52,9 +52,8 @@ import { TabActionBar } from "./TabActionBar";
 import {
   type TtsFormState,
   ttsNormalizerBaseUrlInvalid,
-  ttsNormalizerEffectiveSource,
   ttsNormalizerNeedsOwnCredential,
-  ttsNormalizerProviderChanged,
+  ttsNormalizerPickerSource,
 } from "./ttsFormState";
 import type { Hours, VaultEntry } from "./types";
 
@@ -196,6 +195,10 @@ interface BehaviorTabProps {
   agentModelBaseUrl: string;
   ttsNormalizeCredBaseUrl: string | null;
   onTtsNormalizeEntryChange: (entry: VaultEntry | null) => void;
+  // Switching the rewrite's provider is not a plain setState: it also clears the base-URL state kept
+  // OUTSIDE the form (see AgentEditorPage), which is what stops the old provider's endpoint from
+  // being restored behind a field that no longer renders.
+  onTtsNormalizeProviderChange: (provider: string) => void;
   split: SplitState;
   setSplit: React.Dispatch<React.SetStateAction<SplitState>>;
   vision: VisionState;
@@ -765,6 +768,7 @@ export function BehaviorTab({
   agentModelBaseUrl,
   ttsNormalizeCredBaseUrl,
   onTtsNormalizeEntryChange,
+  onTtsNormalizeProviderChange,
   split,
   setSplit,
   vision,
@@ -811,7 +815,7 @@ export function BehaviorTab({
     credentialRef: agentModelCredentialRef,
     baseURL: agentModelBaseUrl,
   };
-  const normalizeSource = ttsNormalizerEffectiveSource(
+  const normalizeSource = ttsNormalizerPickerSource(
     tts,
     agentModel,
     ttsNormalizeCredBaseUrl,
@@ -820,7 +824,6 @@ export function BehaviorTab({
     tts,
     agentModel,
     ttsNormalizeCredBaseUrl,
-    isValidHttpUrl,
   );
 
   // Transcription language: a curated dropdown with an "other" escape to a free-text ISO code.
@@ -1432,9 +1435,7 @@ export function BehaviorTab({
                       <Select
                         value={tts.normalizeProvider}
                         onChange={(e) =>
-                          setTts(
-                            ttsNormalizerProviderChanged(tts, e.target.value),
-                          )
+                          onTtsNormalizeProviderChange(e.target.value)
                         }
                       >
                         <option value="">
@@ -1466,8 +1467,9 @@ export function BehaviorTab({
                               setTts({ ...tts, normalizeCredentialRef: v })
                             }
                             required={ttsNormalizerNeedsOwnCredential(
-                              tts.normalizeProvider,
-                              agentModelProvider,
+                              tts,
+                              agentModel,
+                              ttsNormalizeCredBaseUrl,
                             )}
                             onEntryChange={onTtsNormalizeEntryChange}
                             compatibleTypes={credentialCompat.model(

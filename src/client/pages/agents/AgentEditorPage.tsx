@@ -89,7 +89,11 @@ import { KnowledgeTab } from "./KnowledgeTab";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
 import { ToolsTab } from "./ToolsTab";
-import { readTtsFormState, ttsSettingsFrom } from "./ttsFormState";
+import {
+  readTtsFormState,
+  ttsNormalizerProviderChanged,
+  ttsSettingsFrom,
+} from "./ttsFormState";
 import type {
   GrantState,
   HandoffUiState,
@@ -2102,6 +2106,17 @@ export function AgentEditorPage() {
     }
   };
 
+  // Switching the rewrite's provider clears its credential, which makes the picker report "no entry"
+  // and would otherwise trip the restore branch above — putting the PREVIOUS provider's endpoint
+  // back, behind a field that only renders for openai-compatible. The new key would then travel to
+  // the old gateway, invisibly. Clearing the out-of-form state here is what makes that unreachable:
+  // it is the same reason ttsNormalizerProviderChanged clears the form's own fields.
+  const onTtsNormalizeProviderChange = (provider: string) => {
+    ttsNormalizeUserBaseUrlRef.current = "";
+    setTtsNormalizeCredBaseUrl(null);
+    setTts((prev) => ttsNormalizerProviderChanged(prev, provider));
+  };
+
   // Shared onScheduleSaved handler: re-fetches hours then sets the saved id.
   const onScheduleSaved = (savedId: string, setter: (v: string) => void) => {
     void loadHours().then(() => setter(savedId));
@@ -2523,6 +2538,7 @@ export function AgentEditorPage() {
                 agentModelBaseUrl={modelCredBaseUrl ?? model.baseURL}
                 ttsNormalizeCredBaseUrl={ttsNormalizeCredBaseUrl}
                 onTtsNormalizeEntryChange={onTtsNormalizeEntryChange}
+                onTtsNormalizeProviderChange={onTtsNormalizeProviderChange}
                 split={split}
                 setSplit={setSplit}
                 serviceWindow={serviceWindow}

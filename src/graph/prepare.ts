@@ -1094,12 +1094,12 @@ export function buildSpeechNormalizer(
   args: SpeechNormalizerArgs = {},
 ): ((text: string) => Promise<string>) | undefined {
   if (!cfg.ttsConfig.normalize) return undefined;
-  const own = cfg.ttsConfig.normalizeCredentialRef !== null;
   const resolved = resolveNormalizeModel(cfg.ttsConfig, {
     provider: cfg.mc.provider,
     model: cfg.mc.model,
     baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
   });
+  const own = resolved.useOwnCredential;
   // Skipping the rewrite must never cost the customer the AUDIO: the caller wraps the whole TTS
   // branch in one try/catch, so anything that throws out of here degrades the reply to text. Every
   // way this builder can fail therefore returns undefined with a visible line instead.
@@ -1116,6 +1116,10 @@ export function buildSpeechNormalizer(
     }
     return undefined;
   };
+  // A provider the agent does not use, with no key of its own. Running it on the AGENT's key would
+  // transmit one vendor's secret to another before failing authentication, so it does not run at all.
+  // REST and MCP write the settings bag directly, so the editor's warning is not the guard here.
+  if (!resolved.runnable) return skip(resolved.reason ?? "not_runnable");
   // Its own credential was configured and did not resolve. Falling back to the AGENT's key would be a
   // silent substitution on a provider that may not even accept it.
   if (own && !cfg.ttsNormalizeApiKey) return skip("credential_not_found");

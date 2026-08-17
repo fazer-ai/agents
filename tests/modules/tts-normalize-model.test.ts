@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import {
+  type NormalizeModelResolution,
   type NormalizeModelSource,
   resolveNormalizeModel,
 } from "@/modules/tts/normalize-model";
@@ -24,7 +25,7 @@ describe("resolveNormalizeModel", () => {
     name: string;
     tts: Record<string, unknown>;
     agent?: NormalizeModelSource;
-    want: NormalizeModelSource;
+    want: Partial<NormalizeModelResolution>;
   }> = [
     {
       // The default, and the only row that matters for an install upgrading into this feature:
@@ -51,15 +52,49 @@ describe("resolveNormalizeModel", () => {
       want: { provider: "openai", model: "gpt-5", baseURL: null },
     },
     {
-      // Inheriting "gpt-5" into anthropic would send an OpenAI model id to Anthropic, so a CHANGED
-      // provider with no model resolves to THAT provider's default instead.
-      name: "a changed provider alone resolves that provider's default model, never the agent's",
+      // A vendor the agent does not use, with no key of its own. Running it on the agent's key would
+      // TRANSMIT an OpenAI secret to Anthropic before failing auth, so it does not run at all.
+      name: "a changed provider with no credential of its own is refused, not run on the agent's key",
       tts: { normalize: true, normalizeProvider: "anthropic" },
+      want: {
+        provider: "anthropic",
+        runnable: false,
+        reason: "provider_without_credential",
+        useOwnCredential: false,
+      },
+    },
+    {
+      // With its own key, the change is legitimate. Inheriting "gpt-5" into Anthropic would send an
+      // OpenAI model id there, so an unset model resolves to the NEW provider's default.
+      name: "a changed provider with its own credential resolves that provider's default model",
+      tts: {
+        normalize: true,
+        normalizeProvider: "anthropic",
+        normalizeCredentialRef: "vault:9",
+      },
       want: {
         provider: "anthropic",
         model: PROVIDER_DEFAULT_MODEL.anthropic ?? "",
         baseURL: null,
+        runnable: true,
+        useOwnCredential: true,
       },
+    },
+    {
+      // The endpoint belongs to the OLD vendor as much as the key does: inheriting it would send the
+      // new dedicated key to the agent's gateway.
+      name: "a changed provider never inherits the agent's endpoint",
+      tts: {
+        normalize: true,
+        normalizeProvider: "openrouter",
+        normalizeCredentialRef: "vault:9",
+      },
+      agent: {
+        provider: "openai-compatible",
+        model: "llama-3.1",
+        baseURL: "https://gw.internal/v1",
+      },
+      want: { provider: "openrouter", baseURL: null, runnable: true },
     },
     {
       name: "both set are both used",
@@ -67,6 +102,7 @@ describe("resolveNormalizeModel", () => {
         normalize: true,
         normalizeProvider: "google",
         normalizeModel: "gemini-2.5-flash",
+        normalizeCredentialRef: "vault:9",
         normalizeBaseURL: "https://proxy.example.com/v1",
       },
       want: {
@@ -112,7 +148,7 @@ describe("resolveNormalizeModel", () => {
 
   for (const c of cases) {
     test(c.name, () => {
-      expect(resolve(c.tts, c.agent ?? AGENT)).toEqual(c.want);
+      expect(resolve(c.tts, c.agent ?? AGENT)).toMatchObject(c.want);
     });
   }
 
@@ -121,6 +157,6 @@ describe("resolveNormalizeModel", () => {
   test("blank overrides read as unset, not as an empty model", () => {
     expect(
       resolve({ normalize: true, normalizeProvider: "  ", normalizeModel: "" }),
-    ).toEqual({ provider: "openai", model: "gpt-5", baseURL: null });
+    ).toMatchObject({ provider: "openai", model: "gpt-5", baseURL: null });
   });
 });

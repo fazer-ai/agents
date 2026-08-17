@@ -80,7 +80,16 @@ describe.skipIf(!dbUp)("agent export/import", () => {
           credentialRef: `vault:${llmKey.id}`,
         },
         settings: {
-          tts: { mode: "never", credentialRef: `vault:${ttsKey.id}` },
+          // TWO credentials in one block: the voice engine's and the speech rewrite's own model.
+          // The second one is the one a per-block loop misses, and then export refuses the whole
+          // agent (a tenant-local vault:<id> survives into the file) while import cannot rewire it.
+          tts: {
+            mode: "never",
+            credentialRef: `vault:${ttsKey.id}`,
+            normalize: true,
+            normalizeProvider: "openai",
+            normalizeCredentialRef: `vault:${llmKey.id}`,
+          },
         },
       },
     });
@@ -143,6 +152,11 @@ describe.skipIf(!dbUp)("agent export/import", () => {
     expect(JSON.stringify(exp)).not.toMatch(/sk-[A-Za-z0-9]{16}/);
     // And no tenant-local `vault:<id>` survives translation (the export guard backstops this).
     expect(JSON.stringify(exp)).not.toContain("vault:");
+    // Both credentials of the tts block, by name.
+    const tts = (exp.agent.settings as Record<string, Record<string, unknown>>)
+      .tts;
+    expect(tts?.credentialRef).toBe("tts-key");
+    expect(tts?.normalizeCredentialRef).toBe("llm-key");
   });
 
   // A hand-written export is operator input like any other, and it lands through a third write path.

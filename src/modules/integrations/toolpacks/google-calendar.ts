@@ -33,7 +33,8 @@ import {
 // Security invariants (mirror asaas.ts):
 //   - the set of operable calendars (`calendarIds`) + `timeZone` are bound to the INSTANCE CONFIG; a
 //     tool's optional `calendarId` arg is validated against the allowlist, fail-closed (with a single
-//     allowed calendar it is auto-selected; with several the model picks by name or id IN the set);
+//     allowed calendar the arg is not even exposed and that calendar is used; with several the model
+//     picks by name or id IN the set);
 //   - the per-customer stamp is bound to ctx.contactDbId, never a tool arg;
 //   - the bearer token flows ONLY into the Authorization header;
 //   - the origin is a fixed constant (never interpolated); SSRF-guarded anyway;
@@ -137,19 +138,45 @@ function listAllowed(
   return `Allowed calendars: ${list} (pass calendarId by name or id).`;
 }
 
-// The allowed calendars as an XML block, appended at the END of a tool's description ONLY when several
-// are allowed (with a single calendar it is auto-selected and never needs to be named). Each <calendar>
-// carries the friendly name (when known) and/or the raw id — both are valid values for the calendarId
-// arg. Empty ⇒ "" (no block).
-function allowedCalendarsXml(
+// The calendar the model cannot choose: with EXACTLY ONE allowed calendar the binding is pinned, so
+// there is nothing to pick — the tools drop the calendarId arg (calendarArgSchema) and the context
+// block names the calendar instead of enumerating options (calendarContextXml). Null when the operator
+// allowed none (the tools refuse at invoke time) or several (the model picks, fenced by pickCalendarId).
+function pinnedCalendarId(allowed: string[]): string | null {
+  return allowed.length === 1 ? (allowed[0] as string) : null;
+}
+
+// The calendars as an XML block, appended at the END of a tool's description. Pinned ⇒ the single
+// <active_calendar> the tools operate on, so the agent can NAME it to the customer without a
+// calendarId arg to pass. Several ⇒ the <allowed_calendars> the model picks from, each <calendar>
+// carrying the friendly name (when known) and/or the raw id — both valid values for the arg. None ⇒
+// "" (no block).
+function calendarContextXml(
   allowed: string[],
   labels: Record<string, string>,
 ): string {
-  if (allowed.length <= 1) return "";
+  const pinned = pinnedCalendarId(allowed);
+  if (pinned) {
+    return `<active_calendar${xmlAttr("name", labels[pinned])}${xmlAttr("id", pinned)}/>`;
+  }
+  if (allowed.length === 0) return "";
   const els = allowed.map(
     (id) => `  <calendar${xmlAttr("name", labels[id])}${xmlAttr("id", id)}/>`,
   );
   return `<allowed_calendars>\n${els.join("\n")}\n</allowed_calendars>`;
+}
+
+// A tool's schema as the MODEL sees it. Pinned ⇒ calendarId is REMOVED: an optional arg offered with
+// no valid value in sight is an invitation to invent one (a support report had an agent passing the
+// operator's own wording for the integration, which never reaches the runtime, and the tool refusing
+// on the one calendar it could have used). Zod strips a residual key from an older turn before the
+// body runs, so the pinned calendar is used either way. Several/none ⇒ the arg stays and
+// pickCalendarId fences it.
+function calendarArgSchema(
+  schema: z.ZodObject<z.ZodRawShape>,
+  allowed: string[],
+): z.ZodTypeAny {
+  return pinnedCalendarId(allowed) ? schema.omit({ calendarId: true }) : schema;
 }
 
 // The configured appointment length as an XML element for calendar_check_availability: preset="true"
@@ -447,8 +474,12 @@ const NO_CONTACT =
 const FOREIGN_EVENT =
   "That appointment is not associated with this customer, so it cannot be read or changed here.";
 
+// NOTE: zod-optional but never optional in practice: the arg is only ever EXPOSED when the
+// integration allows several calendars (calendarArgSchema), and then one of them must be named or
+// pickCalendarId refuses. The trailing sentence is for the operator reading the arg list in the
+// console, which is per-catalog and therefore always shows this field.
 const CALENDAR_ID_DESC =
-  "Which calendar to act on. Optional; required only when the integration allows several calendars. Pass an allowed calendar's name or id.";
+  "Which calendar to act on: name or id of one of the calendars in `<allowed_calendars>`. This arg only appears when the integration allows several calendars; with a single one it is used automatically.";
 
 function projectEvent(ev: Record<string, unknown>) {
   return {
@@ -648,9 +679,9 @@ function buildListEventsTool(
       name: "calendar_list_events",
       description: withCalendarContext(
         `List THIS customer's own appointments on the calendar in a time range (each customer only ever sees their own). Holidays, closures, staff events and other customers' bookings are NEVER visible here, so an empty result does NOT mean the calendar is free; use calendar_check_availability to know what is actually bookable. Returns each appointment's id, summary, start and end. Use ISO 8601 timestamps (with offset) for the range.`,
-        allowedCalendarsXml(allowed, labels),
+        calendarContextXml(allowed, labels),
       ),
-      schema: LIST_EVENTS_SCHEMA,
+      schema: calendarArgSchema(LIST_EVENTS_SCHEMA, allowed),
     },
   );
 }
@@ -804,9 +835,9 @@ function buildCheckAvailabilityTool(
       description: withCalendarContext(
         `Return ALL bookable appointment start times within a range, already honoring the service hours, existing bookings and any operator-designated blocking calendars such as holidays or closures (no appointment details are exposed). Each slot has start, end and a human-readable label. Offer these to the customer and confirm one before creating the appointment. Pass ISO 8601 timestamps for the range, and search AT MOST 24 hours per call (one day at a time — call again for other days). The configured appointment length is shown in \`<slot_duration>\` below — when preset="false", choose it yourself per request and pass slotDurationMinutes (e.g. 30 for a standard appointment, 60 for a longer one); when preset="true", pass slotDurationMinutes only to override it.`,
         slotDurationXml(sel.config),
-        allowedCalendarsXml(allowed, labels),
+        calendarContextXml(allowed, labels),
       ),
-      schema: CHECK_AVAILABILITY_SCHEMA,
+      schema: calendarArgSchema(CHECK_AVAILABILITY_SCHEMA, allowed),
     },
   );
 }
@@ -925,9 +956,9 @@ function buildCreateEventTool(
       name: "calendar_create_event",
       description: withCalendarContext(
         `Create an appointment for THIS customer on the calendar (it is automatically tagged to this customer, so only they can later see or change it). Provide a summary plus start and end. Use ISO 8601 with an offset for timed events (e.g. 2026-06-20T14:00:00-03:00) or a bare date (2026-06-20) for an all-day event. Returns the created appointment's id and links${meetEnabled ? "; share meetLink (the Google Meet room) with the customer — htmlLink is only the calendar page" : ""}.`,
-        allowedCalendarsXml(allowed, labels),
+        calendarContextXml(allowed, labels),
       ),
-      schema: CREATE_EVENT_SCHEMA,
+      schema: calendarArgSchema(CREATE_EVENT_SCHEMA, allowed),
     },
   );
 }
@@ -1038,9 +1069,9 @@ function buildUpdateEventTool(
       name: "calendar_update_event",
       description: withCalendarContext(
         `Reschedule or edit THIS customer's appointment (by its id, e.g. from calendar_list_events). Only an appointment belonging to this customer can be changed. Provide ONLY the fields to change. Dates use the same ISO 8601 / all-day format as create.`,
-        allowedCalendarsXml(allowed, labels),
+        calendarContextXml(allowed, labels),
       ),
-      schema: UPDATE_EVENT_SCHEMA,
+      schema: calendarArgSchema(UPDATE_EVENT_SCHEMA, allowed),
     },
   );
 }
@@ -1109,9 +1140,9 @@ function buildCancelEventTool(
       name: "calendar_cancel_event",
       description: withCalendarContext(
         `Cancel (delete) THIS customer's appointment by its id (e.g. from calendar_list_events). Only an appointment belonging to this customer can be cancelled.`,
-        allowedCalendarsXml(allowed, labels),
+        calendarContextXml(allowed, labels),
       ),
-      schema: CANCEL_EVENT_SCHEMA,
+      schema: calendarArgSchema(CANCEL_EVENT_SCHEMA, allowed),
     },
   );
 }
@@ -1192,9 +1223,9 @@ function buildConfirmAppointmentTool(
       name: "calendar_confirm_appointment",
       description: withCalendarContext(
         `Mark THIS customer's appointment as CONFIRMED after they confirm they will attend (by its id, e.g. from calendar_list_events). Prefixes the event title with [CONFIRMADO] and records the confirmation on the event. Only an appointment belonging to this customer can be confirmed.`,
-        allowedCalendarsXml(allowed, labels),
+        calendarContextXml(allowed, labels),
       ),
-      schema: CONFIRM_APPOINTMENT_SCHEMA,
+      schema: calendarArgSchema(CONFIRM_APPOINTMENT_SCHEMA, allowed),
     },
   );
 }

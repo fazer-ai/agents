@@ -212,11 +212,13 @@ describe("google calendar toolpack — credential + calendar binding", () => {
     );
   });
 
+  // Several allowed calendars is the ONLY case where this boundary exists: with a single one the arg
+  // is not even exposed (see the pinned-calendar suite below), so there is no value to fence.
   test("a calendarId arg outside the allowlist is rejected, no fetch (injection boundary)", async () => {
     const { impl, calls } = stubFetch(200, { items: [] });
     const out = (await toolFor(
       "calendar_list_events",
-      { calendarIds: ["a@g.com"] },
+      { calendarIds: ["a@g.com", "b@g.com"] },
       baseCtx({ fetchImpl: impl }),
     )?.invoke({ calendarId: "evil@g.com" })) as string;
     expect(out).toContain("not allowed");
@@ -236,6 +238,88 @@ describe("google calendar toolpack — credential + calendar binding", () => {
     expect(calls[0]?.url).toContain(
       `/calendars/${encodeURIComponent("a@g.com")}/events`,
     );
+  });
+});
+
+// A support report: an integration with ONE allowed calendar, and the agent calling availability with
+// calendarId set to a string that is not a calendar at all (the operator's own wording for the
+// integration, which never reaches the runtime — the model read it in the prompt). The tool refused,
+// and only omitting the arg worked. The arg was offered with no hint of a valid value, because the
+// <allowed_calendars> block is deliberately suppressed when there is nothing to choose.
+describe("google calendar toolpack — a single allowed calendar is pinned", () => {
+  const PINNED = "clinic@group.calendar.google.com";
+  const ONE = {
+    calendarIds: [PINNED],
+    calendarLabels: { [PINNED]: "Clinic" },
+  };
+  const SEVERAL = {
+    calendarIds: [PINNED, "second@group.calendar.google.com"],
+    calendarLabels: { [PINNED]: "Clinic" },
+  };
+  // What a model with no valid value in sight fills the optional arg with.
+  const INVENTED = "My Calendar Integration";
+  const EVERY_TOOL = googleCalendarToolpack.toolSpecs.map((s) => s.name);
+
+  function argsOf(tool: { schema: unknown } | undefined): string[] {
+    const shape = (tool?.schema as { shape?: Record<string, unknown> })?.shape;
+    return Object.keys(shape ?? {});
+  }
+
+  test("no tool offers a calendarId arg: there is nothing to pick", () => {
+    expect(EVERY_TOOL).toHaveLength(6);
+    for (const name of EVERY_TOOL) {
+      expect(argsOf(toolFor(name, ONE, baseCtx()))).not.toContain("calendarId");
+    }
+  });
+
+  test("with several allowed calendars every tool keeps the arg", () => {
+    for (const name of EVERY_TOOL) {
+      expect(argsOf(toolFor(name, SEVERAL, baseCtx()))).toContain("calendarId");
+    }
+  });
+
+  test("availability: an invented calendarId is dropped, not refused", async () => {
+    const { impl, calls } = stubFetch(200, { calendars: {} });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      ONE,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      timeMin: "2099-06-22T00:00:00-03:00",
+      timeMax: "2099-06-22T23:59:00-03:00",
+      calendarId: INVENTED,
+    })) as string;
+    expect(out).not.toContain("not allowed");
+    expect(calls[0]?.url).toContain("/freeBusy");
+    expect(bodyOf(calls[0] as { init: RequestInit })).toMatchObject({
+      items: [{ id: PINNED }],
+    });
+  });
+
+  test("list: an invented calendarId is dropped, not refused", async () => {
+    const { impl, calls } = stubFetch(200, { items: [] });
+    const out = (await toolFor(
+      "calendar_list_events",
+      ONE,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({ calendarId: INVENTED })) as string;
+    expect(out).not.toContain("not allowed");
+    expect(calls[0]?.url).toContain(
+      `/calendars/${encodeURIComponent(PINNED)}/events`,
+    );
+  });
+
+  test("the description names the pinned calendar instead of listing options", () => {
+    const pinned = toolFor("calendar_check_availability", ONE, baseCtx());
+    expect(pinned?.description).toContain(`<active_calendar name="Clinic"`);
+    expect(pinned?.description).toContain(`id="${PINNED}"`);
+    expect(pinned?.description).not.toContain("<allowed_calendars>");
+  });
+
+  test("with several allowed calendars the description still lists them", () => {
+    const many = toolFor("calendar_check_availability", SEVERAL, baseCtx());
+    expect(many?.description).toContain("<allowed_calendars>");
+    expect(many?.description).not.toContain("<active_calendar");
   });
 });
 

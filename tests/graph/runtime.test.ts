@@ -1799,7 +1799,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         cfg.model === GUARD_MODEL
           ? ({
               invoke: async (msgs: { content: unknown }[]) => {
-                captured.push(String(msgs[0]?.content ?? ""));
+                // Every message, not just the system prompt: the customer's words ride at user
+                // level now, and the point of these tests is WHAT the reviewer received.
+                captured.push(
+                  msgs.map((m) => String(m.content)).join("\n---\n"),
+                );
                 return { content: verdictJson };
               },
             } as unknown as BaseChatModel)

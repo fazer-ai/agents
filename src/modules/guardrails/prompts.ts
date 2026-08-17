@@ -126,21 +126,12 @@ export function buildGuardrailSystemPrompt(p: GuardrailPromptParams): string {
       p.generationPrompt.trim(),
     );
   }
-  // `suggestedReply` is sent TO the customer, so the customer's own message is the right language to
-  // answer in whenever it is available. The analyzed text is only a stand-in for it, and it is the
-  // wrong stand-in precisely when a replacement is being written: a reply that slipped into the
-  // wrong language would have its replacement written in that same wrong language. Not two
-  // instructions, one anchor, so the two cannot contradict each other.
-  const language =
-    customerMessageForReview(p) !== null
-      ? "the SAME language as the customer's message"
-      : "the SAME language as the analyzed text";
   lines.push(
     "",
     "Respond with ONLY a JSON object (no markdown, no prose) of the form:",
     '{"violated": boolean, "categories": string[], "rationale": string, "suggestedReply": string | null}',
     '`categories` lists the violated policy keys (e.g. "toxicity"). `rationale` is one short sentence. ' +
-      `\`suggestedReply\` is a safe, polite replacement message in ${language} ` +
+      "`suggestedReply` is a safe, polite replacement message in the SAME language as the analyzed text " +
       "(what the assistant could say instead, following the guidance above when present), or null. When " +
       'nothing is violated, set "violated" to false and "categories" to [].',
   );

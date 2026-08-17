@@ -174,9 +174,38 @@ export function splitAnalyses(p: AnalysisParams): {
       competitors: [],
       customPolicy: "",
       systemPrompt: undefined,
+      // This half never writes a replacement, whatever the action is, and the runtime falls back to
+      // the configured template message. Two reasons, and the second is the one that settles it:
+      //
+      //   * the policies were stripped from this call so the customer's words cannot trip them, so
+      //     a replacement written here would be written without the rules it has to obey. Handing
+      //     them over as writing guidance was tried and MEASURED: 5 of 10 replacements still named
+      //     a competitor the operator had banned, in the same breath as being told never to;
+      //   * a relevance violation means the reply did not ANSWER, so there is nothing to rewrite
+      //     and the model would have to invent the answer, with no tools, no knowledge base and no
+      //     account data. In those same 10 runs, 3 stated a commercial fact it could not know
+      //     ("Sim, trabalhamos com a Zenvia"). Toxicity rewrites what the agent said; relevance
+      //     would be fabricating what the business does.
+      generationPrompt: undefined,
     },
   };
 }
+
+// A relevance analysis never proposes a replacement, so the runtime falls back to the configured
+// template message. Dropping the generation guidance is not enough on its own: the response shape
+// still asks for `suggestedReply`, and a model that writes one anyway would have it delivered.
+//
+// It must not write one. A relevance violation means the reply did not ANSWER, so there is nothing
+// to rewrite and the model has to invent the answer, with no tools, no knowledge base and no
+// account data. Measured against gpt-5.4-mini, 10 replacements for one such violation: 3 stated a
+// commercial fact the model could not know ("Sim, trabalhamos com a Zenvia", to a customer asking
+// whether we work with them), and 5 named a competitor the operator had banned while being told in
+// the same prompt never to mention it. Toxicity rewrites what the agent said; relevance would be
+// fabricating what the business does.
+const withoutReplacement = (v: GuardrailVerdict): GuardrailVerdict => ({
+  ...v,
+  suggestedReply: null,
+});
 
 // Two analyses, one verdict. A violation on either side is a violation; an error on either side is
 // reported, because "one half never ran" must not read as "screened and approved".
@@ -207,11 +236,13 @@ export async function analyzeGuardrail(
 ): Promise<GuardrailVerdict> {
   const { policies, relevance } = splitAnalyses(params);
   if (relevance === null) return runAnalysis(model, policies as AnalysisParams);
-  if (policies === null) return runAnalysis(model, relevance);
+  if (policies === null) {
+    return withoutReplacement(await runAnalysis(model, relevance));
+  }
   // In parallel: the operator is paying for a turn a customer is waiting on.
   const [byPolicy, byRelevance] = await Promise.all([
     runAnalysis(model, policies),
-    runAnalysis(model, relevance),
+    runAnalysis(model, relevance).then(withoutReplacement),
   ]);
   return mergeVerdicts(byPolicy, byRelevance);
 }

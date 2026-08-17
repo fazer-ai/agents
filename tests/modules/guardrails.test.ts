@@ -275,26 +275,6 @@ describe("buildGuardrailSystemPrompt", () => {
     expect(p).not.toContain("answer_relevance");
   });
 
-  // The replacement is what the CUSTOMER reads. Anchoring its language to the reply under review
-  // breaks in the one case where a replacement matters most: a reply that came out in the wrong
-  // language would be replaced by another reply in that same wrong language.
-  test("anchors the replacement's language to the customer, when there is one", () => {
-    const withCustomer = buildGuardrailSystemPrompt({
-      ...relevance,
-      customerMessage: "vocês atendem no sábado?",
-    });
-    expect(withCustomer).toContain(
-      "the SAME language as the customer's message",
-    );
-    expect(withCustomer).not.toContain("SAME language as the analyzed text");
-  });
-
-  test("falls back to the analyzed text when no customer message travels", () => {
-    const noCustomer = buildGuardrailSystemPrompt(base);
-    expect(noCustomer).toContain("the SAME language as the analyzed text");
-    expect(noCustomer).not.toContain("language as the customer's message");
-  });
-
   test("includes the generation guidance when present", () => {
     const p = buildGuardrailSystemPrompt({
       ...base,
@@ -349,6 +329,15 @@ describe("splitAnalyses", () => {
     expect(policies?.competitors).toEqual(["Zenvia"]);
     expect(policies?.customPolicy).toBe("Nunca peça o CPF.");
     expect(policies?.systemPrompt).toBe("You are Maria.");
+  });
+
+  // Stripping the policies is what stops the customer's words from tripping them, and it also takes
+  // away the rules a replacement would have to follow. So this half does not write one at all: see
+  // `withoutReplacement` for the measurement that settled it.
+  test("this half is never asked to write a replacement", () => {
+    for (const p of [full, { ...full, generationPrompt: "Seja breve." }]) {
+      expect(splitAnalyses(p).relevance?.generationPrompt).toBeUndefined();
+    }
   });
 
   test("no message to compare against, no second call", () => {
@@ -564,7 +553,7 @@ describe("analyzeGuardrail", () => {
           suggestedReply: reply,
         });
 
-      test("a violation on either side wins, with both sets of categories", async () => {
+      test("a violation on either side wins, with its categories and rationale", async () => {
         for (const violatingHalf of ["policies", "relevance"] as const) {
           const r = recordingModel((c) =>
             (violatingHalf === "relevance") === isFenced(c)
@@ -575,15 +564,37 @@ describe("analyzeGuardrail", () => {
           expect(r.calls().length).toBe(2);
           expect(v.violated).toBe(true);
           expect(v.categories).toEqual([violatingHalf]);
-          expect(v.suggestedReply).toBe("TROCA");
           expect(v.rationale).toBe(`r-${violatingHalf}`);
+          // A replacement is only ever taken from the half that judges the reply. The relevance
+          // half would have to invent the answer, so its suggestion is dropped even when it writes
+          // one unasked, and the runtime falls back to the configured template.
+          expect(v.suggestedReply).toBe(
+            violatingHalf === "policies" ? "TROCA" : null,
+          );
         }
+      });
+
+      test("a relevance-only analysis drops the suggestion too", async () => {
+        const r = recordingModel(violation("answer_relevance", "INVENTADA"));
+        const v = await analyzeGuardrail(r.model, {
+          ...split,
+          checks: {
+            toxicity: false,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+            answerRelevance: true,
+          },
+        });
+        expect(r.calls().length).toBe(1);
+        expect(v.violated).toBe(true);
+        expect(v.suggestedReply).toBeNull();
       });
 
       test("both violating merges the categories without repeating them", async () => {
         const r = recordingModel((c) =>
           isFenced(c)
-            ? violation("answer_relevance", null)
+            ? violation("answer_relevance", "INVENTADA")
             : violation("toxicity", "TROCA"),
         );
         const v = await analyzeGuardrail(r.model, split);

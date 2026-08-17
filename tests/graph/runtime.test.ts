@@ -2087,11 +2087,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         model: GUARD_MODEL,
         credentialRef: gVaultRef,
         input: { enabled: false },
+        competitors: ["Zenvia"],
         output: {
           enabled: true,
           action: "template",
           checks: { ...RELEVANCE_CHECKS, competitorMentions: true },
-          competitors: ["Zenvia"],
           templateMessage: "TEMPLATE-COMPETITOR",
         },
       });
@@ -2156,6 +2156,78 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(
         captured.filter((c) => c.startsWith("POLICY") && c.includes("Zenvia")),
       ).toEqual([]);
+    });
+
+    // The other half of the split. Taking the policies off the relevance call is what stops the
+    // customer's words from tripping them, and it also takes away the rules a replacement would have
+    // to obey. Handing them back as writing guidance was tried and measured: 5 of 10 replacements
+    // still named a competitor the operator had banned, in the same breath as being told never to.
+    // Worse, a relevance violation has NOTHING to rewrite, so the model invents the answer: 3 of
+    // those 10 stated a commercial fact it could not know. So this half never proposes a
+    // replacement, and the configured template goes out instead.
+    test("a relevance trip sends the template, never a replacement it invented", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        competitors: ["Zenvia"],
+        output: {
+          enabled: true,
+          action: "generated",
+          checks: { ...RELEVANCE_CHECKS, competitorMentions: true },
+          templateMessage: "TEMPLATE-RELEVANCE",
+        },
+      });
+      await seedConv(965);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      // Writes exactly what the real model wrote in the live battery: an invented commercial fact
+      // that also names the banned competitor.
+      const fabricator = (cfg: ResolvedModelConfig): BaseChatModel =>
+        cfg.model === GUARD_MODEL
+          ? ({
+              invoke: async (msgs: { content: unknown }[]) => {
+                const relevance = String(msgs[0]?.content ?? "").includes(
+                  "<customer_message>",
+                );
+                return {
+                  content: JSON.stringify({
+                    violated: relevance,
+                    categories: relevance ? ["answer_relevance"] : [],
+                    rationale: relevance ? "does not answer" : "",
+                    suggestedReply: relevance
+                      ? "Sim, trabalhamos com a Zenvia."
+                      : null,
+                  }),
+                };
+              },
+            } as unknown as BaseChatModel)
+          : new FakeListChatModel({ responses: [REPLY] });
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({
+          conversationId: 965,
+          inboxId: G_INBOX,
+          message: {
+            id: 1,
+            content: "vocês trabalham com a Zenvia?",
+            messageType: "incoming",
+            private: false,
+          },
+        }),
+        base: appDb,
+        deps: {
+          makeModel: fabricator,
+          makeClient: guardStub(sent, notes),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(sent).toEqual([[965, "TEMPLATE-RELEVANCE"]]);
     });
   });
 });

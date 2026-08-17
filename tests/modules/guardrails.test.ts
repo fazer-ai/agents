@@ -591,7 +591,10 @@ describe("analyzeGuardrail", () => {
         expect(v.suggestedReply).toBeNull();
       });
 
-      test("both violating merges the categories without repeating them", async () => {
+      // A rewrite repairs the FORM of a reply while keeping its substance, so it cannot repair a
+      // reply whose substance was the problem: it would reach the customer as a well-mannered
+      // non-answer, reading more like an answer than the original did.
+      test("both violating merges the categories and drops the rewrite", async () => {
         const r = recordingModel((c) =>
           isFenced(c)
             ? violation("answer_relevance", "INVENTADA")
@@ -600,6 +603,15 @@ describe("analyzeGuardrail", () => {
         const v = await analyzeGuardrail(r.model, split);
         expect(v.violated).toBe(true);
         expect(v.categories.sort()).toEqual(["answer_relevance", "toxicity"]);
+        expect(v.suggestedReply).toBeNull();
+      });
+
+      // ...but a clean relevance verdict leaves the rewrite alone, which is the case it exists for.
+      test("a policy rewrite survives when relevance is happy", async () => {
+        const r = recordingModel((c) =>
+          isFenced(c) ? clean : violation("toxicity", "TROCA"),
+        );
+        const v = await analyzeGuardrail(r.model, split);
         expect(v.suggestedReply).toBe("TROCA");
       });
 

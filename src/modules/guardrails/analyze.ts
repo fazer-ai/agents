@@ -244,7 +244,14 @@ export async function analyzeGuardrail(
     runAnalysis(model, policies),
     runAnalysis(model, relevance).then(withoutReplacement),
   ]);
-  return mergeVerdicts(byPolicy, byRelevance);
+  // A rewrite from the policy half PRESERVES the substance of the reply and repairs its form, which
+  // is the whole reason it is allowed to write one. When relevance also tripped, the substance is
+  // what was wrong, so that rewrite is a polite version of a reply that still does not answer, and
+  // it reads more like an answer than the original did. The template goes out instead.
+  return mergeVerdicts(
+    byRelevance.violated ? withoutReplacement(byPolicy) : byPolicy,
+    byRelevance,
+  );
 }
 
 async function runAnalysis(

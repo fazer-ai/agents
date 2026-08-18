@@ -851,3 +851,89 @@ describe("computeConfigIssues — which endpoint refusals wait for the vault", (
     ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
   });
 });
+
+// Text stored over its cap is cut on the way to the model and nowhere else, so the editor is the
+// only place it can surface. It has to surface from OUTSIDE the field: the boundary deliberately
+// lets an untouched legacy value save, and the field itself may not be on screen — several of these
+// notes have no control in the editor at all, and the sections that do only render when switched on.
+describe("computeConfigIssues — text stored over its cap", () => {
+  const bag = (settings: Record<string, unknown>) => ({ ...base, settings });
+
+  test("no settings, or nothing over its cap, is no issue", () => {
+    expect(computeConfigIssues(base)).toEqual([]);
+    expect(
+      computeConfigIssues(bag({ handoff: { instructions: "short" } })),
+    ).toEqual([]);
+  });
+
+  test("flags an over-cap tool note, deep-linking to the native tools section", () => {
+    const issues = computeConfigIssues(
+      bag({ handoff: { instructions: "h".repeat(1501) } }),
+    );
+    expect(issues).toEqual([
+      {
+        key: "textCap",
+        tab: "tools",
+        sectionId: "tools-native",
+        field: "handoff.instructions",
+        length: 1501,
+        max: 1500,
+      },
+    ]);
+  });
+
+  test("each capped family deep-links to where its field actually lives", () => {
+    const target = (settings: Record<string, unknown>) => {
+      const [issue] = computeConfigIssues(bag(settings));
+      return `${issue?.tab ?? "-"}/${issue?.sectionId ?? "-"}`;
+    };
+    expect(target({ guardrails: { customPolicy: "p".repeat(2001) } })).toBe(
+      "guardrails/gr-policy",
+    );
+    expect(
+      target({ guardrails: { input: { templateMessage: "t".repeat(2001) } } }),
+    ).toBe("guardrails/gr-input");
+    expect(
+      target({
+        guardrails: { output: { generationPrompt: "g".repeat(2001) } },
+      }),
+    ).toBe("guardrails/gr-output");
+    expect(target({ toolGuidance: { assign_label: "l".repeat(1501) } })).toBe(
+      "tools/tools-native",
+    );
+    expect(target({ vision: { extractionPrompt: "v".repeat(4001) } })).toBe(
+      "behavior/vision",
+    );
+    expect(
+      target({ followUp: { steps: [{ instructions: "f".repeat(2001) }] } }),
+    ).toBe("behavior/proactive");
+  });
+
+  // The reported case: a note written through REST or MCP for a native tool the editor has no field
+  // for. It still gets an issue — that is the only way the operator learns the text is being cut —
+  // but with no deep-link target, because there is nowhere to send them.
+  test("a note with no control in the editor is flagged without a target", () => {
+    const [issue] = computeConfigIssues(
+      bag({ toolGuidance: { private_note: "n".repeat(1501) } }),
+    );
+    expect(issue).toEqual({
+      key: "textCap",
+      field: "toolGuidance.private_note",
+      length: 1501,
+      max: 1500,
+    });
+  });
+
+  test("every over-cap field gets its own row", () => {
+    const issues = computeConfigIssues(
+      bag({
+        handoff: { instructions: "h".repeat(1501) },
+        vision: { extractionPrompt: "v".repeat(4001) },
+      }),
+    );
+    expect(issues.map((i) => i.field).sort()).toEqual([
+      "handoff.instructions",
+      "vision.extractionPrompt",
+    ]);
+  });
+});

@@ -73,7 +73,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
           <span id={descriptionId} className="mt-1 block text-error text-xs">
             {t(
               "common.charOverLimit",
-              "{{over}} characters over the limit. Only the first {{max}} are used, and saving is refused until you shorten it.",
+              "{{over}} characters over the limit. The agent only receives the first {{max}}; shorten it to save a change to this field.",
               { over: count - max, max },
             )}
           </span>

@@ -3,6 +3,7 @@ import {
   VAULT_REF_PREFIX,
 } from "@/client/lib/credentialRef";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 
 // Live configuration-health checks for the agent editor (item 1): detect features that are turned on
@@ -19,13 +20,15 @@ export type ConfigIssueKey =
   | "guardrails"
   | "knowledge"
   | "embedding"
-  | "redirect";
+  | "redirect"
+  | "textCap";
 
 export interface ConfigIssue {
   key: ConfigIssueKey;
   // Deep-link target for credential issues (tab + section anchor). Absent for "knowledge" issues,
-  // which open the knowledge-base documents modal instead of scrolling to a section.
-  tab?: "general" | "behavior" | "guardrails" | "channelRedirect";
+  // which open the knowledge-base documents modal instead of scrolling to a section, and for a
+  // "textCap" issue on a field the editor has no control for.
+  tab?: "general" | "behavior" | "guardrails" | "channelRedirect" | "tools";
   // The DOM anchor id of the section to scroll to (matches the section's `id`).
   sectionId?: string;
   // When true, the credential IS referenced but its secret has not been filled yet (a "pending"
@@ -43,9 +46,60 @@ export interface ConfigIssue {
   // editor can open that base's documents modal.
   knowledgeBaseId?: string;
   knowledgeBaseName?: string;
+  // For "textCap" issues: the dotted path of the field, what it holds, and what the reader keeps.
+  field?: string;
+  length?: number;
+  max?: number;
+}
+
+// Where a capped field is edited, by the path the walker reports. A path with no entry has no control
+// in the editor: `toolGuidance` accepts a note for all thirteen native tools and only three of them
+// have a field, so the rest can only have been written through REST or MCP. Those still get a
+// warning — being cut in silence is the whole defect — just without a place to send the operator.
+const TEXT_CAP_TARGETS: Array<{
+  match: RegExp;
+  tab: NonNullable<ConfigIssue["tab"]>;
+  sectionId: string;
+}> = [
+  { match: /^handoff\.instructions$/, tab: "tools", sectionId: "tools-native" },
+  { match: /^kanban\.instructions$/, tab: "tools", sectionId: "tools-native" },
+  {
+    match:
+      /^toolGuidance\.(set_custom_attribute|assign_label|update_kanban_task)$/,
+    tab: "tools",
+    sectionId: "tools-native",
+  },
+  {
+    match: /^guardrails\.customPolicy$/,
+    tab: "guardrails",
+    sectionId: "gr-policy",
+  },
+  { match: /^guardrails\.input\./, tab: "guardrails", sectionId: "gr-input" },
+  { match: /^guardrails\.output\./, tab: "guardrails", sectionId: "gr-output" },
+  { match: /^vision\.extractionPrompt$/, tab: "behavior", sectionId: "vision" },
+  { match: /^followUp\.steps\[/, tab: "behavior", sectionId: "proactive" },
+];
+
+function textCapIssues(settings: unknown): ConfigIssue[] {
+  // Against nothing stored: every over-cap value in the bag is one the operator should know about,
+  // which is the opposite question from the write boundary's (what does this write change).
+  return collectOversizedTextChanges(settings, undefined).map((o) => {
+    const target = TEXT_CAP_TARGETS.find((t) => t.match.test(o.path));
+    return {
+      key: "textCap" as const,
+      ...(target ? { tab: target.tab, sectionId: target.sectionId } : {}),
+      field: o.path,
+      length: o.length,
+      max: o.max,
+    };
+  });
 }
 
 export interface ConfigHealthInput {
+  // The agent's settings AS STORED. The question here is about the row, not about the pending edit:
+  // a field the operator is typing into already shows its own counter, and a warning that reacted to
+  // keystrokes would flicker while they type.
+  settings?: unknown;
   // The agent's model as the operator is EDITING it: this pair answers "does the model have a key",
   // which is a question about what the General tab is about to save.
   modelProvider: string;
@@ -333,5 +387,8 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       sectionId: "cr-entry",
     });
   }
+  // Last: these are about text already in the row, not about a feature that cannot run, so they read
+  // as the tail of the list rather than as the headline.
+  issues.push(...textCapIssues(input.settings));
   return issues;
 }

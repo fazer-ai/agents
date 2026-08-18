@@ -297,7 +297,7 @@
   },
   "common": {
     "cancel": "Cancelar",
-    "charOverLimit": "{{over}} caracteres acima do limite. Só os primeiros {{max}} são usados, e não é possível salvar até encurtar o texto.",
+    "charOverLimit": "{{over}} caracteres acima do limite. O agente só recebe os primeiros {{max}}; encurte o texto para salvar uma alteração neste campo.",
     "clearSearch": "Limpar busca",
     "close": "Fechar",
     "comboBoxAddMore": "Adicionar…",
@@ -691,6 +691,8 @@
       "vision": "A credencial de leitura de imagens está referenciada, mas ainda não foi preenchida."
     },
     "configIssuesTitle": "Avisos de configuração",
+    "configIssueTextCap": "{{field}} tem {{len}} caracteres e o limite é {{max}}: tudo que passa disso é ignorado.",
+    "configIssueTextCapNoField": "{{field}} tem {{len}} caracteres e o limite é {{max}}: tudo que passa disso é ignorado. Esta orientação não tem campo no console, então só pode ser encurtada pela API.",
     "configIssueUnresolved": {
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding não existe mais.",
       "guardrails": "A credencial dos guardrails não existe mais, então as mensagens saem sem triagem.",

@@ -1243,6 +1243,7 @@ function AgentEditor() {
   const savedModelBaseUrl =
     vaultBaseUrl(savedModel.credentialRef) ?? savedModel.baseURL;
   const configIssues = computeConfigIssues({
+    settings: syncedAgentRef.current?.settings,
     modelProvider: model.provider,
     modelCredentialRef: model.credentialRef,
     sttEnabled: stt.enabled,
@@ -1317,6 +1318,28 @@ function AgentEditor() {
   // move differs (fill it, pick another, set one). Kept out of the JSX so the dynamic-key lint
   // suppression sits on the t() call.
   function issueMessage(issue: (typeof configIssues)[number]): string {
+    // Text already in the row, over its cap: whatever passes the cap is dropped by the reader, which
+    // is invisible everywhere else. The message stops at that, without claiming the model receives
+    // the rest — with the section switched off it receives none of it. When the field has no control
+    // in the editor the message says so, instead of leaving the operator hunting for a tab.
+    if (issue.key === "textCap") {
+      const params = {
+        field: issue.field ?? "",
+        len: issue.length ?? 0,
+        max: issue.max ?? 0,
+      };
+      return issue.tab
+        ? t(
+            "editor.configIssueTextCap",
+            "{{field}} holds {{len}} characters and the limit is {{max}}: everything past that is ignored.",
+            params,
+          )
+        : t(
+            "editor.configIssueTextCapNoField",
+            "{{field}} holds {{len}} characters and the limit is {{max}}: everything past that is ignored. This note has no field in the console, so it can only be shortened through the API.",
+            params,
+          );
+    }
     if (issue.key === "knowledge") {
       return t(
         "editor.configIssueKnowledge",
@@ -2394,23 +2417,25 @@ function AgentEditor() {
                 <ul className="flex flex-col gap-1">
                   {configIssues.map((issue) => (
                     <li
-                      key={issue.knowledgeBaseId ?? issue.key}
+                      key={issue.field ?? issue.knowledgeBaseId ?? issue.key}
                       className="flex items-baseline justify-between gap-3 pl-6"
                     >
                       <span className="min-w-0 text-text-secondary text-xs">
                         {issueMessage(issue)}
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => goToIssue(issue)}
-                        className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
-                      >
-                        {issue.key === "knowledge"
-                          ? t("editor.indexKnowledge", "Index")
-                          : issue.pending
-                            ? t("editor.fillCredential", "Fill")
-                            : t("editor.goToIssue", "Fix")}
-                      </button>
+                      {(issue.tab || issue.key === "knowledge") && (
+                        <button
+                          type="button"
+                          onClick={() => goToIssue(issue)}
+                          className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
+                        >
+                          {issue.key === "knowledge"
+                            ? t("editor.indexKnowledge", "Index")
+                            : issue.pending
+                              ? t("editor.fillCredential", "Fill")
+                              : t("editor.goToIssue", "Fix")}
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>

@@ -296,7 +296,7 @@
   },
   "common": {
     "cancel": "Cancel",
-    "charOverLimit": "{{over}} characters over the limit. Only the first {{max}} are used, and saving is refused until you shorten it.",
+    "charOverLimit": "{{over}} characters over the limit. The agent only receives the first {{max}}; shorten it to save a change to this field.",
     "clearSearch": "Clear search",
     "close": "Close",
     "comboBoxAddMore": "Add…",
@@ -689,6 +689,8 @@
       "vision": "The image-reading credential is referenced but not filled in yet."
     },
     "configIssuesTitle": "Configuration warnings",
+    "configIssueTextCap": "{{field}} holds {{len}} characters and the limit is {{max}}: everything past that is ignored.",
+    "configIssueTextCapNoField": "{{field}} holds {{len}} characters and the limit is {{max}}: everything past that is ignored. This note has no field in the console, so it can only be shortened through the API.",
     "configIssueUnresolved": {
       "embedding": "A knowledge base needs indexing, but the embedding credential no longer exists.",
       "guardrails": "The guardrails credential no longer exists, so messages go out unscreened.",

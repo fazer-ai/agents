@@ -1529,6 +1529,33 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     expect(parse(out).unavailableCalendars).toBeUndefined();
   });
 
+  test("batches run in bounded waves, never one socket per ten calendars at once", async () => {
+    // calendarIds is an arbitrary-length array that nothing validates, so an aggregate query is the
+    // one place a config array turns directly into concurrent outbound requests.
+    const ids = Array.from({ length: 200 }, (_, i) => `c${i}@x`);
+    let inFlight = 0;
+    let peak = 0;
+    const impl = (async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 0));
+      inFlight--;
+      return new Response(
+        JSON.stringify({
+          calendars: Object.fromEntries(ids.map((id) => [id, { busy: [] }])),
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    await toolFor(
+      "calendar_check_availability",
+      { ...CLINIC, calendarIds: ids, calendarLabels: {} },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE);
+    expect(peak).toBeLessThanOrEqual(5);
+    expect(peak).toBeGreaterThan(1);
+  });
+
   test('a 2xx whose body cannot be parsed is retriable, not "HTTP null"', async () => {
     const impl = (async () =>
       new Response("<html>proxy ate it</html>", {

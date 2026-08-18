@@ -271,6 +271,12 @@ const MAX_AVAILABILITY_RANGE_MS = 24 * 60 * 60 * 1000;
 // worst-case batch far under both. Because the ceiling is PER REQUEST, there is no global one to
 // enforce: a 60-calendar instance is six batches, not fifty covered and ten discarded.
 const FREEBUSY_BATCH_SIZE = 10;
+// How many of those batches may be in flight at once. `calendarIds` is an arbitrary-length array
+// that nothing validates, so an aggregate query over a large allowlist would otherwise open one
+// socket per ten calendars in a single burst and spend Google quota in one shot. Same position the
+// blocking fan-out already takes (MAX_BLOCKING_CALENDARS), applied to the operable side: an
+// oversized allowlist costs latency, which is the honest consequence, instead of being denied.
+const MAX_CONCURRENT_FREEBUSY = 5;
 // Ceiling on slot entries in one tool result. One entry per (time, calendar) multiplies with the
 // calendar count; this bounds it without collapsing the range (see computeAggregatedSlots). Sized so
 // a realistic clinic (a handful of professionals over a working day) is never truncated at all.
@@ -758,24 +764,29 @@ function buildCheckAvailabilityTool(
       // NOTE: allSettled, not all: gcalFetch THROWS on a timeout or a network error, and a single
       // rejection would discard every batch that answered fine. Non-2xx already degraded per batch;
       // a thrown one has to degrade the same way or the contract is a coin flip on failure mode.
-      const batchRes = await Promise.allSettled(
-        batches.map((ids) =>
-          gcalFetch(
-            "/freeBusy",
-            {
-              method: "POST",
-              token,
-              body: {
-                timeMin: input.timeMin,
-                timeMax: input.timeMax,
-                timeZone,
-                items: ids.map((id) => ({ id })),
+      // The waves are what bound concurrency (see MAX_CONCURRENT_FREEBUSY).
+      const batchRes: PromiseSettledResult<GcalResponse>[] = [];
+      for (let i = 0; i < batches.length; i += MAX_CONCURRENT_FREEBUSY) {
+        const wave = await Promise.allSettled(
+          batches.slice(i, i + MAX_CONCURRENT_FREEBUSY).map((ids) =>
+            gcalFetch(
+              "/freeBusy",
+              {
+                method: "POST",
+                token,
+                body: {
+                  timeMin: input.timeMin,
+                  timeMax: input.timeMax,
+                  timeZone,
+                  items: ids.map((id) => ({ id })),
+                },
               },
-            },
-            ctx,
+              ctx,
+            ),
           ),
-        ),
-      );
+        );
+        batchRes.push(...wave);
+      }
       // NOTE: A batch that failed contributes no entries, so its calendars fall through the same
       // "unreadable" path as a calendar Google refused individually. Only a total failure surfaces
       // the HTTP status, which keeps the single-batch case answering exactly as it always did.

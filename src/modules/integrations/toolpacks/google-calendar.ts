@@ -268,8 +268,8 @@ const MAX_AVAILABILITY_RANGE_MS = 24 * 60 * 60 * 1000;
 // `tooManyCalendarsRequested`), and ours is the response: gcalFetch truncates a body at
 // MAX_RESPONSE_CHARS BEFORE parsing it, so an oversized answer parses to null and every calendar in
 // it reads as unreadable, which would surface as "the whole clinic is unreachable". Ten keeps a
-// worst-case batch far under both. Because the ceiling is PER REQUEST, there is no global one to
-// enforce: a 60-calendar instance is six batches, not fifty covered and ten discarded.
+// worst-case batch far under both. Google's ceiling is PER REQUEST, so batching is what satisfies
+// it; what bounds the query as a whole is MAX_AGGREGATE_CALENDARS below.
 const FREEBUSY_BATCH_SIZE = 10;
 // How many calendars ONE aggregate query may cover. `calendarIds` is an arbitrary-length array that
 // nothing validates, and aggregation is where that array turns into outbound requests and into slot
@@ -761,8 +761,9 @@ function buildCheckAvailabilityTool(
       if (calendarIds.length > MAX_AGGREGATE_CALENDARS) {
         return `Too many calendars are configured to search at once (${calendarIds.length}; the limit is ${MAX_AGGREGATE_CALENDARS}). Pass calendarId to check one calendar, or reduce the calendars in the integration settings.`;
       }
-      // NOTE: freeBusy takes N calendars in ONE request and keys the answer by id, so covering the whole
-      // clinic costs the same round trip covering one professional always did.
+      // NOTE: freeBusy takes N calendars per request and keys the answer by id, so the whole clinic
+      // costs at most five requests (see FREEBUSY_BATCH_SIZE and MAX_AGGREGATE_CALENDARS), not one
+      // per professional the way the model had to do it before.
       const batches: string[][] = [];
       for (let i = 0; i < calendarIds.length; i += FREEBUSY_BATCH_SIZE) {
         batches.push(calendarIds.slice(i, i + FREEBUSY_BATCH_SIZE));

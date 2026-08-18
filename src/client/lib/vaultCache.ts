@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getActiveTenantId } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
-import { formatVaultRef } from "@/client/lib/credentialRef";
+import { canonicalVaultRef, formatVaultRef } from "@/client/lib/credentialRef";
 
 // Derived from the treaty response, never hand-mirrored (see docs/eden-treaty.md).
 export type VaultEntry = NonNullable<
@@ -35,8 +35,13 @@ function notifyChanged(): void {
 
 async function fetchVault(k: string): Promise<VaultEntry[]> {
   try {
-    const { data } = await api.api.v1.vault.get();
-    const entries = data ? [...data.entries] : [];
+    // The treaty reports a non-2xx by resolving with `data: null`, not by rejecting, so a 500 and an
+    // empty vault arrive in the same shape. Callers already treat a rejection as "unknown" (both
+    // catch it), and one of them turns an empty list into "no credential resolves", so a failed
+    // load must not pass for a successful one.
+    const { data, error } = await api.api.v1.vault.get();
+    if (error || !data) throw new Error("vault load failed");
+    const entries = [...data.entries];
     cache.set(k, { entries, at: Date.now() });
     return entries;
   } finally {
@@ -58,6 +63,8 @@ export function loadVault(): Promise<VaultEntry[]> {
 }
 
 // Force a refetch (after a create/update) and notify listeners once the fresh list is in the cache.
+// Rejects when the refetch fails, since `loadVault` now does; the fire-and-forget callers below
+// catch it, and the listeners are deliberately NOT notified, because there is no fresh list to read.
 export async function refreshVault(): Promise<VaultEntry[]> {
   const k = tenantKey();
   cache.delete(k);
@@ -105,7 +112,8 @@ export function useVaultBaseUrls(): (ref: string) => string | null {
   return useCallback(
     (ref: string) =>
       (ref
-        ? entries.find((e) => formatVaultRef(e.id) === ref)?.baseUrl
+        ? entries.find((e) => formatVaultRef(e.id) === canonicalVaultRef(ref))
+            ?.baseUrl
         : null) ?? null,
     [entries],
   );

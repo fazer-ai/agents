@@ -564,3 +564,56 @@ describe("computeConfigIssues — a credential whose vault entry is gone", () =>
     ).toEqual([{ key: "embedding", unresolved: true }]);
   });
 });
+
+// `vault:007` and `vault:7` are the same entry: the runtime parses the id with BigInt, so a
+// noncanonical spelling resolves fine. It reaches the field the way every unvalidated ref does,
+// through `PATCH /v1/agents/:id`, which stores what it is handed. Comparing raw strings against a
+// list that only ever holds the canonical spelling would call a working credential deleted, which
+// is a worse failure than the silence this whole change replaced.
+describe("computeConfigIssues — noncanonical ref spellings", () => {
+  test("a padded id resolves against the canonical list", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        modelCredentialRef: "vault:0001",
+        knownRefs: new Set(["vault:1"]),
+      }),
+    ).toEqual([]);
+  });
+
+  test("a padded id still reports pending, with the canonical vaultId", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        modelCredentialRef: "vault:0001",
+        knownRefs: new Set(["vault:1"]),
+        pendingRefs: new Set(["vault:1"]),
+      }),
+    ).toEqual([
+      {
+        key: "model",
+        tab: "general",
+        sectionId: "general-model",
+        pending: true,
+        vaultId: "1",
+      },
+    ]);
+  });
+
+  test("a ref whose id is not a number is unresolvable, like a name", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        modelCredentialRef: "vault:abc",
+        knownRefs: new Set(["vault:1"]),
+      }),
+    ).toEqual([
+      {
+        key: "model",
+        tab: "general",
+        sectionId: "general-model",
+        unresolved: true,
+      },
+    ]);
+  });
+});

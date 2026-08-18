@@ -15,6 +15,9 @@ import {
 // active tenant with the real setActiveTenantId (localStorage, provided by happy-dom).
 const realFetch = globalThis.fetch;
 let getCalls = 0;
+// Flips one response to a server error, to separate "the vault is empty" from "the vault did not
+// load" — the treaty reports both with an empty `data`.
+let failNext = false;
 let entriesToReturn: Array<{
   id: string;
   name: string;
@@ -27,12 +30,20 @@ beforeEach(() => {
   invalidateVault();
   setActiveTenantId(null);
   getCalls = 0;
+  failNext = false;
   entriesToReturn = [{ id: "1", name: "openai", kind: "openai" }];
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("/api/v1/vault")) {
       getCalls++;
       await new Promise((r) => setTimeout(r, 5));
+      if (failNext) {
+        failNext = false;
+        return new Response(JSON.stringify({ error: "boom" }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
       return new Response(JSON.stringify({ entries: entriesToReturn }), {
         status: 200,
         headers: { "content-type": "application/json" },
@@ -202,6 +213,49 @@ describe("useVaultRefs", () => {
     await waitFor(() =>
       expect(result.current.known?.has("vault:9")).toBe(false),
     );
+    cleanup();
+  });
+});
+
+// A vault that failed to load is UNKNOWN, not empty. The treaty resolves a non-2xx with `data:
+// null` instead of rejecting, so without an explicit check the failure would arrive as an empty
+// list — and an empty list means "no credential resolves", which would flag every field on the page
+// as deleted on a transient 500.
+describe("a failed vault load", () => {
+  test("rejects instead of resolving to an empty list", async () => {
+    failNext = true;
+    expect(loadVault()).rejects.toThrow();
+  });
+
+  test("leaves useVaultRefs at not-loaded", async () => {
+    failNext = true;
+    const { result } = renderHook(() => useVaultRefs());
+    await waitFor(() => expect(getCalls).toBe(1));
+    expect(result.current.known).toBeNull();
+    cleanup();
+  });
+});
+
+// The same ref can be written more than one way and mean the same entry, and the endpoint lookup is
+// judged by the speech rewrite: a padded id reading as "no endpoint" would declare a runnable
+// rewrite dead.
+describe("useVaultBaseUrls with a noncanonical ref", () => {
+  test("resolves a padded id to the same entry", async () => {
+    entriesToReturn = [
+      {
+        id: "7",
+        name: "llama",
+        kind: "openai",
+        baseUrl: "http://llama:8080/v1",
+      },
+    ];
+    const { result } = renderHook(() => useVaultBaseUrls());
+    await waitFor(() =>
+      expect(result.current("vault:7")).toBe("http://llama:8080/v1"),
+    );
+    expect(result.current("vault:0007")).toBe("http://llama:8080/v1");
+    // A name is not a ref: no id can be read out of it, and no resolver matches it.
+    expect(result.current("llama")).toBeNull();
     cleanup();
   });
 });

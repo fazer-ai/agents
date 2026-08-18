@@ -1,3 +1,7 @@
+import {
+  canonicalVaultRef,
+  VAULT_REF_PREFIX,
+} from "@/client/lib/credentialRef";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 
@@ -91,8 +95,6 @@ export interface ConfigHealthInput {
   redirectWidgetInboxId?: number | null;
 }
 
-const VAULT_REF_PREFIX = "vault:";
-
 // The three ways one credentialed feature can be unrunnable. Every credential ref on the agent goes
 // through this one function, all six of them: a rule that reaches half its fields is worse than no
 // rule, because the half it misses now reads as checked.
@@ -119,10 +121,19 @@ function credIssue(
 ): CredVerdict | null {
   if (!enabled) return null;
   if (!ref) return { kind: "missing" };
-  if (pendingRefs?.has(ref)) {
-    return { kind: "pending", vaultId: ref.slice(VAULT_REF_PREFIX.length) };
+  const canonical = canonicalVaultRef(ref);
+  if (canonical !== null && pendingRefs?.has(canonical)) {
+    return {
+      kind: "pending",
+      vaultId: canonical.slice(VAULT_REF_PREFIX.length),
+    };
   }
-  if (knownRefs && !knownRefs.has(ref)) return { kind: "unresolved" };
+  // A ref no id can be read out of is unresolvable on its own terms, but it is still only REPORTED
+  // once the vault has answered: one panel that stays quiet until it knows is easier to trust than
+  // one that is right about a rare case and wrong about every field for a paint.
+  if (knownRefs && (canonical === null || !knownRefs.has(canonical))) {
+    return { kind: "unresolved" };
+  }
   return null;
 }
 

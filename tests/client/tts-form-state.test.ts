@@ -108,6 +108,33 @@ describe("voice knobs are stored at the value that will actually be used", () =>
   });
 });
 
+// The other half of the same rule, and the only half the editor cannot fix by saving: REST and
+// import store the raw number, so the form has to show what synthesis will ACTUALLY do with it.
+describe("voice knobs are displayed at the value that will actually be used", () => {
+  const form = (over: Record<string, unknown>) =>
+    readTtsFormState({ mode: "mirror", ...over }, true);
+
+  test("a bag written out of range is displayed clamped", () => {
+    expect(form({ speed: 9, stability: -3 })).toMatchObject({
+      speed: "4",
+      stability: "0",
+    });
+  });
+
+  test("and one written in range is displayed as it is", () => {
+    expect(form({ speed: 1.15, style: 0.2 })).toMatchObject({
+      speed: "1.15",
+      style: "0.2",
+    });
+  });
+
+  // A knob nobody set is not the bottom of the band: it stays blank, which is what hands the
+  // decision back to the voice.
+  test("an absent knob stays blank", () => {
+    expect(form({})).toMatchObject({ speed: "", stability: "", style: "" });
+  });
+});
+
 describe("switching the rewrite provider", () => {
   // The base URL is the one that bites: its field only renders for openai-compatible, so a leftover
   // value keeps steering the new provider's client at an endpoint the operator can no longer see.

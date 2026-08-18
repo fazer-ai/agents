@@ -3,7 +3,7 @@ import {
   type NormalizeModelResolution,
   resolveNormalizeModel,
 } from "@/modules/tts/normalize-model";
-import { clampVoiceSetting } from "@/modules/tts/settings";
+import { clampVoiceSetting, readVoiceSettings } from "@/modules/tts/settings";
 
 // The agent editor's TTS block, as a pair of pure functions: stored settings → form state → stored
 // settings. It lives outside the page because the Behavior save REPLACES the whole `tts` block with
@@ -53,6 +53,11 @@ export function readTtsFormState(
   normalizeDefault: boolean,
 ): TtsFormState {
   const tt = (block ?? {}) as Record<string, unknown>;
+  // The delivery knobs are hydrated through the RUNTIME's reader, not off the raw bag: REST and
+  // import store whatever they are handed, and synthesis clamps it on the way out. Reading the raw
+  // number would put a 9 on screen for a voice that speaks at 4, with nothing admitting the
+  // difference, and it would stay there, since nothing rewrites the bag until the tab is saved.
+  const voice = readVoiceSettings(tt);
   return {
     mode: str(tt.mode) || "never",
     provider: str(tt.provider) || "openai",
@@ -66,11 +71,11 @@ export function readTtsFormState(
     normalizeModel: str(tt.normalizeModel),
     normalizeCredentialRef: str(tt.normalizeCredentialRef),
     normalizeBaseURL: str(tt.normalizeBaseURL),
-    stability: num(tt.stability),
-    similarityBoost: num(tt.similarityBoost),
-    style: num(tt.style),
-    speed: num(tt.speed),
-    speakerBoost: typeof tt.speakerBoost === "boolean" ? tt.speakerBoost : null,
+    stability: num(voice.stability),
+    similarityBoost: num(voice.similarityBoost),
+    style: num(voice.style),
+    speed: num(voice.speed),
+    speakerBoost: voice.speakerBoost ?? null,
   };
 }
 
@@ -88,9 +93,9 @@ export function ttsSettingsFrom(tts: TtsFormState): Record<string, unknown> {
     normalizeCredentialRef: tts.normalizeCredentialRef || null,
     normalizeBaseURL: tts.normalizeBaseURL.trim() || null,
     // NOTE: blank clears the knob (null), so the operator can hand a field back to the provider
-    // after having set it. The clamp is the READER's, applied here too: the save persists what the
-    // form holds, so storing the raw number would leave the editor showing a value synthesis never
-    // uses — and the next load would show it again, since the form reads the stored bag directly.
+    // after having set it. The clamp is the READER's, applied here too because the save persists
+    // what the form holds, and what the form holds is whatever was TYPED: without this the bag
+    // would carry a number synthesis never uses, out to every other reader of it (MCP, export).
     stability: clampVoiceSetting("stability", numOrNull(tts.stability)),
     similarityBoost: clampVoiceSetting(
       "similarityBoost",

@@ -217,15 +217,17 @@ describe("computeAvailableSlots", () => {
 describe("computeAggregatedSlots", () => {
   const ANA = { calendarId: "ana@x", calendarLabel: "Dra. Ana" };
   const PAULO = { calendarId: "paulo@x", calendarLabel: "Dr. Paulo" };
-  const agg = (over: Record<string, unknown>) =>
+  const aggFull = (over: Record<string, unknown>) =>
     computeAggregatedSlots({
       ...base,
       timeMin: iso("09:00"),
       timeMax: iso("11:00"),
       scheduleWindows: officeHours,
       sources: [],
+      maxSlots: 1000,
       ...over,
     });
+  const agg = (over: Record<string, unknown>) => aggFull(over).slots;
 
   test("a slot busy on one calendar survives on the other, tagged with its own", () => {
     const slots = agg({
@@ -292,5 +294,46 @@ describe("computeAggregatedSlots", () => {
     });
     expect(slots.length).toBeGreaterThan(0);
     expect(slots.every((s) => s.calendarId === "paulo@x")).toBe(true);
+  });
+
+  test("the ceiling drops WHOLE start times and says where it stopped", () => {
+    // Trimming which calendars a time offers would tell the customer a professional is busy when they
+    // are free, so the unit dropped is the time, never part of one.
+    const r = aggFull({
+      sources: [
+        { ...ANA, busy: [] },
+        { ...PAULO, busy: [] },
+      ],
+      maxSlots: 3,
+    });
+    expect(r.slots.map((s) => `${localHM(s.start)}/${s.calendarId}`)).toEqual([
+      "09:00/ana@x",
+      "09:00/paulo@x",
+    ]);
+    expect(localHM(r.coveredUntil as string)).toBe("09:30");
+  });
+
+  test("a range that fits reports no continuation point", () => {
+    const r = aggFull({
+      sources: [
+        { ...ANA, busy: [] },
+        { ...PAULO, busy: [] },
+      ],
+    });
+    expect(r.coveredUntil).toBeUndefined();
+  });
+
+  test("the first start time is kept even when it alone exceeds the ceiling", () => {
+    // Returning nothing because one instant had many free calendars is a worse answer than a
+    // slightly oversized one.
+    const r = aggFull({
+      sources: [
+        { ...ANA, busy: [] },
+        { ...PAULO, busy: [] },
+      ],
+      maxSlots: 1,
+    });
+    expect(r.slots).toHaveLength(2);
+    expect(localHM(r.coveredUntil as string)).toBe("09:30");
   });
 });

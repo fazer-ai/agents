@@ -1458,10 +1458,10 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     );
   });
 
-  test("beyond Google's 50-calendar freeBusy ceiling the overflow is named, not silently dropped", async () => {
-    // freebusy.query caps calendarExpansionMax at 50 and answers tooManyCalendarsRequested past it.
-    // Before this feature the allowlist size never reached freeBusy (availability asked ONE calendar),
-    // so a 60-calendar instance was fine; sending all 60 is a hazard this change introduces.
+  test("the query is BATCHED, and past Google's 50-calendar ceiling the overflow is named", async () => {
+    // Two separate limits. freebusy.query caps calendarExpansionMax at 50, which is Google's. And
+    // gcalFetch truncates a body at MAX_RESPONSE_CHARS BEFORE parsing, so one oversized answer parses
+    // to null and would read as "the whole clinic is unreachable" — hence batches, which is ours.
     const many = Array.from({ length: 60 }, (_, i) => `c${i}@x`);
     const { impl, calls } = stubFetch(200, {
       calendars: Object.fromEntries(
@@ -1473,11 +1473,47 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
       { ...CLINIC, calendarIds: many, calendarLabels: {} },
       baseCtx({ fetchImpl: impl }),
     )?.invoke(RANGE)) as string;
-    const body = bodyOf(calls[0] as { init: RequestInit }) as {
-      items: { id: string }[];
-    };
-    expect(body.items).toHaveLength(50);
+    const asked = calls.flatMap(
+      (c) => (bodyOf(c) as { items: { id: string }[] }).items,
+    );
+    expect(calls).toHaveLength(5);
+    for (const c of calls) {
+      expect(
+        (bodyOf(c) as { items: unknown[] }).items.length,
+      ).toBeLessThanOrEqual(10);
+    }
+    expect(asked.map((i) => i.id)).toEqual(many.slice(0, 50));
     expect(parse(out).unavailableCalendars).toEqual(many.slice(50));
+  });
+
+  test("one failed batch costs only its own calendars, not the whole answer", async () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `c${i}@x`);
+    let n = 0;
+    const impl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const first = n++ === 0;
+      return new Response(
+        JSON.stringify(
+          first
+            ? {
+                calendars: Object.fromEntries(
+                  ids.slice(0, 10).map((id) => [id, { busy: [] }]),
+                ),
+              }
+            : {},
+        ),
+        { status: first ? 200 : 500 },
+      );
+    }) as unknown as typeof fetch;
+    const out = (await toolFor(
+      "calendar_check_availability",
+      { ...CLINIC, calendarIds: ids, calendarLabels: {} },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    const parsed = parse(out);
+    expect(parsed.unavailableCalendars).toEqual(ids.slice(10));
+    expect(
+      parsed.slots.every((s) => ids.slice(0, 10).includes(s.calendarId)),
+    ).toBe(true);
   });
 
   test("a calendar listed as BOTH operable and blocking still blocks its siblings", async () => {
@@ -1509,6 +1545,58 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     const nine = parse(out).slots.filter((s) => localHM(s.start) === "09:00");
     // Blocked for Paulo (the sibling), and NOT self-blocked for Ana: her own freeBusy says free.
     expect(nine.map((s) => s.calendarId)).toEqual([ANA]);
+  });
+
+  test("a blocker whose only sibling went unreadable is not read at all", async () => {
+    // The blocking read is decided from the calendars that ANSWERED, not the ones asked for. A
+    // doubly-listed calendar applies to its siblings only, so with no readable sibling left the
+    // request is pure risk: an error or a truncated page on it would refuse availability that is fine.
+    const { impl, calls } = routedFetch([
+      {
+        match: "/freeBusy",
+        json: {
+          calendars: {
+            [ANA]: { busy: [] },
+            [PAULO]: { errors: [{ domain: "global", reason: "notFound" }] },
+          },
+        },
+      },
+    ]);
+    const out = (await toolFor(
+      "calendar_check_availability",
+      { ...CLINIC, blockingCalendarIds: [ANA] },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(calls).toHaveLength(1);
+    expect(parse(out).slots.length).toBeGreaterThan(0);
+  });
+
+  test("an oversized answer stops at a whole start time and says where to continue", async () => {
+    // 50 calendars over a working day is far past what one tool result can carry. The range must not
+    // be collapsed silently: the caller is told the time to resume from.
+    const ids = Array.from({ length: 50 }, (_, i) => `c${i}@x`);
+    const { impl } = stubFetch(200, {
+      calendars: Object.fromEntries(ids.map((id) => [id, { busy: [] }])),
+    });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      { ...CLINIC, calendarIds: ids, calendarLabels: {} },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      timeMin: "2099-06-22T09:00:00-03:00",
+      timeMax: "2099-06-22T18:00:00-03:00",
+    })) as string;
+    const parsed = parse(out) as {
+      slots: AggSlot[];
+      coveredUntil?: string;
+    };
+    expect(parsed.slots.length).toBeLessThanOrEqual(250);
+    expect(parsed.coveredUntil).toBeTruthy();
+    // Whole start times only: every calendar that answered is present at each time returned.
+    const perTime = new Map<string, number>();
+    for (const s of parsed.slots)
+      perTime.set(s.start, (perTime.get(s.start) ?? 0) + 1);
+    expect([...new Set(perTime.values())]).toEqual([50]);
   });
 
   test("when NO calendar could be read it refuses instead of reporting nothing free", async () => {

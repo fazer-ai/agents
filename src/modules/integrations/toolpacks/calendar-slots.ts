@@ -122,6 +122,15 @@ export interface AggregatedSlot extends Slot {
 
 export interface AggregateInput extends Omit<SlotInput, "busy"> {
   sources: CalendarSource[];
+  // Ceiling on the number of slot entries returned. See the truncation rule below.
+  maxSlots: number;
+}
+
+export interface AggregateResult {
+  slots: AggregatedSlot[];
+  // The first start time the search did NOT cover, when the ceiling cut the list short. Absent when
+  // the whole range fits. Feed it back as the next `timeMin` to continue.
+  coveredUntil?: string;
 }
 
 // Availability across several calendars at once (issue #100): a clinic with one calendar per
@@ -137,15 +146,20 @@ export interface AggregateInput extends Omit<SlotInput, "busy"> {
 // at 09:00) keep the operator's configured calendar order, so the same query answers the same way
 // twice and the operator can predict who gets offered first.
 //
-// NOTE: no bound on the result. An earlier revision kept each calendar's first N starts to hold the
-// response down, which quietly turned "all bookable slots" into "the first couple of hours": at the
-// default 15-minute grain, eight starts is under two hours, so an afternoon request came back as
-// unavailable while the afternoon was in fact free. The range is already bounded to 24h and by
-// business hours, and any bound that survives has to preserve the whole range, not its head.
-export function computeAggregatedSlots(
-  input: AggregateInput,
-): AggregatedSlot[] {
-  const { sources, ...slotInput } = input;
+// TRUNCATION, and why it is shaped this way. One entry per (time, calendar) multiplies with the
+// calendar count, and the raw product is large enough to matter: 50 calendars over a 24h range at
+// the 5-minute floor is 14,400 entries, which does not belong in a tool result. Two earlier attempts
+// were wrong in instructive ways. Returning everything blows the model's context. Keeping each
+// calendar's first N starts holds the size down but collapses the RANGE, so an afternoon request
+// answers "unavailable" while the afternoon is free.
+//
+// So the ceiling is on the total, it drops WHOLE start times rather than trimming the calendars
+// offered at a time (a half-listed time would tell the customer a professional is busy when they are
+// free), and where it stopped is REPORTED, so the caller can continue instead of silently believing
+// it saw the whole day. The first time is always kept: an empty list because one instant had many
+// free calendars would be a worse answer than a slightly oversized one.
+export function computeAggregatedSlots(input: AggregateInput): AggregateResult {
+  const { sources, maxSlots, ...slotInput } = input;
   const decorated: Array<{ order: number; at: number; slot: AggregatedSlot }> =
     [];
   sources.forEach((src, order) => {
@@ -162,5 +176,22 @@ export function computeAggregatedSlots(
     }
   });
   decorated.sort((a, b) => a.at - b.at || a.order - b.order);
-  return decorated.map((d) => d.slot);
+
+  const slots: AggregatedSlot[] = [];
+  let i = 0;
+  while (i < decorated.length) {
+    const at = (decorated[i] as (typeof decorated)[number]).at;
+    let j = i;
+    while (j < decorated.length && decorated[j]?.at === at) j++;
+    const group = decorated.slice(i, j);
+    if (slots.length > 0 && slots.length + group.length > maxSlots) {
+      return {
+        slots,
+        coveredUntil: (group[0] as (typeof decorated)[number]).slot.start,
+      };
+    }
+    for (const d of group) slots.push(d.slot);
+    i = j;
+  }
+  return { slots };
 }

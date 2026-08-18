@@ -81,6 +81,9 @@ export interface PlaygroundDeps {
   makeModel?: (cfg: ResolvedModelConfig) => BaseChatModel;
   checkpointer?: BaseCheckpointSaver;
   mcp?: McpLoadDeps;
+  // The voice provider's fetch, injectable exactly as RuntimeDeps.ttsFetch is on the inbox path:
+  // without this seam the playground's audio reply could only ever be exercised against the network.
+  ttsFetch?: typeof fetch;
 }
 
 export interface PlaygroundTurnParams {
@@ -510,6 +513,7 @@ export async function runPlaygroundTurn(
         // playground exists to let them test. Its usage is tagged source=playground (out of the
         // dashboard) and its flow lines never page an alert channel.
         deps: {
+          fetchImpl: params.deps?.ttsFetch,
           normalizeSpeech: buildSpeechNormalizer(loaded, {
             makeModel: params.deps?.makeModel,
             callbacks: {

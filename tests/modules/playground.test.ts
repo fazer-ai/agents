@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -13,6 +14,7 @@ import {
   runPlaygroundTurn,
   toPlaygroundInvokeError,
 } from "@/modules/playground/service";
+import { UsageReportingModel } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -39,6 +41,7 @@ const suDb = su as PrismaClient;
 
 let tenantId = 0n;
 let agentOk = 0n;
+let agentAudio = 0n;
 let agentNoKey = 0n;
 let agentDisabled = 0n;
 let agentTools = 0n;
@@ -69,6 +72,31 @@ describe.skipIf(!dbUp)("playground", () => {
       })
     ).id;
     llmRef = `vault:${llmKeyId}`;
+    // Audio replies on: a voice-provider key of its own, and the speech rewrite left on (the default).
+    const ttsKeyId = (
+      await suDb.vaultEntry.create({
+        data: { tenantId, name: "tts-key", secret: encryptJson("sk-tts") },
+        select: { id: true },
+      })
+    ).id;
+    agentAudio = (
+      await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Audio",
+          systemPrompt: "x",
+          modelConfig: mc(`vault:${llmKeyId}`),
+          settings: {
+            tts: {
+              mode: "never",
+              provider: "openai",
+              credentialRef: `vault:${ttsKeyId}`,
+              normalize: true,
+            },
+          },
+        },
+      })
+    ).id;
     agentOk = (
       await suDb.agent.create({
         data: {
@@ -155,6 +183,7 @@ describe.skipIf(!dbUp)("playground", () => {
   afterAll(async () => {
     if (tenantId) {
       for (const table of [
+        "playground_media",
         "llm_usage",
         "agent_tool_selections",
         "tool_definitions",
@@ -186,6 +215,54 @@ describe.skipIf(!dbUp)("playground", () => {
     expect(r.threadId.startsWith(`${tenantId}:playground:${agentOk}:`)).toBe(
       true,
     );
+  });
+
+  // The playground synthesized WITHOUT the speech rewrite until #105, so the operator heard a
+  // different rendering than the customer. Observable effects, in the order the operator meets them:
+  // the voice provider is handed the REWRITTEN text, the audio is saved against the turn, and the
+  // rewrite is billed as its own row tagged playground (out of the dashboard, never an alert).
+  test("an audio reply is rewritten for speech, saved, and billed as playground usage", async () => {
+    const spoken: string[] = [];
+    const ttsFetch = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { input?: string };
+      if (typeof body.input === "string") spoken.push(body.input);
+      return new Response(new ArrayBuffer(16), {
+        status: 200,
+        headers: { "content-type": "audio/ogg" },
+      });
+    }) as unknown as typeof fetch;
+    const rewritten = "Oi! Sou o agente de teste, falado.";
+    const model = new UsageReportingModel([REPLY, rewritten]);
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentAudio,
+      message: "oi",
+      forceAudio: true,
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        checkpointer: new MemorySaver(),
+        ttsFetch,
+      },
+    });
+    expect(r.reply).toBe(REPLY);
+    expect(spoken).toEqual([rewritten]);
+    expect(r.ttsMediaId).toBeDefined();
+    const media = await suDb.playgroundMedia.findFirst({
+      where: { tenantId, threadId: r.threadId, kind: "tts_audio" },
+      select: { mime: true },
+    });
+    // The container is the service's decision (channel format), not the fake provider's header.
+    expect(media?.mime).toMatch(/^audio\//);
+    const usage = await suDb.llmUsage.findMany({
+      where: { tenantId, threadId: r.threadId },
+      select: { node: true, source: true },
+      orderBy: { id: "asc" },
+    });
+    expect(usage).toEqual([
+      { node: "agent", source: "playground" },
+      { node: "tts_normalize", source: "playground" },
+    ]);
   });
 
   test("a forged threadId (real conversation shape) is rejected → fresh thread", async () => {

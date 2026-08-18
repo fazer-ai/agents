@@ -713,3 +713,48 @@ describe("computeConfigIssues — the guardrails credential", () => {
     ).toEqual([{ key: "guardrails", ...at, unresolved: true }]);
   });
 });
+
+// Found by sweeping the panel's own inputs rather than by a review round: the rewrite's endpoint can
+// live on its CREDENTIAL, and the browser learns credential endpoints from the same vault list that
+// arrives a request after the first paint. Judged before that answer exists, an endpoint that is
+// merely unread reads as absent, and the panel announces that a runnable rewrite cannot run — the
+// same false alarm the null-until-loaded rule exists to prevent, arriving through the endpoint
+// instead of through the ref.
+describe("computeConfigIssues — the rewrite endpoint while the vault is unknown", () => {
+  const compatRewrite = {
+    ...base,
+    ttsMode: "mirror",
+    ttsCredentialRef: "vault:2",
+    ttsNormalize: true,
+    ttsNormalizeProvider: "openai-compatible",
+    ttsNormalizeCredentialRef: "vault:3",
+    ttsNormalizeBaseURL: "",
+  };
+
+  test("holds the endpoint refusal while the vault has not answered", () => {
+    expect(computeConfigIssues({ ...compatRewrite, knownRefs: null })).toEqual(
+      [],
+    );
+  });
+
+  test("raises it once the vault has answered and the endpoint is still nowhere", () => {
+    expect(
+      computeConfigIssues({
+        ...compatRewrite,
+        knownRefs: new Set(["vault:1", "vault:2", "vault:3"]),
+      }),
+    ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+  });
+
+  // Only the endpoint answer comes from the vault. A bag naming a provider that does not exist is
+  // wrong on its face, and waiting on a list that cannot change that verdict would just delay it.
+  test("still refuses a bag the vault could not rescue", () => {
+    expect(
+      computeConfigIssues({
+        ...compatRewrite,
+        ttsNormalizeProvider: "not-a-provider",
+        knownRefs: null,
+      }),
+    ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+  });
+});

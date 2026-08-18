@@ -233,9 +233,20 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     tab: "behavior",
     sectionId: "tts",
   };
-  if (normalizeResolution !== null && !normalizeResolution.runnable) {
-    // The refusal is a verdict on the BAG, so it holds whatever the vault says and it is what the
-    // operator has to act on first. One issue, not two.
+  // One of the resolver's refusals is not a verdict on the bag alone: an endpoint can live on the
+  // rewrite's CREDENTIAL, and credential endpoints are read from the same vault list that arrives a
+  // request after the first paint. Until it does, an endpoint that is merely unread looks absent,
+  // and announcing that a runnable rewrite cannot run is the false alarm the null-until-loaded rule
+  // exists to prevent. Every other refusal is decided by the bag itself, so waiting on a list that
+  // cannot change the answer would only delay it.
+  const endpointsKnown = known !== null;
+  const refusalHolds =
+    normalizeResolution !== null &&
+    !normalizeResolution.runnable &&
+    (endpointsKnown || normalizeResolution.reason !== "endpoint_unusable");
+  if (refusalHolds) {
+    // The refusal is a verdict on the BAG, so it holds whatever the vault says about the credential
+    // itself, and it is what the operator has to act on first. One issue, not two.
     issues.push(normalizeIssue);
   } else {
     push(

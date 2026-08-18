@@ -155,7 +155,14 @@ export function useVaultRefs(): {
     void load();
   }, [load]);
   useEffect(() => {
-    const onChanged = () => void load();
+    // The announcement means the vault CHANGED, so the list in hand is now known to predate it —
+    // and whoever changed it has usually just created the credential a field points at. Dropping to
+    // not-loaded for the length of the re-read is what keeps that credential from reading as
+    // deleted; every mutation in the app comes through here, so this one line covers all of them.
+    const onChanged = () => {
+      setEntries(null);
+      void load();
+    };
     window.addEventListener(VAULT_CHANGED_EVENT, onChanged);
     return () => window.removeEventListener(VAULT_CHANGED_EVENT, onChanged);
   }, [load]);

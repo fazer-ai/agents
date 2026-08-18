@@ -306,3 +306,35 @@ describe("a failed refreshVault", () => {
     cleanup();
   });
 });
+
+// Every vault mutation in the app funnels through `invalidateVault` or `refreshVault`, and both
+// announce it. From the announcement until the replacement list lands, the list in hand is known to
+// predate the change — and the caller has usually just created the credential a field now points
+// at. Answering "the vault does not hold this ref" from that list is how a credential created a
+// second ago reads as deleted, so the answer is withheld for the length of the request.
+describe("useVaultRefs across a vault change", () => {
+  test("stops answering from the pre-change list until the new one lands", async () => {
+    entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
+    const { result } = renderHook(() => useVaultRefs());
+    await waitFor(() =>
+      expect(result.current.known?.has("vault:3")).toBe(true),
+    );
+    // What a create does: the entry exists in the vault, the field already points at it, and the
+    // list in hand is the one from before.
+    entriesToReturn = [
+      { id: "3", name: "openai", kind: "openai" },
+      { id: "9", name: "just-created", kind: "openai" },
+    ];
+    // The real path every mutation takes: the cache is dropped and the listeners are told, in that
+    // order (VaultPanel's delete and the editor's credential-fill modal both call exactly this).
+    act(() => {
+      invalidateVault();
+    });
+    // Mid-flight: no claim either way about vault:9.
+    expect(result.current.known).toBeNull();
+    await waitFor(() =>
+      expect(result.current.known?.has("vault:9")).toBe(true),
+    );
+    cleanup();
+  });
+});

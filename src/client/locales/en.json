@@ -565,9 +565,9 @@
     "back": "Back to agents",
     "backToConversation": "Back to the conversation",
     "baseURL": "Base URL",
-    "baseURLNotSentByProvider": "This provider does not send a base URL: the request would go to its own endpoint instead. Pick a credential without one, or use an OpenAI-compatible provider.",
     "baseURLFromCredential": "Defined by the selected credential.",
     "baseURLHint": "Required for OpenAI-compatible providers.",
+    "baseURLNotSentByProvider": "This provider does not send a base URL: the request would go to its own endpoint instead. Pick a credential without one, or use an OpenAI-compatible provider.",
     "businessHours": "Business hours",
     "capabilities": {
       "agent": "Agent",

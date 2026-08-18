@@ -238,7 +238,7 @@ describe("resolveNormalizeModel", () => {
         model: "llama-3.1",
         baseURL: "http://llama:8080/v1",
       },
-      want: { runnable: false, reason: "endpoint_missing" },
+      want: { runnable: false, reason: "endpoint_unusable" },
     },
     {
       // And once it brings one, the pair is complete: vendor, host and key all stored together, so
@@ -347,11 +347,11 @@ describe("resolveNormalizeModel", () => {
     {
       name: "an openai-compatible endpoint with no URL anywhere is refused, not built",
       tts: { normalize: true, normalizeProvider: "openai-compatible" },
-      want: { runnable: false, reason: "endpoint_missing" },
+      want: { runnable: false, reason: "endpoint_unusable" },
     },
     {
       // Inheriting from an openai-compatible AGENT: the endpoint comes with the provider, so this is
-      // the ordinary same-vendor case and not an endpoint_missing.
+      // the ordinary same-vendor case and not an endpoint_unusable.
       name: "an openai-compatible agent lends its endpoint to the unchanged provider",
       tts: { normalize: true, normalizeProvider: "openai-compatible" },
       agent: {
@@ -445,6 +445,55 @@ describe("resolveNormalizeModel", () => {
       resolveNormalizeModel(tts, AGENT, {
         isUsableBaseURL: (raw) => /^https?:\/\//.test(raw),
       }),
-    ).toMatchObject({ runnable: false, reason: "endpoint_missing" });
+    ).toMatchObject({ runnable: false, reason: "endpoint_unusable" });
+  });
+
+  // And that check governs every provider that carries an endpoint, not only the one that REQUIRES
+  // it. openrouter takes a base URL, so a malformed one is storable, and the strict reading is the
+  // editor's: judged nowhere else, the save goes through and every rewrite dies on the wire.
+  test("an undialable endpoint is refused on any provider that carries one", () => {
+    const tts = readTtsConfig({
+      tts: {
+        normalize: true,
+        normalizeProvider: "openrouter",
+        normalizeCredentialRef: "vault:9",
+        normalizeBaseURL: "llama:8080",
+      },
+    });
+    expect(
+      resolveNormalizeModel(tts, AGENT, {
+        isUsableBaseURL: (raw) => /^https?:\/\//.test(raw),
+      }),
+    ).toMatchObject({ runnable: false, reason: "endpoint_unusable" });
+    // The same configuration with a dialable one runs, so the refusal is about the URL and not
+    // about openrouter having brought its own endpoint at all.
+    expect(
+      resolveNormalizeModel(
+        readTtsConfig({
+          tts: {
+            normalize: true,
+            normalizeProvider: "openrouter",
+            normalizeCredentialRef: "vault:9",
+            normalizeBaseURL: "https://openrouter.example.com/api/v1",
+          },
+        }),
+        AGENT,
+        { isUsableBaseURL: (raw) => /^https?:\/\//.test(raw) },
+      ),
+    ).toMatchObject({ runnable: true, credential: "own" });
+  });
+
+  // An endpoint the rewrite INHERITED is not judged by that check, on a provider that does not
+  // require one: the rewrite lands wherever the agent's own model lands, which is the invariant the
+  // whole resolution exists to keep. Judging it would take the rewrite away from every install
+  // whose agent carries a URL its provider never dials.
+  test("an inherited endpoint is not judged on a provider that does not require one", () => {
+    expect(
+      resolveNormalizeModel(
+        readTtsConfig({ tts: { normalize: true, normalizeProvider: null } }),
+        { provider: "openrouter", model: "x/y", baseURL: "llama:8080" },
+        { isUsableBaseURL: (raw) => /^https?:\/\//.test(raw) },
+      ),
+    ).toMatchObject({ runnable: true, credential: "agent" });
   });
 });

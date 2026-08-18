@@ -1590,19 +1590,6 @@ function AgentEditor() {
   // Per-tab discard: restore a single section from the last synced agent. No
   // syncSeq bump — only the reverted section returns to baseline, the other
   // tabs keep their own pending state.
-  // Each credential picker keeps two values OUTSIDE the form — the selected entry's own base URL,
-  // and the endpoint the operator had typed before it was selected — so it can hand the typed one
-  // back when a credential that carries none is chosen. Discard restores the form and would leave
-  // that pair behind, holding values from edits that no longer exist: the picker re-reports the
-  // RESTORED credential, sees "had one, has none now", and writes the discarded endpoint into the
-  // form it was just reverted out of.
-  //
-  // Cleared ONLY when the restore actually changes which credential is selected, because that is
-  // exactly when the picker will report again and refill the pair. It notifies on a key of
-  // `value + entry id` (CredentialPicker's `prevNotifiedRef`), so on an unchanged selection nothing
-  // ever comes back: clearing there would strand the endpoint at null, unlock a field the credential
-  // owns, and refuse the restored configuration as `endpoint_missing` with Save disabled — undoing a
-  // discard the operator did not make. Unchanged selection, unchanged pair: it was never stale.
   const revertGeneral = () => {
     const a = syncedAgentRef.current;
     if (!a) return;

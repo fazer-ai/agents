@@ -61,7 +61,7 @@ Nothing here throws. Every refusal skips the rewrite, lets the audio go out from
 | --- | --- |
 | `override_without_provider` | a model id or a credential set while the provider stays inherited |
 | `credential_required` | a destination the agent's key does not cover, with no key of its own |
-| `endpoint_missing` | `openai-compatible` with no endpoint of its own to reach |
+| `endpoint_unusable` | no endpoint the rewrite can be sent to: absent where the provider has no address of its own, or one it brought itself that is not a dialable URL |
 | `endpoint_unsupported` | an endpoint set for a provider whose adapter drops it — only `openai-compatible` and `openrouter` send one (`PROVIDERS_HONORING_BASE_URL`, probed against the built instances so it cannot drift) |
 | `provider_unknown` | a provider name we do not support |
 | `credential_not_found`, `model_not_runnable` | the vault entry is gone, or the factory refused the configuration |

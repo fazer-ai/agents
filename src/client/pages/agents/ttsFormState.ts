@@ -222,9 +222,11 @@ export function ttsNormalizerBaseUrlUnsupported(
   return !r.runnable && r.reason === "endpoint_unsupported";
 }
 
-// An openai-compatible endpoint is nothing without its base URL: createChatModel refuses the
-// configuration and the rewrite is skipped as `model_not_runnable` on every audio reply, silently.
-// The agent's own model field is guarded the same way (GeneralTab's `modelBaseUrlInvalid`).
+// No endpoint the rewrite can be sent to: an openai-compatible one with no address at all, or an
+// address it brought itself that is not a dialable URL. Either way createChatModel refuses the
+// configuration, or the request never leaves, and the rewrite is skipped as `model_not_runnable` on
+// every audio reply, silently. The agent's own model field is guarded the same way (GeneralTab's
+// `modelBaseUrlInvalid`).
 export function ttsNormalizerBaseUrlInvalid(
   tts: TtsFormState,
   agent: AgentModelSource,
@@ -235,5 +237,5 @@ export function ttsNormalizerBaseUrlInvalid(
   // screen to explain it, including the save that turns audio off in the first place.
   if (tts.mode === "never" || !tts.normalize) return false;
   const r = ttsNormalizerResolution(tts, agent, ownCredBaseUrl);
-  return !r.runnable && r.reason === "endpoint_missing";
+  return !r.runnable && r.reason === "endpoint_unusable";
 }

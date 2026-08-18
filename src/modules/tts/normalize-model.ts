@@ -74,9 +74,9 @@ export type NormalizeNotRunnableReason =
   // The rewrite points somewhere the agent's key does not belong (another vendor, or another host),
   // with no key of its own and no way to authenticate without one.
   | "credential_required"
-  // openai-compatible with no base URL anywhere: createChatModel refuses it, and an unguarded build
-  // would throw inside the TTS branch and cost the customer the whole voice note.
-  | "endpoint_missing"
+  // No endpoint the rewrite can actually be sent to: absent where the provider has no address of
+  // its own, or present and undialable. Same outcome either way, so the same refusal.
+  | "endpoint_unusable"
   // An endpoint configured for a provider whose adapter drops it. Passing it anyway is not a no-op:
   // the call leaves for the vendor's public endpoint carrying the key AND the customer's text, which
   // is the opposite of what asking for a proxy meant.
@@ -160,8 +160,18 @@ export function resolveNormalizeModel(
 
   // An endpoint is not a courtesy for openai-compatible: it IS the address, and the credential can
   // be nothing more than that address. Both checks below hang off it.
-  if (provider === "openai-compatible" && !hasEndpoint) {
-    return NOT_RUNNABLE(provider, "endpoint_missing");
+  //
+  // What "usable" means is the CALLER's, and the editor's is stricter than the runtime's, so a
+  // configuration only the editor can refuse is one only the editor will ever judge. That makes the
+  // second half load-bearing: an endpoint the rewrite brought ITSELF and that no client can dial is
+  // no endpoint at all, whatever provider it was typed for, and openrouter is a provider that
+  // accepts one. An INHERITED one is not judged, for the same reason endpoint_unsupported does not
+  // judge it: the rewrite lands wherever the agent's own model lands.
+  if (
+    !hasEndpoint &&
+    (provider === "openai-compatible" || ownBaseURL !== null)
+  ) {
+    return NOT_RUNNABLE(provider, "endpoint_unusable");
   }
 
   // And an endpoint the provider cannot carry is worse than no endpoint: the adapter drops it in

@@ -90,6 +90,8 @@ describe.skipIf(!dbUp)("follow_up_armed_at backfill under RLS", () => {
     if (!dbUp) return;
     await suDb.agent.deleteMany({ where: { tenantId } });
     await suDb.tenant.delete({ where: { id: tenantId } });
+    await suDb.$disconnect();
+    await appDb.$disconnect();
   });
 
   test("arms the agents the original backfill left behind", async () => {

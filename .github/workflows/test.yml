@@ -11,6 +11,36 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    # NOTE: a REAL Postgres, not a mock. Roughly 1600 of this suite's assertions are database-backed
+    # and every one of them is gated on `describe.skipIf(!dbUp)`, so without a server here they do
+    # not fail: they SKIP, and the job reports green having never run the end-to-end layer the
+    # project's testing standard is built on. A stubbed database would be worse than none, because
+    # row-level security is enforced by the server and a stub cannot enforce it.
+    #
+    # pgvector, not plain postgres: `scripts/db-bootstrap.sql` runs CREATE EXTENSION vector. pg17 is
+    # what every docker-compose in this repo ships, so CI tests the server operators actually run.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    # Two URLs and nothing else: `tests/setup.ts` derives every connection the suite uses from them,
+    # and `scripts/db-bootstrap.ts` creates the app role from the first. Two ROLES because that is
+    # the point of running a real server: the app connection is NON-superuser and NON-BYPASSRLS, so
+    # row-level security is actually exercised, while the superuser one does DDL and the tests' own
+    # setup and teardown. The credentials are throwaway and reachable only from inside this job.
+    env:
+      TEST_APP_DATABASE_URL: postgres://fazerai_app:fazerai_app@localhost:5432/agents_ci_test
+      TEST_MIGRATION_DATABASE_URL: postgres://postgres:postgres@localhost:5432/agents_ci_test
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
@@ -37,6 +67,11 @@ jobs:
 
       - name: Generate Prisma Client
         run: bun run prisma:generate
+
+      # CREATE DATABASE, then db-bootstrap (vector extension, app role, grants, langgraph schema),
+      # then `prisma migrate deploy`. The same command a developer runs after cloning.
+      - name: Provision Test Database
+        run: bun run db:test:setup
 
       - name: Run Tests
         run: bun run test

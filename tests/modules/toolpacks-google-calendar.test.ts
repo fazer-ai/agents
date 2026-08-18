@@ -1473,21 +1473,19 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     // Where the model actually decides. The tool description says to omit it, but an optional field
     // is filled or skipped while reading the field, and the shared description ("Which calendar to
     // act on") argues the other way with a list of valid values in sight.
-    const shape = (
-      toolFor("calendar_check_availability", CLINIC, baseCtx())?.schema as {
-        shape: Record<string, { description?: string }>;
-      }
-    ).shape;
-    const desc = shape.calendarId?.description ?? "";
-    expect(desc).toMatch(/omit/i);
-    expect(desc).toMatch(/every calendar/i);
+    const argDesc = (name: string) => {
+      const tool = toolFor(name, CLINIC, baseCtx());
+      if (!tool) throw new Error(`tool not built: ${name}`);
+      const shape = (
+        tool.schema as { shape: Record<string, { description?: string }> }
+      ).shape;
+      return shape.calendarId?.description ?? "";
+    };
+    const availability = argDesc("calendar_check_availability");
+    expect(availability).toMatch(/omit/i);
+    expect(availability).toMatch(/every calendar/i);
     // The acting tools must NOT inherit it: there, leaving it out is refused.
-    const create = (
-      toolFor("calendar_create_event", CLINIC, baseCtx())?.schema as {
-        shape: Record<string, { description?: string }>;
-      }
-    ).shape;
-    expect(create.calendarId?.description).not.toMatch(/omit/i);
+    expect(argDesc("calendar_create_event")).not.toMatch(/omit/i);
   });
 
   test("the tool description tells the model what coveredUntil means", async () => {

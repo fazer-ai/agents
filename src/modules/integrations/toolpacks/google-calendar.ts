@@ -515,12 +515,21 @@ const NO_CONTACT =
 const FOREIGN_EVENT =
   "That appointment is not associated with this customer, so it cannot be read or changed here.";
 
-// NOTE: zod-optional but never optional in practice: the arg is only ever EXPOSED when the
-// integration allows several calendars (calendarArgSchema), and then one of them must be named or
-// pickCalendarId refuses. The trailing sentence is for the operator reading the arg list in the
-// console, which is per-catalog and therefore always shows this field.
+// NOTE: zod-optional but never optional in practice, for the tools that ACT on one calendar: the arg
+// is only ever EXPOSED when the integration allows several (calendarArgSchema), and then one of them
+// must be named or pickCalendarId refuses. The trailing sentence is for the operator reading the arg
+// list in the console, which is per-catalog and therefore always shows this field.
 const CALENDAR_ID_DESC =
   "Which calendar to act on: name or id of one of the calendars in `<allowed_calendars>`. This arg only appears when the integration allows several calendars; with a single one it is used automatically.";
+
+// NOTE: Availability is the ONE tool where omitting this is not a mistake but the default, and the
+// arg description is where that has to be said. The tool description already says so, but the model
+// decides whether to fill an optional field while reading the field, and "Which calendar to act on"
+// there reads as an instruction to pick one: the arg text would be arguing against the tool text,
+// with a list of valid values in sight (the inverse of the #98 failure, where an optional arg with
+// NO valid value in sight invited the model to invent one).
+const AVAILABILITY_CALENDAR_ID_DESC =
+  'OPTIONAL, and usually omitted. Leave it out to search EVERY calendar in `<allowed_calendars>` at once, which is what answers "who is free first?" or "any <specialty> tomorrow?" in one call; each returned slot names the calendar that can take it. Pass it (name or id) ONLY when the customer has already chosen a professional, or when they asked about that one specifically.';
 
 function projectEvent(ev: Record<string, unknown>) {
   return {
@@ -581,7 +590,7 @@ const CHECK_AVAILABILITY_SCHEMA = z.object({
     .describe(
       "Spacing between candidate start times, in minutes. Optional; defaults to the integration's setting (e.g. 15 ⇒ 09:00 and 09:15 are both offered).",
     ),
-  calendarId: z.string().optional().describe(CALENDAR_ID_DESC),
+  calendarId: z.string().optional().describe(AVAILABILITY_CALENDAR_ID_DESC),
 });
 
 const CREATE_EVENT_SCHEMA = z.object({

@@ -1469,6 +1469,27 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     expect(parsed.slots.length).toBeGreaterThan(0);
   });
 
+  test("the calendarId ARG says omitting it searches everyone, not just the prose", async () => {
+    // Where the model actually decides. The tool description says to omit it, but an optional field
+    // is filled or skipped while reading the field, and the shared description ("Which calendar to
+    // act on") argues the other way with a list of valid values in sight.
+    const shape = (
+      toolFor("calendar_check_availability", CLINIC, baseCtx())?.schema as {
+        shape: Record<string, { description?: string }>;
+      }
+    ).shape;
+    const desc = shape.calendarId?.description ?? "";
+    expect(desc).toMatch(/omit/i);
+    expect(desc).toMatch(/every calendar/i);
+    // The acting tools must NOT inherit it: there, leaving it out is refused.
+    const create = (
+      toolFor("calendar_create_event", CLINIC, baseCtx())?.schema as {
+        shape: Record<string, { description?: string }>;
+      }
+    ).shape;
+    expect(create.calendarId?.description).not.toMatch(/omit/i);
+  });
+
   test("the tool description tells the model what coveredUntil means", async () => {
     // A field the model is never told about cannot be acted on, and a truncated list read as complete
     // is the model reporting later times unavailable.

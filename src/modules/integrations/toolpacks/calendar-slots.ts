@@ -103,9 +103,12 @@ function formatLabel(d: Date, tz: string): string {
   return `${weekday} ${get("day")}/${get("month")} ${get("hour")}:${get("minute")}`;
 }
 
-// One calendar as a SOURCE of availability: its own busy intervals, plus how to name it back to the
-// customer. `calendarLabel` is null when the operator never named it (the raw id is then the only
-// handle the model has).
+// One calendar as a SOURCE of availability: every busy window that applies to IT (its own bookings
+// plus whichever operator blocking calendars apply to it), and how to name it back to the customer.
+// `calendarLabel` is null when the operator never named it (the raw id is then the only handle the
+// model has). The busy list arrives complete: which blocking calendar applies to which source is the
+// caller's call, because a calendar can legitimately be an operable calendar for one query and a
+// blocker for its siblings.
 export interface CalendarSource {
   calendarId: string;
   calendarLabel: string | null;
@@ -119,15 +122,6 @@ export interface AggregatedSlot extends Slot {
 
 export interface AggregateInput extends Omit<SlotInput, "busy"> {
   sources: CalendarSource[];
-  // Busy windows that apply to EVERY source: the operator's blocking calendars (holidays, closures).
-  // A holiday shuts the whole clinic, so it cannot live on one source's own list.
-  sharedBusy: { start: string; end: string }[];
-  // Ceiling on how many slots EACH calendar contributes. Per calendar rather than on the merged list
-  // because a merged bound is filled by whichever calendar is free earliest, which silently answers
-  // "is any ophthalmologist free tomorrow?" for one professional. The caller sets it high enough to
-  // be inert when there is a single source, so this feature does not change what one-calendar
-  // operators have been seeing.
-  maxPerSource: number;
 }
 
 // Availability across several calendars at once (issue #100): a clinic with one calendar per
@@ -142,19 +136,20 @@ export interface AggregateInput extends Omit<SlotInput, "busy"> {
 // Ordering is chronological because the question is "first available"; ties (two professionals free
 // at 09:00) keep the operator's configured calendar order, so the same query answers the same way
 // twice and the operator can predict who gets offered first.
+//
+// NOTE: no bound on the result. An earlier revision kept each calendar's first N starts to hold the
+// response down, which quietly turned "all bookable slots" into "the first couple of hours": at the
+// default 15-minute grain, eight starts is under two hours, so an afternoon request came back as
+// unavailable while the afternoon was in fact free. The range is already bounded to 24h and by
+// business hours, and any bound that survives has to preserve the whole range, not its head.
 export function computeAggregatedSlots(
   input: AggregateInput,
 ): AggregatedSlot[] {
-  const { sources, sharedBusy, maxPerSource, ...slotInput } = input;
+  const { sources, ...slotInput } = input;
   const decorated: Array<{ order: number; at: number; slot: AggregatedSlot }> =
     [];
   sources.forEach((src, order) => {
-    const slots = computeAvailableSlots({
-      ...slotInput,
-      busy: [...src.busy, ...sharedBusy],
-    });
-    // computeAvailableSlots already returns chronologically, so the head is this calendar's earliest.
-    for (const s of slots.slice(0, Math.max(0, maxPerSource))) {
+    for (const s of computeAvailableSlots({ ...slotInput, busy: src.busy })) {
       decorated.push({
         order,
         at: Date.parse(s.start),

@@ -263,10 +263,11 @@ const MAX_GRANULARITY_MINUTES = 240;
 // Availability is queried one day at a time: cap the range so the (now unsampled) slot list stays small
 // and the model pages through longer searches itself, a day per call.
 const MAX_AVAILABILITY_RANGE_MS = 24 * 60 * 60 * 1000;
-// How many slots each calendar contributes when several are searched at once. Six professionals over
-// a working day at 30-minute grain is ~96 entries, most of them never used: the customer picks from
-// the first few. Applied per calendar so every professional stays represented.
-const MAX_SLOTS_PER_CALENDAR = 8;
+// freebusy.query caps calendarExpansionMax at 50 and reports anything past it as a per-calendar
+// `tooManyCalendarsRequested`. The allowlist has no ceiling of its own, and until availability could
+// span calendars its size never reached this API at all, so the excess is trimmed HERE and reported
+// through the same channel as a calendar Google could not read.
+const MAX_FREEBUSY_CALENDARS = 50;
 
 function clampMinutes(
   raw: unknown,
@@ -740,7 +741,12 @@ function buildCheckAvailabilityTool(
       if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickAvailabilityCalendars(allowed, labels, input.calendarId);
       if ("error" in pick) return pick.error;
-      const calendarIds = pick.ids;
+      // Past Google's ceiling the tail is not queried at all. Trimming beats letting the API answer
+      // `tooManyCalendarsRequested` for an arbitrary subset: the operator's configured order decides
+      // who is covered, and the customer is never told "these are your options" when part of the
+      // clinic was silently dropped. An explicit calendarId still reaches any single calendar.
+      const calendarIds = pick.ids.slice(0, MAX_FREEBUSY_CALENDARS);
+      const overflow = pick.ids.slice(MAX_FREEBUSY_CALENDARS);
       // freeBusy takes N calendars in ONE request and keys the answer by id, so covering the whole
       // clinic costs the same round trip covering one professional always did.
       const body = {
@@ -774,7 +780,7 @@ function buildCheckAvailabilityTool(
       // double booking. Dropping it only under-offers, and the caller is told which ones went missing
       // so the reply can say so instead of pretending the clinic is smaller than it is.
       const sources: CalendarSource[] = [];
-      const unreadable: string[] = [];
+      const unreadable: string[] = overflow.map((id) => labels[id] ?? id);
       for (const id of calendarIds) {
         const entry = (calendars[id] ?? null) as Record<string, unknown> | null;
         const errors = entry && Array.isArray(entry.errors) ? entry.errors : [];
@@ -807,8 +813,19 @@ function buildCheckAvailabilityTool(
       // expects to block. Only start/end are requested (no titles or attendees reach the model).
       // Fail-closed: a blocking calendar we cannot read could be hiding a closure, so refusing
       // beats offering a slot the operator explicitly blocked.
-      const sharedBusy: { start: string; end: string }[] = [];
-      const blocking = blockingIds.filter((id) => !calendarIds.includes(id));
+      // Which blocking calendars have to be READ. A blocker is skipped only when the query covers
+      // nothing but that same calendar: its own bookings already arrive via freeBusy, and reading it
+      // as a blocker would turn its transparent events into blocks of itself. With siblings in the
+      // query it MUST be read, because a calendar can be operable and still carry closures its
+      // siblings have to respect. Dropping it whenever it appeared in the query (an earlier revision
+      // of this change) made an all-day closure on a doubly-listed calendar invisible to everyone.
+      const blockingWindows: Array<{
+        id: string;
+        windows: { start: string; end: string }[];
+      }> = [];
+      const blocking = blockingIds.filter((id) =>
+        calendarIds.some((c) => c !== id),
+      );
       if (blocking.length > MAX_BLOCKING_CALENDARS) {
         return `Too many blocking calendars are configured (${blocking.length}; the limit is ${MAX_BLOCKING_CALENDARS}), so availability cannot be verified. Reduce the blocking calendars in the integration settings.`;
       }
@@ -837,7 +854,7 @@ function buildCheckAvailabilityTool(
             "Failed to read a blocking calendar (holidays/closures), so availability cannot be verified right now. Try again shortly.",
           );
         }
-        for (const r of blockingRes) {
+        for (const [i, r] of blockingRes.entries()) {
           if (r.status < 200 || r.status >= 300) {
             return toolFailure(
               `Google Calendar returned HTTP ${r.status} for a blocking calendar, so availability cannot be verified right now.`,
@@ -850,13 +867,15 @@ function buildCheckAvailabilityTool(
             return "A blocking calendar has more events in this range than can be checked at once, so availability cannot be verified right now. Try a narrower range.";
           }
           const items = Array.isArray(evData.items) ? evData.items : [];
+          const windows: { start: string; end: string }[] = [];
           for (const ev of items) {
             const w = blockingBusyWindow(
               (ev ?? {}) as Record<string, unknown>,
               timeZone,
             );
-            if (w) sharedBusy.push(w);
+            if (w) windows.push(w);
           }
+          blockingWindows.push({ id: blocking[i] as string, windows });
         }
       }
       // The service hours bounding bookable slots: the integration's chosen BusinessHours (windows +
@@ -872,20 +891,23 @@ function buildCheckAvailabilityTool(
         now: new Date(),
         scheduleWindows: schedule?.windows ?? [],
         scheduleTz: schedule?.timezone ?? timeZone,
-        sources,
-        sharedBusy,
+        // Each source's busy list is assembled HERE: its own bookings plus every blocking calendar
+        // except itself.
+        sources: sources.map((src) => ({
+          ...src,
+          busy: [
+            ...src.busy,
+            ...blockingWindows
+              .filter((b) => b.id !== src.calendarId)
+              .flatMap((b) => b.windows),
+          ],
+        })),
         slotMinutes: resolveSlotDuration(sel.config, input.slotDurationMinutes),
         granularityMinutes: resolveSlotGranularity(
           sel.config,
           input.granularityMinutes,
         ),
         minLeadMinutes,
-        // Inert for a single calendar (Infinity), so this feature changes nothing for the operators
-        // who have one: they keep getting every bookable start in the range, as before.
-        maxPerSource:
-          sources.length > 1
-            ? MAX_SLOTS_PER_CALENDAR
-            : Number.POSITIVE_INFINITY,
       });
       // A list of bookable start times (start/end ISO + a human label), each tagged with the calendar
       // that can take it. Empty ⇒ nothing free in range.

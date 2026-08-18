@@ -223,8 +223,6 @@ describe("computeAggregatedSlots", () => {
       timeMin: iso("09:00"),
       timeMax: iso("11:00"),
       scheduleWindows: officeHours,
-      sharedBusy: [],
-      maxPerSource: 100,
       sources: [],
       ...over,
     });
@@ -267,48 +265,22 @@ describe("computeAggregatedSlots", () => {
     expect(first.map((s) => s.calendarId)).toEqual(["ana@x", "paulo@x"]);
   });
 
-  test("sharedBusy (holidays/closures) blocks the slot on EVERY calendar", () => {
+  test("the WHOLE range survives for every calendar, never just its head", () => {
+    // A per-calendar bound here (an earlier revision kept the first eight starts) turns "all bookable
+    // slots" into "the first couple of hours", and an afternoon request comes back unavailable while
+    // the afternoon is free.
     const slots = agg({
+      timeMin: iso("09:00"),
+      timeMax: iso("17:00"),
       sources: [
         { ...ANA, busy: [] },
         { ...PAULO, busy: [] },
       ],
-      sharedBusy: [{ start: iso("09:00"), end: iso("10:00") }],
     });
-    expect(slots.some((s) => localHM(s.start) === "09:00")).toBe(false);
-    expect(slots.some((s) => localHM(s.start) === "10:00")).toBe(true);
-  });
-
-  test("the bound is PER calendar, so no calendar is starved out of the list", () => {
-    // A bound on the MERGED list would be filled by whichever calendar happens to be free earliest,
-    // and "is any ophthalmologist free tomorrow?" would then answer for one professional only.
-    const slots = agg({
-      sources: [
-        { ...ANA, busy: [] },
-        { ...PAULO, busy: [{ start: iso("09:00"), end: iso("10:00") }] },
-      ],
-      maxPerSource: 1,
-    });
-    expect(slots.map((s) => `${localHM(s.start)}/${s.calendarId}`)).toEqual([
-      "09:00/ana@x",
-      "10:00/paulo@x",
-    ]);
-  });
-
-  test("each calendar keeps its EARLIEST slots when the bound bites", () => {
-    const slots = agg({
-      sources: [
-        { ...ANA, busy: [] },
-        { ...PAULO, busy: [] },
-      ],
-      maxPerSource: 2,
-    });
-    expect(slots.map((s) => localHM(s.start))).toEqual([
-      "09:00",
-      "09:00",
-      "09:30",
-      "09:30",
-    ]);
+    const ana = slots.filter((s) => s.calendarId === "ana@x");
+    expect(localHM(ana[0]?.start as string)).toBe("09:00");
+    expect(localHM(ana[ana.length - 1]?.start as string)).toBe("16:30");
+    expect(ana).toHaveLength(16);
   });
 
   test("a calendar with nothing free contributes nothing and breaks nothing", () => {

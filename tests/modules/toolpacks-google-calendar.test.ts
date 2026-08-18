@@ -1433,22 +1433,82 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     expect(parse(out).slots).toHaveLength(12);
   });
 
-  test("with several calendars each one is bounded, and none is dropped for being later", async () => {
+  test("an afternoon is still offered: several calendars are not cut to their first few starts", async () => {
+    // The reviewer's scenario. At the default 15-minute grain an eight-slot-per-calendar bound
+    // exposes under two hours, so "do you have anything after lunch?" answers no while the afternoon
+    // is free. Nothing may truncate the range.
     const { impl } = stubFetch(200, {
       calendars: { [ANA]: { busy: [] }, [PAULO]: { busy: [] } },
     });
     const out = (await toolFor(
       "calendar_check_availability",
-      CLINIC,
+      { ...CLINIC, slotDurationMinutes: 30, slotGranularityMinutes: 15 },
       baseCtx({ fetchImpl: impl }),
     )?.invoke({
       timeMin: "2099-06-22T09:00:00-03:00",
-      timeMax: "2099-06-22T21:00:00-03:00",
+      timeMax: "2099-06-22T18:00:00-03:00",
     })) as string;
     const slots = parse(out).slots;
-    expect(slots).toHaveLength(16);
-    expect(slots.filter((s) => s.calendarId === ANA)).toHaveLength(8);
-    expect(slots.filter((s) => s.calendarId === PAULO)).toHaveLength(8);
+    const afternoon = slots.filter(
+      (s) => Number(localHM(s.start).slice(0, 2)) >= 14,
+    );
+    expect(afternoon.length).toBeGreaterThan(0);
+    expect(new Set(afternoon.map((s) => s.calendarId))).toEqual(
+      new Set([ANA, PAULO]),
+    );
+  });
+
+  test("beyond Google's 50-calendar freeBusy ceiling the overflow is named, not silently dropped", async () => {
+    // freebusy.query caps calendarExpansionMax at 50 and answers tooManyCalendarsRequested past it.
+    // Before this feature the allowlist size never reached freeBusy (availability asked ONE calendar),
+    // so a 60-calendar instance was fine; sending all 60 is a hazard this change introduces.
+    const many = Array.from({ length: 60 }, (_, i) => `c${i}@x`);
+    const { impl, calls } = stubFetch(200, {
+      calendars: Object.fromEntries(
+        many.slice(0, 50).map((id) => [id, { busy: [] }]),
+      ),
+    });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      { ...CLINIC, calendarIds: many, calendarLabels: {} },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    const body = bodyOf(calls[0] as { init: RequestInit }) as {
+      items: { id: string }[];
+    };
+    expect(body.items).toHaveLength(50);
+    expect(parse(out).unavailableCalendars).toEqual(many.slice(50));
+  });
+
+  test("a calendar listed as BOTH operable and blocking still blocks its siblings", async () => {
+    // freeBusy ignores transparent and all-day events, which is exactly the closure shape, so a
+    // doubly-listed calendar has to be READ as a blocker for the others. Excluding every queried
+    // calendar from the blocking read (an earlier revision) made that closure invisible to everyone.
+    const { impl } = routedFetch([
+      {
+        match: "/freeBusy",
+        json: { calendars: { [ANA]: { busy: [] }, [PAULO]: { busy: [] } } },
+      },
+      {
+        match: "ana%40group",
+        json: {
+          items: [
+            {
+              start: { dateTime: "2099-06-22T09:00:00-03:00" },
+              end: { dateTime: "2099-06-22T10:00:00-03:00" },
+            },
+          ],
+        },
+      },
+    ]);
+    const out = (await toolFor(
+      "calendar_check_availability",
+      { ...CLINIC, blockingCalendarIds: [ANA] },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    const nine = parse(out).slots.filter((s) => localHM(s.start) === "09:00");
+    // Blocked for Paulo (the sibling), and NOT self-blocked for Ana: her own freeBusy says free.
+    expect(nine.map((s) => s.calendarId)).toEqual([ANA]);
   });
 
   test("when NO calendar could be read it refuses instead of reporting nothing free", async () => {

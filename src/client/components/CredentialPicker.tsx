@@ -203,9 +203,12 @@ export function CredentialPicker({
   ]);
 
   async function testExisting() {
-    if (!value) return;
-    // value is `vault:<id>`; extract the id to call POST /:id/test.
-    const id = value.slice("vault:".length);
+    // The ENTRY's id, never the ref's own spelling: the route takes `^\d+$`, and a ref reaches this
+    // field unvalidated (`PATCH /v1/agents/:id` stores what it is handed), so `vault: 7 ` — which
+    // resolves everywhere else, including the selection above — would be refused here and the
+    // credential reported as unreachable.
+    if (!selected) return;
+    const id = selected.id;
     setTesting(true);
     setTestResult(null);
     try {

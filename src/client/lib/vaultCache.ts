@@ -63,15 +63,24 @@ export function loadVault(): Promise<VaultEntry[]> {
 }
 
 // Force a refetch (after a create/update) and notify listeners once the fresh list is in the cache.
-// Rejects when the refetch fails, since `loadVault` now does; the fire-and-forget callers below
-// catch it, and the listeners are deliberately NOT notified, because there is no fresh list to read.
+//
+// Listeners are told either way, and the failure path is the one that needs saying: the caller has
+// just CHANGED the vault and usually pointed a field at the result, so a listener left holding the
+// pre-change list would answer from a vault that no longer exists — a credential created a moment
+// ago reading as deleted. The notification sends them back to `loadVault`, which either gets the
+// fresh list or fails again and leaves them at "not loaded", and both of those are honest.
 export async function refreshVault(): Promise<VaultEntry[]> {
   const k = tenantKey();
   cache.delete(k);
   inflight.delete(k);
-  const entries = await loadVault();
-  notifyChanged();
-  return entries;
+  try {
+    const entries = await loadVault();
+    notifyChanged();
+    return entries;
+  } catch (err) {
+    notifyChanged();
+    throw err;
+  }
 }
 
 // Drop cached vault data (after a mutation, e.g. a VaultPanel delete) and notify listeners; the next

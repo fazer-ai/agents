@@ -18,6 +18,7 @@ let getCalls = 0;
 // Flips one response to a server error, to separate "the vault is empty" from "the vault did not
 // load" — the treaty reports both with an empty `data`.
 let failNext = false;
+let failAll = false;
 let entriesToReturn: Array<{
   id: string;
   name: string;
@@ -31,13 +32,14 @@ beforeEach(() => {
   setActiveTenantId(null);
   getCalls = 0;
   failNext = false;
+  failAll = false;
   entriesToReturn = [{ id: "1", name: "openai", kind: "openai" }];
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("/api/v1/vault")) {
       getCalls++;
       await new Promise((r) => setTimeout(r, 5));
-      if (failNext) {
+      if (failNext || failAll) {
         failNext = false;
         return new Response(JSON.stringify({ error: "boom" }), {
           status: 500,
@@ -256,6 +258,51 @@ describe("useVaultBaseUrls with a noncanonical ref", () => {
     expect(result.current("vault:0007")).toBe("http://llama:8080/v1");
     // A name is not a ref: no id can be read out of it, and no resolver matches it.
     expect(result.current("llama")).toBeNull();
+    cleanup();
+  });
+});
+
+// A refresh that fails leaves the listeners holding a list the cache no longer has, and the caller
+// has usually just CHANGED the vault (created or filled a credential) and pointed a field at the
+// result. Staying quiet there means the editor keeps answering from a list that predates the change
+// — a credential created a moment ago reading as deleted.
+describe("a failed refreshVault", () => {
+  test("sends listeners back to the vault, which heals a transient failure", async () => {
+    entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
+    const { result } = renderHook(() => useVaultRefs());
+    await waitFor(() =>
+      expect(result.current.known?.has("vault:3")).toBe(true),
+    );
+    // What the caller just did: created entry 9 and pointed a field at it. The refresh that would
+    // have delivered it fails; the re-read that the notification triggers succeeds.
+    entriesToReturn = [
+      { id: "3", name: "openai", kind: "openai" },
+      { id: "9", name: "fresh", kind: "openai" },
+    ];
+    failNext = true;
+    await act(async () => {
+      await refreshVault().catch(() => undefined);
+    });
+    await waitFor(() =>
+      expect(result.current.known?.has("vault:9")).toBe(true),
+    );
+    cleanup();
+  });
+
+  test("leaves them at not-loaded when the vault stays down", async () => {
+    entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
+    const { result } = renderHook(() => useVaultRefs());
+    await waitFor(() =>
+      expect(result.current.known?.has("vault:3")).toBe(true),
+    );
+    failAll = true;
+    await act(async () => {
+      await refreshVault().catch(() => undefined);
+    });
+    // Not the stale list, which is what silence would have left behind: a credential the operator
+    // just created reading as deleted.
+    await waitFor(() => expect(result.current.known).toBeNull());
+    failAll = false;
     cleanup();
   });
 });

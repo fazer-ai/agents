@@ -1,5 +1,7 @@
+import { useCallback, useEffect, useState } from "react";
 import { getActiveTenantId } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
+import { formatVaultRef } from "@/client/lib/credentialRef";
 
 // Derived from the treaty response, never hand-mirrored (see docs/eden-treaty.md).
 export type VaultEntry = NonNullable<
@@ -71,4 +73,40 @@ export function invalidateVault(): void {
   cache.clear();
   inflight.clear();
   notifyChanged();
+}
+
+// The base URL a stored `vault:<id>` ref carries, resolved from the vault itself.
+//
+// Reading it off a CredentialPicker's `onEntryChange` instead made it a property of what is MOUNTED.
+// The agent editor renders one tab at a time, so an editor opened straight on Behavior never mounted
+// General, never heard about the model credential, and judged the agent as having no endpoint at
+// all: a false "endpoint missing" on the speech rewrite, with Save disabled, for a configuration the
+// runtime resolves without trouble. A page needs this answer whether or not the field that displays
+// it is on screen.
+//
+// Costs no request: loadVault() is the same shared, de-duplicated read the pickers already do.
+export function useVaultBaseUrls(): (ref: string) => string | null {
+  const [entries, setEntries] = useState<VaultEntry[]>([]);
+  const load = useCallback(async () => {
+    try {
+      setEntries(await loadVault());
+    } catch {
+      // a failed load leaves the list empty, which reads the same as an unresolvable ref
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  useEffect(() => {
+    const onChanged = () => void load();
+    window.addEventListener(VAULT_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(VAULT_CHANGED_EVENT, onChanged);
+  }, [load]);
+  return useCallback(
+    (ref: string) =>
+      (ref
+        ? entries.find((e) => formatVaultRef(e.id) === ref)?.baseUrl
+        : null) ?? null,
+    [entries],
+  );
 }

@@ -1,9 +1,11 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { setActiveTenantId } from "@/client/lib/activeTenant";
 import {
   invalidateVault,
   loadVault,
   refreshVault,
+  useVaultBaseUrls,
   VAULT_CHANGED_EVENT,
 } from "@/client/lib/vaultCache";
 
@@ -12,8 +14,12 @@ import {
 // active tenant with the real setActiveTenantId (localStorage, provided by happy-dom).
 const realFetch = globalThis.fetch;
 let getCalls = 0;
-let entriesToReturn: Array<{ id: string; name: string; kind: string | null }> =
-  [];
+let entriesToReturn: Array<{
+  id: string;
+  name: string;
+  kind: string | null;
+  baseUrl?: string;
+}> = [];
 
 beforeEach(() => {
   invalidateVault();
@@ -94,5 +100,56 @@ describe("vaultCache", () => {
     setActiveTenantId("10");
     await loadVault();
     expect(getCalls).toBe(2);
+  });
+});
+
+// A credential's endpoint has to be readable by the PAGE, not only by the picker that displays it.
+// The agent editor renders one tab at a time and judges the whole configuration on every one of
+// them: while it read this off a CredentialPicker's callback, an editor opened straight on Behavior
+// never mounted General, so the model credential's endpoint did not exist as far as the page was
+// concerned and the speech rewrite was declared endpoint-less on a configuration that runs.
+describe("useVaultBaseUrls", () => {
+  test("resolves a ref's endpoint with no picker mounted", async () => {
+    entriesToReturn = [
+      {
+        id: "7",
+        name: "llama",
+        kind: "openai",
+        baseUrl: "http://llama:8080/v1",
+      },
+      { id: "8", name: "openai", kind: "openai" },
+    ];
+    const { result } = renderHook(() => useVaultBaseUrls());
+    await waitFor(() =>
+      expect(result.current("vault:7")).toBe("http://llama:8080/v1"),
+    );
+    // An entry without one, an unknown ref and no ref at all are the same answer: nothing to
+    // override the typed field with.
+    expect(result.current("vault:8")).toBeNull();
+    expect(result.current("vault:404")).toBeNull();
+    expect(result.current("")).toBeNull();
+    cleanup();
+  });
+
+  test("follows the vault when it changes underneath", async () => {
+    entriesToReturn = [{ id: "7", name: "llama", kind: "openai" }];
+    const { result } = renderHook(() => useVaultBaseUrls());
+    await waitFor(() => expect(getCalls).toBe(1));
+    expect(result.current("vault:7")).toBeNull();
+    entriesToReturn = [
+      {
+        id: "7",
+        name: "llama",
+        kind: "openai",
+        baseUrl: "http://llama:8080/v1",
+      },
+    ];
+    await act(async () => {
+      await refreshVault();
+    });
+    await waitFor(() =>
+      expect(result.current("vault:7")).toBe("http://llama:8080/v1"),
+    );
+    cleanup();
   });
 });

@@ -56,8 +56,9 @@ import {
   ttsNormalizerNeedsOwnCredential,
   ttsNormalizerOverridePicked,
   ttsNormalizerPickerSource,
+  ttsNormalizerProviderChanged,
 } from "./ttsFormState";
-import type { Hours, VaultEntry } from "./types";
+import type { Hours } from "./types";
 
 // Transcription providers (mirror src/modules/stt/providers.ts).
 const STT_PROVIDERS = [
@@ -185,7 +186,6 @@ interface BehaviorTabProps {
   stt: SttState;
   setStt: React.Dispatch<React.SetStateAction<SttState>>;
   sttCredBaseUrl: string | null;
-  onSttEntryChange: (entry: VaultEntry | null) => void;
   tts: TtsFormState;
   setTts: React.Dispatch<React.SetStateAction<TtsFormState>>;
   // The agent's own model, to render the speech rewrite's inherited default honestly (blank there
@@ -196,17 +196,11 @@ interface BehaviorTabProps {
   agentModelCredentialRef: string;
   agentModelBaseUrl: string;
   ttsNormalizeCredBaseUrl: string | null;
-  onTtsNormalizeEntryChange: (entry: VaultEntry | null) => void;
-  // Switching the rewrite's provider is not a plain setState: it also clears the base-URL state kept
-  // OUTSIDE the form (see AgentEditorPage), which is what stops the old provider's endpoint from
-  // being restored behind a field that no longer renders.
-  onTtsNormalizeProviderChange: (provider: string) => void;
   split: SplitState;
   setSplit: React.Dispatch<React.SetStateAction<SplitState>>;
   vision: VisionState;
   setVision: React.Dispatch<React.SetStateAction<VisionState>>;
   visionCredBaseUrl: string | null;
-  onVisionEntryChange: (entry: VaultEntry | null) => void;
   limits: LimitsState;
   observability: { logToolValues: boolean };
   setObservability: React.Dispatch<
@@ -761,7 +755,6 @@ export function BehaviorTab({
   stt,
   setStt,
   sttCredBaseUrl,
-  onSttEntryChange,
   tts,
   setTts,
   agentModelProvider,
@@ -769,14 +762,11 @@ export function BehaviorTab({
   agentModelCredentialRef,
   agentModelBaseUrl,
   ttsNormalizeCredBaseUrl,
-  onTtsNormalizeEntryChange,
-  onTtsNormalizeProviderChange,
   split,
   setSplit,
   vision,
   setVision,
   visionCredBaseUrl,
-  onVisionEntryChange,
   limits,
   observability,
   setObservability,
@@ -1072,7 +1062,6 @@ export function BehaviorTab({
                     <CredentialPicker
                       value={stt.credentialRef}
                       onChange={(v) => setStt({ ...stt, credentialRef: v })}
-                      onEntryChange={onSttEntryChange}
                       required={stt.provider !== "openai-compatible"}
                       compatibleTypes={credentialCompat.stt(stt.provider)}
                       defaultCreateType={credentialCompat.stt(stt.provider)[0]}
@@ -1211,7 +1200,6 @@ export function BehaviorTab({
                       onChange={(v) =>
                         setVision({ ...vision, credentialRef: v })
                       }
-                      onEntryChange={onVisionEntryChange}
                       required={vision.provider !== "openai-compatible"}
                       compatibleTypes={credentialCompat.vision(vision.provider)}
                       defaultCreateType={
@@ -1453,7 +1441,9 @@ export function BehaviorTab({
                       <Select
                         value={tts.normalizeProvider}
                         onChange={(e) =>
-                          onTtsNormalizeProviderChange(e.target.value)
+                          setTts((prev) =>
+                            ttsNormalizerProviderChanged(prev, e.target.value),
+                          )
                         }
                       >
                         <option value="">
@@ -1494,7 +1484,6 @@ export function BehaviorTab({
                           agentModel,
                           ttsNormalizeCredBaseUrl,
                         )}
-                        onEntryChange={onTtsNormalizeEntryChange}
                         compatibleTypes={credentialCompat.model(
                           normalizeEffectiveProvider,
                         )}

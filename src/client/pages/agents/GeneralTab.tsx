@@ -22,7 +22,7 @@ import { REASONING_EFFORTS } from "@/graph/openai-reasoning";
 import { CapabilityMap } from "./CapabilityMap";
 import { PromptPanel } from "./PromptPanel";
 import { TabActionBar } from "./TabActionBar";
-import type { GrantState, ToolCatalog, VaultEntry } from "./types";
+import type { GrantState, ToolCatalog } from "./types";
 
 export const MODEL_PROVIDERS = [
   "openai",
@@ -55,7 +55,6 @@ interface GeneralTabProps {
   model: ModelState;
   setModel: React.Dispatch<React.SetStateAction<ModelState>>;
   modelCredBaseUrl: string | null;
-  onModelEntryChange: (entry: VaultEntry | null) => void;
   // Switching the agent's provider is not a plain setState: it invalidates the previous model id AND
   // everything on OTHER tabs that inherits this provider (see AgentEditorPage).
   dirty: boolean;
@@ -87,7 +86,6 @@ export function GeneralTab({
   model,
   setModel,
   modelCredBaseUrl,
-  onModelEntryChange,
   dirty,
   saving,
   onSave,
@@ -230,7 +228,6 @@ export function GeneralTab({
               defaultCreateType={credentialCompat.model(model.provider)[0]}
               testBaseUrl={modelCredBaseUrl ? undefined : model.baseURL}
               ariaLabel={t("editor.credential", "API key")}
-              onEntryChange={onModelEntryChange}
             />
           </FormField>
           <FormField

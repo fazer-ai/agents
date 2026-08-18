@@ -1,3 +1,4 @@
+import { isValidHttpUrl } from "@/client/lib/validation";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 
 // Live configuration-health checks for the agent editor (item 1): detect features that are turned on
@@ -147,6 +148,10 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
           model: "",
           baseURL: input.modelBaseURL ?? null,
         },
+        // The editor's strictness, not the runtime's, because this check exists FOR the bags the
+        // editor never validated: `llama:8080` is a string, so the runtime's "is there anything
+        // there" says yes and the rewrite dies at the first audio reply instead of here.
+        { isUsableBaseURL: isValidHttpUrl },
       )
     : null;
   // Two independent ways the rewrite goes quiet, and they need different answers. The resolver

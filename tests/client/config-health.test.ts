@@ -336,6 +336,34 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ).toEqual([]);
     });
 
+    // An endpoint no HTTP client can dial. Only REST and MCP can store one (the form refuses it
+    // before the save), and at runtime it costs the rewrite on EVERY audio reply, silently — so this
+    // screen judges endpoints the way the form does, not the way the runtime does.
+    test("an endpoint that is not an http(s) URL is surfaced", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "openai-compatible",
+          ttsNormalizeBaseURL: "llama:8080",
+        }),
+      ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+    });
+
+    // And the same endpoint inherited from the agent, which is the shape an operator reaches by
+    // typing it once on General: the rewrite dies there too, so it is flagged there too.
+    test("an inherited endpoint that is not an http(s) URL is surfaced", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          modelProvider: "openai-compatible",
+          modelBaseURL: "llama:8080",
+          ttsNormalize: true,
+          ttsNormalizeProvider: "openai-compatible",
+        }),
+      ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+    });
+
     // A provider name REST or MCP stored that we do not support. The editor cannot produce it and
     // the runtime skips it without a word, so this is the only screen that will ever mention it.
     // What the message must NOT do is name a missing credential, which would send the operator to

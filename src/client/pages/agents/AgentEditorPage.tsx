@@ -56,6 +56,7 @@ import { slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
   loadVault,
+  useVaultBaseUrls,
   VAULT_CHANGED_EVENT,
 } from "@/client/lib/vaultCache";
 import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditModal";
@@ -88,11 +89,7 @@ import { KnowledgeTab } from "./KnowledgeTab";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
 import { ToolsTab } from "./ToolsTab";
-import {
-  readTtsFormState,
-  ttsNormalizerProviderChanged,
-  ttsSettingsFrom,
-} from "./ttsFormState";
+import { readTtsFormState, ttsSettingsFrom } from "./ttsFormState";
 import type {
   GrantState,
   HandoffUiState,
@@ -574,16 +571,6 @@ function AgentEditor() {
     credentialRef: "",
     baseURL: "",
   });
-  // Base URL from the selected STT credential (locks the input when set).
-  const [sttCredBaseUrl, setSttCredBaseUrl] = useState<string | null>(null);
-  // Base URL from the selected vision credential (locks the input when set).
-  const [visionCredBaseUrl, setVisionCredBaseUrl] = useState<string | null>(
-    null,
-  );
-  // Base URL from the credential selected for the speech rewrite (locks the input when set).
-  const [ttsNormalizeCredBaseUrl, setTtsNormalizeCredBaseUrl] = useState<
-    string | null
-  >(null);
   // Text-to-speech (audio replies). Mode + provider mirror modules/tts.
   // Same reader the saved agent goes through, so a new field can never exist in one and not the
   // other: the Behavior save REPLACES this block wholesale.
@@ -687,8 +674,16 @@ function AgentEditor() {
     temperature: "",
     reasoningEffort: "",
   });
-  // Base URL from the selected model credential (locks the input when set).
-  const [modelCredBaseUrl, setModelCredBaseUrl] = useState<string | null>(null);
+  // The endpoint each selected credential carries, which OUTRANKS the typed field wherever one is
+  // shown. Resolved from the vault, not from the pickers: the page judges these on every tab, and
+  // one tab's picker is unmounted while another is on screen. Only ever mirrored, never merged into
+  // the form — each field displays `credBaseUrl ?? form.baseURL` and is disabled while a credential
+  // provides it, so the operator's own value is never overwritten and never needs giving back.
+  const vaultBaseUrl = useVaultBaseUrls();
+  const modelCredBaseUrl = vaultBaseUrl(model.credentialRef);
+  const sttCredBaseUrl = vaultBaseUrl(stt.credentialRef);
+  const visionCredBaseUrl = vaultBaseUrl(vision.credentialRef);
+  const ttsNormalizeCredBaseUrl = vaultBaseUrl(tts.normalizeCredentialRef);
 
   // Tool selection
   const [grants, setGrants] = useState<GrantState[]>([]);
@@ -2059,30 +2054,6 @@ function AgentEditor() {
     });
   }
 
-  // The endpoint a selected credential carries, which OUTRANKS the typed field wherever one is
-  // shown. It is only ever mirrored, never merged into the form: the field displays
-  // `credBaseUrl ?? form.baseURL` and is disabled while a credential provides it, so the operator's
-  // own value is never overwritten and never needs giving back. Each picker reports its entry on
-  // mount and on every change, which is what keeps these in step without anyone resetting them.
-  const onModelEntryChange = (entry: VaultEntry | null) =>
-    setModelCredBaseUrl(entry?.baseUrl ?? null);
-  const onSttEntryChange = (entry: VaultEntry | null) =>
-    setSttCredBaseUrl(entry?.baseUrl ?? null);
-  const onVisionEntryChange = (entry: VaultEntry | null) =>
-    setVisionCredBaseUrl(entry?.baseUrl ?? null);
-  const onTtsNormalizeEntryChange = (entry: VaultEntry | null) =>
-    setTtsNormalizeCredBaseUrl(entry?.baseUrl ?? null);
-
-  // Switching the rewrite's provider clears its credential, which makes the picker report "no entry"
-  // and would otherwise trip the restore branch above — putting the PREVIOUS provider's endpoint
-  // back, behind a field that only renders for openai-compatible. The new key would then travel to
-  // the old gateway, invisibly. Clearing the out-of-form state here is what makes that unreachable:
-  // it is the same reason ttsNormalizerProviderChanged clears the form's own fields.
-  const onTtsNormalizeProviderChange = (provider: string) => {
-    setTtsNormalizeCredBaseUrl(null);
-    setTts((prev) => ttsNormalizerProviderChanged(prev, provider));
-  };
-
   // Shared onScheduleSaved handler: re-fetches hours then sets the saved id.
   const onScheduleSaved = (savedId: string, setter: (v: string) => void) => {
     void loadHours().then(() => setter(savedId));
@@ -2400,7 +2371,6 @@ function AgentEditor() {
                 model={model}
                 setModel={setModel}
                 modelCredBaseUrl={modelCredBaseUrl}
-                onModelEntryChange={onModelEntryChange}
                 dirty={dirty.general}
                 saving={savingAgent}
                 onSave={() => {
@@ -2493,7 +2463,6 @@ function AgentEditor() {
                 stt={stt}
                 setStt={setStt}
                 sttCredBaseUrl={sttCredBaseUrl}
-                onSttEntryChange={onSttEntryChange}
                 tts={tts}
                 setTts={setTts}
                 agentModelProvider={model.provider}
@@ -2503,8 +2472,6 @@ function AgentEditor() {
                 // field, exactly as the runtime resolves it.
                 agentModelBaseUrl={modelCredBaseUrl ?? model.baseURL}
                 ttsNormalizeCredBaseUrl={ttsNormalizeCredBaseUrl}
-                onTtsNormalizeEntryChange={onTtsNormalizeEntryChange}
-                onTtsNormalizeProviderChange={onTtsNormalizeProviderChange}
                 split={split}
                 setSplit={setSplit}
                 serviceWindow={serviceWindow}
@@ -2519,7 +2486,6 @@ function AgentEditor() {
                 vision={vision}
                 setVision={setVision}
                 visionCredBaseUrl={visionCredBaseUrl}
-                onVisionEntryChange={onVisionEntryChange}
                 limits={limits}
                 setLimits={setLimits}
                 observability={observability}

@@ -1571,7 +1571,7 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
   test("one failed batch costs only its own calendars, not the whole answer", async () => {
     const ids = Array.from({ length: 20 }, (_, i) => `c${i}@x`);
     let n = 0;
-    const impl = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const impl = (async () => {
       const first = n++ === 0;
       return new Response(
         JSON.stringify(

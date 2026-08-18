@@ -671,6 +671,7 @@
     "cloneUnsavedNote": "A clonagem usa a última versão salva; suas alterações não salvas não serão incluídas.",
     "configIssue": {
       "embedding": "Uma base de conhecimento precisa ser indexada, mas o embedding do tenant não está configurado.",
+      "guardrails": "Os guardrails estão ligados, mas sem chave de API definida, então as mensagens saem sem triagem.",
       "model": "O modelo não tem chave de API definida, então o agente não consegue responder.",
       "redirect": "O redirecionamento está ativado mas uma caixa de WhatsApp ou de chat do site não foi definida, então ele não vai rodar.",
       "stt": "A transcrição de voz está ligada, mas sem chave de API definida.",
@@ -681,6 +682,7 @@
     "configIssueKnowledge": "A base de conhecimento \"{{name}}\" tem documentos que precisam ser indexados.",
     "configIssuePending": {
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding ainda não foi preenchida.",
+      "guardrails": "A credencial dos guardrails está referenciada, mas ainda não foi preenchida, então as mensagens saem sem triagem.",
       "model": "A credencial do modelo está referenciada, mas ainda não foi preenchida.",
       "stt": "A credencial de transcrição está referenciada, mas ainda não foi preenchida.",
       "tts": "A credencial de resposta em áudio está referenciada, mas ainda não foi preenchida.",
@@ -690,6 +692,7 @@
     "configIssuesTitle": "Avisos de configuração",
     "configIssueUnresolved": {
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding não existe mais.",
+      "guardrails": "A credencial dos guardrails não existe mais, então as mensagens saem sem triagem.",
       "model": "A credencial do modelo não existe mais, então o agente não consegue responder. Escolha outra.",
       "stt": "A credencial de transcrição não existe mais, então as mensagens de voz não são transcritas.",
       "tts": "A credencial de resposta em áudio não existe mais, então as respostas saem como texto.",

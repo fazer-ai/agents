@@ -1206,6 +1206,9 @@ function AgentEditor() {
   // t('editor.configIssue.ttsNormalize', 'The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.')
   // t('editor.configIssuePending.ttsNormalize', 'The speech-rewrite credential is referenced but not filled in yet.')
   // t('editor.configIssue.vision', 'Image/document reading is on but has no API key set.')
+  // t('editor.configIssue.guardrails', 'Guardrails are on but have no API key set, so messages go out unscreened.')
+  // t('editor.configIssuePending.guardrails', 'The guardrails credential is referenced but not filled in yet, so messages go out unscreened.')
+  // t('editor.configIssueUnresolved.guardrails', 'The guardrails credential no longer exists, so messages go out unscreened.')
   // t('editor.configIssuePending.model', 'The model credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.stt', 'The transcription credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.tts', 'The audio-reply credential is referenced but not filled in yet.')
@@ -1254,6 +1257,8 @@ function AgentEditor() {
     ttsNormalizeBaseURL: ttsNormalizeCredBaseUrl ?? tts.normalizeBaseURL,
     visionEnabled: vision.enabled,
     visionCredentialRef: vision.credentialRef,
+    guardrailsEnabled: guardrails.enabled,
+    guardrailsCredentialRef: guardrails.credentialRef ?? "",
     pendingRefs,
     knownRefs,
     knowledgeBasesNeedingIndex,

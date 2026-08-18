@@ -16,6 +16,7 @@ export type ConfigIssueKey =
   | "tts"
   | "ttsNormalize"
   | "vision"
+  | "guardrails"
   | "knowledge"
   | "embedding"
   | "redirect";
@@ -24,7 +25,7 @@ export interface ConfigIssue {
   key: ConfigIssueKey;
   // Deep-link target for credential issues (tab + section anchor). Absent for "knowledge" issues,
   // which open the knowledge-base documents modal instead of scrolling to a section.
-  tab?: "general" | "behavior" | "channelRedirect";
+  tab?: "general" | "behavior" | "guardrails" | "channelRedirect";
   // The DOM anchor id of the section to scroll to (matches the section's `id`).
   sectionId?: string;
   // When true, the credential IS referenced but its secret has not been filled yet (a "pending"
@@ -71,6 +72,11 @@ export interface ConfigHealthInput {
   ttsNormalizeBaseURL?: string;
   visionEnabled: boolean;
   visionCredentialRef: string;
+  // Guardrails run on a model of their own, and theirs is the one credential whose failure is not
+  // just a feature going quiet: `loadAgentConfig` fails open, so the analysis is skipped and every
+  // message is delivered as if it had been screened and approved.
+  guardrailsEnabled?: boolean;
+  guardrailsCredentialRef?: string;
   // Refs (`vault:<id>`) whose vault entry exists but is still pending (secret not filled in yet). A
   // feature wired to one of these is configured but cannot run until the operator fills it.
   pendingRefs?: Set<string>;
@@ -156,12 +162,17 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       issues.push(base);
     }
   };
+  // An OpenAI-compatible model authenticates through its base URL, so it needs no credential at all
+  // (mirrors the editor's `required={provider !== "openai-compatible"}`). That exempts the ABSENT
+  // credential and nothing else: a ref that IS set is resolved by `loadAgentConfig` before the
+  // provider is ever consulted, and a ref that does not resolve returns null for the whole agent,
+  // which is silence on every message rather than one feature going quiet.
   push(
     { key: "model", tab: "general", sectionId: "general-model" },
     credIssue(
-      Boolean(
-        input.modelProvider && input.modelProvider !== "openai-compatible",
-      ),
+      Boolean(input.modelProvider) &&
+        (input.modelProvider !== "openai-compatible" ||
+          Boolean(input.modelCredentialRef)),
       input.modelCredentialRef,
       pending,
       known,
@@ -241,6 +252,15 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   push(
     { key: "vision", tab: "behavior", sectionId: "vision" },
     credIssue(input.visionEnabled, input.visionCredentialRef, pending, known),
+  );
+  push(
+    { key: "guardrails", tab: "guardrails", sectionId: "gr-model" },
+    credIssue(
+      Boolean(input.guardrailsEnabled),
+      input.guardrailsCredentialRef ?? "",
+      pending,
+      known,
+    ),
   );
   // Knowledge bases with documents awaiting indexing. Indexing needs the tenant's embedding credential,
   // so if that prerequisite is missing we raise ONE "embedding" issue (the root cause) instead of N

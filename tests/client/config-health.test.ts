@@ -617,3 +617,99 @@ describe("computeConfigIssues — noncanonical ref spellings", () => {
     ]);
   });
 });
+
+// An OpenAI-compatible model authenticates through its base URL, so it needs no credential — which
+// is a statement about a credential being ABSENT, and it was being read as "this field is never
+// checked". A ref that IS set has to resolve whatever the provider is: `loadAgentConfig` resolves
+// it before it looks at the provider, and returns null for the whole agent when it cannot, so the
+// agent goes silent on every message.
+describe("computeConfigIssues — an openai-compatible model with a ref of its own", () => {
+  const compat = { ...base, modelProvider: "openai-compatible" };
+
+  test("still raises nothing when no credential is set", () => {
+    expect(
+      computeConfigIssues({
+        ...compat,
+        modelCredentialRef: "",
+        knownRefs: new Set(["vault:1"]),
+      }),
+    ).toEqual([]);
+  });
+
+  test("flags a credential it does set whose entry is gone", () => {
+    expect(
+      computeConfigIssues({ ...compat, knownRefs: new Set(["vault:9"]) }),
+    ).toEqual([
+      {
+        key: "model",
+        tab: "general",
+        sectionId: "general-model",
+        unresolved: true,
+      },
+    ]);
+  });
+
+  test("flags a credential it does set that is still pending", () => {
+    expect(
+      computeConfigIssues({
+        ...compat,
+        pendingRefs: new Set(["vault:1"]),
+        knownRefs: new Set(["vault:1"]),
+      }),
+    ).toEqual([
+      {
+        key: "model",
+        tab: "general",
+        sectionId: "general-model",
+        pending: true,
+        vaultId: "1",
+      },
+    ]);
+  });
+});
+
+// The seventh credential the agent can hold, and the only one whose failure lets messages through
+// UNSCREENED: `loadAgentConfig` fails open when the guardrails credential does not resolve, so the
+// analysis is skipped and every message is delivered as if it had been reviewed and approved.
+describe("computeConfigIssues — the guardrails credential", () => {
+  const guarded = { ...base, guardrailsEnabled: true };
+  const at = { tab: "guardrails", sectionId: "gr-model" } as const;
+
+  test("raises nothing while guardrails are off, whatever the ref says", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        guardrailsEnabled: false,
+        guardrailsCredentialRef: "vault:404",
+        knownRefs: new Set(["vault:1"]),
+      }),
+    ).toEqual([]);
+  });
+
+  test("flags guardrails enabled with no credential", () => {
+    expect(
+      computeConfigIssues({ ...guarded, guardrailsCredentialRef: "" }),
+    ).toEqual([{ key: "guardrails", ...at }]);
+  });
+
+  test("flags a pending guardrails credential", () => {
+    expect(
+      computeConfigIssues({
+        ...guarded,
+        guardrailsCredentialRef: "vault:5",
+        pendingRefs: new Set(["vault:5"]),
+        knownRefs: new Set(["vault:1", "vault:5"]),
+      }),
+    ).toEqual([{ key: "guardrails", ...at, pending: true, vaultId: "5" }]);
+  });
+
+  test("flags a guardrails credential whose entry is gone", () => {
+    expect(
+      computeConfigIssues({
+        ...guarded,
+        guardrailsCredentialRef: "vault:5",
+        knownRefs: new Set(["vault:1"]),
+      }),
+    ).toEqual([{ key: "guardrails", ...at, unresolved: true }]);
+  });
+});

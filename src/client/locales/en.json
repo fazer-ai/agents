@@ -669,6 +669,7 @@
     "cloneUnsavedNote": "Cloning uses the last saved version; your unsaved changes won't be included.",
     "configIssue": {
       "embedding": "A knowledge base needs indexing, but the tenant embedding is not configured.",
+      "guardrails": "Guardrails are on but have no API key set, so messages go out unscreened.",
       "model": "The model has no API key set, so the agent cannot reply.",
       "redirect": "Redirect is on but a WhatsApp or website-chat inbox is not set, so it will not run.",
       "stt": "Voice transcription is on but has no API key set.",
@@ -679,6 +680,7 @@
     "configIssueKnowledge": "Knowledge base \"{{name}}\" has documents that need indexing.",
     "configIssuePending": {
       "embedding": "A knowledge base needs indexing, but the embedding credential is not filled in yet.",
+      "guardrails": "The guardrails credential is referenced but not filled in yet, so messages go out unscreened.",
       "model": "The model credential is referenced but not filled in yet.",
       "stt": "The transcription credential is referenced but not filled in yet.",
       "tts": "The audio-reply credential is referenced but not filled in yet.",
@@ -688,6 +690,7 @@
     "configIssuesTitle": "Configuration warnings",
     "configIssueUnresolved": {
       "embedding": "A knowledge base needs indexing, but the embedding credential no longer exists.",
+      "guardrails": "The guardrails credential no longer exists, so messages go out unscreened.",
       "model": "The model credential no longer exists, so the agent cannot reply. Pick another one.",
       "stt": "The transcription credential no longer exists, so voice messages are not transcribed.",
       "tts": "The audio-reply credential no longer exists, so replies are sent as text.",

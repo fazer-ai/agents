@@ -883,8 +883,13 @@ describe("computeConfigIssues — text stored over its cap", () => {
   });
 
   test("each capped family deep-links to where its field actually lives", () => {
+    // Guardrails ON, because its inner sections are only mounted then (the row below covers OFF).
     const target = (settings: Record<string, unknown>) => {
-      const [issue] = computeConfigIssues(bag(settings));
+      const issue = computeConfigIssues({
+        ...bag(settings),
+        guardrailsEnabled: true,
+        guardrailsCredentialRef: "vault:1",
+      }).find((i) => i.key === "textCap");
       return `${issue?.tab ?? "-"}/${issue?.sectionId ?? "-"}`;
     };
     expect(target({ guardrails: { customPolicy: "p".repeat(2001) } })).toBe(
@@ -907,6 +912,24 @@ describe("computeConfigIssues — text stored over its cap", () => {
     expect(
       target({ followUp: { steps: [{ instructions: "f".repeat(2001) }] } }),
     ).toBe("behavior/proactive");
+  });
+
+  // GuardrailsTab renders gr-input/gr-output/gr-policy only when guardrails are ON, so with them off
+  // the deep-link would carry an anchor that is not in the DOM: the editor's one-shot lookup finds
+  // nothing, and the operator lands on the tab with no scroll, no highlight and no field. gr-model is
+  // the section that is always mounted, and it holds the switch that reveals the rest.
+  test("with guardrails off, its warnings target the section that is actually mounted", () => {
+    const off = computeConfigIssues(
+      bag({ guardrails: { customPolicy: "p".repeat(2001) } }),
+    ).find((i) => i.key === "textCap");
+    expect(off?.sectionId).toBe("gr-model");
+
+    const on = computeConfigIssues({
+      ...bag({ guardrails: { customPolicy: "p".repeat(2001) } }),
+      guardrailsEnabled: true,
+      guardrailsCredentialRef: "vault:1",
+    }).find((i) => i.key === "textCap");
+    expect(on?.sectionId).toBe("gr-policy");
   });
 
   // The reported case: a note written through REST or MCP for a native tool the editor has no field

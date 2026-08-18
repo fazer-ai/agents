@@ -80,14 +80,24 @@ const TEXT_CAP_TARGETS: Array<{
   { match: /^followUp\.steps\[/, tab: "behavior", sectionId: "proactive" },
 ];
 
-function textCapIssues(settings: unknown): ConfigIssue[] {
+function textCapIssues(
+  settings: unknown,
+  guardrailsEnabled: boolean | undefined,
+): ConfigIssue[] {
   // Against nothing stored: every over-cap value in the bag is one the operator should know about,
   // which is the opposite question from the write boundary's (what does this write change).
   return collectOversizedTextChanges(settings, undefined).map((o) => {
     const target = TEXT_CAP_TARGETS.find((t) => t.match.test(o.path));
+    // The guardrails sections other than gr-model are rendered only while guardrails are ON, so with
+    // them off the anchor is not in the DOM and the jump silently does nothing. gr-model is always
+    // mounted and holds the switch that brings the rest back.
+    const sectionId =
+      target?.tab === "guardrails" && !guardrailsEnabled
+        ? "gr-model"
+        : target?.sectionId;
     return {
       key: "textCap" as const,
-      ...(target ? { tab: target.tab, sectionId: target.sectionId } : {}),
+      ...(target ? { tab: target.tab, sectionId } : {}),
       field: o.path,
       length: o.length,
       max: o.max,
@@ -389,6 +399,6 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   }
   // Last: these are about text already in the row, not about a feature that cannot run, so they read
   // as the tail of the list rather than as the headline.
-  issues.push(...textCapIssues(input.settings));
+  issues.push(...textCapIssues(input.settings, input.guardrailsEnabled));
   return issues;
 }

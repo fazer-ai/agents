@@ -40,7 +40,25 @@ function ctx(t: bigint): TenantContext {
 const ok204 = (() =>
   new Response(null, { status: 204 })) as unknown as typeof fetch;
 
+// NOTE: `created_at` is stamped by the CLIENT, not by the column default. Prisma sends a value for
+// `@default(now())` on every insert, so the DEFAULT CURRENT_TIMESTAMP in the migration never fires,
+// and the claim then compares that host timestamp against Postgres `now()`. Two clocks.
+//
+// Production absorbs the difference in the 30s coalesce window. A test that passes
+// `coalesceWindowMs: 0` strips all of it and is left with the few milliseconds between the insert
+// and the claim: measured here, 4ms. A row stamped even 50ms ahead of the database is invisible to
+// `created_at <= now()`, so the claim comes back empty and the test fails on `claimed >= 1` having
+// nothing to do with the code under test. The Docker VM hosting Postgres locally drifts after the
+// Mac sleeps, which is how a whole run turns red and then heals on its own. Injecting a 500ms
+// host-ahead skew reproduces it exactly: all three due tests fail, and none of them do once the
+// stamp comes from the database.
+//
+// So every delivery is stamped from the database's own clock, and the coalesce window each test
+// passes is what decides due or fresh. `now()` in an earlier transaction is by construction at or
+// before `now()` in the claim's, so there is no margin to tune and no assumption about how far the
+// two clocks are apart.
 async function makeDelivery(channelId: bigint): Promise<bigint> {
+  const [stamp] = await suDb.$queryRaw<{ now: Date }[]>`SELECT now() AS now`;
   const row = await suDb.alertDelivery.create({
     data: {
       tenantId,
@@ -48,6 +66,7 @@ async function makeDelivery(channelId: bigint): Promise<bigint> {
       stage: "generate",
       level: "error",
       summary: "boom",
+      createdAt: (stamp as { now: Date }).now,
     },
   });
   return row.id;
@@ -184,5 +203,108 @@ describe.skipIf(!dbUp)("alert worker", () => {
     const row = await suDb.alertDelivery.findUnique({ where: { id } });
     expect(row?.status).toBe("PENDING");
     expect(row?.attempts).toBe(0);
+  });
+
+  // The three below cover claim predicates that mutation found unguarded: removing each one left the
+  // WHOLE suite green. They assert on their OWN row rather than on `claimed`, because the claim is a
+  // batch and a sibling test's row may ride along (see the note at the top of the file).
+
+  // Disabling a channel is the operator's off switch. With `c2.enabled` dropped from the claim, a
+  // channel switched off keeps receiving alerts, and the only thing that told them it was off was
+  // the UI.
+  test("a delivery on a DISABLED channel is not claimed", async () => {
+    const ch = await createAlertChannel(
+      ctx(tenantId),
+      { name: "off", type: "webhook", url: outboundUrl("/off") },
+      appDb,
+    );
+    await suDb.alertChannel.update({
+      where: { id: BigInt(ch.id) },
+      data: { enabled: false },
+    });
+    const id = await makeDelivery(BigInt(ch.id));
+    await processAlertBatch({
+      base: appDb,
+      tenantId,
+      coalesceWindowMs: 0,
+      fetchImpl: ok204,
+      now: () => Date.now(),
+    });
+    const row = await suDb.alertDelivery.findUnique({ where: { id } });
+    expect(row?.status).toBe("PENDING");
+    expect(row?.attempts).toBe(0);
+  });
+
+  // Without the PENDING filter the claim sweeps up terminal rows, so every tick re-posts alerts that
+  // already went out and ones that were given up on. The customer's endpoint sees duplicates forever.
+  test("a terminal delivery is never claimed again", async () => {
+    const ch = await createAlertChannel(
+      ctx(tenantId),
+      { name: "terminal", type: "webhook", url: outboundUrl("/terminal") },
+      appDb,
+    );
+    const delivered = await makeDelivery(BigInt(ch.id));
+    const dead = await makeDelivery(BigInt(ch.id));
+    await suDb.alertDelivery.update({
+      where: { id: delivered },
+      data: { status: "DELIVERED", attempts: 1 },
+    });
+    await suDb.alertDelivery.update({
+      where: { id: dead },
+      data: { status: "DEAD", attempts: 5 },
+    });
+    // Only this test's URL is counted. The claim is a batch and a sibling's row can ride along (a
+    // retry whose backoff came due mid-file did exactly that, 1 run in 20), so a global counter
+    // would assert on other tests' traffic.
+    let posts = 0;
+    const counting = (async (url: string) => {
+      if (url.includes("/terminal")) posts += 1;
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    await processAlertBatch({
+      base: appDb,
+      tenantId,
+      coalesceWindowMs: 0,
+      fetchImpl: counting,
+      now: () => Date.now(),
+    });
+    expect(posts).toBe(0);
+    const after = await suDb.alertDelivery.findMany({
+      where: { id: { in: [delivered, dead] } },
+      orderBy: { id: "asc" },
+    });
+    expect(after.map((r) => [r.status, r.attempts])).toEqual([
+      ["DELIVERED", 1],
+      ["DEAD", 5],
+    ]);
+  });
+
+  // A retry carries `next_attempt_at`, and the backoff is the whole point of it. With the due check
+  // dropped, the very next tick claims it, so a failing endpoint is retried at tick speed instead of
+  // backing off. Stamped from the database clock for the same reason every other row here is.
+  test("a retry scheduled for the future is not claimed before it is due", async () => {
+    const ch = await createAlertChannel(
+      ctx(tenantId),
+      { name: "backoff", type: "webhook", url: outboundUrl("/backoff") },
+      appDb,
+    );
+    const id = await makeDelivery(BigInt(ch.id));
+    const [future] = await suDb.$queryRaw<
+      { at: Date }[]
+    >`SELECT now() + interval '1 hour' AS at`;
+    await suDb.alertDelivery.update({
+      where: { id },
+      data: { attempts: 1, nextAttemptAt: (future as { at: Date }).at },
+    });
+    await processAlertBatch({
+      base: appDb,
+      tenantId,
+      coalesceWindowMs: 0,
+      fetchImpl: ok204,
+      now: () => Date.now(),
+    });
+    const row = await suDb.alertDelivery.findUnique({ where: { id } });
+    expect(row?.status).toBe("PENDING");
+    expect(row?.attempts).toBe(1);
   });
 });

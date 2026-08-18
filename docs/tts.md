@@ -55,7 +55,7 @@ Two other fixtures (a 14h/14h30/15h offer, a three-price list) score zero on bot
 
 **Inherit whole, or name what you override.** With all four unset the rewrite runs the agent's model, on the agent's key, at the agent's endpoint — so an install that touches nothing behaves exactly as before. Set any of them and the rewrite must name its provider, even when it is the agent's own: a model id and an API key belong to the vendor they were picked from, and nothing else in the bag records which one. A dedicated key also brings its own endpoint (the vendor's default, one stored on the credential, or a typed one), never the agent's — that one is a field on another tab, and it moves.
 
-Nothing here throws. Every refusal skips the rewrite, lets the audio go out from the raw text, and is surfaced by `computeConfigIssues`, which is what REST and MCP callers get instead of a validation error:
+Nothing here throws. Every refusal skips the rewrite and lets the audio go out from the raw text. The ones the resolver decides from the stored bag alone are also surfaced by `computeConfigIssues`, which is what REST and MCP callers get instead of a validation error; the last row is decided at runtime and shows up as a `warn` line on the `normalize` flow stage instead (a credential ref whose entry is gone is not flagged by the health panel for any field, see #114):
 
 | refusal | when |
 | --- | --- |

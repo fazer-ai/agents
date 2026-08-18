@@ -9,6 +9,7 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import type { TenantContext } from "@/lib/tenancy";
 import { exportAgent } from "@/modules/agents/transfer";
 import { listConversations } from "@/modules/conversations/service";
+import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
 import {
   runPlaygroundAudioTurn,
   runPlaygroundFileTurn,
@@ -911,19 +912,11 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         inputSchema: {
           since: z.string().optional(),
           until: z.string().optional(),
-          level: z.enum(["info", "warn", "error"]).optional(),
-          stage: z
-            .enum([
-              "stt",
-              "embed",
-              "debounce",
-              "generate",
-              "tool",
-              "tts",
-              "split",
-              "handoff",
-            ])
-            .optional(),
+          level: z.enum(FLOW_LEVELS).optional(),
+          // NOTE: derived from the vocabulary, never listed here: a hand copy had drifted to 8 of the
+          // 11 stages while `logs_stages` (mcp/read.ts) advertised all 11, so a caller filtering by a
+          // stage this very server had just told it about was refused.
+          stage: z.enum(FLOW_STAGES).optional(),
           agent_id: z.string().optional(),
           conversation_id: z.string().optional(),
           turn_id: z.string().optional(),
@@ -964,19 +957,11 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         inputSchema: {
           since: z.string().optional(),
           until: z.string().optional(),
-          level: z.enum(["info", "warn", "error"]).optional(),
-          stage: z
-            .enum([
-              "stt",
-              "embed",
-              "debounce",
-              "generate",
-              "tool",
-              "tts",
-              "split",
-              "handoff",
-            ])
-            .optional(),
+          level: z.enum(FLOW_LEVELS).optional(),
+          // NOTE: derived from the vocabulary, never listed here: a hand copy had drifted to 8 of the
+          // 11 stages while `logs_stages` (mcp/read.ts) advertised all 11, so a caller filtering by a
+          // stage this very server had just told it about was refused.
+          stage: z.enum(FLOW_STAGES).optional(),
           agent_id: z.string().optional(),
           conversation_id: z.string().optional(),
           turn_id: z.string().optional(),

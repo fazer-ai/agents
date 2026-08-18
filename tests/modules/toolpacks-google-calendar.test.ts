@@ -1503,11 +1503,11 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     );
   });
 
-  test("the query is BATCHED, and every calendar is asked even past 50", async () => {
-    // Google's calendarExpansionMax of 50 is a PER-REQUEST ceiling, so batching satisfies it and
-    // there is nothing left to discard globally. An earlier revision trimmed at 50 and reported the
-    // tail as unavailable, which threw away calendars that one more batch would have covered.
-    const many = Array.from({ length: 60 }, (_, i) => `c${i}@x`);
+  test("the query is BATCHED across every allowed calendar", async () => {
+    // Google's calendarExpansionMax of 50 is a PER-REQUEST ceiling, so batching satisfies it. An
+    // earlier revision trimmed the allowlist at 50 and reported the tail as unavailable, throwing
+    // away calendars that one more batch would have covered.
+    const many = Array.from({ length: 50 }, (_, i) => `c${i}@x`);
     const { impl, calls } = stubFetch(200, {
       calendars: Object.fromEntries(many.map((id) => [id, { busy: [] }])),
     });
@@ -1519,7 +1519,7 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     const asked = calls.flatMap(
       (c) => (bodyOf(c) as { items: { id: string }[] }).items,
     );
-    expect(calls).toHaveLength(6);
+    expect(calls).toHaveLength(5);
     for (const c of calls) {
       expect(
         (bodyOf(c) as { items: unknown[] }).items.length,
@@ -1529,31 +1529,29 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     expect(parse(out).unavailableCalendars).toBeUndefined();
   });
 
-  test("batches run in bounded waves, never one socket per ten calendars at once", async () => {
-    // calendarIds is an arbitrary-length array that nothing validates, so an aggregate query is the
-    // one place a config array turns directly into concurrent outbound requests.
-    const ids = Array.from({ length: 200 }, (_, i) => `c${i}@x`);
-    let inFlight = 0;
-    let peak = 0;
-    const impl = (async () => {
-      inFlight++;
-      peak = Math.max(peak, inFlight);
-      await new Promise((r) => setTimeout(r, 0));
-      inFlight--;
-      return new Response(
-        JSON.stringify({
-          calendars: Object.fromEntries(ids.map((id) => [id, { busy: [] }])),
-        }),
-        { status: 200 },
-      );
-    }) as unknown as typeof fetch;
-    await toolFor(
+  test("an allowlist too large to aggregate is refused, and one calendar still works", async () => {
+    // The bound sits on the calendar count rather than on each consequence (requests in flight, slot
+    // entries, the always-kept first start time) because they all come from the same arbitrary-length
+    // config array. Refusing names what the operator has to change; an explicit calendarId is
+    // unaffected at any allowlist size.
+    const ids = Array.from({ length: 51 }, (_, i) => `c${i}@x`);
+    const { impl, calls } = stubFetch(200, {
+      calendars: { "c0@x": { busy: [] } },
+    });
+    const refused = (await toolFor(
       "calendar_check_availability",
       { ...CLINIC, calendarIds: ids, calendarLabels: {} },
       baseCtx({ fetchImpl: impl }),
-    )?.invoke(RANGE);
-    expect(peak).toBeLessThanOrEqual(5);
-    expect(peak).toBeGreaterThan(1);
+    )?.invoke(RANGE)) as string;
+    expect(refused).toContain("the limit is 50");
+    expect(calls).toHaveLength(0);
+
+    const ok = (await toolFor(
+      "calendar_check_availability",
+      { ...CLINIC, calendarIds: ids, calendarLabels: {} },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({ ...RANGE, calendarId: "c0@x" })) as string;
+    expect(parse(ok).slots.length).toBeGreaterThan(0);
   });
 
   test('a 2xx whose body cannot be parsed is retriable, not "HTTP null"', async () => {

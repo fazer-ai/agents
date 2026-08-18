@@ -157,7 +157,10 @@ export interface AggregateResult {
 // offered at a time (a half-listed time would tell the customer a professional is busy when they are
 // free), and where it stopped is REPORTED, so the caller can continue instead of silently believing
 // it saw the whole day. The first time is always kept: an empty list because one instant had many
-// free calendars would be a worse answer than a slightly oversized one.
+// free calendars would be a worse answer than a slightly oversized one, and that exemption is only
+// safe because the CALLER bounds how many sources it passes (google-calendar.ts refuses an
+// aggregate query above MAX_AGGREGATE_CALENDARS). Without such a bound the first group alone
+// could exceed the ceiling by any amount, which is the very thing the ceiling exists to prevent.
 export function computeAggregatedSlots(input: AggregateInput): AggregateResult {
   const { sources, maxSlots, ...slotInput } = input;
   const decorated: Array<{ order: number; at: number; slot: AggregatedSlot }> =

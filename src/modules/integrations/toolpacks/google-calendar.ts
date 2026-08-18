@@ -271,12 +271,15 @@ const MAX_AVAILABILITY_RANGE_MS = 24 * 60 * 60 * 1000;
 // worst-case batch far under both. Because the ceiling is PER REQUEST, there is no global one to
 // enforce: a 60-calendar instance is six batches, not fifty covered and ten discarded.
 const FREEBUSY_BATCH_SIZE = 10;
-// How many of those batches may be in flight at once. `calendarIds` is an arbitrary-length array
-// that nothing validates, so an aggregate query over a large allowlist would otherwise open one
-// socket per ten calendars in a single burst and spend Google quota in one shot. Same position the
-// blocking fan-out already takes (MAX_BLOCKING_CALENDARS), applied to the operable side: an
-// oversized allowlist costs latency, which is the honest consequence, instead of being denied.
-const MAX_CONCURRENT_FREEBUSY = 5;
+// How many calendars ONE aggregate query may cover. `calendarIds` is an arbitrary-length array that
+// nothing validates, and aggregation is where that array turns into outbound requests and into slot
+// entries at once, so the bound belongs here rather than on each consequence separately: at 50 the
+// fan-out is five batches, and the earliest start time (which is emitted whole, see
+// computeAggregatedSlots) cannot approach MAX_SLOT_ENTRIES. Above it the query is REFUSED, the same
+// fail-closed answer MAX_BLOCKING_CALENDARS gives to the same shape of problem, because an aggregate
+// answer over more calendars than this is not one a customer could be read anyway. An explicit
+// calendarId still reaches every calendar, at any allowlist size.
+const MAX_AGGREGATE_CALENDARS = 50;
 // Ceiling on slot entries in one tool result. One entry per (time, calendar) multiplies with the
 // calendar count; this bounds it without collapsing the range (see computeAggregatedSlots). Sized so
 // a realistic clinic (a handful of professionals over a working day) is never truncated at all.
@@ -755,6 +758,9 @@ function buildCheckAvailabilityTool(
       const pick = pickAvailabilityCalendars(allowed, labels, input.calendarId);
       if ("error" in pick) return pick.error;
       const calendarIds = pick.ids;
+      if (calendarIds.length > MAX_AGGREGATE_CALENDARS) {
+        return `Too many calendars are configured to search at once (${calendarIds.length}; the limit is ${MAX_AGGREGATE_CALENDARS}). Pass calendarId to check one calendar, or reduce the calendars in the integration settings.`;
+      }
       // NOTE: freeBusy takes N calendars in ONE request and keys the answer by id, so covering the whole
       // clinic costs the same round trip covering one professional always did.
       const batches: string[][] = [];
@@ -764,29 +770,25 @@ function buildCheckAvailabilityTool(
       // NOTE: allSettled, not all: gcalFetch THROWS on a timeout or a network error, and a single
       // rejection would discard every batch that answered fine. Non-2xx already degraded per batch;
       // a thrown one has to degrade the same way or the contract is a coin flip on failure mode.
-      // The waves are what bound concurrency (see MAX_CONCURRENT_FREEBUSY).
-      const batchRes: PromiseSettledResult<GcalResponse>[] = [];
-      for (let i = 0; i < batches.length; i += MAX_CONCURRENT_FREEBUSY) {
-        const wave = await Promise.allSettled(
-          batches.slice(i, i + MAX_CONCURRENT_FREEBUSY).map((ids) =>
-            gcalFetch(
-              "/freeBusy",
-              {
-                method: "POST",
-                token,
-                body: {
-                  timeMin: input.timeMin,
-                  timeMax: input.timeMax,
-                  timeZone,
-                  items: ids.map((id) => ({ id })),
-                },
+      // Concurrency needs no separate bound: MAX_AGGREGATE_CALENDARS caps this at five requests.
+      const batchRes = await Promise.allSettled(
+        batches.map((ids) =>
+          gcalFetch(
+            "/freeBusy",
+            {
+              method: "POST",
+              token,
+              body: {
+                timeMin: input.timeMin,
+                timeMax: input.timeMax,
+                timeZone,
+                items: ids.map((id) => ({ id })),
               },
-              ctx,
-            ),
+            },
+            ctx,
           ),
-        );
-        batchRes.push(...wave);
-      }
+        ),
+      );
       // NOTE: A batch that failed contributes no entries, so its calendars fall through the same
       // "unreadable" path as a calendar Google refused individually. Only a total failure surfaces
       // the HTTP status, which keeps the single-batch case answering exactly as it always did.

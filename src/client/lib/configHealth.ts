@@ -56,6 +56,9 @@ export interface ConfigHealthInput {
   // none of General's pending edits.
   savedModelProvider: string;
   savedModelBaseURL?: string;
+  // The saved model's credential, needed for one question only: whether an endpoint the rewrite
+  // INHERITS could still arrive from that credential once the vault answers.
+  savedModelCredentialRef?: string;
   sttEnabled: boolean;
   sttCredentialRef: string;
   // TTS has no boolean toggle — any mode other than "never" means audio replies are on.
@@ -233,17 +236,34 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     tab: "behavior",
     sectionId: "tts",
   };
-  // One of the resolver's refusals is not a verdict on the bag alone: an endpoint can live on the
-  // rewrite's CREDENTIAL, and credential endpoints are read from the same vault list that arrives a
-  // request after the first paint. Until it does, an endpoint that is merely unread looks absent,
-  // and announcing that a runnable rewrite cannot run is the false alarm the null-until-loaded rule
-  // exists to prevent. Every other refusal is decided by the bag itself, so waiting on a list that
-  // cannot change the answer would only delay it.
+  // One of the resolver's refusals is not a verdict on the bag alone: an endpoint the bag does not
+  // state can arrive on a CREDENTIAL, and credential endpoints are read from the same vault list
+  // that lands a request after the first paint. Until it does, an endpoint that is merely unread
+  // looks absent, and announcing that a runnable rewrite cannot run is the false alarm the
+  // null-until-loaded rule exists to prevent.
+  //
+  // So it waits, and only where waiting can change the answer. A missing vault list is not a
+  // momentary state: a failed load leaves it missing until a mutation or a reload, so deferring a
+  // verdict no credential could rescue would not delay that warning, it would delete it. Three
+  // things have to be true at once, and each rules out a permanent problem:
+  //
+  //   * the vault has not answered — otherwise every endpoint is already known;
+  //   * some credential is in play that could carry one: the rewrite's own, or the agent's, whose
+  //     endpoint the rewrite inherits with the rest of its model.
+  //
+  // A stated endpoint does NOT settle it, which is worth writing down because the opposite reads as
+  // obvious: a credential's own base URL WINS over the typed field, here and in the runtime alike
+  // (`credentialBaseUrl ?? mc.baseURL`), so a credential still unread can replace an undialable
+  // string with a working host. What settles it is having no credential to hear from, which is the
+  // case in the reviewer's example — a keyless openai-compatible rewrite pointed at `llama:8080`.
   const endpointsKnown = known !== null;
+  const endpointStillOwed =
+    !endpointsKnown &&
+    Boolean(input.ttsNormalizeCredentialRef || input.savedModelCredentialRef);
   const refusalHolds =
     normalizeResolution !== null &&
     !normalizeResolution.runnable &&
-    (endpointsKnown || normalizeResolution.reason !== "endpoint_unusable");
+    !(endpointStillOwed && normalizeResolution.reason === "endpoint_unusable");
   if (refusalHolds) {
     // The refusal is a verdict on the BAG, so it holds whatever the vault says about the credential
     // itself, and it is what the operator has to act on first. One issue, not two.

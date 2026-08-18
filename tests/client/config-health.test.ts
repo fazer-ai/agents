@@ -758,3 +758,96 @@ describe("computeConfigIssues — the rewrite endpoint while the vault is unknow
     ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
   });
 });
+
+// The endpoint refusal waits for the vault, but only where the vault could still change it. A
+// failed vault load leaves that answer missing INDEFINITELY (nothing retries until a mutation or a
+// reload), so deferring a verdict the vault cannot rescue would not delay a warning, it would
+// delete one.
+describe("computeConfigIssues — which endpoint refusals wait for the vault", () => {
+  const audio = { ...base, ttsMode: "mirror", ttsCredentialRef: "vault:2" };
+
+  test("an undialable endpoint with no credential to correct it is decided now", () => {
+    expect(
+      computeConfigIssues({
+        ...audio,
+        ttsNormalize: true,
+        ttsNormalizeProvider: "openai-compatible",
+        ttsNormalizeBaseURL: "llama:8080",
+        knownRefs: null,
+      }),
+    ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+  });
+
+  // A stated endpoint does not settle the question, because a credential's own base URL WINS over
+  // the typed one, here and in the runtime alike — so an unread credential can still replace an
+  // undialable string with a working host, and calling the rewrite dead before reading it would be
+  // wrong in the same way it was wrong with no endpoint at all.
+  test("waits on an undialable endpoint that a credential could still replace", () => {
+    expect(
+      computeConfigIssues({
+        ...audio,
+        ttsNormalize: true,
+        ttsNormalizeProvider: "openai-compatible",
+        ttsNormalizeCredentialRef: "vault:3",
+        ttsNormalizeBaseURL: "llama:8080",
+        knownRefs: null,
+      }),
+    ).toEqual([]);
+  });
+
+  test("no endpoint and no credential anywhere is decided without the vault", () => {
+    expect(
+      computeConfigIssues({
+        ...audio,
+        savedModelProvider: "openai",
+        ttsNormalize: true,
+        ttsNormalizeProvider: "openai-compatible",
+        ttsNormalizeBaseURL: "",
+        knownRefs: null,
+      }),
+    ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+  });
+
+  test("waits when the rewrite's own credential could carry the endpoint", () => {
+    expect(
+      computeConfigIssues({
+        ...audio,
+        ttsNormalize: true,
+        ttsNormalizeProvider: "openai-compatible",
+        ttsNormalizeCredentialRef: "vault:3",
+        ttsNormalizeBaseURL: "",
+        knownRefs: null,
+      }),
+    ).toEqual([]);
+  });
+
+  // Inheriting the agent's model means inheriting its endpoint, and the agent's endpoint can live on
+  // the agent's credential — read from the same list.
+  test("waits when the inherited agent credential could carry it", () => {
+    expect(
+      computeConfigIssues({
+        ...audio,
+        savedModelProvider: "openai-compatible",
+        savedModelCredentialRef: "vault:1",
+        savedModelBaseURL: "",
+        ttsNormalize: true,
+        ttsNormalizeProvider: "",
+        ttsNormalizeBaseURL: "",
+        knownRefs: null,
+      }),
+    ).toEqual([]);
+  });
+
+  test("stops waiting once the vault has answered and nothing supplied one", () => {
+    expect(
+      computeConfigIssues({
+        ...audio,
+        ttsNormalize: true,
+        ttsNormalizeProvider: "openai-compatible",
+        ttsNormalizeCredentialRef: "vault:3",
+        ttsNormalizeBaseURL: "",
+        knownRefs: new Set(["vault:1", "vault:2", "vault:3"]),
+      }),
+    ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+  });
+});

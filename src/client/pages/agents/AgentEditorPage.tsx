@@ -1250,6 +1250,7 @@ function AgentEditor() {
     ttsCredentialRef: tts.credentialRef,
     savedModelProvider: savedModel.provider,
     savedModelBaseURL: savedModelBaseUrl,
+    savedModelCredentialRef: savedModel.credentialRef,
     ttsNormalize: tts.normalize,
     ttsNormalizeProvider: tts.normalizeProvider,
     ttsNormalizeModel: tts.normalizeModel,

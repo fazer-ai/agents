@@ -1,3 +1,4 @@
+import { withKeyedQueue } from "@/lib/locks";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { CHATWOOT_AUTH_HEADER } from "./constants";
 
@@ -147,6 +148,15 @@ export interface CustomAttributeDef {
 
 // Normalizes a Chatwoot list response (a bare array OR `{ payload: [...] }`) into a clean
 // {id, name}[], dropping entries without a positive integer id.
+// A custom_attributes bag as Chatwoot renders it, or {} for anything that is not a plain object.
+// Arrays are excluded on purpose: spreading one produces index keys, which would then be written
+// back as real attributes.
+function attributeBag(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {};
+}
+
 function normalizeIdName(res: unknown): Array<{ id: number; name: string }> {
   const arr = Array.isArray(res)
     ? res
@@ -215,6 +225,12 @@ export class ChatwootClient {
   // `request` AND by the multipart senders, which build their own fetch and would otherwise slip past.
   private assertToken(token: string, endpoint: string): void {
     if (token === "") throw new ChatwootMissingTokenError(endpoint);
+  }
+
+  // Scoped by accountBase so two installs (or two accounts) never queue behind each other on the
+  // same numeric id.
+  private targetKey(scope: string, id: number): string {
+    return `${this.accountBase}:${scope}:${id}`;
   }
 
   private async request(
@@ -439,15 +455,60 @@ export class ChatwootClient {
     );
   }
 
+  // Both custom-attribute endpoints ASSIGN the hash they are given, so a partial update has to
+  // read-merge-write against either one. MEASURED against the deployed fork on 2026-08-18 with a
+  // rolled-back `rails runner` probe: POST /conversations/{id}/custom_attributes with {produto:"A"}
+  // then {medida:"B"} leaves {medida:"B"} — `produto` is gone. The action is a plain
+  // `@conversation.custom_attributes = params[...]` + `save!`, with no setter override on the model,
+  // and it is byte-identical in upstream Chatwoot. The comment that used to sit here claimed the
+  // conversation endpoint merged server-side; it never did, and the `/reset` clear below is the
+  // caller that always depended on it not merging.
+  //
+  // The merge base is what CHATWOOT holds, never our mirror: the mirror is a projection that can lag
+  // (bots never receive contact_updated), and merging from it would erase an attribute an operator
+  // had just set in the UI.
+  //
+  // Serialized per target because one turn's tool calls run CONCURRENTLY — LangGraph's ToolNode runs
+  // them with Promise.all — and unserialized they would all merge into the same pre-write snapshot,
+  // so the last write would drop the others' keys (issue #112).
   setConversationCustomAttributes(
     conversationId: number,
     attributes: Record<string, unknown>,
   ): Promise<unknown> {
-    return this.request(
-      this.config.botToken,
-      "POST",
-      `/conversations/${conversationId}/custom_attributes`,
-      { custom_attributes: attributes },
+    return withKeyedQueue(
+      this.targetKey("conversation", conversationId),
+      async () => {
+        const existing = (await this.request(
+          this.config.botToken,
+          "GET",
+          `/conversations/${conversationId}`,
+        )) as { custom_attributes?: unknown } | null;
+        return this.request(
+          this.config.botToken,
+          "POST",
+          `/conversations/${conversationId}/custom_attributes`,
+          {
+            custom_attributes: {
+              ...attributeBag(existing?.custom_attributes),
+              ...attributes,
+            },
+          },
+        );
+      },
+    );
+  }
+
+  // The `/reset` command wipes the conversation's attributes, and it is the one caller that wants
+  // the endpoint's replacing semantics. It stays a separate operation instead of being expressed as
+  // `setConversationCustomAttributes(id, {})`, which the merge above turns into a no-op.
+  clearConversationCustomAttributes(conversationId: number): Promise<unknown> {
+    return withKeyedQueue(this.targetKey("conversation", conversationId), () =>
+      this.request(
+        this.config.botToken,
+        "POST",
+        `/conversations/${conversationId}/custom_attributes`,
+        { custom_attributes: {} },
+      ),
     );
   }
 
@@ -641,29 +702,31 @@ export class ChatwootClient {
     return out;
   }
 
-  // Contact custom attributes (admin token). PUT /contacts/{id} assigns the whole custom_attributes
-  // hash, so we READ-MERGE-WRITE to avoid clobbering other attributes (the conversation endpoint
-  // merges server-side; the contact one does not).
-  async setContactCustomAttributes(
+  // Contact custom attributes (admin token). Same read-merge-write as the conversation scope above,
+  // and same reason for the queue: PUT /contacts/{id} assigns the whole hash, and concurrent calls
+  // in one turn would otherwise each merge into the pre-write snapshot they all read.
+  setContactCustomAttributes(
     contactId: number,
     attributes: Record<string, unknown>,
   ): Promise<unknown> {
-    const existing = (await this.request(
-      this.config.adminToken,
-      "GET",
-      `/contacts/${contactId}`,
-    )) as { payload?: { custom_attributes?: unknown } } | null;
-    const current =
-      existing?.payload?.custom_attributes &&
-      typeof existing.payload.custom_attributes === "object"
-        ? (existing.payload.custom_attributes as Record<string, unknown>)
-        : {};
-    return this.request(
-      this.config.adminToken,
-      "PUT",
-      `/contacts/${contactId}`,
-      { custom_attributes: { ...current, ...attributes } },
-    );
+    return withKeyedQueue(this.targetKey("contact", contactId), async () => {
+      const existing = (await this.request(
+        this.config.adminToken,
+        "GET",
+        `/contacts/${contactId}`,
+      )) as { payload?: { custom_attributes?: unknown } } | null;
+      return this.request(
+        this.config.adminToken,
+        "PUT",
+        `/contacts/${contactId}`,
+        {
+          custom_attributes: {
+            ...attributeBag(existing?.payload?.custom_attributes),
+            ...attributes,
+          },
+        },
+      );
+    });
   }
 
   // Typing indicator for the split/humanized delivery. `toggle_typing_status` IS in the fork's

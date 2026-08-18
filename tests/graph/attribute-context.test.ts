@@ -6,10 +6,14 @@ import { encryptJson } from "@/api/lib/crypto";
 import { loadAgentConfig } from "@/graph/prepare";
 import { buildNativeTools } from "@/graph/tools/native";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  type ChatwootClient,
+  createChatwootClient,
+} from "@/modules/chatwoot/client";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { fakeChatwootAttributeStore } from "../utils/chatwoot-attribute-store";
 
 // NOTE: End-to-end wiring of the attribute context: the mirrored bags (fed by the webhook) → the
 // block appended to the agent's system prompt at turn prep. No Chatwoot call is involved.
@@ -211,6 +215,85 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
       origem: "Instagram",
       ...Object.fromEntries(keys.map((k) => [k, k])),
     });
+  });
+
+  test("after a burst, what the operator sees and what the agent reads agree", async () => {
+    // The test above proves OUR bag survives a concurrent burst. It stubs the Chatwoot call to a
+    // no-op, so it says nothing about the other side — and the other side was where issue #112
+    // lived: the mirror kept every key while Chatwoot kept one, and nothing ever reconciled them
+    // (agent bots never receive contact_updated). Both views are asserted here, against a Chatwoot
+    // that replaces the bag exactly as the deployed fork does.
+    const convId = CONV_ID + 2;
+    const contact = await suDb.contact.findFirstOrThrow({
+      where: { tenantId, chatwootContactId: 4242 },
+    });
+    const conv = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        contactId: contact.id,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        customAttributes: { origem: "Instagram" },
+      },
+    });
+    const cw = fakeChatwootAttributeStore(5, {
+      conversations: { [convId]: { origem: "Instagram" } },
+      contacts: { 4242: { plano: "pro" } },
+    });
+    const client = await createChatwootClient(
+      {
+        baseUrl: "https://chat.example.com",
+        accountId: 5,
+        adminToken: "ADMIN_TOK",
+        botToken: "BOT_TOK",
+      },
+      { fetchImpl: cw.fetchImpl, assertSafe: async (u: string) => new URL(u) },
+    );
+    const tools = buildNativeTools({
+      client,
+      conversationId: convId,
+      tenantId,
+      base: appDb,
+      conversationDbId: conv.id,
+      contactDbId: contact.id,
+    }) as StructuredToolInterface[];
+    const tool = tools.find((t) => t.name === "set_custom_attribute");
+    if (!tool) throw new Error("set_custom_attribute missing");
+
+    // The burst from the report: several keys per scope in ONE turn.
+    await Promise.all([
+      tool.invoke({ key: "produto", value: "cadeira" }),
+      tool.invoke({ key: "medida", value: "90cm" }),
+      tool.invoke({ key: "quantidade", value: "4" }),
+      tool.invoke({ key: "empresa", value: "Acme", scope: "contact" }),
+      tool.invoke({ key: "nome_cliente", value: "Ana", scope: "contact" }),
+    ]);
+
+    const expectedConversation = {
+      origem: "Instagram",
+      produto: "cadeira",
+      medida: "90cm",
+      quantidade: "4",
+    };
+    const expectedContact = {
+      plano: "pro",
+      empresa: "Acme",
+      nome_cliente: "Ana",
+    };
+    // What the operator opens in Chatwoot...
+    expect(cw.conversations.get(convId)).toEqual(expectedConversation);
+    expect(cw.contacts.get(4242)).toEqual(expectedContact);
+    // ...and what the agent reads back from the mirror on the next turn.
+    const convRow = await suDb.conversation.findUniqueOrThrow({
+      where: { id: conv.id },
+    });
+    const contactRow = await suDb.contact.findUniqueOrThrow({
+      where: { id: contact.id },
+    });
+    expect(convRow.customAttributes).toEqual(expectedConversation);
+    expect(contactRow.customAttributes).toEqual(expectedContact);
   });
 
   test("the write-through barrier is pinned to UTC, not the session timezone", async () => {

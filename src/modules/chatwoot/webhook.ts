@@ -852,7 +852,7 @@ async function maybeConsumeCommandOrGate(params: {
         client.setConversationLabels(conversationId, []),
       );
       await step("clear custom attributes", "atributos", () =>
-        client.setConversationCustomAttributes(conversationId, {}),
+        client.clearConversationCustomAttributes(conversationId),
       );
       // Clear the linked kanban card's scheduled dates too (item 17): a reset is a clean slate, so a
       // stale start/due date from the prior episode must not linger. Title/description/step are kept

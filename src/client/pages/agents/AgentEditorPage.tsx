@@ -50,7 +50,6 @@ import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { computeConfigIssues } from "@/client/lib/configHealth";
-import { shouldRestoreUserBaseUrl } from "@/client/lib/credentialBaseUrl";
 import { TTS_NORMALIZE_DEFAULT } from "@/client/lib/providerDefaults";
 import type { ApiErrorPayload } from "@/client/lib/types";
 import { slugify } from "@/client/lib/utils";
@@ -498,17 +497,15 @@ function AgentEditorSkeleton() {
   );
 }
 
-// The route element is REUSED when `:id` changes (cloning an agent lands straight on the clone's
-// editor), and this page keeps state that is only meaningful for one record: the endpoint parked
-// outside each credential picker's form, the playground thread. Reused across records, the parked
-// endpoint of the agent you left gets handed to the agent you opened, which marks it dirty and
-// offers to save someone else's host.
+// The route element is REUSED when `:id` changes — cloning an agent lands straight on the clone's
+// editor — and this page keeps state that only means anything for one record. `usePlaygroundChat`
+// reloads its saved simulation on that transition but not the conversation itself, so without this
+// the turns you had with one agent show up under the next.
 //
-// Keyed by the record instead of guarded per value: the guards would have to know when each picker
-// will report again (it notifies on `value + entry id`, so two agents sharing one credential never
-// trigger it) and every one of them would be a new way to strand a value that belongs to the form.
-// Remounting answers all of it at once — a different agent is a different form. `:tab` is NOT in the
-// key, so moving between tabs of the same agent keeps everything, which is what it is for.
+// Keyed by the record rather than reset field by field: every one of those resets has to know when
+// the thing it clears will be repopulated, and answering that per field is how a discard ends up
+// stranding a value the form still needs. A different agent is a different form. `:tab` is NOT in
+// the key, so moving between tabs of the same agent keeps everything, which is what it is for.
 export function AgentEditorPage() {
   const { id = "" } = useParams();
   return <AgentEditor key={id} />;
@@ -579,20 +576,14 @@ function AgentEditor() {
   });
   // Base URL from the selected STT credential (locks the input when set).
   const [sttCredBaseUrl, setSttCredBaseUrl] = useState<string | null>(null);
-  // User's own STT base URL value preserved while a credential with baseUrl is selected.
-  const sttUserBaseUrlRef = useRef("");
   // Base URL from the selected vision credential (locks the input when set).
   const [visionCredBaseUrl, setVisionCredBaseUrl] = useState<string | null>(
     null,
   );
-  // User's own vision base URL value preserved while a credential with baseUrl is selected.
-  const visionUserBaseUrlRef = useRef("");
   // Base URL from the credential selected for the speech rewrite (locks the input when set).
   const [ttsNormalizeCredBaseUrl, setTtsNormalizeCredBaseUrl] = useState<
     string | null
   >(null);
-  // User's own rewrite base URL value preserved while a credential with baseUrl is selected.
-  const ttsNormalizeUserBaseUrlRef = useRef("");
   // Text-to-speech (audio replies). Mode + provider mirror modules/tts.
   // Same reader the saved agent goes through, so a new field can never exist in one and not the
   // other: the Behavior save REPLACES this block wholesale.
@@ -698,8 +689,6 @@ function AgentEditor() {
   });
   // Base URL from the selected model credential (locks the input when set).
   const [modelCredBaseUrl, setModelCredBaseUrl] = useState<string | null>(null);
-  // User's own model base URL value preserved while a credential with baseUrl is selected.
-  const modelUserBaseUrlRef = useRef("");
 
   // Tool selection
   const [grants, setGrants] = useState<GrantState[]>([]);
@@ -1028,9 +1017,7 @@ function AgentEditor() {
         credentialRef: stt.credentialRef || null,
         // When the credential has a baseUrl, the runtime uses it; don't overwrite with the
         // displayed (credential's) value — keep the user's own config or null.
-        baseURL: sttCredBaseUrl
-          ? sttUserBaseUrlRef.current.trim() || null
-          : stt.baseURL.trim() || null,
+        baseURL: stt.baseURL.trim() || null,
       },
       tts: ttsSettingsFrom(tts),
       split: {
@@ -1078,9 +1065,7 @@ function AgentEditor() {
         credentialRef: vision.credentialRef || null,
         // When the credential carries a baseUrl, the runtime uses it; keep the user's own value
         // (or null) instead of persisting the displayed credential URL (mirror STT).
-        baseURL: visionCredBaseUrl
-          ? visionUserBaseUrlRef.current.trim() || null
-          : vision.baseURL.trim() || null,
+        baseURL: vision.baseURL.trim() || null,
         // Store null when the prompt is empty or still the default (keeps storage
         // clean; the reader re-prefills the default on load — no false-dirty).
         extractionPrompt:
@@ -1623,15 +1608,6 @@ function AgentEditor() {
   // ever comes back: clearing there would strand the endpoint at null, unlock a field the credential
   // owns, and refuse the restored configuration as `endpoint_missing` with Save disabled — undoing a
   // discard the operator did not make. Unchanged selection, unchanged pair: it was never stale.
-  const forgetCredentialBaseUrl = (
-    credentialChanged: boolean,
-    setCredUrl: (v: string | null) => void,
-    userRef: React.MutableRefObject<string>,
-  ) => {
-    if (!credentialChanged) return;
-    setCredUrl(null);
-    userRef.current = "";
-  };
   const revertGeneral = () => {
     const a = syncedAgentRef.current;
     if (!a) return;
@@ -1639,13 +1615,7 @@ function AgentEditor() {
     setSystemPrompt(a.systemPrompt);
     setEnabled(a.enabled);
     setAgentMode(a.mode === "test" ? "test" : "production");
-    const m = readModelState(a);
-    setModel(m);
-    forgetCredentialBaseUrl(
-      m.credentialRef !== model.credentialRef,
-      setModelCredBaseUrl,
-      modelUserBaseUrlRef,
-    );
+    setModel(readModelState(a));
   };
   const revertBehavior = () => {
     const a = syncedAgentRef.current;
@@ -1665,21 +1635,6 @@ function AgentEditor() {
     setObservability(b.observability);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
-    forgetCredentialBaseUrl(
-      b.stt.credentialRef !== stt.credentialRef,
-      setSttCredBaseUrl,
-      sttUserBaseUrlRef,
-    );
-    forgetCredentialBaseUrl(
-      b.vision.credentialRef !== vision.credentialRef,
-      setVisionCredBaseUrl,
-      visionUserBaseUrlRef,
-    );
-    forgetCredentialBaseUrl(
-      b.tts.normalizeCredentialRef !== tts.normalizeCredentialRef,
-      setTtsNormalizeCredBaseUrl,
-      ttsNormalizeUserBaseUrlRef,
-    );
   };
   const revertChannelRedirect = () => {
     const a = syncedAgentRef.current;
@@ -2104,69 +2059,19 @@ function AgentEditor() {
     });
   }
 
-  // NOTE: Closed-over callback for model credential entry change (preserves ref across tab
-  // unmounts). The `else if` is load-bearing: on mount the picker reports the resolved entry, and a
-  // credential WITHOUT a baseUrl must leave the persisted field alone (shouldRestoreUserBaseUrl).
-  const onModelEntryChange = (entry: VaultEntry | null) => {
-    const credUrl = entry?.baseUrl ?? null;
-    const restore = shouldRestoreUserBaseUrl(modelCredBaseUrl, credUrl);
-    setModelCredBaseUrl(credUrl);
-    if (credUrl) {
-      modelUserBaseUrlRef.current = model.baseURL;
-    } else if (restore) {
-      setModel((prev) => ({
-        ...prev,
-        baseURL: modelUserBaseUrlRef.current,
-      }));
-    }
-  };
-
-  // Closed-over callback for STT credential entry change (preserves sttUserBaseUrlRef across tab unmounts).
-  const onSttEntryChange = (entry: VaultEntry | null) => {
-    const credUrl = entry?.baseUrl ?? null;
-    const restore = shouldRestoreUserBaseUrl(sttCredBaseUrl, credUrl);
-    setSttCredBaseUrl(credUrl);
-    if (credUrl) {
-      // Lock: preserve the user's own value while locked.
-      sttUserBaseUrlRef.current = stt.baseURL;
-    } else if (restore) {
-      // Unlock: restore the user's own value.
-      setStt((prev) => ({
-        ...prev,
-        baseURL: sttUserBaseUrlRef.current,
-      }));
-    }
-  };
-
-  // Closed-over callback for vision credential entry change (mirror of onSttEntryChange).
-  const onVisionEntryChange = (entry: VaultEntry | null) => {
-    const credUrl = entry?.baseUrl ?? null;
-    const restore = shouldRestoreUserBaseUrl(visionCredBaseUrl, credUrl);
-    setVisionCredBaseUrl(credUrl);
-    if (credUrl) {
-      visionUserBaseUrlRef.current = vision.baseURL;
-    } else if (restore) {
-      setVision((prev) => ({
-        ...prev,
-        baseURL: visionUserBaseUrlRef.current,
-      }));
-    }
-  };
-
-  // Closed-over callback for the speech rewrite's credential (mirror of onSttEntryChange).
-  const onTtsNormalizeEntryChange = (entry: VaultEntry | null) => {
-    const credUrl = entry?.baseUrl ?? null;
-    const restore = shouldRestoreUserBaseUrl(ttsNormalizeCredBaseUrl, credUrl);
-    setTtsNormalizeCredBaseUrl(credUrl);
-    if (credUrl) {
-      ttsNormalizeUserBaseUrlRef.current = tts.normalizeBaseURL;
-    } else if (restore) {
-      setTts((prev) => ({
-        ...prev,
-        normalizeBaseURL: ttsNormalizeUserBaseUrlRef.current,
-      }));
-    }
-  };
+  // The endpoint a selected credential carries, which OUTRANKS the typed field wherever one is
+  // shown. It is only ever mirrored, never merged into the form: the field displays
+  // `credBaseUrl ?? form.baseURL` and is disabled while a credential provides it, so the operator's
+  // own value is never overwritten and never needs giving back. Each picker reports its entry on
+  // mount and on every change, which is what keeps these in step without anyone resetting them.
+  const onModelEntryChange = (entry: VaultEntry | null) =>
+    setModelCredBaseUrl(entry?.baseUrl ?? null);
+  const onSttEntryChange = (entry: VaultEntry | null) =>
+    setSttCredBaseUrl(entry?.baseUrl ?? null);
+  const onVisionEntryChange = (entry: VaultEntry | null) =>
+    setVisionCredBaseUrl(entry?.baseUrl ?? null);
+  const onTtsNormalizeEntryChange = (entry: VaultEntry | null) =>
+    setTtsNormalizeCredBaseUrl(entry?.baseUrl ?? null);
 
   // Switching the rewrite's provider clears its credential, which makes the picker report "no entry"
   // and would otherwise trip the restore branch above — putting the PREVIOUS provider's endpoint
@@ -2174,7 +2079,6 @@ function AgentEditor() {
   // the old gateway, invisibly. Clearing the out-of-form state here is what makes that unreachable:
   // it is the same reason ttsNormalizerProviderChanged clears the form's own fields.
   const onTtsNormalizeProviderChange = (provider: string) => {
-    ttsNormalizeUserBaseUrlRef.current = "";
     setTtsNormalizeCredBaseUrl(null);
     setTts((prev) => ttsNormalizerProviderChanged(prev, provider));
   };

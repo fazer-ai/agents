@@ -478,8 +478,14 @@ export class ChatwootClient {
     return withKeyedQueue(
       this.targetKey("conversation", conversationId),
       async () => {
+        // The READ goes out with the admin token even though the write next to it is a bot-token
+        // call. `conversations#show` only entered Chatwoot's BOT_ACCESSIBLE_ENDPOINTS on 2026-06-05
+        // (upstream #14655, "allow agent bots to read conversations and manage labels"), so on any
+        // older instance a bot-token GET is answered with 401 and every attribute write would fail
+        // before the POST. The admin token is also the one guaranteed to exist: it comes from the
+        // deployment row, while the bot token is empty for clients built outside a persona.
         const existing = (await this.request(
-          this.config.botToken,
+          this.config.adminToken,
           "GET",
           `/conversations/${conversationId}`,
         )) as { custom_attributes?: unknown } | null;

@@ -13,11 +13,17 @@
 //
 // Shapes, read off the deployed jbuilders: `GET /conversations/{id}` renders the conversation
 // partial, where `custom_attributes` is TOP-LEVEL; the contact payload nests it under `payload`.
+export interface FakeChatwootRequest {
+  method: string;
+  path: string;
+  token: string;
+}
+
 export interface FakeChatwootAttributeStore {
   fetchImpl: typeof fetch;
   conversations: Map<number, Record<string, unknown>>;
   contacts: Map<number, Record<string, unknown>>;
-  requests: string[];
+  requests: FakeChatwootRequest[];
 }
 
 export function fakeChatwootAttributeStore(
@@ -33,7 +39,7 @@ export function fakeChatwootAttributeStore(
     );
   const conversations = new Map(entries(initial?.conversations));
   const contacts = new Map(entries(initial?.contacts));
-  const requests: string[] = [];
+  const requests: FakeChatwootRequest[] = [];
   const bag = (m: Map<number, Record<string, unknown>>, id: number) =>
     m.get(id) ?? {};
 
@@ -48,7 +54,13 @@ export function fakeChatwootAttributeStore(
           custom_attributes?: Record<string, unknown>;
         })
       : undefined;
-    requests.push(`${method} ${path}`);
+    requests.push({
+      method,
+      path,
+      token:
+        ((init?.headers ?? {}) as Record<string, string>)["api-access-token"] ??
+        "",
+    });
     const ok = (payload: unknown) =>
       ({
         ok: true,

@@ -78,6 +78,24 @@ describe("custom attribute writes against endpoints that replace", () => {
     expect(cw.conversations.get(61)).toEqual({});
   });
 
+  test("the conversation read uses the admin token, the write the bot token", async () => {
+    // `conversations#show` only became bot-accessible in Chatwoot on 2026-06-05 (upstream #14655),
+    // so a bot-token read 401s on any older instance and takes the whole write down with it. The
+    // write stays on the bot token: `custom_attributes` has always been in the bot allowlist, and
+    // the attribute must be attributed to the persona.
+    const cw = fakeChatwootAttributeStore(5);
+    const c = await client(cw.fetchImpl);
+    await c.setConversationCustomAttributes(61, { produto: "cadeira" });
+    expect(cw.requests).toEqual([
+      { method: "GET", path: "/conversations/61", token: "ADMIN_TOK" },
+      {
+        method: "POST",
+        path: "/conversations/61/custom_attributes",
+        token: "BOT_TOK",
+      },
+    ]);
+  });
+
   test("a non-object bag is merged as empty, never spread", async () => {
     // Spreading an array yields index keys ({...["a"]} -> {"0":"a"}), and this merge result is
     // written straight back, so a malformed bag would be PERSISTED as real attributes named 0,1,2.

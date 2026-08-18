@@ -146,18 +146,16 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       )
     : null;
   // Two independent ways the rewrite goes quiet, and they need different answers. The resolver
-  // REFUSING over the credential (none where one is required, or one stored without the provider it
-  // belongs to, which REST and MCP can write and the editor cannot) is a settled fact: the issue is
-  // raised whether or not a ref is present, because a present-but-unusable ref is the whole problem.
-  // A resolvable configuration can still be waiting on a vault entry nobody filled in, which is the
-  // ordinary pending case.
-  const refusedOverCredential =
-    normalizeResolution !== null &&
-    (normalizeResolution.reason === "credential_required" ||
-      normalizeResolution.reason === "credential_without_provider");
+  // REFUSING is a settled fact — for ANY of its reasons, not only the ones about the credential: a
+  // provider name we do not support and a missing endpoint kill the rewrite just as silently, and
+  // the editor cannot save either one, so the bags that carry them arrive over REST and MCP and this
+  // is the only place they are ever seen. The issue is raised whether or not a ref is present,
+  // because a present-but-unusable ref is the whole problem. A resolvable configuration can still be
+  // waiting on a vault entry nobody filled in, which is the ordinary pending case.
+  const refused = normalizeResolution !== null && !normalizeResolution.runnable;
   push(
     { key: "ttsNormalize", tab: "behavior", sectionId: "tts" },
-    refusedOverCredential
+    refused
       ? { pending: false }
       : credIssue(
           normalizeResolution !== null &&

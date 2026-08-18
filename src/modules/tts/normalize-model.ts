@@ -5,20 +5,24 @@ import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 // configuration may run at all. One function answers all four, because they are one question: every
 // wrong answer here is the same failure, a secret belonging to one vendor arriving at another.
 //
-// Three rounds of review found three different paths into that failure (the agent's key sent to a
-// switched provider; the new key sent to the old gateway; a misspelled provider name silently
-// falling back to the agent's while keeping the dedicated key). They were three symptoms of the
-// resolution being spread across the runtime, the editor and the health check, each re-deriving it.
-// It now lives here, and the editor projects THIS rather than re-implementing it.
+// Review found five separate paths into it, and they all had one shape: HALF of the destination
+// stored next to the key, the other half read from something that moves — the agent's provider, the
+// agent's endpoint, a provider name nobody validated. A key is only ever as pinned as its least
+// pinned half, so a dedicated credential names its vendor AND brings its own endpoint, and the
+// agent's key travels only while the destination is unchanged in both halves.
+//
+// Those five were also symptoms of the resolution being spread across the runtime, the editor and
+// the health check, each re-deriving it. It now lives here, and the editor projects THIS rather than
+// re-implementing it.
 //
 // The shape of the rule:
 //
 //   * UNKNOWN provider (a name REST or MCP stored that is not a provider we support): nothing runs.
 //     Falling back to the agent's provider while keeping the dedicated credential would send that
 //     key to a vendor it does not belong to, which is how a typo becomes a leak.
-//   * SAME provider (inherited, or named explicitly to attach a separate key on the same vendor):
-//     each unset field falls back to the agent's, field by field. This is the case the feature
-//     exists for, and it is what keeps an install that touches nothing behaving as before.
+//   * SAME provider, ON THE AGENT'S KEY: each unset field falls back to the agent's, field by
+//     field. This is the case the feature exists for ("same account, cheaper model"), and it is what
+//     keeps an install that touches nothing behaving as before.
 //   * DIFFERENT provider: nothing is inherited, because everything the agent holds belongs to the
 //     old vendor. The model would be an id the new one refuses, the endpoint would send the NEW key
 //     to the OLD gateway, and the KEY would hand one vendor's secret to another.
@@ -27,7 +31,9 @@ import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 //
 // And the credential, which is the part that decides whether a switched provider runs at all:
 //
-//   * `own`   — a credential was configured for the rewrite. Always allowed.
+//   * `own`   — a credential was configured for the rewrite. Always allowed, and inherits NOTHING
+//               about where it is sent: it names the vendor it belongs to, and it carries its own
+//               endpoint (or falls back to that vendor's, never to the agent's).
 //   * `agent` — the agent's own key, allowed ONLY while the DESTINATION is unchanged: same vendor
 //               and same host.
 //   * `none`  — no key travels at all. Reachable only for `openai-compatible`, which authenticates
@@ -131,7 +137,13 @@ export function resolveNormalizeModel(
   const agentBaseURL = str(agent.baseURL);
   const ownBaseURL =
     str(opts.ownCredentialBaseURL) ?? str(tts.normalizeBaseURL);
-  const baseURL = switched ? ownBaseURL : (ownBaseURL ?? agentBaseURL);
+  // The agent's endpoint is inherited by a rewrite that rides the agent WHOLE — its vendor and its
+  // key — and by no other. A dedicated key that borrows the host has the same shape as a dedicated
+  // key that borrowed the vendor: half of the destination is stored, the other half belongs to a
+  // field the operator edits on another tab, and the day it moves the key follows it to a host that
+  // never issued it. Naming the vendor pins one half; this pins the other.
+  const inheritsAgent = !switched && !own;
+  const baseURL = inheritsAgent ? (ownBaseURL ?? agentBaseURL) : ownBaseURL;
   const hasEndpoint = baseURL !== null && usable(baseURL);
 
   // An endpoint is not a courtesy for openai-compatible: it IS the address, and the credential can
@@ -144,8 +156,8 @@ export function resolveNormalizeModel(
   // vendor AND the host. An overridden endpoint on the agent's own provider is still somewhere the
   // agent's key was never issued for, and sending it there is the same leak as sending it to another
   // vendor. (Reachable from the editor, which shows the endpoint field for openai-compatible while
-  // leaving the key optional.) Pointing the rewrite at a proxy on purpose is still supported: name
-  // the credential, even the same one, and the intent is explicit.
+  // leaving the key optional.) Pointing the rewrite at a proxy on purpose is still supported, and it
+  // is spelled out rather than inherited: name the credential and the endpoint it is for.
   const sameDestination = !switched && baseURL === agentBaseURL;
 
   let credential: NormalizeCredentialSource;

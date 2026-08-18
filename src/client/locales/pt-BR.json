@@ -674,7 +674,7 @@
       "redirect": "O redirecionamento está ativado mas uma caixa de WhatsApp ou de chat do site não foi definida, então ele não vai rodar.",
       "stt": "A transcrição de voz está ligada, mas sem chave de API definida.",
       "tts": "As respostas em áudio estão ligadas, mas sem chave de API definida.",
-      "ttsNormalize": "A reescrita para fala aponta para um destino que a chave do agente não cobre, sem uma chave própria utilizável, então será pulada.",
+      "ttsNormalize": "A reescrita para fala está ligada mas a configuração de modelo dela não pode rodar, então o áudio sai sem ela. Confira provedor, chave e endpoint.",
       "vision": "A leitura de imagens/documentos está ligada, mas sem chave de API definida."
     },
     "configIssueKnowledge": "A base de conhecimento \"{{name}}\" tem documentos que precisam ser indexados.",
@@ -1000,7 +1000,7 @@
     "ttsModeNever": "Nunca (somente texto)",
     "ttsModePreference": "Seguir a preferência do cliente",
     "ttsNormalize": "Reescrever a resposta para ser falada, não lida",
-    "ttsNormalizeBaseURLHint": "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+    "ttsNormalizeBaseURLHint": "Obrigatório para endpoints compatíveis com OpenAI, a não ser que a credencial já traga um.",
     "ttsNormalizeCredentialHint": "Obrigatória quando o provedor é diferente do agente: a chave do agente nunca é enviada a outro fornecedor, então sem uma chave própria a reescrita não roda e o áudio sai sem ela.",
     "ttsNormalizeHint": "Uma chamada de modelo a mais por resposta em áudio: números, datas e valores saem por extenso, e uma lista de opções vira uma frase que uma pessoa diria em voz alta. Aparece nos Logs como etapa própria e no painel como uso próprio.",
     "ttsNormalizeModel": "Modelo da reescrita",

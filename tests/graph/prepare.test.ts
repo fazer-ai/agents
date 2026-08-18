@@ -261,17 +261,44 @@ describe("buildSpeechNormalizer", () => {
   // The operator pointed the rewrite at its own credential and that credential is gone. Reaching for
   // the AGENT's key would be a silent substitution onto a provider that may not even accept it, so
   // the rewrite is skipped and the audio goes out from the raw text.
+  //
+  // NOTE: the provider is named on purpose. A dedicated credential without one is refused by the
+  // resolution itself, which would make this pass without the vault lookup ever mattering — a green
+  // test proving the wrong guard.
   test("skips entirely when its own credential did not resolve", () => {
     const { makeModel, getCaptured } = captureModel();
     const cfg = makeConfig({
       ttsConfig: {
         ...TTS_DEFAULTS,
         normalize: true,
+        normalizeProvider: "openai",
         normalizeCredentialRef: "vault:404",
       },
       ttsNormalizeApiKey: "",
     });
     expect(buildSpeechNormalizer(cfg, { makeModel })).toBeUndefined();
     expect(getCaptured()).toBeNull();
+  });
+
+  // What the rule buys, at the layer where it is spent: the key that travels and the host it travels
+  // to. The agent runs behind a gateway; the rewrite has a key of its own on the same vendor. The
+  // gateway is NOT inherited, because the day the operator repoints the agent (a different tab, its
+  // own save) that inheritance would carry this key along with it.
+  test("a dedicated key is not sent to the agent's gateway", () => {
+    const { makeModel, getCaptured } = captureModel();
+    const cfg = makeConfig({
+      mc: { provider: "openai", model: "gpt-5" },
+      credentialBaseUrl: "https://gateway.example.com/v1",
+      ttsConfig: {
+        ...TTS_DEFAULTS,
+        normalize: true,
+        normalizeProvider: "openai",
+        normalizeCredentialRef: "vault:9",
+      },
+      ttsNormalizeApiKey: "sk-rewriter",
+    });
+    expect(buildSpeechNormalizer(cfg, { makeModel })).toBeDefined();
+    expect(getCaptured().apiKey).toBe("sk-rewriter");
+    expect(getCaptured().baseURL).toBeUndefined();
   });
 });

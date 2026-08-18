@@ -13,7 +13,9 @@ import { readTtsConfig } from "@/modules/tts/settings";
 // column that matters is what reaches the provider.
 //
 // The failure this table exists to make impossible: a secret belonging to one vendor arriving at
-// another. Three separate review rounds found three different paths into it.
+// somewhere it was not issued for. Five separate review rounds found five different paths into it,
+// each one storing half of the destination next to the key and reading the other half off a field
+// the operator edits somewhere else.
 
 const AGENT: NormalizeModelSource = {
   provider: "openai",
@@ -155,6 +157,64 @@ describe("resolveNormalizeModel", () => {
         normalizeCredentialRef: "vault:9",
       },
       want: { provider: "openai", runnable: true, credential: "own" },
+    },
+    {
+      // The other half of the same pinning problem. Naming the vendor pins WHO issued the key; it
+      // says nothing about WHERE it may be sent, and the agent's endpoint is a field on another tab.
+      // Inheriting it here would hand that key to whatever host the agent points at tomorrow, so a
+      // dedicated key gets the vendor's own endpoint (null) unless it brings one.
+      name: "a dedicated key does not inherit the agent's endpoint on the same vendor",
+      tts: {
+        normalize: true,
+        normalizeProvider: "openai",
+        normalizeCredentialRef: "vault:9",
+      },
+      agent: { ...AGENT, baseURL: "https://gw.example.com/v1" },
+      want: {
+        provider: "openai",
+        baseURL: null,
+        runnable: true,
+        credential: "own",
+      },
+    },
+    {
+      // Same rule where the endpoint IS the address: with nothing of its own, there is no address to
+      // send the key to, and borrowing the agent's is the leak above. Refused instead of guessed —
+      // and the editor renders that field, so this is one keystroke from the operator.
+      name: "a dedicated key on openai-compatible needs an endpoint of its own",
+      tts: {
+        normalize: true,
+        normalizeProvider: "openai-compatible",
+        normalizeCredentialRef: "vault:9",
+      },
+      agent: {
+        provider: "openai-compatible",
+        model: "llama-3.1",
+        baseURL: "http://llama:8080/v1",
+      },
+      want: { runnable: false, reason: "endpoint_missing" },
+    },
+    {
+      // And once it brings one, the pair is complete: vendor, host and key all stored together, so
+      // nothing the agent does afterwards moves any of them.
+      name: "a dedicated key with its own endpoint pins both halves of the destination",
+      tts: {
+        normalize: true,
+        normalizeProvider: "openai-compatible",
+        normalizeCredentialRef: "vault:9",
+        normalizeBaseURL: "http://rewriter:8080/v1",
+      },
+      agent: {
+        provider: "openai-compatible",
+        model: "llama-3.1",
+        baseURL: "http://llama:8080/v1",
+      },
+      want: {
+        provider: "openai-compatible",
+        baseURL: "http://rewriter:8080/v1",
+        runnable: true,
+        credential: "own",
+      },
     },
     {
       // With its own key, the change is legitimate. Inheriting "gpt-5" into Anthropic would send an

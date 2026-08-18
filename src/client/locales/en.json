@@ -672,7 +672,7 @@
       "redirect": "Redirect is on but a WhatsApp or website-chat inbox is not set, so it will not run.",
       "stt": "Voice transcription is on but has no API key set.",
       "tts": "Audio replies are on but have no API key set.",
-      "ttsNormalize": "The speech rewrite is pointed somewhere the agent's key does not cover, without a usable key of its own, so it will be skipped.",
+      "ttsNormalize": "The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, key and endpoint.",
       "vision": "Image/document reading is on but has no API key set."
     },
     "configIssueKnowledge": "Knowledge base \"{{name}}\" has documents that need indexing.",

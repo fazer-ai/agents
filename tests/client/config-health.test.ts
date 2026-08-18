@@ -336,17 +336,34 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ).toEqual([]);
     });
 
-    // A provider name REST or MCP stored that we do not support. It is refused for a reason that is
-    // NOT a missing key, so telling the operator to add a credential would send them down the wrong
-    // path entirely.
-    test("an unsupported provider name is not reported as a missing credential", () => {
+    // A provider name REST or MCP stored that we do not support. The editor cannot produce it and
+    // the runtime skips it without a word, so this is the only screen that will ever mention it.
+    // What the message must NOT do is name a missing credential, which would send the operator to
+    // buy a key for a typo.
+    test("an unsupported provider name is surfaced too", () => {
       expect(
         computeConfigIssues({
           ...audio,
           ttsNormalize: true,
           ttsNormalizeProvider: "anthropik",
         }),
-      ).toEqual([]);
+      ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+    });
+
+    // A dedicated key with nowhere to send it. The endpoint is not inherited from the agent once the
+    // rewrite has a key of its own, so this bag is dead until someone gives it an address — and a
+    // bag written over REST has no field validation to say so.
+    test("a dedicated key with no endpoint of its own is surfaced", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          modelProvider: "openai-compatible",
+          modelBaseURL: "http://llama:8080/v1",
+          ttsNormalize: true,
+          ttsNormalizeProvider: "openai-compatible",
+          ttsNormalizeCredentialRef: "vault:3",
+        }),
+      ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
     });
   });
 });

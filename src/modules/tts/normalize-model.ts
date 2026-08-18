@@ -56,6 +56,10 @@ export type NormalizeCredentialSource = "own" | "agent" | "none";
 export type NormalizeNotRunnableReason =
   // A provider name we do not support. Never falls back, never carries the credential.
   | "provider_unknown"
+  // A dedicated credential with the provider left inherited. The key was chosen FOR whatever the
+  // agent's provider happened to be at the time, and nothing records which one that was, so the next
+  // change to the agent's provider would re-point that key at a vendor it was never issued for.
+  | "credential_without_provider"
   // The rewrite points somewhere the agent's key does not belong (another vendor, or another host),
   // with no key of its own and no way to authenticate without one.
   | "credential_required"
@@ -114,6 +118,15 @@ export function resolveNormalizeModel(
   const provider = raw ?? agent.provider;
   const switched = provider !== agent.provider;
   const own = str(tts.normalizeCredentialRef) !== null;
+
+  // A dedicated key has to say which vendor it is for, because nothing else does. The agent's
+  // provider is not that answer: it is a moving target, and the tabs of the editor do not even save
+  // together, so changing it on the General tab alone leaves this key behind, now pointed at a
+  // vendor that never issued it. Naming the provider — even the agent's own — is what pins the two
+  // together in the settings bag, where they survive as a pair.
+  if (own && raw === null) {
+    return NOT_RUNNABLE(provider, "credential_without_provider");
+  }
 
   const agentBaseURL = str(agent.baseURL);
   const ownBaseURL =

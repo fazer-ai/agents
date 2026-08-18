@@ -674,7 +674,7 @@
       "redirect": "O redirecionamento está ativado mas uma caixa de WhatsApp ou de chat do site não foi definida, então ele não vai rodar.",
       "stt": "A transcrição de voz está ligada, mas sem chave de API definida.",
       "tts": "As respostas em áudio estão ligadas, mas sem chave de API definida.",
-      "ttsNormalize": "A reescrita para fala aponta para outro provedor mas não tem chave de API própria, então será pulada.",
+      "ttsNormalize": "A reescrita para fala aponta para um destino que a chave do agente não cobre, sem uma chave própria utilizável, então será pulada.",
       "vision": "A leitura de imagens/documentos está ligada, mas sem chave de API definida."
     },
     "configIssueKnowledge": "A base de conhecimento \"{{name}}\" tem documentos que precisam ser indexados.",

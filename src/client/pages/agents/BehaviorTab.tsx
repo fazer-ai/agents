@@ -1472,8 +1472,21 @@ export function BehaviorTab({
                     >
                       <CredentialPicker
                         value={tts.normalizeCredentialRef}
+                        // Picking a key while the provider is inherited PINS the provider it was
+                        // picked for. Left inherited, the pair would come apart the next time the
+                        // agent's provider changed — on the General tab, which does not even save
+                        // together with this one — and the key would follow it to a vendor that
+                        // never issued it. The resolver refuses that configuration; this is what
+                        // keeps the editor from producing it.
                         onChange={(v) =>
-                          setTts({ ...tts, normalizeCredentialRef: v })
+                          setTts({
+                            ...tts,
+                            normalizeCredentialRef: v,
+                            normalizeProvider:
+                              v && tts.normalizeProvider === ""
+                                ? agentModelProvider
+                                : tts.normalizeProvider,
+                          })
                         }
                         required={ttsNormalizerNeedsOwnCredential(
                           tts,

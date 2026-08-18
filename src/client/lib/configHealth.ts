@@ -145,19 +145,26 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
         },
       )
     : null;
-  const normalizeNeedsOwnKey =
+  // Two independent ways the rewrite goes quiet, and they need different answers. The resolver
+  // REFUSING over the credential (none where one is required, or one stored without the provider it
+  // belongs to, which REST and MCP can write and the editor cannot) is a settled fact: the issue is
+  // raised whether or not a ref is present, because a present-but-unusable ref is the whole problem.
+  // A resolvable configuration can still be waiting on a vault entry nobody filled in, which is the
+  // ordinary pending case.
+  const refusedOverCredential =
     normalizeResolution !== null &&
-    // Either the resolver refuses it for want of a credential, or one is configured and has to
-    // resolve (REST and MCP accept a credential with no provider: same vendor, another account).
     (normalizeResolution.reason === "credential_required" ||
-      Boolean(input.ttsNormalizeCredentialRef));
+      normalizeResolution.reason === "credential_without_provider");
   push(
     { key: "ttsNormalize", tab: "behavior", sectionId: "tts" },
-    credIssue(
-      normalizeNeedsOwnKey,
-      input.ttsNormalizeCredentialRef ?? "",
-      pending,
-    ),
+    refusedOverCredential
+      ? { pending: false }
+      : credIssue(
+          normalizeResolution !== null &&
+            Boolean(input.ttsNormalizeCredentialRef),
+          input.ttsNormalizeCredentialRef ?? "",
+          pending,
+        ),
   );
   push(
     { key: "vision", tab: "behavior", sectionId: "vision" },

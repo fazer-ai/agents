@@ -251,15 +251,14 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ]);
     });
 
-    // REST and MCP accept a credential with no provider (the same vendor, another account key), and
-    // the runtime SKIPS every rewrite when that credential does not resolve. Gating the check on the
-    // provider being set hid exactly that case.
-    test("a credential of its own with the provider inherited is still checked", () => {
+    // A credential that is referenced but never filled is a second, independent way for the rewrite
+    // to go quiet, and it is checked whether or not the provider was also overridden.
+    test("a pending credential is reported as pending, with its vaultId", () => {
       expect(
         computeConfigIssues({
           ...audio,
           ttsNormalize: true,
-          ttsNormalizeProvider: "",
+          ttsNormalizeProvider: "openai",
           ttsNormalizeCredentialRef: "vault:3",
           pendingRefs: new Set(["vault:3"]),
         }),
@@ -274,12 +273,12 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ]);
     });
 
-    test("a resolvable credential with the provider inherited raises nothing", () => {
+    test("a resolvable credential with its provider named raises nothing", () => {
       expect(
         computeConfigIssues({
           ...audio,
           ttsNormalize: true,
-          ttsNormalizeProvider: "",
+          ttsNormalizeProvider: "openai",
           ttsNormalizeCredentialRef: "vault:3",
         }),
       ).toEqual([]);
@@ -293,6 +292,20 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
           ttsNormalizeProvider: "anthropic",
         }),
       ).toEqual([]);
+    });
+
+    // A dedicated key with the provider left inherited cannot run: nothing records which vendor it
+    // was chosen for. The editor cannot produce this (picking a key pins the provider), but REST and
+    // MCP write the bag directly, and the runtime failure is silent.
+    test("a credential stored without its provider is surfaced, not left silent", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "",
+          ttsNormalizeCredentialRef: "vault:3",
+        }),
+      ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
     });
 
     // An openai-compatible endpoint authenticates by its URL: the resolver runs it with no key at

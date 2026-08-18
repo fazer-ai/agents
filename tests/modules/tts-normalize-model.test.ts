@@ -115,10 +115,11 @@ describe("resolveNormalizeModel", () => {
       want: { runnable: false, reason: "credential_required" },
     },
     {
-      // Naming the credential (even the agent's own) is how that intent is made explicit.
-      name: "an endpoint override WITH a named credential is allowed",
+      // Naming the credential AND the provider it belongs to is how that intent is made explicit.
+      name: "an endpoint override WITH a named credential and provider is allowed",
       tts: {
         normalize: true,
+        normalizeProvider: "openai",
         normalizeBaseURL: "https://proxy.example.com/v1",
         normalizeCredentialRef: "vault:1",
       },
@@ -127,6 +128,33 @@ describe("resolveNormalizeModel", () => {
         runnable: true,
         credential: "own",
       },
+    },
+    {
+      // A dedicated key with the provider left inherited: nothing records WHICH vendor that key was
+      // chosen for, so the next change to the agent's provider silently re-points it at one that
+      // never issued it. And that change does not need REST — the General tab saves on its own,
+      // without the Behavior tab's cleared state ever reaching the database.
+      name: "a dedicated credential with the provider inherited is refused, not pinned by luck",
+      tts: {
+        normalize: true,
+        normalizeCredentialRef: "vault:9",
+      },
+      want: {
+        runnable: false,
+        reason: "credential_without_provider",
+        credential: "none",
+      },
+    },
+    {
+      // Naming the agent's OWN provider is the fix, and it costs the operator one field: from then
+      // on the pair travels together in the settings bag and survives any change to the agent's.
+      name: "the same credential, with the agent's provider named, is allowed",
+      tts: {
+        normalize: true,
+        normalizeProvider: "openai",
+        normalizeCredentialRef: "vault:9",
+      },
+      want: { provider: "openai", runnable: true, credential: "own" },
     },
     {
       // With its own key, the change is legitimate. Inheriting "gpt-5" into Anthropic would send an

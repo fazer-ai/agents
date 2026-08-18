@@ -72,7 +72,6 @@ import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
-  readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import { BehaviorTab, type SendImageState } from "./BehaviorTab";
@@ -84,6 +83,7 @@ import { ChannelsTab } from "./ChannelsTab";
 import { ExportAgentModal } from "./ExportAgentModal";
 import { GeneralTab } from "./GeneralTab";
 import { GuardrailsTab } from "./GuardrailsTab";
+import { readGuardrailsFormState } from "./guardrailsFormState";
 import { KnowledgeTab } from "./KnowledgeTab";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
@@ -789,7 +789,7 @@ function AgentEditor() {
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
     setChannelRedirect(readChannelRedirectState(a));
-    setGuardrails(readGuardrailsConfig(a.settings));
+    setGuardrails(readGuardrailsFormState(a.settings));
   }, []);
 
   // Reset ONLY the general section (identity + model) from a synced agent — the post-save sync for the
@@ -832,7 +832,7 @@ function AgentEditor() {
   // Reset ONLY the guardrails section from a synced agent — the post-save sync for the Guardrails tab.
   const applyGuardrails = useCallback((a: Agent) => {
     syncedAgentRef.current = a;
-    setGuardrails(readGuardrailsConfig(a.settings));
+    setGuardrails(readGuardrailsFormState(a.settings));
   }, []);
 
   const loadHours = useCallback(async () => {
@@ -1667,7 +1667,7 @@ function AgentEditor() {
   const revertGuardrails = () => {
     const a = syncedAgentRef.current;
     if (!a) return;
-    setGuardrails(readGuardrailsConfig(a.settings));
+    setGuardrails(readGuardrailsFormState(a.settings));
   };
   // Tools and Knowledge share one grant array but own disjoint slices (Tools =
   // non-RAG, Knowledge = RAG), so each discard restores only its slice and
@@ -1998,8 +1998,14 @@ function AgentEditor() {
       cloneModal.close();
       showToast(t("editor.cloned", "Agent cloned (disabled)."), "success");
       navigate(`/agents/${data.agent.id}`);
-    } catch {
-      showToast(t("editor.cloneError", "Could not clone."), "error");
+    } catch (e) {
+      // The clone carries the source agent's settings verbatim, so a source written before the text
+      // caps is refused by name — the generic message would leave the operator with a button that
+      // fails and no field to shorten.
+      showToast(
+        apiErrorMessage(e) || t("editor.cloneError", "Could not clone."),
+        "error",
+      );
     }
   }
 

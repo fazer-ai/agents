@@ -29,6 +29,11 @@ export interface ConfigIssue {
   pending?: boolean;
   // The pending vault entry id (parsed from the `vault:<id>` ref). Only set when `pending` is true.
   vaultId?: string;
+  // When true, the credential is referenced but the vault does not hold it: it was deleted, or the
+  // ref was written by something that does not check (REST stores it verbatim, and MCP speaks
+  // NAMES, which no resolver matches). There is nothing to fill in, so this deep-links to the field
+  // like a missing credential does.
+  unresolved?: boolean;
   // For "knowledge" issues: the base that has imported-but-unindexed documents (and its name), so the
   // editor can open that base's documents modal.
   knowledgeBaseId?: string;
@@ -65,6 +70,13 @@ export interface ConfigHealthInput {
   // Refs (`vault:<id>`) whose vault entry exists but is still pending (secret not filled in yet). A
   // feature wired to one of these is configured but cannot run until the operator fills it.
   pendingRefs?: Set<string>;
+  // Every ref the vault currently holds, so a ref that resolves to nothing can be told apart from
+  // one that resolves. `null`/absent means the list has NOT loaded, and that has to be its own value
+  // rather than an empty set: the vault arrives a request after the first paint, and an empty set
+  // would read as "nothing resolves" and flag every credential on the page for that one paint.
+  // Under-reporting for a moment is the safe direction here; over-reporting trains the operator to
+  // ignore the panel.
+  knownRefs?: Set<string> | null;
   // Knowledge bases this agent uses that still have documents awaiting indexing (status UNINDEXED),
   // e.g. right after an import that bundled the source text. Each becomes a "knowledge" issue — unless
   // the embedding prerequisite below is missing, in which case a single "embedding" issue is raised.
@@ -81,38 +93,57 @@ export interface ConfigHealthInput {
 
 const VAULT_REF_PREFIX = "vault:";
 
+// The three ways one credentialed feature can be unrunnable. Every credential ref on the agent goes
+// through this one function, all six of them: a rule that reaches half its fields is worse than no
+// rule, because the half it misses now reads as checked.
+type CredVerdict =
+  | { kind: "missing" }
+  | { kind: "pending"; vaultId: string }
+  | { kind: "unresolved" };
+
 // For one credentialed feature, decides which issue (if any) to raise:
 //   - not enabled → none;
 //   - enabled with NO ref → "missing" (the classic enabled-but-uncredentialed case);
-//   - enabled with a ref that points to a PENDING vault entry → "pending" (referenced, not filled).
+//   - enabled with a ref that points to a PENDING vault entry → "pending" (referenced, not filled);
+//   - enabled with a ref the vault does not hold → "unresolved" (deleted, or never resolvable).
+// "pending" and "unresolved" are mutually exclusive for any list-derived input, since a pending
+// entry EXISTS and is therefore also a known ref — the order below is for the reader, nothing
+// depends on it: swapping the two branches changes no test, which is why this note replaced a claim
+// that it did. What matters is that they stay separate verdicts, because the fixes differ — fill
+// the secret in place, or pick a different key.
 function credIssue(
   enabled: boolean,
   ref: string,
   pendingRefs: Set<string> | undefined,
-): { pending: boolean; vaultId?: string } | null {
+  knownRefs: Set<string> | null | undefined,
+): CredVerdict | null {
   if (!enabled) return null;
-  if (!ref) return { pending: false };
+  if (!ref) return { kind: "missing" };
   if (pendingRefs?.has(ref)) {
-    return { pending: true, vaultId: ref.slice(VAULT_REF_PREFIX.length) };
+    return { kind: "pending", vaultId: ref.slice(VAULT_REF_PREFIX.length) };
   }
+  if (knownRefs && !knownRefs.has(ref)) return { kind: "unresolved" };
   return null;
 }
 
-// Returns the list of features that are enabled but cannot run: either no credential is set
-// ("missing"), or the referenced credential is a pending vault entry whose secret is not filled yet
-// ("pending"). An OpenAI-compatible model can authenticate via its base URL alone, so it is not
-// flagged (mirrors the editor's `required={provider !== "openai-compatible"}`).
+// Returns the list of features that are enabled but cannot run: no credential is set ("missing"),
+// the referenced credential is a pending vault entry whose secret is not filled yet ("pending"), or
+// the referenced credential is not in the vault at all ("unresolved"). An OpenAI-compatible model
+// can authenticate via its base URL alone, so it is not flagged (mirrors the editor's
+// `required={provider !== "openai-compatible"}`).
 export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   const issues: ConfigIssue[] = [];
   const pending = input.pendingRefs;
-  const push = (
-    base: ConfigIssue,
-    res: { pending: boolean; vaultId?: string } | null,
-  ): void => {
+  const known = input.knownRefs;
+  const push = (base: ConfigIssue, res: CredVerdict | null): void => {
     if (!res) return;
-    issues.push(
-      res.pending ? { ...base, pending: true, vaultId: res.vaultId } : base,
-    );
+    if (res.kind === "pending") {
+      issues.push({ ...base, pending: true, vaultId: res.vaultId });
+    } else if (res.kind === "unresolved") {
+      issues.push({ ...base, unresolved: true });
+    } else {
+      issues.push(base);
+    }
   };
   push(
     { key: "model", tab: "general", sectionId: "general-model" },
@@ -122,15 +153,21 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       ),
       input.modelCredentialRef,
       pending,
+      known,
     ),
   );
   push(
     { key: "stt", tab: "behavior", sectionId: "stt" },
-    credIssue(input.sttEnabled, input.sttCredentialRef, pending),
+    credIssue(input.sttEnabled, input.sttCredentialRef, pending, known),
   );
   push(
     { key: "tts", tab: "behavior", sectionId: "tts" },
-    credIssue(input.ttsMode !== "never", input.ttsCredentialRef, pending),
+    credIssue(
+      input.ttsMode !== "never",
+      input.ttsCredentialRef,
+      pending,
+      known,
+    ),
   );
   // The speech rewrite. Both ways it fails are SILENT at runtime (best-effort: the audio still goes
   // out, unrewritten), so the editor is the only place they surface.
@@ -169,21 +206,30 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // is the only place they are ever seen. The issue is raised whether or not a ref is present,
   // because a present-but-unusable ref is the whole problem. A resolvable configuration can still be
   // waiting on a vault entry nobody filled in, which is the ordinary pending case.
-  const refused = normalizeResolution !== null && !normalizeResolution.runnable;
-  push(
-    { key: "ttsNormalize", tab: "behavior", sectionId: "tts" },
-    refused
-      ? { pending: false }
-      : credIssue(
-          normalizeResolution !== null &&
-            Boolean(input.ttsNormalizeCredentialRef),
-          input.ttsNormalizeCredentialRef ?? "",
-          pending,
-        ),
-  );
+  const normalizeIssue: ConfigIssue = {
+    key: "ttsNormalize",
+    tab: "behavior",
+    sectionId: "tts",
+  };
+  if (normalizeResolution !== null && !normalizeResolution.runnable) {
+    // The refusal is a verdict on the BAG, so it holds whatever the vault says and it is what the
+    // operator has to act on first. One issue, not two.
+    issues.push(normalizeIssue);
+  } else {
+    push(
+      normalizeIssue,
+      credIssue(
+        normalizeResolution !== null &&
+          Boolean(input.ttsNormalizeCredentialRef),
+        input.ttsNormalizeCredentialRef ?? "",
+        pending,
+        known,
+      ),
+    );
+  }
   push(
     { key: "vision", tab: "behavior", sectionId: "vision" },
-    credIssue(input.visionEnabled, input.visionCredentialRef, pending),
+    credIssue(input.visionEnabled, input.visionCredentialRef, pending, known),
   );
   // Knowledge bases with documents awaiting indexing. Indexing needs the tenant's embedding credential,
   // so if that prerequisite is missing we raise ONE "embedding" issue (the root cause) instead of N
@@ -192,15 +238,17 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // the per-base "knowledge" issues (the operator just needs to click index).
   const kbsNeedingIndex = input.knowledgeBasesNeedingIndex ?? [];
   if (kbsNeedingIndex.length > 0) {
-    const embRef = input.embeddingCredentialRef ?? "";
-    if (!embRef) {
-      issues.push({ key: "embedding" });
-    } else if (input.pendingRefs?.has(embRef)) {
-      issues.push({
-        key: "embedding",
-        pending: true,
-        vaultId: embRef.slice(VAULT_REF_PREFIX.length),
-      });
+    // The tenant's embedding key is the sixth ref that can dangle, and it fails exactly like the
+    // other five — hence the same verdict function rather than a second reading of the same three
+    // states. Only when it IS usable do the per-base "index me" prompts make sense.
+    const embedding = credIssue(
+      true,
+      input.embeddingCredentialRef ?? "",
+      pending,
+      known,
+    );
+    if (embedding) {
+      push({ key: "embedding" }, embedding);
     } else {
       for (const kb of kbsNeedingIndex) {
         issues.push({

@@ -442,3 +442,125 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
     });
   });
 });
+
+// A stored ref can point at a vault entry that no longer exists. Deleting an entry is not blocked by
+// its references (the vault's delete is a plain deleteMany; the reference list it shows is
+// informational), and `PATCH /v1/agents/:id` stores whatever ref it is handed, name or id. The
+// runtime is where it lands: the agent's own model logs "cannot reply until it is fixed", and
+// STT/vision/TTS/the speech rewrite skip with a warn line nobody is watching for. Which makes this
+// panel the one place it can be caught before the next customer message, and it stayed green.
+describe("computeConfigIssues — a credential whose vault entry is gone", () => {
+  const linked = {
+    key: "model",
+    tab: "general",
+    sectionId: "general-model",
+  } as const;
+
+  test("flags the model credential when the vault no longer holds it", () => {
+    expect(
+      computeConfigIssues({ ...base, knownRefs: new Set(["vault:7"]) }),
+    ).toEqual([{ ...linked, unresolved: true }]);
+  });
+
+  // The vault list arrives one request after the first paint. An empty set would mean "no credential
+  // resolves" and light up every field on screen for a moment, so "not loaded" has to be its own
+  // value and it has to mean silence.
+  test("raises nothing while the vault has not loaded (undefined or null)", () => {
+    expect(computeConfigIssues(base)).toEqual([]);
+    expect(computeConfigIssues({ ...base, knownRefs: null })).toEqual([]);
+  });
+
+  // Refs are resolved by id and only by id (`vaultRefWhere` matches `vault:<id>`; anything else falls
+  // through to a never-matching row). A name reaches the field over MCP and REST, reads as configured
+  // in the editor, and resolves to nothing at runtime — the same failure by another spelling.
+  test("flags a ref stored as a name, which no resolver will ever match", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        modelCredentialRef: "openai-key",
+        knownRefs: new Set(["vault:1"]),
+      }),
+    ).toEqual([{ ...linked, unresolved: true }]);
+  });
+
+  // A pending entry EXISTS, so it is in the known set; the two states cannot both be true. Asserted
+  // anyway because the fixes differ: pending opens the fill modal, unresolved sends the operator
+  // back to the field to pick another key.
+  test("a pending entry is reported as pending, never as unresolved", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        pendingRefs: new Set(["vault:1"]),
+        knownRefs: new Set(["vault:1"]),
+      }),
+    ).toEqual([{ ...linked, pending: true, vaultId: "1" }]);
+  });
+
+  test("flags stt, tts and vision the same way, each to its own section", () => {
+    const issues = computeConfigIssues({
+      ...base,
+      sttEnabled: true,
+      sttCredentialRef: "vault:9",
+      ttsMode: "mirror",
+      ttsCredentialRef: "vault:8",
+      visionEnabled: true,
+      visionCredentialRef: "vault:6",
+      knownRefs: new Set(["vault:1"]),
+    });
+    expect(
+      issues.map((i) => `${i.key}:${i.unresolved}:${i.sectionId}`),
+    ).toEqual(["stt:true:stt", "tts:true:tts", "vision:true:vision"]);
+  });
+
+  test("flags the speech rewrite's own credential", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        ttsMode: "mirror",
+        ttsCredentialRef: "vault:2",
+        ttsNormalize: true,
+        ttsNormalizeProvider: "anthropic",
+        ttsNormalizeCredentialRef: "vault:3",
+        knownRefs: new Set(["vault:1", "vault:2"]),
+      }),
+    ).toEqual([
+      {
+        key: "ttsNormalize",
+        tab: "behavior",
+        sectionId: "tts",
+        unresolved: true,
+      },
+    ]);
+  });
+
+  // The rewrite has a second, earlier way to be unusable: the resolver refusing the bag outright.
+  // That verdict does not depend on the vault, and it is the one the operator has to act on first,
+  // so it stays the single issue raised.
+  test("a bag the resolver refuses stays one issue, not two", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        ttsMode: "mirror",
+        ttsCredentialRef: "vault:2",
+        ttsNormalize: true,
+        ttsNormalizeProvider: "not-a-provider",
+        ttsNormalizeCredentialRef: "vault:3",
+        knownRefs: new Set(["vault:1", "vault:2"]),
+      }),
+    ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+  });
+
+  // The tenant's embedding key is the sixth ref that can dangle, and it fails the same way: the
+  // per-base "index me" prompts would all fail on a key that is not there, so the root cause is the
+  // one issue raised.
+  test("flags the tenant embedding credential instead of the per-base index prompts", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        knowledgeBasesNeedingIndex: [{ id: "5", name: "FAQ" }],
+        embeddingCredentialRef: "vault:7",
+        knownRefs: new Set(["vault:1"]),
+      }),
+    ).toEqual([{ key: "embedding", unresolved: true }]);
+  });
+});

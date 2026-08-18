@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getActiveTenantId } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
 import { formatVaultRef } from "@/client/lib/credentialRef";
@@ -109,4 +109,53 @@ export function useVaultBaseUrls(): (ref: string) => string | null {
         : null) ?? null,
     [entries],
   );
+}
+
+// Which refs the vault holds right now, and which of those are still waiting for their secret. Both
+// answers come off the same list the pickers already load, and a page needs them whether or not the
+// field that displays them is mounted (the agent editor renders one tab at a time but judges the
+// whole configuration on every one of them).
+//
+// `known` is null until the first list lands, and that distinction is the point: an empty set means
+// "the vault holds nothing", which would declare every credential on the page unresolvable for the
+// one paint between mount and response. `pending` has no such state because the safe direction is
+// the opposite — an unfilled credential simply goes unreported until the list arrives.
+export function useVaultRefs(): {
+  known: Set<string> | null;
+  pending: Set<string>;
+  pendingEntries: VaultEntry[];
+} {
+  const [entries, setEntries] = useState<VaultEntry[] | null>(null);
+  const load = useCallback(async () => {
+    try {
+      setEntries(await loadVault());
+    } catch {
+      // A failed load stays "not loaded": the vault is unknown, not empty.
+      setEntries(null);
+    }
+  }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  useEffect(() => {
+    const onChanged = () => void load();
+    window.addEventListener(VAULT_CHANGED_EVENT, onChanged);
+    return () => window.removeEventListener(VAULT_CHANGED_EVENT, onChanged);
+  }, [load]);
+  const pendingEntries = useMemo(
+    () => (entries ?? []).filter((e) => e.status === "pending"),
+    [entries],
+  );
+  return {
+    known: useMemo(
+      () =>
+        entries ? new Set(entries.map((e) => formatVaultRef(e.id))) : null,
+      [entries],
+    ),
+    pending: useMemo(
+      () => new Set(pendingEntries.map((e) => formatVaultRef(e.id))),
+      [pendingEntries],
+    ),
+    pendingEntries,
+  };
 }

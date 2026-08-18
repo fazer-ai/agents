@@ -54,9 +54,8 @@ import type { ApiErrorPayload } from "@/client/lib/types";
 import { slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
-  loadVault,
   useVaultBaseUrls,
-  VAULT_CHANGED_EVENT,
+  useVaultRefs,
 } from "@/client/lib/vaultCache";
 import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditModal";
 import { McpEditModal } from "@/client/pages/resources/McpEditModal";
@@ -1171,26 +1170,16 @@ function AgentEditor() {
     dirty.tools ||
     dirty.knowledge;
 
-  // Pending credentials (referenced but not filled yet — e.g. created via the MCP credential_create
-  // tool). A feature wired to one of these is configured but cannot run. Loaded from the shared vault
-  // cache and refreshed on any vault change (e.g. the operator fills the secret), so the warning
-  // clears without a manual reload.
-  const [pendingEntries, setPendingEntries] = useState<VaultEntry[]>([]);
-  useEffect(() => {
-    let alive = true;
-    const refresh = () =>
-      loadVault().then((entries) => {
-        if (!alive) return;
-        setPendingEntries(entries.filter((e) => e.status === "pending"));
-      });
-    refresh();
-    window.addEventListener(VAULT_CHANGED_EVENT, refresh);
-    return () => {
-      alive = false;
-      window.removeEventListener(VAULT_CHANGED_EVENT, refresh);
-    };
-  }, []);
-  const pendingRefs = new Set(pendingEntries.map((e) => `vault:${e.id}`));
+  // What the vault holds, for the two credential states the panel below can only see from the list:
+  // referenced but not filled yet (created via the MCP credential_create tool, say), and referenced
+  // but not there at all (deleted, or a name written over REST/MCP that no resolver matches). Both
+  // refresh on any vault change (e.g. the operator fills the secret), so a warning clears without a
+  // manual reload.
+  const {
+    known: knownRefs,
+    pending: pendingRefs,
+    pendingEntries,
+  } = useVaultRefs();
 
   // The tenant's embedding credential ref — a prerequisite for indexing knowledge bases. Loaded once so
   // config health can, when a base needs indexing, point at the real blocker (embedding unconfigured, or
@@ -1224,6 +1213,12 @@ function AgentEditor() {
   // t('editor.configIssue.embedding', 'A knowledge base needs indexing, but the tenant embedding is not configured.')
   // t('editor.configIssuePending.embedding', 'A knowledge base needs indexing, but the embedding credential is not filled in yet.')
   // t('editor.configIssue.redirect', 'Redirect is on but a WhatsApp or website-chat inbox is not set, so it will not run.')
+  // t('editor.configIssueUnresolved.model', 'The model credential no longer exists, so the agent cannot reply. Pick another one.')
+  // t('editor.configIssueUnresolved.stt', 'The transcription credential no longer exists, so voice messages are not transcribed.')
+  // t('editor.configIssueUnresolved.tts', 'The audio-reply credential no longer exists, so replies are sent as text.')
+  // t('editor.configIssueUnresolved.ttsNormalize', 'The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.')
+  // t('editor.configIssueUnresolved.vision', 'The image-reading credential no longer exists, so images and documents are not read.')
+  // t('editor.configIssueUnresolved.embedding', 'A knowledge base needs indexing, but the embedding credential no longer exists.')
   // Knowledge bases this agent uses (its RAG grant) that still have documents awaiting indexing —
   // surfaced as a config warning so a freshly-imported agent flags "index me" right in the editor.
   const ragGrant = grants.find((g) => g.source === "RAG");
@@ -1260,6 +1255,7 @@ function AgentEditor() {
     visionEnabled: vision.enabled,
     visionCredentialRef: vision.credentialRef,
     pendingRefs,
+    knownRefs,
     knowledgeBasesNeedingIndex,
     embeddingCredentialRef,
     redirectEnabled: channelRedirect.enabled,
@@ -1309,8 +1305,10 @@ function AgentEditor() {
     );
   }
 
-  // The human-facing line for a config issue: a "pending credential" variant vs the classic
-  // "missing credential" one. Kept out of the JSX so the dynamic-key biome-ignore sits on the t() call.
+  // The human-facing line for a config issue: "referenced but not filled in" and "referenced but
+  // gone" each read differently from the classic "no credential set", because the operator's next
+  // move differs (fill it, pick another, set one). Kept out of the JSX so the dynamic-key lint
+  // suppression sits on the t() call.
   function issueMessage(issue: (typeof configIssues)[number]): string {
     if (issue.key === "knowledge") {
       return t(
@@ -1323,6 +1321,12 @@ function AgentEditor() {
       // biome-ignore lint/plugin/no-dynamic-i18n-key: pending keys registered via magic comments above computeConfigIssues
       return t(`editor.configIssuePending.${issue.key}` as const, {
         defaultValue: "This credential is referenced but not filled in yet.",
+      });
+    }
+    if (issue.unresolved) {
+      // biome-ignore lint/plugin/no-dynamic-i18n-key: unresolved keys registered via magic comments above computeConfigIssues
+      return t(`editor.configIssueUnresolved.${issue.key}` as const, {
+        defaultValue: "This credential no longer exists. Pick another one.",
       });
     }
     // biome-ignore lint/plugin/no-dynamic-i18n-key: issue keys registered via magic comments above computeConfigIssues

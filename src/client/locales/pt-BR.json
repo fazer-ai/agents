@@ -688,6 +688,14 @@
       "vision": "A credencial de leitura de imagens está referenciada, mas ainda não foi preenchida."
     },
     "configIssuesTitle": "Avisos de configuração",
+    "configIssueUnresolved": {
+      "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding não existe mais.",
+      "model": "A credencial do modelo não existe mais, então o agente não consegue responder. Escolha outra.",
+      "stt": "A credencial de transcrição não existe mais, então as mensagens de voz não são transcritas.",
+      "tts": "A credencial de resposta em áudio não existe mais, então as respostas saem como texto.",
+      "ttsNormalize": "A credencial da reescrita para fala não existe mais, então o áudio sai sem a reescrita.",
+      "vision": "A credencial de leitura de imagens não existe mais, então imagens e documentos não são lidos."
+    },
     "conflictToast": "Este agente foi alterado em outro lugar. Recarregue, ou salve de novo para sobrescrever.",
     "credential": "Chave de API",
     "dangerZone": "Zona de perigo",

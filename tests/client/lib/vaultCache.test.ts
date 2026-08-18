@@ -6,6 +6,7 @@ import {
   loadVault,
   refreshVault,
   useVaultBaseUrls,
+  useVaultRefs,
   VAULT_CHANGED_EVENT,
 } from "@/client/lib/vaultCache";
 
@@ -19,6 +20,7 @@ let entriesToReturn: Array<{
   name: string;
   kind: string | null;
   baseUrl?: string;
+  status?: string;
 }> = [];
 
 beforeEach(() => {
@@ -149,6 +151,56 @@ describe("useVaultBaseUrls", () => {
     });
     await waitFor(() =>
       expect(result.current("vault:7")).toBe("http://llama:8080/v1"),
+    );
+    cleanup();
+  });
+});
+
+// Which refs the vault currently holds, and which of those are still unfilled. Both answers come off
+// the same list, and the page needs them whether or not the field that displays them is mounted —
+// the editor renders one tab at a time.
+describe("useVaultRefs", () => {
+  test("holds `known` at null until the first list arrives", async () => {
+    entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
+    const { result } = renderHook(() => useVaultRefs());
+    // The state that matters: before the response, "nothing is known" must not read as "nothing
+    // resolves". An empty set here would light up every credential on the page for one paint.
+    expect(result.current.known).toBeNull();
+    expect(result.current.pending.size).toBe(0);
+    await waitFor(() =>
+      expect(result.current.known?.has("vault:3")).toBe(true),
+    );
+    cleanup();
+  });
+
+  test("separates filled entries from the ones still awaiting a secret", async () => {
+    entriesToReturn = [
+      { id: "3", name: "openai", kind: "openai" },
+      { id: "4", name: "eleven", kind: "elevenlabs", status: "pending" },
+    ];
+    const { result } = renderHook(() => useVaultRefs());
+    await waitFor(() => expect(result.current.known?.size).toBe(2));
+    // A pending entry EXISTS: it is known AND pending, and the two answers are used for different
+    // fixes (fill it in place vs pick another key).
+    expect(result.current.known?.has("vault:4")).toBe(true);
+    expect([...result.current.pending]).toEqual(["vault:4"]);
+    expect(result.current.pendingEntries.map((e) => e.id)).toEqual(["4"]);
+    cleanup();
+  });
+
+  test("follows a deletion made elsewhere on the page", async () => {
+    entriesToReturn = [
+      { id: "3", name: "openai", kind: "openai" },
+      { id: "9", name: "gone", kind: "openai" },
+    ];
+    const { result } = renderHook(() => useVaultRefs());
+    await waitFor(() => expect(result.current.known?.size).toBe(2));
+    entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
+    await act(async () => {
+      await refreshVault();
+    });
+    await waitFor(() =>
+      expect(result.current.known?.has("vault:9")).toBe(false),
     );
     cleanup();
   });

@@ -17,7 +17,7 @@ import {
   TenantTargetRequiredError,
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { collectOversizedText } from "@/modules/agents/text-caps";
+import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { isOutOfHoursNow, parseWindows } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { ensureTenantSweep } from "@/modules/followups/handlers";
@@ -271,8 +271,14 @@ export class SettingsTextTooLongError extends AppError {
   }
 }
 
-export function assertSettingsTextSizes(settings: unknown): void {
-  const [first] = collectOversizedText(settings);
+// `stored` is the bag this write replaces, and it is what keeps the refusal answerable: only text the
+// write introduces or changes is refused. See collectOversizedTextChanges for why an already-stored
+// value cannot be one (the editor has no control for several of these fields).
+export function assertSettingsTextSizes(
+  settings: unknown,
+  stored: unknown,
+): void {
+  const [first] = collectOversizedTextChanges(settings, stored);
   if (first) {
     throw new SettingsTextTooLongError(first.path, first.length, first.max);
   }
@@ -333,7 +339,6 @@ export async function updateAgent(
   opts: { expectedUpdatedAt?: Date } = {},
 ): Promise<AgentDto> {
   assertPromptSize(patch.systemPrompt);
-  assertSettingsTextSizes(patch.settings);
   const data = agentUpdateSchema.parse(patch);
   validateModelConfigForWrite(data.modelConfig);
   const { businessHoursId, followUpHoursId, ...rest } = data;
@@ -395,6 +400,9 @@ export async function updateAgent(
       Array<{ enabled: boolean; mode: string; settings: unknown }>
     >`SELECT enabled, mode, settings FROM agents WHERE id = ${id} FOR UPDATE`;
     const before = beforeRows[0];
+    // NOTE: Inside the lock, against the row this write replaces — reading the stored bag separately
+    // would compare against a value another writer could have changed in between.
+    assertSettingsTextSizes(rest.settings, before?.settings);
     if (before) {
       const after = {
         enabled: rest.enabled !== undefined ? rest.enabled : before.enabled,
@@ -515,7 +523,7 @@ export async function createAgent(
 ): Promise<AgentDto> {
   const tenantId = requireTenant(ctx);
   assertPromptSize(input.systemPrompt);
-  assertSettingsTextSizes(input.settings);
+  assertSettingsTextSizes(input.settings, undefined);
   const data = agentCreateSchema.parse(input);
   validateModelConfigForWrite(data.modelConfig);
   const bhId =
@@ -630,9 +638,8 @@ export async function cloneAgent(
     if (!src) {
       throw new NotFoundError("agent not found", "errors.agentNotFound");
     }
-    // A clone is a create and it copies the bag verbatim, so it gets the same check: carrying a
-    // legacy over-cap value forward would produce a fresh agent whose first save is refused.
-    assertSettingsTextSizes(src.settings);
+    // NOTE: The bag is copied verbatim, over-cap text included. A clone authors nothing, and refusing
+    // it would make a legacy agent unclonable while its own saves go through.
     const grants = await db.agentToolSelection.findMany({
       where: { agentId: id },
       select: {

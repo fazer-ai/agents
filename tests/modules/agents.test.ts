@@ -894,22 +894,69 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
     }
   });
 
-  // A clone is a create, and it copies the source's settings verbatim. Without the same check a
-  // legacy over-cap value produces a brand-new agent whose FIRST save is refused, which is a worse
-  // place to find out than the clone button.
-  test("cloning refuses to carry an over-cap value forward", async () => {
-    const a = await createAgent(ctx(tenantC), { name: "CloneSrc" }, appDb);
+  // Only text the write introduces or changes is refused. A value stored before the caps existed
+  // cannot be one: several of these fields have no control in the editor at all (a note for a native
+  // tool like private_note) or only render once their section is switched on, so refusing it would
+  // block every save on every tab with nothing the operator could shorten.
+  test("a stored over-cap value does not block a save that leaves it alone", async () => {
+    const a = await createAgent(ctx(tenantC), { name: "LegacyCap" }, appDb);
+    const legacy = "c".repeat(TOOL_INSTRUCTIONS_MAX + 1);
     await suDb.agent.update({
       where: { id: BigInt(a.id) },
-      data: {
+      data: { settings: { handoff: { instructions: legacy } } },
+    });
+
+    const saved = await updateAgent(
+      ctx(tenantC),
+      BigInt(a.id),
+      {
         settings: {
-          handoff: { instructions: "c".repeat(TOOL_INSTRUCTIONS_MAX + 1) },
+          handoff: { instructions: legacy },
+          kanban: { instructions: "move it" },
         },
       },
-    });
+      appDb,
+    );
+    const bag = saved.settings as Record<
+      string,
+      Record<string, string> | undefined
+    >;
+    expect(bag.kanban?.instructions).toBe("move it");
+    // Untouched means untouched: the row keeps every character, and the reader is what keeps the
+    // model-facing copy short.
+    expect(bag.handoff?.instructions).toBe(legacy);
+
+    // Editing that same field is a write like any other, even to a shorter value that is still over.
     expect(
-      cloneAgent(ctx(tenantC), BigInt(a.id), "CloneDst", appDb),
+      updateAgent(
+        ctx(tenantC),
+        BigInt(a.id),
+        { settings: { handoff: { instructions: `${legacy}!` } } },
+        appDb,
+      ),
     ).rejects.toBeInstanceOf(SettingsTextTooLongError);
+  });
+
+  // A clone authors nothing — it replicates a row that already exists in this tenant. Refusing it
+  // would leave a legacy agent unclonable while its own saves go through.
+  test("cloning carries a stored over-cap value forward verbatim", async () => {
+    const a = await createAgent(ctx(tenantC), { name: "CloneSrc" }, appDb);
+    const legacy = "c".repeat(TOOL_INSTRUCTIONS_MAX + 1);
+    await suDb.agent.update({
+      where: { id: BigInt(a.id) },
+      data: { settings: { handoff: { instructions: legacy } } },
+    });
+    const clone = await cloneAgent(
+      ctx(tenantC),
+      BigInt(a.id),
+      "CloneDst",
+      appDb,
+    );
+    const bag = clone.settings as Record<
+      string,
+      Record<string, string> | undefined
+    >;
+    expect(bag.handoff?.instructions).toBe(legacy);
   });
 
   test("create rejects it too, and a value exactly at the cap is accepted", async () => {

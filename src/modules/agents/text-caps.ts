@@ -10,10 +10,11 @@ import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 // copy handed to the model is short — so a transfer policy cut after "escalate only after two failed
 // attempts," reads as a complete rule everywhere the operator can look.
 //
-// So the readers keep clamping (defense for what is already stored), the write boundary refuses
-// (`assertSettingsTextSizes`, so nobody loses text without being told), the importer clamps and warns
-// (a bundle authored elsewhere should not be rejected whole, but the operator hears about it), and
-// the editor declares the cap on the field itself.
+// So the readers keep clamping (defense for what is already stored), the write boundary refuses the
+// text a write INTRODUCES or CHANGES (`assertSettingsTextSizes`, so nobody loses text without being
+// told, and see collectOversizedTextChanges for why it has to be only that), the importer clamps and
+// warns (a bundle authored elsewhere should not be rejected whole, but the operator hears about it),
+// and the editor declares the cap on the field itself.
 //
 // Deliberately NOT here: the list-shaped caps (guardrails competitors, follow-up labels, appointment
 // reminder offsets). Those bound how MANY entries are kept, and an entry that gets dropped is visible
@@ -163,10 +164,28 @@ function cappedFields(settings: unknown): CappedField[] {
   return out;
 }
 
-export function collectOversizedText(settings: unknown): OversizedText[] {
+// The oversized text this write is responsible for: what it introduces, or changes.
+//
+// A value already stored over the cap is NOT the write's problem, and refusing it was a dead end
+// rather than a stricter rule. Every field carrying one can be unreachable in the editor: a
+// native-tool note the editor has no control for at all (`private_note`, `resolve_conversation`), or
+// a section whose fields only render once it is switched on (guardrails, vision, follow-up) or once
+// the tool is granted. The refusal named the field correctly and the operator still had nothing to
+// shorten — on every tab, on every save, permanently. The reader clamps that value on the way to the
+// model, which is the only place the length ever mattered.
+//
+// Compared by path, so an unchanged field is unchanged no matter what else moved in the bag. The one
+// place a path can shift under a value is a follow-up step list that gets reordered, and there the
+// operator is by definition inside the section that renders the field.
+export function collectOversizedTextChanges(
+  next: unknown,
+  previous: unknown,
+): OversizedText[] {
+  const stored = new Map(cappedFields(previous).map((f) => [f.path, f.value]));
   const out: OversizedText[] = [];
-  for (const f of cappedFields(settings)) {
+  for (const f of cappedFields(next)) {
     if (f.value.length <= f.max) continue;
+    if (stored.get(f.path) === f.value) continue;
     out.push({ path: f.path, length: f.value.length, max: f.max });
   }
   return out;

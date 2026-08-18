@@ -556,8 +556,9 @@ export async function agentSettingsSet(
     // On the PATCH, before the merge: mergeBehaviorSettings re-reads each touched block through its
     // typed reader, so by the time the merged bag exists an over-cap note has already been clamped
     // and there is nothing left to refuse. Before the dry run too, not only before the apply — a
-    // preview that promises a write the apply would refuse is worse than no preview.
-    assertSettingsTextSizes(patch);
+    // preview that promises a write the apply would refuse is worse than no preview. Against the
+    // stored bag, so re-sending a legacy value untouched is not a refusal.
+    assertSettingsTextSizes(patch, current.settings);
     const nextBag = mergeBehaviorSettings(
       (current.settings ?? {}) as Record<string, unknown>,
       patch,

@@ -61,7 +61,7 @@ import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditMo
 import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
-import { collectOversizedText } from "@/modules/agents/text-caps";
+import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import {
   CHANNEL_REDIRECT_DEFAULTS,
   type ChannelRedirectConfig,
@@ -1345,9 +1345,11 @@ function AgentEditor() {
   // The write boundary refuses a settings bag whose operator prose is over its cap. A save that
   // fires several calls (tools = grants PUT then agent PATCH) would otherwise persist the first and
   // fail the second, leaving the grants saved, the toast saying it failed, and the local state stale.
-  // Same walker the server runs, so the two answers cannot drift.
+  // Same walker and same comparison the server runs — against the last-synced bag, so a value stored
+  // before the caps is not what stops a save that never touched it.
   function settingsTextError(bag: unknown): string | null {
-    const over = collectOversizedText(bag)[0];
+    const stored = syncedAgentRef.current?.settings;
+    const over = collectOversizedTextChanges(bag, stored)[0];
     if (!over) return null;
     return t(
       "editor.settingsTextTooLong",
@@ -1851,9 +1853,8 @@ function AgentEditor() {
         kanban: kanbanJson,
         toolGuidance: toolGuidanceJson,
       };
-      // The WHOLE bag, not just this tab's fields: the PATCH resends every block, so an over-cap value
-      // left on another tab (or predating the cap) would refuse it just the same — after the grants
-      // had already been written.
+      // The WHOLE bag, not just this tab's fields: the PATCH resends every block, so text typed on
+      // another tab would refuse it just the same — after the grants had already been written.
       const toolsText = settingsTextError(toolsSettings);
       if (toolsText) {
         showToast(toolsText, "error");

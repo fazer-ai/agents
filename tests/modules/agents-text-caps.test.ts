@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   CUSTOM_POLICY_MAX,
   clampOversizedTextInPlace,
-  collectOversizedText,
+  collectOversizedTextChanges,
   EXTRACTION_PROMPT_MAX,
   FOLLOW_UP_INSTRUCTIONS_MAX,
   FOLLOW_UP_MAX_STEPS,
@@ -17,11 +17,14 @@ import {
 // that knows where those fields live, so the write boundary and the importer agree with the readers.
 const over = (max: number) => "x".repeat(max + 1);
 const at = (max: number) => "x".repeat(max);
-const paths = (s: unknown) => collectOversizedText(s).map((o) => o.path);
+// Nothing stored before: every oversized value is one this write introduces, which is what the
+// walker itself is being measured on here.
+const oversized = (s: unknown) => collectOversizedTextChanges(s, undefined);
+const paths = (s: unknown) => oversized(s).map((o) => o.path);
 
-describe("collectOversizedText", () => {
+describe("the settings text walker", () => {
   test("reports the field, its length and the cap it broke", () => {
-    const found = collectOversizedText({
+    const found = oversized({
       handoff: { instructions: over(TOOL_INSTRUCTIONS_MAX) },
     });
     expect(found).toEqual([
@@ -126,7 +129,7 @@ describe("collectOversizedText", () => {
       { guardrails: { input: "not a block" } },
       { followUp: { steps: [null, 7, { instructions: null }] } },
     ]) {
-      expect(collectOversizedText(bag)).toEqual([]);
+      expect(oversized(bag)).toEqual([]);
     }
   });
 });
@@ -170,7 +173,7 @@ describe("clampOversizedTextInPlace", () => {
     expect(clipped).toEqual(
       ["followUp.steps[0].instructions", "handoff.instructions"].sort(),
     );
-    expect(collectOversizedText(bag)).toEqual([]);
+    expect(oversized(bag)).toEqual([]);
     const ho = bag.handoff as Record<string, unknown>;
     expect((ho.instructions as string).length).toBe(TOOL_INSTRUCTIONS_MAX);
     // The rest of the block survives: a clamp that rebuilds the bag from the fields it knows would
@@ -182,5 +185,79 @@ describe("clampOversizedTextInPlace", () => {
     const bag = { handoff: { instructions: at(TOOL_INSTRUCTIONS_MAX) } };
     expect(clampOversizedTextInPlace(bag)).toEqual([]);
     expect(bag.handoff.instructions.length).toBe(TOOL_INSTRUCTIONS_MAX);
+  });
+});
+
+// What a write is allowed to be refused for: the text it INTRODUCES or CHANGES. A value stored before
+// the caps existed cannot be refused, because every field carrying one can be invisible in the editor
+// — a native-tool note with no control at all (`private_note`), or a section whose fields only render
+// when it is switched on — so the refusal would name something the operator has no way to shorten,
+// on every tab, forever. The reader still clamps that value on the way to the model, which is where
+// it always mattered.
+describe("settings text caps: what a write changes", () => {
+  const changed = (next: unknown, prev: unknown) =>
+    collectOversizedTextChanges(next, prev).map((o) => o.path);
+
+  test("an untouched oversized value is not the write's problem", () => {
+    const legacy = { handoff: { instructions: over(TOOL_INSTRUCTIONS_MAX) } };
+    expect(
+      changed({ ...legacy, kanban: { instructions: "move it" } }, legacy),
+    ).toEqual([]);
+  });
+
+  test("editing an oversized value still refuses, even when it gets shorter", () => {
+    const prev = {
+      handoff: { instructions: "y".repeat(TOOL_INSTRUCTIONS_MAX + 500) },
+    };
+    const next = {
+      handoff: { instructions: "y".repeat(TOOL_INSTRUCTIONS_MAX + 100) },
+    };
+    expect(changed(next, prev)).toEqual(["handoff.instructions"]);
+  });
+
+  test("a new oversized value refuses whether or not the field existed", () => {
+    expect(
+      changed({ kanban: { instructions: over(TOOL_INSTRUCTIONS_MAX) } }, {}),
+    ).toEqual(["kanban.instructions"]);
+    expect(
+      changed(
+        { vision: { extractionPrompt: over(EXTRACTION_PROMPT_MAX) } },
+        { vision: { extractionPrompt: "short" } },
+      ),
+    ).toEqual(["vision.extractionPrompt"]);
+  });
+
+  test("a note for a tool the editor has no control for is left alone once stored", () => {
+    const legacy = {
+      toolGuidance: { private_note: over(TOOL_INSTRUCTIONS_MAX) },
+    };
+    expect(changed(legacy, legacy)).toEqual([]);
+    expect(oversized(legacy)).toEqual(
+      ["toolGuidance.private_note"].map((path) => ({
+        path,
+        length: TOOL_INSTRUCTIONS_MAX + 1,
+        max: TOOL_INSTRUCTIONS_MAX,
+      })),
+    );
+  });
+
+  test("no previous bag means every oversized value is new", () => {
+    const bag = { guardrails: { customPolicy: over(CUSTOM_POLICY_MAX) } };
+    expect(changed(bag, undefined)).toEqual(["guardrails.customPolicy"]);
+    expect(changed(bag, "not a bag")).toEqual(["guardrails.customPolicy"]);
+  });
+
+  test("follow-up steps compare per position, like the reader reads them", () => {
+    const step = (instructions: string) => ({ delayValue: 30, instructions });
+    const prev = {
+      followUp: { steps: [step("a"), step(over(FOLLOW_UP_INSTRUCTIONS_MAX))] },
+    };
+    expect(changed(prev, prev)).toEqual([]);
+    // Removing the first step shifts the oversized one into position 0, which reads as a change. The
+    // operator is inside that section to have done it, so the field is on screen and actionable.
+    const shifted = {
+      followUp: { steps: [step(over(FOLLOW_UP_INSTRUCTIONS_MAX))] },
+    };
+    expect(changed(shifted, prev)).toEqual(["followUp.steps[0].instructions"]);
   });
 });

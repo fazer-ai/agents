@@ -25,6 +25,21 @@ function handlers(src: string): { name: string; body: string }[] {
 }
 
 describe("agent editor save errors", () => {
+  // The tools save fires two calls (grants PUT, then agent PATCH), so it checks the bag itself before
+  // the first one — otherwise the grants persist and the PATCH is refused. It has to ask the same
+  // question the server asks: what does this write CHANGE. Comparing against nothing would refuse a
+  // save over text stored before the caps, which is the state the server deliberately lets through.
+  //
+  // Source-level for the same reason as the rest of this file; the rule itself is covered by
+  // agents-text-caps.test.ts, what is left here is the wiring.
+  test("the tools preflight compares against the last-synced bag", () => {
+    const start = SRC.indexOf("function settingsTextError");
+    expect(start).toBeGreaterThan(-1);
+    const fn = SRC.slice(start, SRC.indexOf("\n  }", start));
+    expect(fn).toContain("collectOversizedTextChanges");
+    expect(fn).toContain("syncedAgentRef.current?.settings");
+  });
+
   test("every handler that writes the agent shows the server's message", () => {
     const writers = handlers(SRC).filter((h) => WRITES.test(h.body));
     // Guards the parser itself: a rename or a refactor that stops matching would make the offender

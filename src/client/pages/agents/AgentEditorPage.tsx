@@ -61,6 +61,7 @@ import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditMo
 import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
+import { collectOversizedText } from "@/modules/agents/text-caps";
 import {
   CHANNEL_REDIRECT_DEFAULTS,
   type ChannelRedirectConfig,
@@ -1341,6 +1342,20 @@ function AgentEditor() {
     });
   }
 
+  // The write boundary refuses a settings bag whose operator prose is over its cap. A save that
+  // fires several calls (tools = grants PUT then agent PATCH) would otherwise persist the first and
+  // fail the second, leaving the grants saved, the toast saying it failed, and the local state stale.
+  // Same walker the server runs, so the two answers cannot drift.
+  function settingsTextError(bag: unknown): string | null {
+    const over = collectOversizedText(bag)[0];
+    if (!over) return null;
+    return t(
+      "editor.settingsTextTooLong",
+      "The text in {{field}} is too long: {{len}} characters (limit {{max}}).",
+      { field: over.path, len: over.length, max: over.max },
+    );
+  }
+
   // Localized text for a structured import warning. Static keys (one per code) keep it extract-safe;
   // params interpolate the names/counts. New codes added in transfer.ts must get a case here.
   function importWarningMessage(w: ImportWarning): string {
@@ -1806,15 +1821,8 @@ function AgentEditor() {
     savingRef.current += 1;
     setSavingGrants(true);
     try {
-      const expected = expectedFor(force);
-      const grantsRes = await api.api.v1.agents({ id })["tool-selections"].put({
-        grants,
-        ...(expected ? { expectedUpdatedAt: expected } : {}),
-      });
-      if (handleConflict(grantsRes.error, () => void saveTools(true))) return;
-      if (grantsRes.error || !grantsRes.data) {
-        throw grantsRes.error ?? new Error("no data");
-      }
+      // Everything the PATCH will send, built BEFORE the grants PUT so the whole bag can be checked
+      // against the write boundary's own rule first. None of it depends on the PUT's result.
       const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
         string,
         unknown
@@ -1837,6 +1845,29 @@ function AgentEditor() {
       if (updateKanbanNote)
         toolGuidanceJson.update_kanban_task = updateKanbanNote;
       else delete toolGuidanceJson.update_kanban_task;
+      const toolsSettings = {
+        ...syncedSettings,
+        handoff: handoffJson,
+        kanban: kanbanJson,
+        toolGuidance: toolGuidanceJson,
+      };
+      // The WHOLE bag, not just this tab's fields: the PATCH resends every block, so an over-cap value
+      // left on another tab (or predating the cap) would refuse it just the same — after the grants
+      // had already been written.
+      const toolsText = settingsTextError(toolsSettings);
+      if (toolsText) {
+        showToast(toolsText, "error");
+        return;
+      }
+      const expected = expectedFor(force);
+      const grantsRes = await api.api.v1.agents({ id })["tool-selections"].put({
+        grants,
+        ...(expected ? { expectedUpdatedAt: expected } : {}),
+      });
+      if (handleConflict(grantsRes.error, () => void saveTools(true))) return;
+      if (grantsRes.error || !grantsRes.data) {
+        throw grantsRes.error ?? new Error("no data");
+      }
       // Chain the PATCH precondition to the token the grant write just produced.
       const afterGrants = grantsRes.data.agentUpdatedAt
         ? String(grantsRes.data.agentUpdatedAt)
@@ -1848,12 +1879,7 @@ function AgentEditor() {
       const patchExpected = force ? undefined : afterGrants;
       const agentRes = await api.api.v1.agents({ id }).patch({
         transferWithSummary,
-        settings: {
-          ...syncedSettings,
-          handoff: handoffJson,
-          kanban: kanbanJson,
-          toolGuidance: toolGuidanceJson,
-        },
+        settings: toolsSettings,
         ...(patchExpected ? { expectedUpdatedAt: patchExpected } : {}),
       });
       if (handleConflict(agentRes.error, () => void saveTools(true))) return;

@@ -894,6 +894,24 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
     }
   });
 
+  // A clone is a create, and it copies the source's settings verbatim. Without the same check a
+  // legacy over-cap value produces a brand-new agent whose FIRST save is refused, which is a worse
+  // place to find out than the clone button.
+  test("cloning refuses to carry an over-cap value forward", async () => {
+    const a = await createAgent(ctx(tenantC), { name: "CloneSrc" }, appDb);
+    await suDb.agent.update({
+      where: { id: BigInt(a.id) },
+      data: {
+        settings: {
+          handoff: { instructions: "c".repeat(TOOL_INSTRUCTIONS_MAX + 1) },
+        },
+      },
+    });
+    expect(
+      cloneAgent(ctx(tenantC), BigInt(a.id), "CloneDst", appDb),
+    ).rejects.toBeInstanceOf(SettingsTextTooLongError);
+  });
+
   test("create rejects it too, and a value exactly at the cap is accepted", async () => {
     expect(
       createAgent(

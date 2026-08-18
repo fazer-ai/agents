@@ -630,6 +630,9 @@ export async function cloneAgent(
     if (!src) {
       throw new NotFoundError("agent not found", "errors.agentNotFound");
     }
+    // A clone is a create and it copies the bag verbatim, so it gets the same check: carrying a
+    // legacy over-cap value forward would produce a fresh agent whose first save is refused.
+    assertSettingsTextSizes(src.settings);
     const grants = await db.agentToolSelection.findMany({
       where: { agentId: id },
       select: {

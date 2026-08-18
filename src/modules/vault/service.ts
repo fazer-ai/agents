@@ -238,6 +238,9 @@ export async function resolveVaultRefByName(
 //
 // Deleting an entry still strands every ref that named it. That is a different cause for the same
 // state, answered by the vault list and the picker, not here.
+const VAULT_ID_RE = /^\d+$/;
+const MAX_VAULT_ID = 9223372036854775807n;
+
 export async function requireVaultRef(
   db: ScopedDb,
   ref: string,
@@ -249,12 +252,15 @@ export async function requireVaultRef(
       "errors.invalidVaultRef",
     );
   if (!ref.startsWith(VAULT_REF_PREFIX)) throw malformed();
-  let id: bigint;
-  try {
-    id = BigInt(ref.slice(VAULT_REF_PREFIX.length));
-  } catch {
-    throw malformed();
-  }
+  const raw = ref.slice(VAULT_REF_PREFIX.length);
+  // Decimal digits only, within what a Postgres `bigint` column holds. BigInt is arbitrary precision
+  // and lenient: `0x7`, `+7` and ` 7 ` all parse, and an id past 2^63-1 parses too and is refused by
+  // the DATABASE instead, as a 500 for what is plainly a malformed field. Readers tolerate the
+  // lenient spellings on purpose (canonicalVaultRef); a column takes ONE, so the rest are refused
+  // here rather than normalized, and "stored canonically" stops depending on the writer.
+  if (!VAULT_ID_RE.test(raw)) throw malformed();
+  const id = BigInt(raw);
+  if (id > MAX_VAULT_ID) throw malformed();
   const entry = await db.vaultEntry.findFirst({
     where: { id },
     select: { id: true },

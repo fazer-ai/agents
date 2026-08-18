@@ -309,6 +309,42 @@ describe.skipIf(!dbUp)("vault ref write boundary", () => {
         });
       });
 
+      test("refuses an id no bigint column could hold, without asking the database", async () => {
+        // BigInt is arbitrary precision, so parsing succeeds and the oversized value reaches a
+        // bigint column, where Postgres refuses it: a 500 for what is plainly a malformed field.
+        // Pinned at the EXACT edge (2^63, one past what int8 holds) rather than at some absurd
+        // number, because only the edge says where the bound is: a bound set anywhere below the
+        // absurd value passes that test just as well.
+        await expect(
+          b.create("vault:9223372036854775808"),
+        ).rejects.toMatchObject({
+          statusCode: 400,
+          translationKey: "errors.invalidVaultRef",
+        });
+        // And the largest id a column CAN hold is not malformed, it is merely absent.
+        await expect(
+          b.create("vault:9223372036854775807"),
+        ).rejects.toMatchObject({
+          statusCode: 400,
+          translationKey: "errors.vaultRefNotFound",
+        });
+      });
+
+      test("refuses a spelling BigInt would accept but no writer produces", async () => {
+        // `0x7` and ` 7 ` parse to the same id as `7`. Readers tolerate that on purpose (see
+        // canonicalVaultRef); a column takes one spelling, and refusing the rest here is what makes
+        // "stored canonically" a fact rather than a hope.
+        for (const ref of [
+          `vault:0x${liveId.toString(16)}`,
+          `vault: ${liveId} `,
+        ]) {
+          await expect(b.create(ref)).rejects.toMatchObject({
+            statusCode: 400,
+            translationKey: "errors.invalidVaultRef",
+          });
+        }
+      });
+
       test("refuses a well-formed ref whose entry is gone, on create", async () => {
         await expect(b.create(goneRef)).rejects.toMatchObject({
           statusCode: 400,

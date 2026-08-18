@@ -34,6 +34,22 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 let tenantId = 0n;
+let otherTenantId = 0n;
+// Every tenant this file creates, so afterAll takes them all down. A test that asserts on WHICH rows
+// a batch picked needs a tenant nobody else wrote to: the claim is a batch, and a sibling's leftover
+// row occupies a slot. That has bitten this file twice.
+const tenants: bigint[] = [];
+let tenantSeq = 0;
+async function newTenant(): Promise<bigint> {
+  tenantSeq += 1;
+  const t = (
+    await suDb.tenant.create({
+      data: { name: "FlowW", slug: `flow-w-${process.pid}-${tenantSeq}` },
+    })
+  ).id;
+  tenants.push(t);
+  return t;
+}
 function ctx(t: bigint): TenantContext {
   return { tenantId: t, userId: null, role: "TENANT_ADMIN" };
 }
@@ -57,6 +73,36 @@ const ok204 = (() =>
 // passes is what decides due or fresh. `now()` in an earlier transaction is by construction at or
 // before `now()` in the claim's, so there is no margin to tune and no assumption about how far the
 // two clocks are apart.
+async function makeDeliveryFor(
+  tenant: bigint,
+  channelId: bigint,
+): Promise<bigint> {
+  const [stamp] = await suDb.$queryRaw<{ now: Date }[]>`SELECT now() AS now`;
+  const row = await suDb.alertDelivery.create({
+    data: {
+      tenantId: tenant,
+      channelId,
+      stage: "generate",
+      level: "error",
+      summary: "boom",
+      createdAt: (stamp as { now: Date }).now,
+    },
+  });
+  return row.id;
+}
+
+// `updated_at` carries `@updatedAt`, so Prisma overwrites any value handed to `update`. Raw SQL is
+// the only way to put a row's clock where a test needs it. Unlike `created_at` above, this one stays
+// on the HOST clock on purpose: the reap builds its cutoff from the injected `now()`, so both sides
+// of that comparison are host timestamps and crossing them with the database's would reintroduce
+// exactly the skew this file just removed.
+async function setSending(id: bigint, updatedAt: Date): Promise<void> {
+  await suDb.$executeRaw`
+    UPDATE alert_deliveries
+       SET status = 'SENDING', updated_at = ${updatedAt}
+     WHERE id = ${id}`;
+}
+
 async function makeDelivery(channelId: bigint): Promise<bigint> {
   const [stamp] = await suDb.$queryRaw<{ now: Date }[]>`SELECT now() AS now`;
   const row = await suDb.alertDelivery.create({
@@ -74,23 +120,20 @@ async function makeDelivery(channelId: bigint): Promise<bigint> {
 
 describe.skipIf(!dbUp)("alert worker", () => {
   beforeAll(async () => {
-    tenantId = (
-      await suDb.tenant.create({
-        data: { name: "FlowW", slug: `flow-w-${process.pid}` },
-      })
-    ).id;
+    tenantId = await newTenant();
+    // A neighbour, only ever used to prove the worker does not reach across the tenant boundary.
+    otherTenantId = await newTenant();
   });
 
   afterAll(async () => {
-    if (tenantId) {
+    for (const t of tenants) {
+      if (!t) continue;
       for (const tbl of ["alert_deliveries", "alert_channels"]) {
         await suDb.$executeRawUnsafe(
-          `DELETE FROM ${tbl} WHERE tenant_id = ${tenantId}`,
+          `DELETE FROM ${tbl} WHERE tenant_id = ${t}`,
         );
       }
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM tenants WHERE id = ${tenantId}`,
-      );
+      await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${t}`);
     }
     await suDb.$disconnect();
     await appDb.$disconnect();
@@ -140,18 +183,22 @@ describe.skipIf(!dbUp)("alert worker", () => {
       new Response(null, {
         status: url.includes("/retry") ? 500 : 204,
       })) as unknown as typeof fetch;
+    const t = Date.now();
     const batch = await processAlertBatch({
       base: appDb,
       tenantId,
       coalesceWindowMs: 0,
       fetchImpl,
-      now: () => Date.now(),
+      now: () => t,
     });
     expect(batch.claimed).toBeGreaterThanOrEqual(1);
     const row = await suDb.alertDelivery.findUnique({ where: { id } });
     expect(row?.status).toBe("PENDING");
     expect(row?.attempts).toBe(1);
-    expect(row?.nextAttemptAt).not.toBeNull();
+    // Strictly AFTER the tick's own clock, not merely set: a zeroed backoff still writes a
+    // timestamp, and `not.toBeNull()` accepted it. Backing off is the point of scheduling a retry,
+    // and without a floor the endpoint that just failed is hit again on the very next tick.
+    expect(row?.nextAttemptAt?.getTime()).toBeGreaterThan(t);
   });
 
   test("a blocked (SSRF) URL goes straight to DEAD", async () => {
@@ -306,5 +353,184 @@ describe.skipIf(!dbUp)("alert worker", () => {
     const row = await suDb.alertDelivery.findUnique({ where: { id } });
     expect(row?.status).toBe("PENDING");
     expect(row?.attempts).toBe(1);
+  });
+
+  // The reap exists because a worker can die mid-delivery and strand a row in SENDING forever. Its
+  // whole safety rests on the staleness cutoff: without it the reap resets rows a LIVE worker is
+  // delivering right now, which hands the same alert to the claim again and the customer's endpoint
+  // is posted to twice. Both sides of the cutoff are asserted, because a reap that never fires is
+  // just as wrong as one that fires too eagerly, and only asserting one side leaves the other free.
+  test("the reap leaves a SENDING row that is still fresh alone", async () => {
+    const ch = await createAlertChannel(
+      ctx(tenantId),
+      { name: "inflight", type: "webhook", url: outboundUrl("/inflight") },
+      appDb,
+    );
+    const id = await makeDelivery(BigInt(ch.id));
+    const t = Date.now();
+    await setSending(id, new Date(t - 1_000));
+    const batch = await processAlertBatch({
+      base: appDb,
+      tenantId,
+      coalesceWindowMs: 0,
+      staleMs: 60_000,
+      fetchImpl: ok204,
+      now: () => t,
+    });
+    expect(batch.reaped).toBe(0);
+    const row = await suDb.alertDelivery.findUnique({ where: { id } });
+    expect(row?.status).toBe("SENDING");
+  });
+
+  test("the reap returns a SENDING row stranded past the cutoff to PENDING", async () => {
+    const ch = await createAlertChannel(
+      ctx(tenantId),
+      { name: "stranded", type: "webhook", url: outboundUrl("/stranded") },
+      appDb,
+    );
+    const id = await makeDelivery(BigInt(ch.id));
+    const t = Date.now();
+    await setSending(id, new Date(t - 120_000));
+    await processAlertBatch({
+      base: appDb,
+      tenantId,
+      coalesceWindowMs: 0,
+      staleMs: 60_000,
+      fetchImpl: ok204,
+      now: () => t,
+    });
+    // Reaped and then delivered in the same tick, which is the point of reaping it.
+    const row = await suDb.alertDelivery.findUnique({ where: { id } });
+    expect(row?.status).toBe("DELIVERED");
+  });
+
+  // The reap's own status filter. Without it the update matches any row past the cutoff and drags
+  // DEAD ones back to PENDING, so a delivery that was given up on starts being attempted again.
+  test("the reap does not resurrect a DEAD row past the cutoff", async () => {
+    const ch = await createAlertChannel(
+      ctx(tenantId),
+      { name: "buried", type: "webhook", url: outboundUrl("/buried") },
+      appDb,
+    );
+    const id = await makeDelivery(BigInt(ch.id));
+    const t = Date.now();
+    await suDb.$executeRaw`
+      UPDATE alert_deliveries
+         SET status = 'DEAD', attempts = 8, updated_at = ${new Date(t - 120_000)}
+       WHERE id = ${id}`;
+    await processAlertBatch({
+      base: appDb,
+      tenantId,
+      coalesceWindowMs: 0,
+      staleMs: 60_000,
+      fetchImpl: ok204,
+      now: () => t,
+    });
+    const row = await suDb.alertDelivery.findUnique({ where: { id } });
+    expect(row?.status).toBe("DEAD");
+    expect(row?.attempts).toBe(8);
+  });
+
+  // `tenantId` is the test-only scope that keeps concurrent runs on the shared test DB off each
+  // other's rows, and it guards the claim AND the reap. Dropped from either, this neighbour's rows
+  // move: the due one gets delivered, the stranded one gets reaped. Both are asserted here because
+  // the two call sites carry the scope separately and one can be lost without the other.
+  test("neither the claim nor the reap crosses the tenant boundary", async () => {
+    const ch = await createAlertChannel(
+      ctx(otherTenantId),
+      { name: "neighbour", type: "webhook", url: outboundUrl("/neighbour") },
+      appDb,
+    );
+    const due = await makeDeliveryFor(otherTenantId, BigInt(ch.id));
+    const stranded = await makeDeliveryFor(otherTenantId, BigInt(ch.id));
+    const t = Date.now();
+    await setSending(stranded, new Date(t - 120_000));
+    let posts = 0;
+    const counting = (async (url: string) => {
+      if (url.includes("/neighbour")) posts += 1;
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+    await processAlertBatch({
+      base: appDb,
+      tenantId,
+      coalesceWindowMs: 0,
+      staleMs: 60_000,
+      fetchImpl: counting,
+      now: () => t,
+    });
+    expect(posts).toBe(0);
+    const after = await suDb.alertDelivery.findMany({
+      where: { id: { in: [due, stranded] } },
+      orderBy: { id: "asc" },
+    });
+    expect(after.map((r) => r.status)).toEqual(["PENDING", "SENDING"]);
+  });
+
+  // MAX_ATTEMPTS is what stops a permanently broken endpoint being retried forever. The row on its
+  // last attempt must go DEAD rather than back to PENDING: PENDING would schedule yet another try,
+  // and nothing else in the worker ever ends the cycle.
+  test("the last allowed attempt ends in DEAD, not another retry", async () => {
+    const ch = await createAlertChannel(
+      ctx(tenantId),
+      { name: "exhausted", type: "webhook", url: outboundUrl("/exhausted") },
+      appDb,
+    );
+    const id = await makeDelivery(BigInt(ch.id));
+    await suDb.alertDelivery.update({
+      where: { id },
+      data: { attempts: 7 }, // MAX_ATTEMPTS is 8, so this delivery is the last one
+    });
+    const failing = (async (url: string) =>
+      new Response(null, {
+        status: url.includes("/exhausted") ? 500 : 204,
+      })) as unknown as typeof fetch;
+    await processAlertBatch({
+      base: appDb,
+      tenantId,
+      coalesceWindowMs: 0,
+      fetchImpl: failing,
+      now: () => Date.now(),
+    });
+    const row = await suDb.alertDelivery.findUnique({ where: { id } });
+    expect(row?.status).toBe("DEAD");
+    expect(row?.attempts).toBe(8);
+    expect(row?.nextAttemptAt).toBeNull();
+  });
+
+  // `ORDER BY next_attempt_at NULLS FIRST` is a deliberate priority, not a default: NULLS LAST is
+  // what an ASC sort does on its own, so someone chose to put FRESH deliveries (no next_attempt_at)
+  // ahead of retries. It only shows when the batch cannot take everything, so the limit is squeezed
+  // to make that the case. Its own tenant, because the claim is a batch and a sibling row would
+  // occupy one of the two slots being asserted.
+  test("a full batch takes fresh deliveries before retries", async () => {
+    const own = await newTenant();
+    const ch = await createAlertChannel(
+      ctx(own),
+      { name: "priority", type: "webhook", url: outboundUrl("/priority") },
+      appDb,
+    );
+    const retry = await makeDeliveryFor(own, BigInt(ch.id));
+    const [past] = await suDb.$queryRaw<
+      { at: Date }[]
+    >`SELECT now() - interval '1 hour' AS at`;
+    await suDb.alertDelivery.update({
+      where: { id: retry },
+      data: { attempts: 1, nextAttemptAt: (past as { at: Date }).at },
+    });
+    const fresh = await makeDeliveryFor(own, BigInt(ch.id));
+    await processAlertBatch({
+      base: appDb,
+      tenantId: own,
+      coalesceWindowMs: 0,
+      claimLimit: 1,
+      fetchImpl: ok204,
+      now: () => Date.now(),
+    });
+    const after = await suDb.alertDelivery.findMany({
+      where: { id: { in: [retry, fresh] } },
+    });
+    const byId = new Map(after.map((r) => [r.id, r.status]));
+    expect(byId.get(fresh)).toBe("DELIVERED");
+    expect(byId.get(retry)).toBe("PENDING");
   });
 });

@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
+import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 import { vaultReferences } from "@/modules/vault/service";
 
 // The reverse index behind "is this key still in use?", which the vault UI and the MCP both read
@@ -40,14 +41,9 @@ const ctx = (): TenantContext => ({
   role: "TENANT_ADMIN",
 });
 
-// One key per settings path that can hold one, so a path the query forgets shows up as an empty
-// agent list for that key alone.
-const PATHS = [
-  ["stt", "credentialRef"],
-  ["tts", "credentialRef"],
-  ["tts", "normalizeCredentialRef"],
-  ["vision", "credentialRef"],
-] as const;
+// One key per settings path that can hold one, over the SAME list the query is built from, so a
+// path the list knows and the query forgets shows up as an empty agent list for that key alone.
+const PATHS = SETTINGS_CREDENTIAL_PATHS;
 
 const keyIds: Record<string, bigint> = {};
 

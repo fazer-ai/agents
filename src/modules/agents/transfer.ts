@@ -25,6 +25,7 @@ import {
   stdioCommandLauncher,
 } from "@/lib/mcp-launchers";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
 import { assertNoSecrets } from "@/modules/n8n-export/n8n";
@@ -225,17 +226,6 @@ function dedupeWarnings(ws: ImportWarning[]): ImportWarning[] {
 // Credentials live in several JSON paths on an agent: modelConfig.credentialRef and
 // settings.{stt,tts,vision}.credentialRef. Internally they are `vault:<id>` (tenant-local); export
 // translates them id→name and import translates name→id so the JSON stays portable.
-// Every settings path that holds a credential ref, as (block, field). The `tts` block carries TWO:
-// the voice engine's key and the speech rewrite's own model key. A path missing from this list is a
-// ref that export leaves as a tenant-local `vault:<id>` (which the export's unresolved-reference
-// defense then rejects outright) and that import cannot rewire at the destination.
-const SETTINGS_CRED_PATHS = [
-  ["stt", "credentialRef"],
-  ["tts", "credentialRef"],
-  ["tts", "normalizeCredentialRef"],
-  ["vision", "credentialRef"],
-] as const;
-
 export function collectCredRefs(
   modelConfig: Record<string, unknown>,
   settings: Record<string, unknown>,
@@ -247,7 +237,7 @@ export function collectCredRefs(
   ) {
     refs.push(modelConfig.credentialRef);
   }
-  for (const [key, field] of SETTINGS_CRED_PATHS) {
+  for (const [key, field] of SETTINGS_CREDENTIAL_PATHS) {
     const sub = settings[key];
     if (sub && typeof sub === "object") {
       const ref = (sub as Record<string, unknown>)[field];
@@ -279,7 +269,7 @@ function credentialFieldTargets(
     }
   };
   add(modelConfig.credentialRef, "general", "general-model");
-  for (const [key, field] of SETTINGS_CRED_PATHS) {
+  for (const [key, field] of SETTINGS_CREDENTIAL_PATHS) {
     const sub = settings[key];
     if (sub && typeof sub === "object") {
       add((sub as Record<string, unknown>)[field], "behavior", key);
@@ -304,7 +294,7 @@ export function remapCredRefs(
   const st = { ...settings };
   // NOTE: re-read st[key] each time, since two paths share the `tts` block and the second must see
   // the first one's rewrite.
-  for (const [key, field] of SETTINGS_CRED_PATHS) {
+  for (const [key, field] of SETTINGS_CREDENTIAL_PATHS) {
     const sub = st[key];
     if (sub && typeof sub === "object") {
       const subCopy = { ...(sub as Record<string, unknown>) };

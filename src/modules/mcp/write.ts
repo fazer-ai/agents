@@ -26,6 +26,7 @@ import {
   mergeBehaviorSettings,
   readBehaviorSettings,
 } from "@/modules/agents/behavior-settings";
+import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 import {
   assertPromptSize,
   getAgent,
@@ -443,7 +444,7 @@ export async function agentSettingsGet(
     const settings = readBehaviorSettings(agent.settings);
     // The MCP contract speaks NAMES: project the stored `vault:<id>` refs back to entry names, over
     // the same (block, field) list the write path resolves them from.
-    for (const [key, field] of CREDENTIAL_PATCH_FIELDS) {
+    for (const [key, field] of SETTINGS_CREDENTIAL_PATHS) {
       const block = settings[key] as unknown as
         | Record<string, unknown>
         | undefined;
@@ -464,18 +465,6 @@ export interface AgentSettingsSetArgs extends BehaviorSettingsPatch {
   agent_id: string;
   dry_run?: boolean;
 }
-
-// Every settings field that holds a vault credential, as (block, field). Both directions of the MCP
-// contract read it: names come IN here and are translated to `vault:<id>`, and agent_settings_get
-// translates them back OUT. A field missing from this list silently degrades in both directions.
-const CREDENTIAL_PATCH_FIELDS = [
-  ["stt", "credentialRef"],
-  ["tts", "credentialRef"],
-  ["tts", "normalizeCredentialRef"],
-  ["vision", "credentialRef"],
-] as const satisfies ReadonlyArray<
-  readonly [keyof BehaviorSettingsPatch, string]
->;
 
 // agent_settings_set: patch an agent's BEHAVIOR config. The patch is a partial over the behavior
 // blocks; each block is MERGED into the existing settings bag (untouched keys preserved, exactly
@@ -531,7 +520,7 @@ export async function agentSettingsSet(
     // NOTE: (block, field) pairs, not one field per block: `tts` carries a second credential for
     // the speech normalizer's own model, and a loop that only knows `credentialRef` would let that
     // one through as a raw name, which then fails to resolve at turn time instead of here.
-    for (const [key, field] of CREDENTIAL_PATCH_FIELDS) {
+    for (const [key, field] of SETTINGS_CREDENTIAL_PATHS) {
       // Re-read inside the loop: two fields of the same block are rewritten in sequence.
       const block = patch[key];
       const value = block?.[field];

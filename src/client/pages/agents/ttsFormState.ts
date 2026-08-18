@@ -7,6 +7,7 @@ import {
 import {
   clampVoiceSetting,
   readVoiceSettings,
+  TTS_DEFAULTS,
   TTS_MODES,
   type TtsMode,
 } from "@/modules/tts/settings-shared";
@@ -54,10 +55,7 @@ function numOrNull(v: string): number | null {
   return v.trim() && Number.isFinite(n) ? n : null;
 }
 
-export function readTtsFormState(
-  block: unknown,
-  normalizeDefault: boolean,
-): TtsFormState {
+export function readTtsFormState(block: unknown): TtsFormState {
   const tt = (block ?? {}) as Record<string, unknown>;
   // The delivery knobs are hydrated through the RUNTIME's reader, not off the raw bag: REST and
   // import store whatever they are handed, and synthesis clamps it on the way out. Reading the raw
@@ -82,7 +80,7 @@ export function readTtsFormState(
     credentialRef: str(tt.credentialRef),
     baseURL: str(tt.baseURL),
     normalize:
-      typeof tt.normalize === "boolean" ? tt.normalize : normalizeDefault,
+      typeof tt.normalize === "boolean" ? tt.normalize : TTS_DEFAULTS.normalize,
     normalizeProvider: str(tt.normalizeProvider),
     normalizeModel: str(tt.normalizeModel),
     normalizeCredentialRef: str(tt.normalizeCredentialRef),

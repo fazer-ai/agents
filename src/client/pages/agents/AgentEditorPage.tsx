@@ -50,7 +50,6 @@ import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { computeConfigIssues } from "@/client/lib/configHealth";
-import { TTS_NORMALIZE_DEFAULT } from "@/client/lib/providerDefaults";
 import type { ApiErrorPayload } from "@/client/lib/types";
 import { slugify } from "@/client/lib/utils";
 import {
@@ -304,7 +303,7 @@ function readBehaviorState(a: Agent) {
       credentialRef: str(st.credentialRef),
       baseURL: str(st.baseURL),
     },
-    tts: readTtsFormState(tt, TTS_NORMALIZE_DEFAULT),
+    tts: readTtsFormState(tt),
     split: {
       enabled: typeof sp.enabled === "boolean" ? sp.enabled : true,
       maxChars: num(sp.maxChars) || "600",
@@ -574,9 +573,7 @@ function AgentEditor() {
   // Text-to-speech (audio replies). Mode + provider mirror modules/tts.
   // Same reader the saved agent goes through, so a new field can never exist in one and not the
   // other: the Behavior save REPLACES this block wholesale.
-  const [tts, setTts] = useState(() =>
-    readTtsFormState({}, TTS_NORMALIZE_DEFAULT),
-  );
+  const [tts, setTts] = useState(() => readTtsFormState({}));
   // Reply in multiple messages (split + typing delay). Mirrors modules/split
   // (on by default, wpm 250 — matches SPLIT_DEFAULTS).
   const [split, setSplit] = useState({
@@ -1217,7 +1214,7 @@ function AgentEditor() {
   // t('editor.configIssue.model', 'The model has no API key set, so the agent cannot reply.')
   // t('editor.configIssue.stt', 'Voice transcription is on but has no API key set.')
   // t('editor.configIssue.tts', 'Audio replies are on but have no API key set.')
-  // t('editor.configIssue.ttsNormalize', 'The speech rewrite points at another provider but has no API key of its own, so it will be skipped.')
+  // t('editor.configIssue.ttsNormalize', 'The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.')
   // t('editor.configIssuePending.ttsNormalize', 'The speech-rewrite credential is referenced but not filled in yet.')
   // t('editor.configIssue.vision', 'Image/document reading is on but has no API key set.')
   // t('editor.configIssuePending.model', 'The model credential is referenced but not filled in yet.')

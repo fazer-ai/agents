@@ -3,6 +3,7 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 import {
   runSecretTest,
   type SecretTestDeps,
@@ -852,21 +853,14 @@ export async function vaultReferences(
       }),
       db.agent.findMany({
         where: {
-          // NOTE: one entry per settings path that can hold a credential, including the SECOND one
-          // in the tts block (the speech rewrite's own model) and vision, which was missing. A path
-          // absent here reads as "this key is unused", and the vault UI then offers to delete a key
-          // the runtime is about to need.
+          // NOTE: every settings path that can hold a credential, from the one list all three
+          // consumers of that fact share. A path absent here reads as "this key is unused", and the
+          // vault UI then offers to delete a key the runtime is about to need.
           OR: [
             { modelConfig: { path: ["credentialRef"], equals: idRef } },
-            { settings: { path: ["stt", "credentialRef"], equals: idRef } },
-            { settings: { path: ["tts", "credentialRef"], equals: idRef } },
-            {
-              settings: {
-                path: ["tts", "normalizeCredentialRef"],
-                equals: idRef,
-              },
-            },
-            { settings: { path: ["vision", "credentialRef"], equals: idRef } },
+            ...SETTINGS_CREDENTIAL_PATHS.map(([block, field]) => ({
+              settings: { path: [block, field], equals: idRef },
+            })),
           ],
         },
         select: { id: true, name: true },

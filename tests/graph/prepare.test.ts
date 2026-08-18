@@ -181,6 +181,38 @@ describe("buildSpeechNormalizer", () => {
     expect(getCaptured().reasoningEffort).toBeUndefined();
   });
 
+  // Nothing of the agent's config reaches the factory except what the resolver handed back by name.
+  // Pinned as the exact key set, so a field the schema grows later (and a spread would carry across
+  // a provider switch) shows up here as an extra key rather than as a silent inheritance.
+  test("the factory sees the resolution and nothing else of the agent's config", () => {
+    const { makeModel, getCaptured } = captureModel();
+    const cfg = makeConfig({
+      mc: {
+        provider: "openai",
+        model: "gpt-5",
+        credentialRef: "vault:1",
+        temperature: 0.9,
+        reasoningEffort: "high",
+      },
+      ttsConfig: {
+        ...TTS_DEFAULTS,
+        normalize: true,
+        normalizeProvider: "google",
+        normalizeModel: "gemini-2.5-flash",
+        normalizeCredentialRef: "vault:9",
+      },
+      ttsNormalizeApiKey: "normalizer-key",
+    });
+    buildSpeechNormalizer(cfg, { makeModel });
+    expect(Object.keys(getCaptured()).sort()).toEqual([
+      "apiKey",
+      "baseURL",
+      "model",
+      "provider",
+      "temperature",
+    ]);
+  });
+
   test("its own credential swaps the key, not just the model name", () => {
     const { makeModel, getCaptured } = captureModel();
     const cfg = makeConfig({

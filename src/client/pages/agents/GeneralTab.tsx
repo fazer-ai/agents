@@ -17,21 +17,13 @@ import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { REASONING_EFFORTS } from "@/graph/openai-reasoning";
 import { CapabilityMap } from "./CapabilityMap";
 import { PromptPanel } from "./PromptPanel";
 import { TabActionBar } from "./TabActionBar";
 import type { GrantState, ToolCatalog } from "./types";
-
-export const MODEL_PROVIDERS = [
-  "openai",
-  "openai-compatible",
-  "anthropic",
-  "google",
-  "deepseek",
-  "openrouter",
-] as const;
 
 interface ModelState {
   provider: string;
@@ -55,8 +47,6 @@ interface GeneralTabProps {
   model: ModelState;
   setModel: React.Dispatch<React.SetStateAction<ModelState>>;
   modelCredBaseUrl: string | null;
-  // Switching the agent's provider is not a plain setState: it invalidates the previous model id AND
-  // everything on OTHER tabs that inherits this provider (see AgentEditorPage).
   dirty: boolean;
   saving: boolean;
   onSave: () => void;

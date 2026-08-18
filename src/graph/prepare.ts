@@ -1129,8 +1129,12 @@ export function buildSpeechNormalizer(
   // silent substitution on a provider that may not even accept it.
   if (own && !cfg.ttsNormalizeApiKey) return skip("credential_not_found");
   const makeModel = args.makeModel ?? createChatModel;
+  // Built from the resolution alone, never spread from the agent's config: everything the rewrite
+  // is allowed to inherit came back through the resolver by name, and a spread would carry whatever
+  // else the agent's config holds (today its credentialRef, tomorrow any field the schema grows)
+  // across a provider switch, which is the one thing this whole resolution exists to refuse. The
+  // guardrails model is built the same way.
   const mc: ResolvedModelConfig = {
-    ...cfg.mc,
     provider: resolved.provider as ModelConfig["provider"],
     model: resolved.model,
     // WHOSE key travels, decided by the resolver rather than here: the agent's is reachable only
@@ -1143,11 +1147,10 @@ export function buildSpeechNormalizer(
           ? cfg.apiKey
           : "",
     baseURL: resolved.baseURL ?? undefined,
+    // Pinned, and the agent's reasoningEffort deliberately NOT carried: this pass rewrites an answer
+    // that already exists, and the effort the operator chose is about how the agent THINKS.
+    // Reasoning here would only add latency to an audio reply the customer is waiting on.
     temperature: 0,
-    // NOTE: dropped for the same reason temperature is pinned to 0: this pass rewrites an answer
-    // that already exists, and the effort the operator chose is about how the agent THINKS. Reasoning
-    // here would only add latency to an audio reply the customer is waiting on.
-    reasoningEffort: undefined,
   };
   // createChatModel REJECTS some configurations synchronously (openai-compatible with no effective
   // base URL throws a 400), and this normalizer config is separately editable, so that throw is

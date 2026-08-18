@@ -38,9 +38,3 @@ export const TTS_DEFAULT_VOICE: Record<string, string> = {
   elevenlabs: "",
   openrouter: "af_alloy",
 };
-
-// Whether the speech rewrite is on for an agent that never saved the flag. The client needs this to
-// render an unsaved agent the way the server would run it; TTS_DEFAULTS.normalize is the source of
-// truth and the mirror test above fails if the two ever disagree. Importing the server module here
-// would drag the TTS provider registry (fetch, wav) into the browser bundle.
-export const TTS_NORMALIZE_DEFAULT = true;

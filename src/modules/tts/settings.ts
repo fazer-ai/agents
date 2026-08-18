@@ -2,11 +2,16 @@ import { TTS_PROVIDER_NAMES } from "./providers";
 
 import {
   readVoiceSettings,
+  TTS_DEFAULTS,
   TTS_MODES,
+  type TtsConfig,
   type TtsMode,
   type TtsVoiceSettings,
-  VOICE_SETTINGS_DEFAULTS,
 } from "./settings-shared";
+
+// TtsConfig and TTS_DEFAULTS live in settings-shared (the browser reads them too); re-exported so the
+// server-side importers of this module keep one surface.
+export { TTS_DEFAULTS, type TtsConfig } from "./settings-shared";
 
 // Per-agent text-to-speech (audio reply) configuration, read from `agent.settings.tts`. The reply
 // MODE is the headline control (the operator's three choices, mirroring the n8n flow):
@@ -17,48 +22,6 @@ import {
 // Provider is selectable (ElevenLabs / OpenAI, extensible) and the API key is a vault entry
 // referenced by a stable `vault:<id>` ref (renaming the secret never breaks the agent).
 
-export interface TtsConfig extends TtsVoiceSettings {
-  mode: TtsMode;
-  provider: string;
-  model: string; // "" → provider default
-  voice: string; // "" → provider default (required by some providers, e.g. ElevenLabs)
-  credentialRef: string | null; // `vault:<id>` ref of the entry holding the API key
-
-  baseURL: string | null;
-  // Rewrite the reply for natural speech before synthesizing it. See modules/tts/normalize.ts.
-  normalize: boolean;
-  // The normalizer's OWN model, as four independent overrides of the agent's model config. The
-  // rewrite is a cheaper job than answering, so it can run on a cheaper model. All null/empty (the
-  // default) inherits the agent's model, key and baseURL, which is what keeps an existing install
-  // unchanged. Flat, not nested, for the mergeBehaviorSettings reason above. resolveNormalizeModel
-  // (modules/tts/normalize-model.ts) owns how the four fall back.
-  normalizeProvider: string | null;
-  normalizeModel: string | null;
-  normalizeCredentialRef: string | null;
-  normalizeBaseURL: string | null;
-}
-
-export const TTS_DEFAULTS: TtsConfig = {
-  mode: "never",
-  provider: "openai",
-  model: "",
-  voice: "",
-  credentialRef: null,
-  baseURL: null,
-  normalize: true,
-  normalizeProvider: null,
-  normalizeModel: null,
-  normalizeCredentialRef: null,
-  normalizeBaseURL: null,
-  ...VOICE_SETTINGS_DEFAULTS,
-};
-
-// Accepted ranges, clamped rather than rejected: a value typed slightly outside the band is an
-// operator overshooting a slider, not a reason to fail the whole settings write.
-// NOTE: `speed` is 0.25-4.0, the band the ElevenLabs REST endpoint accepts. The narrower 0.7-1.2 that
-// their docs also quote belongs to the Agents Platform, not to this endpoint, and clamping to it here
-// would silently turn a deliberate 1.5 into 1.2 with no error and no trace.
-// Source: https://github.com/elevenlabs/skills/blob/main/text-to-speech/references/voice-settings.md
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }

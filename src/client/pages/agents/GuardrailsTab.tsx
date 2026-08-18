@@ -10,13 +10,13 @@ import {
 } from "@/client/components";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import { providerLabel } from "@/client/lib/providerLabels";
+import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import type {
   GuardrailAction,
   GuardrailChecks,
   GuardrailsConfig,
 } from "@/modules/guardrails/settings";
-import { MODEL_PROVIDERS } from "./GeneralTab";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 

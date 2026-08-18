@@ -44,8 +44,48 @@ export const VOICE_SETTINGS_DEFAULTS: TtsVoiceSettings = {
   speakerBoost: null,
 };
 
-// Bands the providers accept. Outside them the request is refused (422), so a stored value that
-// overshoots is not a preference to honour: it is a number nobody can use.
+export interface TtsConfig extends TtsVoiceSettings {
+  mode: TtsMode;
+  provider: string;
+  model: string; // "" → provider default
+  voice: string; // "" → provider default (required by some providers, e.g. ElevenLabs)
+  credentialRef: string | null; // `vault:<id>` ref of the entry holding the API key
+
+  baseURL: string | null;
+  // Rewrite the reply for natural speech before synthesizing it. See modules/tts/normalize.ts.
+  normalize: boolean;
+  // The normalizer's OWN model, as four independent overrides of the agent's model config. The
+  // rewrite is a cheaper job than answering, so it can run on a cheaper model. All null/empty (the
+  // default) inherits the agent's model, key and baseURL, which is what keeps an existing install
+  // unchanged. Flat, not nested, for the mergeBehaviorSettings reason above. resolveNormalizeModel
+  // (modules/tts/normalize-model.ts) owns how the four fall back.
+  normalizeProvider: string | null;
+  normalizeModel: string | null;
+  normalizeCredentialRef: string | null;
+  normalizeBaseURL: string | null;
+}
+
+export const TTS_DEFAULTS: TtsConfig = {
+  mode: "never",
+  provider: "openai",
+  model: "",
+  voice: "",
+  credentialRef: null,
+  baseURL: null,
+  normalize: true,
+  normalizeProvider: null,
+  normalizeModel: null,
+  normalizeCredentialRef: null,
+  normalizeBaseURL: null,
+  ...VOICE_SETTINGS_DEFAULTS,
+};
+
+// Accepted ranges, clamped rather than rejected: a value typed slightly outside the band is an
+// operator overshooting a slider, not a reason to fail the whole settings write.
+// NOTE: `speed` is 0.25-4.0, the band the ElevenLabs REST endpoint accepts. The narrower 0.7-1.2 that
+// their docs also quote belongs to the Agents Platform, not to this endpoint, and clamping to it here
+// would silently turn a deliberate 1.5 into 1.2 with no error and no trace.
+// Source: https://github.com/elevenlabs/skills/blob/main/text-to-speech/references/voice-settings.md
 const VOICE_SETTING_RANGES = {
   stability: [0, 1],
   similarityBoost: [0, 1],

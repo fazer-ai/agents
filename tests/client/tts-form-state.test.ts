@@ -11,7 +11,7 @@ import {
   ttsNormalizerProviderChanged,
   ttsSettingsFrom,
 } from "@/client/pages/agents/ttsFormState";
-import { readTtsConfig, TTS_DEFAULTS } from "@/modules/tts/settings";
+import { readTtsConfig } from "@/modules/tts/settings";
 
 // The Behavior save REPLACES the whole `tts` block with what the form holds, so any field the form
 // does not carry is deleted on the next save. `normalizeBaseURL` was exactly that: settable over REST
@@ -41,21 +41,21 @@ const SAVED = {
 
 describe("agent editor TTS round-trip", () => {
   test("an agent's saved block survives load → save unchanged", () => {
-    const form = readTtsFormState(SAVED, TTS_DEFAULTS.normalize);
+    const form = readTtsFormState(SAVED);
     expect(ttsSettingsFrom(form)).toEqual(SAVED);
   });
 
   test("every key the settings reader knows about is carried by the form", () => {
     // The reader is the authority on what an agent can hold; anything it reads and the form drops is
     // a field the editor silently deletes.
-    const saved = ttsSettingsFrom(readTtsFormState(SAVED, true));
+    const saved = ttsSettingsFrom(readTtsFormState(SAVED));
     for (const key of Object.keys(readTtsConfig({ tts: SAVED }))) {
       expect(`${key}:${key in saved}`).toBe(`${key}:true`);
     }
   });
 
   test("an unset numeric knob round-trips as null, never as 0", () => {
-    const form = readTtsFormState({ mode: "mirror" }, true);
+    const form = readTtsFormState({ mode: "mirror" });
     const out = ttsSettingsFrom(form);
     expect(out.stability).toBeNull();
     expect(out.speed).toBeNull();
@@ -63,9 +63,9 @@ describe("agent editor TTS round-trip", () => {
   });
 
   test("an agent with no stored rewrite flag picks up the shipped default", () => {
-    expect(readTtsFormState({ mode: "mirror" }, true).normalize).toBe(true);
+    expect(readTtsFormState({ mode: "mirror" }).normalize).toBe(true);
     expect(
-      readTtsFormState({ mode: "mirror", normalize: false }, true).normalize,
+      readTtsFormState({ mode: "mirror", normalize: false }).normalize,
     ).toBe(false);
   });
 });
@@ -75,7 +75,7 @@ describe("agent editor TTS round-trip", () => {
 // form reads the stored bag directly rather than through the reader.
 describe("voice knobs are stored at the value that will actually be used", () => {
   const knobs = (over: Partial<TtsFormState>) =>
-    ttsSettingsFrom({ ...readTtsFormState({ mode: "mirror" }, true), ...over });
+    ttsSettingsFrom({ ...readTtsFormState({ mode: "mirror" }), ...over });
 
   test("an overshot slider is stored clamped, not raw", () => {
     expect(knobs({ stability: "9", speed: "12" })).toMatchObject({
@@ -113,15 +113,15 @@ describe("voice knobs are stored at the value that will actually be used", () =>
 // that sends no audio, and saves the unusable value straight back.
 describe("mode and provider are allowlisted the way the runtime allowlists them", () => {
   test("a mode the runtime does not accept reads as never", () => {
-    expect(readTtsFormState({ mode: "Mirror" }, true).mode).toBe("never");
-    expect(readTtsFormState({ mode: "mirror" }, true).mode).toBe("mirror");
+    expect(readTtsFormState({ mode: "Mirror" }).mode).toBe("never");
+    expect(readTtsFormState({ mode: "mirror" }).mode).toBe("mirror");
   });
 
   test("a provider the runtime does not accept reads as the default", () => {
-    expect(readTtsFormState({ provider: "Elevenlabs" }, true).provider).toBe(
+    expect(readTtsFormState({ provider: "Elevenlabs" }).provider).toBe(
       "openai",
     );
-    expect(readTtsFormState({ provider: "elevenlabs" }, true).provider).toBe(
+    expect(readTtsFormState({ provider: "elevenlabs" }).provider).toBe(
       "elevenlabs",
     );
   });
@@ -135,7 +135,7 @@ describe("mode and provider are allowlisted the way the runtime allowlists them"
       { mode: "", provider: "" },
       { mode: 7, provider: null },
     ]) {
-      const form = readTtsFormState(bag, true);
+      const form = readTtsFormState(bag);
       const runtime = readTtsConfig({ tts: bag });
       expect(`${form.mode}/${form.provider}`).toBe(
         `${runtime.mode}/${runtime.provider}`,
@@ -148,7 +148,7 @@ describe("mode and provider are allowlisted the way the runtime allowlists them"
 // import store the raw number, so the form has to show what synthesis will ACTUALLY do with it.
 describe("voice knobs are displayed at the value that will actually be used", () => {
   const form = (over: Record<string, unknown>) =>
-    readTtsFormState({ mode: "mirror", ...over }, true);
+    readTtsFormState({ mode: "mirror", ...over });
 
   test("a bag written out of range is displayed clamped", () => {
     expect(form({ speed: 9, stability: -3 })).toMatchObject({
@@ -175,7 +175,7 @@ describe("switching the rewrite provider", () => {
   // The base URL is the one that bites: its field only renders for openai-compatible, so a leftover
   // value keeps steering the new provider's client at an endpoint the operator can no longer see.
   test("drops every field that belonged to the previous provider", () => {
-    const form = readTtsFormState(SAVED, true);
+    const form = readTtsFormState(SAVED);
     const next = ttsNormalizerProviderChanged(form, "openrouter");
     expect(next.normalizeProvider).toBe("openrouter");
     expect(next.normalizeModel).toBe("");
@@ -184,7 +184,7 @@ describe("switching the rewrite provider", () => {
   });
 
   test("leaves the rest of the block alone", () => {
-    const form = readTtsFormState(SAVED, true);
+    const form = readTtsFormState(SAVED);
     const next = ttsNormalizerProviderChanged(form, "openrouter");
     expect(next.voice).toBe(form.voice);
     expect(next.credentialRef).toBe(form.credentialRef);
@@ -197,7 +197,7 @@ describe("switching the rewrite provider", () => {
 // why it is one function and not two copies of an inline ternary in JSX.
 describe("picking an override pins the vendor it came from", () => {
   const base = () =>
-    readTtsFormState({ mode: "mirror", normalizeProvider: "" }, true);
+    readTtsFormState({ mode: "mirror", normalizeProvider: "" });
 
   test("picking a model on an inherited provider names the agent's", () => {
     const next = ttsNormalizerOverridePicked(
@@ -281,7 +281,7 @@ const LOCAL: AgentModelSource = {
   baseURL: "http://llama:8080/v1",
 };
 const form = (over: Partial<TtsFormState> = {}): TtsFormState => ({
-  ...readTtsFormState({ mode: "mirror" }, true),
+  ...readTtsFormState({ mode: "mirror" }),
   ...over,
 });
 

@@ -10,8 +10,6 @@
 // not a transcode); openrouter only emits mp3 and therefore cannot serve Instagram at all (the
 // service falls back to a text reply there).
 
-// NOTE: type-only import — settings.ts imports TTS_PROVIDER_NAMES from here, and erasing this at
-// compile time keeps that from becoming a runtime require cycle.
 import type { TtsVoiceSettings } from "./settings-shared";
 import { pcmToWav } from "./wav";
 

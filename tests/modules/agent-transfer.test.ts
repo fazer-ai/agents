@@ -90,6 +90,15 @@ describe.skipIf(!dbUp)("agent export/import", () => {
             normalizeProvider: "openai",
             normalizeCredentialRef: `vault:${llmKey.id}`,
           },
+          // And the block that three private copies of the credential-path list did not know: with it
+          // out of the list, this same export threw 500 ("unresolved vault reference"), because the
+          // id survived translation and the leak defense caught it.
+          guardrails: {
+            enabled: true,
+            provider: "openai",
+            model: "gpt-4o-mini",
+            credentialRef: `vault:${llmKey.id}`,
+          },
         },
       },
     });
@@ -157,6 +166,10 @@ describe.skipIf(!dbUp)("agent export/import", () => {
       .tts;
     expect(tts?.credentialRef).toBe("tts-key");
     expect(tts?.normalizeCredentialRef).toBe("llm-key");
+    const guardrails = (
+      exp.agent.settings as Record<string, Record<string, unknown>>
+    ).guardrails;
+    expect(guardrails?.credentialRef).toBe("llm-key");
   });
 
   // A hand-written export is operator input like any other, and it lands through a third write path.

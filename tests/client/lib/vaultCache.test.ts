@@ -109,7 +109,11 @@ describe("vaultCache", () => {
     expect(getCalls).toBe(1);
   });
 
-  test("refreshVault forces a refetch and emits the change event", async () => {
+  // Two announcements, one refetch. The first says the list in hand is stale — it goes out before
+  // the request, because that gap is when a listener would otherwise answer from a vault that has
+  // already changed — and the second says the replacement has arrived. Listeners re-read on both,
+  // and the second re-read is served from the cache, which is why this still costs one GET.
+  test("refreshVault forces a refetch and brackets it with change events", async () => {
     await loadVault();
     let fired = 0;
     const h = () => {
@@ -119,7 +123,7 @@ describe("vaultCache", () => {
     await refreshVault();
     window.removeEventListener(VAULT_CHANGED_EVENT, h);
     expect(getCalls).toBe(2);
-    expect(fired).toBe(1);
+    expect(fired).toBe(2);
   });
 
   test("invalidateVault drops the cache (next load refetches) and emits", async () => {
@@ -435,6 +439,76 @@ describe("the in-flight entry while a superseded load fails", () => {
       await joined;
     });
     expect(result.current.known?.has("vault:3")).toBe(true);
+    cleanup();
+  });
+});
+
+// The two orderings a refresh can take, and both used to end with the panel answering from
+// something that is not the current vault.
+describe("refreshVault while listeners are watching", () => {
+  test("tells them the moment it drops the list, not when the new one lands", async () => {
+    entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
+    const { result } = renderHook(() => useVaultRefs());
+    await waitFor(() =>
+      expect(result.current.known?.has("vault:3")).toBe(true),
+    );
+    // The picker's create: the entry exists, the field already points at it, and this refresh is
+    // what will deliver it. Until it does, the list in hand is the one from before.
+    entriesToReturn = [
+      { id: "3", name: "openai", kind: "openai" },
+      { id: "9", name: "just-created", kind: "openai" },
+    ];
+    holdNextResponse();
+    let pending: Promise<unknown> = Promise.resolve();
+    await act(async () => {
+      pending = refreshVault().catch(() => undefined);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    expect(result.current.known).toBeNull();
+    await act(async () => {
+      releaseHeld(0);
+      await pending;
+    });
+    await waitFor(() =>
+      expect(result.current.known?.has("vault:9")).toBe(true),
+    );
+    cleanup();
+  });
+});
+
+// A superseded read is irrelevant whether it succeeded or FAILED: its 500 says nothing about the
+// vault the caller is asking about. Reported as the caller's own failure, it drove the listener to
+// not-loaded on top of the fresh list that had already arrived, and nothing would come along to put
+// it back — the panel silent about pending and dangling credentials until the next reload.
+describe("a superseded read that fails after the fresh one landed", () => {
+  test("does not erase the answer that replaced it", async () => {
+    entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
+    holdNextResponse({ fail: true });
+    const { result } = renderHook(() => useVaultRefs());
+    await waitFor(() => expect(getCalls).toBe(1));
+    entriesToReturn = [
+      { id: "3", name: "openai", kind: "openai" },
+      { id: "9", name: "just-created", kind: "openai" },
+    ];
+    holdNextResponse();
+    await act(async () => {
+      invalidateVault();
+    });
+    await waitFor(() => expect(getCalls).toBe(2));
+    // The replacement lands first...
+    await act(async () => {
+      releaseHeld(1);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    await waitFor(() =>
+      expect(result.current.known?.has("vault:9")).toBe(true),
+    );
+    // ...and then the read it replaced fails.
+    await act(async () => {
+      releaseHeld(0);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(result.current.known?.has("vault:9")).toBe(true);
     cleanup();
   });
 });

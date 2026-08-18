@@ -46,12 +46,15 @@ async function fetchVault(k: string, startedAt: number): Promise<VaultEntry[]> {
   // catch it), and one of them turns an empty list into "no credential resolves", so a failed
   // load must not pass for a successful one.
   const { data, error } = await api.api.v1.vault.get();
+  // Overtaken: the vault changed after this read left, so this answer is about a vault that no
+  // longer exists and the caller asked what it holds NOW. Checked BEFORE the response is judged,
+  // because a superseded FAILURE is just as irrelevant as a superseded list — reported as the
+  // caller's own failure it would drive them to "unknown" on top of the fresh list that already
+  // arrived, with nothing coming to put it back. Either way they get the current answer instead,
+  // from the cache or from the read that replaced this one.
+  if (startedAt !== generation) return loadVault();
   if (error || !data) throw new Error("vault load failed");
   const entries = [...data.entries];
-  // Overtaken: the vault changed after this read left. Neither cached nor returned, because the
-  // caller asked what the vault holds NOW and this answer is about a vault that no longer exists.
-  // They get the current one instead, from the cache or from the read that replaced this.
-  if (startedAt !== generation) return loadVault();
   cache.set(k, { entries, at: Date.now() });
   return entries;
 }
@@ -82,10 +85,12 @@ export function loadVault(): Promise<VaultEntry[]> {
 // ago reading as deleted. The notification sends them back to `loadVault`, which either gets the
 // fresh list or fails again and leaves them at "not loaded", and both of those are honest.
 export async function refreshVault(): Promise<VaultEntry[]> {
-  const k = tenantKey();
-  generation += 1;
-  cache.delete(k);
-  inflight.delete(k);
+  // Announce the drop NOW, through the same call every other mutation uses. The caller has just
+  // changed the vault and usually pointed a field at the result, so the seconds between dropping
+  // the old list and receiving the new one are exactly when a listener still holding the old one
+  // reports the created credential as deleted. Waiting for the GET to announce anything is what
+  // left that window open.
+  invalidateVault();
   try {
     const entries = await loadVault();
     notifyChanged();

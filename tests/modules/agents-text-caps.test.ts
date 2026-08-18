@@ -181,6 +181,33 @@ describe("clampOversizedTextInPlace", () => {
     expect(ho.mode).toBe("pinned");
   });
 
+  // Every reader trims before it applies its cap, so an imported value that is only over because of
+  // leading whitespace loses nothing at the runtime. Clipping the raw string would throw away as many
+  // real characters as there were spaces — content the reader would have kept.
+  test("clips what the reader would keep, not the whitespace in front of it", () => {
+    const rule = "r".repeat(TOOL_INSTRUCTIONS_MAX);
+    const bag: Record<string, unknown> = {
+      handoff: { instructions: `${" ".repeat(100)}${rule}` },
+    };
+    // Nothing of substance is over the cap, so nothing is reported as clipped.
+    expect(clampOversizedTextInPlace(bag)).toEqual([]);
+    expect((bag.handoff as Record<string, string>).instructions).toBe(rule);
+  });
+
+  test("still clips when the text itself is over the cap", () => {
+    const bag: Record<string, unknown> = {
+      handoff: {
+        instructions: `  ${"r".repeat(TOOL_INSTRUCTIONS_MAX + 50)}  `,
+      },
+    };
+    expect(clampOversizedTextInPlace(bag).map((c) => c.path)).toEqual([
+      "handoff.instructions",
+    ]);
+    const kept = (bag.handoff as Record<string, string>).instructions ?? "";
+    expect(kept).toHaveLength(TOOL_INSTRUCTIONS_MAX);
+    expect(kept.startsWith("r")).toBe(true);
+  });
+
   test("leaves a bag with nothing oversized untouched", () => {
     const bag = { handoff: { instructions: at(TOOL_INSTRUCTIONS_MAX) } };
     expect(clampOversizedTextInPlace(bag)).toEqual([]);

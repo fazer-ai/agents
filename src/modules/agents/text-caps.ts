@@ -205,8 +205,17 @@ export function clampOversizedTextInPlace(settings: unknown): OversizedText[] {
   const out: OversizedText[] = [];
   for (const f of cappedFields(settings)) {
     if (f.value.length <= f.max) continue;
-    out.push({ path: f.path, length: f.value.length, max: f.max });
-    f.replace(clipText(f.value, f.max));
+    // Trimmed first, because that is what the readers measure: a value over the cap only by the
+    // whitespace in front of it loses nothing at runtime, and clipping the raw string would throw
+    // away exactly as many real characters as there were spaces. Reported as clipped only when the
+    // text itself is too long, so the import warning never names a field that kept every word.
+    const text = f.value.trim();
+    if (text.length <= f.max) {
+      f.replace(text);
+      continue;
+    }
+    out.push({ path: f.path, length: text.length, max: f.max });
+    f.replace(clipText(text, f.max));
   }
   return out;
 }

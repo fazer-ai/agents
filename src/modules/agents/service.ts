@@ -397,9 +397,30 @@ export async function updateAgent(
     // could land last after another save turned follow-up OFF, restoring ON with the STALE watermark
     // and re-exposing the pre-arm backlog to the sweep. RLS still applies to the raw read.
     const beforeRows = await db.$queryRaw<
-      Array<{ enabled: boolean; mode: string; settings: unknown }>
-    >`SELECT enabled, mode, settings FROM agents WHERE id = ${id} FOR UPDATE`;
+      Array<{
+        enabled: boolean;
+        mode: string;
+        settings: unknown;
+        updated_at: Date;
+      }>
+    >`SELECT enabled, mode, settings, updated_at FROM agents WHERE id = ${id} FOR UPDATE`;
     const before = beforeRows[0];
+    // NOTE: The optimistic-concurrency check comes FIRST, on the locked row. A stale editor resends
+    // the settings it loaded, so if the other writer edited a capped field our copy of it is an edit
+    // too — validating first would answer 400 "text too long" to what is really a 409, and the
+    // editor's conflict flow (reload, or save again to overwrite) would never run. A forced retry
+    // sends no precondition and still gets validated.
+    if (
+      before &&
+      opts.expectedUpdatedAt != null &&
+      before.updated_at.getTime() !== opts.expectedUpdatedAt.getTime()
+    ) {
+      throw new AppError(
+        "agent was modified elsewhere",
+        409,
+        "errors.agentModifiedElsewhere",
+      );
+    }
     // NOTE: Inside the lock, against the row this write replaces — reading the stored bag separately
     // would compare against a value another writer could have changed in between.
     assertSettingsTextSizes(rest.settings, before?.settings);

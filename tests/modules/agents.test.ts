@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { setPublisher, TOPICS } from "@/api/features/realtime/realtime.service";
 import config from "@/config";
 import { buildNativeTools } from "@/graph/tools/native";
+import type { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   cloneAgent,
@@ -932,6 +933,50 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
         ctx(tenantC),
         BigInt(a.id),
         { settings: { handoff: { instructions: `${legacy}!` } } },
+        appDb,
+      ),
+    ).rejects.toBeInstanceOf(SettingsTextTooLongError);
+  });
+
+  // A stale editor resends the settings it loaded. If the other writer edited a capped field, our
+  // copy of that field is an edit too — so validating before the version check would answer 400
+  // "text too long" to what is really a conflict, and the editor's reload-or-overwrite flow would
+  // never run for it.
+  test("a stale write gets the conflict, not the cap error", async () => {
+    const a = await createAgent(ctx(tenantC), { name: "StaleCap" }, appDb);
+    const legacy = "s".repeat(TOOL_INSTRUCTIONS_MAX + 1);
+    const seeded = await suDb.agent.update({
+      where: { id: BigInt(a.id) },
+      data: { settings: { handoff: { instructions: legacy } } },
+      select: { updatedAt: true },
+    });
+    // Someone else shortens it while this editor holds the old bag.
+    await suDb.agent.update({
+      where: { id: BigInt(a.id) },
+      data: { settings: { handoff: { instructions: "short now" } } },
+    });
+    try {
+      await updateAgent(
+        ctx(tenantC),
+        BigInt(a.id),
+        { settings: { handoff: { instructions: legacy } } },
+        appDb,
+        { expectedUpdatedAt: seeded.updatedAt },
+      );
+      expect.unreachable();
+    } catch (e) {
+      expect(e).not.toBeInstanceOf(SettingsTextTooLongError);
+      expect((e as AppError).statusCode).toBe(409);
+      expect((e as AppError).translationKey).toBe(
+        "errors.agentModifiedElsewhere",
+      );
+    }
+    // The overwrite carries no precondition, and IS validated: this bag re-introduces the long note.
+    expect(
+      updateAgent(
+        ctx(tenantC),
+        BigInt(a.id),
+        { settings: { handoff: { instructions: legacy } } },
         appDb,
       ),
     ).rejects.toBeInstanceOf(SettingsTextTooLongError);

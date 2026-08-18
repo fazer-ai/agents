@@ -194,11 +194,15 @@ function buildCreateLinkTool(
         name: input.name ?? input.description ?? "Pagamento",
         ...(input.description ? { description: input.description } : {}),
         value: input.value,
-        externalReference: correlationId,
         // Required by Asaas for DETACHED links (sandbox-confirmed 2026-06): business days the link
         // stays payable. Overridable via config.paymentLink.
         dueDateLimitDays: 3,
         ...overrides,
+        // Last: a config override must NOT clobber the correlation token. externalReference is the
+        // field Asaas offers for the merchant's own identifier, so an operator stamping an ERP id
+        // in config.paymentLink is the expected use of that map — and it used to win, leaving the
+        // paid webhook with nothing to tie back to the conversation (issue #108).
+        externalReference: correlationId,
       };
 
       let res: AsaasResponse;

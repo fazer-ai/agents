@@ -488,6 +488,57 @@ describe.skipIf(!dbUp)("asaas toolpack — correlation ref persistence", () => {
     expect(mapped.event.externalId).toBe(externalReference);
   });
 
+  test("an operator's config.paymentLink cannot clobber the correlation token", async () => {
+    const { impl, calls } = stubFetch(200, {
+      id: "plink_43",
+      url: "https://sandbox.asaas.com/i/def",
+    });
+    const threadId = `${tenantId}:1:778`;
+    const tool = asaasToolpack.build(
+      sel({
+        instanceId,
+        enabledTools: ["asaas_payment_link_create"],
+        config: {
+          environment: "sandbox",
+          // externalReference is the field Asaas offers for the merchant's OWN identifier, so an
+          // ERP/CRM id is the most plausible thing an operator puts in this map. It used to win
+          // over ours, and the payment then arrived uncorrelated to any conversation (issue #108).
+          paymentLink: {
+            externalReference: "ERP-1234",
+            billingType: "CREDIT_CARD",
+          },
+        },
+      }),
+      baseCtx({ tenantId, base: appDb, threadId, fetchImpl: impl }),
+    )[0];
+
+    await tool?.invoke({ value: 50, description: "Consulta" });
+
+    const body = JSON.parse(calls[0]?.init.body as string) as Record<
+      string,
+      unknown
+    >;
+    // The override still governs everything that is not load-bearing.
+    expect(body.billingType).toBe("CREDIT_CARD");
+    // The correlation token is not negotiable.
+    const externalReference = body.externalReference as string;
+    expect(externalReference).toMatch(/^[0-9a-f]{32}$/);
+    expect(externalReference).not.toBe("ERP-1234");
+
+    // What the token buys: the payment webhook still lands on THIS conversation.
+    const ref = await suDb.integrationExternalRef.findFirst({
+      where: { tenantId, externalId: externalReference },
+      select: { threadId: true },
+    });
+    expect(ref?.threadId).toBe(threadId);
+    const mapped = getMapper("ASAAS")?.map({
+      event: "PAYMENT_RECEIVED",
+      payment: { id: "pay_100", externalReference, status: "RECEIVED" },
+    });
+    if (!mapped?.ok) throw new Error("expected a mapped inbound event");
+    expect(mapped.event.externalId).toBe(externalReference);
+  });
+
   test("pix charge persists the correlation ref keyed by externalReference (metadata.paymentId)", async () => {
     const { impl, calls } = scriptedFetch([
       {

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { WindowSpec } from "@/modules/business-hours/hours";
-import { computeAvailableSlots } from "@/modules/integrations/toolpacks/calendar-slots";
+import {
+  computeAggregatedSlots,
+  computeAvailableSlots,
+} from "@/modules/integrations/toolpacks/calendar-slots";
 
 // America/Sao_Paulo is a fixed UTC-3 (no DST since 2019), so -03:00 ISO offsets are stable here.
 const TZ = "America/Sao_Paulo";
@@ -204,5 +207,118 @@ describe("computeAvailableSlots", () => {
         scheduleWindows: officeHours,
       }),
     ).toEqual([]);
+  });
+});
+
+// Issue #100: several allowed calendars are INDEPENDENT sources of availability (one per
+// professional/resource), not one pooled calendar. The decision this table pins is which slots
+// survive and in what order, because that is what the customer is offered when they ask "who can
+// see me first?".
+describe("computeAggregatedSlots", () => {
+  const ANA = { calendarId: "ana@x", calendarLabel: "Dra. Ana" };
+  const PAULO = { calendarId: "paulo@x", calendarLabel: "Dr. Paulo" };
+  const agg = (over: Record<string, unknown>) =>
+    computeAggregatedSlots({
+      ...base,
+      timeMin: iso("09:00"),
+      timeMax: iso("11:00"),
+      scheduleWindows: officeHours,
+      sharedBusy: [],
+      maxPerSource: 100,
+      sources: [],
+      ...over,
+    });
+
+  test("a slot busy on one calendar survives on the other, tagged with its own", () => {
+    const slots = agg({
+      sources: [
+        { ...ANA, busy: [{ start: iso("09:00"), end: iso("10:00") }] },
+        { ...PAULO, busy: [] },
+      ],
+    });
+    const at9 = slots.filter((s) => localHM(s.start) === "09:00");
+    expect(at9.map((s) => s.calendarId)).toEqual(["paulo@x"]);
+    expect(at9[0]?.calendarLabel).toBe("Dr. Paulo");
+  });
+
+  test("busy intervals are NOT pooled across calendars", () => {
+    // Pooling would intersect the two and leave 09:00 free for nobody.
+    const slots = agg({
+      sources: [
+        { ...ANA, busy: [{ start: iso("09:00"), end: iso("09:30") }] },
+        { ...PAULO, busy: [{ start: iso("09:30"), end: iso("10:00") }] },
+      ],
+    });
+    const starts = slots.map((s) => `${localHM(s.start)}/${s.calendarId}`);
+    expect(starts).toContain("09:00/paulo@x");
+    expect(starts).toContain("09:30/ana@x");
+  });
+
+  test("the merged list is chronological, ties broken by the configured order", () => {
+    const slots = agg({
+      sources: [
+        { ...ANA, busy: [] },
+        { ...PAULO, busy: [] },
+      ],
+    });
+    const times = slots.map((s) => Date.parse(s.start));
+    expect(times).toEqual([...times].sort((a, b) => a - b));
+    const first = slots.filter((s) => localHM(s.start) === "09:00");
+    expect(first.map((s) => s.calendarId)).toEqual(["ana@x", "paulo@x"]);
+  });
+
+  test("sharedBusy (holidays/closures) blocks the slot on EVERY calendar", () => {
+    const slots = agg({
+      sources: [
+        { ...ANA, busy: [] },
+        { ...PAULO, busy: [] },
+      ],
+      sharedBusy: [{ start: iso("09:00"), end: iso("10:00") }],
+    });
+    expect(slots.some((s) => localHM(s.start) === "09:00")).toBe(false);
+    expect(slots.some((s) => localHM(s.start) === "10:00")).toBe(true);
+  });
+
+  test("the bound is PER calendar, so no calendar is starved out of the list", () => {
+    // A bound on the MERGED list would be filled by whichever calendar happens to be free earliest,
+    // and "is any ophthalmologist free tomorrow?" would then answer for one professional only.
+    const slots = agg({
+      sources: [
+        { ...ANA, busy: [] },
+        { ...PAULO, busy: [{ start: iso("09:00"), end: iso("10:00") }] },
+      ],
+      maxPerSource: 1,
+    });
+    expect(slots.map((s) => `${localHM(s.start)}/${s.calendarId}`)).toEqual([
+      "09:00/ana@x",
+      "10:00/paulo@x",
+    ]);
+  });
+
+  test("each calendar keeps its EARLIEST slots when the bound bites", () => {
+    const slots = agg({
+      sources: [
+        { ...ANA, busy: [] },
+        { ...PAULO, busy: [] },
+      ],
+      maxPerSource: 2,
+    });
+    expect(slots.map((s) => localHM(s.start))).toEqual([
+      "09:00",
+      "09:00",
+      "09:30",
+      "09:30",
+    ]);
+  });
+
+  test("a calendar with nothing free contributes nothing and breaks nothing", () => {
+    const slots = agg({
+      sources: [
+        { ...ANA, busy: [{ start: iso("00:00"), end: iso("23:59") }] },
+        { ...PAULO, busy: [] },
+      ],
+    });
+    expect(slots.length).toBeGreaterThan(0);
+    expect(slots.every((s) => s.calendarId === "paulo@x")).toBe(true);
   });
 });

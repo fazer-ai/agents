@@ -1285,3 +1285,202 @@ describe("google calendar toolpack — integration failures are marked (issue #4
     expect(String(out.content).toLowerCase()).toContain("at most 24 hours");
   });
 });
+
+// Issue #100: a clinic with one calendar per professional. "Who can see me first?" used to force the
+// model to call this tool once per calendar and merge the results itself, burning the turn's tool
+// budget and risking a calendar never being asked. freeBusy already takes N calendars in ONE request,
+// so aggregating costs the same round trip it always did.
+describe("google calendar toolpack — aggregated availability (issue #100)", () => {
+  const ANA = "ana@group.calendar.google.com";
+  const PAULO = "paulo@group.calendar.google.com";
+  const CLINIC = {
+    calendarIds: [ANA, PAULO],
+    calendarLabels: { [ANA]: "Dra. Ana", [PAULO]: "Dr. Paulo" },
+    slotDurationMinutes: 60,
+    slotGranularityMinutes: 60,
+  };
+  const RANGE = {
+    timeMin: "2099-06-22T09:00:00-03:00",
+    timeMax: "2099-06-22T12:00:00-03:00",
+  };
+  type AggSlot = {
+    start: string;
+    end: string;
+    label: string;
+    calendarId: string;
+    calendarLabel?: string;
+  };
+  const parse = (out: string) =>
+    JSON.parse(out) as { slots: AggSlot[]; unavailableCalendars?: string[] };
+
+  test("no calendarId asks every allowed calendar in ONE freeBusy request", async () => {
+    const { impl, calls } = stubFetch(200, {
+      calendars: { [ANA]: { busy: [] }, [PAULO]: { busy: [] } },
+    });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      CLINIC,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(calls).toHaveLength(1);
+    expect(bodyOf(calls[0] as { init: RequestInit })).toMatchObject({
+      items: [{ id: ANA }, { id: PAULO }],
+    });
+    expect(parse(out).slots.length).toBe(6);
+  });
+
+  test("every slot carries the calendar that can actually take it", async () => {
+    const { impl } = stubFetch(200, {
+      calendars: {
+        [ANA]: {
+          busy: [
+            {
+              start: "2099-06-22T09:00:00-03:00",
+              end: "2099-06-22T10:00:00-03:00",
+            },
+          ],
+        },
+        [PAULO]: { busy: [] },
+      },
+    });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      CLINIC,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    const nine = parse(out).slots.filter((s) => localHM(s.start) === "09:00");
+    expect(nine).toHaveLength(1);
+    expect(nine[0]?.calendarId).toBe(PAULO);
+    expect(nine[0]?.calendarLabel).toBe("Dr. Paulo");
+  });
+
+  test("the merged list is chronological across calendars", async () => {
+    const { impl } = stubFetch(200, {
+      calendars: {
+        [ANA]: {
+          busy: [
+            {
+              start: "2099-06-22T09:00:00-03:00",
+              end: "2099-06-22T11:00:00-03:00",
+            },
+          ],
+        },
+        [PAULO]: {
+          busy: [
+            {
+              start: "2099-06-22T10:00:00-03:00",
+              end: "2099-06-22T12:00:00-03:00",
+            },
+          ],
+        },
+      },
+    });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      CLINIC,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    const times = parse(out).slots.map((s) => Date.parse(s.start));
+    expect(times).toEqual([...times].sort((a, b) => a - b));
+  });
+
+  test("an explicit calendarId still asks that one calendar only", async () => {
+    const { impl, calls } = stubFetch(200, {
+      calendars: { [ANA]: { busy: [] } },
+    });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      CLINIC,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({ ...RANGE, calendarId: "Dra. Ana" })) as string;
+    expect(bodyOf(calls[0] as { init: RequestInit })).toMatchObject({
+      items: [{ id: ANA }],
+    });
+    expect(parse(out).slots.every((s) => s.calendarId === ANA)).toBe(true);
+  });
+
+  test("a calendar freeBusy could not read is EXCLUDED and named, never treated as free", async () => {
+    // Including it with an empty busy list would offer a professional whose bookings we cannot see,
+    // which is a double booking. Dropping it only under-offers.
+    const { impl } = stubFetch(200, {
+      calendars: {
+        [ANA]: { busy: [] },
+        [PAULO]: { errors: [{ domain: "global", reason: "notFound" }] },
+      },
+    });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      CLINIC,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    const parsed = parse(out);
+    expect(parsed.slots.every((s) => s.calendarId === ANA)).toBe(true);
+    expect(parsed.unavailableCalendars).toEqual(["Dr. Paulo"]);
+  });
+
+  test("a single calendar is NOT capped, so one-calendar operators see exactly what they saw before", async () => {
+    const { impl } = stubFetch(200, { calendars: { [ANA]: { busy: [] } } });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      { ...CLINIC, calendarIds: [ANA] },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      timeMin: "2099-06-22T09:00:00-03:00",
+      timeMax: "2099-06-22T21:00:00-03:00",
+    })) as string;
+    // 12 hourly starts. A per-calendar bound applied here would silently shorten the list an
+    // operator has been reading since before this feature existed.
+    expect(parse(out).slots).toHaveLength(12);
+  });
+
+  test("with several calendars each one is bounded, and none is dropped for being later", async () => {
+    const { impl } = stubFetch(200, {
+      calendars: { [ANA]: { busy: [] }, [PAULO]: { busy: [] } },
+    });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      CLINIC,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      timeMin: "2099-06-22T09:00:00-03:00",
+      timeMax: "2099-06-22T21:00:00-03:00",
+    })) as string;
+    const slots = parse(out).slots;
+    expect(slots).toHaveLength(16);
+    expect(slots.filter((s) => s.calendarId === ANA)).toHaveLength(8);
+    expect(slots.filter((s) => s.calendarId === PAULO)).toHaveLength(8);
+  });
+
+  test("when NO calendar could be read it refuses instead of reporting nothing free", async () => {
+    // An empty slot list reads as "this day is fully booked". Saying that because every calendar
+    // failed would send the customer away from a clinic that is in fact open.
+    const { impl } = stubFetch(200, {
+      calendars: {
+        [ANA]: { errors: [{ domain: "global", reason: "notFound" }] },
+        [PAULO]: { errors: [{ domain: "global", reason: "notFound" }] },
+      },
+    });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      CLINIC,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(out).toContain("cannot be verified");
+    expect(out).not.toContain("slots");
+  });
+
+  test("a single allowed calendar keeps the pinned shape, still tagged", async () => {
+    const { impl, calls } = stubFetch(200, {
+      calendars: { [ANA]: { busy: [] } },
+    });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      { ...CLINIC, calendarIds: [ANA] },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(bodyOf(calls[0] as { init: RequestInit })).toMatchObject({
+      items: [{ id: ANA }],
+    });
+    expect(parse(out).slots.every((s) => s.calendarId === ANA)).toBe(true);
+  });
+});

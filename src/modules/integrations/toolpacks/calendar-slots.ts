@@ -102,3 +102,70 @@ function formatLabel(d: Date, tz: string): string {
   const weekday = get("weekday").replace(/\.$/, "");
   return `${weekday} ${get("day")}/${get("month")} ${get("hour")}:${get("minute")}`;
 }
+
+// One calendar as a SOURCE of availability: its own busy intervals, plus how to name it back to the
+// customer. `calendarLabel` is null when the operator never named it (the raw id is then the only
+// handle the model has).
+export interface CalendarSource {
+  calendarId: string;
+  calendarLabel: string | null;
+  busy: { start: string; end: string }[];
+}
+
+export interface AggregatedSlot extends Slot {
+  calendarId: string;
+  calendarLabel?: string;
+}
+
+export interface AggregateInput extends Omit<SlotInput, "busy"> {
+  sources: CalendarSource[];
+  // Busy windows that apply to EVERY source: the operator's blocking calendars (holidays, closures).
+  // A holiday shuts the whole clinic, so it cannot live on one source's own list.
+  sharedBusy: { start: string; end: string }[];
+  // Ceiling on how many slots EACH calendar contributes. Per calendar rather than on the merged list
+  // because a merged bound is filled by whichever calendar is free earliest, which silently answers
+  // "is any ophthalmologist free tomorrow?" for one professional. The caller sets it high enough to
+  // be inert when there is a single source, so this feature does not change what one-calendar
+  // operators have been seeing.
+  maxPerSource: number;
+}
+
+// Availability across several calendars at once (issue #100): a clinic with one calendar per
+// professional, asked "who can see me first?".
+//
+// Each calendar is computed SEPARATELY and the results are merged. Pooling the busy intervals into a
+// single computeAvailableSlots call would answer a different question, when EVERY professional is
+// free simultaneously, which is the intersection and is what you want for a meeting room, not for
+// interchangeable providers. That distinction is the whole point of the issue, so it is pinned by a
+// decision table rather than left to the reader.
+//
+// Ordering is chronological because the question is "first available"; ties (two professionals free
+// at 09:00) keep the operator's configured calendar order, so the same query answers the same way
+// twice and the operator can predict who gets offered first.
+export function computeAggregatedSlots(
+  input: AggregateInput,
+): AggregatedSlot[] {
+  const { sources, sharedBusy, maxPerSource, ...slotInput } = input;
+  const decorated: Array<{ order: number; at: number; slot: AggregatedSlot }> =
+    [];
+  sources.forEach((src, order) => {
+    const slots = computeAvailableSlots({
+      ...slotInput,
+      busy: [...src.busy, ...sharedBusy],
+    });
+    // computeAvailableSlots already returns chronologically, so the head is this calendar's earliest.
+    for (const s of slots.slice(0, Math.max(0, maxPerSource))) {
+      decorated.push({
+        order,
+        at: Date.parse(s.start),
+        slot: {
+          ...s,
+          calendarId: src.calendarId,
+          ...(src.calendarLabel ? { calendarLabel: src.calendarLabel } : {}),
+        },
+      });
+    }
+  });
+  decorated.sort((a, b) => a.at - b.at || a.order - b.order);
+  return decorated.map((d) => d.slot);
+}

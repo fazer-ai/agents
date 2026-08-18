@@ -5,7 +5,7 @@ import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { xmlAttr } from "@/lib/xml";
 import { readAppointmentReminderConfig } from "@/modules/appointments/settings";
-import { computeAvailableSlots } from "./calendar-slots";
+import { type CalendarSource, computeAggregatedSlots } from "./calendar-slots";
 import {
   type IntegrationSelection,
   registerToolpack,
@@ -227,6 +227,26 @@ function pickCalendarId(
   };
 }
 
+// Which calendars an AVAILABILITY query covers (issue #100). Same fencing as pickCalendarId for an
+// explicit arg; the difference is the no-arg case, which used to be refused ("set calendarId") and
+// now means EVERY allowed calendar. That refusal is what forced a clinic's agent to call this tool
+// once per professional and merge the results itself, spending the turn's tool budget on arithmetic
+// the runtime does deterministically. Booking, rescheduling and cancelling deliberately keep the
+// old rule: those act on ONE calendar, chosen after the customer picks a professional.
+function pickAvailabilityCalendars(
+  allowed: string[],
+  labels: Record<string, string>,
+  requested: string | undefined,
+): { ids: string[] } | { error: string } {
+  // An explicit arg, and the empty-allowlist refusal, resolve exactly as every other calendar tool
+  // resolves them; only the no-arg case below differs.
+  if (requested?.trim() || allowed.length === 0) {
+    const one = pickCalendarId(allowed, labels, requested);
+    return "error" in one ? one : { ids: [one.id] };
+  }
+  return { ids: allowed };
+}
+
 function resolveTimeZone(config: Record<string, unknown>): string {
   const v = config.timeZone;
   return typeof v === "string" && v.trim() ? v.trim() : DEFAULT_TIME_ZONE;
@@ -243,6 +263,10 @@ const MAX_GRANULARITY_MINUTES = 240;
 // Availability is queried one day at a time: cap the range so the (now unsampled) slot list stays small
 // and the model pages through longer searches itself, a day per call.
 const MAX_AVAILABILITY_RANGE_MS = 24 * 60 * 60 * 1000;
+// How many slots each calendar contributes when several are searched at once. Six professionals over
+// a working day at 30-minute grain is ~96 entries, most of them never used: the customer picks from
+// the first few. Applied per calendar so every professional stays represented.
+const MAX_SLOTS_PER_CALENDAR = 8;
 
 function clampMinutes(
   raw: unknown,
@@ -714,14 +738,16 @@ function buildCheckAvailabilityTool(
       }
       const token = await resolveToken(sel, ctx);
       if (!token) return toolFailure(NOT_CONNECTED);
-      const pick = pickCalendarId(allowed, labels, input.calendarId);
+      const pick = pickAvailabilityCalendars(allowed, labels, input.calendarId);
       if ("error" in pick) return pick.error;
-      const calendarId = pick.id;
+      const calendarIds = pick.ids;
+      // freeBusy takes N calendars in ONE request and keys the answer by id, so covering the whole
+      // clinic costs the same round trip covering one professional always did.
       const body = {
         timeMin: input.timeMin,
         timeMax: input.timeMax,
         timeZone,
-        items: [{ id: calendarId }],
+        items: calendarIds.map((id) => ({ id })),
       };
       let res: GcalResponse;
       try {
@@ -741,18 +767,48 @@ function buildCheckAvailabilityTool(
       }
       const data = (res.json ?? {}) as Record<string, unknown>;
       const calendars = (data.calendars ?? {}) as Record<string, unknown>;
-      const entry = (calendars[calendarId] ?? {}) as Record<string, unknown>;
-      const busy = (Array.isArray(entry.busy) ? entry.busy : [])
-        .map((b) => (b ?? {}) as Record<string, unknown>)
-        .filter((b) => typeof b.start === "string" && typeof b.end === "string")
-        .map((b) => ({ start: b.start as string, end: b.end as string }));
+      // Per-calendar outcome. freeBusy answers 200 and reports a calendar it could not read as a
+      // per-calendar `errors` array (a revoked share, a deleted calendar), so the failure is INSIDE a
+      // successful response. Such a calendar is dropped, never carried with an empty busy list: empty
+      // busy means "free all day", and offering a professional whose bookings we cannot see is a
+      // double booking. Dropping it only under-offers, and the caller is told which ones went missing
+      // so the reply can say so instead of pretending the clinic is smaller than it is.
+      const sources: CalendarSource[] = [];
+      const unreadable: string[] = [];
+      for (const id of calendarIds) {
+        const entry = (calendars[id] ?? null) as Record<string, unknown> | null;
+        const errors = entry && Array.isArray(entry.errors) ? entry.errors : [];
+        if (!entry || errors.length > 0) {
+          unreadable.push(labels[id] ?? id);
+          continue;
+        }
+        const busy = (Array.isArray(entry.busy) ? entry.busy : [])
+          .map((b) => (b ?? {}) as Record<string, unknown>)
+          .filter(
+            (b) => typeof b.start === "string" && typeof b.end === "string",
+          )
+          .map((b) => ({ start: b.start as string, end: b.end as string }));
+        sources.push({
+          calendarId: id,
+          calendarLabel: labels[id] ?? null,
+          busy,
+        });
+      }
+      // Nothing readable at all: an empty slot list would read as "fully booked", which sends the
+      // customer away from a clinic that is open. Say we could not check instead.
+      if (sources.length === 0) {
+        return toolFailure(
+          `Availability cannot be verified right now: no configured calendar could be read (${unreadable.join(", ")}).`,
+        );
+      }
       // Blocking calendars (holidays, closures) count as busy too, read via events.list, NOT
       // freeBusy: all-day events (the typical holiday shape) default to transparency "transparent"
       // ("Free") and freeBusy silently ignores them, which is exactly the calendar the operator
       // expects to block. Only start/end are requested (no titles or attendees reach the model).
       // Fail-closed: a blocking calendar we cannot read could be hiding a closure, so refusing
       // beats offering a slot the operator explicitly blocked.
-      const blocking = blockingIds.filter((id) => id !== calendarId);
+      const sharedBusy: { start: string; end: string }[] = [];
+      const blocking = blockingIds.filter((id) => !calendarIds.includes(id));
       if (blocking.length > MAX_BLOCKING_CALENDARS) {
         return `Too many blocking calendars are configured (${blocking.length}; the limit is ${MAX_BLOCKING_CALENDARS}), so availability cannot be verified. Reduce the blocking calendars in the integration settings.`;
       }
@@ -799,7 +855,7 @@ function buildCheckAvailabilityTool(
               (ev ?? {}) as Record<string, unknown>,
               timeZone,
             );
-            if (w) busy.push(w);
+            if (w) sharedBusy.push(w);
           }
         }
       }
@@ -810,30 +866,39 @@ function buildCheckAvailabilityTool(
         businessHoursId && ctx.resolveBusinessHours
           ? await ctx.resolveBusinessHours(businessHoursId)
           : null;
-      const slots = computeAvailableSlots({
+      const slots = computeAggregatedSlots({
         timeMin: input.timeMin,
         timeMax: input.timeMax,
         now: new Date(),
         scheduleWindows: schedule?.windows ?? [],
         scheduleTz: schedule?.timezone ?? timeZone,
-        busy,
+        sources,
+        sharedBusy,
         slotMinutes: resolveSlotDuration(sel.config, input.slotDurationMinutes),
         granularityMinutes: resolveSlotGranularity(
           sel.config,
           input.granularityMinutes,
         ),
         minLeadMinutes,
+        // Inert for a single calendar (Infinity), so this feature changes nothing for the operators
+        // who have one: they keep getting every bookable start in the range, as before.
+        maxPerSource:
+          sources.length > 1
+            ? MAX_SLOTS_PER_CALENDAR
+            : Number.POSITIVE_INFINITY,
       });
-      // A list of bookable start times (start/end ISO + a human label). Empty ⇒ nothing free in range.
+      // A list of bookable start times (start/end ISO + a human label), each tagged with the calendar
+      // that can take it. Empty ⇒ nothing free in range.
       return JSON.stringify({
         slots,
         timeZone: schedule?.timezone ?? timeZone,
+        ...(unreadable.length > 0 ? { unavailableCalendars: unreadable } : {}),
       });
     },
     {
       name: "calendar_check_availability",
       description: withCalendarContext(
-        `Return ALL bookable appointment start times within a range, already honoring the service hours, existing bookings and any operator-designated blocking calendars such as holidays or closures (no appointment details are exposed). Each slot has start, end and a human-readable label. Offer these to the customer and confirm one before creating the appointment. Pass ISO 8601 timestamps for the range, and search AT MOST 24 hours per call (one day at a time — call again for other days). The configured appointment length is shown in \`<slot_duration>\` below — when preset="false", choose it yourself per request and pass slotDurationMinutes (e.g. 30 for a standard appointment, 60 for a longer one); when preset="true", pass slotDurationMinutes only to override it.`,
+        `Return ALL bookable appointment start times within a range, already honoring the service hours, existing bookings and any operator-designated blocking calendars such as holidays or closures (no appointment details are exposed). Each slot has start, end, a human-readable label, and the calendarId (plus calendarLabel) that can actually take it. With several calendars configured, OMIT calendarId to search all of them at once and answer "who is available first?" in a single call; pass calendarId only to restrict the search to one. Offer these to the customer and confirm one before creating the appointment, then pass that slot's calendarId when booking. If \`unavailableCalendars\` comes back, those calendars could not be read and their slots are missing from the list. Pass ISO 8601 timestamps for the range, and search AT MOST 24 hours per call (one day at a time — call again for other days). The configured appointment length is shown in \`<slot_duration>\` below — when preset="false", choose it yourself per request and pass slotDurationMinutes (e.g. 30 for a standard appointment, 60 for a longer one); when preset="true", pass slotDurationMinutes only to override it.`,
         slotDurationXml(sel.config),
         calendarContextXml(allowed, labels),
       ),

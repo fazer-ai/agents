@@ -32,12 +32,18 @@ describe("agent editor save errors", () => {
   //
   // Source-level for the same reason as the rest of this file; the rule itself is covered by
   // agents-text-caps.test.ts, what is left here is the wiring.
-  test("the tools preflight compares against the last-synced bag", () => {
+  test("the tools preflight compares against the stored bag, re-read when forced", () => {
     const start = SRC.indexOf("function settingsTextError");
     expect(start).toBeGreaterThan(-1);
-    const fn = SRC.slice(start, SRC.indexOf("\n  }", start));
-    expect(fn).toContain("collectOversizedTextChanges");
-    expect(fn).toContain("syncedAgentRef.current?.settings");
+    expect(SRC.slice(start, SRC.indexOf("\n  }", start))).toContain(
+      "collectOversizedTextChanges",
+    );
+    // A forced overwrite follows a 409, so the synced bag is stale by definition: comparing against
+    // it can pass a check the PATCH then fails, with the grants PUT already persisted.
+    const save = SRC.slice(SRC.indexOf("async function saveTools"));
+    const call = save.slice(0, save.indexOf("settingsTextError("));
+    expect(call).toContain("force");
+    expect(call).toContain("agents({ id }).get()");
   });
 
   test("every handler that writes the agent shows the server's message", () => {

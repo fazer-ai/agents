@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { computeConfigIssues } from "@/client/lib/configHealth";
+import { computeConfigIssues, issueHasAction } from "@/client/lib/configHealth";
 
 // Phase E: detect features turned on without the credential they need (the import that strips
 // secrets is the common trigger), each carrying a deep-link target (tab + section anchor).
@@ -958,5 +958,30 @@ describe("computeConfigIssues — text stored over its cap", () => {
       "handoff.instructions",
       "vision.extractionPrompt",
     ]);
+  });
+});
+
+// The panel hides its button for a warning with nothing to click. That is only ever a textCap issue
+// for a field the console has no control for: an embedding issue also carries no tab, and its fix
+// (fill the vault entry, or set the tenant embedding) is exactly what the button is for.
+describe("issueHasAction", () => {
+  test("a targetless textCap issue has no action, and everything else does", () => {
+    expect(
+      issueHasAction({ key: "textCap", field: "toolGuidance.private_note" }),
+    ).toBe(false);
+    expect(
+      issueHasAction({
+        key: "textCap",
+        tab: "guardrails",
+        sectionId: "gr-policy",
+      }),
+    ).toBe(true);
+    expect(issueHasAction({ key: "embedding" })).toBe(true);
+    expect(
+      issueHasAction({ key: "embedding", pending: true, vaultId: "7" }),
+    ).toBe(true);
+    expect(issueHasAction({ key: "knowledge", knowledgeBaseId: "1" })).toBe(
+      true,
+    );
   });
 });

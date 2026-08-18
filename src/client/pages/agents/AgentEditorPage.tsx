@@ -50,7 +50,7 @@ import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
-import { computeConfigIssues } from "@/client/lib/configHealth";
+import { computeConfigIssues, issueHasAction } from "@/client/lib/configHealth";
 import { slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
@@ -1370,8 +1370,7 @@ function AgentEditor() {
   // fail the second, leaving the grants saved, the toast saying it failed, and the local state stale.
   // Same walker and same comparison the server runs — against the last-synced bag, so a value stored
   // before the caps is not what stops a save that never touched it.
-  function settingsTextError(bag: unknown): string | null {
-    const stored = syncedAgentRef.current?.settings;
+  function settingsTextError(bag: unknown, stored: unknown): string | null {
     const over = collectOversizedTextChanges(bag, stored)[0];
     if (!over) return null;
     return t(
@@ -1878,7 +1877,17 @@ function AgentEditor() {
       };
       // The WHOLE bag, not just this tab's fields: the PATCH resends every block, so text typed on
       // another tab would refuse it just the same — after the grants had already been written.
-      const toolsText = settingsTextError(toolsSettings);
+      //
+      // On a forced overwrite the last-synced bag is stale by definition (the 409 says someone else
+      // wrote), so it is re-read first: if the other writer shortened a legacy over-cap note, our
+      // copy is now an EDIT of it, the server would refuse the PATCH, and the grants PUT would
+      // already have persisted. A failed re-read falls back to the synced bag rather than blocking
+      // the save on it.
+      const storedSettings = force
+        ? ((await api.api.v1.agents({ id }).get()).data?.agent.settings ??
+          syncedSettings)
+        : syncedSettings;
+      const toolsText = settingsTextError(toolsSettings, storedSettings);
       if (toolsText) {
         showToast(toolsText, "error");
         return;
@@ -2423,7 +2432,7 @@ function AgentEditor() {
                       <span className="min-w-0 text-text-secondary text-xs">
                         {issueMessage(issue)}
                       </span>
-                      {(issue.tab || issue.key === "knowledge") && (
+                      {issueHasAction(issue) && (
                         <button
                           type="button"
                           onClick={() => goToIssue(issue)}

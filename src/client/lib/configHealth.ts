@@ -80,6 +80,13 @@ const TEXT_CAP_TARGETS: Array<{
   { match: /^followUp\.steps\[/, tab: "behavior", sectionId: "proactive" },
 ];
 
+// Whether the warning row can offer an action. Everything else in this list has a fix the editor can
+// reach — a section to scroll to, a vault entry to fill, a knowledge base to index — but a textCap
+// issue for a note with no control in the console has nowhere to send anyone.
+export function issueHasAction(issue: ConfigIssue): boolean {
+  return issue.key !== "textCap" || Boolean(issue.tab);
+}
+
 function textCapIssues(
   settings: unknown,
   guardrailsEnabled: boolean | undefined,

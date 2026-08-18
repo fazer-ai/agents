@@ -181,11 +181,18 @@ export function collectOversizedTextChanges(
   next: unknown,
   previous: unknown,
 ): OversizedText[] {
-  const stored = new Map(cappedFields(previous).map((f) => [f.path, f.value]));
+  const stored = new Map(
+    cappedFields(previous).map((f) => [f.path, f.value.trim()]),
+  );
   const out: OversizedText[] = [];
   for (const f of cappedFields(next)) {
     if (f.value.length <= f.max) continue;
-    if (stored.get(f.path) === f.value) continue;
+    // Compared trimmed, measured raw, and the asymmetry is the point. The cap counts what the
+    // browser counts (`maxLength` is over the raw value), while "did this write touch the text" has
+    // to ignore what every reader already discards: the editor trims these fields when it serializes
+    // the form, so an untouched legacy value with surrounding whitespace comes back as a different
+    // string and would read as an edit nobody made.
+    if (stored.get(f.path) === f.value.trim()) continue;
     out.push({ path: f.path, length: f.value.length, max: f.max });
   }
   return out;

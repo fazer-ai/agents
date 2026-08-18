@@ -241,6 +241,19 @@ describe("settings text caps: what a write changes", () => {
     );
   });
 
+  // The editor trims these fields when it serializes the form, so an untouched legacy value stored
+  // with surrounding whitespace comes back as a DIFFERENT string. Comparing raw would call that an
+  // edit and refuse a save the operator never made — on a tab that may not even show the field.
+  test("whitespace the readers discard is not an edit", () => {
+    const body = "w".repeat(TOOL_INSTRUCTIONS_MAX + 200);
+    const prev = { handoff: { instructions: `  ${body}  ` } };
+    const next = { handoff: { instructions: body } };
+    expect(changed(next, prev)).toEqual([]);
+    expect(changed({ handoff: { instructions: `${body}!` } }, prev)).toEqual([
+      "handoff.instructions",
+    ]);
+  });
+
   test("no previous bag means every oversized value is new", () => {
     const bag = { guardrails: { customPolicy: over(CUSTOM_POLICY_MAX) } };
     expect(changed(bag, undefined)).toEqual(["guardrails.customPolicy"]);

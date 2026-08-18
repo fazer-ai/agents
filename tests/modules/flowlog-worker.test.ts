@@ -184,13 +184,25 @@ describe.skipIf(!dbUp)("alert worker", () => {
         status: url.includes("/retry") ? 500 : 204,
       })) as unknown as typeof fetch;
     const t = Date.now();
-    const batch = await processAlertBatch({
-      base: appDb,
-      tenantId,
-      coalesceWindowMs: 0,
-      fetchImpl,
-      now: () => t,
-    });
+    // NOTE: the backoff is FULL jitter, `floor(random() * 2000)` on the first retry, so 0 is a
+    // legitimate draw about 1 run in 2000 and asserting `> t` against a live `Math.random` would be
+    // a flake of exactly the kind this file is being cleaned of. Full jitter is the documented
+    // algorithm and an immediate retry is a valid outcome of it (the tick interval absorbs one), so
+    // the draw is pinned here rather than a floor being added to production for a test's benefit.
+    const realRandom = Math.random;
+    Math.random = () => 0.5;
+    let batch: Awaited<ReturnType<typeof processAlertBatch>>;
+    try {
+      batch = await processAlertBatch({
+        base: appDb,
+        tenantId,
+        coalesceWindowMs: 0,
+        fetchImpl,
+        now: () => t,
+      });
+    } finally {
+      Math.random = realRandom;
+    }
     expect(batch.claimed).toBeGreaterThanOrEqual(1);
     const row = await suDb.alertDelivery.findUnique({ where: { id } });
     expect(row?.status).toBe("PENDING");

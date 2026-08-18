@@ -244,6 +244,40 @@ describe.skipIf(!dbUp)("agent export/import", () => {
     expect(w?.params?.max).toBe(TOOL_INSTRUCTIONS_MAX);
   });
 
+  // The sharp end of clipping by UTF-16 unit: an emoji straddling the cutoff leaves an unpaired
+  // surrogate, which Postgres refuses in jsonb, so the whole import would fail on a note that merely
+  // had an emoji at the wrong offset.
+  test("an imported note clipped mid-emoji still stores (no unpaired surrogate)", async () => {
+    const exp = await exportAgent(ctx(), agentId, appDb);
+    const imported = {
+      ...exp,
+      agent: {
+        ...exp.agent,
+        name: "Vendedora emoji",
+        settings: {
+          ...exp.agent.settings,
+          handoff: {
+            mode: "route",
+            instructions: `${"i".repeat(TOOL_INSTRUCTIONS_MAX - 1)}😀 e mais texto`,
+          },
+        },
+      },
+    };
+    const { agent } = await importAgent(ctx(), imported, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const stored = (
+      (row.settings as Record<string, unknown>).handoff as Record<
+        string,
+        unknown
+      >
+    ).instructions as string;
+    expect(stored.length).toBe(TOOL_INSTRUCTIONS_MAX - 1);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(stored)).toBe(false);
+  });
+
   test("round-trip import recreates the agent DISABLED with resolved refs", async () => {
     const exp = await exportAgent(ctx(), agentId, appDb);
     const imported = { ...exp, agent: { ...exp.agent, name: "Vendedora 2" } };

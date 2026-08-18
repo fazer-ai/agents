@@ -25,6 +25,17 @@ export const GENERATION_PROMPT_MAX = 2000;
 export const EXTRACTION_PROMPT_MAX = 4000;
 export const FOLLOW_UP_INSTRUCTIONS_MAX = 2000;
 
+// Cut to `max` UTF-16 units without ever ending on half of an astral character. `slice` counts code
+// UNITS, so a cut that lands between the two halves of an emoji leaves an unpaired high surrogate:
+// Postgres refuses an unpaired surrogate escape in jsonb (the write that carried it fails outright),
+// and anywhere it survives it renders as a replacement character in the middle of operator text.
+// Dropping the orphan half costs one character off a value that was too long anyway.
+export function clipText(value: string, max: number): string {
+  const cut = value.slice(0, max);
+  const last = cut.charCodeAt(cut.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
+}
+
 export interface OversizedText {
   // Dotted path into the settings bag, e.g. `handoff.instructions`. It is what the operator reads in
   // the error, so it names the stored shape rather than the editor's label (which the API has no
@@ -158,7 +169,7 @@ export function clampOversizedTextInPlace(settings: unknown): OversizedText[] {
   for (const f of cappedFields(settings)) {
     if (f.value.length <= f.max) continue;
     out.push({ path: f.path, length: f.value.length, max: f.max });
-    f.replace(f.value.slice(0, f.max));
+    f.replace(clipText(f.value, f.max));
   }
   return out;
 }

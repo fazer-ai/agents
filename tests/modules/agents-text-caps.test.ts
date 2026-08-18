@@ -116,6 +116,33 @@ describe("collectOversizedText", () => {
 });
 
 describe("clampOversizedTextInPlace", () => {
+  // `slice` counts UTF-16 units, so a cut that lands between the two halves of an astral character
+  // leaves an unpaired surrogate. Postgres refuses an unpaired surrogate escape in jsonb outright, so
+  // this is the import failing on a note that happens to have an emoji at the wrong offset.
+  test("never ends a clip on half of an astral character", () => {
+    const bag = {
+      handoff: {
+        instructions: `${"x".repeat(TOOL_INSTRUCTIONS_MAX - 1)}😀tail`,
+      },
+    };
+    clampOversizedTextInPlace(bag);
+    const out = bag.handoff.instructions;
+    expect(out.length).toBe(TOOL_INSTRUCTIONS_MAX - 1);
+    expect(JSON.parse(JSON.stringify(out))).toBe(out);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(out)).toBe(false);
+  });
+
+  test("keeps an astral character that fits whole", () => {
+    const bag = {
+      handoff: {
+        instructions: `${"x".repeat(TOOL_INSTRUCTIONS_MAX - 2)}😀tail`,
+      },
+    };
+    clampOversizedTextInPlace(bag);
+    expect(bag.handoff.instructions.endsWith("😀")).toBe(true);
+    expect(bag.handoff.instructions.length).toBe(TOOL_INSTRUCTIONS_MAX);
+  });
+
   test("cuts every oversized field to its cap and reports what it cut", () => {
     const bag: Record<string, unknown> = {
       handoff: { mode: "pinned", instructions: over(TOOL_INSTRUCTIONS_MAX) },

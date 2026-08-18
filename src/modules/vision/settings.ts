@@ -1,4 +1,4 @@
-import { EXTRACTION_PROMPT_MAX } from "@/modules/agents/text-caps";
+import { clipText, EXTRACTION_PROMPT_MAX } from "@/modules/agents/text-caps";
 import { DEFAULT_EXTRACTION_PROMPT } from "./prompt-default";
 import { VISION_PROVIDER_NAMES } from "./providers";
 
@@ -54,7 +54,7 @@ export function readVisionConfig(settings: unknown): VisionConfig {
     credentialRef: str(bag.credentialRef),
     baseURL: str(bag.baseURL),
     extractionPrompt: prompt
-      ? prompt.slice(0, EXTRACTION_PROMPT_MAX)
+      ? clipText(prompt, EXTRACTION_PROMPT_MAX)
       : DEFAULT_EXTRACTION_PROMPT,
   };
 }

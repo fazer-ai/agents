@@ -49,8 +49,8 @@ import { useBreadcrumbLabel } from "@/client/contexts/BreadcrumbContext";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { computeConfigIssues } from "@/client/lib/configHealth";
-import type { ApiErrorPayload } from "@/client/lib/types";
 import { slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
@@ -1753,14 +1753,11 @@ function AgentEditor() {
       bumpSync(section);
       showToast(t("editor.saved", "Agent saved."), "success");
     } catch (e) {
-      // NOTE: surface the backend's localized message when present (e.g. the prompt-size cap)
-      // instead of the generic failure toast.
-      const apiMsg =
-        e && typeof e === "object" && "value" in e
-          ? ((e as { value?: ApiErrorPayload }).value?.error ?? null)
-          : null;
+      // NOTE: surface the backend's localized message when present (the prompt-size cap, the
+      // settings text caps) instead of the generic failure toast.
       showToast(
-        apiMsg || t("editor.saveError", "Could not save the agent."),
+        apiErrorMessage(e) ||
+          t("editor.saveError", "Could not save the agent."),
         "error",
       );
     } finally {
@@ -1788,8 +1785,12 @@ function AgentEditor() {
       markSynced(data.agentUpdatedAt ? String(data.agentUpdatedAt) : null);
       bumpSync("tools", "knowledge");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
-    } catch {
-      showToast(t("editor.grantsError", "Could not update tools."), "error");
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) ||
+          t("editor.grantsError", "Could not update tools."),
+        "error",
+      );
     } finally {
       savingRef.current -= 1;
       setSavingGrants(false);
@@ -1876,8 +1877,12 @@ function AgentEditor() {
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync("tools", "knowledge");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
-    } catch {
-      showToast(t("editor.grantsError", "Could not update tools."), "error");
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) ||
+          t("editor.grantsError", "Could not update tools."),
+        "error",
+      );
     } finally {
       savingRef.current -= 1;
       setSavingGrants(false);
@@ -1911,8 +1916,12 @@ function AgentEditor() {
       markSynced(String(data.agent.updatedAt));
       bumpSync("channelRedirect");
       showToast(t("editor.saved", "Agent saved."), "success");
-    } catch {
-      showToast(t("editor.saveError", "Could not save the agent."), "error");
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) ||
+          t("editor.saveError", "Could not save the agent."),
+        "error",
+      );
     } finally {
       savingRef.current -= 1;
       setSavingChannelRedirect(false);
@@ -1942,8 +1951,12 @@ function AgentEditor() {
       markSynced(String(data.agent.updatedAt));
       bumpSync("guardrails");
       showToast(t("editor.saved", "Agent saved."), "success");
-    } catch {
-      showToast(t("editor.saveError", "Could not save the agent."), "error");
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) ||
+          t("editor.saveError", "Could not save the agent."),
+        "error",
+      );
     } finally {
       savingRef.current -= 1;
       setSavingGuardrails(false);

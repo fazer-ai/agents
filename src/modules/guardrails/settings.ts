@@ -2,6 +2,7 @@ import { MODEL_PROVIDERS, type ModelConfig } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import {
   CUSTOM_POLICY_MAX,
+  clipText,
   GENERATION_PROMPT_MAX,
   TEMPLATE_MESSAGE_MAX,
 } from "@/modules/agents/text-caps";
@@ -143,12 +144,12 @@ function readDirection(
     enabled: bool(b.enabled, d.enabled),
     checks: readChecks(b.checks, d.checks),
     action: readAction(b.action),
-    templateMessage: (str(b.templateMessage) ?? d.templateMessage).slice(
-      0,
+    templateMessage: clipText(
+      str(b.templateMessage) ?? d.templateMessage,
       TEMPLATE_MESSAGE_MAX,
     ),
-    generationPrompt: (str(b.generationPrompt) ?? d.generationPrompt).slice(
-      0,
+    generationPrompt: clipText(
+      str(b.generationPrompt) ?? d.generationPrompt,
       GENERATION_PROMPT_MAX,
     ),
   };
@@ -195,7 +196,7 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
     credentialRef: str(bag.credentialRef),
     baseURL: str(bag.baseURL),
     competitors: readCompetitors(bag.competitors),
-    customPolicy: (str(bag.customPolicy) ?? "").slice(0, CUSTOM_POLICY_MAX),
+    customPolicy: clipText(str(bag.customPolicy) ?? "", CUSTOM_POLICY_MAX),
     input: readDirection(bag.input, GUARDRAILS_DEFAULTS.input),
     output: readDirection(bag.output, GUARDRAILS_DEFAULTS.output),
   };

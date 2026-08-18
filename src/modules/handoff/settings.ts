@@ -6,7 +6,7 @@
 //   * "pinned"       → assign to a fixed agent OR team the operator picked (targetAgentId/targetTeamId).
 //   * "agent_choice" → the model may pass a target NAME (agent or team), resolved against the live
 //                      Chatwoot list at call time; the operator lists the options in the prompt.
-import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
+import { clipText, TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 
 export type HandoffMode = "route" | "pinned" | "agent_choice";
 
@@ -44,7 +44,7 @@ export { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 export function readToolInstructions(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const t = v.trim();
-  return t ? t.slice(0, TOOL_INSTRUCTIONS_MAX) : null;
+  return t ? clipText(t, TOOL_INSTRUCTIONS_MAX) : null;
 }
 
 const MODES: HandoffMode[] = ["route", "pinned", "agent_choice"];

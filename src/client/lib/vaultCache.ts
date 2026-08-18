@@ -15,6 +15,13 @@ export type VaultEntry = NonNullable<
 // served across tenants (a tenant SWITCH does a full page reload anyway, which clears this).
 const TTL_MS = 30_000;
 
+// Bumped by every announced vault change. Clearing the in-flight map does not cancel the request it
+// was tracking, so a read that started before the change is still on the wire and still carries the
+// vault as it WAS. Landing last, it would overwrite the cache and every listener with pre-mutation
+// data — the created credential reading as deleted, for a whole TTL. The generation is what lets
+// such an answer be recognised and dropped.
+let generation = 0;
+
 type CacheEntry = { entries: VaultEntry[]; at: number };
 const cache = new Map<string, CacheEntry>();
 const inflight = new Map<string, Promise<VaultEntry[]>>();
@@ -33,20 +40,20 @@ function notifyChanged(): void {
   }
 }
 
-async function fetchVault(k: string): Promise<VaultEntry[]> {
-  try {
-    // The treaty reports a non-2xx by resolving with `data: null`, not by rejecting, so a 500 and an
-    // empty vault arrive in the same shape. Callers already treat a rejection as "unknown" (both
-    // catch it), and one of them turns an empty list into "no credential resolves", so a failed
-    // load must not pass for a successful one.
-    const { data, error } = await api.api.v1.vault.get();
-    if (error || !data) throw new Error("vault load failed");
-    const entries = [...data.entries];
-    cache.set(k, { entries, at: Date.now() });
-    return entries;
-  } finally {
-    inflight.delete(k);
-  }
+async function fetchVault(k: string, startedAt: number): Promise<VaultEntry[]> {
+  // The treaty reports a non-2xx by resolving with `data: null`, not by rejecting, so a 500 and an
+  // empty vault arrive in the same shape. Callers already treat a rejection as "unknown" (both
+  // catch it), and one of them turns an empty list into "no credential resolves", so a failed
+  // load must not pass for a successful one.
+  const { data, error } = await api.api.v1.vault.get();
+  if (error || !data) throw new Error("vault load failed");
+  const entries = [...data.entries];
+  // Overtaken: the vault changed after this read left. Neither cached nor returned, because the
+  // caller asked what the vault holds NOW and this answer is about a vault that no longer exists.
+  // They get the current one instead, from the cache or from the read that replaced this.
+  if (startedAt !== generation) return loadVault();
+  cache.set(k, { entries, at: Date.now() });
+  return entries;
 }
 
 // Returns the vault list, served from the per-tenant cache when fresh and de-duplicated across
@@ -57,7 +64,12 @@ export function loadVault(): Promise<VaultEntry[]> {
   if (hit && Date.now() - hit.at < TTL_MS) return Promise.resolve(hit.entries);
   const pending = inflight.get(k);
   if (pending) return pending;
-  const p = fetchVault(k);
+  // The in-flight entry is cleared by whoever set it, and only while it is still theirs: an
+  // invalidation empties the map, and a request that finished after that must not delete the entry
+  // belonging to the read that replaced it.
+  const p = fetchVault(k, generation).finally(() => {
+    if (inflight.get(k) === p) inflight.delete(k);
+  });
   inflight.set(k, p);
   return p;
 }
@@ -71,6 +83,7 @@ export function loadVault(): Promise<VaultEntry[]> {
 // fresh list or fails again and leaves them at "not loaded", and both of those are honest.
 export async function refreshVault(): Promise<VaultEntry[]> {
   const k = tenantKey();
+  generation += 1;
   cache.delete(k);
   inflight.delete(k);
   try {
@@ -86,6 +99,7 @@ export async function refreshVault(): Promise<VaultEntry[]> {
 // Drop cached vault data (after a mutation, e.g. a VaultPanel delete) and notify listeners; the next
 // loadVault re-fetches.
 export function invalidateVault(): void {
+  generation += 1;
   cache.clear();
   inflight.clear();
   notifyChanged();

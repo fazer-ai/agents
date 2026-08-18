@@ -19,6 +19,22 @@ let getCalls = 0;
 // load" — the treaty reports both with an empty `data`.
 let failNext = false;
 let failAll = false;
+// Holds responses open so an EARLIER request can finish after a later one. Each hold is claimed by
+// the next request to start, in order, and released by its index; the body is snapshot at claim
+// time, which is the point — a held request answers with the vault as it was when it left.
+type Hold = { promise: Promise<unknown>; release: () => void; fail?: boolean };
+let queuedHolds: Hold[] = [];
+let claimedHolds: Hold[] = [];
+function holdNextResponse(opts?: { fail?: boolean }): void {
+  let release = (): void => undefined;
+  const promise = new Promise<unknown>((resolve) => {
+    release = () => resolve(undefined);
+  });
+  queuedHolds.push({ promise, release, fail: opts?.fail });
+}
+function releaseHeld(index: number): void {
+  claimedHolds[index]?.release();
+}
 let entriesToReturn: Array<{
   id: string;
   name: string;
@@ -33,11 +49,26 @@ beforeEach(() => {
   getCalls = 0;
   failNext = false;
   failAll = false;
+  queuedHolds = [];
+  claimedHolds = [];
   entriesToReturn = [{ id: "1", name: "openai", kind: "openai" }];
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("/api/v1/vault")) {
       getCalls++;
+      const snapshot = entriesToReturn;
+      const hold = queuedHolds.shift();
+      if (hold) {
+        claimedHolds.push(hold);
+        await hold.promise;
+        return new Response(
+          JSON.stringify(hold.fail ? { error: "boom" } : { entries: snapshot }),
+          {
+            status: hold.fail ? 500 : 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
       await new Promise((r) => setTimeout(r, 5));
       if (failNext || failAll) {
         failNext = false;
@@ -335,6 +366,75 @@ describe("useVaultRefs across a vault change", () => {
     await waitFor(() =>
       expect(result.current.known?.has("vault:9")).toBe(true),
     );
+    cleanup();
+  });
+});
+
+// Clearing the in-flight map does not cancel the request it was tracking. A load that started
+// BEFORE the vault changed is still on the wire, and if it lands last it describes the vault as it
+// was: it would overwrite both the shared cache and the listener with pre-mutation data, and the
+// credential just created would read as deleted until something else moved.
+describe("a load overtaken by a vault change", () => {
+  test("discards the answer that describes the vault as it was", async () => {
+    entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
+    holdNextResponse();
+    const { result } = renderHook(() => useVaultRefs());
+    await waitFor(() => expect(getCalls).toBe(1));
+    // The vault changes while that first read is still on the wire.
+    entriesToReturn = [
+      { id: "3", name: "openai", kind: "openai" },
+      { id: "9", name: "just-created", kind: "openai" },
+    ];
+    await act(async () => {
+      invalidateVault();
+    });
+    await waitFor(() =>
+      expect(result.current.known?.has("vault:9")).toBe(true),
+    );
+    // Now the overtaken read lands, carrying the list from before the change.
+    await act(async () => {
+      releaseHeld(0);
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(result.current.known?.has("vault:9")).toBe(true);
+    // And it did not poison the shared cache for everyone else either.
+    const cached = await loadVault();
+    expect(cached.map((e) => e.id).sort()).toEqual(["3", "9"]);
+    cleanup();
+  });
+});
+
+// The in-flight entry belongs to the read that set it, and a read that FAILS is the case where that
+// matters: an overtaken read that succeeds settles only once its replacement lands (it hands the
+// caller that newer answer), while a rejection is immediate and lands mid-flight. Clearing the map
+// there would evict the entry of the read still on the wire, and the next caller to arrive would
+// fire a third request for a list already coming — the whole reason this cache exists.
+describe("the in-flight entry while a superseded load fails", () => {
+  test("survives the failure of the read it replaced", async () => {
+    entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
+    holdNextResponse({ fail: true });
+    const { result } = renderHook(() => useVaultRefs());
+    await waitFor(() => expect(getCalls).toBe(1));
+    holdNextResponse();
+    await act(async () => {
+      invalidateVault();
+    });
+    await waitFor(() => expect(getCalls).toBe(2));
+    // The overtaken read fails now, while the current one is still on the wire.
+    await act(async () => {
+      releaseHeld(0);
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    // A newcomer joins that read instead of starting another. The tick matters: the request would
+    // only reach the stub on the next turn, so asserting immediately would pass either way.
+    const joined = loadVault();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(getCalls).toBe(2);
+    await act(async () => {
+      releaseHeld(1);
+      await joined;
+    });
+    expect(result.current.known?.has("vault:3")).toBe(true);
     cleanup();
   });
 });

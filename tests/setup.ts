@@ -33,6 +33,14 @@ if (testSuUrl) {
     const appUrl = new URL(process.env.TEST_APP_DATABASE_URL);
     appUrl.pathname = testDbPath;
     process.env.TEST_APP_DATABASE_URL = appUrl.toString();
+    // NOTE: the LangGraph checkpointer is the one connection the fence above used to miss.
+    // `config.langgraphDatabaseUrl` is `LANGGRAPH_DATABASE_URL || DATABASE_URL`, so the dead
+    // DATABASE_URL set at the top only catches it when LANGGRAPH_DATABASE_URL is UNSET, and a dev
+    // `.env` sets it to the DEV database. Measured before this line existed: every `bun test` run
+    // pointed the checkpointer at secretaria_v4_db (1685 live checkpoint rows) while everything else
+    // was on secretaria_v4_test, and the /reset test issued deleteThread against it. Forced onto the
+    // test DB with the app-role creds, same derivation as the line above.
+    process.env.LANGGRAPH_DATABASE_URL = appUrl.toString();
   }
 }
 process.env.JWT_SECRET = "test-secret-key-for-testing-only";

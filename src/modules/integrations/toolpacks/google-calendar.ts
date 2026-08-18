@@ -763,51 +763,56 @@ function buildCheckAvailabilityTool(
       for (let i = 0; i < calendarIds.length; i += FREEBUSY_BATCH_SIZE) {
         batches.push(calendarIds.slice(i, i + FREEBUSY_BATCH_SIZE));
       }
-      let batchRes: GcalResponse[];
-      try {
-        batchRes = await Promise.all(
-          batches.map((ids) =>
-            gcalFetch(
-              "/freeBusy",
-              {
-                method: "POST",
-                token,
-                body: {
-                  timeMin: input.timeMin,
-                  timeMax: input.timeMax,
-                  timeZone,
-                  items: ids.map((id) => ({ id })),
-                },
+      // allSettled, not all: gcalFetch THROWS on a timeout or a network error, and a single
+      // rejection would discard every batch that answered fine. Non-2xx already degraded per batch;
+      // a thrown one has to degrade the same way or the contract is a coin flip on failure mode.
+      const batchRes = await Promise.allSettled(
+        batches.map((ids) =>
+          gcalFetch(
+            "/freeBusy",
+            {
+              method: "POST",
+              token,
+              body: {
+                timeMin: input.timeMin,
+                timeMax: input.timeMax,
+                timeZone,
+                items: ids.map((id) => ({ id })),
               },
-              ctx,
-            ),
+            },
+            ctx,
           ),
-        );
-      } catch (err) {
-        logger.warn({ err }, "gcal: freeBusy request failed");
-        return toolFailure(
-          "Failed to reach Google Calendar. Try again shortly.",
-        );
-      }
+        ),
+      );
       // A batch that failed contributes no entries, so its calendars fall through the same
       // "unreadable" path as a calendar Google refused individually. Only a total failure surfaces
       // the HTTP status, which keeps the single-batch case answering exactly as it always did.
       const calendars: Record<string, unknown> = {};
-      let failedBatches = 0;
+      let lastStatus: number | null = null;
+      let threw = false;
       for (const r of batchRes) {
-        if (r.status < 200 || r.status >= 300) {
-          failedBatches++;
+        if (r.status === "rejected") {
+          logger.warn({ err: r.reason }, "gcal: freeBusy batch failed");
+          threw = true;
           continue;
         }
-        const d = (r.json ?? {}) as Record<string, unknown>;
+        if (r.value.status < 200 || r.value.status >= 300) {
+          lastStatus = r.value.status;
+          continue;
+        }
+        const d = (r.value.json ?? {}) as Record<string, unknown>;
         Object.assign(
           calendars,
           (d.calendars ?? {}) as Record<string, unknown>,
         );
       }
-      if (failedBatches === batchRes.length) {
+      // Nothing came back at all. Keep the two failure modes distinguishable, exactly as the
+      // single-batch path always reported them.
+      if (Object.keys(calendars).length === 0) {
         return toolFailure(
-          `Google Calendar returned HTTP ${batchRes[0]?.status}.`,
+          threw && lastStatus === null
+            ? "Failed to reach Google Calendar. Try again shortly."
+            : `Google Calendar returned HTTP ${lastStatus}.`,
         );
       }
       // Per-calendar outcome. freeBusy answers 200 and reports a calendar it could not read as a
@@ -945,7 +950,11 @@ function buildCheckAvailabilityTool(
           input.granularityMinutes,
         ),
         minLeadMinutes,
-        maxSlots: MAX_SLOT_ENTRIES,
+        // Only when aggregating. The multiplication this bounds does not exist with one calendar,
+        // and what a single-calendar instance returns is not this change's to alter: capping it would
+        // shorten a list operators have been reading since before the feature existed.
+        maxSlots:
+          sources.length > 1 ? MAX_SLOT_ENTRIES : Number.POSITIVE_INFINITY,
       });
       // A list of bookable start times (start/end ISO + a human label), each tagged with the calendar
       // that can take it. Empty ⇒ nothing free in range. `coveredUntil` appears only when the entry
@@ -960,7 +969,7 @@ function buildCheckAvailabilityTool(
     {
       name: "calendar_check_availability",
       description: withCalendarContext(
-        `Return ALL bookable appointment start times within a range, already honoring the service hours, existing bookings and any operator-designated blocking calendars such as holidays or closures (no appointment details are exposed). Each slot has start, end, a human-readable label, and the calendarId (plus calendarLabel) that can actually take it. With several calendars configured, OMIT calendarId to search all of them at once and answer "who is available first?" in a single call; pass calendarId only to restrict the search to one. Offer these to the customer and confirm one before creating the appointment, then pass that slot's calendarId when booking. If \`unavailableCalendars\` comes back, those calendars could not be read and their slots are missing from the list. Pass ISO 8601 timestamps for the range, and search AT MOST 24 hours per call (one day at a time — call again for other days). The configured appointment length is shown in \`<slot_duration>\` below — when preset="false", choose it yourself per request and pass slotDurationMinutes (e.g. 30 for a standard appointment, 60 for a longer one); when preset="true", pass slotDurationMinutes only to override it.`,
+        `Return ALL bookable appointment start times within a range, already honoring the service hours, existing bookings and any operator-designated blocking calendars such as holidays or closures (no appointment details are exposed). Each slot has start, end, a human-readable label, and the calendarId (plus calendarLabel) that can actually take it. With several calendars configured, OMIT calendarId to search all of them at once and answer "who is available first?" in a single call; pass calendarId only to restrict the search to one. Offer these to the customer and confirm one before creating the appointment, then pass that slot's calendarId when booking. If \`unavailableCalendars\` comes back, those calendars could not be read and their slots are missing from the list. If \`coveredUntil\` comes back, the search stopped early and that timestamp is the FIRST start time it did not cover: the list is NOT the whole range, so never conclude that later times are unavailable, and call again with timeMin set to that value to continue. Pass ISO 8601 timestamps for the range, and search AT MOST 24 hours per call (one day at a time — call again for other days). The configured appointment length is shown in \`<slot_duration>\` below — when preset="false", choose it yourself per request and pass slotDurationMinutes (e.g. 30 for a standard appointment, 60 for a longer one); when preset="true", pass slotDurationMinutes only to override it.`,
         slotDurationXml(sel.config),
         calendarContextXml(allowed, labels),
       ),

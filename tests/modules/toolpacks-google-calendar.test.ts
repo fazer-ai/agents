@@ -1418,19 +1418,60 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     expect(parsed.unavailableCalendars).toEqual(["Dr. Paulo"]);
   });
 
-  test("a single calendar is NOT capped, so one-calendar operators see exactly what they saw before", async () => {
+  test("a single calendar is NOT capped, even past the aggregate ceiling", async () => {
+    // The earlier version of this test used a 12-hour hourly window, which is 12 slots: it asserted
+    // the guarantee without ever reaching the ceiling it claimed did not apply. At the 5-minute floor
+    // a near-24h range yields ~287 starts, which is past the 250 an aggregate query is bound to.
     const { impl } = stubFetch(200, { calendars: { [ANA]: { busy: [] } } });
     const out = (await toolFor(
       "calendar_check_availability",
-      { ...CLINIC, calendarIds: [ANA] },
+      {
+        ...CLINIC,
+        calendarIds: [ANA],
+        slotDurationMinutes: 5,
+        slotGranularityMinutes: 5,
+      },
       baseCtx({ fetchImpl: impl }),
     )?.invoke({
-      timeMin: "2099-06-22T09:00:00-03:00",
-      timeMax: "2099-06-22T21:00:00-03:00",
+      timeMin: "2099-06-22T00:00:00-03:00",
+      timeMax: "2099-06-22T23:59:00-03:00",
     })) as string;
-    // 12 hourly starts. A per-calendar bound applied here would silently shorten the list an
-    // operator has been reading since before this feature existed.
-    expect(parse(out).slots).toHaveLength(12);
+    const parsed = parse(out);
+    expect(parsed.slots.length).toBeGreaterThan(250);
+    expect(parsed.coveredUntil).toBeUndefined();
+  });
+
+  test("a batch that THROWS costs only its own calendars, like a batch that 500s", async () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `c${i}@x`);
+    let n = 0;
+    const impl = (async () => {
+      if (n++ > 0) throw new Error("socket hang up");
+      return new Response(
+        JSON.stringify({
+          calendars: Object.fromEntries(
+            ids.slice(0, 10).map((id) => [id, { busy: [] }]),
+          ),
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    const out = (await toolFor(
+      "calendar_check_availability",
+      { ...CLINIC, calendarIds: ids, calendarLabels: {} },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    const parsed = parse(out);
+    expect(parsed.unavailableCalendars).toEqual(ids.slice(10));
+    expect(parsed.slots.length).toBeGreaterThan(0);
+  });
+
+  test("the tool description tells the model what coveredUntil means", async () => {
+    // A field the model is never told about cannot be acted on, and a truncated list read as complete
+    // is the model reporting later times unavailable.
+    const desc = toolFor("calendar_check_availability", CLINIC, baseCtx())
+      ?.description as string;
+    expect(desc).toContain("coveredUntil");
+    expect(desc).toContain("timeMin");
   });
 
   test("an afternoon is still offered: several calendars are not cut to their first few starts", async () => {

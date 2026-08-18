@@ -46,9 +46,12 @@ export interface ConfigHealthInput {
   ttsMode: string;
   ttsCredentialRef: string;
   // The speech rewrite's four overrides, passed WHOLE because the question they answer is answered
-  // by the shared resolver, not re-derived here: which provider, whose key, which endpoint.
+  // by the shared resolver, not re-derived here: which provider and model, whose key, which
+  // endpoint. The model id is here for the same reason the credential is — it belongs to the vendor
+  // it was picked from, and a bag that does not name that vendor is refused.
   ttsNormalize?: boolean;
   ttsNormalizeProvider?: string;
+  ttsNormalizeModel?: string;
   ttsNormalizeCredentialRef?: string;
   ttsNormalizeBaseURL?: string;
   visionEnabled: boolean;
@@ -135,6 +138,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     ? resolveNormalizeModel(
         {
           normalizeProvider: input.ttsNormalizeProvider,
+          normalizeModel: input.ttsNormalizeModel,
           normalizeCredentialRef: input.ttsNormalizeCredentialRef,
           normalizeBaseURL: input.ttsNormalizeBaseURL,
         },

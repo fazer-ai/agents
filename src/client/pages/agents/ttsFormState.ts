@@ -113,6 +113,31 @@ export function ttsNormalizerProviderChanged(
   };
 }
 
+// Picking a model or a key FOR the rewrite pins the vendor it was picked FROM. Left inherited, the
+// pair comes apart the next time the agent's provider changes — on the General tab, which does not
+// even save together with this one — and the key follows it to a vendor that never issued it while
+// the model id is asked of one that has never heard of it. The resolver refuses that configuration
+// (`override_without_provider`); this is what keeps the editor from ever producing it, at no cost to
+// the operator, who picked from a list the provider itself answered.
+//
+// Clearing the field does NOT unpin the provider: the operator may be mid-edit, and an explicit
+// provider is never the wrong answer — it is only ever more specific than the blank one.
+export function ttsNormalizerOverridePicked(
+  tts: TtsFormState,
+  field: "normalizeModel" | "normalizeCredentialRef",
+  value: string,
+  agentProvider: string,
+): TtsFormState {
+  return {
+    ...tts,
+    [field]: value,
+    normalizeProvider:
+      value && tts.normalizeProvider === ""
+        ? agentProvider
+        : tts.normalizeProvider,
+  };
+}
+
 // The AGENT's provider changing is the rewrite's provider changing too, whenever the rewrite
 // inherits it. Everything picked for the old vendor dies with it: a model id the new vendor refuses
 // (every rewrite failing silently back to raw speech), and a key issued by the old vendor, which

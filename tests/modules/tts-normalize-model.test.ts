@@ -13,9 +13,9 @@ import { readTtsConfig } from "@/modules/tts/settings";
 // column that matters is what reaches the provider.
 //
 // The failure this table exists to make impossible: a secret belonging to one vendor arriving at
-// somewhere it was not issued for. Five separate review rounds found five different paths into it,
-// each one storing half of the destination next to the key and reading the other half off a field
-// the operator edits somewhere else.
+// somewhere it was not issued for, or a model id asked of a vendor that never heard of it. Six
+// separate review rounds found six different paths into it, every one the same shape: half of the
+// pair stored beside the override, the other half read off a field the operator edits elsewhere.
 
 const AGENT: NormalizeModelSource = {
   provider: "openai",
@@ -55,10 +55,25 @@ describe("resolveNormalizeModel", () => {
       },
     },
     {
-      // The common case the feature exists for: same account, cheaper model.
-      name: "a model alone keeps the agent's provider and key",
-      tts: { normalize: true, normalizeModel: "gpt-4o-mini" },
+      // The common case the feature exists for: same account, cheaper model. It names the vendor the
+      // model was picked from, which is one extra field over REST and no extra action in the editor
+      // (the picker fills it in), and it is what keeps the pair from coming apart later.
+      name: "a model on the agent's own provider keeps the agent's key",
+      tts: {
+        normalize: true,
+        normalizeProvider: "openai",
+        normalizeModel: "gpt-4o-mini",
+      },
       want: { provider: "openai", model: "gpt-4o-mini", credential: "agent" },
+    },
+    {
+      // The same field with the vendor left unsaid. Nothing records WHICH provider that id was
+      // picked from, so the next change to the agent's provider asks OpenAI's model id of Anthropic
+      // and every rewrite fails silently back to raw speech. Refusing turns a silent failure into a
+      // config-health issue the operator can see.
+      name: "a model with the provider inherited is refused, not pinned by luck",
+      tts: { normalize: true, normalizeModel: "gpt-4o-mini" },
+      want: { runnable: false, reason: "override_without_provider" },
     },
     {
       // Naming the same provider is what picking a separate credential on the same vendor looks
@@ -136,14 +151,14 @@ describe("resolveNormalizeModel", () => {
       // chosen for, so the next change to the agent's provider silently re-points it at one that
       // never issued it. And that change does not need REST — the General tab saves on its own,
       // without the Behavior tab's cleared state ever reaching the database.
-      name: "a dedicated credential with the provider inherited is refused, not pinned by luck",
+      name: "a dedicated credential with the provider inherited is refused too",
       tts: {
         normalize: true,
         normalizeCredentialRef: "vault:9",
       },
       want: {
         runnable: false,
-        reason: "credential_without_provider",
+        reason: "override_without_provider",
         credential: "none",
       },
     },
@@ -339,7 +354,11 @@ describe("resolveNormalizeModel", () => {
     },
     {
       name: "the baseURL falls back to the agent's when only the model is overridden",
-      tts: { normalize: true, normalizeModel: "gpt-4o-mini" },
+      tts: {
+        normalize: true,
+        normalizeProvider: "openai",
+        normalizeModel: "gpt-4o-mini",
+      },
       agent: { ...AGENT, baseURL: "https://gw.example.com/v1" },
       want: {
         provider: "openai",

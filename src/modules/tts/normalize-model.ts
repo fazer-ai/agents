@@ -62,10 +62,11 @@ export type NormalizeCredentialSource = "own" | "agent" | "none";
 export type NormalizeNotRunnableReason =
   // A provider name we do not support. Never falls back, never carries the credential.
   | "provider_unknown"
-  // A dedicated credential with the provider left inherited. The key was chosen FOR whatever the
-  // agent's provider happened to be at the time, and nothing records which one that was, so the next
-  // change to the agent's provider would re-point that key at a vendor it was never issued for.
-  | "credential_without_provider"
+  // A model id or a credential picked for the rewrite while its provider was left inherited. Both
+  // were chosen FOR whatever the agent's provider happened to be at the time, and nothing records
+  // which one that was, so the next change to the agent's provider re-points them at a vendor that
+  // never issued the key and does not answer to the model id.
+  | "override_without_provider"
   // The rewrite points somewhere the agent's key does not belong (another vendor, or another host),
   // with no key of its own and no way to authenticate without one.
   | "credential_required"
@@ -125,13 +126,16 @@ export function resolveNormalizeModel(
   const switched = provider !== agent.provider;
   const own = str(tts.normalizeCredentialRef) !== null;
 
-  // A dedicated key has to say which vendor it is for, because nothing else does. The agent's
-  // provider is not that answer: it is a moving target, and the tabs of the editor do not even save
-  // together, so changing it on the General tab alone leaves this key behind, now pointed at a
-  // vendor that never issued it. Naming the provider — even the agent's own — is what pins the two
-  // together in the settings bag, where they survive as a pair.
-  if (own && raw === null) {
-    return NOT_RUNNABLE(provider, "credential_without_provider");
+  // Anything picked for the rewrite was picked FOR a vendor, and has to say which one, because
+  // nothing else does. The agent's provider is not that answer: it is a moving target, and the tabs
+  // of the editor do not even save together, so changing it on the General tab alone leaves these
+  // fields behind — a key now pointed at a vendor that never issued it, a model id now asked of one
+  // that has never heard of it. Naming the provider (even the agent's own, which the editor fills in
+  // the moment either field is set) is what pins them together in the settings bag, where they
+  // survive as a pair. Only a rewrite that overrides NOTHING may leave it blank, and that one has
+  // nothing to go stale.
+  if ((own || str(tts.normalizeModel) !== null) && raw === null) {
+    return NOT_RUNNABLE(provider, "override_without_provider");
   }
 
   const agentBaseURL = str(agent.baseURL);

@@ -53,6 +53,7 @@ import {
   type TtsFormState,
   ttsNormalizerBaseUrlInvalid,
   ttsNormalizerNeedsOwnCredential,
+  ttsNormalizerOverridePicked,
   ttsNormalizerPickerSource,
 } from "./ttsFormState";
 import type { Hours, VaultEntry } from "./types";
@@ -1472,21 +1473,15 @@ export function BehaviorTab({
                     >
                       <CredentialPicker
                         value={tts.normalizeCredentialRef}
-                        // Picking a key while the provider is inherited PINS the provider it was
-                        // picked for. Left inherited, the pair would come apart the next time the
-                        // agent's provider changed — on the General tab, which does not even save
-                        // together with this one — and the key would follow it to a vendor that
-                        // never issued it. The resolver refuses that configuration; this is what
-                        // keeps the editor from producing it.
                         onChange={(v) =>
-                          setTts({
-                            ...tts,
-                            normalizeCredentialRef: v,
-                            normalizeProvider:
-                              v && tts.normalizeProvider === ""
-                                ? agentModelProvider
-                                : tts.normalizeProvider,
-                          })
+                          setTts(
+                            ttsNormalizerOverridePicked(
+                              tts,
+                              "normalizeCredentialRef",
+                              v,
+                              agentModelProvider,
+                            ),
+                          )
                         }
                         required={ttsNormalizerNeedsOwnCredential(
                           tts,
@@ -1506,7 +1501,16 @@ export function BehaviorTab({
                     <FormField label={t("editor.model", "Model")} group>
                       <ModelPicker
                         value={tts.normalizeModel}
-                        onChange={(v) => setTts({ ...tts, normalizeModel: v })}
+                        onChange={(v) =>
+                          setTts(
+                            ttsNormalizerOverridePicked(
+                              tts,
+                              "normalizeModel",
+                              v,
+                              agentModelProvider,
+                            ),
+                          )
+                        }
                         provider={normalizeEffectiveProvider}
                         // The picker lists models by CALLING the provider, so it has to use the
                         // credential the rewrite will actually run on: the agent's own, while

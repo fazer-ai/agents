@@ -6,6 +6,7 @@ import {
   ttsNormalizerAgentProviderChanged,
   ttsNormalizerBaseUrlInvalid,
   ttsNormalizerNeedsOwnCredential,
+  ttsNormalizerOverridePicked,
   ttsNormalizerPickerSource,
   ttsNormalizerProviderChanged,
   ttsSettingsFrom,
@@ -114,6 +115,81 @@ describe("when the AGENT's provider changes", () => {
     expect(next.voice).toBe(form.voice);
     expect(next.credentialRef).toBe(form.credentialRef);
     expect(next.mode).toBe(form.mode);
+  });
+});
+
+// Picking a model or a key pins the vendor it was picked from, so the editor can never save the
+// configuration the resolver refuses (`override_without_provider`). Both pickers call this, which is
+// why it is one function and not two copies of an inline ternary in JSX.
+describe("picking an override pins the vendor it came from", () => {
+  const base = () =>
+    readTtsFormState({ mode: "mirror", normalizeProvider: "" }, true);
+
+  test("picking a model on an inherited provider names the agent's", () => {
+    const next = ttsNormalizerOverridePicked(
+      base(),
+      "normalizeModel",
+      "gpt-4o-mini",
+      "openai",
+    );
+    expect(next.normalizeModel).toBe("gpt-4o-mini");
+    expect(next.normalizeProvider).toBe("openai");
+  });
+
+  test("picking a key on an inherited provider names the agent's", () => {
+    const next = ttsNormalizerOverridePicked(
+      base(),
+      "normalizeCredentialRef",
+      "vault:9",
+      "anthropic",
+    );
+    expect(next.normalizeCredentialRef).toBe("vault:9");
+    expect(next.normalizeProvider).toBe("anthropic");
+  });
+
+  // The rewrite already points somewhere on purpose: the agent's provider is not the answer, and
+  // overwriting it here would silently move the whole thing back to the agent's vendor.
+  test("an explicit provider is never overwritten", () => {
+    const next = ttsNormalizerOverridePicked(
+      { ...base(), normalizeProvider: "anthropic" },
+      "normalizeModel",
+      "claude-haiku-4-5",
+      "openai",
+    );
+    expect(next.normalizeProvider).toBe("anthropic");
+  });
+
+  // The complement, and the reason the pin is keyed on a NON-EMPTY value. Clearing the last override
+  // hands the rewrite back to full inheritance; pinning here would freeze it on the agent's CURRENT
+  // vendor instead, silently, and `ttsNormalizerAgentProviderChanged` would then leave it behind on
+  // the old one the next time the agent moved.
+  test("clearing on an inherited provider does not pin anything", () => {
+    const next = ttsNormalizerOverridePicked(
+      base(),
+      "normalizeModel",
+      "",
+      "openai",
+    );
+    expect(next.normalizeProvider).toBe("");
+  });
+
+  // Clearing is not a decision about the vendor, and a blank provider is strictly less informative:
+  // unpinning here would re-create the very state the resolver refuses.
+  test("clearing the field leaves the pinned provider alone", () => {
+    const pinned = ttsNormalizerOverridePicked(
+      base(),
+      "normalizeModel",
+      "gpt-4o-mini",
+      "openai",
+    );
+    const cleared = ttsNormalizerOverridePicked(
+      pinned,
+      "normalizeModel",
+      "",
+      "openai",
+    );
+    expect(cleared.normalizeModel).toBe("");
+    expect(cleared.normalizeProvider).toBe("openai");
   });
 });
 

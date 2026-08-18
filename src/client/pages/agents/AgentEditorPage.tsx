@@ -1250,6 +1250,7 @@ export function AgentEditorPage() {
     modelBaseURL: modelCredBaseUrl ?? model.baseURL,
     ttsNormalize: tts.normalize,
     ttsNormalizeProvider: tts.normalizeProvider,
+    ttsNormalizeModel: tts.normalizeModel,
     ttsNormalizeCredentialRef: tts.normalizeCredentialRef,
     ttsNormalizeBaseURL: ttsNormalizeCredBaseUrl ?? tts.normalizeBaseURL,
     visionEnabled: vision.enabled,

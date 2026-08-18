@@ -350,6 +350,21 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
     });
 
+    // The same shape as the credential above, one field over. A model id picked for the agent's old
+    // vendor survives a provider change made on another tab (and a REST patch of modelConfig never
+    // touches the settings bag at all), and the runtime failure is silent: the audio goes out
+    // unrewritten forever.
+    test("a model id stored without its provider is surfaced", () => {
+      expect(
+        computeConfigIssues({
+          ...audio,
+          ttsNormalize: true,
+          ttsNormalizeProvider: "",
+          ttsNormalizeModel: "gpt-4o-mini",
+        }),
+      ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+    });
+
     // A dedicated key with nowhere to send it. The endpoint is not inherited from the agent once the
     // rewrite has a key of its own, so this bag is dead until someone gives it an address — and a
     // bag written over REST has no field validation to say so.

@@ -1,12 +1,17 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@/../generated/prisma/client";
+import {
+  type InboundAuthStrategy,
+  PrismaClient,
+} from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { createIntegrationInstance } from "@/modules/integrations/service";
 import {
   DEFAULT_SIGNATURE_HEADER,
   DEFAULT_STATIC_HEADER,
+  type InboundAuthOutcome,
+  type InboundSecretResolution,
   resolveInboundAuthConfig,
   verifyInboundAuth,
 } from "@/modules/webhooks/inbound/auth";
@@ -16,6 +21,7 @@ import {
 } from "@/modules/webhooks/inbound/route-token";
 import {
   processInboundDelivery,
+  type ReceiveParams,
   receiveInbound,
 } from "@/modules/webhooks/inbound/service";
 
@@ -100,55 +106,169 @@ describe("inbound auth header resolution", () => {
 });
 
 // ── auth strategies (unit) ──
+// One table, because this is one decision. Every row names the REASON, not pass/fail: the reason is
+// what issue #124 asked for, and a boolean cannot carry it: the four ways a secret fails to arrive
+// used to be the same `false` as a genuinely wrong token.
 describe("inbound auth", () => {
   const body = '{"a":1}';
-  test("NONE always passes", () => {
-    expect(
-      verifyInboundAuth({
-        strategy: "NONE",
-        secret: null,
-        rawBody: body,
-        getHeader: () => null,
-      }),
-    ).toBe(true);
+  const token = "s3cr3t";
+  const sig = createHmac("sha256", token).update(body).digest("hex");
+  const filled = (value: unknown): InboundSecretResolution => ({
+    state: "filled",
+    value,
   });
-  test("STATIC_HEADER matches the vault secret", () => {
-    const headers: Record<string, string> = {
-      [DEFAULT_STATIC_HEADER]: "s3cr3t",
-    };
-    const make = (s: string | null, secret: string) =>
-      verifyInboundAuth({
-        strategy: "STATIC_HEADER",
-        secret,
-        rawBody: body,
-        getHeader: (n) => (s === null ? null : (headers[n] ?? null)),
-      });
-    expect(make("x", "s3cr3t")).toBe(true);
-    expect(make("x", "wrong")).toBe(false);
-    expect(
-      verifyInboundAuth({
-        strategy: "STATIC_HEADER",
-        secret: "s3cr3t",
-        rawBody: body,
-        getHeader: () => null,
-      }),
-    ).toBe(false);
-  });
-  test("HMAC_SHA256 verifies the signature over the raw body", () => {
-    const secret = "hmac-secret";
-    const sig = createHmac("sha256", secret).update(body).digest("hex");
-    const check = (provided: string | null) =>
-      verifyInboundAuth({
-        strategy: "HMAC_SHA256",
-        secret,
-        rawBody: body,
-        getHeader: (n) => (n === DEFAULT_SIGNATURE_HEADER ? provided : null),
-      });
-    expect(check(sig)).toBe(true);
-    expect(check(`sha256=${sig}`)).toBe(true);
-    expect(check("deadbeef")).toBe(false);
-    expect(check(null)).toBe(false);
-  });
+  const hdr =
+    (h: Record<string, string>) =>
+    (n: string): string | null =>
+      h[n] ?? null;
+  const none = (): string | null => null;
+
+  const cases: Array<{
+    name: string;
+    strategy: InboundAuthStrategy;
+    secret: InboundSecretResolution;
+    getHeader: (name: string) => string | null;
+    expected: InboundAuthOutcome;
+  }> = [
+    // NONE never consults the secret, in any state.
+    {
+      name: "NONE passes with no secret configured",
+      strategy: "NONE",
+      secret: null,
+      getHeader: none,
+      expected: { ok: true },
+    },
+    {
+      name: "NONE passes even when the ref resolves to nothing",
+      strategy: "NONE",
+      secret: { state: "not_found" },
+      getHeader: none,
+      expected: { ok: true },
+    },
+
+    // The four ways the secret never becomes usable. Each is a different thing for the operator to
+    // do, and all four were indistinguishable before.
+    {
+      name: "STATIC_HEADER without a secret ref on the instance",
+      strategy: "STATIC_HEADER",
+      secret: null,
+      getHeader: hdr({ [DEFAULT_STATIC_HEADER]: token }),
+      expected: { ok: false, reason: "secret_not_configured" },
+    },
+    {
+      name: "STATIC_HEADER whose ref matches no vault entry",
+      strategy: "STATIC_HEADER",
+      secret: { state: "not_found" },
+      getHeader: hdr({ [DEFAULT_STATIC_HEADER]: token }),
+      expected: { ok: false, reason: "secret_ref_unresolved" },
+    },
+    {
+      name: "STATIC_HEADER whose entry was never filled",
+      strategy: "STATIC_HEADER",
+      secret: { state: "pending" },
+      getHeader: hdr({ [DEFAULT_STATIC_HEADER]: token }),
+      expected: { ok: false, reason: "secret_pending" },
+    },
+    {
+      // A multi-field credential (langfuse, google_oauth) decrypts to a Record. It is truthy, so it
+      // used to sail past the null check and die in Buffer.from, a 500 where every other refusal
+      // is a 401, which is both a crash and an oracle.
+      name: "STATIC_HEADER wired to a multi-field credential",
+      strategy: "STATIC_HEADER",
+      secret: filled({ publicKey: "pk", secretKey: "sk" }),
+      getHeader: hdr({ [DEFAULT_STATIC_HEADER]: token }),
+      expected: { ok: false, reason: "secret_unusable" },
+    },
+    {
+      // The shipped guard was `if (!secret)`, which caught "" and null together. Splitting the
+      // states splits that guard, and an empty secret has to stay fail-closed.
+      name: "STATIC_HEADER wired to an empty secret, against an empty header",
+      strategy: "STATIC_HEADER",
+      secret: filled(""),
+      getHeader: hdr({ [DEFAULT_STATIC_HEADER]: "" }),
+      expected: { ok: false, reason: "secret_unusable" },
+    },
+
+    // The two genuine auth failures, which are the only ones the operator can fix on their side.
+    {
+      name: "STATIC_HEADER with the header absent",
+      strategy: "STATIC_HEADER",
+      secret: filled(token),
+      getHeader: none,
+      expected: { ok: false, reason: "header_missing" },
+    },
+    {
+      name: "STATIC_HEADER with the wrong value",
+      strategy: "STATIC_HEADER",
+      secret: filled(token),
+      getHeader: hdr({ [DEFAULT_STATIC_HEADER]: "wrong" }),
+      expected: { ok: false, reason: "credential_mismatch" },
+    },
+    {
+      name: "STATIC_HEADER with the right value",
+      strategy: "STATIC_HEADER",
+      secret: filled(token),
+      getHeader: hdr({ [DEFAULT_STATIC_HEADER]: token }),
+      expected: { ok: true },
+    },
+
+    // HMAC reaches the same verdicts through its own material.
+    {
+      name: "HMAC_SHA256 whose entry was never filled",
+      strategy: "HMAC_SHA256",
+      secret: { state: "pending" },
+      getHeader: hdr({ [DEFAULT_SIGNATURE_HEADER]: sig }),
+      expected: { ok: false, reason: "secret_pending" },
+    },
+    {
+      name: "HMAC_SHA256 wired to a multi-field credential",
+      strategy: "HMAC_SHA256",
+      secret: filled({ publicKey: "pk", secretKey: "sk" }),
+      getHeader: hdr({ [DEFAULT_SIGNATURE_HEADER]: sig }),
+      expected: { ok: false, reason: "secret_unusable" },
+    },
+    {
+      name: "HMAC_SHA256 with the signature header absent",
+      strategy: "HMAC_SHA256",
+      secret: filled(token),
+      getHeader: none,
+      expected: { ok: false, reason: "header_missing" },
+    },
+    {
+      name: "HMAC_SHA256 with a signature over different material",
+      strategy: "HMAC_SHA256",
+      secret: filled(token),
+      getHeader: hdr({ [DEFAULT_SIGNATURE_HEADER]: "deadbeef" }),
+      expected: { ok: false, reason: "credential_mismatch" },
+    },
+    {
+      name: "HMAC_SHA256 verifies the signature over the raw body",
+      strategy: "HMAC_SHA256",
+      secret: filled(token),
+      getHeader: hdr({ [DEFAULT_SIGNATURE_HEADER]: sig }),
+      expected: { ok: true },
+    },
+    {
+      name: "HMAC_SHA256 accepts the sha256= prefix",
+      strategy: "HMAC_SHA256",
+      secret: filled(token),
+      getHeader: hdr({ [DEFAULT_SIGNATURE_HEADER]: `sha256=${sig}` }),
+      expected: { ok: true },
+    },
+  ];
+
+  for (const c of cases) {
+    test(c.name, () => {
+      expect(
+        verifyInboundAuth({
+          strategy: c.strategy,
+          secret: c.secret,
+          rawBody: body,
+          getHeader: c.getHeader,
+        }),
+      ).toEqual(c.expected);
+    });
+  }
 });
 
 // ── receptor pipeline (real DB) ──
@@ -644,5 +764,261 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
         where: { integrationInstanceId: instanceId },
       }),
     ).toBe(0);
+  });
+
+  // ── why the 401 happened (issue #124) ──
+  // The response is uniform by design, so the refusal REASON in the server log is the observable
+  // effect of this fix: asserting the 401 alone would assert the behaviour that was already there.
+  // Each broken instance is written straight to the table: the write boundary now refuses these
+  // values, and the point is precisely that databases already hold them.
+
+  function captureWarnings() {
+    const seen: Record<string, unknown>[] = [];
+    const logger = {
+      warn: (obj: unknown) => {
+        seen.push(obj as Record<string, unknown>);
+      },
+    };
+    return { seen, deps: { logger } as ReceiveParams["deps"] };
+  }
+
+  async function rawInstance(spec: {
+    strategy: InboundAuthStrategy;
+    secretRef?: string | null;
+    enabled?: boolean;
+  }): Promise<{ token: string; id: bigint }> {
+    const minted = generateRouteToken();
+    const row = await suDb.integrationInstance.create({
+      data: {
+        tenantId,
+        catalogType: "ASAAS",
+        name: `diag-${minted.hash.slice(0, 10)}`,
+        enabled: spec.enabled ?? true,
+        config: {},
+        inboundAuthStrategy: spec.strategy,
+        inboundSecretRef: spec.secretRef ?? null,
+        routeTokenHash: minted.hash,
+        routeToken: encryptJson(minted.token),
+      },
+      select: { id: true },
+    });
+    return { token: minted.token, id: row.id };
+  }
+
+  const diagBody = JSON.stringify({
+    event: "PAYMENT_RECEIVED",
+    payment: { id: "diag", status: "RECEIVED", value: 1 },
+  });
+
+  test("names the cause when the ref is a bare vault NAME, which resolves to nothing", async () => {
+    await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "asaas-inbound",
+        secret: encryptJson("REAL-TOKEN"),
+      },
+    });
+    // What a client following the REST schema's own wording ("Vault reference name") used to store.
+    const { token, id } = await rawInstance({
+      strategy: "STATIC_HEADER",
+      secretRef: "asaas-inbound",
+    });
+    const cap = captureWarnings();
+
+    await expect(
+      receiveInbound({
+        routeToken: token,
+        rawBody: diagBody,
+        getHeader: headersFrom({ [ASAAS_STATIC_HEADER]: "REAL-TOKEN" }),
+        base: appDb,
+        deps: cap.deps,
+      }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+
+    expect(cap.seen).toHaveLength(1);
+    expect(cap.seen[0]).toMatchObject({
+      reason: "secret_ref_unresolved",
+      instanceId: String(id),
+      secretRef: "asaas-inbound",
+      strategy: "STATIC_HEADER",
+    });
+    // The token the operator pasted on both ends never reaches the log.
+    expect(JSON.stringify(cap.seen[0])).not.toContain("REAL-TOKEN");
+  });
+
+  test("names the cause when the vault entry exists but was never filled", async () => {
+    const entry = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "unfilled-inbound",
+        secret: encryptJson({}),
+        status: "pending",
+      },
+      select: { id: true },
+    });
+    const { token } = await rawInstance({
+      strategy: "STATIC_HEADER",
+      secretRef: `vault:${entry.id}`,
+    });
+    const cap = captureWarnings();
+
+    await expect(
+      receiveInbound({
+        routeToken: token,
+        rawBody: diagBody,
+        getHeader: headersFrom({ [ASAAS_STATIC_HEADER]: "anything" }),
+        base: appDb,
+        deps: cap.deps,
+      }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+
+    expect(cap.seen[0]).toMatchObject({
+      reason: "secret_pending",
+      secretRef: `vault:${entry.id}`,
+    });
+  });
+
+  test("names the cause when the strategy needs a secret the instance never named", async () => {
+    const { token } = await rawInstance({ strategy: "HMAC_SHA256" });
+    const cap = captureWarnings();
+
+    await expect(
+      receiveInbound({
+        routeToken: token,
+        rawBody: diagBody,
+        getHeader: headersFrom({ [DEFAULT_SIGNATURE_HEADER]: "deadbeef" }),
+        base: appDb,
+        deps: cap.deps,
+      }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+
+    expect(cap.seen[0]).toMatchObject({ reason: "secret_not_configured" });
+    expect(cap.seen[0]).not.toHaveProperty("secretRef");
+  });
+
+  test("a delivery wired to a multi-field credential is refused, not crashed", async () => {
+    // langfuse-shaped: decryptJson gives a Record, which used to reach Buffer.from and throw, so a
+    // 500 where every other refusal is a 401.
+    const entry = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "multi-field-inbound",
+        kind: "langfuse",
+        secret: encryptJson({ publicKey: "pk", secretKey: "sk" }),
+      },
+      select: { id: true },
+    });
+    const { token } = await rawInstance({
+      strategy: "STATIC_HEADER",
+      secretRef: `vault:${entry.id}`,
+    });
+    const cap = captureWarnings();
+
+    const err = await receiveInbound({
+      routeToken: token,
+      rawBody: diagBody,
+      getHeader: headersFrom({ [ASAAS_STATIC_HEADER]: "whatever" }),
+      base: appDb,
+      deps: cap.deps,
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect((err as { statusCode?: number }).statusCode).toBe(401);
+    expect((err as Error).name).not.toBe("TypeError");
+    expect(cap.seen[0]).toMatchObject({ reason: "secret_unusable" });
+  });
+
+  test("separates a token that resolves nothing from an instance that is switched off", async () => {
+    const unknown = captureWarnings();
+    await expect(
+      receiveInbound({
+        routeToken: "not-a-live-token",
+        rawBody: diagBody,
+        getHeader: () => null,
+        base: appDb,
+        deps: unknown.deps,
+      }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+    expect(unknown.seen[0]).toMatchObject({ reason: "route_unknown" });
+    expect(unknown.seen[0]).not.toHaveProperty("instanceId");
+
+    const { token, id } = await rawInstance({
+      strategy: "NONE",
+      enabled: false,
+    });
+    const disabled = captureWarnings();
+    await expect(
+      receiveInbound({
+        routeToken: token,
+        rawBody: diagBody,
+        getHeader: () => null,
+        base: appDb,
+        deps: disabled.deps,
+      }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+    expect(disabled.seen[0]).toMatchObject({
+      reason: "route_disabled",
+      instanceId: String(id),
+    });
+  });
+
+  test("the response is identical whichever cause produced it", async () => {
+    const entry = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "identical-inbound",
+        secret: encryptJson("GOOD"),
+      },
+      select: { id: true },
+    });
+    const wired = await rawInstance({
+      strategy: "STATIC_HEADER",
+      secretRef: `vault:${entry.id}`,
+    });
+    const dangling = await rawInstance({
+      strategy: "STATIC_HEADER",
+      secretRef: "vault:999999999",
+    });
+    const shape = async (routeToken: string) =>
+      receiveInbound({
+        routeToken,
+        rawBody: diagBody,
+        getHeader: headersFrom({ [ASAAS_STATIC_HEADER]: "BAD" }),
+        base: appDb,
+        deps: captureWarnings().deps,
+      }).then(
+        () => null,
+        (e: unknown) => ({
+          statusCode: (e as { statusCode?: number }).statusCode,
+          message: (e as Error).message,
+          translationKey: (e as { translationKey?: string }).translationKey,
+        }),
+      );
+    // Wrong token vs a ref pointing at nothing: same status, same body. The reason lives in the
+    // log, never in the answer. There is no oracle for which route tokens are live.
+    expect(await shape(wired.token)).toEqual(await shape(dangling.token));
+  });
+
+  test("an accepted delivery logs no rejection at all", async () => {
+    const entry = await suDb.vaultEntry.create({
+      data: { tenantId, name: "quiet-inbound", secret: encryptJson("QUIET") },
+      select: { id: true },
+    });
+    const { token } = await rawInstance({
+      strategy: "STATIC_HEADER",
+      secretRef: `vault:${entry.id}`,
+    });
+    const cap = captureWarnings();
+
+    const ok = await receiveInbound({
+      routeToken: token,
+      rawBody: diagBody,
+      getHeader: headersFrom({ [ASAAS_STATIC_HEADER]: "QUIET" }),
+      base: appDb,
+      deps: cap.deps,
+    });
+    expect(ok.outcome).toBe("queued");
+    expect(cap.seen).toHaveLength(0);
   });
 });

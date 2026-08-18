@@ -228,6 +228,30 @@ describe.skipIf(!dbUp)("MCP webhooks/alerts/integrations tools (DB)", () => {
     }
   });
 
+  test("integration_create still takes a vault NAME, now that the column will not", async () => {
+    // The write boundary refuses anything that is not `vault:<id>`, and MCP is the transport that
+    // speaks names: it resolves them here, before the service ever sees the argument. This is the
+    // test that says the two decisions fit together: tightening the column did not make the tool
+    // that talks to a model start demanding numeric ids.
+    const r = await integrationCreate(
+      principal({ tenantId: tenantA }),
+      {
+        catalog_type: "ASAAS",
+        name: "named-secret-integration",
+        inbound_auth_strategy: "STATIC_HEADER",
+        inbound_secret_ref: "wh-secret",
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    const row = await suDb.integrationInstance.findFirst({
+      where: { tenantId: tenantA, name: "named-secret-integration" },
+      select: { inboundSecretRef: true },
+    });
+    expect(row?.inboundSecretRef).toBe(`vault:${secretId}`);
+  });
+
   test("webhook_delete cross-tenant → not found", async () => {
     // Create a webhook in tenantA, then attempt deletion as tenantB.
     const own = await webhookCreate(

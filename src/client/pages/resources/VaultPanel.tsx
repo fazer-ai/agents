@@ -431,6 +431,7 @@ function RefList({ refs }: { refs: References | null }) {
     refs.integrations.length === 0 &&
     refs.agents.length === 0 &&
     refs.webhooks.length === 0 &&
+    refs.alertChannels.length === 0 &&
     refs.tenantSettings.length === 0;
   return (
     <div className="flex flex-col gap-3 text-sm">
@@ -471,6 +472,14 @@ function RefList({ refs }: { refs: References | null }) {
         items={refs.webhooks.map((u) => ({
           key: u,
           label: u,
+          to: "/webhooks",
+        }))}
+      />
+      <RefGroup
+        label={t("vault.refAlertChannels", "Alert channels")}
+        items={refs.alertChannels.map((n) => ({
+          key: n,
+          label: n,
           to: "/webhooks",
         }))}
       />

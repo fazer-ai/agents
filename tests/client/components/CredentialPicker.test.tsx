@@ -24,9 +24,28 @@ import { invalidateVault } from "@/client/lib/vaultCache";
 const realFetch = globalThis.fetch;
 let testUrls: string[] = [];
 
+interface FakeEntry {
+  id: string;
+  name: string;
+  kind: string;
+  baseUrl: null;
+  paramName: null;
+  status: string;
+}
+const activeEntry: FakeEntry = {
+  id: "7",
+  name: "openai-main",
+  kind: "openai",
+  baseUrl: null,
+  paramName: null,
+  status: "active",
+};
+let vaultEntries: FakeEntry[] = [];
+
 beforeEach(() => {
   invalidateVault();
   testUrls = [];
+  vaultEntries = [activeEntry];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("/test")) {
@@ -37,21 +56,10 @@ beforeEach(() => {
       });
     }
     if (url.includes("/api/v1/vault")) {
-      return new Response(
-        JSON.stringify({
-          entries: [
-            {
-              id: "7",
-              name: "openai-main",
-              kind: "openai",
-              baseUrl: null,
-              paramName: null,
-              status: "active",
-            },
-          ],
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
+      return new Response(JSON.stringify({ entries: vaultEntries }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }
     return realFetch(input as RequestInfo | URL, init);
   }) as typeof fetch;
@@ -79,5 +87,38 @@ describe("CredentialPicker with a noncanonical ref", () => {
     testButton.click();
     await waitFor(() => expect(testUrls.length).toBe(1));
     expect(testUrls[0]).toBe("/api/v1/vault/7/test");
+  });
+});
+
+// A referenced entry whose secret was never filled. `credential_create` and the vault both produce
+// this on purpose, and until now the only field that said so was the agent's own (configHealth), so
+// so an integration wired to one failed as a bare 401 with nothing said anywhere (issue #124).
+describe("CredentialPicker with a pending entry", () => {
+  // The sentence shares its element with the Fill control, so match a fragment.
+  const warning = /no value yet/;
+
+  test("says the secret is missing, and offers to fill it in place", async () => {
+    vaultEntries = [{ ...activeEntry, status: "pending" }];
+    render(
+      <CredentialPicker value="vault:7" onChange={() => {}} ariaLabel="key" />,
+    );
+    await waitFor(() =>
+      expect(screen.queryAllByText("openai-main").length > 0).toBe(true),
+    );
+    expect(screen.queryAllByText(warning).length > 0).toBe(true);
+    // In place, not a link to the vault page: the operator is mid-edit on a form whose unsaved
+    // state a navigation would throw away.
+    expect(screen.queryAllByRole("button", { name: "Fill" }).length).toBe(1);
+  });
+
+  test("says nothing when the entry holds a secret", async () => {
+    render(
+      <CredentialPicker value="vault:7" onChange={() => {}} ariaLabel="key" />,
+    );
+    await waitFor(() =>
+      expect(screen.queryAllByText("openai-main").length > 0).toBe(true),
+    );
+    expect(screen.queryAllByText(warning).length).toBe(0);
+    expect(screen.queryAllByRole("button", { name: "Fill" }).length).toBe(0);
   });
 });

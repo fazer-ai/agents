@@ -30,6 +30,8 @@ import {
 // translate('errors.vaultParamNameRequired', 'Param name is required for this credential type')
 // translate('errors.invalidVaultParamName', 'Param name contains invalid characters')
 // translate('errors.vaultBaseUrlRequired', 'This credential type requires a base URL.')
+// translate('errors.invalidVaultRef', 'Not a vault reference: expected vault:<id>, not a credential name')
+// translate('errors.vaultRefNotFound', 'That vault reference does not point to any credential')
 // translate('errors.credentialPending', 'This credential has not been filled yet')
 // translate('errors.credentialPendingUnsupportedKind', 'This credential type is set up via a connect flow and cannot be created as a pending reference')
 

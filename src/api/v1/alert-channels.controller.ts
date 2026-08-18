@@ -107,7 +107,7 @@ export const alertChannelsController = new Elysia({
               minLength: 1,
               maxLength: 128,
               description:
-                "Vault reference name for a signing secret (never the secret itself), or null for none.",
+                "Vault reference (`vault:<id>`, from GET /v1/vault) for a signing secret. Never the secret itself, and never an entry name; null for none.",
             }),
           ),
         ),
@@ -181,7 +181,7 @@ export const alertChannelsController = new Elysia({
               minLength: 1,
               maxLength: 128,
               description:
-                "New vault reference name for a signing secret, or null to clear it.",
+                "New vault reference (`vault:<id>`) for a signing secret, or null to clear it.",
             }),
           ),
         ),

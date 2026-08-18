@@ -4,6 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { requireVaultRef } from "@/modules/vault/service";
 import { normalizeToolShapes } from "./normalize";
 
 // Custom HTTP tool definitions (per-tenant). A definition is the LLM-facing parameter schema +
@@ -205,6 +206,9 @@ export async function createToolDefinition(
   });
   return runScopedOn(base, ctx, async (db) => {
     await assertNameFree(db, data.name);
+    const credentialRef = data.credentialRef
+      ? await requireVaultRef(db, data.credentialRef)
+      : null;
     const row = await db.toolDefinition.create({
       data: {
         tenantId,
@@ -219,7 +223,7 @@ export async function createToolDefinition(
         outputSchema: (data.outputSchema ?? {}) as Prisma.InputJsonValue,
         query: (shapes.query ?? {}) as Prisma.InputJsonValue,
         body: (shapes.body ?? {}) as Prisma.InputJsonValue,
-        credentialRef: data.credentialRef ?? null,
+        credentialRef,
         enabled: data.enabled ?? true,
         riskTier: data.riskTier ?? "medium",
         expectedStatuses: normalizeExpectedStatuses(data.expectedStatuses),
@@ -298,7 +302,9 @@ export async function updateToolDefinition(
     if (data.body !== undefined)
       patchData.body = shapes.body as Prisma.InputJsonValue;
     if (data.credentialRef !== undefined)
-      patchData.credentialRef = data.credentialRef ?? null;
+      patchData.credentialRef = data.credentialRef
+        ? await requireVaultRef(db, data.credentialRef)
+        : null;
     if (data.enabled !== undefined) patchData.enabled = data.enabled;
     if (data.riskTier !== undefined) patchData.riskTier = data.riskTier;
     if (data.expectedStatuses !== undefined)

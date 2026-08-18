@@ -170,6 +170,13 @@ export function CredentialPicker({
     entries.find((e) => formatVaultRef(e.id) === canonicalVaultRef(value)) ??
     null;
   const unresolved = !selected && !!value;
+  // The entry is there and its secret is not: `credential_create` (MCP) and the vault's own "add a
+  // reference now, fill it later" both produce this, deliberately: resolveSecretRef says so and
+  // points at the alert that would surface it. That alert only ever existed for the agent's own
+  // credentials (configHealth), so every other field wired to a pending entry failed with nothing
+  // said anywhere: an integration's inbound secret failed as a bare 401 (issue #124). Saying it in
+  // the picker says it once, for every field that references a credential.
+  const unfilled = selected?.status === "pending";
   const canTest = !!selected && isTestableSecretType(selected.kind);
   // Same compatibility rule as the list ranking: flags a selection left behind after the
   // context changed (e.g. the provider switched while an old credential stayed selected).
@@ -479,6 +486,25 @@ export function CredentialPicker({
         </span>
       )}
 
+      {unfilled && (
+        <span
+          className="flex flex-wrap items-center gap-2 text-warning text-xs"
+          role="status"
+        >
+          {t(
+            "credentialPicker.pendingUnfilled",
+            "This credential has no value yet, so anything using it cannot run.",
+          )}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => editModal.open()}
+          >
+            {t("vault.fill", "Fill")}
+          </button>
+        </span>
+      )}
+
       {loaded && required && !value && (
         <span className="text-warning text-xs" role="status">
           {t(
@@ -509,9 +535,19 @@ export function CredentialPicker({
         />
       </Modal>
 
-      <Modal modal={editModal} title={t("vault.updateTitle", "Update secret")}>
+      <Modal
+        modal={editModal}
+        title={
+          unfilled
+            ? t("vault.fillTitle", "Fill pending credential")
+            : t("vault.updateTitle", "Update secret")
+        }
+      >
         <CredentialForm
           mode="update"
+          // Filling here has to demand a real value, exactly as the vault panel does: a rename-only
+          // save would close the form and leave the entry just as unfilled as it was.
+          requireValue={unfilled}
           initialId={selected?.id}
           initialName={selected?.name}
           initialKind={selected?.kind ?? "generic"}

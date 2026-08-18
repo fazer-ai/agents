@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { InboundAuthStrategy } from "@/../generated/prisma/client";
 import { getCatalogEntry } from "@/modules/integrations/catalog";
+import type { VaultRefResolution } from "@/modules/vault/service";
 
 // Per-instance inbound auth, verified AFTER the route token has resolved the tenant (so the
 // secret read is tenant-scoped and a bad signature for a real token still fails uniformly).
@@ -45,36 +46,96 @@ function timingEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
+// How the instance's secret arrived, straight from the vault's own three-state answer, plus `null`
+// for an instance that names no secret at all. It is the whole input to the gate below, and the
+// reason it is a state rather than a `string | null` is issue #124: every one of these used to
+// collapse into the same null, and therefore into the same 401.
+export type InboundSecretResolution = VaultRefResolution<unknown> | null;
+
+// Why a delivery was refused. The response never carries this (see the caller: every failure is the
+// same 401, with no oracle for which route tokens are live). It exists so the SERVER can say which
+// of these happened, which is the difference between an operator finding a misconfiguration and
+// staring at a 401 in someone else's delivery log.
+export type InboundAuthFailure =
+  | "secret_not_configured"
+  | "secret_ref_unresolved"
+  | "secret_pending"
+  | "secret_unusable"
+  | "header_missing"
+  | "credential_mismatch"
+  | "unsupported_strategy";
+
+export type InboundAuthOutcome =
+  | { ok: true }
+  | { ok: false; reason: InboundAuthFailure };
+
+const fail = (reason: InboundAuthFailure): InboundAuthOutcome => ({
+  ok: false,
+  reason,
+});
+
+// The secret has to become a non-empty string before any strategy can use it, and each way it fails
+// to is a different thing for the operator to do: point the field somewhere real, fill the entry,
+// or pick a credential of a shape this can use. A multi-field credential (langfuse, google_oauth)
+// decrypts to a Record, which is truthy, so before this narrowed it reached Buffer.from/createHmac
+// and threw, so a mis-wired secret answered 500 while a wrong token answered 401.
+//
+// The empty-string case is not decoration: the shipped guard was `if (!secret)`, which caught "" and
+// null in one breath. Splitting the states splits that guard too, and "" has to stay fail-closed.
+function readSecret(
+  secret: InboundSecretResolution,
+): { ok: true; value: string } | { ok: false; reason: InboundAuthFailure } {
+  if (secret === null) return { ok: false, reason: "secret_not_configured" };
+  if (secret.state === "not_found") {
+    return { ok: false, reason: "secret_ref_unresolved" };
+  }
+  if (secret.state === "pending")
+    return { ok: false, reason: "secret_pending" };
+  const value = secret.value;
+  if (typeof value !== "string" || value.length === 0) {
+    return { ok: false, reason: "secret_unusable" };
+  }
+  return { ok: true, value };
+}
+
 // `getHeader` is case-insensitive in callers (Headers.get); strategy NONE always passes.
 // HMAC material is the raw body; an optional `sha256=` prefix is stripped before compare.
 export function verifyInboundAuth(params: {
   strategy: InboundAuthStrategy;
-  secret: string | null;
+  secret: InboundSecretResolution;
   rawBody: string;
   getHeader: (name: string) => string | null;
   config?: InboundAuthConfig;
-}): boolean {
+}): InboundAuthOutcome {
   const { strategy, secret, rawBody, getHeader, config } = params;
 
-  if (strategy === "NONE") return true;
-  if (!secret) return false; // a secret-bearing strategy with no configured secret fails closed
+  if (strategy === "NONE") return { ok: true };
+
+  const resolved = readSecret(secret);
+  if (!resolved.ok) return resolved;
+  const value = resolved.value;
 
   if (strategy === "STATIC_HEADER") {
     const headerName = config?.authHeader ?? DEFAULT_STATIC_HEADER;
     const provided = getHeader(headerName);
-    return provided !== null && timingEqual(provided, secret);
+    if (provided === null) return fail("header_missing");
+    return timingEqual(provided, value)
+      ? { ok: true }
+      : fail("credential_mismatch");
   }
 
   if (strategy === "HMAC_SHA256") {
     const headerName = config?.signatureHeader ?? DEFAULT_SIGNATURE_HEADER;
     const provided = getHeader(headerName);
-    if (provided === null) return false;
-    const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
+    if (provided === null) return fail("header_missing");
+    const expected = createHmac("sha256", value).update(rawBody).digest("hex");
     const stripped = provided.startsWith("sha256=")
       ? provided.slice("sha256=".length)
       : provided;
-    return timingEqual(expected, stripped);
+    return timingEqual(expected, stripped)
+      ? { ok: true }
+      : fail("credential_mismatch");
   }
 
-  return false;
+  return fail("unsupported_strategy");
 }

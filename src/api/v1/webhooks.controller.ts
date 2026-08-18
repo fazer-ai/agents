@@ -97,7 +97,7 @@ export const webhooksController = new Elysia({
               minLength: 1,
               maxLength: 128,
               description:
-                "Vault reference name for the signing secret (never the secret itself), or null for none.",
+                "Vault reference (`vault:<id>`, from GET /v1/vault) for the signing secret. Never the secret itself, and never an entry name; null for none.",
             }),
           ),
         ),
@@ -153,7 +153,7 @@ export const webhooksController = new Elysia({
               minLength: 1,
               maxLength: 128,
               description:
-                "New vault reference name for the signing secret, or null to clear it.",
+                "New vault reference (`vault:<id>`) for the signing secret, or null to clear it.",
             }),
           ),
         ),

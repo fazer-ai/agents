@@ -15,8 +15,13 @@ import type {
   InboundEventKind,
   NormalizedInboundEvent,
 } from "@/modules/integrations/types";
-import { tryResolveVaultSecret } from "@/modules/vault/service";
-import { resolveInboundAuthConfig, verifyInboundAuth } from "./auth";
+import { resolveVaultRefState } from "@/modules/vault/service";
+import {
+  type InboundAuthFailure,
+  type InboundSecretResolution,
+  resolveInboundAuthConfig,
+  verifyInboundAuth,
+} from "./auth";
 
 // Generic inbound receptor. Resolve tenant by route token → verify the per-instance auth
 // strategy (tenant-scoped secret) → normalize via the integration's pure mapper → persist an
@@ -34,6 +39,41 @@ function sysCtx(tenantId: bigint): TenantContext {
 
 function asString(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
+}
+
+type InboundLogger = Pick<typeof logger, "warn">;
+
+// Everything that answers 401, route resolution included: an operator debugging a webhook asks "is
+// my URL even right?" before "is my token right?", and both used to be the same silent throw.
+type InboundRejection = "route_unknown" | "route_disabled" | InboundAuthFailure;
+
+// The refusal, recorded where the operator can find it. The RESPONSE stays uniform on purpose (no
+// oracle for which route tokens are live), and that argument covers the response, not the server's
+// own record: without this line an unresolvable ref, an unfilled secret and a genuinely wrong token
+// are the same event in every log we keep, which is issue #124. Carries ids and the vault REF
+// (`vault:<id>` is an address, not a secret), never the header value, never the body.
+function logRejection(
+  log: InboundLogger,
+  reason: InboundRejection,
+  route: ResolvedInboundRoute | null,
+): void {
+  log.warn(
+    {
+      reason,
+      ...(route
+        ? {
+            instanceId: String(route.id),
+            tenantId: String(route.tenantId),
+            catalogType: route.catalogType,
+            strategy: route.inboundAuthStrategy,
+            ...(route.inboundSecretRef
+              ? { secretRef: route.inboundSecretRef }
+              : {}),
+          }
+        : {}),
+    },
+    "inbound: rejected with 401",
+  );
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -67,32 +107,46 @@ export interface ReceiveParams {
   rawBody: string;
   getHeader: (name: string) => string | null;
   base?: PrismaClient;
+  // Injectable for tests; defaults to the app logger. The refusal reason is the observable effect
+  // of a 401 here (the response is uniform by design), so a test that cannot read it is testing a
+  // proxy for the fix rather than the fix.
+  deps?: { logger?: InboundLogger };
 }
 
 export async function receiveInbound(
   params: ReceiveParams,
 ): Promise<ReceiveResult> {
   const base = params.base ?? basePrisma;
+  const log = params.deps?.logger ?? logger;
   const route = await resolveInboundRouteByToken(params.routeToken, base);
   // Unknown token, disabled instance, and bad auth all return the SAME 401 (no oracle for
   // which tokens are live). The hash lookup is the constant-time part.
-  if (!route?.enabled) throw new UnauthorizedError();
+  if (!route?.enabled) {
+    logRejection(log, route ? "route_disabled" : "route_unknown", route);
+    throw new UnauthorizedError();
+  }
 
-  let secret: string | null = null;
+  // The vault's three-state answer, not a value: "no such entry" and "never filled" are different
+  // problems with different fixes, and collapsing them (as tryResolveVaultSecret does, correctly,
+  // for "can I use this?") is what left the operator with nothing to act on.
+  let secret: InboundSecretResolution = null;
   if (route.inboundAuthStrategy !== "NONE" && route.inboundSecretRef) {
     const ref = route.inboundSecretRef;
     secret = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
-      tryResolveVaultSecret<string>(db, ref),
+      resolveVaultRefState<unknown>(db, ref),
     );
   }
-  const authOk = verifyInboundAuth({
+  const auth = verifyInboundAuth({
     strategy: route.inboundAuthStrategy,
     secret,
     rawBody: params.rawBody,
     getHeader: params.getHeader,
     config: resolveInboundAuthConfig(route.catalogType, route.config),
   });
-  if (!authOk) throw new UnauthorizedError();
+  if (!auth.ok) {
+    logRejection(log, auth.reason, route);
+    throw new UnauthorizedError();
+  }
 
   // Authenticated past this point — a malformed body is a 400 (caller's bug), not a 401.
   let parsed: unknown;

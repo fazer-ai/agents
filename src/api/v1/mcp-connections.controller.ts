@@ -59,7 +59,7 @@ const writeBody = t.Object({
   credentialRef: t.Optional(
     t.Union([t.String(), t.Null()], {
       description:
-        "Vault reference for the credential used to authenticate to the server; null if none.",
+        "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
     }),
   ),
   enabled: t.Optional(

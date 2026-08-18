@@ -16,7 +16,7 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
 import { ensureFreshMcpAccessToken } from "@/modules/vault/mcp-oauth";
 import { isManagedOAuthKind } from "@/modules/vault/secret-types";
-import { tryResolveVaultEntry } from "@/modules/vault/service";
+import { requireVaultRef, tryResolveVaultEntry } from "@/modules/vault/service";
 
 // MCP server connections (per-tenant). The connection is the transport + endpoint + a vault
 // credential reference; the per-agent allowlist of discovered tools lives in AgentToolSelection
@@ -192,6 +192,9 @@ export async function createMcpConnection(
   await assertTransportValid(data);
   return runScopedOn(base, ctx, async (db) => {
     await assertNameFree(db, data.name);
+    const credentialRef = data.credentialRef
+      ? await requireVaultRef(db, data.credentialRef)
+      : null;
     const row = await db.mcpServerConnection.create({
       data: {
         tenantId,
@@ -199,7 +202,7 @@ export async function createMcpConnection(
         transport: data.transport,
         url: data.url ?? null,
         command: data.command ?? null,
-        credentialRef: data.credentialRef ?? null,
+        credentialRef,
         enabled: data.enabled ?? true,
       },
       select: SELECT,
@@ -235,6 +238,9 @@ export async function updateMcpConnection(
   });
   return runScopedOn(base, ctx, async (db) => {
     if (data.name) await assertNameFree(db, data.name, id);
+    const credentialRef = data.credentialRef
+      ? await requireVaultRef(db, data.credentialRef)
+      : null;
     await db.mcpServerConnection.update({
       where: { id },
       data: {
@@ -244,9 +250,7 @@ export async function updateMcpConnection(
         ...(data.command !== undefined
           ? { command: data.command ?? null }
           : {}),
-        ...(data.credentialRef !== undefined
-          ? { credentialRef: data.credentialRef ?? null }
-          : {}),
+        ...(data.credentialRef !== undefined ? { credentialRef } : {}),
         ...(data.enabled !== undefined ? { enabled: data.enabled } : {}),
       },
     });

@@ -4,6 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { requireVaultRef } from "@/modules/vault/service";
 import { isOutboundEvent, type OutboundEvent } from "./events";
 import { syncTenantHeartbeat } from "./heartbeat";
 
@@ -114,18 +115,21 @@ export async function createWebhookSubscription(
   const parsed = webhookSubscriptionCreateSchema.parse(input);
   const events = assertKnownEvents(parsed.events);
   await assertUrlSafe(parsed.url);
-  const row = await runScopedOn(base, ctx, (db) =>
-    db.webhookSubscription.create({
+  const row = await runScopedOn(base, ctx, async (db) => {
+    const secretRef = parsed.secretRef
+      ? await requireVaultRef(db, parsed.secretRef)
+      : null;
+    return db.webhookSubscription.create({
       data: {
         tenantId,
         url: parsed.url,
         events,
-        secretRef: parsed.secretRef ?? null,
+        secretRef,
         enabled: parsed.enabled ?? true,
       },
       select: SELECT,
-    }),
-  );
+    });
+  });
   // Reconcile the per-tenant heartbeat emitter against the new subscription state.
   await syncTenantHeartbeat(tenantId, base);
   return toDto(row);
@@ -170,6 +174,10 @@ export async function updateWebhookSubscription(
   }
   // updateMany → count 0 for a foreign/missing id under RLS → NotFound (never a cross-tenant write).
   const row = await runScopedOn(base, ctx, async (db) => {
+    // Canonicalized inside the tx, so the entry cannot be deleted between the check and the write.
+    if (typeof data.secretRef === "string") {
+      data.secretRef = await requireVaultRef(db, data.secretRef);
+    }
     const res = await db.webhookSubscription.updateMany({
       where: { id },
       data,

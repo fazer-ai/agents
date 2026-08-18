@@ -202,14 +202,14 @@ export const integrationsAdminController = new Elysia({
         credentialRef: t.Optional(
           t.Union([t.String(), t.Null()], {
             description:
-              "Vault reference name for the outbound credential (never the secret itself), or null for none.",
+              "Vault reference (`vault:<id>`, from GET /v1/vault) for the outbound credential. Never the secret itself, and never an entry name; null for none.",
           }),
         ),
         inboundAuthStrategy: t.Optional(authStrategy),
         inboundSecretRef: t.Optional(
           t.Union([t.String(), t.Null()], {
             description:
-              "Vault reference name for the inbound auth secret (never the secret itself), or null for none.",
+              "Vault reference (`vault:<id>`, from GET /v1/vault) for the inbound auth secret. Never the secret itself, and never an entry name; null for none.",
           }),
         ),
         enabled: t.Optional(
@@ -271,14 +271,14 @@ export const integrationsAdminController = new Elysia({
         credentialRef: t.Optional(
           t.Union([t.String(), t.Null()], {
             description:
-              "New vault reference name for the outbound credential, or null to clear it.",
+              "New vault reference (`vault:<id>`) for the outbound credential, or null to clear it.",
           }),
         ),
         inboundAuthStrategy: t.Optional(authStrategy),
         inboundSecretRef: t.Optional(
           t.Union([t.String(), t.Null()], {
             description:
-              "New vault reference name for the inbound auth secret, or null to clear it.",
+              "New vault reference (`vault:<id>`) for the inbound auth secret, or null to clear it.",
           }),
         ),
       }),

@@ -47,7 +47,9 @@ const PATHS = SETTINGS_CREDENTIAL_PATHS;
 
 const keyIds: Record<string, bigint> = {};
 
-describe.skipIf(!dbUp)("vaultReferences over agent settings", () => {
+let alertKeyId = 0n;
+
+describe.skipIf(!dbUp)("vaultReferences", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
       data: { name: "VREF", slug: `vref-${process.pid}` },
@@ -70,11 +72,27 @@ describe.skipIf(!dbUp)("vaultReferences over agent settings", () => {
         },
       });
     }
+    // An alert channel signs its deliveries with a vault secret like everything else, and it was the
+    // one referencing table this query never looked at.
+    const alertKey = await suDb.vaultEntry.create({
+      data: { tenantId, name: "alert-hmac", secret: encryptJson("sk-a") },
+      select: { id: true },
+    });
+    alertKeyId = alertKey.id;
+    await suDb.alertChannel.create({
+      data: {
+        tenantId,
+        name: "ops-webhook",
+        type: "webhook",
+        url: encryptJson("https://203.0.113.10/alert"),
+        secretRef: `vault:${alertKey.id}`,
+      },
+    });
   });
 
   afterAll(async () => {
     if (tenantId) {
-      for (const table of ["agents", "vault_entries"]) {
+      for (const table of ["agents", "alert_channels", "vault_entries"]) {
         await suDb.$executeRawUnsafe(
           `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
         );
@@ -94,4 +112,12 @@ describe.skipIf(!dbUp)("vaultReferences over agent settings", () => {
       expect(refs.agents.map((a) => a.name)).toEqual([`agent-${name}`]);
     });
   }
+
+  test("a key used only by an alert channel is reported as in use", async () => {
+    const refs = await vaultReferences(ctx(), alertKeyId, appDb);
+    expect(refs.alertChannels).toEqual(["ops-webhook"]);
+    // Named by its own bucket, not swept into a neighbour's.
+    expect(refs.webhooks).toEqual([]);
+    expect(refs.integrations).toEqual([]);
+  });
 });

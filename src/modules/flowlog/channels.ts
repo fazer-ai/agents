@@ -5,6 +5,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { requireVaultRef } from "@/modules/vault/service";
 import { FLOW_LEVELS, FLOW_STAGES } from "./stages";
 
 // CRUD for AlertChannel (external alert sinks for execution-flow warnings/errors). Mirrors the
@@ -134,8 +135,11 @@ export async function createAlertChannel(
   const parsed = alertChannelCreateSchema.parse(input);
   await assertSafeOutboundUrl(parsed.url);
   const stages = assertStages(parsed.stages ?? []);
-  const row = await runScopedOn(base, ctx, (db) =>
-    db.alertChannel.create({
+  const row = await runScopedOn(base, ctx, async (db) => {
+    const secretRef = parsed.secretRef
+      ? await requireVaultRef(db, parsed.secretRef)
+      : null;
+    return db.alertChannel.create({
       data: {
         tenantId,
         name: parsed.name,
@@ -143,12 +147,12 @@ export async function createAlertChannel(
         url: encryptJson(parsed.url),
         minLevel: parsed.minLevel ?? "error",
         stages,
-        secretRef: parsed.secretRef ?? null,
+        secretRef,
         enabled: parsed.enabled ?? true,
       },
       select: SELECT,
-    }),
-  );
+    });
+  });
   return toDto(row);
 }
 
@@ -193,6 +197,10 @@ export async function updateAlertChannel(
     );
   }
   const row = await runScopedOn(base, ctx, async (db) => {
+    // Canonicalized inside the tx, so the entry cannot be deleted between the check and the write.
+    if (typeof data.secretRef === "string") {
+      data.secretRef = await requireVaultRef(db, data.secretRef);
+    }
     // updateMany → count 0 for a foreign/missing id under RLS → NotFound (never a cross-tenant write).
     const res = await db.alertChannel.updateMany({ where: { id }, data });
     if (res.count === 0)

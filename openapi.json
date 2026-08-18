@@ -9922,7 +9922,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -10058,7 +10058,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -10194,7 +10194,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -10566,7 +10566,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -10702,7 +10702,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -10838,7 +10838,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -11324,7 +11324,7 @@
                     ]
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential used to authenticate to the server; null if none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -11380,7 +11380,7 @@
                     ]
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential used to authenticate to the server; null if none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -11436,7 +11436,7 @@
                     ]
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential used to authenticate to the server; null if none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -11690,7 +11690,7 @@
                     ]
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential used to authenticate to the server; null if none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -11746,7 +11746,7 @@
                     ]
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential used to authenticate to the server; null if none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -11802,7 +11802,7 @@
                     ]
                   },
                   "credentialRef": {
-                    "description": "Vault reference for the credential used to authenticate to the server; null if none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential used to authenticate to the server; never an entry name, null if none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -16830,7 +16830,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "Vault reference name for the signing secret (never the secret itself), or null for none.",
+                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the signing secret. Never the secret itself, and never an entry name; null for none.",
                         "type": "string"
                       },
                       {
@@ -16872,7 +16872,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "Vault reference name for the signing secret (never the secret itself), or null for none.",
+                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the signing secret. Never the secret itself, and never an entry name; null for none.",
                         "type": "string"
                       },
                       {
@@ -16914,7 +16914,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "Vault reference name for the signing secret (never the secret itself), or null for none.",
+                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the signing secret. Never the secret itself, and never an entry name; null for none.",
                         "type": "string"
                       },
                       {
@@ -17065,7 +17065,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "New vault reference name for the signing secret, or null to clear it.",
+                        "description": "New vault reference (`vault:<id>`) for the signing secret, or null to clear it.",
                         "type": "string"
                       },
                       {
@@ -17103,7 +17103,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "New vault reference name for the signing secret, or null to clear it.",
+                        "description": "New vault reference (`vault:<id>`) for the signing secret, or null to clear it.",
                         "type": "string"
                       },
                       {
@@ -17141,7 +17141,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "New vault reference name for the signing secret, or null to clear it.",
+                        "description": "New vault reference (`vault:<id>`) for the signing secret, or null to clear it.",
                         "type": "string"
                       },
                       {
@@ -18401,7 +18401,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "Vault reference name for a signing secret (never the secret itself), or null for none.",
+                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for a signing secret. Never the secret itself, and never an entry name; null for none.",
                         "type": "string"
                       },
                       {
@@ -18463,7 +18463,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "Vault reference name for a signing secret (never the secret itself), or null for none.",
+                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for a signing secret. Never the secret itself, and never an entry name; null for none.",
                         "type": "string"
                       },
                       {
@@ -18525,7 +18525,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "Vault reference name for a signing secret (never the secret itself), or null for none.",
+                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for a signing secret. Never the secret itself, and never an entry name; null for none.",
                         "type": "string"
                       },
                       {
@@ -18696,7 +18696,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "New vault reference name for a signing secret, or null to clear it.",
+                        "description": "New vault reference (`vault:<id>`) for a signing secret, or null to clear it.",
                         "type": "string"
                       },
                       {
@@ -18753,7 +18753,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "New vault reference name for a signing secret, or null to clear it.",
+                        "description": "New vault reference (`vault:<id>`) for a signing secret, or null to clear it.",
                         "type": "string"
                       },
                       {
@@ -18810,7 +18810,7 @@
                       {
                         "minLength": 1,
                         "maxLength": 128,
-                        "description": "New vault reference name for a signing secret, or null to clear it.",
+                        "description": "New vault reference (`vault:<id>`) for a signing secret, or null to clear it.",
                         "type": "string"
                       },
                       {
@@ -19499,7 +19499,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "Vault reference name for the outbound credential (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the outbound credential. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -19518,7 +19518,7 @@
                     ]
                   },
                   "inboundSecretRef": {
-                    "description": "Vault reference name for the inbound auth secret (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the inbound auth secret. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -19561,7 +19561,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "Vault reference name for the outbound credential (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the outbound credential. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -19580,7 +19580,7 @@
                     ]
                   },
                   "inboundSecretRef": {
-                    "description": "Vault reference name for the inbound auth secret (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the inbound auth secret. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -19623,7 +19623,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "Vault reference name for the outbound credential (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the outbound credential. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -19642,7 +19642,7 @@
                     ]
                   },
                   "inboundSecretRef": {
-                    "description": "Vault reference name for the inbound auth secret (never the secret itself), or null for none.",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the inbound auth secret. Never the secret itself, and never an entry name; null for none.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -19902,7 +19902,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "New vault reference name for the outbound credential, or null to clear it.",
+                    "description": "New vault reference (`vault:<id>`) for the outbound credential, or null to clear it.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -19921,7 +19921,7 @@
                     ]
                   },
                   "inboundSecretRef": {
-                    "description": "New vault reference name for the inbound auth secret, or null to clear it.",
+                    "description": "New vault reference (`vault:<id>`) for the inbound auth secret, or null to clear it.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -19956,7 +19956,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "New vault reference name for the outbound credential, or null to clear it.",
+                    "description": "New vault reference (`vault:<id>`) for the outbound credential, or null to clear it.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -19975,7 +19975,7 @@
                     ]
                   },
                   "inboundSecretRef": {
-                    "description": "New vault reference name for the inbound auth secret, or null to clear it.",
+                    "description": "New vault reference (`vault:<id>`) for the inbound auth secret, or null to clear it.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -20010,7 +20010,7 @@
                     }
                   },
                   "credentialRef": {
-                    "description": "New vault reference name for the outbound credential, or null to clear it.",
+                    "description": "New vault reference (`vault:<id>`) for the outbound credential, or null to clear it.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -20029,7 +20029,7 @@
                     ]
                   },
                   "inboundSecretRef": {
-                    "description": "New vault reference name for the inbound auth secret, or null to clear it.",
+                    "description": "New vault reference (`vault:<id>`) for the inbound auth secret, or null to clear it.",
                     "anyOf": [
                       {
                         "type": "string"

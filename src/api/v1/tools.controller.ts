@@ -98,7 +98,7 @@ export const writeBody = t.Object({
   credentialRef: t.Optional(
     t.Union([t.String(), t.Null()], {
       description:
-        "Vault reference for the credential (never the secret itself), or null for none.",
+        "Vault reference (`vault:<id>`, from GET /v1/vault) for the credential. Never the secret itself, and never an entry name; null for none.",
     }),
   ),
   enabled: t.Optional(

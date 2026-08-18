@@ -8,6 +8,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { requireVaultRef } from "@/modules/vault/service";
 import {
   generateRouteToken,
   hashRouteToken,
@@ -86,24 +87,32 @@ export async function createIntegrationInstance(
   const created = await runScopedOn(
     base,
     { tenantId, userId: null, role: "TENANT_ADMIN" },
-    (db) =>
-      db.integrationInstance.create({
+    async (db) => {
+      const credentialRef = params.credentialRef
+        ? await requireVaultRef(db, params.credentialRef)
+        : null;
+      const inboundSecretRef =
+        minted && params.inboundSecretRef
+          ? await requireVaultRef(db, params.inboundSecretRef)
+          : null;
+      return db.integrationInstance.create({
         data: {
           tenantId,
           catalogType: params.catalogType,
           name: params.name,
           enabled: params.enabled ?? true,
           config: (params.config ?? {}) as Prisma.InputJsonValue,
-          credentialRef: params.credentialRef ?? null,
+          credentialRef,
           inboundAuthStrategy: minted
             ? (params.inboundAuthStrategy ?? "NONE")
             : "NONE",
-          inboundSecretRef: minted ? (params.inboundSecretRef ?? null) : null,
+          inboundSecretRef,
           routeTokenHash: minted?.hash ?? null,
           routeToken: minted ? encryptJson(minted.token) : null,
         },
         select: { id: true },
-      }),
+      });
+    },
   );
   return { id: created.id, routeToken: minted?.token ?? null };
 }
@@ -260,6 +269,12 @@ export async function updateIntegrationInstance(
         "errors.integrationInstanceNotFound",
       );
     }
+    const credentialRef = params.credentialRef
+      ? await requireVaultRef(db, params.credentialRef)
+      : null;
+    const inboundSecretRef = params.inboundSecretRef
+      ? await requireVaultRef(db, params.inboundSecretRef)
+      : null;
     await db.integrationInstance.update({
       where: { id },
       data: {
@@ -268,15 +283,11 @@ export async function updateIntegrationInstance(
         ...(params.config !== undefined
           ? { config: params.config as Prisma.InputJsonValue }
           : {}),
-        ...(params.credentialRef !== undefined
-          ? { credentialRef: params.credentialRef ?? null }
-          : {}),
+        ...(params.credentialRef !== undefined ? { credentialRef } : {}),
         ...(params.inboundAuthStrategy !== undefined
           ? { inboundAuthStrategy: params.inboundAuthStrategy }
           : {}),
-        ...(params.inboundSecretRef !== undefined
-          ? { inboundSecretRef: params.inboundSecretRef ?? null }
-          : {}),
+        ...(params.inboundSecretRef !== undefined ? { inboundSecretRef } : {}),
       },
     });
     const row = await db.integrationInstance.findUniqueOrThrow({

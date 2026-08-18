@@ -238,8 +238,8 @@ function pickAvailabilityCalendars(
   labels: Record<string, string>,
   requested: string | undefined,
 ): { ids: string[] } | { error: string } {
-  // An explicit arg, and the empty-allowlist refusal, resolve exactly as every other calendar tool
-  // resolves them; only the no-arg case below differs.
+  // NOTE: An explicit arg, and the empty-allowlist refusal, resolve exactly as every other calendar
+  // tool resolves them; only the no-arg case below differs.
   if (requested?.trim() || allowed.length === 0) {
     const one = pickCalendarId(allowed, labels, requested);
     return "error" in one ? one : { ids: [one.id] };
@@ -263,16 +263,13 @@ const MAX_GRANULARITY_MINUTES = 240;
 // Availability is queried one day at a time: cap the range so the (now unsampled) slot list stays small
 // and the model pages through longer searches itself, a day per call.
 const MAX_AVAILABILITY_RANGE_MS = 24 * 60 * 60 * 1000;
-// freebusy.query caps calendarExpansionMax at 50 and reports anything past it as a per-calendar
-// `tooManyCalendarsRequested`. The allowlist has no ceiling of its own, and until availability could
-// span calendars its size never reached this API at all, so the excess is trimmed HERE and reported
-// through the same channel as a calendar Google could not read.
-const MAX_FREEBUSY_CALENDARS = 50;
-// Calendars per freeBusy request. The ceiling above is Google's; this one is OURS, and it is about
-// the response: gcalFetch truncates a body at MAX_RESPONSE_CHARS BEFORE parsing it, so an oversized
-// answer parses to null and every calendar in it reads as unreadable. Fifty densely booked calendars
-// in one answer can reach that, and the failure would look like "the whole clinic is unreachable".
-// Ten keeps a worst-case batch far under the cap, at a handful of parallel requests.
+// Calendars per freeBusy request. Two limits meet here and batching satisfies both. Google's
+// calendarExpansionMax caps ONE freebusy.query at 50 (past it, per-calendar
+// `tooManyCalendarsRequested`), and ours is the response: gcalFetch truncates a body at
+// MAX_RESPONSE_CHARS BEFORE parsing it, so an oversized answer parses to null and every calendar in
+// it reads as unreadable, which would surface as "the whole clinic is unreachable". Ten keeps a
+// worst-case batch far under both. Because the ceiling is PER REQUEST, there is no global one to
+// enforce: a 60-calendar instance is six batches, not fifty covered and ten discarded.
 const FREEBUSY_BATCH_SIZE = 10;
 // Ceiling on slot entries in one tool result. One entry per (time, calendar) multiplies with the
 // calendar count; this bounds it without collapsing the range (see computeAggregatedSlots). Sized so
@@ -751,19 +748,14 @@ function buildCheckAvailabilityTool(
       if (!token) return toolFailure(NOT_CONNECTED);
       const pick = pickAvailabilityCalendars(allowed, labels, input.calendarId);
       if ("error" in pick) return pick.error;
-      // Past Google's ceiling the tail is not queried at all. Trimming beats letting the API answer
-      // `tooManyCalendarsRequested` for an arbitrary subset: the operator's configured order decides
-      // who is covered, and the customer is never told "these are your options" when part of the
-      // clinic was silently dropped. An explicit calendarId still reaches any single calendar.
-      const calendarIds = pick.ids.slice(0, MAX_FREEBUSY_CALENDARS);
-      const overflow = pick.ids.slice(MAX_FREEBUSY_CALENDARS);
-      // freeBusy takes N calendars in ONE request and keys the answer by id, so covering the whole
+      const calendarIds = pick.ids;
+      // NOTE: freeBusy takes N calendars in ONE request and keys the answer by id, so covering the whole
       // clinic costs the same round trip covering one professional always did.
       const batches: string[][] = [];
       for (let i = 0; i < calendarIds.length; i += FREEBUSY_BATCH_SIZE) {
         batches.push(calendarIds.slice(i, i + FREEBUSY_BATCH_SIZE));
       }
-      // allSettled, not all: gcalFetch THROWS on a timeout or a network error, and a single
+      // NOTE: allSettled, not all: gcalFetch THROWS on a timeout or a network error, and a single
       // rejection would discard every batch that answered fine. Non-2xx already degraded per batch;
       // a thrown one has to degrade the same way or the contract is a coin flip on failure mode.
       const batchRes = await Promise.allSettled(
@@ -784,7 +776,7 @@ function buildCheckAvailabilityTool(
           ),
         ),
       );
-      // A batch that failed contributes no entries, so its calendars fall through the same
+      // NOTE: A batch that failed contributes no entries, so its calendars fall through the same
       // "unreadable" path as a calendar Google refused individually. Only a total failure surfaces
       // the HTTP status, which keeps the single-batch case answering exactly as it always did.
       const calendars: Record<string, unknown> = {};
@@ -806,23 +798,28 @@ function buildCheckAvailabilityTool(
           (d.calendars ?? {}) as Record<string, unknown>,
         );
       }
-      // Nothing came back at all. Keep the two failure modes distinguishable, exactly as the
-      // single-batch path always reported them.
+      // NOTE: Nothing came back at all, and the three ways that happens stay distinguishable, exactly
+      // as the single-batch path always reported them. The last one is a 2xx whose body was empty,
+      // malformed, or truncated by MAX_RESPONSE_CHARS before parsing: there is no status to quote
+      // (saying "HTTP null" is worse than saying nothing), and it is retriable, so it reads as such.
       if (Object.keys(calendars).length === 0) {
+        if (lastStatus !== null) {
+          return toolFailure(`Google Calendar returned HTTP ${lastStatus}.`);
+        }
         return toolFailure(
-          threw && lastStatus === null
+          threw
             ? "Failed to reach Google Calendar. Try again shortly."
-            : `Google Calendar returned HTTP ${lastStatus}.`,
+            : "Google Calendar's availability response could not be read. Try again shortly.",
         );
       }
-      // Per-calendar outcome. freeBusy answers 200 and reports a calendar it could not read as a
+      // NOTE: Per-calendar outcome. freeBusy answers 200 and reports a calendar it could not read as a
       // per-calendar `errors` array (a revoked share, a deleted calendar), so the failure is INSIDE a
       // successful response. Such a calendar is dropped, never carried with an empty busy list: empty
       // busy means "free all day", and offering a professional whose bookings we cannot see is a
       // double booking. Dropping it only under-offers, and the caller is told which ones went missing
       // so the reply can say so instead of pretending the clinic is smaller than it is.
       const sources: CalendarSource[] = [];
-      const unreadable: string[] = overflow.map((id) => labels[id] ?? id);
+      const unreadable: string[] = [];
       for (const id of calendarIds) {
         const entry = (calendars[id] ?? null) as Record<string, unknown> | null;
         const errors = entry && Array.isArray(entry.errors) ? entry.errors : [];
@@ -842,7 +839,7 @@ function buildCheckAvailabilityTool(
           busy,
         });
       }
-      // Nothing readable at all: an empty slot list would read as "fully booked", which sends the
+      // NOTE: Nothing readable at all: an empty slot list would read as "fully booked", which sends the
       // customer away from a clinic that is open. Say we could not check instead.
       if (sources.length === 0) {
         return toolFailure(
@@ -933,7 +930,7 @@ function buildCheckAvailabilityTool(
         now: new Date(),
         scheduleWindows: schedule?.windows ?? [],
         scheduleTz: schedule?.timezone ?? timeZone,
-        // Each source's busy list is assembled HERE: its own bookings plus every blocking calendar
+        // NOTE: Each source's busy list is assembled HERE: its own bookings plus every blocking calendar
         // except itself.
         sources: sources.map((src) => ({
           ...src,
@@ -950,13 +947,13 @@ function buildCheckAvailabilityTool(
           input.granularityMinutes,
         ),
         minLeadMinutes,
-        // Only when aggregating. The multiplication this bounds does not exist with one calendar,
+        // NOTE: Only when aggregating. The multiplication this bounds does not exist with one calendar,
         // and what a single-calendar instance returns is not this change's to alter: capping it would
         // shorten a list operators have been reading since before the feature existed.
         maxSlots:
           sources.length > 1 ? MAX_SLOT_ENTRIES : Number.POSITIVE_INFINITY,
       });
-      // A list of bookable start times (start/end ISO + a human label), each tagged with the calendar
+      // NOTE: A list of bookable start times (start/end ISO + a human label), each tagged with the calendar
       // that can take it. Empty ⇒ nothing free in range. `coveredUntil` appears only when the entry
       // ceiling stopped the search early, and is the timeMin to continue from.
       return JSON.stringify({

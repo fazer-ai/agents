@@ -1311,7 +1311,11 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     calendarLabel?: string;
   };
   const parse = (out: string) =>
-    JSON.parse(out) as { slots: AggSlot[]; unavailableCalendars?: string[] };
+    JSON.parse(out) as {
+      slots: AggSlot[];
+      unavailableCalendars?: string[];
+      coveredUntil?: string;
+    };
 
   test("no calendarId asks every allowed calendar in ONE freeBusy request", async () => {
     const { impl, calls } = stubFetch(200, {
@@ -1499,15 +1503,13 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     );
   });
 
-  test("the query is BATCHED, and past Google's 50-calendar ceiling the overflow is named", async () => {
-    // Two separate limits. freebusy.query caps calendarExpansionMax at 50, which is Google's. And
-    // gcalFetch truncates a body at MAX_RESPONSE_CHARS BEFORE parsing, so one oversized answer parses
-    // to null and would read as "the whole clinic is unreachable" — hence batches, which is ours.
+  test("the query is BATCHED, and every calendar is asked even past 50", async () => {
+    // Google's calendarExpansionMax of 50 is a PER-REQUEST ceiling, so batching satisfies it and
+    // there is nothing left to discard globally. An earlier revision trimmed at 50 and reported the
+    // tail as unavailable, which threw away calendars that one more batch would have covered.
     const many = Array.from({ length: 60 }, (_, i) => `c${i}@x`);
     const { impl, calls } = stubFetch(200, {
-      calendars: Object.fromEntries(
-        many.slice(0, 50).map((id) => [id, { busy: [] }]),
-      ),
+      calendars: Object.fromEntries(many.map((id) => [id, { busy: [] }])),
     });
     const out = (await toolFor(
       "calendar_check_availability",
@@ -1517,14 +1519,28 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
     const asked = calls.flatMap(
       (c) => (bodyOf(c) as { items: { id: string }[] }).items,
     );
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(6);
     for (const c of calls) {
       expect(
         (bodyOf(c) as { items: unknown[] }).items.length,
       ).toBeLessThanOrEqual(10);
     }
-    expect(asked.map((i) => i.id)).toEqual(many.slice(0, 50));
-    expect(parse(out).unavailableCalendars).toEqual(many.slice(50));
+    expect(asked.map((i) => i.id)).toEqual(many);
+    expect(parse(out).unavailableCalendars).toBeUndefined();
+  });
+
+  test('a 2xx whose body cannot be parsed is retriable, not "HTTP null"', async () => {
+    const impl = (async () =>
+      new Response("<html>proxy ate it</html>", {
+        status: 200,
+      })) as unknown as typeof fetch;
+    const out = (await toolFor(
+      "calendar_check_availability",
+      CLINIC,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke(RANGE)) as string;
+    expect(out).toContain("could not be read");
+    expect(out).not.toContain("null");
   });
 
   test("one failed batch costs only its own calendars, not the whole answer", async () => {

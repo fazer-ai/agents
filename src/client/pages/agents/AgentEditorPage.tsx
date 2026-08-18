@@ -1594,6 +1594,20 @@ export function AgentEditorPage() {
   // Per-tab discard: restore a single section from the last synced agent. No
   // syncSeq bump — only the reverted section returns to baseline, the other
   // tabs keep their own pending state.
+  // Each credential picker keeps two values OUTSIDE the form — the selected entry's own base URL,
+  // and the endpoint the operator had typed before it was selected — so it can hand the typed one
+  // back when a credential that carries none is chosen. Discard restores the form and would leave
+  // that pair behind, holding values from edits that no longer exist: the picker re-reports the
+  // RESTORED credential, sees "had one, has none now", and writes the discarded endpoint into the
+  // form it was just reverted out of. Clearing the pair is what makes the restored state the whole
+  // state; the picker re-populates it on its next report, from the credential that survived.
+  const forgetCredentialBaseUrl = (
+    setCredUrl: (v: string | null) => void,
+    userRef: React.MutableRefObject<string>,
+  ) => {
+    setCredUrl(null);
+    userRef.current = "";
+  };
   const revertGeneral = () => {
     const a = syncedAgentRef.current;
     if (!a) return;
@@ -1602,6 +1616,7 @@ export function AgentEditorPage() {
     setEnabled(a.enabled);
     setAgentMode(a.mode === "test" ? "test" : "production");
     setModel(readModelState(a));
+    forgetCredentialBaseUrl(setModelCredBaseUrl, modelUserBaseUrlRef);
   };
   const revertBehavior = () => {
     const a = syncedAgentRef.current;
@@ -1621,6 +1636,12 @@ export function AgentEditorPage() {
     setObservability(b.observability);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
+    forgetCredentialBaseUrl(setSttCredBaseUrl, sttUserBaseUrlRef);
+    forgetCredentialBaseUrl(setVisionCredBaseUrl, visionUserBaseUrlRef);
+    forgetCredentialBaseUrl(
+      setTtsNormalizeCredBaseUrl,
+      ttsNormalizeUserBaseUrlRef,
+    );
   };
   const revertChannelRedirect = () => {
     const a = syncedAgentRef.current;

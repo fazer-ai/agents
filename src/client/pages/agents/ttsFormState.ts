@@ -3,6 +3,7 @@ import {
   type NormalizeModelResolution,
   resolveNormalizeModel,
 } from "@/modules/tts/normalize-model";
+import { clampVoiceSetting } from "@/modules/tts/settings";
 
 // The agent editor's TTS block, as a pair of pure functions: stored settings → form state → stored
 // settings. It lives outside the page because the Behavior save REPLACES the whole `tts` block with
@@ -87,11 +88,16 @@ export function ttsSettingsFrom(tts: TtsFormState): Record<string, unknown> {
     normalizeCredentialRef: tts.normalizeCredentialRef || null,
     normalizeBaseURL: tts.normalizeBaseURL.trim() || null,
     // NOTE: blank clears the knob (null), so the operator can hand a field back to the provider
-    // after having set it. readTtsConfig clamps whatever number survives.
-    stability: numOrNull(tts.stability),
-    similarityBoost: numOrNull(tts.similarityBoost),
-    style: numOrNull(tts.style),
-    speed: numOrNull(tts.speed),
+    // after having set it. The clamp is the READER's, applied here too: the save persists what the
+    // form holds, so storing the raw number would leave the editor showing a value synthesis never
+    // uses — and the next load would show it again, since the form reads the stored bag directly.
+    stability: clampVoiceSetting("stability", numOrNull(tts.stability)),
+    similarityBoost: clampVoiceSetting(
+      "similarityBoost",
+      numOrNull(tts.similarityBoost),
+    ),
+    style: clampVoiceSetting("style", numOrNull(tts.style)),
+    speed: clampVoiceSetting("speed", numOrNull(tts.speed)),
     speakerBoost: tts.speakerBoost,
   };
 }
@@ -195,6 +201,20 @@ export function ttsNormalizerPickerSource(
           : "",
     baseURL: r.baseURL ?? "",
   };
+}
+
+// Whether the endpoint in play is one this provider will never send. The operator can reach it in
+// two clicks — pick a credential that carries a base URL while the rewrite sits on a keyed vendor —
+// and the field that would explain it does not even render for that provider. So the field renders
+// whenever there IS an endpoint in play, and says which of the two things is wrong.
+export function ttsNormalizerBaseUrlUnsupported(
+  tts: TtsFormState,
+  agent: AgentModelSource,
+  ownCredBaseUrl: string | null,
+): boolean {
+  if (tts.mode === "never" || !tts.normalize) return false;
+  const r = ttsNormalizerResolution(tts, agent, ownCredBaseUrl);
+  return !r.runnable && r.reason === "endpoint_unsupported";
 }
 
 // An openai-compatible endpoint is nothing without its base URL: createChatModel refuses the

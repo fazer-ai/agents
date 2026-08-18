@@ -103,6 +103,17 @@ function clamped(v: unknown, [min, max]: readonly [number, number]) {
   return Math.min(max, Math.max(min, v));
 }
 
+// The same clamp, for ONE knob, so a writer can normalize before storing instead of storing a value
+// the reader will quietly correct later. The editor needs it: it persists what the form holds, and
+// what the form holds is whatever was typed — leaving the operator looking at a 9 forever while
+// synthesis runs at 4, with nothing on screen admitting the difference.
+export function clampVoiceSetting(
+  knob: keyof typeof VOICE_SETTING_RANGES,
+  value: number | null,
+): number | null {
+  return clamped(value, VOICE_SETTING_RANGES[knob]);
+}
+
 export function readVoiceSettings(bag: unknown): TtsVoiceSettings {
   if (!bag || typeof bag !== "object") return { ...VOICE_SETTINGS_DEFAULTS };
   const b = bag as Record<string, unknown>;

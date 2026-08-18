@@ -4,6 +4,7 @@ import {
   readTtsFormState,
   type TtsFormState,
   ttsNormalizerBaseUrlInvalid,
+  ttsNormalizerBaseUrlUnsupported,
   ttsNormalizerNeedsOwnCredential,
   ttsNormalizerOverridePicked,
   ttsNormalizerPickerSource,
@@ -66,6 +67,44 @@ describe("agent editor TTS round-trip", () => {
     expect(
       readTtsFormState({ mode: "mirror", normalize: false }, true).normalize,
     ).toBe(false);
+  });
+});
+
+// The knobs are clamped by the READER at runtime, so a form that stores the raw number leaves the
+// editor showing a value synthesis never uses — and showing it again on the next load, since the
+// form reads the stored bag directly rather than through the reader.
+describe("voice knobs are stored at the value that will actually be used", () => {
+  const knobs = (over: Partial<TtsFormState>) =>
+    ttsSettingsFrom({ ...readTtsFormState({ mode: "mirror" }, true), ...over });
+
+  test("an overshot slider is stored clamped, not raw", () => {
+    expect(knobs({ stability: "9", speed: "12" })).toMatchObject({
+      stability: 1,
+      speed: 4,
+    });
+  });
+
+  test("an undershot one too", () => {
+    expect(knobs({ style: "-3", speed: "0.05" })).toMatchObject({
+      style: 0,
+      speed: 0.25,
+    });
+  });
+
+  // Clamping must not turn "leave it to the voice" into a number: null is a value here, and the
+  // lowest end of the band is NOT the same instruction.
+  test("a blank knob still clears to null", () => {
+    expect(knobs({ stability: "", speed: "" })).toMatchObject({
+      stability: null,
+      speed: null,
+    });
+  });
+
+  test("a value inside the band is untouched", () => {
+    expect(knobs({ stability: "0.35", speed: "1.15" })).toMatchObject({
+      stability: 0.35,
+      speed: 1.15,
+    });
   });
 });
 
@@ -326,6 +365,57 @@ describe("what the model picker queries with", () => {
 // An openai-compatible endpoint with no base URL is refused by createChatModel, and the rewrite is
 // then skipped as `model_not_runnable` on every audio reply, silently. The editor is stricter than
 // the runtime here on purpose: a half-typed URL is refused before the save.
+// An endpoint aimed at a provider that will never send it. Reachable from the editor in two clicks
+// (pick a credential that carries one while the rewrite sits on a keyed vendor), and the request
+// would leave for the vendor's public host with the key and the customer's text.
+describe("an endpoint the provider cannot send", () => {
+  test("a credential's endpoint on a keyed provider is unsupported", () => {
+    expect(
+      ttsNormalizerBaseUrlUnsupported(
+        form({
+          normalizeProvider: "openai",
+          normalizeCredentialRef: "vault:9",
+        }),
+        OPENAI,
+        "https://proxy.example.com/v1",
+      ),
+    ).toBe(true);
+  });
+
+  test("the same endpoint on openai-compatible is fine", () => {
+    expect(
+      ttsNormalizerBaseUrlUnsupported(
+        form({
+          normalizeProvider: "openai-compatible",
+          normalizeCredentialRef: "vault:9",
+        }),
+        OPENAI,
+        "https://proxy.example.com/v1",
+      ),
+    ).toBe(false);
+  });
+
+  // The agent's own endpoint is not the rewrite's doing: it lands wherever the agent's model lands.
+  test("an endpoint inherited from the agent is never flagged", () => {
+    expect(ttsNormalizerBaseUrlUnsupported(form(), LOCAL, null)).toBe(false);
+  });
+
+  // With audio off the whole block is hidden, and a hidden block must never freeze Save.
+  test("audio off never reports it", () => {
+    expect(
+      ttsNormalizerBaseUrlUnsupported(
+        form({
+          mode: "never",
+          normalizeProvider: "openai",
+          normalizeCredentialRef: "vault:9",
+        }),
+        OPENAI,
+        "https://proxy.example.com/v1",
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("the rewrite's endpoint has to be usable before saving", () => {
   test("openai-compatible with nothing anywhere blocks the save", () => {
     expect(

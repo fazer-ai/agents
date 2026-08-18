@@ -567,6 +567,7 @@
     "back": "Voltar para agentes",
     "backToConversation": "Voltar para a conversa",
     "baseURL": "Base URL",
+    "baseURLNotSentByProvider": "Este provedor não envia base URL: a requisição iria para o endpoint próprio dele. Escolha uma credencial sem base URL, ou use um provedor compatível com OpenAI.",
     "baseURLFromCredential": "Definida pela credencial selecionada.",
     "baseURLHint": "Obrigatório para provedores compatíveis com OpenAI.",
     "businessHours": "Horário de atendimento",

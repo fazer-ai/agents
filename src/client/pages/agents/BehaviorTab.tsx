@@ -52,6 +52,7 @@ import { TabActionBar } from "./TabActionBar";
 import {
   type TtsFormState,
   ttsNormalizerBaseUrlInvalid,
+  ttsNormalizerBaseUrlUnsupported,
   ttsNormalizerNeedsOwnCredential,
   ttsNormalizerOverridePicked,
   ttsNormalizerPickerSource,
@@ -837,6 +838,11 @@ export function BehaviorTab({
     agentModel,
     ttsNormalizeCredBaseUrl,
   );
+  const normalizeBaseUrlUnsupported = ttsNormalizerBaseUrlUnsupported(
+    tts,
+    agentModel,
+    ttsNormalizeCredBaseUrl,
+  );
 
   // Transcription language: a curated dropdown with an "other" escape to a free-text ISO code.
   const sttLangKnown = (STT_LANGUAGES as readonly string[]).includes(
@@ -1537,7 +1543,9 @@ export function BehaviorTab({
                         aria-label={t("editor.model", "Model")}
                       />
                     </FormField>
-                    {normalizeEffectiveProvider === "openai-compatible" && (
+                    {(normalizeEffectiveProvider === "openai-compatible" ||
+                      !!ttsNormalizeCredBaseUrl ||
+                      !!tts.normalizeBaseURL.trim()) && (
                       <FormField
                         label={t("editor.baseURL", "Base URL")}
                         description={
@@ -1552,12 +1560,18 @@ export function BehaviorTab({
                               )
                         }
                         error={
-                          normalizeBaseUrlInvalid && tts.normalizeBaseURL.trim()
+                          normalizeBaseUrlUnsupported
                             ? t(
-                                "common.invalidUrl",
-                                "Must be a valid http(s) URL.",
+                                "editor.baseURLNotSentByProvider",
+                                "This provider does not send a base URL: the request would go to its own endpoint instead. Pick a credential without one, or use an OpenAI-compatible provider.",
                               )
-                            : null
+                            : normalizeBaseUrlInvalid &&
+                                tts.normalizeBaseURL.trim()
+                              ? t(
+                                  "common.invalidUrl",
+                                  "Must be a valid http(s) URL.",
+                                )
+                              : null
                         }
                       >
                         <Input
@@ -2091,7 +2105,10 @@ export function BehaviorTab({
         onSave={onSave}
         onDiscard={onDiscard}
         saveDisabled={
-          sttBaseUrlInvalid || visionBaseUrlInvalid || normalizeBaseUrlInvalid
+          sttBaseUrlInvalid ||
+          visionBaseUrlInvalid ||
+          normalizeBaseUrlInvalid ||
+          normalizeBaseUrlUnsupported
         }
         onOpenPlayground={onOpenPlayground}
       />

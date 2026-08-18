@@ -14,6 +14,10 @@ export const CATALOG: ReadonlyArray<CatalogEntry> = [
       "Brazilian payments. Outbound toolpack (payment links + PIX charges) plus the inbound payment webhook: when a charge is paid, the agent is woken on the conversation that generated it and decides whether to notify the customer.",
     supportsInbound: true,
     defaultInboundAuth: "STATIC_HEADER",
+    // Asaas sends the webhook's authentication token in `asaas-access-token` and the name is not
+    // configurable in their panel, so comparing against our generic default rejected every
+    // delivery (issue #107).
+    inboundAuthHeader: "asaas-access-token",
   },
   {
     catalogType: "GOOGLE_CALENDAR",

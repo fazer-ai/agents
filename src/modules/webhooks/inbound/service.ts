@@ -16,7 +16,7 @@ import type {
   NormalizedInboundEvent,
 } from "@/modules/integrations/types";
 import { tryResolveVaultSecret } from "@/modules/vault/service";
-import { verifyInboundAuth } from "./auth";
+import { resolveInboundAuthConfig, verifyInboundAuth } from "./auth";
 
 // Generic inbound receptor. Resolve tenant by route token → verify the per-instance auth
 // strategy (tenant-scoped secret) → normalize via the integration's pure mapper → persist an
@@ -90,10 +90,7 @@ export async function receiveInbound(
     secret,
     rawBody: params.rawBody,
     getHeader: params.getHeader,
-    config: {
-      authHeader: asString(route.config.authHeader),
-      signatureHeader: asString(route.config.signatureHeader),
-    },
+    config: resolveInboundAuthConfig(route.catalogType, route.config),
   });
   if (!authOk) throw new UnauthorizedError();
 

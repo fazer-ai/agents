@@ -7,6 +7,7 @@ import { createIntegrationInstance } from "@/modules/integrations/service";
 import {
   DEFAULT_SIGNATURE_HEADER,
   DEFAULT_STATIC_HEADER,
+  resolveInboundAuthConfig,
   verifyInboundAuth,
 } from "@/modules/webhooks/inbound/auth";
 import {
@@ -27,6 +28,75 @@ describe("inbound route token", () => {
     expect(a.hash).toBe(hashRouteToken(a.token));
     expect(a.hash).toMatch(/^[0-9a-f]{64}$/);
   });
+});
+
+// The header Asaas fixes on its side; the operator cannot change it in the Asaas panel.
+const ASAAS_STATIC_HEADER = "asaas-access-token";
+
+// ── which header carries the token (unit, decision table) ──
+// Precedence, most specific first: the operator's per-instance override, then the provider's own
+// convention from the catalog, then our generic default. The catalog layer is what issue #107 was
+// missing: Asaas fixes `asaas-access-token` on its side and the operator cannot change it there, so
+// without it every Asaas delivery was compared against a header Asaas never sends.
+describe("inbound auth header resolution", () => {
+  const cases: Array<{
+    name: string;
+    catalogType: string;
+    config: Record<string, unknown>;
+    authHeader: string;
+    signatureHeader: string;
+  }> = [
+    {
+      name: "Asaas falls back to the header Asaas actually sends",
+      catalogType: "ASAAS",
+      config: {},
+      authHeader: "asaas-access-token",
+      signatureHeader: DEFAULT_SIGNATURE_HEADER,
+    },
+    {
+      name: "a per-instance override beats the catalog convention",
+      catalogType: "ASAAS",
+      config: { authHeader: "x-custom" },
+      authHeader: "x-custom",
+      signatureHeader: DEFAULT_SIGNATURE_HEADER,
+    },
+    {
+      name: "a catalog entry without a convention keeps the generic default",
+      catalogType: "GOOGLE_CALENDAR",
+      config: {},
+      authHeader: DEFAULT_STATIC_HEADER,
+      signatureHeader: DEFAULT_SIGNATURE_HEADER,
+    },
+    {
+      name: "an unknown catalogType keeps the generic default",
+      catalogType: "NOT_IN_THE_CATALOG",
+      config: {},
+      authHeader: DEFAULT_STATIC_HEADER,
+      signatureHeader: DEFAULT_SIGNATURE_HEADER,
+    },
+    {
+      name: "a non-string override is ignored rather than trusted",
+      catalogType: "ASAAS",
+      config: { authHeader: 42 },
+      authHeader: "asaas-access-token",
+      signatureHeader: DEFAULT_SIGNATURE_HEADER,
+    },
+    {
+      name: "the signature header is overridable per instance too",
+      catalogType: "ASAAS",
+      config: { signatureHeader: "x-sig" },
+      authHeader: "asaas-access-token",
+      signatureHeader: "x-sig",
+    },
+  ];
+  for (const c of cases) {
+    test(c.name, () => {
+      expect(resolveInboundAuthConfig(c.catalogType, c.config)).toEqual({
+        authHeader: c.authHeader,
+        signatureHeader: c.signatureHeader,
+      });
+    });
+  }
 });
 
 // ── auth strategies (unit) ──
@@ -408,19 +478,32 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
       payment: { id: "n1", status: "OVERDUE" },
     });
 
+    // The right header, the wrong value.
     await expect(
       receiveInbound({
         routeToken: routeToken as string,
         rawBody: body,
-        getHeader: headersFrom({ [DEFAULT_STATIC_HEADER]: "WRONG" }),
+        getHeader: headersFrom({ [ASAAS_STATIC_HEADER]: "WRONG" }),
         base: appDb,
       }),
     ).rejects.toMatchObject({ statusCode: 401 });
 
+    // The right value in the GENERIC header. Asaas never sends this one, so accepting it would
+    // mean the instance authenticates something Asaas cannot produce (issue #107).
+    await expect(
+      receiveInbound({
+        routeToken: routeToken as string,
+        rawBody: body,
+        getHeader: headersFrom({ [DEFAULT_STATIC_HEADER]: "T0KEN" }),
+        base: appDb,
+      }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+
+    // What Asaas actually delivers: its token, in its own header.
     const ok = await receiveInbound({
       routeToken: routeToken as string,
       rawBody: body,
-      getHeader: headersFrom({ [DEFAULT_STATIC_HEADER]: "T0KEN" }),
+      getHeader: headersFrom({ [ASAAS_STATIC_HEADER]: "T0KEN" }),
       base: appDb,
     });
     expect(ok.outcome).toBe("queued");

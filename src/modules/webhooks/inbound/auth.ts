@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { InboundAuthStrategy } from "@/../generated/prisma/client";
+import { getCatalogEntry } from "@/modules/integrations/catalog";
 
 // Per-instance inbound auth, verified AFTER the route token has resolved the tenant (so the
 // secret read is tenant-scoped and a bad signature for a real token still fails uniformly).
@@ -12,6 +13,29 @@ export const DEFAULT_SIGNATURE_HEADER = "x-webhook-signature";
 export interface InboundAuthConfig {
   authHeader?: string;
   signatureHeader?: string;
+}
+
+// Which header carries the credential for this instance. Precedence, most specific first: the
+// operator's per-instance override, then the provider's own convention from the catalog, then our
+// generic default. The middle layer is the one issue #107 was missing — a provider that fixes its
+// header name (Asaas: `asaas-access-token`) leaves the operator nothing to change on their side, so
+// the generic default rejected every delivery and the failure was visible only in the provider's
+// own queue.
+export function resolveInboundAuthConfig(
+  catalogType: string,
+  config: Record<string, unknown>,
+): Required<InboundAuthConfig> {
+  const entry = getCatalogEntry(catalogType);
+  const override = (v: unknown): string | undefined =>
+    typeof v === "string" && v.length > 0 ? v : undefined;
+  return {
+    authHeader:
+      override(config.authHeader) ??
+      entry?.inboundAuthHeader ??
+      DEFAULT_STATIC_HEADER,
+    signatureHeader:
+      override(config.signatureHeader) ?? DEFAULT_SIGNATURE_HEADER,
+  };
 }
 
 function timingEqual(a: string, b: string): boolean {

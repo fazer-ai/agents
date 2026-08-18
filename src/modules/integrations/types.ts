@@ -56,4 +56,8 @@ export interface CatalogEntry {
   // NOTE: suggested default for the UI when an operator first enables the integration; the
   // instance can override. The actual gate is per-instance (inboundAuthStrategy column).
   defaultInboundAuth: InboundAuthStrategy;
+  // NOTE: the header THIS provider sends its static token in, when it fixes one. Absent ⇒ the
+  // generic default. This is not a preference: a provider that hardcodes its header name leaves the
+  // operator nothing to configure on their side, so the convention has to live here (issue #107).
+  inboundAuthHeader?: string;
 }

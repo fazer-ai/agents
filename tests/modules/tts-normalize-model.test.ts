@@ -124,19 +124,23 @@ describe("resolveNormalizeModel", () => {
     {
       // Same, on a provider that cannot authenticate by URL: refused outright rather than run on a
       // key that does not belong to that host.
-      name: "an endpoint override on a keyed provider is refused without a key of its own",
+      // On OpenAI the endpoint is not merely unauthorized, it is INERT: the adapter drops it and the
+      // call leaves for api.openai.com. Naming the missing key first would send the operator to buy
+      // one that still would not reach the host they typed.
+      name: "an endpoint override on a provider that cannot send one is refused as unsupported",
       tts: {
         normalize: true,
         normalizeBaseURL: "https://unrelated-host.example.com/v1",
       },
-      want: { runnable: false, reason: "credential_required" },
+      want: { runnable: false, reason: "endpoint_unsupported" },
     },
     {
-      // Naming the credential AND the provider it belongs to is how that intent is made explicit.
+      // Naming the credential AND the provider it belongs to is how that intent is made explicit —
+      // on a provider that can carry the endpoint at all.
       name: "an endpoint override WITH a named credential and provider is allowed",
       tts: {
         normalize: true,
-        normalizeProvider: "openai",
+        normalizeProvider: "openrouter",
         normalizeBaseURL: "https://proxy.example.com/v1",
         normalizeCredentialRef: "vault:1",
       },
@@ -144,6 +148,33 @@ describe("resolveNormalizeModel", () => {
         baseURL: "https://proxy.example.com/v1",
         runnable: true,
         credential: "own",
+      },
+    },
+    {
+      // The same intent aimed at an adapter that has nowhere to put it. Running would send the key
+      // AND the customer's text to the vendor's public endpoint — the exact opposite of what asking
+      // for a proxy meant — so the configuration is refused instead of silently rerouted.
+      name: "a proxy on a provider whose adapter drops it is refused, not quietly bypassed",
+      tts: {
+        normalize: true,
+        normalizeProvider: "openai",
+        normalizeBaseURL: "https://proxy.example.com/v1",
+        normalizeCredentialRef: "vault:1",
+      },
+      want: { runnable: false, reason: "endpoint_unsupported" },
+    },
+    {
+      // An endpoint the AGENT carries is a different matter: honored or dropped, the rewrite lands
+      // exactly where the agent's own model lands, which is all this resolution ever promised.
+      // Refusing here would take the rewrite away from every install whose agent has one.
+      name: "an endpoint inherited from the agent is never judged, only an own one",
+      tts: { normalize: true },
+      agent: { ...AGENT, baseURL: "https://gw.example.com/v1" },
+      want: {
+        provider: "openai",
+        baseURL: "https://gw.example.com/v1",
+        runnable: true,
+        credential: "agent",
       },
     },
     {
@@ -271,12 +302,11 @@ describe("resolveNormalizeModel", () => {
         normalizeProvider: "google",
         normalizeModel: "gemini-2.5-flash",
         normalizeCredentialRef: "vault:9",
-        normalizeBaseURL: "https://proxy.example.com/v1",
       },
       want: {
         provider: "google",
         model: "gemini-2.5-flash",
-        baseURL: "https://proxy.example.com/v1",
+        baseURL: null,
         credential: "own",
       },
     },

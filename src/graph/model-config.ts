@@ -15,6 +15,19 @@ export const MODEL_PROVIDERS = [
   "openrouter",
 ] as const;
 
+// The providers whose adapter actually SENDS a configured endpoint. The rest accept one and drop it
+// without a word — measured on the built instances: deepseek keeps its own api.deepseek.com, and
+// openai/anthropic/google carry the value nowhere at all. That turns "route this through my proxy"
+// into "send it straight to the vendor", with the customer's text, which is why a caller that has an
+// endpoint to honor must ask here first rather than pass it and hope.
+//
+// NOTE: tests/graph/model-endpoint-support.test.ts probes each built instance, so this list cannot
+// drift away from what createChatModel does.
+export const PROVIDERS_HONORING_BASE_URL = [
+  "openai-compatible",
+  "openrouter",
+] as const;
+
 export const modelConfigSchema = z
   .object({
     provider: z.enum(MODEL_PROVIDERS),

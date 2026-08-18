@@ -63,7 +63,6 @@ import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditMo
 import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
-import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import {
   CHANNEL_REDIRECT_DEFAULTS,
   type ChannelRedirectConfig,
@@ -92,7 +91,6 @@ import { PlaygroundTab } from "./PlaygroundTab";
 import { ToolsTab } from "./ToolsTab";
 import {
   readTtsFormState,
-  ttsNormalizerAgentProviderChanged,
   ttsNormalizerProviderChanged,
   ttsSettingsFrom,
 } from "./ttsFormState";
@@ -2111,22 +2109,6 @@ export function AgentEditorPage() {
     }
   };
 
-  // Switching the AGENT's provider invalidates the previous model id, and with it everything on
-  // another tab that INHERITS this provider. The speech rewrite is the one that does: with its own
-  // provider left blank it follows the agent's, so a model picked for the old vendor would be asked
-  // of the new one (every rewrite failing, silently, back to raw speech), and a key picked for the
-  // old vendor would be SENT to the new one. Both die with the provider that justified them.
-  const onModelProviderChange = (provider: string) => {
-    setModel((prev) => ({
-      ...prev,
-      provider,
-      model: PROVIDER_DEFAULT_MODEL[provider] ?? "",
-    }));
-    setTts(ttsNormalizerAgentProviderChanged);
-    ttsNormalizeUserBaseUrlRef.current = "";
-    setTtsNormalizeCredBaseUrl(null);
-  };
-
   // Switching the rewrite's provider clears its credential, which makes the picker report "no entry"
   // and would otherwise trip the restore branch above — putting the PREVIOUS provider's endpoint
   // back, behind a field that only renders for openai-compatible. The new key would then travel to
@@ -2456,7 +2438,6 @@ export function AgentEditorPage() {
                 setModel={setModel}
                 modelCredBaseUrl={modelCredBaseUrl}
                 onModelEntryChange={onModelEntryChange}
-                onProviderChange={onModelProviderChange}
                 dirty={dirty.general}
                 saving={savingAgent}
                 onSave={() => {

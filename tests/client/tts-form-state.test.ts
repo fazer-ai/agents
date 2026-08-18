@@ -3,7 +3,6 @@ import {
   type AgentModelSource,
   readTtsFormState,
   type TtsFormState,
-  ttsNormalizerAgentProviderChanged,
   ttsNormalizerBaseUrlInvalid,
   ttsNormalizerNeedsOwnCredential,
   ttsNormalizerOverridePicked,
@@ -91,33 +90,6 @@ describe("switching the rewrite provider", () => {
   });
 });
 
-// The agent's provider changing is the rewrite's provider changing too, whenever it inherits it.
-describe("when the AGENT's provider changes", () => {
-  test("an inherited rewrite drops what belonged to the old vendor", () => {
-    const next = ttsNormalizerAgentProviderChanged(
-      readTtsFormState({ ...SAVED, normalizeProvider: "" }, true),
-    );
-    expect(next.normalizeProvider).toBe("");
-    expect(next.normalizeModel).toBe("");
-    expect(next.normalizeCredentialRef).toBe("");
-    expect(next.normalizeBaseURL).toBe("");
-  });
-
-  // A rewrite that names its own provider never followed the agent, so nothing about it changed.
-  test("a rewrite with a provider of its own is untouched", () => {
-    const form = readTtsFormState(SAVED, true);
-    expect(ttsNormalizerAgentProviderChanged(form)).toEqual(form);
-  });
-
-  test("the rest of the TTS block is never touched", () => {
-    const form = readTtsFormState({ ...SAVED, normalizeProvider: "" }, true);
-    const next = ttsNormalizerAgentProviderChanged(form);
-    expect(next.voice).toBe(form.voice);
-    expect(next.credentialRef).toBe(form.credentialRef);
-    expect(next.mode).toBe(form.mode);
-  });
-});
-
 // Picking a model or a key pins the vendor it was picked from, so the editor can never save the
 // configuration the resolver refuses (`override_without_provider`). Both pickers call this, which is
 // why it is one function and not two copies of an inline ternary in JSX.
@@ -161,8 +133,7 @@ describe("picking an override pins the vendor it came from", () => {
 
   // The complement, and the reason the pin is keyed on a NON-EMPTY value. Clearing the last override
   // hands the rewrite back to full inheritance; pinning here would freeze it on the agent's CURRENT
-  // vendor instead, silently, and `ttsNormalizerAgentProviderChanged` would then leave it behind on
-  // the old one the next time the agent moved.
+  // vendor instead, silently, and the resolver would then refuse it the next time the agent moved.
   test("clearing on an inherited provider does not pin anything", () => {
     const next = ttsNormalizerOverridePicked(
       base(),

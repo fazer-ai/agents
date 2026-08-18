@@ -181,7 +181,7 @@ describe("buildSpeechNormalizer", () => {
     expect(getCaptured().reasoningEffort).toBeUndefined();
   });
 
-  test("its own credential swaps the key and the baseURL, not just the model name", () => {
+  test("its own credential swaps the key, not just the model name", () => {
     const { makeModel, getCaptured } = captureModel();
     const cfg = makeConfig({
       mc: { provider: "openai", model: "gpt-5" },
@@ -194,11 +194,34 @@ describe("buildSpeechNormalizer", () => {
         normalizeCredentialRef: "vault:9",
       },
       ttsNormalizeApiKey: "normalizer-key",
-      ttsNormalizeCredentialBaseUrl: "https://normalizer.example.com/v1",
     });
     buildSpeechNormalizer(cfg, { makeModel });
     expect(getCaptured().provider).toBe("google");
     expect(getCaptured().model).toBe("gemini-2.5-flash");
+    expect(getCaptured().apiKey).toBe("normalizer-key");
+    // Not the agent's gateway, and not a Google one either: Google's adapter has no endpoint to
+    // give, so the only correct value here is nothing.
+    expect(getCaptured().baseURL).toBeUndefined();
+  });
+
+  // Where an endpoint IS honored, it has to be the rewrite's own and not the agent's. Same
+  // assertion as above, on the provider that can actually carry it.
+  test("its own endpoint reaches the factory on a provider that sends one", () => {
+    const { makeModel, getCaptured } = captureModel();
+    const cfg = makeConfig({
+      mc: { provider: "openai", model: "gpt-5" },
+      credentialBaseUrl: "https://agent.example.com/v1",
+      ttsConfig: {
+        ...TTS_DEFAULTS,
+        normalize: true,
+        normalizeProvider: "openrouter",
+        normalizeModel: "openai/gpt-4o-mini",
+        normalizeCredentialRef: "vault:9",
+      },
+      ttsNormalizeApiKey: "normalizer-key",
+      ttsNormalizeCredentialBaseUrl: "https://normalizer.example.com/v1",
+    });
+    buildSpeechNormalizer(cfg, { makeModel });
     expect(getCaptured().apiKey).toBe("normalizer-key");
     expect(getCaptured().baseURL).toBe("https://normalizer.example.com/v1");
   });

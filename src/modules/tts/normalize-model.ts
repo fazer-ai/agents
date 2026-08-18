@@ -1,4 +1,8 @@
-import { MODEL_PROVIDERS, type ModelConfig } from "@/graph/model-config";
+import {
+  MODEL_PROVIDERS,
+  type ModelConfig,
+  PROVIDERS_HONORING_BASE_URL,
+} from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 
 // WHICH model rewrites the reply for speech, on WHOSE key, at WHICH endpoint, and whether that
@@ -72,7 +76,11 @@ export type NormalizeNotRunnableReason =
   | "credential_required"
   // openai-compatible with no base URL anywhere: createChatModel refuses it, and an unguarded build
   // would throw inside the TTS branch and cost the customer the whole voice note.
-  | "endpoint_missing";
+  | "endpoint_missing"
+  // An endpoint configured for a provider whose adapter drops it. Passing it anyway is not a no-op:
+  // the call leaves for the vendor's public endpoint carrying the key AND the customer's text, which
+  // is the opposite of what asking for a proxy meant.
+  | "endpoint_unsupported";
 
 export interface NormalizeModelResolution {
   provider: string;
@@ -154,6 +162,21 @@ export function resolveNormalizeModel(
   // be nothing more than that address. Both checks below hang off it.
   if (provider === "openai-compatible" && !hasEndpoint) {
     return NOT_RUNNABLE(provider, "endpoint_missing");
+  }
+
+  // And an endpoint the provider cannot carry is worse than no endpoint: the adapter drops it in
+  // silence and the request goes to the vendor's own host instead of the one the operator named.
+  // Refusing costs a rewrite; running costs a proxy that was chosen for a reason.
+  //
+  // Only the rewrite's OWN endpoint is judged here. An INHERITED one is not a promise this feature
+  // made: the rewrite lands wherever the agent's own model lands, dropped field and all, which is
+  // the one thing this whole resolution exists to guarantee. Refusing there would take the rewrite
+  // away from every install whose agent carries an endpoint its provider never used.
+  if (
+    ownBaseURL !== null &&
+    !(PROVIDERS_HONORING_BASE_URL as readonly string[]).includes(provider)
+  ) {
+    return NOT_RUNNABLE(provider, "endpoint_unsupported");
   }
 
   // What makes the agent's key reusable is not "the same vendor", it is the same DESTINATION: the

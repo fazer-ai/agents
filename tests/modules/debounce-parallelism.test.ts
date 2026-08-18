@@ -69,16 +69,37 @@ function threadOf(convId: number) {
 // per call, which keeps a real failure fast and readable instead of a test-timeout.
 const QUORUM_GRACE_MS = 1_000;
 
+// NOTE: reaching quorum only settles the LOWER half of `toBe(cap)`. Releasing there would let the
+// parked calls drain within `delayMs` while an over-admitted call was still doing its own DB work,
+// and the peak would read exactly `cap` on a semaphore that admits more than one. So quorum does not
+// release: everyone stays parked through this window, where an extra arrival still counts. Sized
+// from the measured tail (the 5 surplus turns arrive within ~25ms of the 20th) at 3x the fake
+// latency, so it is not a stopwatch on the same scale as the thing it observes.
+//
+// It is a window, not a proof: no finite wait can rule out an admission that comes later still. The
+// deterministic upper bound lives in tests/lib/semaphore.test.ts and tests/graph/model-limit.test.ts,
+// where every caller acquires synchronously in one tick and no timing is involved. What this buys is
+// that the INTEGRATION path can see over-admission at all, which it could not before.
+const OVERFLOW_PROBE_MS = 300;
+
 function quorumGate(quorum: number, meter: { active: number }) {
   let reached: () => void = () => {};
   const atQuorum = new Promise<void>((resolve) => {
     reached = resolve;
   });
+  let quorumMet = false;
   let grace: Promise<unknown> | undefined;
   return async () => {
-    if (meter.active >= quorum) reached();
+    if (meter.active >= quorum) {
+      quorumMet = true;
+      reached();
+    }
     grace ??= sleep(QUORUM_GRACE_MS);
     await Promise.race([atQuorum, grace]);
+    // Skipped when the gate opened on the grace clock instead: a semaphore that admits FEWER than
+    // the cap never reaches quorum, and charging it the probe per serialized call would end the
+    // test on the clock rather than on the assertion that names the defect.
+    if (quorumMet) await sleep(OVERFLOW_PROBE_MS);
   };
 }
 
@@ -276,8 +297,12 @@ describe.skipIf(!dbUp)("debounce parallelism", () => {
     // semaphore holds the line at config.agent.modelConcurrency. Deterministic thanks to the
     // rendezvous above, which is why this is `toBe` and not a range.
     expect(meter.max).toBe(cap);
-    // Anti-serial guard, generous to avoid timing flakiness: serial would be ~M*delayMs (the real
-    // number is in the log). meter.max === cap above is the strong, deterministic proof of parallelism.
-    expect(elapsed).toBeLessThan(M * delayMs);
+    // NOTE: the wall-clock anti-serial guard that used to sit here is gone. It bounded `elapsed`
+    // below M*delayMs, but the rendezvous adds fixed harness time (grace clock, probe window) that
+    // has nothing to do with the code under test, so the bound had drifted into measuring this
+    // file's own overhead: 1428ms observed against a 2500ms threshold. It also bought nothing.
+    // Serializing the worker's own `Promise.allSettled` over the jobs is caught above with a peak of
+    // 1, before the timing assertion is ever reached. `elapsed` stays in the log, where a human
+    // reading a failure wants it, and asserts nothing.
   });
 });

@@ -444,7 +444,7 @@ export async function agentSettingsGet(
     const settings = readBehaviorSettings(agent.settings);
     // The MCP contract speaks NAMES: project the stored `vault:<id>` refs back to entry names, over
     // the same (block, field) list the write path resolves them from.
-    for (const [key, field] of SETTINGS_CREDENTIAL_PATHS) {
+    for (const { block: key, field } of SETTINGS_CREDENTIAL_PATHS) {
       const block = settings[key] as unknown as
         | Record<string, unknown>
         | undefined;
@@ -520,7 +520,7 @@ export async function agentSettingsSet(
     // NOTE: (block, field) pairs, not one field per block: `tts` carries a second credential for
     // the speech normalizer's own model, and a loop that only knows `credentialRef` would let that
     // one through as a raw name, which then fails to resolve at turn time instead of here.
-    for (const [key, field] of SETTINGS_CREDENTIAL_PATHS) {
+    for (const { block: key, field } of SETTINGS_CREDENTIAL_PATHS) {
       // Re-read inside the loop: two fields of the same block are rewritten in sequence.
       const block = patch[key];
       const value = block?.[field];

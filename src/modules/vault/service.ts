@@ -858,7 +858,7 @@ export async function vaultReferences(
           // vault UI then offers to delete a key the runtime is about to need.
           OR: [
             { modelConfig: { path: ["credentialRef"], equals: idRef } },
-            ...SETTINGS_CREDENTIAL_PATHS.map(([block, field]) => ({
+            ...SETTINGS_CREDENTIAL_PATHS.map(({ block, field }) => ({
               settings: { path: [block, field], equals: idRef },
             })),
           ],

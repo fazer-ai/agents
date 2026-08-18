@@ -53,7 +53,7 @@ describe.skipIf(!dbUp)("vaultReferences over agent settings", () => {
       data: { name: "VREF", slug: `vref-${process.pid}` },
     });
     tenantId = t.id;
-    for (const [block, field] of PATHS) {
+    for (const { block, field } of PATHS) {
       const name = `${block}-${field}`;
       const entry = await suDb.vaultEntry.create({
         data: { tenantId, name, secret: encryptJson("sk-x") },
@@ -87,7 +87,7 @@ describe.skipIf(!dbUp)("vaultReferences over agent settings", () => {
     await appDb.$disconnect();
   });
 
-  for (const [block, field] of PATHS) {
+  for (const { block, field } of PATHS) {
     const name = `${block}-${field}`;
     test(`a key used only as ${block}.${field} is reported as in use`, async () => {
       const refs = await vaultReferences(ctx(), keyIds[name] as bigint, appDb);

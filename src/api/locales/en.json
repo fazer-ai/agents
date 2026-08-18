@@ -56,6 +56,7 @@
     "promptTooLong": "System prompt is too long: {{len}} characters (limit {{max}}).",
     "providerModelsFailed": "Failed to retrieve model list from provider.",
     "rateLimitExceeded": "Rate limit exceeded. Please try again later.",
+    "settingsTextTooLong": "The text in {{field}} is too long: {{len}} characters (limit {{max}}).",
     "setupAlreadyComplete": "Initial setup has already been completed",
     "signupDisabled": "Sign-ups are disabled",
     "tenantNotFound": "Tenant not found",

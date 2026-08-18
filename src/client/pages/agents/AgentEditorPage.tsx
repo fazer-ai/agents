@@ -1346,6 +1346,12 @@ function AgentEditor() {
   function importWarningMessage(w: ImportWarning): string {
     const p = w.params ?? {};
     switch (w.code) {
+      case "guidanceClipped":
+        return t(
+          "editor.importWarning.guidanceClipped",
+          'The text in "{{field}}" was longer than {{max}} characters and was trimmed on import.',
+          p,
+        );
       case "credentialNotFound":
         return t(
           "editor.importWarning.credentialNotFound",

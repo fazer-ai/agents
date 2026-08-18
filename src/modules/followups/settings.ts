@@ -6,6 +6,8 @@
 // No back-compat with the old single-shot flat shape: an agent without a `steps` array gets one
 // default step (its pre-multi-step config is not read).
 
+import { FOLLOW_UP_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
+
 export type FollowUpDelayUnit = "minutes" | "hours" | "days";
 
 export interface FollowUpStep {
@@ -92,7 +94,7 @@ function readStep(raw: unknown): FollowUpStep | null {
     : "minutes";
   const instructions = (
     typeof bag.instructions === "string" ? bag.instructions.trim() : ""
-  ).slice(0, 2000);
+  ).slice(0, FOLLOW_UP_INSTRUCTIONS_MAX);
   const step: FollowUpStep = { delayValue, delayUnit, instructions };
   // Accept the new `assignLabels` array; fall back to the legacy single `assignLabel` string so an
   // agent saved before multi-label keeps its label. De-duped, trimmed, bounded.

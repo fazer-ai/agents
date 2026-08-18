@@ -1,3 +1,4 @@
+import { EXTRACTION_PROMPT_MAX } from "@/modules/agents/text-caps";
 import { DEFAULT_EXTRACTION_PROMPT } from "./prompt-default";
 import { VISION_PROVIDER_NAMES } from "./providers";
 
@@ -29,8 +30,6 @@ export const VISION_DEFAULTS: VisionConfig = {
   extractionPrompt: DEFAULT_EXTRACTION_PROMPT,
 };
 
-const PROMPT_MAX = 4000;
-
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
@@ -55,7 +54,7 @@ export function readVisionConfig(settings: unknown): VisionConfig {
     credentialRef: str(bag.credentialRef),
     baseURL: str(bag.baseURL),
     extractionPrompt: prompt
-      ? prompt.slice(0, PROMPT_MAX)
+      ? prompt.slice(0, EXTRACTION_PROMPT_MAX)
       : DEFAULT_EXTRACTION_PROMPT,
   };
 }

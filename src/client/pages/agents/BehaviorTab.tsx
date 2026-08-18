@@ -45,6 +45,10 @@ import { formatWindowsSummary } from "@/client/lib/schedulePreview";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import {
+  EXTRACTION_PROMPT_MAX,
+  FOLLOW_UP_INSTRUCTIONS_MAX,
+} from "@/modules/agents/text-caps";
 import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
@@ -696,7 +700,7 @@ function FollowUpStepsEditor({
                 onChange={(e) =>
                   updateStep(index, { instructions: e.target.value })
                 }
-                maxLength={2000}
+                maxLength={FOLLOW_UP_INSTRUCTIONS_MAX}
                 rows={3}
                 placeholder={t(
                   "editor.followUpInstructionsPlaceholder",
@@ -1292,6 +1296,7 @@ export function BehaviorTab({
                       setVision({ ...vision, extractionPrompt: e.target.value })
                     }
                     rows={3}
+                    maxLength={EXTRACTION_PROMPT_MAX}
                     placeholder={DEFAULT_EXTRACTION_PROMPT}
                   />
                 </FormField>

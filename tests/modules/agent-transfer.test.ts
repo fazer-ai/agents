@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
+import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import {
   type AgentExport,
   exportAgent,
@@ -205,6 +206,42 @@ describe.skipIf(!dbUp)("agent export/import", () => {
       ).allowedHosts,
     ).toEqual(["cdn.loja.com.br"]);
     expect(JSON.stringify(row.settings)).not.toContain("senha-secreta");
+  });
+
+  // Direct writes REFUSE over-cap operator prose so nobody loses text without being told. An import
+  // is a payload authored somewhere else, and refusing the whole bundle over a long note would be a
+  // worse trade than the one this path already makes everywhere else: normalize, and say what was
+  // normalized. Clamping here is also what keeps the imported agent saveable afterwards.
+  test("an imported note over the cap is clamped before storage, with a warning naming the field", async () => {
+    const exp = await exportAgent(ctx(), agentId, appDb);
+    const imported = {
+      ...exp,
+      agent: {
+        ...exp.agent,
+        name: "Vendedora prolixa",
+        settings: {
+          ...exp.agent.settings,
+          handoff: {
+            mode: "route",
+            instructions: "i".repeat(TOOL_INSTRUCTIONS_MAX + 40),
+          },
+        },
+      },
+    };
+    const { agent, warnings } = await importAgent(ctx(), imported, appDb);
+    const row = await suDb.agent.findFirstOrThrow({
+      where: { id: BigInt(agent.id) },
+      select: { settings: true },
+    });
+    const ho = (row.settings as Record<string, unknown>).handoff as Record<
+      string,
+      unknown
+    >;
+    expect((ho.instructions as string).length).toBe(TOOL_INSTRUCTIONS_MAX);
+    expect(ho.mode).toBe("route");
+    const w = warnings.find((x) => x.code === "guidanceClipped");
+    expect(w?.params?.field).toBe("handoff.instructions");
+    expect(w?.params?.max).toBe(TOOL_INSTRUCTIONS_MAX);
   });
 
   test("round-trip import recreates the agent DISABLED with resolved refs", async () => {

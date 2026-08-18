@@ -296,6 +296,7 @@
   },
   "common": {
     "cancel": "Cancel",
+    "charOverLimit": "{{over}} characters over the limit. Only the first {{max}} are used, and saving is refused until you shorten it.",
     "clearSearch": "Clear search",
     "close": "Close",
     "comboBoxAddMore": "Add…",
@@ -832,6 +833,7 @@
       "credentialMissingMeta": "Credential \"{{name}}\" is missing from the export metadata, so it was left unset.",
       "credentialNotFound": "Credential \"{{name}}\" was not found here, so it was left unset.",
       "credentialPending": "Credential \"{{name}}\" was not found here, so a placeholder was created. Fill in its secret to activate it.",
+      "guidanceClipped": "The text in \"{{field}}\" was longer than {{max}} characters and was trimmed on import.",
       "hoursNotFound": "Business hours \"{{name}}\" were not found here, so they were left unset.",
       "hoursReused": "Business hours \"{{name}}\" already existed and were reused; check the schedule is right.",
       "httpGrantNotFound": "Tool \"{{name}}\" was not found, so its grant was skipped.",

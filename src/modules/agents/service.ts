@@ -17,6 +17,7 @@ import {
   TenantTargetRequiredError,
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { collectOversizedText } from "@/modules/agents/text-caps";
 import { isOutOfHoursNow, parseWindows } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { ensureTenantSweep } from "@/modules/followups/handlers";
@@ -253,6 +254,30 @@ export function assertPromptSize(systemPrompt: string | undefined): void {
   }
 }
 
+// NOTE: the operator prose inside `settings` (tool guidance, guardrails policy, vision prompt,
+// follow-up steps) is clamped by the READERS, which is invisible to whoever wrote it: the row keeps
+// every character and only the model-facing copy is short. Refusing at the boundary is the same
+// checkpoint the system prompt gets — see text-caps.ts for why it is a refusal here and a clamp on
+// import. Checked BEFORE the schema parse so every transport surfaces this error instead of a raw
+// validation failure.
+export class SettingsTextTooLongError extends AppError {
+  constructor(field: string, length: number, max: number) {
+    super(
+      `settings text is too long: ${field} has ${length} characters (limit ${max})`,
+      400,
+      "errors.settingsTextTooLong",
+      { field, len: length, max },
+    );
+  }
+}
+
+export function assertSettingsTextSizes(settings: unknown): void {
+  const [first] = collectOversizedText(settings);
+  if (first) {
+    throw new SettingsTextTooLongError(first.path, first.length, first.max);
+  }
+}
+
 // Allowlist of editable fields. tenantId/id are never touched; modelConfig/settings must be
 // objects (the runtime's own parser validates their inner shape at load time).
 // NOTE: The EFFECTIVE follow-up state: an ENABLED agent with followUp.enabled, in ANY mode — the
@@ -308,6 +333,7 @@ export async function updateAgent(
   opts: { expectedUpdatedAt?: Date } = {},
 ): Promise<AgentDto> {
   assertPromptSize(patch.systemPrompt);
+  assertSettingsTextSizes(patch.settings);
   const data = agentUpdateSchema.parse(patch);
   validateModelConfigForWrite(data.modelConfig);
   const { businessHoursId, followUpHoursId, ...rest } = data;
@@ -489,6 +515,7 @@ export async function createAgent(
 ): Promise<AgentDto> {
   const tenantId = requireTenant(ctx);
   assertPromptSize(input.systemPrompt);
+  assertSettingsTextSizes(input.settings);
   const data = agentCreateSchema.parse(input);
   validateModelConfigForWrite(data.modelConfig);
   const bhId =

@@ -56,6 +56,7 @@
     "promptTooLong": "O prompt do sistema é longo demais: {{len}} caracteres (limite {{max}}).",
     "providerModelsFailed": "Não foi possível obter a lista de modelos do provedor.",
     "rateLimitExceeded": "Limite de requisições excedido. Tente novamente mais tarde.",
+    "settingsTextTooLong": "O texto em {{field}} é longo demais: {{len}} caracteres (limite {{max}}).",
     "setupAlreadyComplete": "A configuração inicial já foi concluída",
     "signupDisabled": "Cadastros estão desabilitados",
     "tenantNotFound": "Tenant não encontrado",

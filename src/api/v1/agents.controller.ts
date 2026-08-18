@@ -49,6 +49,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.fileTooLarge', 'File is too large')
 // translate('errors.promptTooLong', 'System prompt is too long: {{len}} characters (limit {{max}}).')
 // translate('errors.providerModelsFailed', 'Failed to retrieve model list from provider.')
+// translate('errors.settingsTextTooLong', 'The text in {{field}} is too long: {{len}} characters (limit {{max}}).')
 // translate('errors.unknownProvider', 'Unknown model provider.')
 // translate('errors.unsupportedAudioType', 'Unsupported audio type')
 // translate('errors.visionCredentialMissing', 'Vision credential not found')

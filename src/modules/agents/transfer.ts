@@ -29,6 +29,7 @@ import {
   type CredentialFieldTab,
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
+import { clampOversizedTextInPlace } from "@/modules/agents/text-caps";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
 import { assertNoSecrets } from "@/modules/n8n-export/n8n";
@@ -897,6 +898,17 @@ export async function importAgent(
         return refByName.get(ref) ?? null;
       },
     );
+
+    // Operator prose over its cap is CLAMPED here, not refused. A direct write refuses (the person is
+    // at the keyboard and can trim it), but a bundle authored somewhere else would be rejected whole
+    // over a long note, and the readers would clip it on every read anyway. Clamping also keeps the
+    // imported agent saveable: an over-cap value stored here would make its first save fail.
+    for (const clipped of clampOversizedTextInPlace(settings)) {
+      warnings.push({
+        code: "guidanceClipped",
+        params: { field: clipped.path, max: clipped.max },
+      });
+    }
 
     // Import DISABLED and in TEST mode — the operator reviews, re-links any missing references +
     // credentials, validates with /teste, then enables for production. Both are set explicitly: the

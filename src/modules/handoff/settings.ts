@@ -6,6 +6,8 @@
 //   * "pinned"       → assign to a fixed agent OR team the operator picked (targetAgentId/targetTeamId).
 //   * "agent_choice" → the model may pass a target NAME (agent or team), resolved against the live
 //                      Chatwoot list at call time; the operator lists the options in the prompt.
+import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
+
 export type HandoffMode = "route" | "pinned" | "agent_choice";
 
 export interface HandoffConfig {
@@ -34,8 +36,10 @@ export const HANDOFF_DEFAULTS: HandoffConfig = {
   instructions: null,
 };
 
-// Cap operator guidance so it can't bloat the tool description / prompt budget unboundedly.
-export const TOOL_INSTRUCTIONS_MAX = 1500;
+// Cap operator guidance so it can't bloat the tool description / prompt budget unboundedly. The
+// number lives in the shared table (with the write boundary and the editor that declare it), and is
+// re-exported here so callers keep importing it next to the reader that applies it.
+export { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 
 export function readToolInstructions(v: unknown): string | null {
   if (typeof v !== "string") return null;

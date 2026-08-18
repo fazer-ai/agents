@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   agentList,
@@ -556,6 +557,37 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
       where: { tenantId: tenantA, action: "mcp.agent_settings_set" },
     });
     expect(audits).toBe(0);
+  });
+
+  // Operator prose (handoff/kanban/tool guidance, guardrails policy, vision prompt, follow-up steps)
+  // is clamped by the readers, so an over-cap note used to come back as a SUCCESSFUL diff already
+  // showing the shortened value, which reads as "applied" rather than "cut". The dry run is checked
+  // too: a preview that promises a write the apply would refuse is worse than no preview.
+  test("agent_settings_set refuses over-cap guidance, on the preview and on the apply", async () => {
+    const p = principal({ tenantId: tenantA });
+    const boom = "h".repeat(TOOL_INSTRUCTIONS_MAX + 1);
+    const preview = await agentSettingsSet(
+      p,
+      { agent_id: String(agentA), handoff: { instructions: boom } },
+      { base: appDb },
+    );
+    expect(preview.ok).toBe(false);
+    if (!preview.ok) {
+      expect(preview.error).toContain("handoff.instructions");
+      expect(preview.error).toContain(String(TOOL_INSTRUCTIONS_MAX));
+    }
+    const applied = await agentSettingsSet(
+      p,
+      {
+        agent_id: String(agentA),
+        handoff: { instructions: boom },
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(applied.ok).toBe(false);
+    const row = await suDb.agent.findUnique({ where: { id: agentA } });
+    expect(JSON.stringify(row?.settings)).not.toContain(boom.slice(0, 200));
   });
 
   test("agent_settings_set apply merges + clamps + audits, preserving other keys", async () => {

@@ -1,0 +1,164 @@
+import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+
+// Caps on the operator-authored free text stored inside `agent.settings`, and the one place that
+// knows where that text lives.
+//
+// Each of these fields is read through a clamp (readToolInstructions, readGuardrailsConfig,
+// readVisionConfig, readFollowUpConfig), which is the right thing for a bag that can hold anything:
+// a malformed row must never reach the model unbounded. What the clamp cannot do is tell the person
+// who wrote the text. The row keeps every character, the editor hydrates from the row, and only the
+// copy handed to the model is short — so a transfer policy cut after "escalate only after two failed
+// attempts," reads as a complete rule everywhere the operator can look.
+//
+// So the readers keep clamping (defense for what is already stored), the write boundary refuses
+// (`assertSettingsTextSizes`, so nobody loses text without being told), the importer clamps and warns
+// (a bundle authored elsewhere should not be rejected whole, but the operator hears about it), and
+// the editor declares the cap on the field itself.
+//
+// Deliberately NOT here: the list-shaped caps (guardrails competitors, follow-up labels, appointment
+// reminder offsets). Those bound how MANY entries are kept, and an entry that gets dropped is visible
+// as a missing row rather than as a sentence that ends early.
+export const TOOL_INSTRUCTIONS_MAX = 1500;
+export const CUSTOM_POLICY_MAX = 2000;
+export const TEMPLATE_MESSAGE_MAX = 2000;
+export const GENERATION_PROMPT_MAX = 2000;
+export const EXTRACTION_PROMPT_MAX = 4000;
+export const FOLLOW_UP_INSTRUCTIONS_MAX = 2000;
+
+export interface OversizedText {
+  // Dotted path into the settings bag, e.g. `handoff.instructions`. It is what the operator reads in
+  // the error, so it names the stored shape rather than the editor's label (which the API has no
+  // business knowing).
+  path: string;
+  length: number;
+  max: number;
+}
+
+interface CappedField {
+  path: string;
+  // Trimmed, because every reader trims BEFORE it clamps: surrounding whitespace is never what makes
+  // a value too long, and refusing over it would refuse text the model receives whole.
+  value: string;
+  max: number;
+  replace: (next: string) => void;
+}
+
+function bagOf(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
+// Every capped text field PRESENT in this bag, in a form both callers can act on. Absent blocks,
+// non-string values and malformed shapes are skipped rather than reported: the settings bag is
+// free-form by design and a write must not fail over a key nothing reads.
+function cappedFields(settings: unknown): CappedField[] {
+  const out: CappedField[] = [];
+  const root = bagOf(settings);
+  if (!root) return out;
+  const add = (
+    owner: Record<string, unknown>,
+    key: string,
+    path: string,
+    max: number,
+  ) => {
+    const v = owner[key];
+    if (typeof v !== "string") return;
+    out.push({
+      path,
+      value: v.trim(),
+      max,
+      replace: (next) => {
+        owner[key] = next;
+      },
+    });
+  };
+
+  const handoff = bagOf(root.handoff);
+  if (handoff) {
+    add(handoff, "instructions", "handoff.instructions", TOOL_INSTRUCTIONS_MAX);
+  }
+  const kanban = bagOf(root.kanban);
+  if (kanban) {
+    add(kanban, "instructions", "kanban.instructions", TOOL_INSTRUCTIONS_MAX);
+  }
+  const guidance = bagOf(root.toolGuidance);
+  if (guidance) {
+    // Only native tool names: readToolGuidance drops every other key, so an unknown one is text
+    // nothing ever reads.
+    for (const name of NATIVE_TOOL_NAMES) {
+      add(guidance, name, `toolGuidance.${name}`, TOOL_INSTRUCTIONS_MAX);
+    }
+  }
+  const guardrails = bagOf(root.guardrails);
+  if (guardrails) {
+    add(
+      guardrails,
+      "customPolicy",
+      "guardrails.customPolicy",
+      CUSTOM_POLICY_MAX,
+    );
+    // Per direction: the template message is what the CUSTOMER reads when a check trips, and the
+    // generation prompt steers the model that rewrites the reply. Both are clamped by readDirection.
+    for (const dir of ["input", "output"] as const) {
+      const d = bagOf(guardrails[dir]);
+      if (!d) continue;
+      add(
+        d,
+        "templateMessage",
+        `guardrails.${dir}.templateMessage`,
+        TEMPLATE_MESSAGE_MAX,
+      );
+      add(
+        d,
+        "generationPrompt",
+        `guardrails.${dir}.generationPrompt`,
+        GENERATION_PROMPT_MAX,
+      );
+    }
+  }
+  const vision = bagOf(root.vision);
+  if (vision) {
+    add(
+      vision,
+      "extractionPrompt",
+      "vision.extractionPrompt",
+      EXTRACTION_PROMPT_MAX,
+    );
+  }
+  const followUp = bagOf(root.followUp);
+  const steps = Array.isArray(followUp?.steps) ? followUp.steps : [];
+  steps.forEach((raw, i) => {
+    const step = bagOf(raw);
+    if (!step) return;
+    add(
+      step,
+      "instructions",
+      `followUp.steps[${i}].instructions`,
+      FOLLOW_UP_INSTRUCTIONS_MAX,
+    );
+  });
+  return out;
+}
+
+export function collectOversizedText(settings: unknown): OversizedText[] {
+  const out: OversizedText[] = [];
+  for (const f of cappedFields(settings)) {
+    if (f.value.length <= f.max) continue;
+    out.push({ path: f.path, length: f.value.length, max: f.max });
+  }
+  return out;
+}
+
+// Cuts each oversized field to exactly what its reader would have used, IN PLACE, and returns what it
+// cut. In place because the caller owns a freshly parsed payload and the bag holds keys this module
+// knows nothing about: rebuilding it from the fields listed here would drop the rest.
+export function clampOversizedTextInPlace(settings: unknown): OversizedText[] {
+  const out: OversizedText[] = [];
+  for (const f of cappedFields(settings)) {
+    if (f.value.length <= f.max) continue;
+    out.push({ path: f.path, length: f.value.length, max: f.max });
+    f.replace(f.value.slice(0, f.max));
+  }
+  return out;
+}

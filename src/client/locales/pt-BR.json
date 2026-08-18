@@ -297,6 +297,7 @@
   },
   "common": {
     "cancel": "Cancelar",
+    "charOverLimit": "{{over}} caracteres acima do limite. Só os primeiros {{max}} são usados, e não é possível salvar até encurtar o texto.",
     "clearSearch": "Limpar busca",
     "close": "Fechar",
     "comboBoxAddMore": "Adicionar…",
@@ -834,6 +835,7 @@
       "credentialMissingMeta": "A credencial \"{{name}}\" não está nos metadados do export, então ficou em branco.",
       "credentialNotFound": "A credencial \"{{name}}\" não foi encontrada aqui, então ficou em branco.",
       "credentialPending": "A credencial \"{{name}}\" não foi encontrada aqui, então criamos um espaço reservado. Preencha o segredo para ativá-la.",
+      "guidanceClipped": "O texto em \"{{field}}\" passava de {{max}} caracteres e foi cortado na importação.",
       "hoursNotFound": "O horário \"{{name}}\" não foi encontrado aqui, então ficou em branco.",
       "hoursReused": "O horário \"{{name}}\" já existia e foi reaproveitado; confira se a agenda está certa.",
       "httpGrantNotFound": "A ferramenta \"{{name}}\" não foi encontrada, então a concessão foi ignorada.",

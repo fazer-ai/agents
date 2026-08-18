@@ -1599,12 +1599,20 @@ export function AgentEditorPage() {
   // back when a credential that carries none is chosen. Discard restores the form and would leave
   // that pair behind, holding values from edits that no longer exist: the picker re-reports the
   // RESTORED credential, sees "had one, has none now", and writes the discarded endpoint into the
-  // form it was just reverted out of. Clearing the pair is what makes the restored state the whole
-  // state; the picker re-populates it on its next report, from the credential that survived.
+  // form it was just reverted out of.
+  //
+  // Cleared ONLY when the restore actually changes which credential is selected, because that is
+  // exactly when the picker will report again and refill the pair. It notifies on a key of
+  // `value + entry id` (CredentialPicker's `prevNotifiedRef`), so on an unchanged selection nothing
+  // ever comes back: clearing there would strand the endpoint at null, unlock a field the credential
+  // owns, and refuse the restored configuration as `endpoint_missing` with Save disabled — undoing a
+  // discard the operator did not make. Unchanged selection, unchanged pair: it was never stale.
   const forgetCredentialBaseUrl = (
+    credentialChanged: boolean,
     setCredUrl: (v: string | null) => void,
     userRef: React.MutableRefObject<string>,
   ) => {
+    if (!credentialChanged) return;
     setCredUrl(null);
     userRef.current = "";
   };
@@ -1615,8 +1623,13 @@ export function AgentEditorPage() {
     setSystemPrompt(a.systemPrompt);
     setEnabled(a.enabled);
     setAgentMode(a.mode === "test" ? "test" : "production");
-    setModel(readModelState(a));
-    forgetCredentialBaseUrl(setModelCredBaseUrl, modelUserBaseUrlRef);
+    const m = readModelState(a);
+    setModel(m);
+    forgetCredentialBaseUrl(
+      m.credentialRef !== model.credentialRef,
+      setModelCredBaseUrl,
+      modelUserBaseUrlRef,
+    );
   };
   const revertBehavior = () => {
     const a = syncedAgentRef.current;
@@ -1636,9 +1649,18 @@ export function AgentEditorPage() {
     setObservability(b.observability);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
-    forgetCredentialBaseUrl(setSttCredBaseUrl, sttUserBaseUrlRef);
-    forgetCredentialBaseUrl(setVisionCredBaseUrl, visionUserBaseUrlRef);
     forgetCredentialBaseUrl(
+      b.stt.credentialRef !== stt.credentialRef,
+      setSttCredBaseUrl,
+      sttUserBaseUrlRef,
+    );
+    forgetCredentialBaseUrl(
+      b.vision.credentialRef !== vision.credentialRef,
+      setVisionCredBaseUrl,
+      visionUserBaseUrlRef,
+    );
+    forgetCredentialBaseUrl(
+      b.tts.normalizeCredentialRef !== tts.normalizeCredentialRef,
       setTtsNormalizeCredBaseUrl,
       ttsNormalizeUserBaseUrlRef,
     );

@@ -122,6 +122,47 @@ describe("resolveNormalizeModel", () => {
       },
     },
     {
+      // The agent's endpoint spelled another way is the agent's endpoint: a trailing slash, an
+      // upper-case host and a default port are what a URL parser discards, not another host. The
+      // agent's key stays reusable, because it IS the same destination.
+      name: "the agent's endpoint spelled another way is still the agent's destination",
+      tts: {
+        normalize: true,
+        normalizeProvider: "openai-compatible",
+        normalizeBaseURL: "HTTP://LLAMA:8080/v1/",
+      },
+      agent: {
+        provider: "openai-compatible",
+        model: "llama-3.1",
+        baseURL: "http://llama:8080/v1",
+      },
+      want: {
+        provider: "openai-compatible",
+        runnable: true,
+        credential: "agent",
+      },
+    },
+    {
+      // But another PATH on the same host is another destination: a gateway can key its paths, and
+      // this is the rule's own "leak with a smaller radius". Canonical, not origin-only.
+      name: "another path on the same host is not the agent's destination",
+      tts: {
+        normalize: true,
+        normalizeProvider: "openai-compatible",
+        normalizeBaseURL: "http://llama:8080/tenant-b/v1",
+      },
+      agent: {
+        provider: "openai-compatible",
+        model: "llama-3.1",
+        baseURL: "http://llama:8080/v1",
+      },
+      want: {
+        provider: "openai-compatible",
+        runnable: true,
+        credential: "none",
+      },
+    },
+    {
       // Same, on a provider that cannot authenticate by URL: refused outright rather than run on a
       // key that does not belong to that host.
       // On OpenAI the endpoint is not merely unauthorized, it is INERT: the adapter drops it and the

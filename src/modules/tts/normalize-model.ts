@@ -97,6 +97,28 @@ function str(v: string | null | undefined): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
+// Two spellings of one endpoint are one destination. The comparison that decides whether the
+// agent's key may travel used to be the raw string, so `https://host/v1/` next to the agent's
+// `https://host/v1` counted as another host: on openai-compatible the key was dropped and every
+// rewrite failed to authenticate, on a keyed vendor the configuration was refused as
+// `credential_required`. Canonical form (as the URL parser sees it: case-insensitive scheme and
+// host, default port dropped) with the trailing slashes off the path. Deliberately NOT origin-only:
+// a gateway can key its paths (`/tenant-a/v1` vs `/tenant-b/v1`), and sending one path's key to
+// another is the leak with the smaller radius the rule above describes.
+function sameEndpoint(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return a === b;
+  const canonical = (raw: string): string => {
+    try {
+      const u = new URL(raw);
+      u.pathname = u.pathname.replace(/\/+$/, "");
+      return u.href;
+    } catch {
+      return raw;
+    }
+  };
+  return canonical(a) === canonical(b);
+}
+
 const NOT_RUNNABLE = (
   provider: string,
   reason: NormalizeNotRunnableReason,
@@ -195,7 +217,7 @@ export function resolveNormalizeModel(
   // vendor. (Reachable from the editor, which shows the endpoint field for openai-compatible while
   // leaving the key optional.) Pointing the rewrite at a proxy on purpose is still supported, and it
   // is spelled out rather than inherited: name the credential and the endpoint it is for.
-  const sameDestination = !switched && baseURL === agentBaseURL;
+  const sameDestination = !switched && sameEndpoint(baseURL, agentBaseURL);
 
   let credential: NormalizeCredentialSource;
   if (own) {

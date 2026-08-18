@@ -498,7 +498,23 @@ function AgentEditorSkeleton() {
   );
 }
 
+// The route element is REUSED when `:id` changes (cloning an agent lands straight on the clone's
+// editor), and this page keeps state that is only meaningful for one record: the endpoint parked
+// outside each credential picker's form, the playground thread. Reused across records, the parked
+// endpoint of the agent you left gets handed to the agent you opened, which marks it dirty and
+// offers to save someone else's host.
+//
+// Keyed by the record instead of guarded per value: the guards would have to know when each picker
+// will report again (it notifies on `value + entry id`, so two agents sharing one credential never
+// trigger it) and every one of them would be a new way to strand a value that belongs to the form.
+// Remounting answers all of it at once — a different agent is a different form. `:tab` is NOT in the
+// key, so moving between tabs of the same agent keeps everything, which is what it is for.
 export function AgentEditorPage() {
+  const { id = "" } = useParams();
+  return <AgentEditor key={id} />;
+}
+
+function AgentEditor() {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const navigate = useNavigate();

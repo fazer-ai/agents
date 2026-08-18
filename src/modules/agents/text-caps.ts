@@ -25,6 +25,10 @@ export const GENERATION_PROMPT_MAX = 2000;
 export const EXTRACTION_PROMPT_MAX = 4000;
 export const FOLLOW_UP_INSTRUCTIONS_MAX = 2000;
 
+// Not a text cap: how many follow-up steps readFollowUpConfig keeps. It lives here because the walker
+// below has to stop where the reader stops — text in a step the reader discards is text nothing reads.
+export const FOLLOW_UP_MAX_STEPS = 10;
+
 // Cut to `max` UTF-16 units without ever ending on half of an astral character. `slice` counts code
 // UNITS, so a cut that lands between the two halves of an emoji leaves an unpaired high surrogate:
 // Postgres refuses an unpaired surrogate escape in jsonb (the write that carried it fails outright),
@@ -47,8 +51,10 @@ export interface OversizedText {
 
 interface CappedField {
   path: string;
-  // Trimmed, because every reader trims BEFORE it clamps: surrounding whitespace is never what makes
-  // a value too long, and refusing over it would refuse text the model receives whole.
+  // The RAW stored string, not the trimmed one the readers measure. The editor cannot mirror a
+  // trimmed rule: the browser enforces `maxLength` against the raw value, so counting the trimmed one
+  // made the control refuse a character while the counter still showed room. Accepting a value whose
+  // only problem is invisible whitespace is worth less than one rule the operator can see.
   value: string;
   max: number;
   replace: (next: string) => void;
@@ -77,7 +83,7 @@ function cappedFields(settings: unknown): CappedField[] {
     if (typeof v !== "string") return;
     out.push({
       path,
-      value: v.trim(),
+      value: v,
       max,
       replace: (next) => {
         owner[key] = next;
@@ -138,7 +144,12 @@ function cappedFields(settings: unknown): CappedField[] {
     );
   }
   const followUp = bagOf(root.followUp);
-  const steps = Array.isArray(followUp?.steps) ? followUp.steps : [];
+  // Sliced like the reader does: it keeps FOLLOW_UP_MAX_STEPS and discards the rest before parsing,
+  // so an instruction in a later step is text nothing reads.
+  const steps = (Array.isArray(followUp?.steps) ? followUp.steps : []).slice(
+    0,
+    FOLLOW_UP_MAX_STEPS,
+  );
   steps.forEach((raw, i) => {
     const step = bagOf(raw);
     if (!step) return;

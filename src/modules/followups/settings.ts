@@ -9,6 +9,7 @@
 import {
   clipText,
   FOLLOW_UP_INSTRUCTIONS_MAX,
+  FOLLOW_UP_MAX_STEPS,
 } from "@/modules/agents/text-caps";
 
 export type FollowUpDelayUnit = "minutes" | "hours" | "days";
@@ -31,7 +32,9 @@ export interface FollowUpConfig {
   pauseWhileAppointment: boolean;
 }
 
-export const FOLLOW_UP_MAX_STEPS = 10;
+// Re-exported: the number lives with the text caps because the walker that mirrors this reader has to
+// know where the reader stops looking, and importing it back from here would close a cycle.
+export { FOLLOW_UP_MAX_STEPS } from "@/modules/agents/text-caps";
 
 function cloneDefaults(): FollowUpConfig {
   return {

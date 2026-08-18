@@ -27,11 +27,11 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
   ({ className, error, errorMessage, helperText, rows = 5, ...props }, ref) => {
     const { t } = useTranslation();
     const max = typeof props.maxLength === "number" ? props.maxLength : null;
-    // Trimmed, because the server measures the same way (every reader trims before it clamps): a
-    // value that only passes the cap through surrounding whitespace saves fine, and counting the raw
-    // string here would claim a refusal that never comes.
-    const count =
-      typeof props.value === "string" ? props.value.trim().length : null;
+    // Raw length: the same thing the browser enforces `maxLength` against, and the same thing the
+    // write boundary refuses on (see modules/agents/text-caps.ts). Measuring the trimmed value put
+    // the control at odds with itself — leading spaces made it stop accepting characters while this
+    // counter still showed room.
+    const count = typeof props.value === "string" ? props.value.length : null;
     const over = max !== null && count !== null && count > max;
     const showCount =
       max !== null && count !== null && count >= max * COUNTER_FROM;

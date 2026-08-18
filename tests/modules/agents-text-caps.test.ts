@@ -5,6 +5,7 @@ import {
   collectOversizedText,
   EXTRACTION_PROMPT_MAX,
   FOLLOW_UP_INSTRUCTIONS_MAX,
+  FOLLOW_UP_MAX_STEPS,
   GENERATION_PROMPT_MAX,
   TEMPLATE_MESSAGE_MAX,
   TOOL_INSTRUCTIONS_MAX,
@@ -78,12 +79,16 @@ describe("collectOversizedText", () => {
     ).toEqual([]);
   });
 
-  test("the reader trims before clamping, so trailing space is not what breaks the cap", () => {
-    // readToolInstructions trims first: a value that only exceeds the cap through surrounding
-    // whitespace is stored short, and refusing it would refuse a note the model receives whole.
+  test("whitespace counts, because the control and the browser count it too", () => {
+    // The readers trim before they clamp, so a value that only passes the cap through surrounding
+    // whitespace would still be read whole. Measuring the trimmed length here was this walker's first
+    // shape and it could not be mirrored on screen: the browser enforces `maxLength` against the RAW
+    // value, so a field holding two leading spaces refused the next character while the counter still
+    // showed room. One rule everywhere is worth more than accepting a value whose only problem is
+    // invisible, and the counter says exactly how much to delete.
     expect(
-      paths({ handoff: { instructions: `  ${at(TOOL_INSTRUCTIONS_MAX)}  ` } }),
-    ).toEqual([]);
+      paths({ handoff: { instructions: ` ${at(TOOL_INSTRUCTIONS_MAX)}` } }),
+    ).toEqual(["handoff.instructions"]);
   });
 
   test("ignores tool-guidance keys the reader itself drops", () => {
@@ -92,6 +97,17 @@ describe("collectOversizedText", () => {
     expect(
       paths({ toolGuidance: { not_a_tool: over(TOOL_INSTRUCTIONS_MAX) } }),
     ).toEqual([]);
+  });
+
+  test("ignores follow-up steps past the reader's own limit", () => {
+    // readFollowUpConfig slices to FOLLOW_UP_MAX_STEPS before it parses, so an 11th step is text
+    // nothing ever reads: refusing a write over it (or warning about it on import) would be about a
+    // value the runtime discards. Same rule as the tool-guidance keys above.
+    const steps = Array.from({ length: FOLLOW_UP_MAX_STEPS + 2 }, (_, i) => ({
+      instructions:
+        i >= FOLLOW_UP_MAX_STEPS ? over(FOLLOW_UP_INSTRUCTIONS_MAX) : "fine",
+    }));
+    expect(paths({ followUp: { steps } })).toEqual([]);
   });
 
   test("survives every malformed shape a settings bag can hold", () => {

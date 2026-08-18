@@ -47,19 +47,19 @@ describe("Textarea character counter", () => {
     expect(el.getAttribute("aria-invalid")).toBe("true");
   });
 
-  // The server trims before it measures (every reader does), so a value that only exceeds the cap
-  // through surrounding whitespace is accepted there. Counting the raw string here would mark it
-  // invalid and claim the save is refused, which would be a lie about what the API does.
-  test("surrounding whitespace does not make a value over the limit", () => {
+  // Raw length, the same thing the browser enforces `maxLength` against and the same thing the write
+  // boundary refuses on. Counting the trimmed string instead put the control at odds with itself:
+  // leading spaces made it stop accepting characters while the counter still showed room.
+  test("whitespace counts, so the counter never disagrees with the control", () => {
     render(
       <Textarea
         maxLength={100}
-        value={`  ${"x".repeat(100)}\n`}
+        value={`  ${"x".repeat(100)}`}
         onChange={() => {}}
       />,
     );
-    expect(overLimitShown()).toBe(false);
-    expect(counterShown("100/100")).toBe(true);
+    expect(overLimitShown()).toBe(true);
+    expect(counterShown("102/100")).toBe(true);
   });
 
   test("no cap declared, no counter", () => {

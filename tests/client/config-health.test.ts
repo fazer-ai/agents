@@ -6,6 +6,9 @@ import { computeConfigIssues } from "@/client/lib/configHealth";
 const base = {
   modelProvider: "openai",
   modelCredentialRef: "vault:1",
+  // What the rewrite inherits is the STORED model, which is a different input from the one above
+  // (the General tab's pending edit). They agree in most rows; the ones that separate them say so.
+  savedModelProvider: "openai",
   sttEnabled: false,
   sttCredentialRef: "",
   ttsMode: "never",
@@ -328,8 +331,8 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       expect(
         computeConfigIssues({
           ...audio,
-          modelProvider: "openai-compatible",
-          modelBaseURL: "http://llama:8080/v1",
+          savedModelProvider: "openai-compatible",
+          savedModelBaseURL: "http://llama:8080/v1",
           ttsNormalize: true,
           ttsNormalizeProvider: "openai-compatible",
         }),
@@ -356,12 +359,41 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       expect(
         computeConfigIssues({
           ...audio,
-          modelProvider: "openai-compatible",
-          modelBaseURL: "llama:8080",
+          savedModelProvider: "openai-compatible",
+          savedModelBaseURL: "llama:8080",
           ttsNormalize: true,
           ttsNormalizeProvider: "openai-compatible",
         }),
       ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+    });
+
+    // The tabs of the editor save independently, so what the rewrite inherits is the model that is
+    // STORED, not the one the operator is part-way through changing on General. Judging against the
+    // pending edit blesses a pairing that will not exist: the Behavior save carries the rewrite and
+    // none of General, so the bag lands naming a vendor the saved agent never had.
+    test("the rewrite is judged against the SAVED model, not the edited one", () => {
+      const rewrite = {
+        ...audio,
+        ttsNormalize: true,
+        ttsNormalizeProvider: "anthropic",
+      };
+      // Mid-edit on General: anthropic on screen, openai stored. The rewrite would ride a key the
+      // stored agent does not have, so it needs one of its own.
+      expect(
+        computeConfigIssues({
+          ...rewrite,
+          modelProvider: "anthropic",
+          savedModelProvider: "openai",
+        }),
+      ).toEqual([{ key: "ttsNormalize", tab: "behavior", sectionId: "tts" }]);
+      // Once that edit is SAVED, the same rewrite inherits the agent's key and raises nothing.
+      expect(
+        computeConfigIssues({
+          ...rewrite,
+          modelProvider: "anthropic",
+          savedModelProvider: "anthropic",
+        }),
+      ).toEqual([]);
     });
 
     // A provider name REST or MCP stored that we do not support. The editor cannot produce it and
@@ -400,8 +432,8 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       expect(
         computeConfigIssues({
           ...audio,
-          modelProvider: "openai-compatible",
-          modelBaseURL: "http://llama:8080/v1",
+          savedModelProvider: "openai-compatible",
+          savedModelBaseURL: "http://llama:8080/v1",
           ttsNormalize: true,
           ttsNormalizeProvider: "openai-compatible",
           ttsNormalizeCredentialRef: "vault:3",

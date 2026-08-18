@@ -27,6 +27,12 @@ export const TTS_DEFAULT_MODEL: Record<string, string> = {
 
 // ElevenLabs has no default voice (a voice id is mandatory) → empty string here, surfaced in the UI
 // as a "required" hint rather than a fake default.
+// The TTS providers the editor offers, mirrored here rather than imported so the browser does not
+// pull the synthesis registry in (see modules/tts/settings-shared.ts). The mirror test asserts the
+// two lists are EQUAL, in both directions: an entry missing here hides a provider the runtime
+// supports, and an extra one is worse, because the form reader uses this as its allowlist.
+export const TTS_PROVIDERS = ["openai", "elevenlabs", "openrouter"] as const;
+
 export const TTS_DEFAULT_VOICE: Record<string, string> = {
   openai: "alloy",
   elevenlabs: "",

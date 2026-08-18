@@ -36,11 +36,16 @@ export interface ConfigIssue {
 }
 
 export interface ConfigHealthInput {
+  // The agent's model as the operator is EDITING it: this pair answers "does the model have a key",
+  // which is a question about what the General tab is about to save.
   modelProvider: string;
   modelCredentialRef: string;
-  // The agent model's EFFECTIVE endpoint, which the rewrite inherits while its provider is the
-  // agent's own.
-  modelBaseURL?: string;
+  // The agent's model as STORED, with its EFFECTIVE endpoint (a credential that carries one wins
+  // over the typed field). Separate from the pair above on purpose: the speech rewrite inherits
+  // from the SAVED model, because the editor's tabs save independently and a Behavior save carries
+  // none of General's pending edits.
+  savedModelProvider: string;
+  savedModelBaseURL?: string;
   sttEnabled: boolean;
   sttCredentialRef: string;
   // TTS has no boolean toggle — any mode other than "never" means audio replies are on.
@@ -143,10 +148,13 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
           normalizeCredentialRef: input.ttsNormalizeCredentialRef,
           normalizeBaseURL: input.ttsNormalizeBaseURL,
         },
+        // The SAVED model, never the one the General tab is holding: the two tabs save separately,
+        // so a rewrite validated against an unsaved provider is validated against a configuration
+        // that will not exist when the Behavior block lands.
         {
-          provider: input.modelProvider,
+          provider: input.savedModelProvider,
           model: "",
-          baseURL: input.modelBaseURL ?? null,
+          baseURL: input.savedModelBaseURL ?? null,
         },
         // The editor's strictness, not the runtime's, because this check exists FOR the bags the
         // editor never validated: `llama:8080` is a string, so the runtime's "is there anything

@@ -37,6 +37,7 @@ import {
   STT_DEFAULT_MODEL,
   TTS_DEFAULT_MODEL,
   TTS_DEFAULT_VOICE,
+  TTS_PROVIDERS,
   VISION_DEFAULT_MODEL,
 } from "@/client/lib/providerDefaults";
 import { providerLabel } from "@/client/lib/providerLabels";
@@ -71,7 +72,6 @@ const STT_PROVIDERS = [
 
 // Audio-reply providers (mirror src/modules/tts/providers). The three reply modes are rendered
 // inline as <option>s below.
-const TTS_PROVIDERS = ["openai", "elevenlabs", "openrouter"] as const;
 
 // Image/document extraction providers (mirror src/modules/vision/providers).
 const VISION_PROVIDERS = [

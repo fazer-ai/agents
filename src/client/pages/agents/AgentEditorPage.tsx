@@ -1234,6 +1234,18 @@ function AgentEditor() {
   const knowledgeBasesNeedingIndex = (catalog?.knowledgeBases ?? [])
     .filter((k) => selectedKbIds.has(k.id) && k.unindexedCount > 0)
     .map((k) => ({ id: k.id, name: k.name }));
+  // The agent's model as STORED, which is what the speech rewrite will inherit at runtime and is
+  // not the same thing as the model being edited on General. The tabs do not save together: a
+  // Behavior save carries none of General's pending edits, so judging the rewrite against them
+  // blesses a pairing that exists nowhere. Reproduced by review: switch the provider on General,
+  // configure the rewrite to inherit that provider's key, save Behavior, discard General. The bag
+  // now names a vendor the saved agent never had, and every audio reply skips the rewrite as
+  // `credential_required` while the editor called the configuration valid.
+  const savedModel = syncedAgentRef.current
+    ? readModelState(syncedAgentRef.current)
+    : model;
+  const savedModelBaseUrl =
+    vaultBaseUrl(savedModel.credentialRef) ?? savedModel.baseURL;
   const configIssues = computeConfigIssues({
     modelProvider: model.provider,
     modelCredentialRef: model.credentialRef,
@@ -1241,7 +1253,8 @@ function AgentEditor() {
     sttCredentialRef: stt.credentialRef,
     ttsMode: tts.mode,
     ttsCredentialRef: tts.credentialRef,
-    modelBaseURL: modelCredBaseUrl ?? model.baseURL,
+    savedModelProvider: savedModel.provider,
+    savedModelBaseURL: savedModelBaseUrl,
     ttsNormalize: tts.normalize,
     ttsNormalizeProvider: tts.normalizeProvider,
     ttsNormalizeModel: tts.normalizeModel,
@@ -2452,12 +2465,13 @@ function AgentEditor() {
                 sttCredBaseUrl={sttCredBaseUrl}
                 tts={tts}
                 setTts={setTts}
-                agentModelProvider={model.provider}
-                agentModelName={model.model}
-                agentModelCredentialRef={model.credentialRef}
-                // The EFFECTIVE endpoint: a credential that carries its own wins over the typed
+                // The SAVED model, not the one being edited on General (see savedModel above), and
+                // its EFFECTIVE endpoint: a credential that carries its own wins over the typed
                 // field, exactly as the runtime resolves it.
-                agentModelBaseUrl={modelCredBaseUrl ?? model.baseURL}
+                agentModelProvider={savedModel.provider}
+                agentModelName={savedModel.model}
+                agentModelCredentialRef={savedModel.credentialRef}
+                agentModelBaseUrl={savedModelBaseUrl}
                 ttsNormalizeCredBaseUrl={ttsNormalizeCredBaseUrl}
                 split={split}
                 setSplit={setSplit}

@@ -108,6 +108,42 @@ describe("voice knobs are stored at the value that will actually be used", () =>
   });
 });
 
+// Same rule as the knobs, on the two fields that decide whether the section is even coherent. The
+// runtime reader allowlists both; a form that does not shows an audio configuration for an agent
+// that sends no audio, and saves the unusable value straight back.
+describe("mode and provider are allowlisted the way the runtime allowlists them", () => {
+  test("a mode the runtime does not accept reads as never", () => {
+    expect(readTtsFormState({ mode: "Mirror" }, true).mode).toBe("never");
+    expect(readTtsFormState({ mode: "mirror" }, true).mode).toBe("mirror");
+  });
+
+  test("a provider the runtime does not accept reads as the default", () => {
+    expect(readTtsFormState({ provider: "Elevenlabs" }, true).provider).toBe(
+      "openai",
+    );
+    expect(readTtsFormState({ provider: "elevenlabs" }, true).provider).toBe(
+      "elevenlabs",
+    );
+  });
+
+  // And the reader agrees with the runtime's, field by field, on the same bag: this is the
+  // invariant, the two above are just the cases that broke it.
+  test("both fields agree with readTtsConfig on the same bag", () => {
+    for (const bag of [
+      { mode: "Mirror", provider: "Elevenlabs" },
+      { mode: "preference", provider: "openrouter" },
+      { mode: "", provider: "" },
+      { mode: 7, provider: null },
+    ]) {
+      const form = readTtsFormState(bag, true);
+      const runtime = readTtsConfig({ tts: bag });
+      expect(`${form.mode}/${form.provider}`).toBe(
+        `${runtime.mode}/${runtime.provider}`,
+      );
+    }
+  });
+});
+
 // The other half of the same rule, and the only half the editor cannot fix by saving: REST and
 // import store the raw number, so the form has to show what synthesis will ACTUALLY do with it.
 describe("voice knobs are displayed at the value that will actually be used", () => {

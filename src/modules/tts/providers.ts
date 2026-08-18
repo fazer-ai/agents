@@ -12,7 +12,7 @@
 
 // NOTE: type-only import — settings.ts imports TTS_PROVIDER_NAMES from here, and erasing this at
 // compile time keeps that from becoming a runtime require cycle.
-import type { TtsVoiceSettings } from "./settings";
+import type { TtsVoiceSettings } from "./settings-shared";
 import { pcmToWav } from "./wav";
 
 const TTS_TIMEOUT_MS = 60_000;

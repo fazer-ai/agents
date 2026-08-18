@@ -1,9 +1,15 @@
+import { TTS_PROVIDERS } from "@/client/lib/providerDefaults";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import {
   type NormalizeModelResolution,
   resolveNormalizeModel,
 } from "@/modules/tts/normalize-model";
-import { clampVoiceSetting, readVoiceSettings } from "@/modules/tts/settings";
+import {
+  clampVoiceSetting,
+  readVoiceSettings,
+  TTS_MODES,
+  type TtsMode,
+} from "@/modules/tts/settings-shared";
 
 // The agent editor's TTS block, as a pair of pure functions: stored settings → form state → stored
 // settings. It lives outside the page because the Behavior save REPLACES the whole `tts` block with
@@ -58,9 +64,19 @@ export function readTtsFormState(
   // number would put a 9 on screen for a voice that speaks at 4, with nothing admitting the
   // difference, and it would stay there, since nothing rewrites the bag until the tab is saved.
   const voice = readVoiceSettings(tt);
+  // Mode and provider are ALLOWLISTED, exactly as the runtime reader allowlists them. A bag can
+  // carry anything (REST and import store what they are handed, and "Mirror" is one keystroke from
+  // "mirror"): the runtime falls back to "never" and to openai, while a raw value here puts an
+  // empty `<select>` on screen above a fully-rendered audio section for an agent that will never
+  // send audio, and saves the same string straight back.
+  const mode = str(tt.mode);
+  const provider = str(tt.provider);
   return {
-    mode: str(tt.mode) || "never",
-    provider: str(tt.provider) || "openai",
+    mode: mode && TTS_MODES.includes(mode as TtsMode) ? mode : "never",
+    provider:
+      provider && (TTS_PROVIDERS as readonly string[]).includes(provider)
+        ? provider
+        : "openai",
     model: str(tt.model),
     voice: str(tt.voice),
     credentialRef: str(tt.credentialRef),

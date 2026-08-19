@@ -1211,15 +1211,28 @@ function AgentEditor() {
   // What the guardrail screen actually DID lately, for the panel below. Configuration cannot answer
   // it: a retired model id, a parameter the vendor rejects and a chronic timeout are all valid
   // configuration until the call is made, and the pass is fail-open, so each one delivers messages
-  // as if they had been reviewed. Fetched once per agent (a count over a 24h window does not move
-  // while the editor is open) and only while guardrails are on, so an agent that never enabled the
-  // feature pays no request.
+  // as if they had been reviewed.
+  //
+  // A snapshot, not a subscription. It is taken when the agent loads, when guardrails are switched
+  // on, and after every successful save, which is the operator's loop here: change the model, save,
+  // see whether the screen is still failing. It does NOT follow live traffic, so an editor left
+  // open does not learn about failures that started meanwhile. Polling a config screen to close
+  // that gap costs a request a minute on every open editor to shorten a wait that ends the next
+  // time anybody looks.
+  //
+  // A request that FAILS leaves this null, which the panel reads as "nothing to say" rather than
+  // as a warning. That is the same call the panel already makes for an unloaded vault list, and for
+  // the same reason: this panel's currency is that every line on it is worth acting on, and a line
+  // saying the console could not reach its own API is one the operator cannot act on from here. The
+  // next save retries.
+  const [savedTick, setSavedTick] = useState(0);
   const [guardrailHealth, setGuardrailHealth] = useState<{
     windowHours: number;
     failures: number;
     lastAt: string | null;
   } | null>(null);
   const guardrailsOn = guardrails.enabled;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: savedTick is the refetch trigger, not a value this effect reads
   useEffect(() => {
     if (!id || !guardrailsOn) {
       setGuardrailHealth(null);
@@ -1235,7 +1248,7 @@ function AgentEditor() {
     return () => {
       alive = false;
     };
-  }, [id, guardrailsOn]);
+  }, [id, guardrailsOn, savedTick]);
 
   // Live config-health (item 1): features turned on but missing the credential they need to run, OR
   // referencing a credential whose secret is not filled in yet (pending). The import that strips
@@ -1825,6 +1838,10 @@ function AgentEditor() {
     if (updatedAt) loadedUpdatedAtRef.current = updatedAt;
     setStaleNotice(false);
     setConflictRetry(null);
+    // Every successful save funnels through here, which makes it the one place that can tell the
+    // server-read parts of this page to look again. The guardrail health snapshot is the first: a
+    // save is the operator's "I fixed it", and it is the only moment they are owed a fresh answer.
+    setSavedTick((n) => n + 1);
   }
 
   async function saveAgent(

@@ -49,8 +49,9 @@ const SINCE = ago(24 * 60);
 
 let tenantA = 0n;
 let tenantB = 0n;
-const AGENT = 4_242n;
-const OTHER_AGENT = 4_243n;
+let AGENT = 0n;
+let OTHER_AGENT = 0n;
+let AGENT_B = 0n;
 function ctx(t: bigint): TenantContext {
   return { tenantId: t, userId: null, role: "TENANT_ADMIN" };
 }
@@ -84,6 +85,22 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
         data: { name: "GhB", slug: `gh-b-${process.pid}` },
       })
     ).id;
+    const agentRow = (tenantId: bigint, name: string) =>
+      suDb.agent.create({
+        data: {
+          tenantId,
+          name,
+          systemPrompt: "x",
+          modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        },
+        select: { id: true },
+      });
+    AGENT = (await agentRow(tenantA, "Guarded")).id;
+    OTHER_AGENT = (await agentRow(tenantA, "Sibling")).id;
+    // Tenant B's own agent. The RLS assertion below asks for a reading while scoped to B, and with
+    // the agent resolved first that has to be an agent B can actually see, or the read would 404 for
+    // the wrong reason and the leak it guards against would go untested.
+    AGENT_B = (await agentRow(tenantB, "Other tenant")).id;
     await suDb.executionLog.createMany({
       data: [
         // Two analyses that could not run, the newer one carrying the cause.
@@ -161,7 +178,7 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
         {
           tenantId: tenantB,
           turnId: "g7",
-          agentId: AGENT,
+          agentId: AGENT_B,
           stage: "guardrail",
           level: "warn",
           status: "error",
@@ -208,19 +225,43 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
   });
 
   test("an agent with nothing logged reads as zero, not as unknown", async () => {
-    const health = await readGuardrailHealth(
-      ctx(tenantA),
-      9_999n,
-      SINCE,
-      appDb,
-    );
+    const quiet = (
+      await suDb.agent.create({
+        data: {
+          tenantId: tenantA,
+          name: "Quiet",
+          systemPrompt: "x",
+          modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        },
+        select: { id: true },
+      })
+    ).id;
+    const health = await readGuardrailHealth(ctx(tenantA), quiet, SINCE, appDb);
     expect(health).toEqual({ failures: 0, lastAt: null, lastError: null });
   });
 
-  // The playground is where an operator re-tests after changing the model id, and a screen that
-  // cannot run there cannot run on real traffic either. Alerting excludes playground (a test turn
-  // must not page); a configuration warning is not a page.
-  test("a playground failure counts too", async () => {
+  // Zero and "there is no such agent" are different answers, and the endpoint advertises 404. Rows
+  // outlive the agent inside the retention window, so without this an id that was deleted (or one
+  // that never existed) answers with a confident zero, and a recycled id answers with somebody
+  // else's history.
+  test("an agent that does not exist is a 404, never a zero", async () => {
+    await expect(
+      readGuardrailHealth(ctx(tenantA), 9_999_999n, SINCE, appDb),
+    ).rejects.toThrow("agent not found");
+  });
+
+  test("another tenant's agent is a 404, not a reading", async () => {
+    await expect(
+      readGuardrailHealth(ctx(tenantA), AGENT_B, SINCE, appDb),
+    ).rejects.toThrow("agent not found");
+  });
+
+  // The read does not filter by source. Today that is a distinction without a difference: the
+  // guardrail stage is only ever written from the turn path, and the playground does not run the
+  // pass at all, so this row is seeded by hand and the product cannot currently produce it. Pinned
+  // anyway, because a filter added "for correctness" would report zero the day the pass runs
+  // somewhere else, which is the exact failure this module exists to remove.
+  test("a failure from any source counts, not just inbox", async () => {
     await suDb.executionLog.create({
       data: {
         tenantId: tenantA,
@@ -239,8 +280,13 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
     expect(health.lastAt).toBe(ago(1).toISOString());
   });
 
-  test("RLS: another tenant's failures are never counted", async () => {
-    const health = await readGuardrailHealth(ctx(tenantB), AGENT, SINCE, appDb);
+  test("RLS: a tenant only ever reads its own agent's failures", async () => {
+    const health = await readGuardrailHealth(
+      ctx(tenantB),
+      AGENT_B,
+      SINCE,
+      appDb,
+    );
     expect(health.failures).toBe(1);
     expect(health.lastError).toBe("other tenant");
   });

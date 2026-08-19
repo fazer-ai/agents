@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 
 // Whether the guardrail screen is actually running, answered from what it did rather than from how
@@ -47,9 +48,11 @@ export async function readGuardrailHealth(
   since: Date,
   base: PrismaClient = basePrisma,
 ): Promise<GuardrailHealth> {
-  // Both sources on purpose. Alerting excludes the playground because a test turn must not page,
-  // but the playground is exactly where an operator re-tests after changing the model id, and a
-  // screen that cannot run there cannot run on real traffic either.
+  // No source filter, which today means inbox: the guardrail stage is written from the turn path
+  // only, and the playground does not run the pass at all (modules/playground/service.ts never
+  // reaches analyzeGuardrail). Filtering to "inbox" anyway would encode that absence as a rule, so
+  // that the day the pass runs somewhere else its failures would be counted as zero by a filter
+  // nobody remembered. The question this answers is "could the screen run", not "on which surface".
   const where = {
     agentId,
     stage: "guardrail",
@@ -57,6 +60,16 @@ export async function readGuardrailHealth(
     createdAt: { gte: since },
   };
   return runScopedOn(base, ctx, async (db) => {
+    // The agent is resolved first so an id that never existed (or was deleted while its rows are
+    // still inside the retention window) answers 404 instead of a confident zero, or worse, the
+    // history of whoever held the id before. Same shape as getAgentToolSelections.
+    const agent = await db.agent.findUnique({
+      where: { id: agentId },
+      select: { id: true },
+    });
+    if (!agent) {
+      throw new NotFoundError("agent not found", "errors.agentNotFound");
+    }
     const failures = await db.executionLog.count({ where });
     const last = failures
       ? await db.executionLog.findFirst({

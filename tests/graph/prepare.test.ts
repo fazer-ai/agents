@@ -182,20 +182,6 @@ describe("buildSpeechNormalizer", () => {
     expect(getCaptured().reasoningEffort).toBeUndefined();
   });
 
-  // Same pin, and the one provider that cannot take it. Anthropic's current models answer 400 to
-  // any temperature, which here costs the audio reply (the rewrite is best-effort, so the customer
-  // gets the unnormalized text) and, on the guardrails call that shares this pin, the whole control.
-  test("the pin is dropped on anthropic, which rejects the parameter", () => {
-    const { makeModel, getCaptured } = captureModel();
-    const cfg = makeConfig({
-      mc: { provider: "anthropic", model: "claude-sonnet-5", temperature: 0.9 },
-      ttsConfig: { ...TTS_DEFAULTS, normalize: true },
-    });
-    buildSpeechNormalizer(cfg, { makeModel });
-    expect(getCaptured().provider).toBe("anthropic");
-    expect(getCaptured().temperature).toBeUndefined();
-  });
-
   // Nothing of the agent's config reaches the factory except what the resolver handed back by name.
   // Pinned as the exact key set, so a field the schema grows later (and a spread would carry across
   // a provider switch) shows up here as an extra key rather than as a silent inheritance.

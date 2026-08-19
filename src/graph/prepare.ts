@@ -80,7 +80,6 @@ import {
   createChatModel,
   type ModelConfig,
   parseModelConfig,
-  pinnedTemperature,
   type ResolvedModelConfig,
 } from "./models";
 import {
@@ -1156,9 +1155,7 @@ export function buildSpeechNormalizer(
     // Pinned, and the agent's reasoningEffort deliberately NOT carried: this pass rewrites an answer
     // that already exists, and the effort the operator chose is about how the agent THINKS.
     // Reasoning here would only add latency to an audio reply the customer is waiting on.
-    temperature: pinnedTemperature(
-      resolved.provider as ModelConfig["provider"],
-    ),
+    temperature: 0,
   };
   // createChatModel REJECTS some configurations synchronously (openai-compatible with no effective
   // base URL throws a 400), and this normalizer config is separately editable, so that throw is

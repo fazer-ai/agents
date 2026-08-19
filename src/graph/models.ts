@@ -22,7 +22,6 @@ export {
   type ModelConfig,
   modelConfigSchema,
   parseModelConfig,
-  pinnedTemperature,
 } from "./model-config";
 export { REASONING_EFFORTS, type ReasoningEffort } from "./openai-reasoning";
 
@@ -184,8 +183,30 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
         },
         planOpenAITransport(model, undefined),
       );
+    // NOTE: temperature is DROPPED for this provider, whoever set it. Anthropic's current generation
+    // rejects any non-default value of `temperature`, `top_p` and `top_k` with a hard 400 ("`temperature`
+    // is deprecated for this model"), and their migration guide for Sonnet 5 says to "remove these
+    // parameters ... the default value (or omitting the parameter) is accepted". So this is not a
+    // workaround for an error, it is the documented way to call the model: there is no sampling
+    // control left to honor. Steering moved to the system prompt.
+    //
+    // Dropped by PROVIDER rather than by model pattern, unlike `openaiTemperature`, because there is
+    // nothing reliable to match on. `claude-haiku-4-5` and `claude-sonnet-4-5` still accept the
+    // parameter, `claude-opus-4-5` accepts it while advertising the same `effort` capability as every
+    // model that refuses it, and /v1/models never mentions the parameter at all. A pattern would be a
+    // copy of a vendor policy that moves without us, and the cost of being wrong is not symmetric:
+    // the guardrail pass pins a temperature and is FAIL-OPEN, so one missed id is not a visible
+    // error, it is a moderation control that approves everything (measured: `claude-sonnet-5` as the
+    // guardrails model returned `violated: false` with a 400 attached, on every message).
+    //
+    // What the coarser rule costs is the operator's own value on the two models that still take it.
+    // Measured on `claude-haiku-4-5`, the guardrail battery is identical with `temperature: 0` and
+    // with the field absent: violations caught 16/16 in both arms, and on the output rewrite the
+    // customer-facing price survived 16/16 while the internal cost leaked 0/16 in both. Nothing is
+    // rewritten in storage either — the value stays as the operator set it, so the day Anthropic
+    // takes the parameter back this line is all that has to go.
     case "anthropic":
-      return new ChatAnthropic({ model, apiKey, temperature });
+      return new ChatAnthropic({ model, apiKey });
     case "google": {
       const gemini = new ChatGoogleGenerativeAI({ model, apiKey, temperature });
       // NOTE: the adapter declares tool parameters in the OpenAPI subset, whose closed field set

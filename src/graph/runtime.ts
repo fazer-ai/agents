@@ -36,11 +36,7 @@ import { chatwootThreadId, resolveGraphThreadId } from "./checkpointer";
 import { lastAssistantText } from "./graph";
 import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { CONVERSATION_DIVIDER } from "./ingest";
-import {
-  createChatModel,
-  pinnedTemperature,
-  type ResolvedModelConfig,
-} from "./models";
+import { createChatModel, type ResolvedModelConfig } from "./models";
 import {
   type AgentConfig,
   buildCallbacks,
@@ -404,7 +400,7 @@ export async function runLoadedTurn(
           baseURL:
             loaded.guardrailsCredentialBaseUrl ?? gr.baseURL ?? undefined,
           apiKey: loaded.guardrailsApiKey,
-          temperature: pinnedTemperature(gr.provider),
+          temperature: 0,
         })
       : null;
   const runGuardrail = async (

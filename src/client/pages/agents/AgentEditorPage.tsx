@@ -51,7 +51,7 @@ import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { computeConfigIssues, issueHasAction } from "@/client/lib/configHealth";
-import { slugify } from "@/client/lib/utils";
+import { formatRelativeTime, slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
   useVaultBaseUrls,
@@ -511,7 +511,7 @@ export function AgentEditorPage() {
 }
 
 function AgentEditor() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { showToast } = useToast();
   const navigate = useNavigate();
   const { id = "", tab: tabParam } = useParams();
@@ -1208,6 +1208,35 @@ function AgentEditor() {
     };
   }, []);
 
+  // What the guardrail screen actually DID lately, for the panel below. Configuration cannot answer
+  // it: a retired model id, a parameter the vendor rejects and a chronic timeout are all valid
+  // configuration until the call is made, and the pass is fail-open, so each one delivers messages
+  // as if they had been reviewed. Fetched once per agent (a count over a 24h window does not move
+  // while the editor is open) and only while guardrails are on, so an agent that never enabled the
+  // feature pays no request.
+  const [guardrailHealth, setGuardrailHealth] = useState<{
+    windowHours: number;
+    failures: number;
+    lastAt: string | null;
+  } | null>(null);
+  const guardrailsOn = guardrails.enabled;
+  useEffect(() => {
+    if (!id || !guardrailsOn) {
+      setGuardrailHealth(null);
+      return;
+    }
+    let alive = true;
+    api.api.v1
+      .agents({ id })
+      .guardrails.health.get()
+      .then(({ data }) => {
+        if (alive && data) setGuardrailHealth(data);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id, guardrailsOn]);
+
   // Live config-health (item 1): features turned on but missing the credential they need to run, OR
   // referencing a credential whose secret is not filled in yet (pending). The import that strips
   // secrets is the common trigger; each issue deep-links to its tab + section, or to the vault fill
@@ -1221,6 +1250,7 @@ function AgentEditor() {
   // t('editor.configIssue.guardrails', 'Guardrails are on but have no API key set, so messages go out unscreened.')
   // t('editor.configIssuePending.guardrails', 'The guardrails credential is referenced but not filled in yet, so messages go out unscreened.')
   // t('editor.configIssueUnresolved.guardrails', 'The guardrails credential no longer exists, so messages go out unscreened.')
+  // t('editor.configIssueGuardrailsFailing', 'Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. Check the model, the endpoint and the key.')
   // t('editor.configIssuePending.model', 'The model credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.stt', 'The transcription credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.tts', 'The audio-reply credential is referenced but not filled in yet.')
@@ -1273,6 +1303,8 @@ function AgentEditor() {
     visionCredentialRef: vision.credentialRef,
     guardrailsEnabled: guardrails.enabled,
     guardrailsCredentialRef: guardrails.credentialRef ?? "",
+    guardrailsFailures: guardrailHealth?.failures,
+    guardrailsLastFailureAt: guardrailHealth?.lastAt,
     pendingRefs,
     knownRefs,
     knowledgeBasesNeedingIndex,
@@ -1356,6 +1388,22 @@ function AgentEditor() {
         "editor.configIssueKnowledge",
         'Knowledge base "{{name}}" has documents that need indexing.',
         { name: issue.knowledgeBaseName ?? "" },
+      );
+    }
+    // A guardrail that HAS its credential and still could not run. The count is the whole point: the
+    // panel's other lines describe a state ("no key set"), this one describes what already happened,
+    // and an operator has to be told that those turns went out unscreened rather than blocked.
+    if (issue.key === "guardrailsFailing") {
+      return t(
+        "editor.configIssueGuardrailsFailing",
+        "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. Check the model, the endpoint and the key.",
+        {
+          failures: issue.failures ?? 0,
+          hours: guardrailHealth?.windowHours ?? 24,
+          when: issue.lastFailureAt
+            ? formatRelativeTime(issue.lastFailureAt, i18n.language)
+            : "-",
+        },
       );
     }
     if (issue.pending) {

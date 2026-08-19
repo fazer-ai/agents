@@ -24,6 +24,11 @@ import {
   updateAgent,
 } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
+import {
+  GUARDRAIL_HEALTH_WINDOW_HOURS,
+  guardrailHealthWindowStart,
+  readGuardrailHealth,
+} from "@/modules/guardrails/health";
 import { listProviderModels } from "@/modules/models/service";
 import { getPlaygroundMedia } from "@/modules/playground/media";
 import {
@@ -238,6 +243,33 @@ export const agentsController = new Elysia({
     }),
     {
       detail: doc("Get agent", "Returns a single agent by id."),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
+  // Whether this agent's guardrail screen is actually running, from what it recorded. The editor's
+  // configuration-warning panel needs it because configuration cannot answer the question: analysis
+  // is fail-open, so a screen that can never run reads as one that ran and approved everywhere else.
+  .get(
+    "/:id/guardrails/health",
+    async ({ tenantContext, params }) => ({
+      windowHours: GUARDRAIL_HEALTH_WINDOW_HOURS,
+      ...(await readGuardrailHealth(
+        ctxOrThrow(tenantContext),
+        BigInt(params.id),
+        guardrailHealthWindowStart(),
+      )),
+    }),
+    {
+      detail: doc(
+        "Get guardrail health",
+        "Counts the guardrail analyses that could not run for this agent in the recent window, with the most recent one and the error it carried. Analysis is fail-open, so every failure counted here is a turn that was delivered without being screened.",
+      ),
       response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",
       params: t.Object({

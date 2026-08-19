@@ -7,11 +7,14 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { setPublisher, TOPICS } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
+import { computeConfigIssues } from "@/client/lib/configHealth";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { runAgentTurn } from "@/graph/runtime";
+import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
@@ -1745,7 +1748,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // But it also must not be indistinguishable from a guardrail that ran and approved, or an
     // operator whose credential expired reads "no violations" forever. Same argument that put
     // `retriedEmptyResponse` in the trail on #63.
-    test("a guardrail that cannot run leaves a line in the turn trail", async () => {
+    test("a guardrail that cannot run is reported on the screen that enabled it", async () => {
       await setGuardrails({
         enabled: true,
         provider: "openai",
@@ -1791,21 +1794,49 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // The customer still gets answered: moderation failing is not the customer's problem.
       expect(sent).toEqual([[952, REPLY]]);
 
+      // ...and the console says so where the feature was turned on. The chain under test is the
+      // whole one: the vendor refuses the call, the turn records a guardrail failure, the health
+      // read counts it, and the editor's configuration-warning panel raises a line for it. Ending
+      // at the log row instead would assert a proxy: that row already existed and the operator
+      // still had no way to learn the screen was dead from the screen that switched it on.
       // emitFlowEvent is fire-and-forget, so poll briefly.
-      let failureLogged = false;
-      for (let i = 0; i < 30 && !failureLogged; i++) {
-        const rows = await suDb.executionLog.findMany({
-          where: { tenantId: gTenantId, stage: "guardrail", level: "warn" },
-          select: { detail: true },
-        });
-        failureLogged = rows.some(
-          (r) =>
-            (r.detail as Record<string, unknown> | null)?.outcome ===
-            "analysis_failed",
-        );
-        if (!failureLogged) await new Promise((r) => setTimeout(r, 100));
+      const ctx: TenantContext = {
+        tenantId: gTenantId,
+        userId: null,
+        role: "TENANT_ADMIN",
+      };
+      const since = new Date(Date.now() - 3_600_000);
+      let health = { failures: 0, lastAt: null as string | null };
+      for (let i = 0; i < 30 && health.failures === 0; i++) {
+        health = await readGuardrailHealth(ctx, gAgentId, since, appDb);
+        if (health.failures === 0) await new Promise((r) => setTimeout(r, 100));
       }
-      expect(failureLogged).toBe(true);
+      expect(health.failures).toBeGreaterThan(0);
+      expect(
+        computeConfigIssues({
+          modelProvider: "openai",
+          modelCredentialRef: "vault:1",
+          savedModelProvider: "openai",
+          sttEnabled: false,
+          sttCredentialRef: "",
+          ttsMode: "never",
+          ttsCredentialRef: "",
+          visionEnabled: false,
+          visionCredentialRef: "",
+          guardrailsEnabled: true,
+          guardrailsCredentialRef: "vault:1",
+          guardrailsFailures: health.failures,
+          guardrailsLastFailureAt: health.lastAt,
+        }),
+      ).toEqual([
+        {
+          key: "guardrailsFailing",
+          tab: "guardrails",
+          sectionId: "gr-model",
+          failures: health.failures,
+          lastFailureAt: health.lastAt as string,
+        },
+      ]);
     });
     // answer_relevance is the only check that needs the customer's own message: without it the
     // reviewer can judge tone, scope and persona, but not whether the reply answered the question.

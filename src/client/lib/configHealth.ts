@@ -18,6 +18,7 @@ export type ConfigIssueKey =
   | "ttsNormalize"
   | "vision"
   | "guardrails"
+  | "guardrailsFailing"
   | "knowledge"
   | "embedding"
   | "redirect"
@@ -50,6 +51,11 @@ export interface ConfigIssue {
   field?: string;
   length?: number;
   max?: number;
+  // For "guardrailsFailing": how many analyses could not run in the window, and when the last one
+  // was. The count is what makes the warning actionable (one is a blip, forty is a dead screen) and
+  // the timestamp is what lets an operator who just fixed it see the count stop.
+  failures?: number;
+  lastFailureAt?: string;
 }
 
 // Where a capped field is edited, by the path the walker reports. A path with no entry has no control
@@ -151,6 +157,14 @@ export interface ConfigHealthInput {
   // message is delivered as if it had been screened and approved.
   guardrailsEnabled?: boolean;
   guardrailsCredentialRef?: string;
+  // What the screen actually DID, read back from the execution log (modules/guardrails/health.ts):
+  // how many analyses could not run in the recent window, and when the last one was. Configuration
+  // alone cannot see this half. A model id the vendor retired, a parameter it rejects on every call
+  // and a chronic timeout are all valid configuration until the call is made, and the pass is
+  // fail-open, so each one delivers messages as if they had been reviewed. Absent or 0 raises
+  // nothing: the count has to have arrived from the server to mean anything.
+  guardrailsFailures?: number;
+  guardrailsLastFailureAt?: string | null;
   // Refs (`vault:<id>`) whose vault entry exists but is still pending (secret not filled in yet). A
   // feature wired to one of these is configured but cannot run until the operator fills it.
   pendingRefs?: Set<string>;
@@ -355,15 +369,36 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     { key: "vision", tab: "behavior", sectionId: "vision" },
     credIssue(input.visionEnabled, input.visionCredentialRef, pending, known),
   );
+  const guardrailsCred = credIssue(
+    Boolean(input.guardrailsEnabled),
+    input.guardrailsCredentialRef ?? "",
+    pending,
+    known,
+  );
   push(
     { key: "guardrails", tab: "guardrails", sectionId: "gr-model" },
-    credIssue(
-      Boolean(input.guardrailsEnabled),
-      input.guardrailsCredentialRef ?? "",
-      pending,
-      known,
-    ),
+    guardrailsCred,
   );
+  // The credentialed guardrail that still could not run: same consequence (messages delivered
+  // unscreened), a cause no ref check can reach. Suppressed while the credential verdict above is
+  // live, and not for tidiness: with no credential the runtime never builds the model and writes no
+  // failure rows at all, so a count arriving next to a credential issue can only be a leftover from
+  // before that credential broke. Fixing the ref is the move either way.
+  if (
+    input.guardrailsEnabled &&
+    !guardrailsCred &&
+    (input.guardrailsFailures ?? 0) > 0
+  ) {
+    issues.push({
+      key: "guardrailsFailing",
+      tab: "guardrails",
+      sectionId: "gr-model",
+      failures: input.guardrailsFailures,
+      ...(input.guardrailsLastFailureAt
+        ? { lastFailureAt: input.guardrailsLastFailureAt }
+        : {}),
+    });
+  }
   // Knowledge bases with documents awaiting indexing. Indexing needs the tenant's embedding credential,
   // so if that prerequisite is missing we raise ONE "embedding" issue (the root cause) instead of N
   // per-base "index me" prompts that would just fail: no ref → point at embedding settings; a

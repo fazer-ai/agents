@@ -714,6 +714,74 @@ describe("computeConfigIssues — the guardrails credential", () => {
   });
 });
 
+// The half of "unscreened" that configuration cannot see. A retired model id, a parameter the vendor
+// rejects on every call (#130 was a live instance) and a chronic timeout are all valid configuration
+// right up to the moment the call is made, and the analysis is fail-open, so every one of them
+// delivers messages as if they had been reviewed. What the screen actually DID is read back from the
+// execution log and handed to the panel as a count.
+describe("computeConfigIssues — a guardrail that could not run", () => {
+  const guarded = {
+    ...base,
+    guardrailsEnabled: true,
+    guardrailsCredentialRef: "vault:1",
+  };
+  const at = { tab: "guardrails", sectionId: "gr-model" } as const;
+
+  test("flags a credentialed guardrail whose analyses have been failing", () => {
+    expect(
+      computeConfigIssues({
+        ...guarded,
+        guardrailsFailures: 47,
+        guardrailsLastFailureAt: "2026-08-19T12:00:00.000Z",
+      }),
+    ).toEqual([
+      {
+        key: "guardrailsFailing",
+        ...at,
+        failures: 47,
+        lastFailureAt: "2026-08-19T12:00:00.000Z",
+      },
+    ]);
+  });
+
+  test("raises nothing when nothing failed in the window", () => {
+    expect(computeConfigIssues({ ...guarded, guardrailsFailures: 0 })).toEqual(
+      [],
+    );
+  });
+
+  test("raises nothing while guardrails are off, whatever the log holds", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        guardrailsEnabled: false,
+        guardrailsCredentialRef: "vault:1",
+        guardrailsFailures: 47,
+      }),
+    ).toEqual([]);
+  });
+
+  // One root cause, not two. With no credential the runtime never builds the model, so it writes no
+  // failure rows at all: a count arriving alongside a credential issue can only be a leftover from
+  // before the credential broke, and repeating the symptom under the cause trains the operator to
+  // skim the panel.
+  test("stays quiet while the credential issue is live", () => {
+    expect(
+      computeConfigIssues({
+        ...guarded,
+        guardrailsCredentialRef: "",
+        guardrailsFailures: 47,
+      }),
+    ).toEqual([{ key: "guardrails", ...at }]);
+  });
+
+  test("survives a count with no timestamp", () => {
+    expect(computeConfigIssues({ ...guarded, guardrailsFailures: 3 })).toEqual([
+      { key: "guardrailsFailing", ...at, failures: 3 },
+    ]);
+  });
+});
+
 // Found by sweeping the panel's own inputs rather than by a review round: the rewrite's endpoint can
 // live on its CREDENTIAL, and the browser learns credential endpoints from the same vault list that
 // arrives a request after the first paint. Judged before that answer exists, an endpoint that is

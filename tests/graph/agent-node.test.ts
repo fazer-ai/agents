@@ -126,3 +126,80 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(model.boundSystemPrompts[0]).toBe("PROMPT");
   });
 });
+
+// The ceiling is wired through the node, so what it is worth is measured where it matters: in the
+// list the model actually receives. See tests/graph/history-window.test.ts for the rule itself.
+describe("agentNode history ceiling", () => {
+  // Eight turns of a chatty contact. Every message is long enough that a small ceiling has to cut.
+  const seed = (): BaseMessage[] => {
+    const out: BaseMessage[] = [];
+    for (let i = 0; i < 8; i++) {
+      out.push(new HumanMessage(`pergunta ${i} ${"palavra ".repeat(200)}`));
+      out.push(new AIMessage(`resposta ${i} ${"palavra ".repeat(200)}`));
+    }
+    return out;
+  };
+
+  test("without a ceiling the whole thread travels", async () => {
+    const model = new RecordingModel();
+    const graph = buildAgentGraph({
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+    });
+    await graph.invoke(
+      { messages: seed() },
+      { configurable: { thread_id: "ceiling-off" } },
+    );
+    // 16 seeded + the system prompt the node prepends.
+    expect(model.seen[0]).toHaveLength(17);
+  });
+
+  test("with a ceiling the oldest attendances are dropped and the trim is announced", async () => {
+    const model = new RecordingModel();
+    const trims: Array<{ kept: number; dropped: number; tokens: number }> = [];
+    const graph = buildAgentGraph({
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      maxHistoryTokens: 2_000,
+      onHistoryTrim: (info) => trims.push(info),
+    });
+    await graph.invoke(
+      { messages: seed() },
+      { configurable: { thread_id: "ceiling-on" } },
+    );
+    const seen = model.seen[0];
+    expect(seen).toBeDefined();
+    if (!seen) return;
+    expect(seen.length).toBeLessThan(17);
+    // One system prompt, first, and the window opens on a customer message right after it.
+    expect(seen[0]?.getType()).toBe("system");
+    expect(seen[1]?.getType()).toBe("human");
+    // The turn being answered is never the thing that gets dropped.
+    expect(seen.at(-1)?.content).toContain("resposta 7");
+    expect(String(seen[1]?.content)).not.toContain("pergunta 0");
+    expect(trims).toHaveLength(1);
+    expect(trims[0]?.dropped).toBeGreaterThan(0);
+    expect(trims[0]?.kept).toBe(seen.length - 1);
+    expect(trims[0]?.tokens).toBeGreaterThan(0);
+  });
+
+  test("a ceiling the thread already fits under changes nothing and stays silent", async () => {
+    const model = new RecordingModel();
+    const trims: unknown[] = [];
+    const graph = buildAgentGraph({
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      maxHistoryTokens: 1_000_000,
+      onHistoryTrim: (info) => trims.push(info),
+    });
+    await graph.invoke(
+      { messages: seed() },
+      { configurable: { thread_id: "ceiling-slack" } },
+    );
+    expect(model.seen[0]).toHaveLength(17);
+    expect(trims).toHaveLength(0);
+  });
+});

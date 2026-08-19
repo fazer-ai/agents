@@ -138,6 +138,9 @@ interface VisionState {
 
 interface LimitsState {
   maxToolCalls: string;
+  // Empty string = no ceiling. Kept as text so an operator can clear the field to disable it; the
+  // reader turns anything non-positive into null.
+  maxHistoryTokens: string;
 }
 
 // NOTE: The allowed-host list is edited as raw textarea text (one per line) and only turns into an
@@ -1855,6 +1858,24 @@ export function BehaviorTab({
                   value={limits.maxToolCalls}
                   onChange={(e) =>
                     setLimits({ ...limits, maxToolCalls: e.target.value })
+                  }
+                />
+              </FormField>
+              <FormField
+                label={t("editor.limitsMaxHistoryTokens", "History ceiling")}
+                description={t(
+                  "editor.limitsMaxHistoryTokensHint",
+                  "The agent remembers every conversation it has had with this contact on this channel, and sends all of it on every turn, so a returning customer gets slower and more expensive the more they talk. This caps how much of that memory travels: older attendances stop being sent once the cap is reached, and the conversation being answered is never dropped. Counts the history only, so leave room above it for the instructions and the tool definitions. Empty = no ceiling. 2,000-1,000,000.",
+                )}
+              >
+                <Input
+                  type="number"
+                  min={2000}
+                  max={1000000}
+                  placeholder={t("editor.limitsNoCeiling", "No ceiling")}
+                  value={limits.maxHistoryTokens}
+                  onChange={(e) =>
+                    setLimits({ ...limits, maxHistoryTokens: e.target.value })
                   }
                 />
               </FormField>

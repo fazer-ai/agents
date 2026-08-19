@@ -451,6 +451,19 @@ export async function runAgentNudge(
         model: cfg.mc.model,
         detail: { retriedEmptyResponse: attempt },
       }),
+    // The proactive turn runs on the SAME thread as the reactive one, so it is subject to the same
+    // ceiling and has to leave the same trace. INFO for the reason given in runtime.ts.
+    onHistoryTrim: ({ kept, dropped, tokens }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "info",
+        status: "ok",
+        detail: {
+          historyKept: kept,
+          historyDropped: dropped,
+          historyTokens: tokens,
+        },
+      }),
   });
   const callbacks = buildCallbacks(cfg, {
     tenantId,

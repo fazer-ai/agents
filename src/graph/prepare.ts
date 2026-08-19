@@ -221,6 +221,9 @@ export interface AgentConfig {
   timezone: string;
   // Soft+hard cap on tool executions within one turn (agent.settings.limits.maxToolCalls).
   maxToolCalls: number;
+  // Ceiling on the history tokens sent to the model (agent.settings.limits.maxHistoryTokens).
+  // null = no ceiling, send the whole thread.
+  maxHistoryTokens: number | null;
   // Whether this agent's tool lines log the VALUES the model sent instead of their shape
   // (agent.settings.observability.logToolValues; off by default — see src/modules/flowlog/shape.ts).
   logToolValues: boolean;
@@ -554,6 +557,7 @@ export async function loadAgentConfig(
   const promptSections = [attributeSection, appointmentSection].filter(
     (s): s is string => s !== null,
   );
+  const limits = readLimitsConfig(effSettings);
   return {
     agentId: agent.id,
     agentBotId: bot?.chatwootAgentBotId ?? null,
@@ -605,7 +609,8 @@ export async function loadAgentConfig(
     },
     contactName: conv?.contact?.name ?? null,
     timezone,
-    maxToolCalls: readLimitsConfig(effSettings).maxToolCalls,
+    maxToolCalls: limits.maxToolCalls,
+    maxHistoryTokens: limits.maxHistoryTokens,
     logToolValues: readObservabilityConfig(effSettings).logToolValues,
   };
 }
@@ -1201,6 +1206,12 @@ export interface GraphBuildDeps {
   // Fired when the hard tool-call limit forces a no-tools answer (runtime emits a flow warn).
   onToolLimit?: (info: { maxToolCalls: number; toolCalls: number }) => void;
   onModelRetry?: (info: { attempt: number; error: unknown }) => void;
+  // Fired when a turn dropped history to fit maxHistoryTokens (runtime records it in the trail).
+  onHistoryTrim?: (info: {
+    kept: number;
+    dropped: number;
+    tokens: number;
+  }) => void;
 }
 
 export async function buildModelAndGraph(
@@ -1231,5 +1242,7 @@ export async function buildModelAndGraph(
     maxToolCalls: cfg.maxToolCalls,
     onToolLimit: deps.onToolLimit,
     onModelRetry: deps.onModelRetry,
+    maxHistoryTokens: cfg.maxHistoryTokens,
+    onHistoryTrim: deps.onHistoryTrim,
   });
 }

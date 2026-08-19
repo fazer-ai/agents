@@ -114,6 +114,8 @@ describe("behavior-settings — observability", () => {
       { observability: { logToolValues: "true" } },
     );
     expect(next.observability).toEqual({ logToolValues: true });
-    expect(next.limits).toEqual({ maxToolCalls: 7 });
+    // The limits block is re-read through its typed reader, so it comes back normalized in full:
+    // the untouched tool-call cap plus the history ceiling explicitly at "off".
+    expect(next.limits).toEqual({ maxToolCalls: 7, maxHistoryTokens: null });
   });
 });

@@ -293,6 +293,21 @@ export async function runLoadedTurn(
         model: loaded.mc.model,
         detail: { retriedEmptyResponse: attempt },
       }),
+    // The history ceiling dropped older attendances from this turn. INFO, not warn: emitFlowEvent
+    // fans warn/error out to the alert channels, and a correctly configured ceiling trims on nearly
+    // every turn of a long thread, so a warn here would page the operator forever for working.
+    // Counts only, never a fragment of what was dropped.
+    onHistoryTrim: ({ kept, dropped, tokens }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "info",
+        status: "ok",
+        detail: {
+          historyKept: kept,
+          historyDropped: dropped,
+          historyTokens: tokens,
+        },
+      }),
   });
   const callbacks = buildCallbacks(loaded, {
     tenantId,

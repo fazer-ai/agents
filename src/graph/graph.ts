@@ -9,7 +9,11 @@ import {
 } from "@langchain/langgraph";
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
+import logger from "@/api/lib/logger";
+import { selectHistoryWindow } from "@/graph/history-window";
+import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
+import { loadTokenCounter } from "@/graph/token-count";
 
 // Minimal functional supervisor: an agent node over the persisted message history, with an
 // optional tool-calling loop (agent ⇄ tools until the model stops calling tools). The
@@ -34,6 +38,17 @@ export interface BuildAgentGraphParams {
   // model-limit). Same purpose as onToolLimit: without it a recovered turn looks like a clean one
   // and the fault rate stays invisible.
   onModelRetry?: (info: { attempt: number; error: unknown }) => void;
+  // Ceiling on the history tokens handed to the model (agent.settings.limits.maxHistoryTokens).
+  // null/undefined = send the whole thread, which is the historical behavior.
+  maxHistoryTokens?: number | null;
+  // Fired when a turn actually dropped messages, so the runtime can put it in the turn trail.
+  // Trimming that leaves no trace is indistinguishable, from the operator's chair, from the agent
+  // forgetting things on its own.
+  onHistoryTrim?: (info: {
+    kept: number;
+    dropped: number;
+    tokens: number;
+  }) => void;
 }
 
 const DEFAULT_MAX_TOOL_CALLS = 10;
@@ -50,6 +65,34 @@ function toolCallsSinceLastHuman(history: BaseMessage[]): number {
   return count;
 }
 
+// Applies the per-agent history ceiling, if there is one. The whole path is best-effort: trimming
+// is an optimization and must never cost a customer their answer, so anything unexpected (a missing
+// encoding on a broken install, a throw from the counter) falls back to the full history — slow and
+// expensive, but exactly the behavior that shipped before the ceiling existed.
+async function applyHistoryCeiling(
+  full: BaseMessage[],
+  maxHistoryTokens: number | null | undefined,
+  onHistoryTrim: BuildAgentGraphParams["onHistoryTrim"],
+): Promise<BaseMessage[]> {
+  if (!maxHistoryTokens) return full;
+  try {
+    const count = await loadTokenCounter();
+    if (!count) return full;
+    const window = selectHistoryWindow(full, maxHistoryTokens, count);
+    if (window.dropped > 0) {
+      onHistoryTrim?.({
+        kept: window.kept.length,
+        dropped: window.dropped,
+        tokens: window.tokens,
+      });
+    }
+    return window.kept;
+  } catch (err) {
+    logger.warn({ err }, "history ceiling: trim failed, sending full history");
+    return full;
+  }
+}
+
 export function buildAgentGraph({
   model,
   systemPrompt,
@@ -58,6 +101,8 @@ export function buildAgentGraph({
   maxToolCalls,
   onToolLimit,
   onModelRetry,
+  maxHistoryTokens,
+  onHistoryTrim,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
@@ -68,7 +113,16 @@ export function buildAgentGraph({
     // system message that leaked into the history (e.g. a proactive nudge persisted as a
     // SystemMessage by an older build). Providers like Google reject a second one outright with
     // "System messages are only permitted as the first passed message".
-    const history = state.messages.filter((m) => m.getType() !== "system");
+    const full = state.messages.filter((m) => m.getType() !== "system");
+
+    // Bound the history BEFORE the tool-call budget below, so both read the same window. The window
+    // always keeps the last human message and everything after it, so the tool count is unaffected
+    // by the trim — this ordering is about the two never disagreeing, not about the count changing.
+    const history = await applyHistoryCeiling(
+      full,
+      maxHistoryTokens,
+      onHistoryTrim,
+    );
 
     // Tool-call budget for this turn. Hard limit reached → invoke the RAW model (no tools bound), so
     // the response carries no tool_calls and toolsCondition routes to END. Approaching it (N-2) →
@@ -121,17 +175,5 @@ export function lastAssistantText(messages: BaseMessage[]): string {
   if (!last) return "";
   const content = last.content;
   if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((c) =>
-        typeof c === "string"
-          ? c
-          : c && typeof c === "object" && "text" in c
-            ? String((c as { text: unknown }).text)
-            : "",
-      )
-      .join("")
-      .trim();
-  }
-  return "";
+  return contentToText(content).trim();
 }

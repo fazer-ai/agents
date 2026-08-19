@@ -239,6 +239,11 @@ async function buildPlaygroundGraph(params: {
   // Same warn line the reactive turn leaves when a model call had to be retried. The caller passes
   // it because the FlowContext is the caller's.
   onModelRetry?: (info: { attempt: number; error: unknown }) => void;
+  onHistoryTrim?: (info: {
+    kept: number;
+    dropped: number;
+    tokens: number;
+  }) => void;
 }) {
   const { tenantId, agentId, threadId, base } = params;
   const loaded = await loadPlaygroundConfig({
@@ -270,6 +275,7 @@ async function buildPlaygroundGraph(params: {
     makeModel: params.deps?.makeModel,
     checkpointer: params.deps?.checkpointer,
     onModelRetry: params.onModelRetry,
+    onHistoryTrim: params.onHistoryTrim,
   });
   // Tag usage as playground so it never pollutes the real dashboard figures (the dashboard
   // defaults to source="inbox"). inboxId is null here (no mirror conversation).
@@ -427,6 +433,17 @@ export async function runPlaygroundTurn(
           level: "warn",
           status: "ok",
           detail: { retriedEmptyResponse: attempt },
+        }),
+      onHistoryTrim: ({ kept, dropped, tokens }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "info",
+          status: "ok",
+          detail: {
+            historyKept: kept,
+            historyDropped: dropped,
+            historyTokens: tokens,
+          },
         }),
     });
 
@@ -626,6 +643,17 @@ export async function runPlaygroundFollowup(
         level: "warn",
         status: "ok",
         detail: { retriedEmptyResponse: attempt },
+      }),
+    onHistoryTrim: ({ kept, dropped, tokens }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "info",
+        status: "ok",
+        detail: {
+          historyKept: kept,
+          historyDropped: dropped,
+          historyTokens: tokens,
+        },
       }),
   });
 

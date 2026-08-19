@@ -350,6 +350,9 @@ function readBehaviorState(a: Agent) {
     },
     limits: {
       maxToolCalls: num(li.maxToolCalls) || "10",
+      // NOTE: Empty means no ceiling, so an absent/zero value must stay empty rather than pick up a
+      // default the way maxToolCalls does.
+      maxHistoryTokens: num(li.maxHistoryTokens),
     },
     attributeContext: {
       conversation: attrKeys(ac.conversation),
@@ -605,8 +608,12 @@ function AgentEditor() {
     baseURL: "",
     extractionPrompt: DEFAULT_EXTRACTION_PROMPT,
   });
-  // Runtime limits. Mirrors agent.settings.limits (modules/agents/limits): the per-turn tool-call cap.
-  const [limits, setLimits] = useState({ maxToolCalls: "10" });
+  // Runtime limits. Mirrors agent.settings.limits (modules/agents/limits): the per-turn tool-call
+  // cap and the per-turn history ceiling.
+  const [limits, setLimits] = useState({
+    maxToolCalls: "10",
+    maxHistoryTokens: "",
+  });
   // Whether this agent's tool lines log the values the model sent instead of their shape. Mirrors
   // agent.settings.observability (modules/flowlog/settings).
   const [observability, setObservability] = useState({ logToolValues: false });
@@ -1068,6 +1075,10 @@ function AgentEditor() {
       },
       limits: {
         maxToolCalls: Number(limits.maxToolCalls) || 10,
+        // NOTE: An emptied field is how the operator turns the ceiling OFF, so it has to reach the
+        // API as null. `Number("") || 0` would send 0, which the reader also reads as off, but null
+        // is what "not configured" means everywhere else in this payload.
+        maxHistoryTokens: Number(limits.maxHistoryTokens) || null,
       },
       observability: { logToolValues: observability.logToolValues },
       attributeContext: {

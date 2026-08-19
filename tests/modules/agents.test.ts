@@ -368,12 +368,15 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
     expect(JSON.stringify(row.settings)).not.toContain("senha-secreta");
   });
 
+  // Pinned as the WHOLE object rather than field by field: what an agent is born with when the
+  // caller sent no config is the one place a value nobody chose can reach production. It carried a
+  // temperature until an Anthropic model turned that into a 400 on every turn (the parameter was
+  // already inert on the gpt-5 model named here), so an added field must fail here rather than ship.
   test("create without modelConfig applies the default model config", async () => {
     const a = await createAgent(ctx(tenantC), { name: "Defaulted" }, appDb);
     expect(a.modelConfig).toEqual({
       provider: "openai",
       model: "gpt-5.4-mini",
-      temperature: 0.7,
     });
     expect(a.mode).toBe("test");
   });

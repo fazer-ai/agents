@@ -71,7 +71,12 @@ export type ModelConfig = z.infer<typeof modelConfigSchema>;
 export const DEFAULT_MODEL_CONFIG: ModelConfig = {
   provider: "openai",
   model: "gpt-5.4-mini",
-  temperature: 0.7,
+  // NOTE: no temperature on purpose. It used to ship 0.7, which was inert where it shipped (the
+  // model named here is a gpt-5, and `openaiTemperature` drops the parameter for that family) and
+  // only came alive on a provider switch — where Anthropic's current models answer 400 to any
+  // temperature and every turn fails. A value the operator never chose must not be the one that
+  // breaks their agent, and the editor already creates agents with the field empty, so leaving it
+  // unset is also what makes the API and the console agree.
 };
 
 export function parseModelConfig(raw: unknown): ModelConfig {
@@ -83,4 +88,29 @@ export function parseModelConfig(raw: unknown): ModelConfig {
     );
   }
   return parsed.data;
+}
+
+// The temperature for the calls WE pin rather than the operator: the guardrail judge
+// (`src/graph/runtime.ts`) and the TTS speech rewrite (`src/graph/prepare.ts`). Both want a
+// deterministic pass over text that already exists, and neither is a preference anyone expressed.
+//
+// Anthropic is refused the parameter entirely instead of being pattern-matched. Its current
+// generation answers 400 to ANY temperature (`claude-sonnet-5` and `claude-opus-5`: "`temperature`
+// is deprecated for this model"; `claude-fable-5`: "not supported ... when set to non-default
+// values"), while `claude-haiku-4-5` and `claude-sonnet-4-5` still accept it, and there is no way
+// to ask which is which: the /v1/models capabilities never mention the parameter, and
+// `claude-opus-4-5` carries the same `effort` capability as the models that reject it while
+// accepting temperature. A model-name pattern would be a copy of a vendor policy that moves without
+// us, and the cost of being wrong is not symmetric — guardrail analysis is fail-open, so a 400 on
+// every call does not read as a broken guardrail, it reads as one that approves everything.
+//
+// What the blanket drop costs was measured rather than assumed. On `claude-haiku-4-5`, which does
+// accept the parameter, the guardrail battery is identical with `temperature: 0` and with the field
+// absent: violations caught 16/16 in both arms, and on the output rewrite the customer-facing price
+// survived 16/16 while the internal cost leaked 0/16 in both. The operator's own temperature is not
+// touched by this and still travels as they set it.
+export function pinnedTemperature(
+  provider: ModelConfig["provider"],
+): 0 | undefined {
+  return provider === "anthropic" ? undefined : 0;
 }

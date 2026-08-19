@@ -22,6 +22,7 @@ export {
   type ModelConfig,
   modelConfigSchema,
   parseModelConfig,
+  pinnedTemperature,
 } from "./model-config";
 export { REASONING_EFFORTS, type ReasoningEffort } from "./openai-reasoning";
 

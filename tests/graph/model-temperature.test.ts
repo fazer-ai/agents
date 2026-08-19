@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatAnthropic } from "@langchain/anthropic";
 import type { ChatOpenAI } from "@langchain/openai";
+import { DEFAULT_MODEL_CONFIG } from "@/graph/model-config";
 import { createChatModel } from "@/graph/models";
 
 // OpenAI's reasoning families answer 400 ("Unsupported value: 'temperature' does not support 0.3
@@ -103,5 +104,15 @@ describe("createChatModel temperature on fine-tuned ids", () => {
   test("kept when the base model does not", () => {
     expect(openai("ft:gpt-4o:acme::x1", 0.3).temperature).toBe(0.3);
     expect(openai("ft:gpt-5-chat:acme::x1", 0.3).temperature).toBe(0.3);
+  });
+});
+
+// The shipped default is a value the operator never chose, so it must not be a value that can break
+// their agent. It was also inert where it shipped: DEFAULT_MODEL_CONFIG names a gpt-5 model, whose
+// temperature `openaiTemperature` drops anyway. It only ever came alive on a provider switch, which
+// is exactly where Anthropic answers 400 to it.
+describe("the shipped default carries no temperature", () => {
+  test("DEFAULT_MODEL_CONFIG leaves the knob unset", () => {
+    expect(DEFAULT_MODEL_CONFIG.temperature).toBeUndefined();
   });
 });

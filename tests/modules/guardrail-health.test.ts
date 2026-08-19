@@ -315,6 +315,44 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
     expect(health.lastAt).toBe(ago(3).toISOString());
   });
 
+  // Two rows can carry the same createdAt, and the error has to come from one of them rather than
+  // from a third read of "the newest row". The later insert wins; both answers agree on the time.
+  test("a tie on the timestamp resolves to the later insert", async () => {
+    // Its own agent: the rows above are shared by every test in this block, and a burst asserted
+    // against a shared agent would be answered by whatever an earlier test happened to add.
+    const burst = (
+      await suDb.agent.create({
+        data: {
+          tenantId: tenantA,
+          name: "Burst",
+          systemPrompt: "x",
+          modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        },
+        select: { id: true },
+      })
+    ).id;
+    const at = ago(4);
+    for (const msg of ["first of the burst", "second of the burst"]) {
+      await suDb.executionLog.create({
+        data: {
+          tenantId: tenantA,
+          turnId: "g10",
+          agentId: burst,
+          stage: "guardrail",
+          level: "warn",
+          status: "error",
+          source: "inbox",
+          errorMessage: msg,
+          createdAt: at,
+        },
+      });
+    }
+    const health = await readGuardrailHealth(ctx(tenantA), burst, SINCE, appDb);
+    expect(health.failures).toBe(2);
+    expect(health.lastAt).toBe(at.toISOString());
+    expect(health.lastError).toBe("second of the burst");
+  });
+
   test("RLS: a tenant only ever reads its own agent's failures", async () => {
     const health = await readGuardrailHealth(
       ctx(tenantB),

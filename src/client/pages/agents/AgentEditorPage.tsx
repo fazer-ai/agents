@@ -880,6 +880,10 @@ function AgentEditor() {
       bumpSync(...SECTION_KEYS);
       setStaleNotice(false);
       setConflictRetry(null);
+      // The other half of the sync tick. A reload is an explicit "tell me the current state", and
+      // without it the server-read parts of the page would answer with whatever they read the first
+      // time, which is the state the operator just asked to replace.
+      setServerSyncTick((n) => n + 1);
       if (hoursRes.data) setHours([...hoursRes.data.businessHours]);
     } catch {
       setError(true);
@@ -1224,25 +1228,27 @@ function AgentEditor() {
   // configuration until the call is made, and the pass is fail-open, so each one delivers messages
   // as if they had been reviewed.
   //
-  // A snapshot, not a subscription. It is taken when the agent loads, when guardrails are switched
-  // on, and after every successful save, which is the operator's loop here: change the model, save,
-  // see whether the screen is still failing. It does NOT follow live traffic, so an editor left
-  // open does not learn about failures that started meanwhile. Polling a config screen to close
-  // that gap costs a request a minute on every open editor to shorten a wait that ends the next
-  // time anybody looks.
+  // A snapshot, not a subscription, and `serverSyncTick` is what decides when it is retaken: every
+  // successful load (including the Reload the stale-state banner offers) and every successful save.
+  // Those are the two moments the operator expects a fresh answer. Nothing is fetched before the
+  // first load completes (the tick starts at 0), so the page does not spend a request answering a
+  // question about an agent it has not read yet.
   //
-  // A request that FAILS leaves this null, which the panel reads as "nothing to say" rather than
-  // as a warning. That is the same call the panel already makes for an unloaded vault list, and for
-  // the same reason: this panel's currency is that every line on it is worth acting on, and a line
-  // saying the console could not reach its own API is one the operator cannot act on from here. The
-  // next save retries.
-  const [savedTick, setSavedTick] = useState(0);
+  // It does NOT follow live traffic. An editor left open does not learn about failures that started
+  // meanwhile, and closing that gap by polling costs a request a minute on every open editor to
+  // shorten a wait that ends the next time anybody loads or saves.
+  //
+  // A request that fails clears the snapshot instead of leaving the last one on screen, and a null
+  // snapshot is read by the panel as "nothing to say" rather than as a warning. Both halves are the
+  // same call the panel already makes for an unloaded vault list: under-reporting for a moment is
+  // the safe direction, because a stale count invites acting on a number nobody can vouch for, and
+  // a line saying the console could not reach its own API is not actionable from this screen.
+  const [serverSyncTick, setServerSyncTick] = useState(0);
   const [guardrailHealth, setGuardrailHealth] =
     useState<GuardrailHealthResp | null>(null);
   const guardrailsOn = guardrails.enabled;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: savedTick is the refetch trigger, not a value this effect reads
   useEffect(() => {
-    if (!id || !guardrailsOn) {
+    if (!id || !guardrailsOn || serverSyncTick === 0) {
       setGuardrailHealth(null);
       return;
     }
@@ -1251,12 +1257,16 @@ function AgentEditor() {
       .agents({ id })
       .guardrails.health.get()
       .then(({ data }) => {
-        if (alive && data) setGuardrailHealth(data);
+        if (!alive) return;
+        setGuardrailHealth(data ?? null);
+      })
+      .catch(() => {
+        if (alive) setGuardrailHealth(null);
       });
     return () => {
       alive = false;
     };
-  }, [id, guardrailsOn, savedTick]);
+  }, [id, guardrailsOn, serverSyncTick]);
 
   // Live config-health (item 1): features turned on but missing the credential they need to run, OR
   // referencing a credential whose secret is not filled in yet (pending). The import that strips
@@ -1858,10 +1868,10 @@ function AgentEditor() {
     if (updatedAt) loadedUpdatedAtRef.current = updatedAt;
     setStaleNotice(false);
     setConflictRetry(null);
-    // Every successful save funnels through here, which makes it the one place that can tell the
-    // server-read parts of this page to look again. The guardrail health snapshot is the first: a
-    // save is the operator's "I fixed it", and it is the only moment they are owed a fresh answer.
-    setSavedTick((n) => n + 1);
+    // Every successful save funnels through here, which makes it one of the two places that can tell
+    // the server-read parts of this page to look again (the other is `load`). A save is the
+    // operator's "I fixed it", and the guardrail health snapshot is the first reader of the tick.
+    setServerSyncTick((n) => n + 1);
   }
 
   async function saveAgent(

@@ -70,22 +70,35 @@ export async function readGuardrailHealth(
     if (!agent) {
       throw new NotFoundError("agent not found", "errors.agentNotFound");
     }
-    const failures = await db.executionLog.count({ where });
-    const last = failures
+    // The count and the newest timestamp come from ONE statement, because they have to agree. The
+    // rows are written fire-and-forget from other transactions and Postgres reads at READ COMMITTED,
+    // so two separate statements can straddle a commit and answer "2 failures, the most recent at
+    // <the third one's time>". The error is then read AT that timestamp rather than "the newest
+    // row", which keeps it part of the same answer instead of a third snapshot.
+    //
+    // Newest by createdAt, never by id: the writes are independent transactions and `now()` is the
+    // TRANSACTION's start time, so a turn that began earlier can be inserted later and take a higher
+    // id. The sequence would then name the wrong row as the most recent failure, which is the one
+    // field an operator reads to decide whether the screen is still failing.
+    const agg = await db.executionLog.aggregate({
+      where,
+      _count: { _all: true },
+      _max: { createdAt: true },
+    });
+    const lastAt = agg._max.createdAt;
+    const last = lastAt
       ? await db.executionLog.findFirst({
-          where,
-          // By createdAt, not by id. The rows are written fire-and-forget from independent
-          // transactions, and `now()` is the TRANSACTION's start time, so a turn that began
-          // earlier can be inserted later and take a higher id. Ordering by the sequence would
-          // then report an older failure as the most recent one, which is the single field an
-          // operator uses to decide whether the screen is still failing. id breaks ties.
-          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-          select: { createdAt: true, errorMessage: true },
+          // Exact timestamp, so this can only ever return a row the aggregate already counted. Two
+          // rows can share it (the resolution is microseconds, but a burst is a burst), and then the
+          // later insert wins; either one is "the most recent failure" and they agree on the time.
+          where: { ...where, createdAt: lastAt },
+          orderBy: { id: "desc" },
+          select: { errorMessage: true },
         })
       : null;
     return {
-      failures,
-      lastAt: last ? last.createdAt.toISOString() : null,
+      failures: agg._count._all,
+      lastAt: lastAt ? lastAt.toISOString() : null,
       lastError: last?.errorMessage ?? null,
     };
   });

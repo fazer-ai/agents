@@ -103,6 +103,17 @@ type AgentResp = Awaited<
   ReturnType<ReturnType<typeof api.api.v1.agents>["get"]>
 >;
 type Agent = NonNullable<AgentResp["data"]>["agent"];
+// Derived, never hand-declared (docs/eden-treaty.md): a mirrored interface drifts the moment the
+// controller adds a field, and it did. Written by hand this type omitted `lastError`, which is the
+// one part of the reading that names the vendor's refusal, so the warning it feeds could only give
+// generic advice about a cause the server had already identified.
+type GuardrailHealthResp = NonNullable<
+  Awaited<
+    ReturnType<
+      ReturnType<typeof api.api.v1.agents>["guardrails"]["health"]["get"]
+    >
+  >["data"]
+>;
 type TabKey =
   | "general"
   | "channels"
@@ -1226,11 +1237,8 @@ function AgentEditor() {
   // saying the console could not reach its own API is one the operator cannot act on from here. The
   // next save retries.
   const [savedTick, setSavedTick] = useState(0);
-  const [guardrailHealth, setGuardrailHealth] = useState<{
-    windowHours: number;
-    failures: number;
-    lastAt: string | null;
-  } | null>(null);
+  const [guardrailHealth, setGuardrailHealth] =
+    useState<GuardrailHealthResp | null>(null);
   const guardrailsOn = guardrails.enabled;
   // biome-ignore lint/correctness/useExhaustiveDependencies: savedTick is the refetch trigger, not a value this effect reads
   useEffect(() => {
@@ -1264,6 +1272,7 @@ function AgentEditor() {
   // t('editor.configIssuePending.guardrails', 'The guardrails credential is referenced but not filled in yet, so messages go out unscreened.')
   // t('editor.configIssueUnresolved.guardrails', 'The guardrails credential no longer exists, so messages go out unscreened.')
   // t('editor.configIssueGuardrailsFailing', 'Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. Check the model, the endpoint and the key.')
+  // t('editor.configIssueGuardrailsFailingCause', 'Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. The last one said: {{error}}')
   // t('editor.configIssuePending.model', 'The model credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.stt', 'The transcription credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.tts', 'The audio-reply credential is referenced but not filled in yet.')
@@ -1407,17 +1416,28 @@ function AgentEditor() {
     // panel's other lines describe a state ("no key set"), this one describes what already happened,
     // and an operator has to be told that those turns went out unscreened rather than blocked.
     if (issue.key === "guardrailsFailing") {
-      return t(
-        "editor.configIssueGuardrailsFailing",
-        "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. Check the model, the endpoint and the key.",
-        {
-          failures: issue.failures ?? 0,
-          hours: guardrailHealth?.windowHours ?? 24,
-          when: issue.lastFailureAt
-            ? formatRelativeTime(issue.lastFailureAt, i18n.language)
-            : "-",
-        },
-      );
+      const params = {
+        failures: issue.failures ?? 0,
+        hours: guardrailHealth?.windowHours ?? 24,
+        when: issue.lastFailureAt
+          ? formatRelativeTime(issue.lastFailureAt, i18n.language)
+          : "-",
+        error: guardrailHealth?.lastError ?? "",
+      };
+      // The vendor's own words when they survived the write, generic advice when they did not. They
+      // are what separates "look at this" from "fix this": "400 temperature is not supported" names
+      // the setting, while a list of three things to check makes the operator try all of them.
+      return params.error
+        ? t(
+            "editor.configIssueGuardrailsFailingCause",
+            "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. The last one said: {{error}}",
+            params,
+          )
+        : t(
+            "editor.configIssueGuardrailsFailing",
+            "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. Check the model, the endpoint and the key.",
+            params,
+          );
     }
     if (issue.pending) {
       // biome-ignore lint/plugin/no-dynamic-i18n-key: pending keys registered via magic comments above computeConfigIssues

@@ -258,6 +258,7 @@ export const agentsController = new Elysia({
   .get(
     "/:id/guardrails/health",
     async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
       windowHours: GUARDRAIL_HEALTH_WINDOW_HOURS,
       ...(await readGuardrailHealth(
         ctxOrThrow(tenantContext),

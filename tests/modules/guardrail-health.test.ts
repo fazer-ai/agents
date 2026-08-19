@@ -280,6 +280,41 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
     expect(health.lastAt).toBe(ago(1).toISOString());
   });
 
+  // The rows are written fire-and-forget from independent transactions, and `now()` is the
+  // TRANSACTION's start time, so the sequence can hand a higher id to a turn that started earlier.
+  // Reading "the most recent" off the id would then report a failure that is not the most recent,
+  // and that single field is what an operator uses to decide whether the screen is still failing.
+  test("the most recent failure is the newest one, not the highest id", async () => {
+    const older = await suDb.executionLog.create({
+      data: {
+        tenantId: tenantA,
+        turnId: "g9",
+        agentId: OTHER_AGENT,
+        stage: "guardrail",
+        level: "warn",
+        status: "error",
+        source: "inbox",
+        errorMessage: "started earlier, written later",
+        createdAt: ago(30),
+      },
+      select: { id: true },
+    });
+    const newer = await suDb.executionLog.findFirst({
+      where: { tenantId: tenantA, turnId: "g6" },
+      select: { id: true },
+    });
+    // The row that must win is the one with the EARLIER id, which is the whole point.
+    expect(older.id > (newer?.id ?? 0n)).toBe(true);
+    const health = await readGuardrailHealth(
+      ctx(tenantA),
+      OTHER_AGENT,
+      SINCE,
+      appDb,
+    );
+    expect(health.lastError).toBe("not this agent");
+    expect(health.lastAt).toBe(ago(3).toISOString());
+  });
+
   test("RLS: a tenant only ever reads its own agent's failures", async () => {
     const health = await readGuardrailHealth(
       ctx(tenantB),

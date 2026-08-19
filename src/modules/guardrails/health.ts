@@ -74,7 +74,12 @@ export async function readGuardrailHealth(
     const last = failures
       ? await db.executionLog.findFirst({
           where,
-          orderBy: { id: "desc" },
+          // By createdAt, not by id. The rows are written fire-and-forget from independent
+          // transactions, and `now()` is the TRANSACTION's start time, so a turn that began
+          // earlier can be inserted later and take a higher id. Ordering by the sequence would
+          // then report an older failure as the most recent one, which is the single field an
+          // operator uses to decide whether the screen is still failing. id breaks ties.
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
           select: { createdAt: true, errorMessage: true },
         })
       : null;

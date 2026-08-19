@@ -680,6 +680,7 @@
       "vision": "Image/document reading is on but has no API key set."
     },
     "configIssueGuardrailsFailing": "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. Check the model, the endpoint and the key.",
+    "configIssueGuardrailsFailingCause": "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. The last one said: {{error}}",
     "configIssueKnowledge": "Knowledge base \"{{name}}\" has documents that need indexing.",
     "configIssuePending": {
       "embedding": "A knowledge base needs indexing, but the embedding credential is not filled in yet.",

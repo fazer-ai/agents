@@ -682,6 +682,7 @@
       "vision": "A leitura de imagens/documentos está ligada, mas sem chave de API definida."
     },
     "configIssueGuardrailsFailing": "Os guardrails estão ligados, mas {{failures}} das verificações não conseguiram rodar nas últimas {{hours}} horas (a mais recente {{when}}), então essas mensagens saíram sem passar pela revisão. Confira o modelo, o endpoint e a chave.",
+    "configIssueGuardrailsFailingCause": "Os guardrails estão ligados, mas {{failures}} das verificações não conseguiram rodar nas últimas {{hours}} horas (a mais recente {{when}}), então essas mensagens saíram sem passar pela revisão. A última respondeu: {{error}}",
     "configIssueKnowledge": "A base de conhecimento \"{{name}}\" tem documentos que precisam ser indexados.",
     "configIssuePending": {
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding ainda não foi preenchida.",

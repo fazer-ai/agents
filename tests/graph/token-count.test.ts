@@ -50,6 +50,32 @@ describe("loadTokenCounter", () => {
     expect(toolCall).toBeGreaterThan(empty + 20);
   });
 
+  // A customer can type anything, including a tokenizer control marker. js-tiktoken's default is to
+  // THROW on one, and the caller treats a throw as "ceiling unavailable" and sends the full history
+  // — so the default would hand any customer a one-message switch for turning off the agent's
+  // ceiling. The marker has to count as the ordinary characters it is.
+  test("a tokenizer control marker in customer text is counted, not thrown on", async () => {
+    const count = await loadTokenCounter();
+    if (!count) throw new Error("encoding unavailable");
+    expect(() =>
+      count(new HumanMessage("bom dia <|endoftext|> tudo bem?")),
+    ).not.toThrow();
+    expect(
+      count(new HumanMessage("bom dia <|endoftext|> tudo bem?")),
+    ).toBeGreaterThan(count(new HumanMessage("bom dia tudo bem?")));
+    // Inside a tool result too, which is the other half of what travels in a history.
+    expect(() =>
+      count(
+        new AIMessage({
+          content: "",
+          tool_calls: [
+            { name: "x", args: { q: "<|fim_prefix|>" }, id: "call_1" },
+          ],
+        }),
+      ),
+    ).not.toThrow();
+  });
+
   test("content delivered as text blocks is counted like a string", async () => {
     const count = await loadTokenCounter();
     if (!count) throw new Error("encoding unavailable");

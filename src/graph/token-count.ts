@@ -15,14 +15,25 @@ import { contentToText } from "./message-text";
 // tool-driven thread are exactly the ones it cannot see.
 //
 // So the ranks are read from disk, and LAZILY: an install that never enables a ceiling never pays
-// for them. Measured on an M-series Mac: +96MB RSS and ~96ms to build cl100k_base once, then ~22ms
-// to tokenize 243k chars (76.8k tokens).
+// for them. Measured inside the deploy base image (oven/bun:1-alpine, arm64): RSS 34MB -> 209MB,
+// paid once, then ~22ms to tokenize 243k chars (76.8k tokens).
 //
-// ONE encoding for every provider. cl100k_base is exact for the OpenAI family and an approximation
-// for Gemini/Anthropic, which is the right trade for a CEILING: this number decides how much
-// history to keep and is never shown as a bill. The cheap alternative is worse in the direction
-// that matters — measured against this tokenizer, bytes/4 comes in at -40% on a JSON tool result
-// and -53% on a URL carrying a uuid, and undercounting is what lets a thread through the bound.
+// ONE encoding for every provider: o200k_base, which is what every current OpenAI model uses
+// (gpt-4o, gpt-4.1, the gpt-5 family, the o-series). js-tiktoken ships OpenAI tokenizers only, and
+// no other provider publishes a local table — Anthropic and Google expose token-counting ENDPOINTS
+// instead, and a network round trip per turn is the very thing this module exists to avoid. So off
+// the OpenAI family the number is an approximation, which is the right trade for a CEILING: it
+// decides how much history to keep and is never shown as a bill.
+//
+// The legacy cl100k_base table costs half the memory and was measured against o200k on this
+// product's own content: +15.3% aggregate and +11% to +30% on Portuguese prose, because the older
+// vocabulary splits accented words harder. Overcounting is the safe direction, but it is 15% of a
+// configured budget quietly going unused on the model family this product defaults to, which does
+// not pay for the 83MB it saves.
+//
+// The cheap alternative is worse in the direction that matters — measured against this tokenizer,
+// bytes/4 comes in at -40% on a JSON tool result and -53% on a URL carrying a uuid, and
+// undercounting is what lets a thread through the bound.
 
 export type TokenCounter = (message: BaseMessage) => number;
 
@@ -37,7 +48,7 @@ async function build(): Promise<TokenCounter | null> {
   try {
     const [{ Tiktoken }, ranks] = await Promise.all([
       import("js-tiktoken/lite"),
-      import("js-tiktoken/ranks/cl100k_base"),
+      import("js-tiktoken/ranks/o200k_base"),
     ]);
     const encoding = new Tiktoken(ranks.default);
     return (message) => {
@@ -48,7 +59,12 @@ async function build(): Promise<TokenCounter | null> {
       const calls = (message as { tool_calls?: unknown[] }).tool_calls;
       if (Array.isArray(calls) && calls.length > 0)
         text += JSON.stringify(calls);
-      return encoding.encode(text).length + MESSAGE_OVERHEAD_TOKENS;
+      // NOTE: Both special-token lists are empty ON PURPOSE. By default js-tiktoken THROWS when the
+      // text contains a marker like <|endoftext|>, and this text is whatever a customer typed into
+      // WhatsApp — so the default would let anyone switch off an agent's ceiling by sending one
+      // literal string (the throw is caught upstream, which falls back to the full history). Empty
+      // lists count the marker as the ordinary characters it is.
+      return encoding.encode(text, [], []).length + MESSAGE_OVERHEAD_TOKENS;
     };
   } catch (err) {
     // A broken install, not a transient fault: the ranks ship with the package. Cache the failure

@@ -1693,6 +1693,27 @@
     "resize": "Arrastar para redimensionar",
     "send": "Enviar",
     "sessions": "Sessões",
+    "share": {
+      "button": "Compartilhar",
+      "create": "Criar link",
+      "createFailed": "Não foi possível criar o link",
+      "empty": "Nenhum link de compartilhamento ainda.",
+      "existing": "Links existentes",
+      "hint": "Crie um link público para o cliente conversar com este agente, sem precisar de login. O link expira e para de aceitar mensagens após atingir a cota.",
+      "maxMessages": "Limite de mensagens",
+      "messageCount": "{{used}}/{{max}} mensagens",
+      "revoke": "Revogar",
+      "revokeAria": "Revogar link de compartilhamento",
+      "revokeFailed": "Não foi possível revogar o link",
+      "revokeMessage": "O link deixará de funcionar imediatamente. Isso não pode ser desfeito.",
+      "revokeTitle": "Revogar link de compartilhamento",
+      "statusActive": "Ativo até {{date}}",
+      "statusExpired": "Expirado",
+      "statusRevoked": "Revogado",
+      "title": "Compartilhar este agente",
+      "ttl": "Expira em (horas)",
+      "urlWarning": "Copie este link agora. Ele é exibido apenas uma vez aqui."
+    },
     "thinking": "Pensando…",
     "toolsDirtyNote": "Mudanças de prompt e modelo são testadas ao vivo. Mudanças de ferramentas precisam ser salvas antes.",
     "toolsim": {
@@ -1722,6 +1743,14 @@
       "visionImage": "Leitura de imagem"
     },
     "untitledSession": "Sessão sem título"
+  },
+  "playgroundShare": {
+    "chattingWith": "Conversando com {{name}}",
+    "empty": "Envie uma mensagem para começar.",
+    "exhausted": "Este link de chat atingiu o limite de mensagens.",
+    "inputPlaceholder": "Digite uma mensagem…",
+    "invalid": "Este link de chat é inválido ou expirou.",
+    "sendError": "Algo deu errado. Tente novamente."
   },
   "resources": {
     "deleteRefsWarning_one": "{{count}} agente usa isto e vai parar de funcionar se você excluir.",

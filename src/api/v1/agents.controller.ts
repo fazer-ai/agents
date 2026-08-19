@@ -40,6 +40,15 @@ import {
   getPlaygroundSessionTurns,
   listPlaygroundSessions,
 } from "@/modules/playground/sessions";
+import {
+  listPlaygroundShareLinks,
+  MAX_MAX_MESSAGES,
+  MAX_TTL_HOURS,
+  MIN_MAX_MESSAGES,
+  MIN_TTL_HOURS,
+  mintPlaygroundShareLink,
+  revokePlaygroundShareLink,
+} from "@/modules/playground/share";
 import { listTtsOptions } from "@/modules/tts/listing";
 
 // translate('errors.agentConfirmMismatch', 'The agent name does not match')
@@ -1080,6 +1089,113 @@ export const agentsController = new Elysia({
         threadId: t.String({
           description:
             "Playground thread id, shaped tenantId:playground:agentId:uuid.",
+        }),
+      }),
+    },
+  )
+  // Public no-login share links: an operator mints a link (bounded TTL + message quota) that a
+  // customer can open to chat with the agent, no Chatwoot/login involved. The public side (resolve +
+  // send message) lives in playground-share.controller.ts, unauthenticated by design (opaque token).
+  .post(
+    "/:id/playground/share",
+    async ({ tenantContext, params, body }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const minted = await mintPlaygroundShareLink({
+        tenantId: ctx.tenantId as bigint,
+        agentId: BigInt(params.id),
+        ttlHours: body?.ttlHours,
+        maxMessages: body?.maxMessages,
+      });
+      return {
+        instance: instanceIdentity,
+        id: String(minted.id),
+        token: minted.token,
+        url: `${config.publicUrl.replace(/\/+$/, "")}/playground-share/${minted.token}`,
+        expiresAt: minted.expiresAt,
+        maxMessages: minted.maxMessages,
+      };
+    },
+    {
+      detail: doc(
+        "Mint playground share link",
+        "Creates a public, no-login link that lets a customer chat with this agent for a bounded time and message count.",
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+      body: t.Optional(
+        t.Object({
+          ttlHours: t.Optional(
+            t.Number({ minimum: MIN_TTL_HOURS, maximum: MAX_TTL_HOURS }),
+          ),
+          maxMessages: t.Optional(
+            t.Number({ minimum: MIN_MAX_MESSAGES, maximum: MAX_MAX_MESSAGES }),
+          ),
+        }),
+      ),
+    },
+  )
+  .get(
+    "/:id/playground/share",
+    async ({ tenantContext, params }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const links = await listPlaygroundShareLinks(
+        ctx.tenantId as bigint,
+        BigInt(params.id),
+      );
+      return {
+        instance: instanceIdentity,
+        links: links.map((l) => ({
+          id: String(l.id),
+          messageCount: l.messageCount,
+          maxMessages: l.maxMessages,
+          expiresAt: l.expiresAt,
+          revokedAt: l.revokedAt,
+          createdAt: l.createdAt,
+        })),
+      };
+    },
+    {
+      detail: doc(
+        "List playground share links",
+        "Lists the agent's share links (no tokens returned — the plaintext is only shown once, at mint time).",
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
+  .delete(
+    "/:id/playground/share/:linkId",
+    async ({ tenantContext, params }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      await revokePlaygroundShareLink(
+        ctx.tenantId as bigint,
+        BigInt(params.linkId),
+      );
+      return { instance: instanceIdentity, ok: true };
+    },
+    {
+      detail: doc(
+        "Revoke playground share link",
+        "Immediately invalidates a share link.",
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+        linkId: t.String({
+          description: "Share link id, a BigInt encoded as a decimal string.",
         }),
       }),
     },

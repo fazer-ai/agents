@@ -1688,6 +1688,27 @@
     "resize": "Drag to resize",
     "send": "Send",
     "sessions": "Sessions",
+    "share": {
+      "button": "Share",
+      "create": "Create link",
+      "createFailed": "Could not create the link",
+      "empty": "No share links yet.",
+      "existing": "Existing links",
+      "hint": "Create a public link so a customer can chat with this agent, no login required. It expires and stops accepting messages after its quota.",
+      "maxMessages": "Message limit",
+      "messageCount": "{{used}}/{{max}} messages",
+      "revoke": "Revoke",
+      "revokeAria": "Revoke share link",
+      "revokeFailed": "Could not revoke the link",
+      "revokeMessage": "The link will stop working immediately. This cannot be undone.",
+      "revokeTitle": "Revoke share link",
+      "statusActive": "Active until {{date}}",
+      "statusExpired": "Expired",
+      "statusRevoked": "Revoked",
+      "title": "Share this agent",
+      "ttl": "Expires in (hours)",
+      "urlWarning": "Copy this link now. It is shown only once here."
+    },
     "thinking": "Thinking…",
     "toolsDirtyNote": "Prompt and model changes are tested live. Tool changes need saving first.",
     "toolsim": {
@@ -1717,6 +1738,14 @@
       "visionImage": "Image reading"
     },
     "untitledSession": "Untitled session"
+  },
+  "playgroundShare": {
+    "chattingWith": "Chatting with {{name}}",
+    "empty": "Send a message to start.",
+    "exhausted": "This chat link has reached its message limit.",
+    "inputPlaceholder": "Type a message…",
+    "invalid": "This chat link is invalid or has expired.",
+    "sendError": "Something went wrong. Please try again."
   },
   "resources": {
     "deleteRefsWarning_one": "{{count}} agent uses this and will stop working if you delete it.",

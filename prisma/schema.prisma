@@ -122,6 +122,7 @@ model Tenant {
   knowledgeDocuments            KnowledgeDocument[]
   playgroundSessions            PlaygroundSession[]
   playgroundMedia               PlaygroundMedia[]
+  playgroundShareLinks          PlaygroundShareLink[]
   approvalQueueItems            ApprovalQueueItem[]
   vaultEntries                  VaultEntry[]
   toolDefinitions               ToolDefinition[]
@@ -561,9 +562,10 @@ model Agent {
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
-  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  toolSelections AgentToolSelection[]
-  chatwootBots   ChatwootAgentBot[]
+  tenant               Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  toolSelections       AgentToolSelection[]
+  chatwootBots         ChatwootAgentBot[]
+  playgroundShareLinks PlaygroundShareLink[]
 
   @@index([tenantId])
   @@map("agents")
@@ -669,6 +671,27 @@ model PlaygroundSession {
   @@unique([tenantId, threadId])
   @@index([tenantId, agentId, updatedAt])
   @@map("playground_sessions")
+}
+
+// Operator-minted, no-login public link to chat with an agent in an isolated playground thread. Only
+// the SHA-256 hash of the token is stored (see src/modules/webhooks/inbound/route-token.ts).
+model PlaygroundShareLink {
+  id           BigInt    @id @default(autoincrement())
+  tenantId     BigInt    @map("tenant_id")
+  agentId      BigInt    @map("agent_id")
+  tokenHash    String    @unique @map("token_hash")
+  messageCount Int       @default(0) @map("message_count")
+  maxMessages  Int       @default(60) @map("max_messages")
+  expiresAt    DateTime  @map("expires_at")
+  revokedAt    DateTime? @map("revoked_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent  Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([agentId])
+  @@map("playground_share_links")
 }
 
 // Binary media (recorded voice notes, generated TTS replies, uploaded files) for playground replay.

@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Send,
   Settings2,
+  Share2,
   Trash2,
   Wrench,
   X,
@@ -45,6 +46,7 @@ import { useModalController } from "@/client/components/Modal";
 import { useMediaObjectUrl } from "@/client/components/useMediaObjectUrl";
 import { cn } from "@/client/lib/utils";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
+import { PlaygroundShareModal } from "./PlaygroundShareModal";
 import type {
   PlaygroundSessionMeta,
   PlaygroundTurn,
@@ -132,6 +134,7 @@ export function PlaygroundChat({
   // or its base without leaving the playground (onChanged is a no-op — we only preview here).
   const km = useKnowledgeManager({ onChanged: () => {} });
   const confirm = useModalController<ConfirmPayload>();
+  const shareModal = useModalController();
 
   // Keep the latest turn in view as the conversation grows / the agent answers.
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll on every turn/typing change
@@ -220,6 +223,14 @@ export function PlaygroundChat({
                   </Button>
                 </span>
               </Tooltip>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => shareModal.open()}
+              >
+                <Share2 className="h-4 w-4" aria-hidden="true" />
+                {t("playground.share.button", "Share")}
+              </Button>
             </div>
           </div>
 
@@ -311,6 +322,7 @@ export function PlaygroundChat({
       </div>
       {km.modals}
       <ConfirmDialog modal={confirm} />
+      <PlaygroundShareModal modal={shareModal} agentId={agentId} />
     </>
   );
 }

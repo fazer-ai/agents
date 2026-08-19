@@ -33,6 +33,7 @@ import { LoginPage } from "@/client/pages/LoginPage";
 import { LogsPage } from "@/client/pages/LogsPage";
 import { McpPage } from "@/client/pages/McpPage";
 import { OAuthConsentPage } from "@/client/pages/OAuthConsentPage";
+import { PlaygroundSharePage } from "@/client/pages/PlaygroundSharePage";
 import { AdvancedPanel } from "@/client/pages/resources/AdvancedPanel";
 import { BusinessHoursPanel } from "@/client/pages/resources/BusinessHoursPanel";
 import { IntegrationsPanel } from "@/client/pages/resources/IntegrationsPanel";
@@ -193,6 +194,10 @@ export function App() {
                                 element={<AcceptInvitePage />}
                               />
                               <Route path="/login" element={<LoginPage />} />
+                              <Route
+                                path="/playground-share/:token"
+                                element={<PlaygroundSharePage />}
+                              />
                               <Route path="/signup" element={<SignupPage />} />
                               <Route
                                 path="/oauth/consent"

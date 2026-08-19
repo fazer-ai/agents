@@ -33,6 +33,7 @@ import {
   oauthMcpCallbackController,
   oauthMcpVaultController,
 } from "@/api/v1/oauth-mcp.controller";
+import { playgroundShareController } from "@/api/v1/playground-share.controller";
 import { quotesController } from "@/api/v1/quotes.controller";
 import { tenantSettingsController } from "@/api/v1/tenant-settings.controller";
 import { toolsController } from "@/api/v1/tools.controller";
@@ -249,6 +250,7 @@ const api = new Elysia()
   .use(mcpMeController)
   .use(mcpAdminController)
   .use(chatwootController)
-  .use(chatwootAdminController);
+  .use(chatwootAdminController)
+  .use(playgroundShareController);
 
 export default api;

@@ -13,7 +13,7 @@ import logger from "@/api/lib/logger";
 import { selectHistoryWindow } from "@/graph/history-window";
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
-import { loadTokenCounter } from "@/graph/token-count";
+import { countMessageTokens } from "@/graph/token-count";
 
 // Minimal functional supervisor: an agent node over the persisted message history, with an
 // optional tool-calling loop (agent ⇄ tools until the model stops calling tools). The
@@ -65,20 +65,21 @@ function toolCallsSinceLastHuman(history: BaseMessage[]): number {
   return count;
 }
 
-// Applies the per-agent history ceiling, if there is one. The whole path is best-effort: trimming
-// is an optimization and must never cost a customer their answer, so anything unexpected (a missing
-// encoding on a broken install, a throw from the counter) falls back to the full history — slow and
+// Applies the per-agent history ceiling, if there is one. Best-effort: trimming is an optimization
+// and must never cost a customer their answer, so a throw falls back to the full history — slow and
 // expensive, but exactly the behavior that shipped before the ceiling existed.
-async function applyHistoryCeiling(
+function applyHistoryCeiling(
   full: BaseMessage[],
   maxHistoryTokens: number | null | undefined,
   onHistoryTrim: BuildAgentGraphParams["onHistoryTrim"],
-): Promise<BaseMessage[]> {
+): BaseMessage[] {
   if (!maxHistoryTokens) return full;
   try {
-    const count = await loadTokenCounter();
-    if (!count) return full;
-    const window = selectHistoryWindow(full, maxHistoryTokens, count);
+    const window = selectHistoryWindow(
+      full,
+      maxHistoryTokens,
+      countMessageTokens,
+    );
     if (window.dropped > 0) {
       onHistoryTrim?.({
         kept: window.kept.length,
@@ -115,14 +116,10 @@ export function buildAgentGraph({
     // "System messages are only permitted as the first passed message".
     const full = state.messages.filter((m) => m.getType() !== "system");
 
-    // Bound the history BEFORE the tool-call budget below, so both read the same window. The window
-    // always keeps the last human message and everything after it, so the tool count is unaffected
-    // by the trim — this ordering is about the two never disagreeing, not about the count changing.
-    const history = await applyHistoryCeiling(
-      full,
-      maxHistoryTokens,
-      onHistoryTrim,
-    );
+    // NOTE: Bound the history BEFORE the tool-call budget below, so both read the same window. The
+    // window always keeps the last human message and everything after it, so the tool count is not
+    // affected by the trim; this ordering is about the two never disagreeing.
+    const history = applyHistoryCeiling(full, maxHistoryTokens, onHistoryTrim);
 
     // Tool-call budget for this turn. Hard limit reached → invoke the RAW model (no tools bound), so
     // the response carries no tool_calls and toolsCondition routes to END. Approaching it (N-2) →

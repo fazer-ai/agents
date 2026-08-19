@@ -57,12 +57,12 @@ export function selectHistoryWindow(
       break;
     }
   }
-  // No human message anywhere: there is no safe place to open a window (invariant 1), so leave the
-  // history alone rather than guess a boundary.
+  // NOTE: No human message anywhere means there is no safe place to open a window (invariant 1),
+  // so leave the history alone rather than guess a boundary.
   if (lastHuman < 0) return untouched();
 
-  // Longest suffix that fits, counting each message exactly once. Stops at the first message that
-  // does not fit, because a window has to be contiguous.
+  // NOTE: Longest suffix that fits, counting each message exactly once. Stops at the first message
+  // that does not fit, because a window has to be contiguous.
   const counted: number[] = new Array(history.length);
   const tokensAt = (i: number): number => {
     const cachedCount = counted[i];
@@ -81,13 +81,13 @@ export function selectHistoryWindow(
     start = i;
   }
 
-  // Invariant 4: only look for a boundary when the budget actually forced a cut. A history that
-  // fits entirely goes through as-is, even when it happens to begin on a non-human message.
+  // NOTE: Invariant 4 — only look for a boundary when the budget actually forced a cut. A history
+  // that fits entirely goes through as-is, even when it happens to begin on a non-human message.
   if (start > 0) {
     while (start < history.length && history[start]?.getType() !== "human") {
       start++;
     }
-    // Invariant 3: the turn being answered always travels, budget or no budget.
+    // NOTE: Invariant 3 — the turn being answered always travels, budget or no budget.
     if (start > lastHuman) start = lastHuman;
   }
 

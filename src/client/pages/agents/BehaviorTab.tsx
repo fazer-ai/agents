@@ -1865,7 +1865,7 @@ export function BehaviorTab({
                 label={t("editor.limitsMaxHistoryTokens", "History ceiling")}
                 description={t(
                   "editor.limitsMaxHistoryTokensHint",
-                  "The agent remembers every conversation it has had with this contact on this channel, and sends all of it on every turn, so a returning customer gets slower and more expensive the more they talk. This caps how much of that memory travels: older attendances stop being sent once the cap is reached, and the conversation being answered is never dropped. Counts the history only, so leave room above it for the instructions and the tool definitions. Empty = no ceiling. 2,000-1,000,000.",
+                  "The agent remembers every conversation it has had with this contact on this channel, and sends all of it on every turn, so a returning customer gets slower and more expensive the more they talk. This caps how much of that memory travels: older attendances stop being sent once the cap is reached, and the conversation being answered is never dropped. The count is an estimate and runs low on tool-heavy threads, and the instructions and tool definitions are not counted at all, so set it below the budget you actually have. Empty = no ceiling. 2,000-1,000,000.",
                 )}
               >
                 <Input

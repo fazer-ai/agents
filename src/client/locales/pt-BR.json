@@ -876,7 +876,7 @@
     "limits": "Limites de execução",
     "limitsHint": "Limite quanto trabalho o agente faz em um único turno antes de ter que responder.",
     "limitsMaxHistoryTokens": "Teto de histórico",
-    "limitsMaxHistoryTokensHint": "O agente lembra de toda conversa que já teve com este contato neste canal, e manda tudo isso a cada turno, então um cliente que volta fica mais lento e mais caro quanto mais fala. Isto limita quanto dessa memória viaja: atendimentos antigos deixam de ser enviados ao atingir o limite, e a conversa que está sendo respondida nunca é descartada. Conta só o histórico, então deixe folga acima dele para as instruções e as definições de ferramentas. Vazio = sem teto. 2.000 a 1.000.000.",
+    "limitsMaxHistoryTokensHint": "O agente lembra de toda conversa que já teve com este contato neste canal, e manda tudo isso a cada turno, então um cliente que volta fica mais lento e mais caro quanto mais fala. Isto limita quanto dessa memória viaja: atendimentos antigos deixam de ser enviados ao atingir o limite, e a conversa que está sendo respondida nunca é descartada. A contagem é uma estimativa e fica baixa em thread com muita ferramenta, e as instruções e as definições de ferramentas não entram na conta, então configure abaixo do orçamento que você realmente tem. Vazio = sem teto. 2.000 a 1.000.000.",
     "limitsMaxToolCalls": "Máx. de ferramentas / turno",
     "limitsMaxToolCallsHint": "Depois desse número de usos de ferramenta o agente é obrigado a responder com o que já tem (sem erro). 1-50.",
     "limitsNoCeiling": "Sem teto",

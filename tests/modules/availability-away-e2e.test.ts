@@ -152,6 +152,9 @@ async function deliverCustomerMessage(
   chatwootInboxId: number,
   seq: number,
   baseOverride?: PrismaClient,
+  // Which bot the delivery believes it is. Null is a value the parameter declares and the HTTP
+  // controller defaults to, so the fence has to survive being asked without an identity.
+  ourAgentBotId: number | null = 9,
 ): Promise<void> {
   const n = normalizeChatwootEvent({
     event: "message_created",
@@ -188,7 +191,7 @@ async function deliverCustomerMessage(
     tenantId,
     instanceId,
     deliveryRowId: delivery.id,
-    agentBotId: 9,
+    agentBotId: ourAgentBotId,
     normalized: n,
     base: baseOverride ?? appDb,
   });
@@ -522,6 +525,42 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
       select: { awayMessageSentAt: true, assigneeType: true },
     });
     expect(after?.assigneeType).toBe(type);
+    expect(after?.awayMessageSentAt).toBeNull();
+  });
+
+  // Not knowing which bot we are is not the same as being every bot. When the delivery carries no
+  // bot id — the value its own parameter declares, and the one the HTTP controller falls back to —
+  // "an AgentBot owns this" can no longer be narrowed to "WE own this", so the only reading left is
+  // that it is not ours.
+  test("without a bot id, another bot's conversation is not ours", async () => {
+    const convId = 9113;
+    const ahead = new Date(Date.now() + 5 * 60_000);
+    const aheadEpoch = Math.floor(ahead.getTime() / 1000);
+    const row = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: inboxWithCopyId,
+        chatwootConversationId: convId,
+        status: "pending",
+        assigneeType: "AgentBot",
+        assigneeId: 77,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: ahead,
+        chatwootStatusAt: aheadEpoch,
+        chatwootAssigneeAt: aheadEpoch,
+        lastInboundAt: new Date(Date.now() - 3 * 60_000),
+      },
+      select: { id: true },
+    });
+
+    await deliverCustomerMessage(convId, INBOX_WITH_COPY, 18, undefined, null);
+
+    expect(publicOn(convId)).toEqual([]);
+    const after = await suDb.conversation.findUnique({
+      where: { id: row.id },
+      select: { awayMessageSentAt: true },
+    });
     expect(after?.awayMessageSentAt).toBeNull();
   });
 

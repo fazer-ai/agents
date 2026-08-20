@@ -655,8 +655,8 @@ async function maybeConsumeCommandOrGate(params: {
   // test mode). Both resolved by the caller before the mirror ran.
   command: ControlCommand | null;
   commandActive: boolean;
-  // Our persona bot on this instance, for the live ownership fence below. Null = unknown, which
-  // makes the fence stricter (a conversation owned by ANOTHER bot cannot read as ours).
+  // Our persona bot on this instance, for the live ownership fence below. Null = unknown, and the
+  // fence treats that as "not ours" for anything an AgentBot owns.
   agentBotId: number | null;
   base: PrismaClient;
 }): Promise<boolean> {
@@ -778,13 +778,19 @@ async function maybeConsumeCommandOrGate(params: {
         select: { assigneeType: true, assigneeId: true, status: true },
       }),
     );
+    // Not knowing which bot we are is not the same as being every bot: "an AgentBot owns this" only
+    // narrows to "WE own this" with an id to compare against. shouldBotHandle answers the loose
+    // attribution question when the id is missing (its other callers depend on that), so the strict
+    // half is decided here, where the id is known to be absent.
+    if (params.agentBotId == null && conv?.assigneeType === "AgentBot")
+      return false;
     return shouldBotHandle(
       {
         assigneeType: conv?.assigneeType ?? null,
         assigneeId: conv?.assigneeId ?? null,
         status: conv?.status ?? null,
       },
-      { ourAgentBotId: params.agentBotId ?? undefined },
+      { ourAgentBotId: params.agentBotId },
     );
   };
 

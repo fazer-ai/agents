@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
-import { runCompactionTick } from "@/modules/memory/worker";
+import config from "@/config";
+import { defaultBatchSize, runCompactionTick } from "@/modules/memory/worker";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 
 // Pure unit test for the tick's fan-out: `claim`/`run` are injected, so no DB and no provider are
@@ -22,6 +23,14 @@ function job(id: number): ClaimedJob {
 }
 
 describe("runCompactionTick", () => {
+  // The summarizer takes permits from the SAME semaphore a customer's turn does, so a batch sized at
+  // the whole model budget lets compaction hold every one of them and a turn that just arrived waits
+  // behind summaries. Nobody waits on this lane; somebody always waits on the other.
+  test("the default batch leaves model capacity for customer turns", () => {
+    expect(defaultBatchSize()).toBeLessThan(config.agent.modelConcurrency);
+    expect(defaultBatchSize()).toBeGreaterThanOrEqual(1);
+  });
+
   test("drains the claimed batch concurrently, not serially", async () => {
     const jobs = [job(1), job(2), job(3)];
     const timeline: string[] = [];
@@ -103,5 +112,52 @@ describe("runCompactionTick", () => {
     );
     expect(seen).toEqual(["MEMORY_COMPACT"]);
     expect(out.reaped).toBe(1);
+  });
+
+  // `enqueueJob` re-arms by upserting the SAME physical row back to PENDING, status included, so a
+  // new attendance arming this key mid-summary makes the row claimable again. A second handler on it
+  // cuts an overlapping raw prefix and writes a second durable summary under a different
+  // last-message id — the memory head then describes the same events twice — and the older handler
+  // also completes or fails a row the newer claim owns.
+  test("a row already running here is not run a second time", async () => {
+    const started: bigint[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const run = async (j: ClaimedJob) => {
+      started.push(j.id);
+      await gate;
+    };
+    const claim = async () => [job(7)];
+
+    // First tick claims and starts it; it is still running when the second tick claims the same row.
+    const first = runCompactionTick(base, 20, {
+      claim,
+      run,
+      reap: async () => [],
+    });
+    await sleep(5);
+    const second = await runCompactionTick(base, 20, {
+      claim,
+      run,
+      reap: async () => [],
+    });
+    expect(second.claimed).toBe(0);
+    expect(started).toEqual([7n]);
+
+    release();
+    await first;
+
+    // Once it finishes, the row is runnable again — the guard is about overlap, not a one-shot.
+    const third = await runCompactionTick(base, 20, {
+      claim,
+      run: async (j: ClaimedJob) => {
+        started.push(j.id);
+      },
+      reap: async () => [],
+    });
+    expect(third.claimed).toBe(1);
+    expect(started).toEqual([7n, 7n]);
   });
 });

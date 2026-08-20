@@ -36,6 +36,28 @@ import { runClaimed } from "@/modules/scheduler/worker";
 // that is not coming back.
 const DEFAULT_STALE_MS = 5 * 60_000;
 
+// A QUARTER of the process-wide model budget, never the whole of it. The summarizer takes permits
+// from the same FIFO semaphore a customer's turn does (config.agent.modelConcurrency), so a batch
+// sized at that budget lets compaction hold every permit and a turn that just arrived waits behind
+// summaries — up to their 60s ceiling. Nobody is waiting on this lane; somebody is always waiting on
+// the other one, which is the whole reason the two are separated at all.
+export function defaultBatchSize(): number {
+  return Math.max(1, Math.floor(config.agent.modelConcurrency / 4));
+}
+
+// The rows this process is executing RIGHT NOW, by job id. `enqueueJob` re-arms by upserting the
+// same physical row back to PENDING, status and all, so a new attendance arming this key while its
+// summary is still running makes the row claimable again — and the next tick would run a SECOND
+// handler on it. Both would cut overlapping raw prefixes and write two durable summaries with
+// different last-message ids, so the memory head describes the same events twice; the older handler
+// would also complete or fail a row the newer claim owns (both are guarded only by id + CLAIMED).
+//
+// Per-process, which is what these workers already are by construction (single replica, globalThis
+// singleton). The general form — any kind, any handler — needs a claim generation on the row and is
+// tracked separately; this closes the window that is wide, because only this kind holds a claim for
+// up to a minute while every attendance boundary re-arms it.
+const inFlight = new Set<string>();
+
 export interface CompactionTickDeps {
   claim?: typeof claimDueCompactionJobs;
   run?: typeof runClaimed;
@@ -59,10 +81,28 @@ export async function runCompactionTick(
     "MEMORY_COMPACT",
   );
   const jobs = await claim(batchSize, base);
+  // A row already executing here is LEFT ALONE — not run, and not pushed back to PENDING either,
+  // which would only re-create the double claim one tick later. Its owner decides its fate, and the
+  // reaper above re-pends it if that owner dies.
+  const mine = jobs.filter((job) => !inFlight.has(String(job.id)));
+  const skipped = jobs.length - mine.length;
+  if (skipped > 0) {
+    logger.info(
+      "compaction: %d job(s) already running in this process, left to their owner",
+      skipped,
+    );
+  }
+  for (const job of mine) inFlight.add(String(job.id));
   // allSettled: runClaimed never re-throws (it fails the job internally), but a stray throw must not
   // stall the tick.
-  await Promise.allSettled(jobs.map((job) => run(job, base)));
-  return { claimed: jobs.length, reaped: reaped.length };
+  await Promise.allSettled(
+    mine.map((job) =>
+      Promise.resolve(run(job, base)).finally(() => {
+        inFlight.delete(String(job.id));
+      }),
+    ),
+  );
+  return { claimed: mine.length, reaped: reaped.length };
 }
 
 interface Holder {
@@ -90,7 +130,7 @@ export function startCompactionWorker(opts: StartOptions = {}): () => void {
   if (h.timer) return stopCompactionWorker;
   const base = opts.base ?? basePrisma;
   const intervalMs = opts.intervalMs ?? config.compactionWorker.intervalMs;
-  const batchSize = opts.batchSize ?? 20;
+  const batchSize = opts.batchSize ?? defaultBatchSize();
   const staleMs = opts.staleMs ?? DEFAULT_STALE_MS;
   h.timer = setInterval(() => {
     if (h.running) return;

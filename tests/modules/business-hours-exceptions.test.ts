@@ -59,6 +59,8 @@ let instanceId = 0n;
 let inboxDbId = 0n;
 let agentId = 0n;
 let hoursId = 0n;
+// A second agent whose schedule never reopens, for the estimate's terminal case.
+let neverInboxDbId = 0n;
 
 // The local calendar date `days` from now, in the schedule's timezone — the same key an exception
 // matches on. en-CA formats as YYYY-MM-DD.
@@ -143,12 +145,15 @@ function stubClient() {
 
 const threadOf = (convId: number) => `${tenantId}:${instanceId}:${convId}`;
 
-async function seedConversation(convId: number): Promise<bigint> {
+async function seedConversation(
+  convId: number,
+  inbox: bigint = inboxDbId,
+): Promise<bigint> {
   const row = await suDb.conversation.create({
     data: {
       tenantId,
       chatwootInstanceId: instanceId,
-      inboxId: inboxDbId,
+      inboxId: inbox,
       chatwootConversationId: convId,
       status: "pending",
       threadId: threadOf(convId),
@@ -249,6 +254,58 @@ describe.skipIf(!dbUp)("business-hours date exceptions (issue #129)", () => {
       },
     });
     inboxDbId = inbox.id;
+
+    // A schedule that never reopens: a recurring span covering every month-day. Only expressible now
+    // that dates exist, which is what makes the handler's "end the sequence" branch reachable.
+    const neverHours = await suDb.businessHours.create({
+      data: {
+        tenantId,
+        name: "Fechado indefinidamente",
+        timezone: TZ,
+        windows: [0, 1, 2, 3, 4, 5, 6].map((day) => ({
+          day,
+          start: "00:00",
+          end: "23:59",
+        })),
+        exceptions: [
+          {
+            date: "2026-01-01",
+            dateEnd: "2026-12-31",
+            recurring: true,
+            label: "Encerrado",
+            ranges: [],
+          },
+        ],
+      },
+      select: { id: true },
+    });
+    const neverAgent = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Encerrado",
+        systemPrompt: "x",
+        businessHoursId: neverHours.id,
+        followUpArmedAt: new Date(Date.now() - 30 * 86_400_000),
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: {
+          followUp: {
+            enabled: true,
+            steps: [{ delayValue: 1, delayUnit: "minutes", instructions: "" }],
+          },
+        },
+      },
+      select: { id: true },
+    });
+    const neverInbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: INBOX_ID + 1,
+        name: "Encerrado",
+        agentId: neverAgent.id,
+      },
+    });
+    neverInboxDbId = neverInbox.id;
   });
 
   afterAll(async () => {
@@ -406,6 +463,51 @@ describe.skipIf(!dbUp)("business-hours date exceptions (issue #129)", () => {
       }).format(new Date(detail.followUp?.nextRunAt as string)),
     ).toBe(localDate(2));
     expect(detail.followUp?.nextRunAtDeferred).toBe(true);
+  });
+
+  test("a schedule that never reopens ends the sequence instead of nudging", async () => {
+    const convId = 8106;
+    await seedConversation(convId, neverInboxDbId);
+    const s = stubClient();
+    const result = await followUpHandler(
+      {
+        id: 2n,
+        tenantId,
+        kind: "FOLLOWUP",
+        payload: { threadId: threadOf(convId) },
+        attempts: 0,
+      },
+      appDb,
+      {
+        makeModel: () => new FakeListChatModel({ responses: ["oi"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    );
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+  });
+
+  test("a schedule that never reopens shows no next step, not a time inside the closure", async () => {
+    // The handler ends the sequence here (there is no instant to defer to). An estimate that fell back
+    // to the ungated time would promise a follow-up that can never run — and before date exceptions
+    // that fallback could not be reached, because a weekly grid always reopens inside the scan.
+    const convId = 8105;
+    const rowId = await seedConversation(convId, neverInboxDbId);
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "FOLLOWUP",
+        dedupeKey: `followup:${threadOf(convId)}`,
+        status: "PENDING",
+        runAt: new Date(Date.now() - 60_000),
+        payload: { threadId: threadOf(convId) },
+      },
+    });
+    const detail = await getConversationDetail(ctx(), rowId, appDb);
+    expect(detail.followUp?.nextRunAt).toBeNull();
+    expect(detail.followUp?.nextStep).toBeNull();
   });
 
   // ── the read the bookable-slot filter goes through ──

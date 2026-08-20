@@ -62,14 +62,21 @@ export function parseWindows(raw: unknown): WindowSpec[] {
   return parsed.data.filter(isRangeOrdered);
 }
 
-// Same contract as parseWindows for the second dimension: shape-valid entries only, dead ranges and
-// impossible calendar dates dropped, so a hand-edited row can never widen availability.
+// Shape-valid entries only, with dead ranges and impossible calendar dates dropped, so a hand-edited
+// row can never widen availability. Validated ENTRY BY ENTRY, not as one array: a single malformed
+// element would otherwise take every valid holiday with it and silently restore the weekly hours on
+// all of them, which is the one direction this dimension must never fail in.
 export function parseExceptions(raw: unknown): ScheduleException[] {
-  const parsed = z.array(scheduleExceptionSchema).safeParse(raw);
-  if (!parsed.success) return [];
-  return parsed.data
-    .filter((e) => isRealDate(e.date) && (!e.dateEnd || isRealDate(e.dateEnd)))
-    .map((e) => ({ ...e, ranges: e.ranges.filter(isRangeOrdered) }));
+  if (!Array.isArray(raw)) return [];
+  const out: ScheduleException[] = [];
+  for (const item of raw) {
+    const parsed = scheduleExceptionSchema.safeParse(item);
+    if (!parsed.success) continue;
+    const e = parsed.data;
+    if (!isRealDate(e.date) || (e.dateEnd && !isRealDate(e.dateEnd))) continue;
+    out.push({ ...e, ranges: e.ranges.filter(isRangeOrdered) });
+  }
+  return out;
 }
 
 export function parseSchedule(row: {
@@ -170,7 +177,10 @@ function exceptionCovers(e: ScheduleException, key: string): boolean {
   const from = e.recurring ? e.date.slice(5) : e.date;
   const to = e.dateEnd ? (e.recurring ? e.dateEnd.slice(5) : e.dateEnd) : from;
   const k = e.recurring ? key.slice(5) : key;
-  if (to < from) return k >= from || k <= to;
+  // A span ending before it starts only means something under month-day comparison, where it wraps the
+  // year end. On full dates it describes an empty span and covers nothing — the same answer
+  // assertValidExceptions gives when one is written through the API, which the import path bypasses.
+  if (to < from) return e.recurring === true && (k >= from || k <= to);
   return k >= from && k <= to;
 }
 

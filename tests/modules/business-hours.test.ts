@@ -105,6 +105,22 @@ describe("parseExceptions", () => {
     ]);
   });
 
+  test("one malformed entry does not take the valid ones with it", () => {
+    // Validated per entry, not as one array. The array-wide failure would return [] and silently
+    // restore the weekly hours on every holiday — the schedule would read as OPEN on all of them.
+    // Reachable because the agent-import path writes the column as raw JSON.
+    expect(
+      parseExceptions([
+        { date: "2026-09-07", label: "Independência", ranges: [] },
+        { nonsense: true },
+        { date: "2026-12-25", ranges: [] },
+      ]),
+    ).toEqual([
+      { date: "2026-09-07", label: "Independência", ranges: [] },
+      { date: "2026-12-25", ranges: [] },
+    ]);
+  });
+
   test("an empty ranges array survives — closed all day is the common case", () => {
     expect(
       parseExceptions([
@@ -220,6 +236,19 @@ describe("exceptions replace the weekly grid for the dates they match", () => {
     expect(isOpenAt(s, noon("2031-01-01"))).toBe(false);
     expect(isOpenAt(s, noon("2031-01-03"))).toBe(true);
     expect(isOpenAt(s, noon("2030-12-22"))).toBe(true);
+  });
+
+  test("a DATED span that runs backwards covers nothing", () => {
+    // Only month-day comparison can wrap the year end. On full dates the span is empty, and reading it
+    // as a wrap would close Dec 25–31 plus Jan 1–Dec 20 — almost the whole year. The API rejects such
+    // a span on write; the resolver has to agree, because agent import writes the column unvalidated.
+    const s = sched(everyDay, SP, [
+      { date: "2026-12-25", dateEnd: "2026-12-20", ranges: [] },
+    ]);
+    const noon = (ymd: string) => new Date(`${ymd}T15:00:00Z`);
+    expect(isOpenAt(s, noon("2026-12-26"))).toBe(true);
+    expect(isOpenAt(s, noon("2026-12-25"))).toBe(true);
+    expect(isOpenAt(s, noon("2026-06-15"))).toBe(true);
   });
 
   test("a dated exception outranks a recurring one for that year", () => {

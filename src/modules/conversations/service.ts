@@ -785,6 +785,14 @@ export async function getConversationDetail(
     // step is "2d". The tooltip uses this to explain the deferral.
     let nextRunAtDeferred = false;
     const firstStep = cfg.steps[0];
+    // The estimate exists to show what the handler will ACTUALLY do, including its terminal case: a
+    // schedule that never reopens (a closure outliving the scan horizon, or a recurring one covering
+    // every date) makes the handler END the sequence, so the console must show no next step rather
+    // than a time inside the closure. Null here means exactly that. Before date exceptions this
+    // branch was unreachable — a weekly grid always reopens within the scan — so the estimate could
+    // fall back to the ungated time without ever being wrong.
+    const openWindowFor = (dueAt: Date): Date | null =>
+      hours && hours.windows.length > 0 ? nextOpenAt(hours, dueAt) : dueAt;
     // NOTE: A PENDING step-0 job enqueued before a re-arm will be DROPPED by the handler's
     // activation fence — the estimate must not promise it. Later steps stay exempt (an in-flight
     // sequence legitimately outlives a re-arm), mirroring followUpHandler.
@@ -814,11 +822,13 @@ export async function getConversationDetail(
         if (floor.getTime() > dueAt.getTime()) dueAt = floor;
       }
       const ungated = dueAt.getTime();
-      if (hours && hours.windows.length > 0) {
-        dueAt = nextOpenAt(hours, dueAt) ?? dueAt;
+      const gated = openWindowFor(dueAt);
+      if (gated === null) {
+        nextStep = null;
+      } else {
+        if (gated.getTime() > ungated) nextRunAtDeferred = true;
+        nextRunAt = gated.toISOString();
       }
-      if (dueAt.getTime() > ungated) nextRunAtDeferred = true;
-      nextRunAt = dueAt.toISOString();
     } else if (
       // No job armed yet: estimate the FIRST step so the operator sees a live countdown during the
       // idle window. The sweep only enqueues the job ~at fire time, so for short delays (e.g. 1 min)
@@ -840,18 +850,20 @@ export async function getConversationDetail(
       conv.lastEventAt
     ) {
       nextStep = 1;
-      let dueAt = new Date(
+      const dueAt = new Date(
         conv.lastEventAt.getTime() + stepDelayMinutes(firstStep) * 60_000,
       );
       const ungated = dueAt.getTime();
       // Mirror the handler's business-hours gate: a follow-up coming due outside the configured window
       // does NOT fire then — the worker reschedules it into the next open window. Reflect that here so
       // the estimate never shows a time the follow-up can't actually fire.
-      if (hours && hours.windows.length > 0) {
-        dueAt = nextOpenAt(hours, dueAt) ?? dueAt;
+      const gated = openWindowFor(dueAt);
+      if (gated === null) {
+        nextStep = null;
+      } else {
+        if (gated.getTime() > ungated) nextRunAtDeferred = true;
+        nextRunAt = gated.toISOString();
       }
-      if (dueAt.getTime() > ungated) nextRunAtDeferred = true;
-      nextRunAt = dueAt.toISOString();
     }
     // A live appointment suppresses BOTH shapes: the sweep never enqueues the estimated step, and an
     // already-armed job is rescheduled by the handler for as long as the appointment stands, so its

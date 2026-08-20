@@ -24,6 +24,11 @@ import { updateEmbeddingSettings } from "@/modules/tenant-settings/service";
 // while it is still the run that owns the document. It runs FIRST inside the replace-chunks
 // transaction, so a stale run also writes no chunks at all and search keeps answering from the last
 // consistent index instead of going wrong for a while.
+//
+// The embed is not the only window, and the last test here covers the other one: the text to index
+// and the PROCESSING mark are read in ONE transaction, because an edit landing between a separate
+// read and the mark leaves the row PENDING (the value it already had) — so the mark is taken
+// successfully, over text the document no longer has.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -47,6 +52,15 @@ if (appUrl && suUrl) {
 }
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
+// A SECOND app connection. The edit injected mid-run has to commit while the job's own transaction
+// is still open, which one client cannot do with itself.
+const editDb = dbUp
+  ? new PrismaClient({
+      adapter: new PrismaPg({
+        connectionString: process.env.TEST_APP_DATABASE_URL as string,
+      }),
+    })
+  : (undefined as unknown as PrismaClient);
 
 function ctx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -180,7 +194,11 @@ async function seedTenant(slug: string): Promise<{ id: bigint; kb: bigint }> {
 }
 
 // The REAL job handler, the same entry point the scheduler uses.
-async function runIngest(tenantId: bigint, documentId: bigint) {
+async function runIngestOn(
+  base: PrismaClient,
+  tenantId: bigint,
+  documentId: bigint,
+) {
   registerRagIngestHandler();
   const handler = getJobHandler("RAG_INGEST");
   if (!handler) throw new Error("RAG_INGEST handler not registered");
@@ -192,8 +210,12 @@ async function runIngest(tenantId: bigint, documentId: bigint) {
       payload: { documentId: String(documentId) },
       attempts: 0,
     },
-    appDb,
+    base,
   );
+}
+
+async function runIngest(tenantId: bigint, documentId: bigint) {
+  return runIngestOn(appDb, tenantId, documentId);
 }
 
 async function readDoc(tenantId: bigint, id: bigint) {
@@ -227,6 +249,7 @@ afterAll(async () => {
   }
   await su?.$disconnect();
   await app?.$disconnect();
+  await editDb?.$disconnect();
 });
 
 describe.skipIf(!dbUp)(
@@ -339,6 +362,51 @@ describe.skipIf(!dbUp)(
 
       await runIngest(id, doc.id);
       expect(await readChunks(id, doc.id)).toEqual(["THIRD TEXT"]);
+    });
+
+    // Round 1 review, P2: the embed is not the only window. The run reads the document's text and
+    // takes the mark in two separate steps, and an edit landing BETWEEN them leaves the row PENDING
+    // (the value it already had), so the claim still succeeds — carrying text the document no
+    // longer has. The run then indexes the old text and publishes it legitimately, which is the
+    // same permanent divergence through a narrower door.
+    test("what gets indexed is the text the claim froze, not the text read before it", async () => {
+      const { id, kb } = await seedTenant("rag-claim");
+      const doc = await createDocument({
+        tenantId: id,
+        knowledgeBaseId: kb,
+        title: "policy",
+        sourceType: "text",
+        text: "ORIGINAL TEXT",
+        base: appDb,
+      });
+
+      // There is no network in this gap, so it needs a seam rather than the embedding double. The
+      // knowledge-base config read sits inside it, right after the document read.
+      let fired = false;
+      const hooked = appDb.$extends({
+        query: {
+          knowledgeBase: {
+            async findUnique({ args, query }) {
+              if (!fired) {
+                fired = true;
+                await updateDocument(
+                  id,
+                  doc.id,
+                  { text: "EDITED TEXT" },
+                  editDb,
+                );
+              }
+              return query(args);
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+
+      await runIngestOn(hooked, id, doc.id);
+      expect(fired).toBe(true);
+
+      expect(await readChunks(id, doc.id)).toEqual(["EDITED TEXT"]);
+      expect((await readDoc(id, doc.id)).status).toBe("READY");
     });
   },
 );

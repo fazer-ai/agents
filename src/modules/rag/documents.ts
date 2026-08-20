@@ -492,12 +492,13 @@ async function runIngestJobForTenant(
 ): Promise<JobResult> {
   // 1. Load document + KB config (scoped read, no network).
   const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+    // NOTE: the content is deliberately NOT read here. It is read by the claim below, in the same
+    // transaction that takes the mark — see there for why the two cannot be separated.
     const doc = await db.knowledgeDocument.findUnique({
       where: { id: documentId },
       select: {
         id: true,
         status: true,
-        content: true,
         knowledgeBaseId: true,
       },
     });
@@ -546,15 +547,24 @@ async function runIngestJobForTenant(
     return { outcome: "done" };
   }
 
-  // Take the document: PENDING → PROCESSING marks it as owned by THIS run. The mark is what every
-  // write below is conditional on, so it is not just a badge for the console — see the release in
-  // step 4.
-  await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.knowledgeDocument.updateMany({
+  // Claim the document: PENDING → PROCESSING marks it as owned by THIS run, and the text to index
+  // is read back under the same transaction. The two are one step because an edit landing between
+  // them leaves the row PENDING — the value it already had — so a claim taken on separately-read
+  // text still succeeds, and the run would go on to index text the document no longer has while
+  // holding a mark that says it may publish. The UPDATE holds this row's lock for the rest of the
+  // transaction, so the content read after it is the content as of the claim.
+  const claimed = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const { count } = await db.knowledgeDocument.updateMany({
       where: { id: documentId, status: "PENDING" },
       data: { status: "PROCESSING" },
-    }),
-  );
+    });
+    if (count === 0) return null;
+    return db.knowledgeDocument.findUnique({
+      where: { id: documentId },
+      select: { content: true },
+    });
+  });
+  if (!claimed) return { outcome: "done" };
   broadcastDocumentEvent(tenantId, {
     knowledgeBaseId: String(doc.knowledgeBaseId),
     documentId: String(documentId),
@@ -564,7 +574,7 @@ async function runIngestJobForTenant(
   try {
     // 2. Chunk + embed (NO transaction, network I/O). Embedding config came from the prerequisite
     // check above.
-    const chunks = await chunkText(doc.content, {
+    const chunks = await chunkText(claimed.content, {
       chunkSize: kb.chunkSize,
       chunkOverlap: kb.chunkOverlap,
     });

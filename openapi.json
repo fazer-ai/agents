@@ -7312,7 +7312,7 @@
           "Agents"
         ],
         "summary": "List playground tools",
-        "description": "Returns the agent's tools (name, description, category, risk, auto-simulated flag) for the simulate-a-return UI.",
+        "description": "Returns the agent's tools (name, description, category, auto-simulated flag) for the simulate-a-return UI.",
         "parameters": [
           {
             "name": "id",
@@ -10046,14 +10046,6 @@
                     "description": "Whether the tool is available to agents.",
                     "type": "boolean"
                   },
-                  "riskTier": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high"
-                    ]
-                  },
                   "expectedStatuses": {
                     "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
                     "type": "array",
@@ -10182,14 +10174,6 @@
                     "description": "Whether the tool is available to agents.",
                     "type": "boolean"
                   },
-                  "riskTier": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high"
-                    ]
-                  },
                   "expectedStatuses": {
                     "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
                     "type": "array",
@@ -10317,14 +10301,6 @@
                   "enabled": {
                     "description": "Whether the tool is available to agents.",
                     "type": "boolean"
-                  },
-                  "riskTier": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high"
-                    ]
                   },
                   "expectedStatuses": {
                     "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
@@ -10690,14 +10666,6 @@
                     "description": "Whether the tool is available to agents.",
                     "type": "boolean"
                   },
-                  "riskTier": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high"
-                    ]
-                  },
                   "expectedStatuses": {
                     "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
                     "type": "array",
@@ -10826,14 +10794,6 @@
                     "description": "Whether the tool is available to agents.",
                     "type": "boolean"
                   },
-                  "riskTier": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high"
-                    ]
-                  },
                   "expectedStatuses": {
                     "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
                     "type": "array",
@@ -10961,14 +10921,6 @@
                   "enabled": {
                     "description": "Whether the tool is available to agents.",
                     "type": "boolean"
-                  },
-                  "riskTier": {
-                    "type": "string",
-                    "enum": [
-                      "low",
-                      "medium",
-                      "high"
-                    ]
                   },
                   "expectedStatuses": {
                     "description": "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",

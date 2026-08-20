@@ -4,13 +4,7 @@ import { broadcastAgentConfigEvent } from "@/api/features/realtime/realtime.serv
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { DEFAULT_MODEL_CONFIG, modelConfigSchema } from "@/graph/model-config";
-import {
-  NATIVE_TOOL_NAMES,
-  NATIVE_TOOL_RISK,
-  RAG_TOOL_NAMES,
-  RAG_TOOL_RISK,
-  type RiskTier,
-} from "@/graph/tools/catalog";
+import { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } from "@/graph/tools/catalog";
 import {
   AppError,
   NotFoundError,
@@ -737,14 +731,13 @@ export interface ToolGrantDto {
 export interface ToolSelectionView {
   grants: ToolGrantDto[];
   catalog: {
-    native: { name: string; riskTier: RiskTier }[];
-    rag: { name: string; riskTier: RiskTier }[];
+    native: { name: string }[];
+    rag: { name: string }[];
     toolDefinitions: {
       id: string;
       name: string;
       label: string;
       enabled: boolean;
-      riskTier: string;
     }[];
     mcpConnections: { id: string; name: string; enabled: boolean }[];
     integrationInstances: {
@@ -755,7 +748,6 @@ export interface ToolSelectionView {
       enabled: boolean;
       tools: {
         name: string;
-        riskTier: string;
         args: { name: string; description?: string; required: boolean }[];
       }[];
     }[];
@@ -993,7 +985,6 @@ async function buildToolSelectionView(
       name: true,
       label: true,
       enabled: true,
-      riskTier: true,
     },
     orderBy: { name: "asc" },
   });
@@ -1029,20 +1020,13 @@ async function buildToolSelectionView(
     agentUpdatedAt: agent?.updatedAt ?? null,
     grants: grants.map(toGrantDto),
     catalog: {
-      native: NATIVE_TOOL_NAMES.map((n) => ({
-        name: n,
-        riskTier: NATIVE_TOOL_RISK[n],
-      })),
-      rag: RAG_TOOL_NAMES.map((n) => ({
-        name: n,
-        riskTier: RAG_TOOL_RISK[n],
-      })),
+      native: NATIVE_TOOL_NAMES.map((n) => ({ name: n })),
+      rag: RAG_TOOL_NAMES.map((n) => ({ name: n })),
       toolDefinitions: toolDefinitions.map((t) => ({
         id: String(t.id),
         name: t.name,
         label: t.label,
         enabled: t.enabled,
-        riskTier: t.riskTier,
       })),
       mcpConnections: mcpConnections.map((m) => ({
         id: String(m.id),
@@ -1055,7 +1039,7 @@ async function buildToolSelectionView(
         kind: getCatalogEntry(i.catalogType)?.kind ?? null,
         name: i.name,
         enabled: i.enabled,
-        // name + risk + arg specs (label/description come from the frontend's toolpackToolMeta).
+        // name + arg specs (label/description come from the frontend's toolpackToolMeta).
         tools: getToolpackToolViews(i.catalogType),
       })),
       knowledgeBases: knowledgeBases.map((k) => ({

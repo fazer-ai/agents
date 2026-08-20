@@ -632,30 +632,13 @@ const CONFIRM_APPOINTMENT_SCHEMA = z.object({
 });
 
 const GCAL_TOOL_SPECS: ToolSpec[] = [
-  { name: "calendar_list_events", risk: "low", schema: LIST_EVENTS_SCHEMA },
-  {
-    name: "calendar_check_availability",
-    risk: "low",
-    schema: CHECK_AVAILABILITY_SCHEMA,
-  },
-  {
-    name: "calendar_create_event",
-    risk: "medium",
-    schema: CREATE_EVENT_SCHEMA,
-  },
-  {
-    name: "calendar_update_event",
-    risk: "medium",
-    schema: UPDATE_EVENT_SCHEMA,
-  },
-  {
-    name: "calendar_cancel_event",
-    risk: "medium",
-    schema: CANCEL_EVENT_SCHEMA,
-  },
+  { name: "calendar_list_events", schema: LIST_EVENTS_SCHEMA },
+  { name: "calendar_check_availability", schema: CHECK_AVAILABILITY_SCHEMA },
+  { name: "calendar_create_event", schema: CREATE_EVENT_SCHEMA },
+  { name: "calendar_update_event", schema: UPDATE_EVENT_SCHEMA },
+  { name: "calendar_cancel_event", schema: CANCEL_EVENT_SCHEMA },
   {
     name: "calendar_confirm_appointment",
-    risk: "medium",
     schema: CONFIRM_APPOINTMENT_SCHEMA,
   },
 ];

@@ -99,8 +99,7 @@ async function asaasFetch(
   }
 }
 
-// Tool input schemas (single source for both the runtime tool and the UI arg specs). The risk is
-// declared alongside each in ASAAS_TOOL_SPECS: a financial write (link/PIX) is high, status is low.
+// Tool input schemas (single source for both the runtime tool and the UI arg specs).
 const PAYMENT_LINK_SCHEMA = z.object({
   value: z.number().positive().describe("Amount in BRL, e.g. 199.90"),
   description: z
@@ -157,13 +156,9 @@ const PAYMENT_STATUS_SCHEMA = z.object({
 });
 
 const ASAAS_TOOL_SPECS: ToolSpec[] = [
-  {
-    name: "asaas_payment_link_create",
-    risk: "high",
-    schema: PAYMENT_LINK_SCHEMA,
-  },
-  { name: "asaas_create_pix_charge", risk: "high", schema: PIX_CHARGE_SCHEMA },
-  { name: "asaas_payment_status", risk: "low", schema: PAYMENT_STATUS_SCHEMA },
+  { name: "asaas_payment_link_create", schema: PAYMENT_LINK_SCHEMA },
+  { name: "asaas_create_pix_charge", schema: PIX_CHARGE_SCHEMA },
+  { name: "asaas_payment_status", schema: PAYMENT_STATUS_SCHEMA },
 ];
 
 function buildCreateLinkTool(

@@ -451,7 +451,6 @@ export interface ToolWriteArgs {
   body?: Record<string, unknown>;
   credential_ref?: string | null;
   enabled?: boolean;
-  risk_tier?: "low" | "medium" | "high";
   expected_statuses?: number[];
   ack_enabled?: boolean;
   ack_message?: string | null;
@@ -476,7 +475,6 @@ async function buildToolPatch(
   if (args.query !== undefined) patch.query = args.query;
   if (args.body !== undefined) patch.body = args.body;
   if (args.enabled !== undefined) patch.enabled = args.enabled;
-  if (args.risk_tier !== undefined) patch.riskTier = args.risk_tier;
   // Normalized HERE and not only in the service: this patch is also what a dry run shows as the
   // preview, and a preview that echoes the raw argument promises a shape the apply would not write.
   if (args.expected_statuses !== undefined)

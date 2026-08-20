@@ -15,6 +15,7 @@ export const FLOW_STAGES = [
   "tts", // audio-reply synthesis
   "split", // humanized balloon delivery
   "handoff", // human takeover detected before posting
+  "memory", // a closed attendance folded into the contact's memory (compaction)
 ] as const;
 export type FlowStage = (typeof FLOW_STAGES)[number];
 

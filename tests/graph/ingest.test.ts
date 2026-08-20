@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { HumanMessage } from "@langchain/core/messages";
+import {
+  type BaseMessage,
+  HumanMessage,
+  RemoveMessage,
+} from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -7,7 +11,11 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { buildAgentGraph } from "@/graph/graph";
+import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { ingestMessageIntoThread } from "@/graph/ingest";
+import { isConversationDivider, stampedConversationId } from "@/graph/markers";
+import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
+import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -66,6 +74,49 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     await appDb.$disconnect();
   });
 
+  // A conversation can be REOPENED after another has already run on this thread — an operator picking
+  // an old one back up, a human agent replying in it. The probe that decides whether to write the
+  // divider used to ask "does this conversation appear ANYWHERE in the thread", and the earlier run
+  // answered yes: no divider, so the first turn of the resumed attendance reached the model as a
+  // continuation of the conversation that ran in between. The stamp is inert to the model; the
+  // divider is the only part of this it reads.
+  test("a conversation reopened after another one still opens a new attendance", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12377;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingest = (conversationId: number, messageId: number, text: string) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId,
+        text,
+      });
+
+    // Conversation 880, then 881 — an ordinary boundary — then 880 again.
+    expect(await ingest(880, 1, "primeira dúvida")).toBe("ingested");
+    expect(await ingest(881, 2, "outro assunto")).toBe("ingested");
+    expect(await ingest(880, 3, "voltei naquele assunto")).toBe("ingested");
+
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    const dividers = messages.filter((m) => isConversationDivider(m));
+    // One for 881, one for the reopened 880 — the second is the one that used to be missing.
+    expect(dividers.length).toBe(2);
+    expect(String(dividers.at(-1)?.content)).toContain(
+      "voltei naquele assunto",
+    );
+  });
+
   test("appends to the same thread a real turn uses; the next turn sees the ingested messages", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12345;
@@ -76,9 +127,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     );
     const ingest = (over: {
       messageId: number;
-      role: "customer" | "human_agent";
       text: string;
-      agentName?: string;
       conversationId?: number;
     }) =>
       ingestMessageIntoThread({
@@ -107,26 +156,12 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       { configurable: { thread_id: graphThreadId } },
     );
 
-    // 2. While the bot is silent, ingest a human agent's reply then a customer message.
-    expect(
-      await ingest({
-        messageId: 10,
-        role: "human_agent",
-        text: "Aqui é o João, vou te ajudar.",
-        agentName: "João",
-      }),
-    ).toBe("ingested");
-    expect(
-      await ingest({ messageId: 11, role: "customer", text: "obrigado!" }),
-    ).toBe("ingested");
+    // 2. While the bot is silent, ingest a customer message.
+    expect(await ingest({ messageId: 11, text: "obrigado!" })).toBe("ingested");
 
     // 3. Idempotency: the same id (re-delivery) and an older id are both skipped by the watermark.
-    expect(await ingest({ messageId: 11, role: "customer", text: "DUP" })).toBe(
-      "skipped",
-    );
-    expect(await ingest({ messageId: 5, role: "customer", text: "OLD" })).toBe(
-      "skipped",
-    );
+    expect(await ingest({ messageId: 11, text: "DUP" })).toBe("skipped");
+    expect(await ingest({ messageId: 5, text: "OLD" })).toBe("skipped");
 
     // 4. The next real turn loads the thread (incl. the ingested messages) and runs without error.
     const result = await graph.invoke(
@@ -134,10 +169,6 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       { configurable: { thread_id: graphThreadId } },
     );
     const contents = result.messages.map((m) => String(m.content));
-    // The human-agent reply is in history, marked so the model never mistakes it for its own output.
-    expect(
-      contents.some((c) => c.includes("<atendente") && c.includes("João")),
-    ).toBe(true);
     // The customer message the bot stayed silent on is in history.
     expect(contents.some((c) => c === "obrigado!")).toBe(true);
     // The de-duplicated text never made it in.
@@ -157,6 +188,68 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     expect(at.lastSyncedMessageId).toBe(11);
   });
 
+  // An agent who opens the conversation sends its FIRST message. Detecting the transition only on
+  // customer messages left that message inside the previous attendance, so when the customer finally
+  // replied the boundary landed after it — and the agent's opener was summarized and removed with the
+  // attendance that had already ended.
+  // The whole reason the cut reads a stamp instead of the divider: the divider is one message, and an
+  // invoke that started earlier saves the channel it loaded and erases it. Erased, the boundary has to
+  // survive anyway — it lives on the messages themselves.
+  test("the boundary survives losing the divider", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 23458;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingest = (conversationId: number, messageId: number, text: string) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId,
+        contactInboxId,
+        graphThreadId,
+        messageId,
+        text,
+        base: appDb,
+        checkpointer: saver,
+      });
+
+    await ingest(820, 1, "atendimento antigo");
+    await ingest(821, 2, "oi, voltei");
+    await ingest(821, 3, "queria remarcar");
+
+    const read = async () => {
+      const cp = await saver.get({
+        configurable: { thread_id: graphThreadId },
+      });
+      return ((cp?.channel_values as { messages?: BaseMessage[] } | undefined)
+        ?.messages ?? []) as BaseMessage[];
+    };
+    const withDivider = await read();
+    expect(
+      selectClosedPrefix(withDivider, { currentAttendanceClosed: false })
+        .closed,
+    ).toHaveLength(1);
+
+    // An older invoke finishing mid-attendance takes the divider with it.
+    const divider = withDivider.find(isConversationDivider);
+    expect(divider).toBeDefined();
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: graphThreadId } },
+      { messages: [new RemoveMessage({ id: divider?.id as string })] },
+      THREAD_STATE_NODE,
+    );
+
+    const without = await read();
+    expect(without.some(isConversationDivider)).toBe(false);
+    const cut = selectClosedPrefix(without, { currentAttendanceClosed: false });
+    expect(cut.closed).toHaveLength(1);
+    expect(String(cut.closed[0]?.content)).toBe("atendimento antigo");
+    expect(cut.open.map((m) => String(m.content))).toEqual(["queria remarcar"]);
+  });
+
   test("a customer message starting a NEW conversation on the thread gets the fresh-attendance divider", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 23456;
@@ -173,7 +266,6 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       contactInboxId,
       graphThreadId,
       messageId: 1,
-      role: "customer",
       text: "primeira",
       base: appDb,
       checkpointer: saver,
@@ -186,7 +278,6 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       contactInboxId,
       graphThreadId,
       messageId: 2,
-      role: "customer",
       text: "segunda",
       base: appDb,
       checkpointer: saver,
@@ -200,5 +291,97 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     expect(String(messages[0]?.content)).toBe("primeira");
     expect(String(messages[1]?.content)).toContain("nova conversa");
     expect(String(messages[1]?.content)).toContain("segunda");
+    // And it is a boundary the CUT can find. This path folds the marker into the customer's own
+    // message, so the text alone cannot say whether the customer wrote it — recognition is by
+    // metadata, and a divider written without it leaves the first attendance uncompactable forever.
+    const cut = selectClosedPrefix(messages as unknown as BaseMessage[], {
+      currentAttendanceClosed: false,
+    });
+    expect(cut.closed).toHaveLength(1);
+    expect(cut.open).toHaveLength(1);
+  });
+
+  test("a boundary crossed while a turn owns the thread is armed but not consumed", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 23459;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const closed: number[] = [];
+    const ingest = (conversationId: number, messageId: number, text: string) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId,
+        contactInboxId,
+        graphThreadId,
+        messageId,
+        text,
+        base: appDb,
+        checkpointer: saver,
+        onAttendanceClosed: (prev) => {
+          closed.push(prev);
+        },
+      });
+    await ingest(810, 1, "primeira");
+
+    // An older turn is still invoking on this thread. Its save will restore the channel it loaded,
+    // so a divider written now would be erased while the marker advanced for good.
+    markTurnInFlight(graphThreadId);
+    await ingest(811, 2, "segunda");
+    clearTurnInFlight(graphThreadId);
+
+    const mid = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const midMessages = ((mid?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    // No divider: the message went in raw. It still carries its conversation, which is what the cut
+    // reads, so the attendance stays compactable either way.
+    expect(midMessages.map((m) => isConversationDivider(m))).toEqual([
+      false,
+      false,
+    ]);
+    expect(stampedConversationId(midMessages[1] as BaseMessage)).toBe(811);
+    // Armed all the same: attendance 810 is compactable right now.
+    expect(closed).toEqual([810]);
+    // And the marker did NOT move, so the boundary is still owed.
+    const row = await suDb.agentThread.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { lastConversationId: true, lastSyncedMessageId: true },
+    });
+    expect(row?.lastConversationId).toBe(810);
+    // The synced watermark advances regardless: it guards at-most-once append.
+    expect(row?.lastSyncedMessageId).toBe(2);
+
+    // The next message of the SAME conversation does NOT get the divider, even with the thread free
+    // and the marker still owing the boundary. This attendance has already started, so a divider
+    // here would sit in the middle of it and tell the model that the messages before it — messages of
+    // the conversation it is answering right now — are a past attendance. A hint in the wrong place
+    // is worse than no hint.
+    await ingest(811, 3, "terceira");
+    const after = await saver.get({
+      configurable: { thread_id: graphThreadId },
+    });
+    const messages = ((after?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(messages.map((m) => isConversationDivider(m))).toEqual([
+      false,
+      false,
+      false,
+    ]);
+    // The boundary is on the messages either way, which is the whole reason losing the divider is
+    // survivable: the cut still ends the old attendance in the right place.
+    expect(messages.map(stampedConversationId)).toEqual([810, 811, 811]);
+    const cut = selectClosedPrefix(messages, {
+      currentAttendanceClosed: false,
+    });
+    expect(cut.closed.map((m) => String(m.content))).toEqual(["primeira"]);
   });
 });

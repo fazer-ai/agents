@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   ArrowRightLeft,
+  Brain,
   CalendarClock,
   Gauge,
   Image,
@@ -214,6 +215,10 @@ interface BehaviorTabProps {
   setVision: React.Dispatch<React.SetStateAction<VisionState>>;
   visionCredBaseUrl: string | null;
   limits: LimitsState;
+  memory: { compactionEnabled: boolean };
+  setMemory: React.Dispatch<
+    React.SetStateAction<{ compactionEnabled: boolean }>
+  >;
   observability: { logToolValues: boolean };
   setObservability: React.Dispatch<
     React.SetStateAction<{ logToolValues: boolean }>
@@ -785,6 +790,8 @@ export function BehaviorTab({
   setVision,
   visionCredBaseUrl,
   limits,
+  memory,
+  setMemory,
   observability,
   setObservability,
   setLimits,
@@ -914,6 +921,11 @@ export function BehaviorTab({
       id: "limits",
       icon: Gauge,
       label: t("editor.limits", "Execution limits"),
+    },
+    {
+      id: "memory",
+      icon: Brain,
+      label: t("editor.memory", "Memory"),
     },
     {
       id: "observability",
@@ -1918,6 +1930,25 @@ export function BehaviorTab({
                 />
               </FormField>
             </div>
+          </Section>
+
+          <Section
+            id="memory"
+            icon={Brain}
+            title={t("editor.memory", "Memory")}
+            description={t(
+              "editor.memoryHint",
+              'The agent remembers every conversation it has had with this contact on this channel. When an attendance ends, its messages are replaced by a summary of it, so the memory becomes "N summarized attendances + the current one". What survives a summary is the useful part: who the contact is, what was agreed, what was left open. Exact wording does not, so turn this off if the agent must be able to quote an old conversation word for word. The summary is written by the agent\'s own model, after the reply is sent, so no customer waits for it.',
+            )}
+          >
+            <SwitchField
+              checked={memory.compactionEnabled}
+              onCheckedChange={(v) => setMemory({ compactionEnabled: v })}
+              label={t(
+                "editor.memoryCompaction",
+                "Summarize attendances that have ended",
+              )}
+            />
           </Section>
 
           <Section

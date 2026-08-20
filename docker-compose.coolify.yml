@@ -19,6 +19,14 @@ services:
       # NOTE: default to the public URL, NOT `*` — the WS realtime origin check does an exact
       # match, so `*` matches no real Origin and 403s every WebSocket upgrade.
       - CORS_ORIGIN=${CORS_ORIGIN:-${SERVICE_URL_AGENTS}}
+      # Rate-limit keying. Safe to trust here: this service publishes no port, so every request
+      # arrives through Coolify's proxy and X-Forwarded-For is written by it. Without this the whole
+      # deployment shares one bucket. Leave the hops at 1: a proxy that does not trust its upstream
+      # emits only its own peer, so behind a CDN a higher count finds a chain shorter than itself and
+      # falls back to the proxy socket, collapsing everyone into one bucket. Configure the platform
+      # proxy to trust the CDN before raising it.
+      - TRUST_PROXY=true
+      - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-1}
       # First-run: disable the /setup token in this trusted, TLS-fronted onboarding window (the
       # advisory lock still caps /setup at one admin). Set to `true` to require it.
       - SETUP_TOKEN_REQUIRED=${SETUP_TOKEN_REQUIRED:-false}

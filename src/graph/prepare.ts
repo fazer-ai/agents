@@ -64,6 +64,7 @@ import {
   type SideEffectErrorReporter,
 } from "@/modules/integrations/toolpacks";
 import { type KanbanConfig, readKanbanConfig } from "@/modules/kanban/settings";
+import { readMemoryConfig } from "@/modules/memory/settings";
 import {
   readServiceWindowConfig,
   type ServiceWindowConfig,
@@ -225,6 +226,10 @@ export interface AgentConfig {
   // Ceiling on the history tokens sent to the model (agent.settings.limits.maxHistoryTokens).
   // null = no ceiling, send the whole thread.
   maxHistoryTokens: number | null;
+  // Whether a closed attendance gets folded into the contact's memory instead of staying raw on
+  // the thread (agent.settings.memory.compaction). Read here so the turn that CROSSES an
+  // attendance boundary can arm the compaction job without a second query.
+  memoryCompaction: boolean;
   // Whether this agent's tool lines log the VALUES the model sent instead of their shape
   // (agent.settings.observability.logToolValues; off by default — see src/modules/flowlog/shape.ts).
   logToolValues: boolean;
@@ -284,7 +289,16 @@ function pickPromptVar(
 export async function loadAgentConfig(
   db: ScopedDb,
   args: LoadAgentArgs,
-  opts: { ignoreDisabled?: boolean; overrides?: AgentConfigOverrides } = {},
+  opts: {
+    ignoreDisabled?: boolean;
+    overrides?: AgentConfigOverrides;
+    // Skips the A/B variant resolution. Resolving one is not a read: it INSERTS the thread's
+    // assignment when there is none, and that row lands in the denominator of every result for the
+    // experiment. A caller that never runs the tested prompt — memory compaction summarizes with a
+    // fixed prompt of its own — would be inventing participants for an experiment it takes no part
+    // in, lowering its reported rates with nothing in the numbers to say why.
+    skipExperiment?: boolean;
+  } = {},
 ): Promise<AgentConfig | null> {
   const agent = await db.agent.findUnique({
     where: { id: args.agentId },
@@ -437,11 +451,13 @@ export async function loadAgentConfig(
   const langfuseCfg = await resolveLangfuseConfig(db, args.tenantId);
   const sel = await loadToolSelections(db, agent.id);
   // A/B: an active experiment for this agent may override the system prompt for this thread.
-  const promptOverride = await resolveVariantOverride(db, {
-    tenantId: args.tenantId,
-    agentId: agent.id,
-    threadId: args.threadId,
-  });
+  const promptOverride = opts.skipExperiment
+    ? null
+    : await resolveVariantOverride(db, {
+        tenantId: args.tenantId,
+        agentId: agent.id,
+        threadId: args.threadId,
+      });
   // Grounding is a runtime invariant: when the agent can search the KB, append the grounding
   // directive (don't fabricate / cite / "I don't know" → human) instead of trusting the tenant
   // prompt. The threshold lives in agent.settings (no column on the RAG selection row).
@@ -612,6 +628,7 @@ export async function loadAgentConfig(
     timezone,
     maxToolCalls: limits.maxToolCalls,
     maxHistoryTokens: limits.maxHistoryTokens,
+    memoryCompaction: readMemoryConfig(effSettings).compaction.enabled,
     logToolValues: readObservabilityConfig(effSettings).logToolValues,
   };
 }
@@ -1023,6 +1040,11 @@ export interface CallbacksArgs {
   // turn itself; a secondary call on a separately-configured model (the speech normalizer) must pass
   // the model it actually billed, or the row attributes that spend to the wrong model.
   model?: string;
+  // The conversation to ATTRIBUTE the usage row and the trace to. Defaults to the one the config was
+  // loaded for, which is right for a turn; memory compaction is the exception, because a claimed job
+  // can find the thread already past the conversation its payload named, and the summary it bills is
+  // of the segment it actually cut.
+  conversationId?: bigint | null;
   // Passed through to the Langfuse handler: false for a secondary call sharing the turn's trace.
   // See TraceContext.updateRoot.
   updateRoot?: boolean;
@@ -1035,6 +1057,20 @@ export interface CallbacksArgs {
   tools?: StructuredToolInterface[];
 }
 
+// `??` was wrong here, and the case it got wrong is the one the override exists for: compaction
+// passes an explicit null when the segment it summarized belongs to a conversation whose mirrored row
+// is gone (an owed backlog, a conversation deleted since). Coalescing that back to the config's own
+// conversation charges the generation to an unrelated attendance — louder than the bug the override
+// was added to fix. Omitted and explicitly-null are different answers, so they are read differently.
+function resolveUsageConversation(
+  cfg: AgentConfig,
+  args: CallbacksArgs,
+): bigint | null {
+  return args.conversationId !== undefined
+    ? args.conversationId
+    : cfg.conversationDbId;
+}
+
 export function buildCallbacks(
   cfg: AgentConfig,
   args: CallbacksArgs,
@@ -1042,7 +1078,7 @@ export function buildCallbacks(
   const usage = new UsageCapture({
     tenantId: args.tenantId,
     agentId: cfg.agentId,
-    conversationId: cfg.conversationDbId,
+    conversationId: resolveUsageConversation(cfg, args),
     inboxId: cfg.inboxDbId,
     threadId: args.threadId,
     model: args.model ?? cfg.mc.model,
@@ -1055,7 +1091,7 @@ export function buildCallbacks(
   const langfuse = buildLangfuseHandler(cfg.langfuseCfg, {
     tenantId: args.tenantId,
     threadId: args.threadId,
-    conversationId: cfg.conversationDbId,
+    conversationId: resolveUsageConversation(cfg, args),
     agentId: cfg.agentId,
     userId: cfg.langfuseCfg?.tenantSlug,
     turnId: args.turnId,

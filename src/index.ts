@@ -26,6 +26,11 @@ import {
   ensureAllTenantSweeps,
   registerFollowUpHandlers,
 } from "@/modules/followups/handlers";
+import { registerMemoryHandlers } from "@/modules/memory/compact";
+import {
+  startCompactionWorker,
+  stopCompactionWorker,
+} from "@/modules/memory/worker";
 import { registerRagIngestHandler } from "@/modules/rag/documents";
 import { startScheduler, stopScheduler } from "@/modules/scheduler/worker";
 import { registerHeartbeatHandler } from "@/modules/webhooks/outbound/heartbeat";
@@ -159,6 +164,7 @@ if (config.schedulerWorker.enabled) {
   registerFlowlogRetentionHandler();
   registerAppointmentReminderHandler();
   registerRedirectFollowUpHandlers();
+  registerMemoryHandlers();
   startScheduler();
   // Arm the per-tenant execution-log retention sweep for every existing tenant (best-effort: a
   // boot-time DB outage just means the sweep arms on the next restart).
@@ -186,11 +192,23 @@ if (config.debounceWorker.enabled) {
   startDebounceWorker();
 }
 
+// NOTE: Dedicated worker for MEMORY_COMPACT jobs (attendance compaction). The mirror image of the
+// debounce lane: not fast, but long — a summary is a model call with a 60s ceiling, and compaction
+// fires for every agent on every closed attendance, so on the scheduler's serial lane a batch of
+// them would delay the jobs a customer feels. `registerMemoryHandlers` is idempotent, so registering
+// it here as well is what keeps a claimed job from landing without a handler when the scheduler
+// itself is disabled.
+if (config.compactionWorker.enabled) {
+  registerMemoryHandlers();
+  startCompactionWorker();
+}
+
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
     stopOutboundWorker();
     stopScheduler();
     stopDebounceWorker();
+    stopCompactionWorker();
     stopAlertWorker();
     process.exit(0);
   });

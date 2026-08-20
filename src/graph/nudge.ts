@@ -1,7 +1,8 @@
-import { HumanMessage } from "@langchain/core/messages";
+import type { BaseMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
@@ -11,12 +12,28 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
+import { armCompaction } from "@/modules/memory/compact";
 import {
   buildTemplatePayload,
   proactiveSendMode,
 } from "@/modules/service-window/service";
-import { resolveGraphThreadId, threadBelongsToTenant } from "./checkpointer";
+import {
+  attendanceHasStarted,
+  claimAttendanceBoundary,
+  needsAttendanceStartProbe,
+} from "./attendance-boundary";
+import {
+  getCheckpointer,
+  resolveGraphThreadId,
+  threadBelongsToTenant,
+} from "./checkpointer";
 import { lastAssistantText } from "./graph";
+import {
+  clearTurnInFlight,
+  isTurnInFlight,
+  markTurnInFlight,
+} from "./inflight";
+import { conversationDividerMessage, nudgeMessage } from "./markers";
 import {
   type AgentConfig,
   buildCallbacks,
@@ -25,6 +42,7 @@ import {
   loadAgentConfig,
 } from "./prepare";
 import type { RuntimeDeps } from "./runtime";
+import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 import { buildNativeTools } from "./tools/native";
 
 // agentNudge consumption: an inbound domain event (correlated to a conversation thread) is
@@ -290,6 +308,7 @@ export async function runAgentNudge(
   }
   if (!loaded) return "no-agent";
   const cfg: AgentConfig = loaded.cfg;
+  const contactInboxId = cfg.contactInboxId;
 
   // Invoke on the SAME per-contact-inbox memory thread the reactive turn uses (resolveGraphThreadId),
   // NOT params.threadId (per-conversation). Keying the graph here on the conversation thread was a bug:
@@ -437,9 +456,13 @@ export async function runAgentNudge(
   );
 
   // 3. Model + graph + callbacks (node="nudge").
+  // The SAME checkpointer the graph is built on, so the divider written below and the invoke's own
+  // messages land on one thread. Resolved here rather than inside the claim: `getCheckpointer` can
+  // reach the network on first use, and the claim runs inside an advisory-lock transaction.
+  const checkpointer = params.deps?.checkpointer ?? (await getCheckpointer());
   const graph = await buildModelAndGraph(cfg, tools, {
     makeModel: params.deps?.makeModel,
-    checkpointer: params.deps?.checkpointer,
+    checkpointer,
     // Same warn line the reactive turn leaves: a proactive send that only worked on the second
     // attempt must not read like a clean one, and this path can page an alert channel.
     onModelRetry: ({ attempt }) =>
@@ -480,7 +503,15 @@ export async function runAgentNudge(
     callbacks,
   };
 
-  // A suspended interrupt (human-in-the-loop) must not be barged over — defer the nudge.
+  // Claim the graph thread against a memory-compaction rewrite for as long as this invoke is reading
+  // and writing the channel. Same reasoning as the reactive turn (see ./inflight): an invoke saves
+  // the state it loaded, so a rewrite that lands in the middle of one is undone when it finishes,
+  // and the raw history it replaced comes back. The mark is taken under the lock the rewrite holds,
+  // which is what makes the two exclusive rather than merely staggered, and released in the `finally`
+  // below — the window only has to cover the invoke, since nothing after it writes the thread.
+  // A suspended interrupt (human-in-the-loop) must not be barged over — defer the nudge. Probed
+  // BEFORE the claim below, so a nudge that is not going to be delivered does not consume the
+  // attendance boundary on its way out.
   try {
     const state = await graph.getState(invokeConfig);
     const pendingInterrupt = (state?.tasks ?? []).some(
@@ -491,14 +522,135 @@ export async function runAgentNudge(
     // No prior checkpoint / state unavailable → proceed.
   }
 
-  // 4. Invoke with the normalized event as a HUMAN turn. It must NOT be a SystemMessage: the agent
-  // node already prepends the one-and-only system prompt, and a second system message in the thread
-  // makes strict providers (Google) reject the call ("System messages are only permitted as the
-  // first passed message"). The renderNudge directive + data fence read fine as a human trigger.
-  const result = await graph.invoke(
-    { messages: [new HumanMessage(renderNudge(params.nudge, canMessagePre))] },
-    invokeConfig,
-  );
+  let claimedGraphThread = false;
+  let result: Awaited<ReturnType<typeof graph.invoke>>;
+  try {
+    // Taken INSIDE the try, and released only if it was actually taken: the transaction can reject
+    // after its callback ran (a failed commit, a lost connection), and a claim made on the way to a
+    // rejection that skips the `finally` never comes back — every later compaction on this thread
+    // would read it as busy and reschedule until the process restarts.
+    const claim = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      withEntityLock(db, `ingest:${graphThreadId}`, async () => {
+        // A thread keyed by CONVERSATION rather than by contact-inbox (resolveGraphThreadId, when the
+        // contact-inbox is unknown) carries a single attendance by construction: there is no earlier
+        // one for a divider to separate this from, and no sidecar row keyed by contact-inbox to
+        // advance. Claim the thread against a compaction rewrite all the same — the invoke below is
+        // still a read-modify-write of the whole channel.
+        if (contactInboxId === null) {
+          markTurnInFlight(graphThreadId);
+          claimedGraphThread = true;
+          return {
+            writeDivider: false,
+            advanceMarker: false,
+            closedConversationId: null,
+          };
+        }
+        const key = {
+          tenantId_chatwootInstanceId_contactInboxId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            contactInboxId,
+          },
+        };
+        const existing = await db.agentThread.findUnique({
+          where: key,
+          select: { lastConversationId: true },
+        });
+        // Read BEFORE this nudge marks its own claim: what matters is whether some OTHER invoke is
+        // mid-flight (./attendance-boundary.ts, case 1).
+        const anotherInvokeIsReading = isTurnInFlight(graphThreadId);
+        markTurnInFlight(graphThreadId);
+        claimedGraphThread = true;
+        const previous = existing?.lastConversationId ?? null;
+        const alreadyStarted = needsAttendanceStartProbe(
+          previous,
+          conversationId,
+          anotherInvokeIsReading,
+        )
+          ? attendanceHasStarted(
+              (
+                (await graph.getState(invokeConfig)).values as
+                  | { messages?: BaseMessage[] }
+                  | undefined
+              )?.messages ?? [],
+              conversationId,
+            )
+          : false;
+        const decided = claimAttendanceBoundary({
+          previousConversationId: previous,
+          conversationId,
+          anotherInvokeIsReading,
+          attendanceAlreadyStarted: alreadyStarted,
+        });
+        // The divider goes in BEFORE the marker moves, and inside the claim — the same order and the
+        // same lock the reactive turn uses (./runtime.ts). It used to ride in this nudge's own invoke
+        // instead, which advanced the marker on a divider that did not exist yet: a turn arriving
+        // during the generation read the conversation as already recorded, declined to write one of
+        // its own, and then this invoke appended ours AFTER that turn's messages — a divider in the
+        // middle of the attendance, which is worse than none. An invoke that never succeeded left the
+        // marker advanced and no divider at all.
+        //
+        // The invoke below does not erase it either: an invoke saves the channel it LOADED, and this
+        // one has not started yet, so it loads the divider along with everything else.
+        if (decided.writeDivider) {
+          await buildThreadStateGraph(checkpointer).updateState(
+            { configurable: { thread_id: graphThreadId } },
+            { messages: [conversationDividerMessage(conversationId)] },
+            THREAD_STATE_NODE,
+          );
+        }
+        // The sidecar row is what resolve-time compaction reads to know which attendance the thread
+        // is on. A nudge that opens a conversation used to leave it absent, and the job then exited
+        // at its generation fence with the attendance never summarized.
+        if (decided.advanceMarker) {
+          await db.agentThread.upsert({
+            where: key,
+            create: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              contactInboxId,
+              threadId: graphThreadId,
+              lastConversationId: conversationId,
+            },
+            update: { lastConversationId: conversationId },
+          });
+        }
+        return decided;
+      }),
+    );
+    if (claim.closedConversationId !== null && contactInboxId !== null) {
+      // Outside the lock: this opens its own transaction, and nesting one inside an advisory-lock
+      // transaction would hold that lock across a second connection's work.
+      await armCompaction({
+        tenantId,
+        instanceId,
+        contactInboxId,
+        conversationId: claim.closedConversationId,
+        agentId: cfg.agentId,
+        reason: "new_attendance",
+        enabled: cfg.memoryCompaction,
+        base,
+      });
+    }
+
+    // 4. Invoke with the normalized event as a HUMAN turn. It must NOT be a SystemMessage: the agent
+    // node already prepends the one-and-only system prompt, and a second system message in the thread
+    // makes strict providers (Google) reject the call ("System messages are only permitted as the
+    // first passed message"). The renderNudge directive + data fence read fine as a human trigger.
+    result = await graph.invoke(
+      {
+        messages: [
+          nudgeMessage(
+            renderNudge(params.nudge, canMessagePre),
+            conversationId,
+          ),
+        ],
+      },
+      invokeConfig,
+    );
+  } finally {
+    if (claimedGraphThread) clearTurnInFlight(graphThreadId);
+  }
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
   const replyRaw = lastAssistantText(result.messages);

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import {
+  claimDueCompactionJobs,
   claimDueJobs,
   completeJob,
   enqueueJob,
@@ -130,6 +131,80 @@ describe.skipIf(!dbUp)("scheduler", () => {
       select: { payload: true },
     });
     expect(b.payload).toEqual({ threadId: "1:2:3" });
+  });
+
+  // THE LANE SPLIT. The scheduler tick awaits its claimed jobs one at a time, so a kind that takes
+  // seconds per job holds up everything behind it. Two kinds are drained by their own workers for
+  // opposite reasons — DEBOUNCE because it must be fast, MEMORY_COMPACT because it is slow and fires
+  // for every agent on every closed attendance — and neither may be picked up here, or the split
+  // buys nothing.
+  test("the shared lane claims neither debounce nor compaction jobs", async () => {
+    const shared = await enqueueJob({
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-lane-shared",
+      runAt: past(),
+      base: appDb,
+    });
+    const debounce = await enqueueJob({
+      tenantId,
+      kind: "DEBOUNCE",
+      dedupeKey: "dk-lane-debounce",
+      runAt: past(),
+      base: appDb,
+    });
+    const compaction = await enqueueJob({
+      tenantId,
+      kind: "MEMORY_COMPACT",
+      dedupeKey: "dk-lane-compaction",
+      runAt: past(),
+      base: appDb,
+    });
+
+    const claimed = await claimDueJobs(50, appDb, new Date(), tenantId);
+    const ids = claimed.map((j) => j.id);
+    expect(ids).toContain(shared);
+    expect(ids).not.toContain(debounce);
+    expect(ids).not.toContain(compaction);
+    // Still PENDING, waiting for their own lane — not skipped, not lost.
+    expect((await statusOf(compaction)).status).toBe("PENDING");
+
+    // And the compaction lane claims that one, and only that one.
+    const mine = await claimDueCompactionJobs(50, appDb, new Date(), tenantId);
+    const mineIds = mine.map((j) => j.id);
+    expect(mineIds).toEqual([compaction]);
+  });
+
+  // The exclusion has to happen in the CLAIM, not after it: a row left PENDING is protected by the
+  // very CAS that would otherwise let a handler still running complete a newer arm (both are guarded
+  // on id + CLAIMED).
+  test("an excluded id is left PENDING, not claimed", async () => {
+    const busy = await enqueueJob({
+      tenantId,
+      kind: "MEMORY_COMPACT",
+      dedupeKey: "dk-lane-busy",
+      runAt: past(),
+      base: appDb,
+    });
+    const free = await enqueueJob({
+      tenantId,
+      kind: "MEMORY_COMPACT",
+      dedupeKey: "dk-lane-free",
+      runAt: past(),
+      base: appDb,
+    });
+
+    const claimed = await claimDueCompactionJobs(
+      50,
+      appDb,
+      new Date(),
+      tenantId,
+      [busy],
+    );
+    const ids = claimed.map((j) => j.id);
+    expect(ids).toContain(free);
+    expect(ids).not.toContain(busy);
+    expect((await statusOf(busy)).status).toBe("PENDING");
   });
 
   test("claim → complete", async () => {

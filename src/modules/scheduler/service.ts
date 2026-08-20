@@ -24,7 +24,8 @@ export type SchedulerJobKind =
   | "HEARTBEAT"
   | "FLOWLOG_SWEEP"
   | "APPOINTMENT_REMINDER"
-  | "REDIRECT_FOLLOWUP";
+  | "REDIRECT_FOLLOWUP"
+  | "MEMORY_COMPACT";
 
 export interface ClaimedJob {
   id: bigint;
@@ -40,6 +41,12 @@ export interface EnqueueParams {
   dedupeKey: string;
   runAt: Date;
   payload?: Record<string, unknown>;
+  // Start this row's retry budget over. Off by default, because most kinds key their dedupeKey to
+  // one unit of work (a conversation's follow-up, a document's ingest) and a re-arm there is the
+  // SAME work being retried. A kind whose key is permanent — one row per contact thread, reused by
+  // every attendance forever — needs it: without it, four transient failures spread over months make
+  // the next attendance dead-letter on its first, and that thread never compacts again.
+  resetAttempts?: boolean;
   base?: PrismaClient;
 }
 
@@ -73,6 +80,7 @@ export async function enqueueJob(params: EnqueueParams): Promise<bigint> {
         ...(params.payload !== undefined
           ? { payload: params.payload as Prisma.InputJsonValue }
           : {}),
+        ...(params.resetAttempts ? { attempts: 0 } : {}),
       },
       select: { id: true },
     });
@@ -129,10 +137,20 @@ async function claimWhere(
   now: Date,
   kindFilter: Prisma.Sql,
   tenantId?: bigint,
+  // Rows this process is already executing. They must not be CLAIMED again: `enqueueJob` re-arms by
+  // upserting the same physical row back to PENDING, and claiming it a second time is what lets the
+  // handler still running complete the newer arm out from under it (both are guarded on
+  // id + CLAIMED). Left PENDING, that same CAS is what PROTECTS it — the stale completion simply
+  // does not match — and the row is claimed on a later tick, once its owner is done.
+  excludeIds?: bigint[],
 ): Promise<ClaimedJob[]> {
   const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
   const tenantClause =
     tenantId != null ? Prisma.sql`AND tenant_id = ${tenantId}` : Prisma.empty;
+  const excludeClause =
+    excludeIds && excludeIds.length > 0
+      ? Prisma.sql`AND id NOT IN (${Prisma.join(excludeIds)})`
+      : Prisma.empty;
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.$queryRaw<
       Array<{
@@ -147,7 +165,7 @@ async function claimWhere(
       WHERE id IN (
         SELECT id FROM scheduler_jobs
         WHERE status = 'PENDING' AND run_at <= ${now} AND ${kindFilter}
-          ${tenantClause}
+          ${tenantClause} ${excludeClause}
         ORDER BY run_at
         FOR UPDATE SKIP LOCKED
         LIMIT ${lim}
@@ -178,7 +196,13 @@ export function claimDueJobs(
   now: Date = new Date(),
   tenantId?: bigint,
 ): Promise<ClaimedJob[]> {
-  return claimWhere(limit, base, now, Prisma.sql`kind <> 'DEBOUNCE'`, tenantId);
+  return claimWhere(
+    limit,
+    base,
+    now,
+    Prisma.sql`kind NOT IN ('DEBOUNCE', 'MEMORY_COMPACT')`,
+    tenantId,
+  );
 }
 
 // The fast debounce tick claims ONLY debounce jobs.
@@ -189,6 +213,29 @@ export function claimDueDebounceJobs(
   tenantId?: bigint,
 ): Promise<ClaimedJob[]> {
   return claimWhere(limit, base, now, Prisma.sql`kind = 'DEBOUNCE'`, tenantId);
+}
+
+// The compaction lane claims ONLY compaction jobs, and exists for the same reason the debounce lane
+// does — different reason, opposite direction. `runSchedulerTick` awaits its claimed jobs one at a
+// time, and a summary is a model call with a 60s ceiling. Compaction is also the first job kind that
+// fires for EVERY agent on EVERY closed attendance (it ships on by default), so a batch of them on
+// the shared lane would hold up the jobs that are actually time-sensitive — a follow-up, an
+// appointment reminder — by minutes. Its own lane keeps that arithmetic off them entirely.
+export function claimDueCompactionJobs(
+  limit: number,
+  base: PrismaClient = basePrisma,
+  now: Date = new Date(),
+  tenantId?: bigint,
+  excludeIds?: bigint[],
+): Promise<ClaimedJob[]> {
+  return claimWhere(
+    limit,
+    base,
+    now,
+    Prisma.sql`kind = 'MEMORY_COMPACT'`,
+    tenantId,
+    excludeIds,
+  );
 }
 
 // Terminal success.
@@ -277,10 +324,18 @@ export async function reapStaleJobs(
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
   tenantId?: bigint,
+  // Restrict the reap to one kind. A lane with its own worker reaps its OWN stale claims, because
+  // the worker flags are independent: with the scheduler disabled and that lane enabled, nothing
+  // else re-pends a row left CLAIMED by a process that died mid-job, and the dedicated tick only
+  // claims PENDING ones. Reaping the same kind from both places is harmless — the second pass finds
+  // the row already re-pended.
+  kind?: ClaimedJob["kind"],
 ): Promise<ReapedJob[]> {
   const cutoff = new Date(now.getTime() - staleMs);
   const tenantClause =
     tenantId != null ? Prisma.sql`AND tenant_id = ${tenantId}` : Prisma.empty;
+  const kindClause =
+    kind != null ? Prisma.sql`AND kind = ${kind}` : Prisma.empty;
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.$queryRaw<
       Array<{
@@ -297,7 +352,7 @@ export async function reapStaleJobs(
           attempts = attempts + 1,
           claimed_at = NULL,
           updated_at = now()
-      WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause}
+      WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
       RETURNING id, tenant_id, kind, payload, attempts, status`);
     return rows.map((r) => ({
       id: r.id,

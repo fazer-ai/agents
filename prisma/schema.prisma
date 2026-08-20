@@ -64,6 +64,7 @@ enum SchedulerJobKind {
   FLOWLOG_SWEEP
   APPOINTMENT_REMINDER
   REDIRECT_FOLLOWUP
+  MEMORY_COMPACT
 }
 
 enum SchedulerJobStatus {
@@ -115,6 +116,7 @@ model Tenant {
   contacts                      Contact[]
   conversations                 Conversation[]
   agentThreads                  AgentThread[]
+  attendanceSummaries           AttendanceSummary[]
   agents                        Agent[]
   businessHours                 BusinessHours[]
   knowledgeBases                KnowledgeBase[]
@@ -278,6 +280,7 @@ model ChatwootInstance {
   webhookDeliveries ChatwootWebhookDelivery[]
   agentBots         ChatwootAgentBot[]
   agentThreads      AgentThread[]
+  attendanceSummaries AttendanceSummary[]
 
   @@unique([tenantId, accountId])
   // Global (no tenantId): one Chatwoot account belongs to a single tenant across the whole fleet.
@@ -539,6 +542,57 @@ model AgentThread {
   @@unique([tenantId, chatwootInstanceId, contactInboxId])
   @@index([tenantId])
   @@map("agent_threads")
+}
+
+// One row per attendance that has been folded into a contact's memory: the condensed form of the raw
+// turns that used to sit in the graph thread. Keyed on the SAME triple as AgentThread plus the
+// Chatwoot conversation display_id, so an attendance is summarized EXACTLY ONCE, ever — the unique
+// key is what makes a re-armed compaction job cost nothing instead of paying for a second generation
+// (and writing a second, differently-worded memory of the same attendance).
+//
+// The rows are the source of truth for the memory head prepended to the thread; the thread only
+// carries a rendered copy. Keeping them here rather than only inside the message means a summary is
+// never re-summarized (no compounding loss), survives a checkpointer reset, and is inspectable.
+model AttendanceSummary {
+  id                 BigInt   @id @default(autoincrement())
+  tenantId           BigInt   @map("tenant_id")
+  chatwootInstanceId BigInt   @map("chatwoot_instance_id")
+  contactInboxId     Int      @map("contact_inbox_id")
+  // Chatwoot display_id of the attendance this summarizes. On a thread that had several raw
+  // attendances waiting (compaction newly enabled, or a run that kept failing), one row covers the
+  // whole backlog and carries the display_id of the most recent closed one.
+  conversationId     Int      @map("conversation_id")
+  // The graph message id of the LAST turn this row summarized, and the reason a row is a SEGMENT of
+  // an attendance rather than the whole of it. A conversation can be resolved, compacted, reopened by
+  // the customer and resolved again: the second cut carries only the new turns, so keying on the
+  // conversation alone would either replace the first summary with a description of the tail or
+  // reuse the first for turns it never saw. Both lose half the attendance. Keyed on this, the second
+  // pass writes its own row and both segments survive; a RETRY of the same cut finds the same id and
+  // costs nothing.
+  lastMessageId      String   @map("last_message_id")
+  summary            String
+  // How many raw messages this row replaced, for the turn trail. Never any of their text.
+  messageCount       Int      @map("message_count")
+  // When the attendance itself happened (the mirrored conversation's last event), NOT when the job
+  // ran. Compaction can run months after the fact — the boundary trigger fires only when the contact
+  // comes back — and dating the memory by the job would tell the model a returning customer's
+  // history happened today.
+  //
+  // NULLABLE because that rule has to hold when the date cannot be read at all: with the mirrored
+  // conversation gone, `now()` is not a fallback, it is the exact lie the rule above forbids, and it
+  // would also sort the oldest attendance to the FRONT of the window the head renders. Unknown sorts
+  // last on the descending window (so it never displaces a genuinely newer entry) and renders with
+  // no date attribute.
+  attendanceAt       DateTime? @map("attendance_at")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, chatwootInstanceId, contactInboxId, conversationId, lastMessageId])
+  @@index([tenantId, chatwootInstanceId, contactInboxId])
+  @@map("attendance_summaries")
 }
 
 // ──────────────────────────────────────────────── agent config ──

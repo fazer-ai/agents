@@ -60,7 +60,7 @@
     "bun-plugin-tailwind": "^0.1.2",
     "elysia": "^1.4.29",
     "elysia-helmet": "^3.1.0",
-    "elysia-rate-limit": "^4.6.2",
+    "elysia-rate-limit": "^4.6.3",
     "i18next": "^26.3.6",
     "jose": "^6.2.7",
     "langfuse-langchain": "3.38.20",

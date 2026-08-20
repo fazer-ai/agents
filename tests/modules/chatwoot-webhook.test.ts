@@ -9,7 +9,6 @@ import {
 import {
   firstAudioAttachment,
   firstLocationAttachment,
-  isHumanAgentMessage,
   isIncomingMessage,
   isNewIncomingMessage,
   normalizeChatwootEvent,
@@ -179,7 +178,6 @@ describe("normalizeChatwootEvent", () => {
       id: 33,
       name: "João",
     });
-    expect(human && isHumanAgentMessage(human)).toBe(true);
   });
 
   test("returns null for a non-object or eventless payload", () => {
@@ -281,40 +279,6 @@ describe("firstLocationAttachment (issue #45)", () => {
         loc({ latitude: -91, longitude: 10, fallbackTitle: "Praça da Sé" }),
       ]),
     ).toEqual({ latitude: null, longitude: null, title: "Praça da Sé" });
-  });
-});
-
-describe("isHumanAgentMessage (continuous-ingestion role gate)", () => {
-  const msg = (over: Record<string, unknown>) =>
-    normalizeChatwootEvent({
-      event: "message_created",
-      id: 1,
-      content: "x",
-      message_type: "outgoing",
-      private: false,
-      sender: { id: 1, name: "A", type: "user" },
-      conversation: { id: 42, inbox_id: 7, status: "open" },
-      ...over,
-    });
-
-  test("true only for a brand-new outgoing message authored by a human (User) agent", () => {
-    expect(isHumanAgentMessage(msg({}) as never)).toBe(true);
-    // Our bot / another bot (agent_bot) → not human.
-    expect(
-      isHumanAgentMessage(
-        msg({ sender: { id: 9, name: "Bot", type: "agent_bot" } }) as never,
-      ),
-    ).toBe(false);
-    // Incoming (the customer) → not a human AGENT message.
-    expect(
-      isHumanAgentMessage(msg({ message_type: "incoming" }) as never),
-    ).toBe(false);
-    // A private note (operator-only) → never part of the customer dialogue.
-    expect(isHumanAgentMessage(msg({ private: true }) as never)).toBe(false);
-    // An edit (message_updated) → must not re-ingest.
-    expect(
-      isHumanAgentMessage(msg({ event: "message_updated" }) as never),
-    ).toBe(false);
   });
 });
 

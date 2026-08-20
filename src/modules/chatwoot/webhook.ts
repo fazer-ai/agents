@@ -16,6 +16,7 @@ import {
 import { ingestMessageIntoThread } from "@/graph/ingest";
 import { runAgentTurn } from "@/graph/runtime";
 import { AppError, UnauthorizedError } from "@/lib/errors";
+import { withEntityLock } from "@/lib/locks";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { shouldRunReset } from "@/modules/agents/test-mode";
 import {
@@ -50,6 +51,9 @@ import {
 } from "@/modules/conversations/failure-note";
 import { armDebounce, resolveDebounceConfig } from "@/modules/debounce/service";
 import { advanceHandledWatermark } from "@/modules/debounce/watermark";
+import { armCompaction } from "@/modules/memory/compact";
+import { clearContactMemory } from "@/modules/memory/reset";
+import { readMemoryConfig } from "@/modules/memory/settings";
 import { cancelPendingJob } from "@/modules/scheduler/service";
 import {
   resolveSttConfig,
@@ -73,7 +77,6 @@ import {
   firstAudioAttachment,
   firstLocationAttachment,
   firstVisualAttachment,
-  isHumanAgentMessage,
   isIncomingMessage,
   isNewIncomingMessage,
   normalizeChatwootEvent,
@@ -479,6 +482,10 @@ async function ingestUnhandledMessage(args: {
   n: NormalizedChatwootEvent;
   act: boolean;
   consumed: boolean;
+  // The inbox's agent, for arming memory compaction when this message opens a new attendance. The
+  // caller already resolved it (inboxAgentRuntime) to decide whether to ingest at all.
+  agentId: bigint;
+  compactionEnabled: boolean;
   base: PrismaClient;
 }): Promise<void> {
   const { tenantId, instanceId, n, act, consumed, base } = args;
@@ -500,32 +507,21 @@ async function ingestUnhandledMessage(args: {
     contactInboxId,
   );
 
-  // A human agent's outgoing reply (a colleague messaged the customer while the bot was silent).
-  if (isHumanAgentMessage(n)) {
-    const text = (n.message.content ?? "").trim();
-    if (!text) return;
-    try {
-      await ingestMessageIntoThread({
-        tenantId,
-        instanceId,
-        conversationId,
-        contactInboxId,
-        graphThreadId,
-        messageId,
-        role: "human_agent",
-        text,
-        agentName: n.message.sender?.name ?? null,
-        base,
-      });
-    } catch (err) {
-      logger.warn(
-        "ingest (human agent) failed (conv=%s): %s",
-        String(conversationId),
-        errMsg(err),
-      );
-    }
-    return;
-  }
+  // A new attendance can begin on a message the agent never answers (out of hours, a human on the
+  // conversation, or the agent reaching out first). Without this arm, that boundary would be invisible
+  // to compaction until the attendance AFTER it, which is exactly the deployment that never resolves
+  // conversations — the population the whole feature exists for.
+  const armOnBoundary = (previousConversationId: number): Promise<void> =>
+    armCompaction({
+      tenantId,
+      instanceId,
+      contactInboxId,
+      conversationId: previousConversationId,
+      agentId: args.agentId,
+      reason: "new_attendance",
+      enabled: args.compactionEnabled,
+      base,
+    }).then(() => undefined);
 
   // A customer incoming message the bot will NOT answer: silenced out of hours (act && consumed) or
   // not bot-handled (!act — a human owns it, or it is not pending). An answered/debounced message is
@@ -553,9 +549,9 @@ async function ingestUnhandledMessage(args: {
       contactInboxId,
       graphThreadId,
       messageId,
-      role: "customer",
       text,
       base,
+      onAttendanceClosed: armOnBoundary,
     });
   } catch (err) {
     logger.warn(
@@ -965,23 +961,64 @@ async function maybeConsumeCommandOrGate(params: {
       }
     };
 
-    // Clear the agent's memory thread (per contact-inbox / channel) AND the AgentThread marker (the
-    // divider's last-conversation + the ingestion watermark), so a reset truly starts this channel's
-    // conversation over. Only THIS channel's memory is cleared (the contact's other channels keep
+    // Clear the agent's memory thread (per contact-inbox / channel), the AgentThread marker (the
+    // divider's last-conversation + the ingestion watermark) AND the compacted memory of past
+    // attendances, so a reset truly starts this channel's conversation over. Only THIS channel's memory is cleared (the contact's other channels keep
     // their own threads), which matches where the operator typed /reset.
     if (ctx.conv.contactInboxId !== null) {
       const contactInboxId = ctx.conv.contactInboxId;
-      await step("deleteThread", "memória", async () => {
-        const cp = await getCheckpointer();
-        await cp.deleteThread(
-          contactInboxThreadId(tenantId, instanceId, contactInboxId),
-        );
-      });
-      await step("clear agent-thread marker", "memória", () =>
+      // ALL THREE deletions under the lock a compaction takes, and in one step, because a reset that
+      // clears them in separate critical sections loses to a job already CLAIMED (past
+      // cancelPendingJob, provider call in flight):
+      //
+      //   - the summary rows and the AgentThread marker, or the job slips its row in between the two
+      //     and the next compaction renders memory this reset cleared;
+      //   - the CHECKPOINT itself, or the job's rewrite recreates the thread — with the memory head
+      //     in it — right after this deleted it, and nothing deletes it again. That one is the worst
+      //     of the three, because the operator sees the reset confirmed and the agent keeps
+      //     answering from the memory they just cleared.
+      //
+      // Under the shared lock the job either finished before this ran (and this deletes everything it
+      // wrote) or it finds the AgentThread row gone and drops the summary. The checkpointer call is a
+      // separate connection, which is exactly why the advisory lock — and not the transaction — is
+      // what serializes here.
+      //
+      // The order the three deletions run in is load-bearing and lives with its reasoning in
+      // src/modules/memory/reset.ts.
+      await step("clear agent memory", "memória", () =>
         runScopedOn(base, sysCtx(tenantId), (db) =>
-          db.agentThread.deleteMany({
-            where: { tenantId, chatwootInstanceId: instanceId, contactInboxId },
-          }),
+          withEntityLock(
+            db,
+            `ingest:${contactInboxThreadId(tenantId, instanceId, contactInboxId)}`,
+            async () => {
+              await clearContactMemory({
+                db,
+                checkpointer: await getCheckpointer(),
+                tenantId,
+                instanceId,
+                contactInboxId,
+                threadId: contactInboxThreadId(
+                  tenantId,
+                  instanceId,
+                  contactInboxId,
+                ),
+              });
+            },
+          ),
+        ),
+      );
+      // The compacted memory of past attendances lives in its own table, not in the thread, so
+      // deleting the thread alone would resurrect every one of them on the next compaction (the head
+      // is rendered from these rows). "Starts this channel's conversation over" has to include them,
+      // and the PENDING job that would write more of them: a compaction armed on a resolve waits out
+      // a grace window, so at any moment one can be sitting in the queue holding the conversation
+      // this reset is clearing.
+      await step("cancel pending compaction", "memória", () =>
+        cancelPendingJob(
+          tenantId,
+          "MEMORY_COMPACT",
+          contactInboxThreadId(tenantId, instanceId, contactInboxId),
+          base,
         ),
       );
     }
@@ -1308,6 +1345,11 @@ export async function processChatwootDelivery(
   );
   const convLabel = n.conversationId === null ? "?" : String(n.conversationId);
 
+  // ── A conversation this agent manages just transitioned TO resolved (by anyone: the agent's own
+  //    resolve tool, an operator in our console, or a human resolving directly in Chatwoot). Two
+  //    independent consequences hang off the same transition: memory compaction for EVERY agent, and
+  //    the WhatsApp→chat redirect handling for a widget inbox.
+  //
   // ── WhatsApp→chat redirect: the WIDGET conversation this agent manages just transitioned TO resolved
   //    (by anyone — the agent's own resolve tool, an operator in our console, or a human resolving
   //    directly in Chatwoot). Two things happen: (1) cancel any pending follow-up ladder job — a
@@ -1323,20 +1365,97 @@ export async function processChatwootDelivery(
     mirror.prevStatus !== null &&
     mirror.prevStatus !== "resolved" &&
     mirror.status === "resolved" &&
-    n.inboxId !== null &&
     n.conversationId !== null
   ) {
     const conversationId = n.conversationId;
+    // Both ids FROM THE MIRROR when the event does not carry them. A conversation_* payload can
+    // arrive without `inbox` and without `contact_inbox` — the mirror handles that shape explicitly,
+    // preserving the stored ids rather than nulling them — and gating on the event alone would skip
+    // compaction for a resolve that is otherwise complete. Nothing comes back for it either: if the
+    // customer returns on the same conversation there is no new-attendance boundary, so that history
+    // stays raw indefinitely, on exactly the resolve trigger that exists to make the return turn
+    // cheap.
+    //
+    // In its OWN best-effort boundary, ahead of everything else. The redirect handling below is a
+    // different feature that happens to key off the same transition, and it is the one with a
+    // deadline: it cancels the follow-up chase and posts the closing message. A transient failure in
+    // this lookup would otherwise land in the shared catch, skip both of those, and still mark the
+    // delivery processed — losing the closing sequence for good, for a conversation that will never
+    // resolve again.
+    let storedInboxId: number | null = null;
+    let storedContactInboxId: number | null = null;
+    if (n.inboxId === null || n.contactInboxId === null) {
+      try {
+        const stored = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+          db.conversation.findUnique({
+            where: {
+              tenantId_chatwootInstanceId_chatwootConversationId: {
+                tenantId: params.tenantId,
+                chatwootInstanceId: params.instanceId,
+                chatwootConversationId: conversationId,
+              },
+            },
+            select: {
+              contactInboxId: true,
+              inbox: { select: { chatwootInboxId: true } },
+            },
+          }),
+        );
+        storedInboxId = stored?.inbox?.chatwootInboxId ?? null;
+        storedContactInboxId = stored?.contactInboxId ?? null;
+      } catch (err) {
+        logger.warn(
+          "chatwoot: resolving ids for compaction on resolve failed (conv=%s): %s",
+          String(conversationId),
+          errMsg(err),
+        );
+      }
+    }
+    const closingInboxId = n.inboxId ?? storedInboxId;
+    const closingContactInboxId = n.contactInboxId ?? storedContactInboxId;
     try {
       const closingRt = await inboxAgentRuntime(
         params.tenantId,
         params.instanceId,
-        n.inboxId,
+        closingInboxId,
         base,
       );
       if (closingRt) {
+        // Memory compaction: an attendance that ended is an attendance that can become a summary.
+        // Armed here, with a grace period, so the thread is already compacted BEFORE the customer
+        // comes back — measurement says the resumption turn is the one billed fresh (cache rate
+        // ~0% past 24h), so compacting only when they return would miss the expensive turn. The
+        // job re-checks the status at execution, because a resolve can be undone. Unlike the
+        // redirect handling below, this applies to every agent, not only a widget inbox.
+        if (closingContactInboxId !== null) {
+          try {
+            await armCompaction({
+              tenantId: params.tenantId,
+              instanceId: params.instanceId,
+              contactInboxId: closingContactInboxId,
+              conversationId,
+              agentId: closingRt.agentId,
+              reason: "resolved",
+              enabled: readMemoryConfig(closingRt.settings).compaction.enabled,
+              base,
+            });
+          } catch (err) {
+            logger.warn(
+              "chatwoot: arming compaction on resolve failed (conv=%s): %s",
+              String(conversationId),
+              errMsg(err),
+            );
+          }
+        }
         const redirectCfg = readChannelRedirectConfig(closingRt.settings);
-        if (redirectCfg.enabled && redirectCfg.widgetInboxId === n.inboxId) {
+        // The redirect keys off the EVENT's inbox (it is the widget conversation that resolved).
+        // A sparse payload carries none, and `widgetInboxId === null` would otherwise read as a
+        // match on a half-configured agent.
+        if (
+          redirectCfg.enabled &&
+          n.inboxId !== null &&
+          redirectCfg.widgetInboxId === n.inboxId
+        ) {
           // (1) Stop chasing a resolved conversation, regardless of whether closing is on.
           await cancelPendingJob(
             params.tenantId,
@@ -1664,6 +1783,8 @@ export async function processChatwootDelivery(
       n,
       act,
       consumed,
+      agentId: rt.agentId,
+      compactionEnabled: readMemoryConfig(rt.settings).compaction.enabled,
       base,
     });
   }

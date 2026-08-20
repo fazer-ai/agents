@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -9,12 +9,19 @@ import { setPublisher, TOPICS } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
 import { computeConfigIssues } from "@/client/lib/configHealth";
 import { contactInboxThreadId } from "@/graph/checkpointer";
+import {
+  clearTurnInFlight,
+  isTurnInFlight,
+  markTurnInFlight,
+} from "@/graph/inflight";
+import { isConversationDivider } from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { runAgentTurn } from "@/graph/runtime";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { readGuardrailHealth } from "@/modules/guardrails/health";
+import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
@@ -456,8 +463,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(after.lastConversationId).toBe(921);
 
-    // Both turns share ONE per-contact-inbox thread (continuity); only conv 921's human turn carries
-    // the divider so the model treats it as a fresh attendance.
+    // Both turns share ONE per-contact-inbox thread (continuity), and the boundary between them is
+    // its OWN message rather than a prefix on the customer's words: the divider is written when the
+    // boundary is claimed, so it survives a turn that never reaches the model, and the customer's
+    // message reaches the guardrails as the customer actually wrote it.
     const cp = await saver.get({
       configurable: {
         thread_id: contactInboxThreadId(tenantId, instanceId, contactInboxId),
@@ -466,9 +475,217 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const messages = ((
       cp?.channel_values as { messages?: Array<{ content: unknown }> }
     )?.messages ?? []) as Array<{ content: unknown }>;
-    expect(messages.length).toBe(4); // HumanA, AIReplyA, HumanB(+divider), AIReplyB
+    // HumanA, AIReplyA, DIVIDER, HumanB, AIReplyB
+    expect(messages.length).toBe(5);
     expect(String(messages[0]?.content)).not.toContain("nova conversa");
     expect(String(messages[2]?.content)).toContain("nova conversa");
+    // The customer's own message is untouched by the marker.
+    expect(String(messages[3]?.content)).not.toContain("nova conversa");
+    expect(String(messages[3]?.content)).toBe(String(messages[0]?.content));
+    // And the boundary is one the CUT can find. Recognition is by metadata, not by the text above,
+    // so a divider written without it would read as an ordinary turn here and the first attendance
+    // would never be compactable — the producer and the consumer only meet if this passes.
+    const cut = selectClosedPrefix(messages as unknown as BaseMessage[], {
+      currentAttendanceClosed: false,
+    });
+    expect(cut.closed).toHaveLength(2);
+    expect(cut.open).toHaveLength(3);
+  });
+
+  // The producer half of the memory-compaction guard. The consumer half (a compaction that finds the
+  // thread claimed stands down) is pinned in tests/modules/memory-compaction.test.ts; nothing there
+  // proves a turn ever CLAIMS it, and the two only meet if both name the same key — so this computes
+  // the key the same way compaction does, from contactInboxThreadId.
+  //
+  // Why it matters that the claim covers the invoke specifically: a LangGraph invoke saves the state
+  // it loaded when it started, so a compaction rewriting the channel in the middle of one is undone
+  // the moment the turn finishes, and the raw history it had replaced comes back.
+  test("a turn claims the memory thread for as long as its invoke holds it", async () => {
+    const contact = await suDb.contact.create({
+      data: { tenantId, chatwootContactId: 557, name: "Cliente" },
+      select: { id: true },
+    });
+    const contactInboxId = 7003;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 975,
+        contactInboxId,
+        status: "pending",
+        contactId: contact.id,
+        threadId: `${tenantId}:${instanceId}:975`,
+        lastEventAt: new Date(),
+      },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const claimedDuringInvoke: boolean[] = [];
+    class ObservingModel {
+      async invoke(_messages: unknown[]) {
+        claimedDuringInvoke.push(isTurnInFlight(graphThreadId));
+        return new AIMessage(REPLY);
+      }
+      bindTools(_tools: unknown) {
+        return { invoke: (m: unknown[]) => this.invoke(m) };
+      }
+    }
+
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 975 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new ObservingModel() as never,
+        makeClient: makeStubClient([]),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(claimedDuringInvoke).toEqual([true]);
+    // And released on the way out, or compaction for this contact would defer itself forever.
+    expect(isTurnInFlight(graphThreadId)).toBe(false);
+  });
+
+  // Without a contact-inbox there is no per-contact memory thread, and resolveGraphThreadId falls
+  // back to the per-CONVERSATION id — the very key the follow-up guard uses. A turn that releases a
+  // claim it never took would then release a concurrent turn's, and a nudge would fire into the
+  // middle of that turn: the bug the follow-up guard exists to prevent, reintroduced from the side.
+  test("a turn without a contact-inbox releases nothing it did not claim", async () => {
+    await seedConversation(976, null);
+    const threadId = `${tenantId}:${instanceId}:976`;
+    // Stands in for a concurrent turn on the same conversation, still running.
+    markTurnInFlight(threadId);
+    try {
+      await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 976 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStubClient([]),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(isTurnInFlight(threadId)).toBe(true);
+    } finally {
+      clearTurnInFlight(threadId);
+    }
+    expect(isTurnInFlight(threadId)).toBe(false);
+  });
+
+  // The divider is written by something that is NOT an invoke, so an invoke that started earlier — a
+  // turn of the conversation that just ended, still generating — saves the channel it loaded and
+  // erases it. Deferring the claim keeps the divider (prompt content) worth writing later, and the
+  // messages keep their own conversation stamps meanwhile, so the CUT lands in the right place either
+  // way: the deferred turn belongs to the new attendance, not to the one that closed.
+  test("a boundary is not claimed while another invoke is reading the thread", async () => {
+    const contact = await suDb.contact.create({
+      data: { tenantId, chatwootContactId: 558, name: "Cliente" },
+      select: { id: true },
+    });
+    const contactInboxId = 7004;
+    for (const convId of [980, 981]) {
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: convId,
+          contactInboxId,
+          status: "pending",
+          contactId: contact.id,
+          threadId: `${tenantId}:${instanceId}:${convId}`,
+          lastEventAt: new Date(),
+        },
+      });
+    }
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const saver = new MemorySaver();
+    const turn = (conversationId: number) =>
+      runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStubClient([]),
+          checkpointer: saver,
+        },
+      });
+
+    await turn(980);
+    // A turn of the OLD conversation, still invoking when the new one arrives.
+    markTurnInFlight(graphThreadId);
+    try {
+      await turn(981);
+    } finally {
+      clearTurnInFlight(graphThreadId);
+    }
+
+    // Compaction is armed regardless: the attendance that ended is compactable now, and making it
+    // wait for a next turn that may never come is how a boundary quietly goes uncompacted.
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "MEMORY_COMPACT",
+          dedupeKey: graphThreadId,
+          status: "PENDING",
+        },
+      }),
+    ).toBe(1);
+
+    // The marker stayed put, so the boundary is still there to be claimed.
+    const marker = await suDb.agentThread.findUniqueOrThrow({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+    });
+    expect(marker.lastConversationId).toBe(980);
+
+    // And the NEXT turn, with nothing in flight, claims it: divider written, marker advanced.
+    await turn(981);
+    const after = await suDb.agentThread.findUniqueOrThrow({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+    });
+    expect(after.lastConversationId).toBe(981);
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const messages = ((
+      cp?.channel_values as { messages?: BaseMessage[] } | undefined
+    )?.messages ?? []) as BaseMessage[];
+    // Two: the first conversation's turn and its reply. The turn that ran while the boundary was
+    // deferred carries conversation 981 on its own message, so it stays in the OPEN attendance — the
+    // cut reads the stamp, not the divider.
+    expect(
+      selectClosedPrefix(messages, { currentAttendanceClosed: false }).closed,
+    ).toHaveLength(2);
+    // And no divider was appended: it could only land AFTER the exchange that already happened on
+    // this conversation, telling the model that part of the conversation it is in the middle of is a
+    // past attendance. A hint in the wrong place is worse than no hint.
+    expect(messages.some(isConversationDivider)).toBe(false);
   });
 
   test("inbox without an Agent → no-agent (silent)", async () => {

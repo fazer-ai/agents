@@ -7,9 +7,12 @@ import {
   test,
 } from "bun:test";
 import { createHmac } from "node:crypto";
+import { HumanMessage } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { contactInboxThreadId, getCheckpointer } from "@/graph/checkpointer";
+import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 import {
   processChatwootDelivery,
@@ -245,6 +248,117 @@ describe.skipIf(!dbUp)(
       // The defect: this token was "" and Chatwoot answered 401, so the attributes survived the reset.
       expect(attrs[0]?.token).toBe(BOT_TOKEN);
       expect(attrs[0]?.body).toEqual({ custom_attributes: {} });
+    });
+
+    // The compacted memory of past attendances lives in its own table, not in the graph thread, so
+    // deleting the thread alone would leave it behind — and the next compaction renders it back into
+    // the thread's first message. A /reset that says "memória" and resurrects it is a lie.
+    test("the compacted memory of past attendances is cleared too", async () => {
+      await suDb.attendanceSummary.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId: 301,
+          conversationId: 999,
+          lastMessageId: "msg-abc",
+          summary: "orçamento de R$ 250 aprovado",
+          messageCount: 4,
+          attendanceAt: new Date(),
+        },
+      });
+      // A compaction armed on a resolve waits out a grace window, so at any moment there can be one
+      // sitting in the queue holding this very conversation. Left armed it fires minutes later and
+      // writes a fresh row: memory the operator explicitly deleted, back with no trace of where it
+      // came from.
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "MEMORY_COMPACT",
+          dedupeKey: contactInboxThreadId(tenantId, instanceId, 301),
+          runAt: new Date(Date.now() + 600_000),
+          status: "PENDING",
+          payload: {},
+        },
+      });
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      expect(
+        await suDb.attendanceSummary.count({
+          where: { tenantId, contactInboxId: 301 },
+        }),
+      ).toBe(0);
+      const job = await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "MEMORY_COMPACT",
+          dedupeKey: contactInboxThreadId(tenantId, instanceId, 301),
+        },
+      });
+      // cancelPendingJob retires a row as DONE (its vocabulary for "this will not run").
+      expect(job?.status).toBe("DONE");
+    });
+
+    // The checkpoint is the one piece of the memory that a compaction can RECREATE. Deleted outside
+    // the lock the rewrite holds, the order that loses is: reset deletes the thread, the claimed job
+    // finishes its rewrite and writes the checkpoint back — with the memory head in it — and reset
+    // then takes the lock and deletes rows that no longer describe what the agent can see. The
+    // operator is told the memory was cleared and the agent keeps answering from it.
+    //
+    // Held from another connection, the lock proves the ordering directly: while it is held, nothing
+    // of the memory may be gone.
+    test("the checkpoint is deleted under the lock, not before it", async () => {
+      const threadId = contactInboxThreadId(tenantId, instanceId, 301);
+      const cp = await getCheckpointer();
+      await buildThreadStateGraph(cp).updateState(
+        { configurable: { thread_id: threadId } },
+        { messages: [new HumanMessage("orçamento de R$ 250 aprovado")] },
+        THREAD_STATE_NODE,
+      );
+      const read = () => cp.get({ configurable: { thread_id: threadId } });
+      expect(await read()).toBeTruthy();
+      await suDb.attendanceSummary.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId: 301,
+          conversationId: 998,
+          lastMessageId: "msg-lock",
+          summary: "orçamento aprovado",
+          messageCount: 2,
+          attendanceAt: new Date(),
+        },
+      });
+
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      const survived: boolean[] = [];
+      // Kept OUT of the transaction's return value on purpose: returning it would make Prisma await
+      // the reset before committing, and the reset is waiting on the lock that commit releases.
+      let running: Promise<void> = Promise.resolve();
+      let resetFailed: unknown;
+      // The memory step is the FIRST of the reset, so it blocks here almost immediately.
+      await suDb.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`ingest:${threadId}`})::bigint)`;
+        running = sendReset().catch((err) => {
+          resetFailed = err;
+        });
+        for (let i = 0; i < 12; i++) {
+          await new Promise((r) => setTimeout(r, 50));
+          survived.push(Boolean(await read()));
+        }
+      });
+      await running;
+      expect(resetFailed).toBeUndefined();
+
+      expect(survived.every(Boolean)).toBe(true);
+      expect(await read()).toBeUndefined();
+      expect(
+        await suDb.attendanceSummary.count({
+          where: { tenantId, contactInboxId: 301 },
+        }),
+      ).toBe(0);
     });
 
     test("a failed step does not skip the independent ones that follow it", async () => {

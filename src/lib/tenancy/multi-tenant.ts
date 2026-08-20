@@ -42,6 +42,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "AlertChannel",
   "AlertDelivery",
   "ApiKey",
+  "AttendanceSummary",
 ]);
 
 function withTenant<T>(data: T, tenantId: bigint): T {

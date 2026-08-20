@@ -1,10 +1,24 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import {
+  AIMessage,
+  type BaseMessage,
+  HumanMessage,
+} from "@langchain/core/messages";
+import type { ChatResult } from "@langchain/core/outputs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
+import { isTurnInFlight } from "@/graph/inflight";
+import {
+  conversationStamp,
+  isConversationDivider,
+  isNudgeTurn,
+  stampedConversationId,
+} from "@/graph/markers";
 import {
   FOLLOWUP_SKIP_SENTINEL,
   isNudgeSilent,
@@ -13,7 +27,9 @@ import {
   renderNudge,
   runAgentNudge,
 } from "@/graph/nudge";
+import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { EmptyThenReplyModel } from "../utils/scripted-models";
 
@@ -247,6 +263,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     if (tenantId) {
       for (const table of [
         "llm_usage",
+        "scheduler_jobs",
+        "agent_threads",
         "conversations",
         "inboxes",
         "agents",
@@ -286,6 +304,136 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.notes).toEqual([]);
   });
 
+  // A follow-up invokes on the SAME memory thread a reactive turn does, so it is the second producer
+  // of the compaction claim (src/graph/inflight.ts). Left unclaimed, a compaction firing while a
+  // nudge is thinking has its rewrite undone the moment the nudge finishes, because an invoke saves
+  // the state it loaded when it started.
+  test("claims the memory thread while its invoke holds it", async () => {
+    const contactInboxId = 8802;
+    await seedConv(909, null, new Date(), contactInboxId);
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const claimedDuringInvoke: boolean[] = [];
+    class ObservingModel extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "fake-observing";
+      }
+      async _generate(): Promise<ChatResult> {
+        claimedDuringInvoke.push(isTurnInFlight(graphThreadId));
+        return {
+          generations: [
+            { text: "Tudo certo?", message: new AIMessage("Tudo certo?") },
+          ],
+        };
+      }
+    }
+    const s = stub();
+
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:909`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new ObservingModel(),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+
+    expect(outcome).toBe("messaged");
+    expect(claimedDuringInvoke).toEqual([true]);
+    // Released on every exit, or compaction for this contact defers itself forever.
+    expect(isTurnInFlight(graphThreadId)).toBe(false);
+  });
+
+  // The claim is taken inside a transaction, and a transaction can reject AFTER its callback ran (a
+  // failed commit, a lost connection). A claim made on the way to a rejection that skips the release
+  // never comes back: every later compaction on this thread reads it as busy and reschedules until
+  // the process restarts.
+  test("a claim taken on a transaction that then rejects is still released", async () => {
+    const contactInboxId = 8803;
+    await seedConv(914, null, new Date(), contactInboxId);
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    // Fails ONLY the transaction that takes the claim, and only on the way OUT — the callback, and
+    // the mark inside it, already ran. That transaction is the one that acquires the advisory lock,
+    // which is how it is told apart from the scoped reads the nudge makes before it; failing all of
+    // them would abort the nudge before it ever claimed, and the test would pass with the bug in.
+    // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+    const failCommitOnLock = (client: any): any =>
+      new Proxy(client, {
+        get(target, prop, receiver) {
+          if (prop === "$extends") {
+            return (...args: unknown[]) =>
+              failCommitOnLock(target.$extends(...args));
+          }
+          if (prop === "$transaction") {
+            return async (fn: (tx: unknown) => Promise<unknown>) => {
+              let tookTheLock = false;
+              // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+              const out = await target.$transaction((tx: any) =>
+                fn(
+                  new Proxy(tx, {
+                    // biome-ignore lint/suspicious/noExplicitAny: same
+                    get(t2: any, p2: string | symbol, r2: unknown) {
+                      if (p2 === "$executeRaw") {
+                        return (
+                          strings: TemplateStringsArray,
+                          ...v: unknown[]
+                        ) => {
+                          if (
+                            String(strings?.[0]).includes(
+                              "pg_advisory_xact_lock",
+                            )
+                          ) {
+                            tookTheLock = true;
+                          }
+                          return t2.$executeRaw(strings, ...v);
+                        };
+                      }
+                      return Reflect.get(t2, p2, r2);
+                    },
+                  }),
+                ),
+              );
+              if (tookTheLock) throw new Error("connection lost on commit");
+              return out;
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+    const rejectingBase = failCommitOnLock(appDb) as typeof appDb;
+    const s2 = stub();
+
+    await expect(
+      runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:914`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: rejectingBase,
+        deps: {
+          makeModel: () => new FakeListChatModel({ responses: ["Oi!"] }),
+          makeClient: s2.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      }),
+    ).rejects.toThrow();
+    expect(isTurnInFlight(graphThreadId)).toBe(false);
+  });
+
   test("invokes on the per-contact-inbox memory thread, not the per-conversation thread (unification)", async () => {
     const contactInboxId = 8800;
     await seedConv(907, null, new Date(), contactInboxId);
@@ -316,6 +464,250 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       configurable: { thread_id: `${tenantId}:${instanceId}:907` },
     });
     expect(perConv).toBeUndefined();
+  });
+
+  // The nudge's directive goes into the SAME channel a customer writes to, as a human turn, so
+  // nothing downstream could tell the operator's follow-up guidance from something the contact said.
+  // Compaction is where that bites: unmarked, the guidance is summarized as the customer's words and
+  // becomes what the agent believes from then on (src/modules/memory/summarize.ts).
+  test("the injected nudge turn is marked as a nudge, not left looking like the customer", async () => {
+    const contactInboxId = 8801;
+    await seedConv(908, null, new Date(), contactInboxId);
+    const saver = new MemorySaver();
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:908`,
+      nudge: {
+        source: "followup",
+        kind: "inactivity",
+        step: 1,
+        instructions: "Ofereça o pacote premium.",
+      },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const cp = await saver.get({
+      configurable: {
+        thread_id: contactInboxThreadId(tenantId, instanceId, contactInboxId),
+      },
+    });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    const injected = messages.find((m) =>
+      String(m.content).includes("Ofereça o pacote premium"),
+    );
+    expect(injected).toBeDefined();
+    expect(isNudgeTurn(injected as BaseMessage)).toBe(true);
+  });
+
+  // Seeds a thread that already holds a finished attendance, and the sidecar row saying so.
+  async function seedPriorAttendance(
+    contactInboxId: number,
+    previousConversationId: number,
+    saver: MemorySaver,
+  ) {
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await suDb.agentThread.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+        threadId,
+        lastConversationId: previousConversationId,
+      },
+    });
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new HumanMessage({
+            content: "quanto custa a avaliação?",
+            additional_kwargs: conversationStamp(previousConversationId),
+          }),
+          new AIMessage("Custa R$ 250,00."),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    return threadId;
+  }
+
+  // THE REGRESSION. A proactive nudge can be the first thing that happens on a NEW conversation — a
+  // redirect follow-up that lands before the customer says anything. Unstamped, the cut read the
+  // PREVIOUS attendance as still current, so the nudge and the reply it produced were summarized and
+  // deleted as part of it: the agent's own proactive message vanished from the memory of an
+  // attendance that had not even started.
+  test("a nudge that opens a new attendance is not swept into the previous one", async () => {
+    const contactInboxId = 8810;
+    const saver = new MemorySaver();
+    const threadId = await seedPriorAttendance(contactInboxId, 940, saver);
+    await seedConv(941, null, new Date(), contactInboxId);
+    const s = stub();
+
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:941`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+
+    const cp = await saver.get({ configurable: { thread_id: threadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    const nudge = messages.find((m) => isNudgeTurn(m));
+    expect(nudge).toBeDefined();
+    expect(stampedConversationId(nudge as BaseMessage)).toBe(941);
+
+    // The whole point of the stamp: the cut leaves the new attendance alone. Everything the nudge
+    // put in the thread — its own turn and the reply it produced — is OPEN, and only the previous
+    // attendance is closed.
+    const cut = selectClosedPrefix(messages, {
+      currentAttendanceClosed: false,
+    });
+    expect(cut.closed.map((m) => String(m.content))).toEqual([
+      "quanto custa a avaliação?",
+      "Custa R$ 250,00.",
+    ]);
+    expect(cut.open.some((m) => isNudgeTurn(m))).toBe(true);
+    expect(cut.open.some((m) => String(m.content) === "Tudo certo?")).toBe(
+      true,
+    );
+
+    // The divider is prompt content, and it rides in the nudge's OWN invoke: written separately just
+    // before it, the invoke would save the channel it had already loaded and erase it.
+    expect(messages.some((m) => isConversationDivider(m))).toBe(true);
+  });
+
+  // The sidecar row is what resolve-time compaction reads to know which attendance the thread is on.
+  // A nudge that opened the conversation used to leave it absent, and the job then exited at its
+  // generation fence — the attendance was never summarized at all.
+  test("a nudge creates the sidecar row when it is the thread's first activity", async () => {
+    const contactInboxId = 8811;
+    await seedConv(942, null, new Date(), contactInboxId);
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:942`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    const row = await suDb.agentThread.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+    });
+    expect(row?.lastConversationId).toBe(942);
+  });
+
+  // ORDER, and observed at the only moment that proves it. The divider used to ride in the nudge's
+  // own invoke while the marker advanced inside the claim, so the marker moved on a divider that did
+  // not exist yet: a turn arriving in that window read the conversation as already recorded, declined
+  // to write one of its own, and this invoke then appended ours after that turn's messages — a
+  // divider in the middle of the attendance, which is worse than none. Watching the upsert itself is
+  // what pins the order; asserting afterwards proves nothing, since both versions end with a divider
+  // on the thread.
+  test("the divider is durable before the marker advances", async () => {
+    const contactInboxId = 8813;
+    const saver = new MemorySaver();
+    const threadId = await seedPriorAttendance(contactInboxId, 945, saver);
+    await seedConv(946, null, new Date(), contactInboxId);
+    const s = stub();
+    const dividerWasThere: boolean[] = [];
+    const watching = appDb.$extends({
+      query: {
+        agentThread: {
+          async upsert({ args, query }) {
+            const cp = await saver.get({
+              configurable: { thread_id: threadId },
+            });
+            const messages = ((
+              cp?.channel_values as {
+                messages?: BaseMessage[];
+              }
+            )?.messages ?? []) as BaseMessage[];
+            dividerWasThere.push(
+              messages.some((m) => isConversationDivider(m)),
+            );
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:946`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: watching,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+    expect(dividerWasThere).toEqual([true]);
+  });
+
+  // Crossing the boundary is also what makes the attendance that ENDED compactable. A nudge that
+  // consumed the boundary without arming would leave that attendance waiting on a next writer that
+  // may never come.
+  test("a nudge that crosses a boundary arms compaction and advances the marker", async () => {
+    const contactInboxId = 8812;
+    const saver = new MemorySaver();
+    const threadId = await seedPriorAttendance(contactInboxId, 943, saver);
+    await seedConv(944, null, new Date(), contactInboxId);
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:944`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const row = await suDb.agentThread.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+    });
+    expect(row?.lastConversationId).toBe(944);
+    const job = await suDb.schedulerJob.findFirst({
+      where: { tenantId, kind: "MEMORY_COMPACT", dedupeKey: threadId },
+    });
+    expect(job).not.toBeNull();
   });
 
   test("outside the 24h window (no template) → private note, not a free-form message", async () => {

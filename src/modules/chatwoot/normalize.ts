@@ -247,20 +247,6 @@ export function isNewIncomingMessage(e: NormalizedChatwootEvent): boolean {
   return e.event === "message_created" && isIncomingMessage(e);
 }
 
-// True when a brand-new OUTGOING message was authored by a HUMAN agent (a Chatwoot User), as opposed
-// to our bot, another bot, or the AI assistant (sender.type "agent_bot"/"Captain", or absent). Drives
-// continuous ingestion: a human colleague's reply is folded into the agent's memory marked as such, so
-// the bot understands what actually happened while it was silent. message_created only (an edit must
-// not re-ingest); not a private note (operator-only, never part of the customer dialogue).
-export function isHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
-  return (
-    e.event === "message_created" &&
-    e.message?.messageType === "outgoing" &&
-    e.message?.private !== true &&
-    e.message?.sender?.type === "user"
-  );
-}
-
 // The control commands an operator types into the conversation to drive the agent (matched on the
 // trimmed, case-insensitive text content — text-only by design). `/teste` activates a test agent for
 // THIS conversation; `/reset` clears its memory/state. Both are handled by the webhook gate.

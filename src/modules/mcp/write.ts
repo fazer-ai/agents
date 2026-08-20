@@ -503,6 +503,7 @@ export async function agentSettingsSet(
   if (args.observability !== undefined)
     patch.observability = args.observability;
   if (args.availability !== undefined) patch.availability = args.availability;
+  if (args.memory !== undefined) patch.memory = args.memory;
   if (args.channelRedirect !== undefined)
     patch.channelRedirect = args.channelRedirect;
   if (args.attributeContext !== undefined)
@@ -510,7 +511,7 @@ export async function agentSettingsSet(
   if (args.sendImage !== undefined) patch.sendImage = args.sendImage;
   if (Object.keys(patch).length === 0) {
     return err(
-      "no updatable fields provided (debounce, stt, tts, vision, split, serviceWindow, followUp, handoff, limits, availability, channelRedirect, attributeContext, sendImage, observability and/or grounding)",
+      "no updatable fields provided (debounce, stt, tts, vision, split, serviceWindow, followUp, handoff, limits, availability, channelRedirect, attributeContext, sendImage, observability, memory and/or grounding)",
     );
   }
 

@@ -66,6 +66,7 @@ function makeConfig(
     timezone: "America/Sao_Paulo",
     maxToolCalls: 10,
     maxHistoryTokens: null,
+    memoryCompaction: true,
     logToolValues: false,
     ...over,
   } as AgentConfig;

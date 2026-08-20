@@ -240,6 +240,41 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
     expect(health).toEqual({ failures: 0, lastAt: null, lastError: null });
   });
 
+  // An agent whose only failure predates the window. The count is bounded twice over (the window on
+  // the filter, the keyset on the count), but the row being QUOTED is chosen by the filter alone, so
+  // without the window there the reading comes back as zero failures next to a timestamp and an
+  // error from days ago: a response that contradicts itself, and a "last error" the operator would
+  // read as current.
+  test("a failure older than the window leaves nothing behind, not even a timestamp", async () => {
+    const healed = (
+      await suDb.agent.create({
+        data: {
+          tenantId: tenantA,
+          name: "Healed",
+          systemPrompt: "x",
+          modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        },
+        select: { id: true },
+      })
+    ).id;
+    await suDb.executionLog.create({
+      data: {
+        tenantId: tenantA,
+        turnId: "g14",
+        agentId: healed,
+        stage: "guardrail",
+        level: "warn",
+        status: "error",
+        source: "inbox",
+        errorMessage: "fixed three days ago",
+        createdAt: ago(72 * 60),
+      },
+    });
+    expect(
+      await readGuardrailHealth(ctx(tenantA), healed, SINCE, appDb),
+    ).toEqual({ failures: 0, lastAt: null, lastError: null });
+  });
+
   // Zero and "there is no such agent" are different answers, and the endpoint advertises 404. Rows
   // outlive the agent inside the retention window, so without this an id that was deleted (or one
   // that never existed) answers with a confident zero, and a recycled id answers with somebody

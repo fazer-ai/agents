@@ -89,31 +89,54 @@ const app = new Elysia({
       set.headers["cache-control"] = "public, max-age=86400";
     }
   })
-  .onError(({ path, error, code, request, set }) => {
+  // NOTE: typed app errors (ForbiddenError 403, TenantTargetRequiredError 400, NotFoundError 404,
+  // ...) carry their HTTP status. Logged at warn, since they are expected control-flow and not server
+  // faults. When the error carries a translationKey, localize it from the request's Accept-Language
+  // (the request ALS may not be in scope here) so user-facing messages are not raw English.
+  //
+  // NOTE: registered BEFORE the limiters, while everything else below is registered AFTER them, and
+  // the split is load-bearing in BOTH directions. An AppError is thrown from a MATCHED route, or from
+  // a hook that runs after the limiters' counting hook, so the request has already been charged. The
+  // plugin cannot know that: its own `onError` reads `error.status ?? error.statusCode`, where our
+  // NotFoundError is indistinguishable from a route that never existed, so it charges a second time.
+  // That is not merely an overcharge. Measured with a max of 4 and one request of budget left, a
+  // request that should have been admitted and answered 404 came back 429: the second charge crossed
+  // the ceiling, and the limiter answers from its own hook without ever reaching the handler below.
+  // Answering AppError here keeps it away from the plugin entirely.
+  .onError(({ path, error, request, set }) => {
+    if (!(error instanceof AppError)) return;
+    logger.warn("%s %s", path, error.message);
+    const message = error.translationKey
+      ? translateWithLocale(
+          getLocaleFromHeader(request.headers.get("accept-language")),
+          error.translationKey,
+          error.message,
+          error.translationParams,
+        )
+      : error.message;
+    // NOTE: keep set.status in sync, because the access log in onAfterResponse reads it and a raw
+    // Response alone would make a 4xx show up there as a 500.
+    set.status = error.statusCode;
+    return Response.json({ error: message }, { status: error.statusCode });
+  })
+  .use(rateLimitMiddleware())
+  .use(mcpTransportRateLimitMiddleware())
+  .use(registerRateLimitMiddleware())
+  .use(staticRateLimitMiddleware())
+  // NOTE: everything the AppError handler above does not answer, registered AFTER the limiters ON
+  // PURPOSE. This is the mirror image of that split: a request rejected BEFORE the handler never
+  // reaches the plugin's counting hook, so the plugin charges those from its own `onError`, and
+  // Elysia stops at the first error handler that RETURNS A VALUE. With this registered first the
+  // NOT_FOUND branch below answered and the plugin never ran: measured on the real app, `POST
+  // /api/nope` and any request to a missing non-/api path came back 404 with no `RateLimit-*` header
+  // and no budget spent. An unknown GET under /api looked metered only because the `.get("/api/*")`
+  // guard below turns it into a MATCHED route, which the normal hook counts.
+  // PARSE and VALIDATION were never affected either way, because the `default:` branch below returns
+  // `undefined` for them and the chain continues to the plugin regardless of order.
+  .onError(({ path, error, code }) => {
     // NOTE: Handle BigInt parsing errors as 400 Bad Request
     if (error instanceof SyntaxError && error.message.includes("BigInt")) {
       return new Response("Invalid ID format", { status: 400 });
-    }
-
-    // NOTE: typed app errors (ForbiddenError 403, TenantTargetRequiredError 400,
-    // NotFoundError 404, ...) carry their HTTP status. Handle before the generic 500
-    // branch and log at warn (they are expected control-flow, not server faults). When
-    // the error carries a translationKey, localize it from the request's Accept-Language
-    // (the request ALS may not be in scope here) so user-facing messages aren't raw English.
-    if (error instanceof AppError) {
-      logger.warn("%s %s", path, error.message);
-      const message = error.translationKey
-        ? translateWithLocale(
-            getLocaleFromHeader(request.headers.get("accept-language")),
-            error.translationKey,
-            error.message,
-            error.translationParams,
-          )
-        : error.message;
-      // NOTE: keep set.status in sync — the access log in onAfterResponse reads it,
-      // so a raw Response alone would make a 4xx show up there as a 500.
-      set.status = error.statusCode;
-      return Response.json({ error: message }, { status: error.statusCode });
     }
 
     logger.error("%s\n%s", path, error);
@@ -136,10 +159,6 @@ const app = new Elysia({
       default:
     }
   })
-  .use(rateLimitMiddleware())
-  .use(mcpTransportRateLimitMiddleware())
-  .use(registerRateLimitMiddleware())
-  .use(staticRateLimitMiddleware())
   .use(
     await staticPlugin({
       assets: config.env === "production" ? "dist" : "public",

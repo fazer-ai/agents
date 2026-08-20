@@ -20,9 +20,10 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 // when a screen runs and approves, so this counts failures and never a ratio: the honest reading of
 // "3 rows" is "3 checks did not happen", not "3 out of N", and not "3 messages were delivered
 // unscreened" either. A failed INPUT check leaves the output check free to still screen the reply,
-// and a split output analysis can report an error from one half while the other half trips and
-// blocks the send. What every row does prove is the part that matters: fail-open means the check
-// that failed blocked nothing, so whatever it would have caught went through.
+// and the output direction MERGES two analyses (splitAnalyses), so one half can report an error
+// while the other returns violated and the send is replaced or suppressed anyway. What every row
+// does prove is narrower and still worth saying: fail-open applies to the check that failed, so
+// that one caught nothing and held nothing back.
 export const GUARDRAIL_HEALTH_WINDOW_HOURS = 24;
 
 // The window's start, as a function so the unit conversion is reachable by a test. Written inline in

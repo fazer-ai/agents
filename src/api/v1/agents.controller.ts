@@ -269,7 +269,7 @@ export const agentsController = new Elysia({
     {
       detail: doc(
         "Get guardrail health",
-        "Counts the guardrail analyses that could not run for this agent in the recent window, with the most recent one and the error it carried. Analysis is fail-open, so a check counted here blocked nothing: whatever it would have caught went through.",
+        "Counts the guardrail analyses that could not run for this agent in the recent window, with the most recent one and the error it carried. Analysis is fail-open, so a check counted here caught nothing and held nothing back. It does not follow that the turn went out unscreened: the other direction may still have screened it, and a split output analysis can carry an error from one half and a violation from the other.",
       ),
       response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",

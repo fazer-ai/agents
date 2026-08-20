@@ -33,6 +33,16 @@ services:
       # NOTE: default to the public URL, NOT `*` — the WS realtime origin check does an exact
       # match, so `*` matches no real Origin and 403s every WebSocket upgrade.
       - CORS_ORIGIN=${CORS_ORIGIN:-${PUBLIC_URL}}
+      # Rate-limit keying. OFF here, unlike the bundled-proxy files, because the app port above is
+      # published on every interface by default: anyone who can reach it directly could otherwise
+      # send an X-Forwarded-For of their choosing and give themselves a private bucket. Before setting
+      # this to `true`, narrow the binding (APP_PORT=127.0.0.1:3000) or firewall the port, AND check
+      # that your proxy overwrites or appends to X-Forwarded-For instead of passing the client's value
+      # through (nginx `$proxy_add_x_forwarded_for`, not `$http_x_forwarded_for`) — otherwise the last
+      # entry is still the client's. Leave the hops at 1 unless the proxy nearest to this app is
+      # configured to forward the chain it received; see .env.example.
+      - TRUST_PROXY=${TRUST_PROXY:-false}
+      - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-1}
       # First-run: disable the /setup token in this trusted, TLS-fronted onboarding window (the
       # advisory lock still caps /setup at one admin). Set to `true` to require it.
       - SETUP_TOKEN_REQUIRED=${SETUP_TOKEN_REQUIRED:-false}

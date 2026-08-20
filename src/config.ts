@@ -37,6 +37,8 @@ const {
   SSRF_ALLOW_PRIVATE_TARGETS,
   RATE_LIMIT_USER_PER_MIN,
   RATE_LIMIT_MCP_PER_MIN,
+  TRUST_PROXY,
+  TRUSTED_PROXY_HOPS,
   BUN_PUBLIC_EDITION,
   FAZER_AI_HUB_URL,
   AGENTS_UPDATE_CHECK_URL,
@@ -67,6 +69,34 @@ const parseDomainList = (
   }
 
   return values;
+};
+
+// TRUST_PROXY decides whether the forwarded chain is believed when keying the rate limiters.
+// Unset means false: without a declaration the safe reading is that the app may be reached directly,
+// where believing the header would let a caller pick its own bucket. A value that is neither
+// spelling fails by name rather than falling back, because the fallback is the strict side and an
+// operator who typed `yes` would get the opposite of what they meant, silently and permanently.
+const parseTrustProxy = (raw: string | undefined, envName: string): boolean => {
+  const value = (raw ?? "").trim().toLowerCase();
+  if (value === "") return false;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(
+    `${envName} must be "true" or "false" (got "${raw}"). It decides whether X-Forwarded-For is believed when keying the rate limiters.`,
+  );
+};
+
+// A hop count selects WHICH X-Forwarded-For entry is believed to be the client, so a silently
+// defaulted bad value would change who shares a bucket. Fail by name at boot instead.
+const parseHops = (raw: string | undefined, envName: string): number => {
+  if (raw === undefined || raw.trim() === "") return 1;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(
+      `${envName} must be a whole number >= 1 (got "${raw}"). It selects which X-Forwarded-For entry is read as the client.`,
+    );
+  }
+  return value;
 };
 
 const googleClientId = (GOOGLE_CLIENT_ID ?? "").trim();
@@ -235,10 +265,21 @@ const config = {
           ? false
           : (NODE_ENV || "development") === "development",
   },
-  // NOTE: Per-IP rate-limit ceilings (requests/minute). These are runaway guards, NOT tight
+  // NOTE: Whether to believe the X-Forwarded-For chain when keying the rate limiters. OFF unless
+  // declared: the compose files that guarantee the app is only reachable through a proxy set it, and
+  // the one that publishes the app port leaves the operator to. See src/api/lib/clientIp.ts for why
+  // this is not derived from the peer address.
+  trustProxy: parseTrustProxy(TRUST_PROXY, "TRUST_PROXY"),
+  // NOTE: How many proxies sit between the client and this app. The client address is read that many
+  // hops from the END of X-Forwarded-For, since a proxy appends the peer it saw and a client can
+  // prepend but never append. One proxy (every compose file here) is the last entry; a CDN in front
+  // of that proxy makes it two.
+  trustedProxyHops: parseHops(TRUSTED_PROXY_HOPS, "TRUSTED_PROXY_HOPS"),
+  // NOTE: Per-client rate-limit ceilings (requests/minute). These are runaway guards, NOT tight
   // throttles: navigating the console fires dozens of parallel reads, and one MCP client funnels
-  // every tool call through a single IP, so the buckets must be generous. CAVEAT: shared-NAT users
-  // count against the same bucket. The strict auth (10/min) and static (1000/min) limits are fixed.
+  // every tool call through a single address, so the buckets must be generous. CAVEAT: everyone
+  // behind one NAT counts against the same bucket. The static (1000/min) and DCR (10/min) limits are
+  // fixed in the middleware.
   rateLimit: {
     userPerMin:
       RATE_LIMIT_USER_PER_MIN && Number(RATE_LIMIT_USER_PER_MIN) > 0

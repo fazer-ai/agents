@@ -53,12 +53,20 @@ export async function loadChatwootClient(
 // Resolves the persona's Chatwoot Agent Bot for an instance: its numeric id (the gate's "our bot")
 // + decrypted access token (used to post the persona's replies / act on its conversations). null
 // when the persona has no bot on this instance yet (never bound here). Scoped (RLS).
+// A persona's Agent Bot as the two things a caller ever needs together: the token it speaks with, and
+// the numeric id the conversation knows it by. Kept as one type because resolving one without the
+// other is how a message gets sent by an identity nobody checked.
+export interface AgentBotIdentity {
+  chatwootAgentBotId: number;
+  accessToken: string;
+}
+
 export async function loadAgentBot(
   tenantId: bigint,
   instanceId: bigint,
   agentId: bigint,
   base: PrismaClient = basePrisma,
-): Promise<{ chatwootAgentBotId: number; accessToken: string } | null> {
+): Promise<AgentBotIdentity | null> {
   const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootAgentBot.findUnique({
       where: {

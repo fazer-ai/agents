@@ -53,6 +53,7 @@ const INBOX_WITH_COPY = 881;
 const INBOX_SILENT = 882;
 const INBOX_DISABLED = 883;
 const INBOX_PAUSED = 884;
+const INBOX_NO_BOT = 885;
 const AWAY_COPY = "Estamos fechados. Voltamos {proximo_atendimento}.";
 
 let tenantId = 0n;
@@ -61,6 +62,7 @@ let inboxWithCopyId = 0n;
 let inboxSilentId = 0n;
 let inboxDisabledId = 0n;
 let inboxPausedId = 0n;
+let inboxNoBotId = 0n;
 
 function localDate(days: number): string {
   const at = new Date(Date.now() + days * 86_400_000);
@@ -85,6 +87,8 @@ const publicAttempts: number[] = [];
 // Same, for the operator's PRIVATE note: it carries its own one-shot watermark, so a note that never
 // arrived must not stamp one either.
 const failPrivateFor = new Set<number>();
+// Every POST to a messages endpoint the double saw, before any authentication verdict.
+const sendAttempts: number[] = [];
 let realFetch: typeof globalThis.fetch;
 
 // The double AUTHENTICATES like Chatwoot: a client built without the persona's bot token gets the same
@@ -103,8 +107,13 @@ function installChatwootDouble(): void {
         status,
         headers: { "content-type": "application/json" },
       });
-    if (token === "") return json({ error: "Invalid Access Token" }, 401);
     const messages = url.match(/\/conversations\/(\d+)\/messages$/);
+    if (messages && init?.method === "POST") {
+      // Every attempt, including the ones rejected below for a missing token: a fence that stops a
+      // post is only distinguishable from a post that fails by whether the attempt happened at all.
+      sendAttempts.push(Number(messages[1]));
+    }
+    if (token === "") return json({ error: "Invalid Access Token" }, 401);
     if (messages && (init?.method ?? "GET") === "GET")
       return json({ payload: [] });
     if (messages && init?.method === "POST") {
@@ -371,6 +380,30 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
       select: { id: true },
     });
     inboxPausedId = d.id;
+    // An agent with copy and schedule but NO Agent Bot row: nothing on this instance can speak as it.
+    const botless = await suDb.agent.create({
+      data: {
+        ...baseAgent,
+        name: "Sem bot",
+        settings: {
+          debounce: { enabled: false },
+          split: { enabled: false },
+          availability: { enabled: true, awayMessage: AWAY_COPY },
+        },
+      },
+      select: { id: true },
+    });
+    const e = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: INBOX_NO_BOT,
+        name: "Sem bot",
+        agentId: botless.id,
+      },
+      select: { id: true },
+    });
+    inboxNoBotId = e.id;
   });
 
   afterAll(async () => {
@@ -555,11 +588,11 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
     expect(notesOn(convId)).toHaveLength(1);
   });
 
-  // Not knowing which bot we are is not the same as being every bot. When the delivery carries no
-  // bot id — the value its own parameter declares, and the one the HTTP controller falls back to —
-  // "an AgentBot owns this" can no longer be narrowed to "WE own this", so the only reading left is
-  // that it is not ours.
-  test("without a bot id, another bot's conversation is not ours", async () => {
+  // An inbox whose agent has no Agent Bot has no identity to speak as, so another bot's conversation
+  // can never read as its own. Two things hold it shut — the fence refusing to claim ownership without
+  // an id, and the token-less client that could not send anyway — and this pins the OUTCOME they
+  // share: nothing reaches the customer and no day is spent.
+  test("an inbox with no persona does not claim another bot's conversation", async () => {
     const convId = 9113;
     const ahead = new Date(Date.now() + 5 * 60_000);
     const aheadEpoch = Math.floor(ahead.getTime() / 1000);
@@ -567,7 +600,7 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
       data: {
         tenantId,
         chatwootInstanceId: instanceId,
-        inboxId: inboxWithCopyId,
+        inboxId: inboxNoBotId,
         chatwootConversationId: convId,
         status: "pending",
         assigneeType: "AgentBot",
@@ -581,7 +614,77 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
       select: { id: true },
     });
 
-    await deliverCustomerMessage(convId, INBOX_WITH_COPY, 18, undefined, null);
+    await deliverCustomerMessage(convId, INBOX_NO_BOT, 18, undefined, null);
+
+    expect(sendAttempts.filter((c) => c === convId)).toEqual([]);
+    expect(publicOn(convId)).toEqual([]);
+    const after = await suDb.conversation.findUnique({
+      where: { id: row.id },
+      select: { awayMessageSentAt: true },
+    });
+    expect(after?.awayMessageSentAt).toBeNull();
+  });
+
+  // The control for the two above: a conversation assigned to the sending persona's OWN bot is still
+  // its conversation, and the message goes out. Without this row, a fence that simply refused every
+  // AgentBot assignment would read as correct.
+  test("a conversation assigned to our own persona still gets the message", async () => {
+    const convId = 9116;
+    const ahead = new Date(Date.now() + 5 * 60_000);
+    const aheadEpoch = Math.floor(ahead.getTime() / 1000);
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: inboxWithCopyId,
+        chatwootConversationId: convId,
+        status: "pending",
+        assigneeType: "AgentBot",
+        // Bot 9 IS the persona bound to this inbox.
+        assigneeId: 9,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: ahead,
+        chatwootStatusAt: aheadEpoch,
+        chatwootAssigneeAt: aheadEpoch,
+        lastInboundAt: new Date(Date.now() - 3 * 60_000),
+      },
+    });
+
+    await deliverCustomerMessage(convId, INBOX_WITH_COPY, 22, undefined, 9);
+
+    expect(publicOn(convId)).toHaveLength(1);
+  });
+
+  // Chatwoot delivers an event to the conversation's ASSIGNED agent bot as well as to the inbox's, so
+  // on a multi-bot instance the bot that RECEIVES a delivery is not always the bot that would SEND the
+  // reply — that one is the persona bound to the inbox. The fence has to ask about the sender: asking
+  // about the recipient approves an identity that is not the one holding the token.
+  test("the fence asks about the persona that sends, not the one that received", async () => {
+    const convId = 9115;
+    const ahead = new Date(Date.now() + 5 * 60_000);
+    const aheadEpoch = Math.floor(ahead.getTime() / 1000);
+    const row = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        // Inbox of the persona whose bot id is 9 — the one whose token would send.
+        inboxId: inboxWithCopyId,
+        chatwootConversationId: convId,
+        status: "pending",
+        // Owned by bot 10, another persona's bot on the same instance.
+        assigneeType: "AgentBot",
+        assigneeId: 10,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: ahead,
+        chatwootStatusAt: aheadEpoch,
+        chatwootAssigneeAt: aheadEpoch,
+        lastInboundAt: new Date(Date.now() - 3 * 60_000),
+      },
+      select: { id: true },
+    });
+
+    // Delivered to bot 10 (it owns the conversation, so Chatwoot dispatches to it too).
+    await deliverCustomerMessage(convId, INBOX_WITH_COPY, 21, undefined, 10);
 
     expect(publicOn(convId)).toEqual([]);
     const after = await suDb.conversation.findUnique({

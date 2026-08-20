@@ -61,7 +61,11 @@ import {
 } from "@/modules/vision/service";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
 import type { ChatwootClient } from "./client";
-import { loadAgentBot, loadChatwootClient } from "./instance";
+import {
+  type AgentBotIdentity,
+  loadAgentBot,
+  loadChatwootClient,
+} from "./instance";
 import { mirrorChatwootEvent } from "./mirror";
 import {
   type ControlCommand,
@@ -655,9 +659,6 @@ async function maybeConsumeCommandOrGate(params: {
   // test mode). Both resolved by the caller before the mirror ran.
   command: ControlCommand | null;
   commandActive: boolean;
-  // Our persona bot on this instance, for the live ownership fence below. Null = unknown, and the
-  // fence treats that as "not ours" for anything an AgentBot owns.
-  agentBotId: number | null;
   base: PrismaClient;
 }): Promise<boolean> {
   const { tenantId, instanceId, n, command, commandActive, base } = params;
@@ -742,20 +743,28 @@ async function maybeConsumeCommandOrGate(params: {
   });
   if (!ctx) return false;
 
-  // A client that acts AS the persona bound to this conversation's inbox. Every bot-token endpoint
-  // (send, private note, custom attributes) authenticates with it; admin-token ones (labels, kanban)
-  // ignore it. Building the client without resolving the bot yields an empty token, which Chatwoot
-  // rejects with 401 — issue #79, where /reset did exactly that and reported success anyway.
-  const personaClient = async (): Promise<ChatwootClient> => {
-    const bot =
+  // The persona bound to this conversation's inbox, resolved ONCE and used for both halves of every
+  // customer-visible post: the token it speaks with, and the id the conversation knows it by. They are
+  // deliberately the same lookup. Chatwoot also dispatches an event to the conversation's ASSIGNED
+  // agent bot (agent_bot_listener.rb), so the bot that RECEIVED this delivery is not always the one
+  // that would send the reply — and a fence that clears the recipient while the client sends as the
+  // inbox's persona posts one persona's message into another's conversation.
+  let personaOnce: Promise<AgentBotIdentity | null> | null = null;
+  const persona = (): Promise<AgentBotIdentity | null> =>
+    (personaOnce ??=
       ctx.agentId !== null
-        ? await loadAgentBot(tenantId, instanceId, ctx.agentId, base)
-        : null;
-    return loadChatwootClient(tenantId, instanceId, {
+        ? loadAgentBot(tenantId, instanceId, ctx.agentId, base)
+        : Promise.resolve(null));
+
+  // A client that acts AS that persona. Every bot-token endpoint (send, private note, custom
+  // attributes) authenticates with it; admin-token ones (labels, kanban) ignore it. Building the
+  // client without resolving the bot yields an empty token, which Chatwoot rejects with 401 — issue
+  // #79, where /reset did exactly that and reported success anyway.
+  const personaClient = async (): Promise<ChatwootClient> =>
+    loadChatwootClient(tenantId, instanceId, {
       base,
-      botToken: bot?.accessToken,
+      botToken: (await persona())?.accessToken,
     });
-  };
 
   // Is the conversation still the bot's, RIGHT NOW? `act` upstream was decided from the payload
   // Chatwoot sent, so a human who took the conversation between that event and this post is invisible
@@ -778,19 +787,24 @@ async function maybeConsumeCommandOrGate(params: {
         select: { assigneeType: true, assigneeId: true, status: true },
       }),
     );
-    // Not knowing which bot we are is not the same as being every bot: "an AgentBot owns this" only
-    // narrows to "WE own this" with an id to compare against. shouldBotHandle answers the loose
-    // attribution question when the id is missing (its other callers depend on that), so the strict
-    // half is decided here, where the id is known to be absent.
-    if (params.agentBotId == null && conv?.assigneeType === "AgentBot")
-      return false;
+    // No resolvable persona means nothing can speak here, and "an AgentBot owns this" cannot be
+    // narrowed to "the sender owns this" without an id to compare against. shouldBotHandle answers the
+    // loose attribution question when the id is missing (its other callers depend on that), so the
+    // strict half is decided here, where the absence is known.
+    //
+    // NOTE: no test distinguishes this line today, and that is not an oversight: a persona that failed
+    // to resolve also leaves the client with an empty bot token, which never reaches the network. The
+    // line is here because the fence's answer must be right on its own terms — "we own this" is false
+    // when there is no "we" — rather than right because a lookup two layers down happens to fail too.
+    const ourBotId = (await persona())?.chatwootAgentBotId ?? null;
+    if (ourBotId === null && conv?.assigneeType === "AgentBot") return false;
     return shouldBotHandle(
       {
         assigneeType: conv?.assigneeType ?? null,
         assigneeId: conv?.assigneeId ?? null,
         status: conv?.status ?? null,
       },
-      { ourAgentBotId: params.agentBotId },
+      { ourAgentBotId: ourBotId },
     );
   };
 
@@ -1426,7 +1440,6 @@ export async function processChatwootDelivery(
       n,
       command,
       commandActive,
-      agentBotId: params.agentBotId,
       base,
     });
     if (!consumed) {

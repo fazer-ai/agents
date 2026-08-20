@@ -115,6 +115,34 @@ export const staticRateLimitMiddleware = () =>
     skip: (request) => !isStaticRequest(request),
   });
 
+const REGISTER_PATH = "/api/v1/mcp/oauth/register";
+
+// NOTE: Elysia answers `/api/v1/mcp/oauth/register` and `.../register/` with the SAME handler, so
+// comparing the raw pathname is a one-character bypass of the limiter below: measured before this
+// normalization, 14 registrations through the slashed spelling under a ceiling of 10, every one a
+// 200 and none carrying a `RateLimit-*` header.
+//
+// Nothing else in the alias space reaches the route. Measured server-side with `curl --path-as-is`,
+// which is the only way to ask the question (a client normalizes the path before it leaves):
+// `//api/v1/...`, `/api//v1/...`, `.../register//`, a percent-encoded letter and a different case
+// all 404, and `.../oauth/./register` both routes AND is already counted, because the URL parser
+// collapses `.` segments before this predicate sees them. One trailing slash is the whole
+// normalization needed.
+//
+// NOTE: POST-only, because the path only EXISTS as POST. Now that a rejected request is charged, a
+// 404 spends this budget like anything else, so without the method check a crawler or a broken link
+// doing GET here would burn the registration budget for every client sharing that address. Those
+// still pay the global limit, which is where an unmatched route belongs.
+export const isRegisterRequest = (request: Request): boolean => {
+  if (request.method !== "POST") return false;
+  const { pathname } = new URL(request.url);
+  const canonical =
+    pathname.length > 1 && pathname.endsWith("/")
+      ? pathname.slice(0, -1)
+      : pathname;
+  return canonical === REGISTER_PATH;
+};
+
 // Tight per-IP limit dedicated to DCR self-registration (RFC 7591). When the DCR endpoint is open,
 // anyone can mint OAuth client rows, so cap it to a low rate to bound abuse / table flooding. Applies
 // ONLY to POST /api/v1/mcp/oauth/register (skips every other path, which keeps its own bucket).
@@ -122,6 +150,5 @@ export const registerRateLimitMiddleware = () =>
   rateLimit({
     ...sharedLimiterOptions,
     max: 10, // 10 registrations per minute per IP
-    skip: (request) =>
-      new URL(request.url).pathname !== "/api/v1/mcp/oauth/register",
+    skip: (request) => !isRegisterRequest(request),
   });

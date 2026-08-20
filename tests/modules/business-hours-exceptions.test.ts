@@ -487,6 +487,14 @@ describe.skipIf(!dbUp)("business-hours date exceptions (issue #129)", () => {
     );
     expect(result).toEqual({ outcome: "done" });
     expect(s.sent).toEqual([]);
+    // Abandoned WITH a watermark. A bare "done" leaves the episode untouched, so the sweep matches it
+    // again on the very next pass and every eligible conversation re-enters this scan once a minute,
+    // forever. The stamp is what ends the episode rather than just this run of it.
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { lastFollowUpAt: true },
+    });
+    expect(conv.lastFollowUpAt).not.toBeNull();
   });
 
   test("a schedule that never reopens shows no next step, not a time inside the closure", async () => {

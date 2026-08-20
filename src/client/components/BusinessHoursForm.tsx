@@ -70,7 +70,10 @@ export interface BusinessHoursFormProps {
     name: string;
     timezone: string;
     windows: Window[];
-    exceptions?: Exception[];
+    // Required, not optional: the form PATCHes this field unconditionally, so a caller that omits it
+    // initializes to [] and silently deletes every holiday the operator had. Three call sites build
+    // this object; making it required is what stops a fourth from repeating that.
+    exceptions: Exception[];
   };
   onSaved: (id: string, name: string) => void;
   onCancel: () => void;
@@ -100,6 +103,7 @@ export function BusinessHoursForm({
   const [exceptions, setExceptions] = useState<Exception[]>(
     initial?.exceptions ?? [],
   );
+
   const [saving, setSaving] = useState(false);
 
   const baselineRef = useRef<string>(

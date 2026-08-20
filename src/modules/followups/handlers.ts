@@ -373,14 +373,22 @@ export async function followUpHandler(
       const next = nextOpenAt(hours, now);
       if (next) return { outcome: "reschedule", runAt: next };
       // Nothing opens within the scan horizon — a schedule closed for a year, which before date
-      // exceptions could not be expressed at all (a weekly grid always repeats inside the scan). The
-      // sequence still ends, because there is no instant to defer to; what changes is that it says so.
-      // A nudge that vanishes silently is the same invisible failure the exceptions exist to remove.
+      // exceptions could not be expressed at all (a weekly grid always repeats inside the scan). There
+      // is no instant to defer to, so the episode is abandoned WITH A STAMP, exactly like the
+      // retry-exhaustion path below: a bare `done` leaves the episode untouched, the sweep matches it
+      // again on the next pass, and every eligible conversation re-enters this scan once a minute
+      // forever. The stamp keeps the sweep away until the customer speaks again.
       logger.warn(
-        "followUpHandler: schedule never opens within %d days — ending the sequence at step %d (thread=%s)",
+        "followUpHandler: schedule never opens within %d days — abandoning the episode at step %d (thread=%s)",
         NEXT_OPEN_SCAN_DAYS,
         stepIndex,
         threadId,
+      );
+      await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.conversation.update({
+          where: { id: ctx.conv.id },
+          data: { lastFollowUpAt: new Date() },
+        }),
       );
       return { outcome: "done" };
     }

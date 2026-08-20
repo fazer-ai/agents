@@ -2875,6 +2875,10 @@ function AgentEditor() {
               name: businessHoursReviewItem.name,
               timezone: businessHoursReviewItem.timezone,
               windows: businessHoursReviewItem.windows.map((w) => ({ ...w })),
+              exceptions: businessHoursReviewItem.exceptions.map((e) => ({
+                ...e,
+                ranges: e.ranges.map((r) => ({ ...r })),
+              })),
             }}
             onSaved={() => businessHoursReviewModal.close()}
             onCancel={() => businessHoursReviewModal.close()}

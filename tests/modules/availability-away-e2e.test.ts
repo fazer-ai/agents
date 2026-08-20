@@ -52,6 +52,7 @@ const BOT_TOKEN = "AWAY-BOT-TOKEN";
 const INBOX_WITH_COPY = 881;
 const INBOX_SILENT = 882;
 const INBOX_DISABLED = 883;
+const INBOX_PAUSED = 884;
 const AWAY_COPY = "Estamos fechados. Voltamos {proximo_atendimento}.";
 
 let tenantId = 0n;
@@ -59,6 +60,7 @@ let instanceId = 0n;
 let inboxWithCopyId = 0n;
 let inboxSilentId = 0n;
 let inboxDisabledId = 0n;
+let inboxPausedId = 0n;
 
 function localDate(days: number): string {
   const at = new Date(Date.now() + days * 86_400_000);
@@ -253,7 +255,7 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
         settings: {
           debounce: { enabled: false },
           split: { enabled: false },
-          availability: { awayMessage: AWAY_COPY },
+          availability: { enabled: true, awayMessage: AWAY_COPY },
         },
       },
       select: { id: true },
@@ -275,20 +277,39 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
         settings: {
           debounce: { enabled: false },
           split: { enabled: false },
-          availability: { awayMessage: AWAY_COPY },
+          availability: { enabled: true, awayMessage: AWAY_COPY },
+        },
+      },
+      select: { id: true },
+    });
+    // Copy written and kept, switch off: the operator paused the message without discarding the text.
+    const paused = await suDb.agent.create({
+      data: {
+        ...baseAgent,
+        name: "Pausado",
+        settings: {
+          debounce: { enabled: false },
+          split: { enabled: false },
+          availability: { enabled: false, awayMessage: AWAY_COPY },
         },
       },
       select: { id: true },
     });
     // One bot per persona, which is what makes the persona token the sender identity.
-    for (const agentId of [withCopy.id, silent.id, disabled.id]) {
+    for (const agentId of [withCopy.id, silent.id, disabled.id, paused.id]) {
       await suDb.chatwootAgentBot.create({
         data: {
           tenantId,
           chatwootInstanceId: instanceId,
           agentId,
           chatwootAgentBotId:
-            agentId === withCopy.id ? 9 : agentId === silent.id ? 10 : 11,
+            agentId === withCopy.id
+              ? 9
+              : agentId === silent.id
+                ? 10
+                : agentId === disabled.id
+                  ? 11
+                  : 12,
           accessToken: encryptJson(BOT_TOKEN),
           webhookSecret: encryptJson("SECRET"),
           webhookRouteTokenHash: `hash-${process.pid}-${agentId}`,
@@ -329,6 +350,17 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
       select: { id: true },
     });
     inboxDisabledId = c.id;
+    const d = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: INBOX_PAUSED,
+        name: "Pausado",
+        agentId: paused.id,
+      },
+      select: { id: true },
+    });
+    inboxPausedId = d.id;
   });
 
   afterAll(async () => {
@@ -427,6 +459,25 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
     expect(
       notesOn(convId).some((p) => p.content.includes("fora do horário")),
     ).toBe(true);
+  });
+
+  // Two different "off" switches meet here. The one above turns the whole AGENT off; this one leaves
+  // the agent running and silences only the customer-facing message, with the copy still on the row.
+  test("the switch off keeps the copy and sends nothing, note unaffected", async () => {
+    const convId = 9109;
+    const rowId = await seedConversation(convId, inboxPausedId);
+    await deliverCustomerMessage(convId, INBOX_PAUSED, 14);
+
+    expect(publicOn(convId)).toEqual([]);
+    expect(
+      notesOn(convId).some((p) => p.content.includes("fora do horário")),
+    ).toBe(true);
+    // Nothing was claimed either: flipping the switch back on must send TODAY, not skip the day.
+    const row = await suDb.conversation.findUnique({
+      where: { id: rowId },
+      select: { awayMessageSentAt: true },
+    });
+    expect(row?.awayMessageSentAt).toBeNull();
   });
 
   // The dispatch is detached: two messages in a row can be processed by two invocations that both

@@ -1084,16 +1084,18 @@ async function maybeConsumeCommandOrGate(params: {
     //    still tells the operator why it is quiet — that note is pre-existing behavior nobody but the
     //    operator sees — but it acquires no voice toward the customer: switching an agent off switches
     //    off everything it says to them, which is why the runtime refuses to run it a few lines later.
+    const awayCfg = readAvailabilityConfig(ctx.agentSettings);
     const away =
       ctx.agentEnabled &&
       ctx.hours &&
       awayMessageDue(ctx.hours, now, ctx.conv.awayMessageSentAt)
         ? renderAwayMessage({
-            copy: readAvailabilityConfig(ctx.agentSettings).awayMessage,
+            enabled: awayCfg.enabled,
+            copy: awayCfg.awayMessage,
             schedule: ctx.hours,
             now,
           })
-        : ({ send: false, reason: "not_configured" } as const);
+        : ({ send: false, reason: "disabled" } as const);
     if (!away.send && away.reason === "no_next_open") {
       logger.warn(
         "chatwoot: away message not sent (conv=%s) — it interpolates the next opening and the schedule never opens within %d days",

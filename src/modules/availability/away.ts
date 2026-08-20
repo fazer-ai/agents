@@ -10,14 +10,23 @@ import {
 // so from their side the business simply did not answer (issue #153). `awayMessage` is operator-authored
 // copy sent as the persona bot from the same branch that posts the note: no model call, no tokens.
 //
-// Empty copy = the pre-#153 behavior (silence), so the block is additive for every existing agent.
+// Switched off (the default) = the pre-#153 behavior (silence), so the block is additive for every
+// existing agent, and an operator who pauses the message keeps the text they wrote.
 
 export interface AvailabilityConfig {
+  // The operator's on/off for the message. It exists so pausing does not mean DISCARDING the copy,
+  // and because the two sibling blocks whose job is also to send fixed, no-AI text carry the same
+  // switch next to their text (`serviceWindow.enabled` beside its template, `channelRedirect.enabled`
+  // beside its redirect/closing copy) — a third block spelling "off" as "the textarea is empty"
+  // would be the odd one out on the same screen.
+  enabled: boolean;
   // What the customer receives while the agent is outside its schedule. Empty = send nothing.
   awayMessage: string;
 }
 
+// Off, like every agent behaved before this block existed. Turning it on is a deliberate act.
 export const AVAILABILITY_DEFAULTS: AvailabilityConfig = {
+  enabled: false,
   awayMessage: "",
 };
 
@@ -38,9 +47,12 @@ export function readAvailabilityConfig(settings: unknown): AvailabilityConfig {
       : undefined;
   if (!bag || typeof bag !== "object") return { ...AVAILABILITY_DEFAULTS };
   const raw = (bag as Record<string, unknown>).awayMessage;
+  // Strict boolean: anything else (absent, "true", 1) reads as off, so a malformed write can only
+  // ever silence the message, never start sending one nobody switched on.
   // Clamped like every other operator free-text field: the write boundary refuses copy that is too
   // long, and this is the defense for a row that got one anyway (import, hand-edit, older write).
   return {
+    enabled: (bag as Record<string, unknown>).enabled === true,
     awayMessage:
       typeof raw === "string" ? clipText(raw.trim(), TEMPLATE_MESSAGE_MAX) : "",
   };
@@ -63,7 +75,7 @@ function formatNextOpen(at: Date, timezone: string, locale: string): string {
 }
 
 export type AwayRender =
-  | { send: false; reason: "not_configured" | "no_next_open" }
+  | { send: false; reason: "disabled" | "not_configured" | "no_next_open" }
   | { send: true; text: string };
 
 // The text the customer receives, or why they receive nothing.
@@ -74,10 +86,12 @@ export type AwayRender =
 // it with anything else would be the product inventing a commitment nobody made. Copy that makes no
 // promise is unaffected — it goes out as written.
 export function renderAwayMessage(params: {
+  enabled: boolean;
   copy: string;
   schedule: Schedule;
   now: Date;
 }): AwayRender {
+  if (!params.enabled) return { send: false, reason: "disabled" };
   const copy = params.copy.trim();
   if (!copy) return { send: false, reason: "not_configured" };
 

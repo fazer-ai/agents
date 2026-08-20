@@ -28,6 +28,30 @@ describe("readAvailabilityConfig", () => {
     ).toBe("");
   });
 
+  test("the switch is off unless it was stored as a real boolean true", () => {
+    expect(readAvailabilityConfig(undefined).enabled).toBe(false);
+    expect(readAvailabilityConfig({ availability: {} }).enabled).toBe(false);
+    expect(
+      readAvailabilityConfig({ availability: { enabled: "yes" } }).enabled,
+    ).toBe(false);
+    expect(
+      readAvailabilityConfig({ availability: { enabled: 1 } }).enabled,
+    ).toBe(false);
+    expect(
+      readAvailabilityConfig({ availability: { enabled: true } }).enabled,
+    ).toBe(true);
+  });
+
+  // The copy SURVIVES the switch being off: that is the whole point of having a switch instead of
+  // making an empty textarea mean "off". An operator pausing the message keeps what they wrote.
+  test("copy is read whatever the switch says", () => {
+    expect(
+      readAvailabilityConfig({
+        availability: { enabled: false, awayMessage: "Voltamos amanha." },
+      }),
+    ).toEqual({ enabled: false, awayMessage: "Voltamos amanha." });
+  });
+
   test("copy is trimmed, so whitespace never counts as configured", () => {
     expect(
       readAvailabilityConfig({ availability: { awayMessage: "  oi  " } })
@@ -43,16 +67,51 @@ describe("readAvailabilityConfig", () => {
 describe("renderAwayMessage", () => {
   test("no copy → nothing is sent (the feature is off by default)", () => {
     expect(
-      renderAwayMessage({ copy: "", schedule: MON_9_TO_17, now: SUNDAY }),
+      renderAwayMessage({
+        enabled: true,
+        copy: "",
+        schedule: MON_9_TO_17,
+        now: SUNDAY,
+      }),
     ).toEqual({ send: false, reason: "not_configured" });
     expect(
-      renderAwayMessage({ copy: "   ", schedule: MON_9_TO_17, now: SUNDAY }),
+      renderAwayMessage({
+        enabled: true,
+        copy: "   ",
+        schedule: MON_9_TO_17,
+        now: SUNDAY,
+      }),
+    ).toEqual({ send: false, reason: "not_configured" });
+  });
+
+  // The switch is checked FIRST: a paused message is paused even when the copy is perfect and the
+  // schedule has a next opening to promise. Nothing downstream of it runs.
+  test("the switch off sends nothing, and says so", () => {
+    expect(
+      renderAwayMessage({
+        enabled: false,
+        copy: "Voltamos {proximo_atendimento}.",
+        schedule: MON_9_TO_17,
+        now: SUNDAY,
+      }),
+    ).toEqual({ send: false, reason: "disabled" });
+  });
+
+  test("the switch on with no copy is still nothing to send", () => {
+    expect(
+      renderAwayMessage({
+        enabled: true,
+        copy: "   ",
+        schedule: MON_9_TO_17,
+        now: SUNDAY,
+      }),
     ).toEqual({ send: false, reason: "not_configured" });
   });
 
   test("copy with no placeholder goes out exactly as written", () => {
     expect(
       renderAwayMessage({
+        enabled: true,
         copy: "Estamos fechados agora.",
         schedule: MON_9_TO_17,
         now: SUNDAY,
@@ -63,6 +122,7 @@ describe("renderAwayMessage", () => {
   test("each placeholder renders the next opening in its own language", () => {
     expect(
       renderAwayMessage({
+        enabled: true,
         copy: "Voltamos {proximo_atendimento}.",
         schedule: MON_9_TO_17,
         now: SUNDAY,
@@ -70,6 +130,7 @@ describe("renderAwayMessage", () => {
     ).toEqual({ send: true, text: `Voltamos ${NEXT_PT}.` });
     expect(
       renderAwayMessage({
+        enabled: true,
         copy: "We are back {next_open}.",
         schedule: MON_9_TO_17,
         now: SUNDAY,
@@ -80,6 +141,7 @@ describe("renderAwayMessage", () => {
   test("every occurrence is replaced, and mixed copy stays in its own languages", () => {
     expect(
       renderAwayMessage({
+        enabled: true,
         copy: "{proximo_atendimento} / {next_open} / {proximo_atendimento}",
         schedule: MON_9_TO_17,
         now: SUNDAY,
@@ -103,6 +165,7 @@ describe("renderAwayMessage", () => {
     };
     expect(
       renderAwayMessage({
+        enabled: true,
         copy: "Voltamos {proximo_atendimento}.",
         schedule: withHoliday,
         now: SUNDAY,
@@ -128,6 +191,7 @@ describe("renderAwayMessage", () => {
     };
     expect(
       renderAwayMessage({
+        enabled: true,
         copy: "Voltamos {proximo_atendimento}.",
         schedule: neverOpens,
         now: SUNDAY,
@@ -150,6 +214,7 @@ describe("renderAwayMessage", () => {
     };
     expect(
       renderAwayMessage({
+        enabled: true,
         copy: "Estamos fechados.",
         schedule: neverOpens,
         now: SUNDAY,

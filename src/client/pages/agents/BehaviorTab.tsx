@@ -187,6 +187,8 @@ interface BehaviorTabProps {
   hours: Hours[];
   businessHoursId: string;
   setBusinessHoursId: (v: string) => void;
+  awayEnabled: boolean;
+  setAwayEnabled: (v: boolean) => void;
   awayMessage: string;
   setAwayMessage: (v: string) => void;
   followUpHoursId: string;
@@ -759,6 +761,8 @@ export function BehaviorTab({
   hours,
   businessHoursId,
   setBusinessHoursId,
+  awayEnabled,
+  setAwayEnabled,
   awayMessage,
   setAwayMessage,
   followUpHoursId,
@@ -934,7 +938,7 @@ export function BehaviorTab({
             title={t("editor.availability", "Availability")}
             description={t(
               "editor.availabilityHint",
-              "When the agent is active and answering. Outside these hours it stays silent, notifies the operator with a private note, and sends the customer the message below if you write one.",
+              "When the agent is active and answering. Outside these hours it stays silent, notifies the operator with a private note, and, if you turn it on below, tells the customer too.",
             )}
           >
             <FormField
@@ -952,24 +956,34 @@ export function BehaviorTab({
                 }}
               />
             </FormField>
-            <FormField
-              label={t("editor.awayMessage", "Out-of-hours message")}
-              description={t(
-                "editor.awayMessageHint",
-                "Sent to the customer while the agent is outside these hours, at most once a day per conversation. Leave it empty to stay silent. Write {next_open} (or {proximo_atendimento} for a Portuguese message) where the next opening should appear.",
+            <SwitchField
+              checked={awayEnabled}
+              onCheckedChange={setAwayEnabled}
+              label={t(
+                "editor.awayEnabled",
+                "Reply to the customer while closed",
               )}
-            >
-              <Textarea
-                value={awayMessage}
-                onChange={(e) => setAwayMessage(e.target.value)}
-                rows={2}
-                maxLength={TEMPLATE_MESSAGE_MAX}
-                placeholder={t(
-                  "editor.awayMessagePlaceholder",
-                  "We are closed right now. We will be back {next_open}.",
+            />
+            {awayEnabled && (
+              <FormField
+                label={t("editor.awayMessage", "Out-of-hours message")}
+                description={t(
+                  "editor.awayMessageHint",
+                  'Sent to the customer while the agent is outside these hours, at most once a day per conversation. Write {next_open} (or {proximo_atendimento} for a Portuguese message) where the next opening should appear: the customer reads something like "Monday, 08/25, 09:00".',
                 )}
-              />
-            </FormField>
+              >
+                <Textarea
+                  value={awayMessage}
+                  onChange={(e) => setAwayMessage(e.target.value)}
+                  rows={2}
+                  maxLength={TEMPLATE_MESSAGE_MAX}
+                  placeholder={t(
+                    "editor.awayMessagePlaceholder",
+                    "We are closed right now. We will be back {next_open}.",
+                  )}
+                />
+              </FormField>
+            )}
           </Section>
 
           <Section

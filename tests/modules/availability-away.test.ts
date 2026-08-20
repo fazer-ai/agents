@@ -173,6 +173,27 @@ describe("renderAwayMessage", () => {
     ).toEqual({ send: true, text: "Voltamos terça-feira, 09/01, 09:00." });
   });
 
+  // The horizon is a full year, so the promised date can land in the NEXT one and read as this
+  // week's. The year shows up exactly there, and nowhere else (every case above renders without it).
+  test("a reopening in another year is dated with the year", () => {
+    const wednesdays: Schedule = {
+      windows: [{ day: 3, start: "09:00", end: "17:00" }],
+      exceptions: [],
+      timezone: "UTC",
+    };
+    expect(
+      renderAwayMessage({
+        enabled: true,
+        copy: "Voltamos {proximo_atendimento}. / {next_open}",
+        schedule: wednesdays,
+        now: new Date("2024-12-30T12:00:00Z"), // Monday, two days before the turn of the year
+      }),
+    ).toEqual({
+      send: true,
+      text: "Voltamos quarta-feira, 01/01/2025, 09:00. / Wednesday, 01/01/2025, 09:00",
+    });
+  });
+
   // Copy that promises a return time cannot be sent when there is no return time to promise: a
   // mutilated sentence and an invented one are both worse than the note the operator already gets.
   test("a schedule that never opens suppresses copy that promises a time", () => {

@@ -62,12 +62,28 @@ export function readAvailabilityConfig(settings: unknown): AvailabilityConfig {
 // ambiguous for exactly the closures #148 added: a year-end shutdown answers "Saturday", which is the
 // Saturday eleven days out. One format that is never ambiguous beats two that are each right half the
 // time. `hourCycle: "h23"` keeps midnight at 00:00 instead of the 24:00 some ICU builds render.
-function formatNextOpen(at: Date, timezone: string, locale: string): string {
+//
+// The year joins it only when the promise crosses into a different one, which is the same argument
+// one notch further out: `nextOpenAt` scans NEXT_OPEN_SCAN_DAYS ahead, so a schedule closed for
+// nearly a year answers with a date that reads as this week's ("01/01") and means the next year's.
+// Printing it always would tax every ordinary "back tomorrow" for a case almost nothing reaches.
+function formatNextOpen(
+  at: Date,
+  now: Date,
+  timezone: string,
+  locale: string,
+): string {
+  const year =
+    localDateKey(at, timezone).slice(0, 4) ===
+    localDateKey(now, timezone).slice(0, 4)
+      ? {}
+      : ({ year: "numeric" } as const);
   return new Intl.DateTimeFormat(locale, {
     timeZone: timezone,
     weekday: "long",
     day: "2-digit",
     month: "2-digit",
+    ...year,
     hour: "2-digit",
     minute: "2-digit",
     hourCycle: "h23",
@@ -105,7 +121,7 @@ export function renderAwayMessage(params: {
   for (const { token, locale } of used) {
     text = text.replaceAll(
       token,
-      formatNextOpen(next, params.schedule.timezone, locale),
+      formatNextOpen(next, params.now, params.schedule.timezone, locale),
     );
   }
   return { send: true, text };

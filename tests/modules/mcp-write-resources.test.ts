@@ -195,6 +195,85 @@ describe.skipIf(!dbUp)("MCP resource-write tools (DB)", () => {
     ).toBe(1);
   });
 
+  test("business_hours_create carries date exceptions, and rejects an impossible date", async () => {
+    const p = principal({ tenantId: tenantA });
+    const ok = await businessHoursCreate(
+      p,
+      {
+        name: "Com feriado",
+        timezone: "America/Sao_Paulo",
+        windows: [{ day: 1, start: "09:00", end: "18:00" }],
+        exceptions: [
+          { date: "2026-09-07", label: "Independência", ranges: [] },
+          {
+            date: "2026-12-24",
+            ranges: [{ start: "08:00", end: "12:00" }],
+          },
+        ],
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(ok.ok).toBe(true);
+    const row = await suDb.businessHours.findFirstOrThrow({
+      where: { tenantId: tenantA, name: "Com feriado" },
+      select: { exceptions: true },
+    });
+    expect(row.exceptions).toHaveLength(2);
+
+    // A dated span that runs backwards covers nothing, so it would sit in the editor looking like a
+    // closure that is simply never in force.
+    const backwards = await businessHoursCreate(
+      p,
+      {
+        name: "Span invertido",
+        windows: [],
+        exceptions: [{ date: "2026-12-25", dateEnd: "2026-12-20", ranges: [] }],
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(backwards.ok).toBe(false);
+    // The same span IS valid when it recurs: that is how a year-end shutdown wraps.
+    const wrapping = await businessHoursCreate(
+      p,
+      {
+        name: "Recesso anual",
+        windows: [],
+        exceptions: [
+          {
+            date: "2026-12-23",
+            dateEnd: "2027-01-02",
+            recurring: true,
+            ranges: [],
+          },
+        ],
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(wrapping.ok).toBe(true);
+
+    // Feb 30 passes the "YYYY-MM-DD" shape and would roll over into March, silently moving the
+    // closure to a day the operator never chose.
+    const bad = await businessHoursCreate(
+      p,
+      {
+        name: "Data impossível",
+        windows: [],
+        exceptions: [{ date: "2026-02-30", ranges: [] }],
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(bad.ok).toBe(false);
+    expect(
+      await suDb.businessHours.count({
+        where: { tenantId: tenantA, name: "Data impossível" },
+      }),
+    ).toBe(0);
+  });
+
   test("experiment_create apply persists", async () => {
     const p = principal({ tenantId: tenantA });
     const r = await experimentCreate(

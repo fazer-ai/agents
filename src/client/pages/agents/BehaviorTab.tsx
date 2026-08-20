@@ -240,6 +240,7 @@ function toScheduleOption(h: Hours): ScheduleOption {
     id: String(h.id),
     name: h.name,
     windows: (h.windows ?? []) as ScheduleOption["windows"],
+    exceptions: (h.exceptions ?? []) as ScheduleOption["exceptions"],
     timezone: h.timezone,
   };
 }

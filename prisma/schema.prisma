@@ -575,6 +575,9 @@ model BusinessHours {
   name      String
   timezone  String   @default("America/Sao_Paulo")
   windows   Json     @default("[]")
+  // Date exceptions that REPLACE the weekly grid on the dates they match (holidays, shutdowns,
+  // half-days). Empty array = the weekly grid alone, i.e. exactly the pre-#129 behavior.
+  exceptions Json    @default("[]")
   source    String   @default("LOCAL") // LOCAL|CHATWOOT_MIRROR
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

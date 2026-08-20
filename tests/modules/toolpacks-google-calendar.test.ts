@@ -859,6 +859,7 @@ describe("google calendar toolpack — list + availability", () => {
         // Morning-only service hours, in the schedule's own timezone.
         resolveBusinessHours: async () => ({
           windows: [{ day, start: "09:00", end: "12:00" }],
+          exceptions: [],
           timezone: TZ,
         }),
       }),
@@ -877,6 +878,73 @@ describe("google calendar toolpack — list + availability", () => {
     ]);
     expect(parsed.timeZone).toBe(TZ);
     expect(parsed.slots[0]?.label).toContain("09:00");
+  });
+
+  test("a date exception on the schedule removes that day's slots entirely (issue #129)", async () => {
+    const day = spWeekday("2099-06-22T09:00:00-03:00");
+    const { impl, calls } = stubFetch(200, {
+      calendars: { primary: { busy: [] } },
+    });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      {
+        businessHoursId: "5",
+        slotDurationMinutes: 60,
+        slotGranularityMinutes: 60,
+      },
+      baseCtx({
+        fetchImpl: impl,
+        resolveBusinessHours: async () => ({
+          // The same morning grid as the test above, so the ONLY difference is the exception.
+          windows: [{ day, start: "09:00", end: "12:00" }],
+          exceptions: [{ date: "2099-06-22", label: "Feriado", ranges: [] }],
+          timezone: TZ,
+        }),
+      }),
+    )?.invoke({
+      timeMin: "2099-06-22T00:00:00-03:00",
+      timeMax: "2099-06-22T23:59:00-03:00",
+    })) as string;
+    const parsed = JSON.parse(out) as { slots: { start: string }[] };
+    expect(parsed.slots).toEqual([]);
+    // The busy lookup still happened: the schedule is what emptied the list, not a short-circuit that
+    // would also hide a real calendar error.
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  test("a half-day exception bounds the slots to its own range, not the grid's", async () => {
+    const day = spWeekday("2099-06-22T09:00:00-03:00");
+    const { impl } = stubFetch(200, { calendars: { primary: { busy: [] } } });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      {
+        businessHoursId: "5",
+        slotDurationMinutes: 60,
+        slotGranularityMinutes: 60,
+      },
+      baseCtx({
+        fetchImpl: impl,
+        resolveBusinessHours: async () => ({
+          windows: [{ day, start: "09:00", end: "18:00" }],
+          exceptions: [
+            {
+              date: "2099-06-22",
+              label: "Véspera",
+              ranges: [{ start: "09:00", end: "11:00" }],
+            },
+          ],
+          timezone: TZ,
+        }),
+      }),
+    )?.invoke({
+      timeMin: "2099-06-22T00:00:00-03:00",
+      timeMax: "2099-06-22T23:59:00-03:00",
+    })) as string;
+    const parsed = JSON.parse(out) as { slots: { start: string }[] };
+    expect(parsed.slots.map((s) => localHM(s.start))).toEqual([
+      "09:00",
+      "10:00",
+    ]);
   });
 
   test("availability with no schedule configured ⇒ no time-of-day filter (full grid)", async () => {

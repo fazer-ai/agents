@@ -188,6 +188,10 @@ export function BusinessHoursPanel() {
                   name: editingItem.name,
                   timezone: editingItem.timezone,
                   windows: editingItem.windows.map((w) => ({ ...w })),
+                  exceptions: editingItem.exceptions.map((e) => ({
+                    ...e,
+                    ranges: e.ranges.map((r) => ({ ...r })),
+                  })),
                 }
               : undefined
           }

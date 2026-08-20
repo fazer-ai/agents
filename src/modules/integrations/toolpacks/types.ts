@@ -2,7 +2,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import type { SafeUrlOptions } from "@/lib/ssrf";
-import type { WindowSpec } from "@/modules/business-hours/hours";
+import type { Schedule } from "@/modules/business-hours/hours";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 
 // Outbound toolpacks: the per-agent activation of a catalog integration's OUTBOUND tools (the
@@ -42,12 +42,11 @@ export interface ToolpackCtx {
   // that delivers something to the customer (e.g. Drive send_file) uses it; absent on the
   // playground (conversationId 0 + stub client), so such tools degrade gracefully.
   chatwoot?: { client: ChatwootClient; conversationId: number };
-  // Resolves an integration's chosen BusinessHours by id → its windows + timezone (short scoped DB
-  // read; no network). The Calendar availability tool uses it to bound bookable slots to the service
-  // hours; null when unset/deleted/other-tenant ⇒ "always on". Injected in prepare.ts; stubbed in tests.
-  resolveBusinessHours?: (
-    id: string,
-  ) => Promise<{ windows: WindowSpec[]; timezone: string } | null>;
+  // Resolves an integration's chosen BusinessHours by id → the whole schedule (weekly windows, date
+  // exceptions, timezone; short scoped DB read, no network). The Calendar availability tool uses it to
+  // bound bookable slots to the service hours; null when unset/deleted/other-tenant ⇒ "always on".
+  // Injected in prepare.ts; stubbed in tests.
+  resolveBusinessHours?: (id: string) => Promise<Schedule | null>;
   // Schedules deterministic reminders for an appointment the agent just booked (Calendar create). A
   // closure bound to the tenant + this conversation's thread; it is a pure MECHANISM (enqueue the
   // scheduler jobs). The POLICY (offsetsHours + askConfirmationOnLast) lives in the Calendar

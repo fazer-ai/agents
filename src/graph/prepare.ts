@@ -17,7 +17,8 @@ import {
   cancelAppointmentReminders,
   enqueueAppointmentReminders,
 } from "@/modules/appointments/reminders";
-import { parseWindows, type WindowSpec } from "@/modules/business-hours/hours";
+import type { Schedule } from "@/modules/business-hours/hours";
+import { readSchedule } from "@/modules/business-hours/service";
 import {
   attributeBagsFrom,
   buildAttributeContextSection,
@@ -703,23 +704,11 @@ export async function buildToolset(
 ): Promise<StructuredToolInterface[]> {
   const resolveCredential = (ref: string) =>
     resolveInjectableCredential(ctx.base, ctx.tenantId, ref);
-  // Resolves an integration's chosen BusinessHours by id → windows + timezone (scoped read; RLS fences
-  // it to this tenant, so a stale/other-tenant id yields null ⇒ the Calendar availability tool treats
-  // the schedule as "always on"). Mirrors resolveCredential's bound-closure shape.
-  const resolveBusinessHours = async (
-    id: string,
-  ): Promise<{ windows: WindowSpec[]; timezone: string } | null> => {
-    const bhId = /^\d+$/.test(id) ? BigInt(id) : null;
-    if (bhId === null) return null;
-    const row = await runScopedOn(ctx.base, sysCtx(ctx.tenantId), (db) =>
-      db.businessHours.findUnique({
-        where: { id: bhId },
-        select: { windows: true, timezone: true },
-      }),
-    );
-    if (!row) return null;
-    return { windows: parseWindows(row.windows), timezone: row.timezone };
-  };
+  // Resolves an integration's chosen BusinessHours by id → the whole schedule (scoped read; RLS
+  // fences it to this tenant, so a stale/other-tenant id yields null ⇒ the Calendar availability tool
+  // treats the schedule as "always on"). Mirrors resolveCredential's bound-closure shape.
+  const resolveBusinessHours = (id: string): Promise<Schedule | null> =>
+    readSchedule(sysCtx(ctx.tenantId), id, ctx.base);
   const flow = deps.flow;
   // NOTE: A side effect that fails INSIDE a tool that still returns success is invisible in the
   // tool's own flowlog line (the tool legitimately succeeded for the model). This binding lets toolpacks and

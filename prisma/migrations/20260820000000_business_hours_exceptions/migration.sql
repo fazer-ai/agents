@@ -1,0 +1,12 @@
+-- Date exceptions on a business-hours profile (issue #129).
+--
+-- Until now a profile could only express a weekly grid ({day, start, end}), so a holiday, a
+-- collective shutdown or a half-day had no representation at all. The four consumers that read the
+-- profile — the reactive availability gate, the follow-up scheduler, the console indicators and the
+-- bookable-slot filter — therefore treated September 7 as an ordinary Monday, each one doing exactly
+-- what it was configured to do.
+--
+-- Additive by construction: every existing row gets '[]', which the resolver reads as "no exception
+-- matches any date", so the weekly grid decides alone and behavior is unchanged. There is no
+-- backfill, and nothing to repair on an existing install.
+ALTER TABLE "business_hours" ADD COLUMN "exceptions" JSONB NOT NULL DEFAULT '[]';

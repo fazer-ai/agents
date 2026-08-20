@@ -1,6 +1,6 @@
 import {
   fitsWithinWindows,
-  type WindowSpec,
+  type Schedule,
 } from "@/modules/business-hours/hours";
 
 // Pure appointment-slot generator (n8n secretária v3 parity). Turns a time range + the professional's
@@ -19,10 +19,10 @@ export interface SlotInput {
   timeMin: string;
   timeMax: string;
   now: Date;
-  // Empty ⇒ no business-hours restriction ("always on"); otherwise the slot must fit inside a window.
-  scheduleWindows: WindowSpec[];
-  // Timezone the windows are expressed in AND the label is rendered in.
-  scheduleTz: string;
+  // The service hours a slot must fit inside. Empty `windows` ⇒ no business-hours restriction
+  // ("always on"); date exceptions ride along, so a holiday removes that day's slots. Its timezone is
+  // the one the windows are expressed in AND the label is rendered in.
+  schedule: Schedule;
   busy: { start: string; end: string }[];
   slotMinutes: number;
   granularityMinutes: number;
@@ -63,13 +63,8 @@ export function computeAvailableSlots(input: SlotInput): Slot[] {
     const slotStart = new Date(t);
     const slotEnd = new Date(t + slotMs);
     if (
-      input.scheduleWindows.length > 0 &&
-      !fitsWithinWindows(
-        input.scheduleWindows,
-        input.scheduleTz,
-        slotStart,
-        slotEnd,
-      )
+      input.schedule.windows.length > 0 &&
+      !fitsWithinWindows(input.schedule, slotStart, slotEnd)
     ) {
       continue;
     }
@@ -79,7 +74,7 @@ export function computeAvailableSlots(input: SlotInput): Slot[] {
     out.push({
       start: slotStart.toISOString(),
       end: slotEnd.toISOString(),
-      label: formatLabel(slotStart, input.scheduleTz),
+      label: formatLabel(slotStart, input.schedule.timezone),
     });
   }
 

@@ -568,6 +568,12 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
         name: "Comercial",
         timezone: "America/Sao_Paulo",
         windows: [],
+        // Date exceptions are part of the schedule, so they have to travel with it. Nothing in the
+        // type system says so: the bundle carries the schedule as raw JSON, and a forgotten field
+        // here would arrive at the destination as a schedule that quietly forgot its holidays.
+        exceptions: [
+          { date: "2026-09-07", label: "Independência", ranges: [] },
+        ],
       },
     });
     const agent = await suDb.agent.create({
@@ -655,6 +661,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(c?.knowledgeBases.find((k) => k.name === "Catálogo")).toBeDefined();
     // Business hours are bundled so the import can recreate them.
     expect(c?.businessHours?.some((h) => h.name === "Comercial")).toBe(true);
+    expect(
+      c?.businessHours?.find((h) => h.name === "Comercial")?.exceptions,
+    ).toEqual([{ date: "2026-09-07", label: "Independência", ranges: [] }]);
     const json = JSON.stringify(exp);
     // No inbound secret / route token hash / vault id ever travels.
     expect(json).not.toContain("vault:");
@@ -713,6 +722,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       where: { tenantId: dstTenant, name: "Comercial" },
     });
     expect(bh).not.toBeNull();
+    expect(bh?.exceptions).toEqual([
+      { date: "2026-09-07", label: "Independência", ranges: [] },
+    ]);
     const agentRow = await suDb.agent.findUnique({
       where: { id: BigInt(agent.id) },
       select: { businessHoursId: true },

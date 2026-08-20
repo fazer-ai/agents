@@ -44,6 +44,7 @@ describe("outOfHoursGate", () => {
   // Mon 09:00-17:00 UTC. 2024-01-08 is a Monday; 2024-01-07 a Sunday → fixed instants, no real clock.
   const HOURS = {
     windows: [{ day: 1, start: "09:00", end: "17:00" }],
+    exceptions: [],
     timezone: "UTC",
   };
   const MON_MIDDAY = new Date("2024-01-08T12:00:00Z"); // open
@@ -56,7 +57,11 @@ describe("outOfHoursGate", () => {
       postNote: false,
     });
     expect(
-      outOfHoursGate({ windows: [], timezone: "UTC" }, MON_NIGHT, false),
+      outOfHoursGate(
+        { windows: [], exceptions: [], timezone: "UTC" },
+        MON_NIGHT,
+        false,
+      ),
     ).toEqual({ silence: false, postNote: false });
   });
 

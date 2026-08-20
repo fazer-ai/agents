@@ -12462,6 +12462,56 @@
                         "end"
                       ]
                     }
+                  },
+                  "exceptions": {
+                    "description": "Date exceptions (holidays, shutdowns, half-days) that replace the weekly windows on the dates they match.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "date": {
+                          "description": "Calendar date the exception applies to, \"YYYY-MM-DD\". With recurring, only the month and day are compared.",
+                          "type": "string"
+                        },
+                        "dateEnd": {
+                          "description": "Inclusive last date of the span, \"YYYY-MM-DD\". Under recurring, a month-day before the start wraps the year end (e.g. Dec 23 through Jan 2).",
+                          "type": "string"
+                        },
+                        "recurring": {
+                          "description": "Match the same month-day every year. Only for fixed-date holidays; movable ones (Carnival, Good Friday) need a dated entry per year.",
+                          "type": "boolean"
+                        },
+                        "label": {
+                          "description": "Operator-facing name, e.g. Independence Day.",
+                          "type": "string"
+                        },
+                        "ranges": {
+                          "description": "Hours in force on the matched dates, REPLACING the weekly windows. Empty = closed all day.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "start": {
+                                "description": "Range start time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              },
+                              "end": {
+                                "description": "Range end time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "start",
+                              "end"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "date",
+                        "ranges"
+                      ]
+                    }
                   }
                 }
               }
@@ -12517,6 +12567,56 @@
                         "end"
                       ]
                     }
+                  },
+                  "exceptions": {
+                    "description": "Date exceptions (holidays, shutdowns, half-days) that replace the weekly windows on the dates they match.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "date": {
+                          "description": "Calendar date the exception applies to, \"YYYY-MM-DD\". With recurring, only the month and day are compared.",
+                          "type": "string"
+                        },
+                        "dateEnd": {
+                          "description": "Inclusive last date of the span, \"YYYY-MM-DD\". Under recurring, a month-day before the start wraps the year end (e.g. Dec 23 through Jan 2).",
+                          "type": "string"
+                        },
+                        "recurring": {
+                          "description": "Match the same month-day every year. Only for fixed-date holidays; movable ones (Carnival, Good Friday) need a dated entry per year.",
+                          "type": "boolean"
+                        },
+                        "label": {
+                          "description": "Operator-facing name, e.g. Independence Day.",
+                          "type": "string"
+                        },
+                        "ranges": {
+                          "description": "Hours in force on the matched dates, REPLACING the weekly windows. Empty = closed all day.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "start": {
+                                "description": "Range start time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              },
+                              "end": {
+                                "description": "Range end time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "start",
+                              "end"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "date",
+                        "ranges"
+                      ]
+                    }
                   }
                 }
               }
@@ -12570,6 +12670,56 @@
                         "day",
                         "start",
                         "end"
+                      ]
+                    }
+                  },
+                  "exceptions": {
+                    "description": "Date exceptions (holidays, shutdowns, half-days) that replace the weekly windows on the dates they match.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "date": {
+                          "description": "Calendar date the exception applies to, \"YYYY-MM-DD\". With recurring, only the month and day are compared.",
+                          "type": "string"
+                        },
+                        "dateEnd": {
+                          "description": "Inclusive last date of the span, \"YYYY-MM-DD\". Under recurring, a month-day before the start wraps the year end (e.g. Dec 23 through Jan 2).",
+                          "type": "string"
+                        },
+                        "recurring": {
+                          "description": "Match the same month-day every year. Only for fixed-date holidays; movable ones (Carnival, Good Friday) need a dated entry per year.",
+                          "type": "boolean"
+                        },
+                        "label": {
+                          "description": "Operator-facing name, e.g. Independence Day.",
+                          "type": "string"
+                        },
+                        "ranges": {
+                          "description": "Hours in force on the matched dates, REPLACING the weekly windows. Empty = closed all day.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "start": {
+                                "description": "Range start time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              },
+                              "end": {
+                                "description": "Range end time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "start",
+                              "end"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "date",
+                        "ranges"
                       ]
                     }
                   }
@@ -12844,6 +12994,56 @@
                         "end"
                       ]
                     }
+                  },
+                  "exceptions": {
+                    "description": "Date exceptions (holidays, shutdowns, half-days) that replace the weekly windows on the dates they match.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "date": {
+                          "description": "Calendar date the exception applies to, \"YYYY-MM-DD\". With recurring, only the month and day are compared.",
+                          "type": "string"
+                        },
+                        "dateEnd": {
+                          "description": "Inclusive last date of the span, \"YYYY-MM-DD\". Under recurring, a month-day before the start wraps the year end (e.g. Dec 23 through Jan 2).",
+                          "type": "string"
+                        },
+                        "recurring": {
+                          "description": "Match the same month-day every year. Only for fixed-date holidays; movable ones (Carnival, Good Friday) need a dated entry per year.",
+                          "type": "boolean"
+                        },
+                        "label": {
+                          "description": "Operator-facing name, e.g. Independence Day.",
+                          "type": "string"
+                        },
+                        "ranges": {
+                          "description": "Hours in force on the matched dates, REPLACING the weekly windows. Empty = closed all day.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "start": {
+                                "description": "Range start time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              },
+                              "end": {
+                                "description": "Range end time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "start",
+                              "end"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "date",
+                        "ranges"
+                      ]
+                    }
                   }
                 }
               }
@@ -12899,6 +13099,56 @@
                         "end"
                       ]
                     }
+                  },
+                  "exceptions": {
+                    "description": "Date exceptions (holidays, shutdowns, half-days) that replace the weekly windows on the dates they match.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "date": {
+                          "description": "Calendar date the exception applies to, \"YYYY-MM-DD\". With recurring, only the month and day are compared.",
+                          "type": "string"
+                        },
+                        "dateEnd": {
+                          "description": "Inclusive last date of the span, \"YYYY-MM-DD\". Under recurring, a month-day before the start wraps the year end (e.g. Dec 23 through Jan 2).",
+                          "type": "string"
+                        },
+                        "recurring": {
+                          "description": "Match the same month-day every year. Only for fixed-date holidays; movable ones (Carnival, Good Friday) need a dated entry per year.",
+                          "type": "boolean"
+                        },
+                        "label": {
+                          "description": "Operator-facing name, e.g. Independence Day.",
+                          "type": "string"
+                        },
+                        "ranges": {
+                          "description": "Hours in force on the matched dates, REPLACING the weekly windows. Empty = closed all day.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "start": {
+                                "description": "Range start time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              },
+                              "end": {
+                                "description": "Range end time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "start",
+                              "end"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "date",
+                        "ranges"
+                      ]
+                    }
                   }
                 }
               }
@@ -12952,6 +13202,56 @@
                         "day",
                         "start",
                         "end"
+                      ]
+                    }
+                  },
+                  "exceptions": {
+                    "description": "Date exceptions (holidays, shutdowns, half-days) that replace the weekly windows on the dates they match.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "date": {
+                          "description": "Calendar date the exception applies to, \"YYYY-MM-DD\". With recurring, only the month and day are compared.",
+                          "type": "string"
+                        },
+                        "dateEnd": {
+                          "description": "Inclusive last date of the span, \"YYYY-MM-DD\". Under recurring, a month-day before the start wraps the year end (e.g. Dec 23 through Jan 2).",
+                          "type": "string"
+                        },
+                        "recurring": {
+                          "description": "Match the same month-day every year. Only for fixed-date holidays; movable ones (Carnival, Good Friday) need a dated entry per year.",
+                          "type": "boolean"
+                        },
+                        "label": {
+                          "description": "Operator-facing name, e.g. Independence Day.",
+                          "type": "string"
+                        },
+                        "ranges": {
+                          "description": "Hours in force on the matched dates, REPLACING the weekly windows. Empty = closed all day.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "start": {
+                                "description": "Range start time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              },
+                              "end": {
+                                "description": "Range end time as \"HH:mm\" (24-hour, in the schedule timezone).",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "start",
+                              "end"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "date",
+                        "ranges"
                       ]
                     }
                   }

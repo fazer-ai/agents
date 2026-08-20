@@ -253,12 +253,21 @@ interface WindowArg {
   end: string;
 }
 
+interface ExceptionArg {
+  date: string;
+  dateEnd?: string;
+  recurring?: boolean;
+  label?: string;
+  ranges: Array<{ start: string; end: string }>;
+}
+
 export async function businessHoursCreate(
   principal: VerifiedToken,
   args: {
     name: string;
     timezone?: string;
     windows?: WindowArg[];
+    exceptions?: ExceptionArg[];
     dry_run?: boolean;
   },
   deps: WriteDeps = {},
@@ -276,12 +285,18 @@ export async function businessHoursCreate(
           name: args.name,
           timezone: args.timezone ?? null,
           windows: args.windows ?? [],
+          exceptions: args.exceptions ?? [],
         },
       });
     }
     const created = await createBusinessHours(
       ctx,
-      { name: args.name, timezone: args.timezone, windows: args.windows },
+      {
+        name: args.name,
+        timezone: args.timezone,
+        windows: args.windows,
+        exceptions: args.exceptions,
+      },
       base,
     );
     const target = `business_hours:${created.id}`;
@@ -306,6 +321,7 @@ export async function businessHoursUpdate(
     name?: string;
     timezone?: string;
     windows?: WindowArg[];
+    exceptions?: ExceptionArg[];
     dry_run?: boolean;
   },
   deps: WriteDeps = {},
@@ -315,12 +331,20 @@ export async function businessHoursUpdate(
   if ("ok" in ctx) return ctx;
   const id = parseId(args.business_hours_id, "business_hours_id");
   if (typeof id !== "bigint") return id;
-  const patch: { name?: string; timezone?: string; windows?: WindowArg[] } = {};
+  const patch: {
+    name?: string;
+    timezone?: string;
+    windows?: WindowArg[];
+    exceptions?: ExceptionArg[];
+  } = {};
   if (args.name !== undefined) patch.name = args.name;
   if (args.timezone !== undefined) patch.timezone = args.timezone;
   if (args.windows !== undefined) patch.windows = args.windows;
+  if (args.exceptions !== undefined) patch.exceptions = args.exceptions;
   if (Object.keys(patch).length === 0) {
-    return err("no updatable fields provided (name, timezone, windows)");
+    return err(
+      "no updatable fields provided (name, timezone, windows, exceptions)",
+    );
   }
   try {
     const current = await getBusinessHours(ctx, id, base);
@@ -329,12 +353,14 @@ export async function businessHoursUpdate(
       name: current.name,
       timezone: current.timezone,
       windows: current.windows,
+      exceptions: current.exceptions,
     };
     if (args.dry_run !== false) {
       const previewAfter = {
         name: patch.name ?? current.name,
         timezone: patch.timezone ?? current.timezone,
         windows: patch.windows ?? current.windows,
+        exceptions: patch.exceptions ?? current.exceptions,
       };
       return ok({
         dryRun: true,
@@ -353,6 +379,7 @@ export async function businessHoursUpdate(
         name: updated.name,
         timezone: updated.timezone,
         windows: updated.windows,
+        exceptions: updated.exceptions,
       }),
     });
     return ok({ dryRun: false, applied: true, target, businessHours: updated });

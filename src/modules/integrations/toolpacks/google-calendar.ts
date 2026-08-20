@@ -951,8 +951,12 @@ function buildCheckAvailabilityTool(
         timeMin: input.timeMin,
         timeMax: input.timeMax,
         now: new Date(),
-        scheduleWindows: schedule?.windows ?? [],
-        scheduleTz: schedule?.timezone ?? timeZone,
+        // No schedule ⇒ always on, and the integration's display timezone renders the labels.
+        schedule: schedule ?? {
+          windows: [],
+          exceptions: [],
+          timezone: timeZone,
+        },
         // NOTE: Each source's busy list is assembled HERE: its own bookings plus every blocking calendar
         // except itself.
         sources: sources.map((src) => ({

@@ -892,6 +892,34 @@ function FollowUpLine({
               {line}
             </span>
           ))}
+          {followUp.hours.exceptionToday && (
+            // The weekly grid above is not what today looks like. Said here rather than by rewriting
+            // the grid, because the operator still needs to know what the ordinary week is.
+            <span className="text-warning">
+              {followUp.hours.exceptionToday.ranges.length === 0
+                ? t(
+                    "conversation.followUp.closedToday",
+                    "Closed today ({{label}})",
+                    {
+                      label:
+                        followUp.hours.exceptionToday.label ||
+                        followUp.hours.exceptionToday.date,
+                    },
+                  )
+                : t(
+                    "conversation.followUp.exceptionToday",
+                    "Today only: {{hours}} ({{label}})",
+                    {
+                      hours: followUp.hours.exceptionToday.ranges
+                        .map((r) => `${r.start}–${r.end}`)
+                        .join(", "),
+                      label:
+                        followUp.hours.exceptionToday.label ||
+                        followUp.hours.exceptionToday.date,
+                    },
+                  )}
+            </span>
+          )}
           <span className="text-[10px] text-text-muted">
             {followUp.hours.timezone}
           </span>

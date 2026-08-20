@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { WindowSpec } from "@/modules/business-hours/hours";
+import type {
+  Schedule,
+  ScheduleException,
+  WindowSpec,
+} from "@/modules/business-hours/hours";
 import {
   computeAggregatedSlots,
   computeAvailableSlots,
@@ -39,13 +43,16 @@ const farPast = new Date("2026-06-01T00:00:00-03:00");
 
 const base = {
   now: farPast,
-  scheduleTz: TZ,
   busy: [] as { start: string; end: string }[],
   slotMinutes: 30,
   granularityMinutes: 30,
   minLeadMinutes: 0,
 };
 const officeHours: WindowSpec[] = [{ day: DAY, start: "08:00", end: "18:00" }];
+const sch = (
+  windows: WindowSpec[],
+  exceptions: ScheduleException[] = [],
+): Schedule => ({ windows, exceptions, timezone: TZ });
 
 describe("computeAvailableSlots", () => {
   test("granularity < duration produces overlapping starts (09:00 and 09:15)", () => {
@@ -53,7 +60,7 @@ describe("computeAvailableSlots", () => {
       ...base,
       timeMin: iso("09:00"),
       timeMax: iso("12:00"),
-      scheduleWindows: officeHours,
+      schedule: sch(officeHours),
       granularityMinutes: 15,
     });
     const starts = slots.map((s) => localHM(s.start));
@@ -71,7 +78,7 @@ describe("computeAvailableSlots", () => {
       ...base,
       timeMin: iso("07:00"),
       timeMax: iso("09:00"),
-      scheduleWindows: officeHours,
+      schedule: sch(officeHours),
     });
     const starts = slots.map((s) => localHM(s.start));
     expect(starts).toEqual(["08:00", "08:30"]);
@@ -84,10 +91,10 @@ describe("computeAvailableSlots", () => {
       timeMax: iso("15:00"),
       slotMinutes: 60,
       granularityMinutes: 60,
-      scheduleWindows: [
+      schedule: sch([
         { day: DAY, start: "08:00", end: "12:00" },
         { day: DAY, start: "14:00", end: "18:00" },
-      ],
+      ]),
     });
     const starts = slots.map((s) => localHM(s.start));
     expect(starts).toContain("11:00");
@@ -104,7 +111,7 @@ describe("computeAvailableSlots", () => {
       ...base,
       timeMin: iso("09:00"),
       timeMax: iso("18:00"),
-      scheduleWindows: otherDay,
+      schedule: sch(otherDay),
     });
     expect(slots).toEqual([]);
   });
@@ -114,7 +121,7 @@ describe("computeAvailableSlots", () => {
       ...base,
       timeMin: iso("09:00"),
       timeMax: iso("11:00"),
-      scheduleWindows: officeHours,
+      schedule: sch(officeHours),
       busy: [{ start: iso("10:00"), end: iso("10:30") }],
     });
     const starts = slots.map((s) => localHM(s.start));
@@ -128,7 +135,7 @@ describe("computeAvailableSlots", () => {
       now: new Date(iso("10:00")),
       timeMin: iso("09:00"),
       timeMax: iso("12:00"),
-      scheduleWindows: officeHours,
+      schedule: sch(officeHours),
     });
     const starts = slots.map((s) => localHM(s.start));
     expect(starts).toEqual(["10:00", "10:30", "11:00", "11:30"]);
@@ -144,7 +151,7 @@ describe("computeAvailableSlots", () => {
       now: new Date("2026-06-22T09:07:31.660-03:00"),
       timeMin: iso("00:00"),
       timeMax: iso("12:00"),
-      scheduleWindows: officeHours,
+      schedule: sch(officeHours),
       granularityMinutes: 15,
     });
     const starts = slots.map((s) => localHM(s.start));
@@ -161,7 +168,7 @@ describe("computeAvailableSlots", () => {
       ...base,
       timeMin: iso("09:00"),
       timeMax: iso("11:00"),
-      scheduleWindows: [],
+      schedule: sch([]),
     });
     const starts = slots.map((s) => localHM(s.start));
     expect(starts).toEqual(["09:00", "09:30", "10:00", "10:30"]);
@@ -172,7 +179,7 @@ describe("computeAvailableSlots", () => {
       ...base,
       timeMin: iso("09:00"),
       timeMax: iso("18:00"),
-      scheduleWindows: officeHours,
+      schedule: sch(officeHours),
     });
     const starts = slots.map((s) => localHM(s.start));
     // 09:00 → 17:30 in 30-min steps: all 18 slots present, in order (last is 17:30+30=18:00).
@@ -204,7 +211,7 @@ describe("computeAvailableSlots", () => {
         ...base,
         timeMin: iso("12:00"),
         timeMax: iso("09:00"),
-        scheduleWindows: officeHours,
+        schedule: sch(officeHours),
       }),
     ).toEqual([]);
   });
@@ -222,7 +229,7 @@ describe("computeAggregatedSlots", () => {
       ...base,
       timeMin: iso("09:00"),
       timeMax: iso("11:00"),
-      scheduleWindows: officeHours,
+      schedule: sch(officeHours),
       sources: [],
       maxSlots: 1000,
       ...over,

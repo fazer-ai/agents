@@ -144,6 +144,10 @@ const exportedBusinessHoursSchema = z.object({
   name: z.string(),
   timezone: z.string().optional(),
   windows: z.array(z.unknown()).optional(),
+  // Absent in exports written before date exceptions existed, which import as a schedule with none —
+  // the same schedule the source had. Omitting this field here would not fail any type check: the
+  // export would simply arrive at the destination with every holiday and shutdown silently gone.
+  exceptions: z.array(z.unknown()).optional(),
   source: z.string().optional(),
 });
 const exportedComponentsSchema = z.object({
@@ -565,6 +569,7 @@ export async function exportAgent(
               name: true,
               timezone: true,
               windows: true,
+              exceptions: true,
               source: true,
             },
           })
@@ -619,6 +624,7 @@ export async function exportAgent(
           name: r.name,
           timezone: r.timezone,
           windows: (r.windows ?? []) as unknown[],
+          exceptions: (r.exceptions ?? []) as unknown[],
           source: r.source,
         })),
       };
@@ -1044,6 +1050,9 @@ async function createMissingBusinessHours(
         ...(h.timezone ? { timezone: h.timezone } : {}),
         ...(h.windows != null
           ? { windows: h.windows as Prisma.InputJsonValue }
+          : {}),
+        ...(h.exceptions != null
+          ? { exceptions: h.exceptions as Prisma.InputJsonValue }
           : {}),
         ...(h.source ? { source: h.source } : {}),
       },

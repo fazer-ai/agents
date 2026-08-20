@@ -20,8 +20,8 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { shouldRunReset } from "@/modules/agents/test-mode";
 import {
   isOpenAt,
-  parseWindows,
-  type WindowSpec,
+  parseSchedule,
+  type Schedule,
 } from "@/modules/business-hours/hours";
 import { linkRedirectConversations } from "@/modules/channel-redirect/cross-link";
 import {
@@ -561,14 +561,14 @@ async function ingestUnhandledMessage(args: {
 // one-shot private note (postNote true only the first time, mirroring the test-mode notice). No
 // schedule / empty windows → always on (never silenced). Pure (now injected) so it is unit-testable.
 export function outOfHoursGate(
-  hours: { windows: WindowSpec[]; timezone: string } | null,
+  hours: Schedule | null,
   now: Date,
   noticeAlreadySent: boolean,
 ): { silence: boolean; postNote: boolean } {
   if (!hours || hours.windows.length === 0) {
     return { silence: false, postNote: false };
   }
-  if (isOpenAt(hours.windows, hours.timezone, now)) {
+  if (isOpenAt(hours, now)) {
     return { silence: false, postNote: false };
   }
   return { silence: true, postNote: !noticeAlreadySent };
@@ -624,7 +624,7 @@ async function maybeConsumeCommandOrGate(params: {
     let inboxChatwootId: number | null = null;
     let agentSettings: unknown = null;
     let mode = "production";
-    let hours: { windows: WindowSpec[]; timezone: string } | null = null;
+    let hours: Schedule | null = null;
     if (conv.inboxId !== null) {
       const inbox = await db.inbox.findUnique({
         where: { id: conv.inboxId },
@@ -645,14 +645,9 @@ async function maybeConsumeCommandOrGate(params: {
           if (agent.businessHoursId !== null) {
             const bh = await db.businessHours.findUnique({
               where: { id: agent.businessHoursId },
-              select: { windows: true, timezone: true },
+              select: { windows: true, exceptions: true, timezone: true },
             });
-            if (bh) {
-              hours = {
-                windows: parseWindows(bh.windows),
-                timezone: bh.timezone,
-              };
-            }
+            if (bh) hours = parseSchedule(bh);
           }
         }
       }

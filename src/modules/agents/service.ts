@@ -18,7 +18,7 @@ import {
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
-import { isOutOfHoursNow, parseWindows } from "@/modules/business-hours/hours";
+import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
@@ -192,16 +192,13 @@ export async function listAgentsPaged(
     const hoursRows = hoursIds.length
       ? await db.businessHours.findMany({
           where: { id: { in: hoursIds } },
-          select: { id: true, windows: true, timezone: true },
+          select: { id: true, windows: true, exceptions: true, timezone: true },
         })
       : [];
     const now = new Date();
     const outOfHoursById = new Map<bigint, boolean>();
     for (const h of hoursRows) {
-      outOfHoursById.set(
-        h.id,
-        isOutOfHoursNow(parseWindows(h.windows), h.timezone, now),
-      );
+      outOfHoursById.set(h.id, isOutOfHoursNow(parseSchedule(h), now));
     }
     return {
       agents: rows.map((r) => ({

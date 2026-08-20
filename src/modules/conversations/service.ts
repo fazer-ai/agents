@@ -7,9 +7,11 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadAppointmentContext } from "@/modules/appointments/context";
 import {
+  exceptionInForceAt,
   isOutOfHoursNow,
   nextOpenAt,
-  parseWindows,
+  parseSchedule,
+  type ScheduleException,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -198,14 +200,14 @@ export async function listConversations(
     const hoursRows = await runScopedOn(base, ctx, (db) =>
       db.businessHours.findMany({
         where: { id: { in: hoursIds } },
-        select: { id: true, windows: true, timezone: true },
+        select: { id: true, windows: true, exceptions: true, timezone: true },
       }),
     );
     const now = new Date();
     for (const h of hoursRows) {
       outOfHoursByHoursId.set(
         String(h.id),
-        isOutOfHoursNow(parseWindows(h.windows), h.timezone, now),
+        isOutOfHoursNow(parseSchedule(h), now),
       );
     }
   }
@@ -341,6 +343,10 @@ export interface ConversationDetail {
     hours: {
       timezone: string;
       windows: { day: number; start: string; end: string }[];
+      // The date exception in force TODAY, when one is (holiday, shutdown, half-day). Non-null means
+      // the weekly grid above is NOT what the agent is keeping right now, so the tooltip has to say
+      // so; `ranges: []` is a full closure.
+      exceptionToday: ScheduleException | null;
     } | null;
     // WhatsApp→chat redirect (channelRedirect): this conversation's inbox is the redirect's entry or
     // widget inbox, so the generic follow-up above is SUPPRESSED here (the redirect owns re-engagement
@@ -755,11 +761,11 @@ export async function getConversationDetail(
         ? await runScopedOn(base, ctx, (db) =>
             db.businessHours.findUnique({
               where: { id: hoursId },
-              select: { windows: true, timezone: true },
+              select: { windows: true, exceptions: true, timezone: true },
             }),
           )
         : null;
-    const hoursWindows = hoursRow ? parseWindows(hoursRow.windows) : [];
+    const hours = hoursRow ? parseSchedule(hoursRow) : null;
     const job = managedByRedirect
       ? null
       : await runScopedOn(base, ctx, (db) =>
@@ -808,8 +814,8 @@ export async function getConversationDetail(
         if (floor.getTime() > dueAt.getTime()) dueAt = floor;
       }
       const ungated = dueAt.getTime();
-      if (hoursRow && hoursWindows.length > 0) {
-        dueAt = nextOpenAt(hoursWindows, hoursRow.timezone, dueAt) ?? dueAt;
+      if (hours && hours.windows.length > 0) {
+        dueAt = nextOpenAt(hours, dueAt) ?? dueAt;
       }
       if (dueAt.getTime() > ungated) nextRunAtDeferred = true;
       nextRunAt = dueAt.toISOString();
@@ -841,8 +847,8 @@ export async function getConversationDetail(
       // Mirror the handler's business-hours gate: a follow-up coming due outside the configured window
       // does NOT fire then — the worker reschedules it into the next open window. Reflect that here so
       // the estimate never shows a time the follow-up can't actually fire.
-      if (hoursRow && hoursWindows.length > 0) {
-        dueAt = nextOpenAt(hoursWindows, hoursRow.timezone, dueAt) ?? dueAt;
+      if (hours && hours.windows.length > 0) {
+        dueAt = nextOpenAt(hours, dueAt) ?? dueAt;
       }
       if (dueAt.getTime() > ungated) nextRunAtDeferred = true;
       nextRunAt = dueAt.toISOString();
@@ -921,8 +927,16 @@ export async function getConversationDetail(
           }))
         : [],
       hours:
-        hoursRow && hoursWindows.length > 0
-          ? { timezone: hoursRow.timezone, windows: hoursWindows }
+        hours && hours.windows.length > 0
+          ? {
+              timezone: hours.timezone,
+              windows: hours.windows,
+              // The weekly grid alone reads as authoritative, so on a date an exception governs the
+              // panel would state hours the agent is not keeping — the same silent disagreement this
+              // whole schedule dimension exists to end. Resolved here because the local date depends
+              // on the schedule's timezone, which the browser does not share.
+              exceptionToday: exceptionInForceAt(hours, new Date()),
+            }
           : null,
       managedByRedirect,
       redirectNext,
@@ -939,15 +953,11 @@ export async function getConversationDetail(
     const bh = await runScopedOn(base, ctx, (db) =>
       db.businessHours.findUnique({
         where: { id: availId },
-        select: { windows: true, timezone: true },
+        select: { windows: true, exceptions: true, timezone: true },
       }),
     );
     if (bh) {
-      outOfHours = isOutOfHoursNow(
-        parseWindows(bh.windows),
-        bh.timezone,
-        new Date(),
-      );
+      outOfHours = isOutOfHoursNow(parseSchedule(bh), new Date());
     }
   }
 

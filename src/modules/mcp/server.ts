@@ -2205,7 +2205,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "business_hours_create",
       {
         description:
-          "Create a business-hours profile. windows is an array of { day (0-6), start (HH:mm), end (HH:mm) }. Previews and creates NOTHING unless dry_run is false.",
+          "Create a business-hours profile. windows is an array of { day (0-6), start (HH:mm), end (HH:mm) }. exceptions is an array of date overrides that REPLACE the weekly grid on the dates they match: { date (YYYY-MM-DD), dateEnd (optional, inclusive span end), recurring (optional, matches the same month-day every year), label, ranges (array of { start, end }; empty = closed all day) }. Previews and creates NOTHING unless dry_run is false.",
         inputSchema: {
           name: z.string(),
           timezone: z.string().optional(),
@@ -2218,6 +2218,19 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
               }),
             )
             .optional(),
+          exceptions: z
+            .array(
+              z.object({
+                date: z.string(),
+                dateEnd: z.string().optional(),
+                recurring: z.boolean().optional(),
+                label: z.string().optional(),
+                ranges: z.array(
+                  z.object({ start: z.string(), end: z.string() }),
+                ),
+              }),
+            )
+            .optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -2226,6 +2239,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           name: string;
           timezone?: string;
           windows?: Array<{ day: number; start: string; end: string }>;
+          exceptions?: Array<{
+            date: string;
+            dateEnd?: string;
+            recurring?: boolean;
+            label?: string;
+            ranges: Array<{ start: string; end: string }>;
+          }>;
           dry_run?: boolean;
         },
         eff,
@@ -2238,7 +2258,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "business_hours_update",
       {
         description:
-          "Update a business-hours profile (name, timezone, windows). Previews a diff and applies NOTHING unless dry_run is false.",
+          "Update a business-hours profile (name, timezone, windows, exceptions). exceptions is an array of date overrides that REPLACE the weekly grid on the dates they match: { date (YYYY-MM-DD), dateEnd (optional, inclusive span end), recurring (optional, matches the same month-day every year), label, ranges (array of { start, end }; empty = closed all day) }. Previews a diff and applies NOTHING unless dry_run is false.",
         inputSchema: {
           business_hours_id: z.string(),
           name: z.string().optional(),
@@ -2252,6 +2272,19 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
               }),
             )
             .optional(),
+          exceptions: z
+            .array(
+              z.object({
+                date: z.string(),
+                dateEnd: z.string().optional(),
+                recurring: z.boolean().optional(),
+                label: z.string().optional(),
+                ranges: z.array(
+                  z.object({ start: z.string(), end: z.string() }),
+                ),
+              }),
+            )
+            .optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -2261,6 +2294,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           name?: string;
           timezone?: string;
           windows?: Array<{ day: number; start: string; end: string }>;
+          exceptions?: Array<{
+            date: string;
+            dateEnd?: string;
+            recurring?: boolean;
+            label?: string;
+            ranges: Array<{ start: string; end: string }>;
+          }>;
           dry_run?: boolean;
         },
         eff,

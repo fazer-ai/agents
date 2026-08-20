@@ -8,8 +8,9 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { hasLiveAppointment } from "@/modules/appointments/reminders";
 import {
   isOpenAt,
+  NEXT_OPEN_SCAN_DAYS,
   nextOpenAt,
-  parseWindows,
+  parseSchedule,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
@@ -288,7 +289,7 @@ export async function followUpHandler(
     const hours = hoursId
       ? await db.businessHours.findUnique({
           where: { id: hoursId },
-          select: { windows: true, timezone: true },
+          select: { windows: true, exceptions: true, timezone: true },
         })
       : null;
     return { conv, followUpCfg, hours, armedAt: agent.followUpArmedAt };
@@ -366,11 +367,21 @@ export async function followUpHandler(
   // Business hours: reschedule into the next open window rather than messaging out of hours (same
   // payload — the step index is preserved).
   if (ctx.hours) {
-    const windows = parseWindows(ctx.hours.windows);
+    const hours = parseSchedule(ctx.hours);
     const now = new Date();
-    if (windows.length > 0 && !isOpenAt(windows, ctx.hours.timezone, now)) {
-      const next = nextOpenAt(windows, ctx.hours.timezone, now);
+    if (hours.windows.length > 0 && !isOpenAt(hours, now)) {
+      const next = nextOpenAt(hours, now);
       if (next) return { outcome: "reschedule", runAt: next };
+      // Nothing opens within the scan horizon — a schedule closed for a year, which before date
+      // exceptions could not be expressed at all (a weekly grid always repeats inside the scan). The
+      // sequence still ends, because there is no instant to defer to; what changes is that it says so.
+      // A nudge that vanishes silently is the same invisible failure the exceptions exist to remove.
+      logger.warn(
+        "followUpHandler: schedule never opens within %d days — ending the sequence at step %d (thread=%s)",
+        NEXT_OPEN_SCAN_DAYS,
+        stepIndex,
+        threadId,
+      );
       return { outcome: "done" };
     }
   }

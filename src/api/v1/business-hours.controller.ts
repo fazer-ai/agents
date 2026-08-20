@@ -38,6 +38,44 @@ const windowSchema = t.Object({
   }),
 });
 
+// A span of the local day inside a date exception. No `day`: the exception's date already fixes it.
+const rangeSchema = t.Object({
+  start: t.String({
+    description:
+      'Range start time as "HH:mm" (24-hour, in the schedule timezone).',
+  }),
+  end: t.String({
+    description:
+      'Range end time as "HH:mm" (24-hour, in the schedule timezone).',
+  }),
+});
+
+const exceptionSchema = t.Object({
+  date: t.String({
+    description:
+      'Calendar date the exception applies to, "YYYY-MM-DD". With recurring, only the month and day are compared.',
+  }),
+  dateEnd: t.Optional(
+    t.String({
+      description:
+        'Inclusive last date of the span, "YYYY-MM-DD". Under recurring, a month-day before the start wraps the year end (e.g. Dec 23 through Jan 2).',
+    }),
+  ),
+  recurring: t.Optional(
+    t.Boolean({
+      description:
+        "Match the same month-day every year. Only for fixed-date holidays; movable ones (Carnival, Good Friday) need a dated entry per year.",
+    }),
+  ),
+  label: t.Optional(
+    t.String({ description: "Operator-facing name, e.g. Independence Day." }),
+  ),
+  ranges: t.Array(rangeSchema, {
+    description:
+      "Hours in force on the matched dates, REPLACING the weekly windows. Empty = closed all day.",
+  }),
+});
+
 const writeBody = t.Object({
   name: t.Optional(
     t.String({ description: "Human-readable name of the schedule." }),
@@ -51,6 +89,12 @@ const writeBody = t.Object({
   windows: t.Optional(
     t.Array(windowSchema, {
       description: "Open windows that define the schedule.",
+    }),
+  ),
+  exceptions: t.Optional(
+    t.Array(exceptionSchema, {
+      description:
+        "Date exceptions (holidays, shutdowns, half-days) that replace the weekly windows on the dates they match.",
     }),
   ),
 });

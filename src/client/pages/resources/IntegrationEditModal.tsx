@@ -74,12 +74,14 @@ function toScheduleOption(h: {
   id: string;
   name: string;
   windows?: unknown;
+  exceptions?: unknown;
   timezone: string;
 }): ScheduleOption {
   return {
     id: String(h.id),
     name: h.name,
     windows: (h.windows ?? []) as ScheduleOption["windows"],
+    exceptions: (h.exceptions ?? []) as ScheduleOption["exceptions"],
     timezone: h.timezone,
   };
 }

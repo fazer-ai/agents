@@ -1,6 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Elysia } from "elysia";
-import { clientKeyFor, rateLimitMiddleware } from "@/api/middlewares/rateLimit";
+import {
+  clientKeyFor,
+  isRegisterRequest,
+  rateLimitMiddleware,
+  registerRateLimitMiddleware,
+} from "@/api/middlewares/rateLimit";
 
 // NOTE: tests/setup.ts captures Bun's native Response before happy-dom replaces it globally, and
 // Bun.serve does not recognize the spec one. Restored for the duration of this file only, the same
@@ -103,5 +108,69 @@ describe("rate-limit keying (client address, not the socket peer)", () => {
       statuses.push(res.status);
     }
     expect(statuses).toEqual([200, 200, 429]);
+  });
+});
+
+// Which requests the DCR limiter covers. The budget is 10/min because an open DCR endpoint lets
+// anyone mint OAuth client rows, so a spelling that routes but escapes the limiter is the whole
+// limiter: measured before the fix, 14 registrations through `/register/` under that ceiling, every
+// one a 200 and none carrying a `RateLimit-*` header.
+describe("the DCR limiter covers every spelling that routes", () => {
+  const post = (path: string) =>
+    new Request(`http://localhost${path}`, { method: "POST" });
+
+  test("the trailing slash is the same request", () => {
+    expect(isRegisterRequest(post("/api/v1/mcp/oauth/register"))).toBe(true);
+    expect(isRegisterRequest(post("/api/v1/mcp/oauth/register/"))).toBe(true);
+  });
+
+  // The rest of the alias space, measured server-side with `curl --path-as-is`: every one of these
+  // 404s, so covering them would only spend the registration budget on requests that never register.
+  // `./` is absent on purpose: the URL parser collapses it before this sees it, so it arrives as the
+  // canonical spelling and is already covered by the case above.
+  test("spellings that do not route are left to the global limit", () => {
+    for (const alias of [
+      "//api/v1/mcp/oauth/register",
+      "/api//v1/mcp/oauth/register",
+      "/api/v1/mcp/oauth/register//",
+      "/api/v1/mcp/oauth/regist%65r",
+      "/API/v1/mcp/oauth/register",
+    ]) {
+      expect(isRegisterRequest(post(alias))).toBe(false);
+    }
+  });
+
+  // A 404 spends whatever budget covers it, so a crawler doing GET on this path would otherwise burn
+  // the registration budget for every client sharing that address. The path only exists as POST.
+  test("only POST is covered, since only POST registers", () => {
+    for (const method of ["GET", "PUT", "DELETE", "HEAD"]) {
+      const request = new Request(
+        "http://localhost/api/v1/mcp/oauth/register",
+        { method },
+      );
+      expect(isRegisterRequest(request)).toBe(false);
+    }
+  });
+
+  // End to end, through the real middleware: the two spellings share ONE bucket. Reading this as two
+  // buckets, or as one that the slashed spelling never touches, is the bug.
+  test("exhausting through the slashed spelling rejects the canonical one", async () => {
+    const app = new Elysia()
+      .use(registerRateLimitMiddleware())
+      .post("/api/v1/mcp/oauth/register", () => ({ ok: true }));
+    const listening = app.listen(0) as unknown as ListeningApp;
+    if (!listening.server?.port) throw new Error("Failed to start test server");
+    servers.push(listening.server);
+    const send = (path: string) =>
+      Bun.fetch(`http://localhost:${listening.server.port}${path}`, {
+        method: "POST",
+      });
+
+    const statuses: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      statuses.push((await send("/api/v1/mcp/oauth/register/")).status);
+    }
+    expect(statuses.every((status) => status === 200)).toBe(true);
+    expect((await send("/api/v1/mcp/oauth/register")).status).toBe(429);
   });
 });

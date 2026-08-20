@@ -411,12 +411,64 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
     }) as unknown as PrismaClient;
     const health = await readGuardrailHealth(ctx(tenantA), late, SINCE, racing);
     expect(injected).toBe(true);
+    expect(health.failures).toBe(1);
     // One or the other, never a mix: the count must not include a failure newer than the one it is
     // reporting, or the panel reads "2 failures, the most recent 20 minutes ago" while the newest is
     // a minute old and said something else.
     expect(health.failures).toBe(1);
     expect(health.lastError).toBe("the one that was read");
     expect(health.lastAt).toBe(ago(20).toISOString());
+  });
+
+  // Same interleaving, same millisecond. createdAt is a TIMESTAMP(3), so a burst lands several
+  // failures inside one, and the row that commits mid-read is then NEWER by the ordering this module
+  // uses (createdAt, then id) while carrying the same timestamp. A count cut on the timestamp alone
+  // readmits it and reports a failure the message is not describing.
+  test("a mid-read failure in the same millisecond is not counted either", async () => {
+    const tied = (
+      await suDb.agent.create({
+        data: {
+          tenantId: tenantA,
+          name: "Tied",
+          systemPrompt: "x",
+          modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        },
+        select: { id: true },
+      })
+    ).id;
+    const at = ago(20);
+    const row = (msg: string) => ({
+      tenantId: tenantA,
+      turnId: "g13",
+      agentId: tied,
+      stage: "guardrail",
+      level: "warn",
+      status: "error",
+      source: "inbox",
+      errorMessage: msg,
+      createdAt: at,
+    });
+    await suDb.executionLog.create({ data: row("the one that was read") });
+    let injected = false;
+    const racing = appDb.$extends({
+      query: {
+        executionLog: {
+          count: async ({ args, query }) => {
+            if (!injected) {
+              injected = true;
+              await suDb.executionLog.create({
+                data: row("same millisecond, higher id"),
+              });
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const health = await readGuardrailHealth(ctx(tenantA), tied, SINCE, racing);
+    expect(injected).toBe(true);
+    expect(health.failures).toBe(1);
+    expect(health.lastError).toBe("the one that was read");
   });
 
   test("RLS: a tenant only ever reads its own agent's failures", async () => {

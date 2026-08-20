@@ -90,11 +90,22 @@ export async function readGuardrailHealth(
     const last = await db.executionLog.findFirst({
       where,
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      select: { createdAt: true, errorMessage: true },
+      select: { id: true, createdAt: true, errorMessage: true },
     });
     if (!last) return { failures: 0, lastAt: null, lastError: null };
+    // The cut is the keyset the ordering above defines, (createdAt, id), not the timestamp alone.
+    // createdAt is a TIMESTAMP(3), so a burst puts several failures in the same millisecond, and a
+    // bound of `createdAt <= last.createdAt` would readmit a row that this very ordering calls
+    // NEWER than the one being quoted: the count would then be reporting a failure the message is
+    // not describing.
     const failures = await db.executionLog.count({
-      where: { ...where, createdAt: { gte: since, lte: last.createdAt } },
+      where: {
+        ...where,
+        OR: [
+          { createdAt: { gte: since, lt: last.createdAt } },
+          { createdAt: last.createdAt, id: { lte: last.id } },
+        ],
+      },
     });
     return {
       failures,

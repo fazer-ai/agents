@@ -175,6 +175,38 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect(mineIds).toEqual([compaction]);
   });
 
+  // The exclusion has to happen in the CLAIM, not after it: a row left PENDING is protected by the
+  // very CAS that would otherwise let a handler still running complete a newer arm (both are guarded
+  // on id + CLAIMED).
+  test("an excluded id is left PENDING, not claimed", async () => {
+    const busy = await enqueueJob({
+      tenantId,
+      kind: "MEMORY_COMPACT",
+      dedupeKey: "dk-lane-busy",
+      runAt: past(),
+      base: appDb,
+    });
+    const free = await enqueueJob({
+      tenantId,
+      kind: "MEMORY_COMPACT",
+      dedupeKey: "dk-lane-free",
+      runAt: past(),
+      base: appDb,
+    });
+
+    const claimed = await claimDueCompactionJobs(
+      50,
+      appDb,
+      new Date(),
+      tenantId,
+      [busy],
+    );
+    const ids = claimed.map((j) => j.id);
+    expect(ids).toContain(free);
+    expect(ids).not.toContain(busy);
+    expect((await statusOf(busy)).status).toBe("PENDING");
+  });
+
   test("claim → complete", async () => {
     const id = await enqueueJob({
       tenantId,

@@ -45,18 +45,23 @@ export function defaultBatchSize(): number {
   return Math.max(1, Math.floor(config.agent.modelConcurrency / 4));
 }
 
-// The rows this process is executing RIGHT NOW, by job id. `enqueueJob` re-arms by upserting the
-// same physical row back to PENDING, status and all, so a new attendance arming this key while its
-// summary is still running makes the row claimable again — and the next tick would run a SECOND
-// handler on it. Both would cut overlapping raw prefixes and write two durable summaries with
-// different last-message ids, so the memory head describes the same events twice; the older handler
-// would also complete or fail a row the newer claim owns (both are guarded only by id + CLAIMED).
+// The rows this process is executing RIGHT NOW, excluded from the CLAIM ITSELF rather than filtered
+// after it. `enqueueJob` re-arms by upserting the same physical row back to PENDING, status and all,
+// so a new attendance arming this key while its summary is still running makes the row claimable
+// again. Claiming it a second time is what does the damage, in both directions: a second handler
+// cuts an overlapping raw prefix and writes a second durable summary under a different last-message
+// id (the memory head then describes the same events twice), and the handler still running completes
+// the newer arm out from under it, since both are guarded only by id + CLAIMED — after which no
+// future boundary re-arms that attendance and it is never compacted.
+//
+// Never claimed, that same CAS becomes the protection: the stale completion does not match a PENDING
+// row, the re-arm survives, and the next tick picks it up once its owner is done.
 //
 // Per-process, which is what these workers already are by construction (single replica, globalThis
 // singleton). The general form — any kind, any handler — needs a claim generation on the row and is
-// tracked separately; this closes the window that is wide, because only this kind holds a claim for
-// up to a minute while every attendance boundary re-arms it.
-const inFlight = new Set<string>();
+// not this PR's to fix; this closes the window that is wide, because only this kind holds a claim
+// for up to a minute while every attendance boundary re-arms it.
+const inFlight = new Set<bigint>();
 
 export interface CompactionTickDeps {
   claim?: typeof claimDueCompactionJobs;
@@ -80,29 +85,20 @@ export async function runCompactionTick(
     undefined,
     "MEMORY_COMPACT",
   );
-  const jobs = await claim(batchSize, base);
-  // A row already executing here is LEFT ALONE — not run, and not pushed back to PENDING either,
-  // which would only re-create the double claim one tick later. Its owner decides its fate, and the
-  // reaper above re-pends it if that owner dies.
-  const mine = jobs.filter((job) => !inFlight.has(String(job.id)));
-  const skipped = jobs.length - mine.length;
-  if (skipped > 0) {
-    logger.info(
-      "compaction: %d job(s) already running in this process, left to their owner",
-      skipped,
-    );
-  }
-  for (const job of mine) inFlight.add(String(job.id));
+  const jobs = await claim(batchSize, base, new Date(), undefined, [
+    ...inFlight,
+  ]);
+  for (const job of jobs) inFlight.add(job.id);
   // allSettled: runClaimed never re-throws (it fails the job internally), but a stray throw must not
   // stall the tick.
   await Promise.allSettled(
-    mine.map((job) =>
+    jobs.map((job) =>
       Promise.resolve(run(job, base)).finally(() => {
-        inFlight.delete(String(job.id));
+        inFlight.delete(job.id);
       }),
     ),
   );
-  return { claimed: mine.length, reaped: reaped.length };
+  return { claimed: jobs.length, reaped: reaped.length };
 }
 
 interface Holder {

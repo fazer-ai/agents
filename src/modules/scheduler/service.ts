@@ -137,10 +137,20 @@ async function claimWhere(
   now: Date,
   kindFilter: Prisma.Sql,
   tenantId?: bigint,
+  // Rows this process is already executing. They must not be CLAIMED again: `enqueueJob` re-arms by
+  // upserting the same physical row back to PENDING, and claiming it a second time is what lets the
+  // handler still running complete the newer arm out from under it (both are guarded on
+  // id + CLAIMED). Left PENDING, that same CAS is what PROTECTS it — the stale completion simply
+  // does not match — and the row is claimed on a later tick, once its owner is done.
+  excludeIds?: bigint[],
 ): Promise<ClaimedJob[]> {
   const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
   const tenantClause =
     tenantId != null ? Prisma.sql`AND tenant_id = ${tenantId}` : Prisma.empty;
+  const excludeClause =
+    excludeIds && excludeIds.length > 0
+      ? Prisma.sql`AND id NOT IN (${Prisma.join(excludeIds)})`
+      : Prisma.empty;
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.$queryRaw<
       Array<{
@@ -155,7 +165,7 @@ async function claimWhere(
       WHERE id IN (
         SELECT id FROM scheduler_jobs
         WHERE status = 'PENDING' AND run_at <= ${now} AND ${kindFilter}
-          ${tenantClause}
+          ${tenantClause} ${excludeClause}
         ORDER BY run_at
         FOR UPDATE SKIP LOCKED
         LIMIT ${lim}
@@ -216,6 +226,7 @@ export function claimDueCompactionJobs(
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
   tenantId?: bigint,
+  excludeIds?: bigint[],
 ): Promise<ClaimedJob[]> {
   return claimWhere(
     limit,
@@ -223,6 +234,7 @@ export function claimDueCompactionJobs(
     now,
     Prisma.sql`kind = 'MEMORY_COMPACT'`,
     tenantId,
+    excludeIds,
   );
 }
 

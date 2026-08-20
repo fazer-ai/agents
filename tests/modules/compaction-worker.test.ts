@@ -115,23 +115,35 @@ describe("runCompactionTick", () => {
   });
 
   // `enqueueJob` re-arms by upserting the SAME physical row back to PENDING, status included, so a
-  // new attendance arming this key mid-summary makes the row claimable again. A second handler on it
-  // cuts an overlapping raw prefix and writes a second durable summary under a different
-  // last-message id — the memory head then describes the same events twice — and the older handler
-  // also completes or fails a row the newer claim owns.
-  test("a row already running here is not run a second time", async () => {
+  // new attendance arming this key mid-summary makes the row claimable again. Claiming it a second
+  // time is what does the damage in BOTH directions: a second handler cuts an overlapping prefix and
+  // writes a duplicate durable summary, and the handler still running completes the newer arm out
+  // from under it (both guarded only by id + CLAIMED), after which that attendance is never
+  // compacted. So the id is excluded from the CLAIM, not filtered after it — left PENDING, the same
+  // CAS is what protects the re-arm.
+  test("a row running here is excluded from the claim, not claimed and dropped", async () => {
+    const excluded: bigint[][] = [];
     const started: bigint[] = [];
     let release!: () => void;
     const gate = new Promise<void>((r) => {
       release = r;
     });
+    const claim = async (
+      _limit: number,
+      _base?: PrismaClient,
+      _now?: Date,
+      _tenant?: bigint,
+      excludeIds?: bigint[],
+    ) => {
+      excluded.push(excludeIds ?? []);
+      // The row is only handed out when the caller did not exclude it.
+      return (excludeIds ?? []).includes(7n) ? [] : [job(7)];
+    };
     const run = async (j: ClaimedJob) => {
       started.push(j.id);
       await gate;
     };
-    const claim = async () => [job(7)];
 
-    // First tick claims and starts it; it is still running when the second tick claims the same row.
     const first = runCompactionTick(base, 20, {
       claim,
       run,
@@ -143,13 +155,16 @@ describe("runCompactionTick", () => {
       run,
       reap: async () => [],
     });
+
+    // The second tick asked for everything EXCEPT the row already running, and got nothing.
+    expect(excluded[1]).toEqual([7n]);
     expect(second.claimed).toBe(0);
     expect(started).toEqual([7n]);
 
     release();
     await first;
 
-    // Once it finishes, the row is runnable again — the guard is about overlap, not a one-shot.
+    // Once its owner is done the id is released, so the row is claimable again.
     const third = await runCompactionTick(base, 20, {
       claim,
       run: async (j: ClaimedJob) => {
@@ -157,6 +172,7 @@ describe("runCompactionTick", () => {
       },
       reap: async () => [],
     });
+    expect(excluded[2]).toEqual([]);
     expect(third.claimed).toBe(1);
     expect(started).toEqual([7n, 7n]);
   });

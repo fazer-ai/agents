@@ -798,20 +798,23 @@ async function maybeConsumeCommandOrGate(params: {
   // none of them was asking it. Private notes are deliberately exempt: only the operator sees one, and
   // a note that lands after a handoff explains the silence instead of talking over anybody.
   const postPublicMessage = async (text: string): Promise<boolean> => {
-    if (!(await stillOurs())) {
-      logger.info(
-        "chatwoot: public message withheld (conv=%s) — the conversation is no longer the bot's",
-        String(conversationId),
-      );
-      return false;
-    }
+    // Inside the try, deliberately: a fence that cannot answer must report "not sent" like any other
+    // failure. Thrown, it would skip the away branch's release and burn the day it just claimed on a
+    // message the customer never got.
     try {
+      if (!(await stillOurs())) {
+        logger.info(
+          "chatwoot: public message withheld (conv=%s) — the conversation is no longer the bot's",
+          String(conversationId),
+        );
+        return false;
+      }
       const client = await personaClient();
       await client.sendMessage(conversationId, text);
       return true;
     } catch (err) {
       logger.warn(
-        "chatwoot: public message send failed (conv=%s): %s",
+        "chatwoot: public message not sent (conv=%s): %s",
         String(conversationId),
         errMsg(err),
       );

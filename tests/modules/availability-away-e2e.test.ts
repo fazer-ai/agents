@@ -151,6 +151,7 @@ async function deliverCustomerMessage(
   convId: number,
   chatwootInboxId: number,
   seq: number,
+  baseOverride?: PrismaClient,
 ): Promise<void> {
   const n = normalizeChatwootEvent({
     event: "message_created",
@@ -189,7 +190,7 @@ async function deliverCustomerMessage(
     deliveryRowId: delivery.id,
     agentBotId: 9,
     normalized: n,
-    base: appDb,
+    base: baseOverride ?? appDb,
   });
 }
 
@@ -522,6 +523,43 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
     });
     expect(after?.assigneeType).toBe(type);
     expect(after?.awayMessageSentAt).toBeNull();
+  });
+
+  // The fence answers from the database, so it can also fail to answer. Unable to tell whether the
+  // conversation is still ours, the only safe reading is "not sent": stay quiet AND give the day back,
+  // rather than burning it on a message nobody received.
+  test("an ownership read that cannot answer releases the day", async () => {
+    const convId = 9112;
+    const rowId = await seedConversation(convId, inboxWithCopyId);
+    let fenceReads = 0;
+    const brokenFence = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            // The fence's read is the narrow one: assigneeType + assigneeId + status and nothing
+            // else. The mirror also reads assigneeId, but along with the row id and its clocks.
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (sel?.assigneeId === true && Object.keys(sel).length === 3) {
+              fenceReads += 1;
+              throw new Error("ownership read exploded");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    await deliverCustomerMessage(convId, INBOX_WITH_COPY, 17, brokenFence);
+
+    // Guards the guard: if the fence stops selecting assigneeId this test must fail loudly rather
+    // than quietly stop injecting anything.
+    expect(fenceReads).toBeGreaterThan(0);
+    expect(publicOn(convId)).toEqual([]);
+    const row = await suDb.conversation.findUnique({
+      where: { id: rowId },
+      select: { awayMessageSentAt: true },
+    });
+    expect(row?.awayMessageSentAt).toBeNull();
   });
 
   // The dispatch is detached: two messages in a row can be processed by two invocations that both

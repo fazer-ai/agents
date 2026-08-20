@@ -48,3 +48,18 @@ process.env.JWT_SECRET = "test-secret-key-for-testing-only";
 // `/auth/google` regardless of the developer's local `.env` and so tests can
 // exercise the enabled-mode code path.
 process.env.GOOGLE_CLIENT_ID = "test-google-client.apps.googleusercontent.com";
+// NOTE: Force the shipped rate-limit budgets, for the same reason as the line
+// above and with one consequence worth spelling out. Two test files read a real
+// response from the real app: one identifies WHICH limiter answered by the
+// ceiling it advertises (`RateLimit-Limit: 20` is the credential bucket, 600 the
+// global one), the other measures what a rejected request costs by watching the
+// remaining budget move. All four of these are environment variables, so a
+// developer who tunes one in their `.env` would watch a correct app fail, and
+// fail with `Expected: "20", Received: "600"`, which is exactly the signature of
+// the limiter-collision regression those tests exist to catch. Pinning here, at
+// preload and before any module reads config, is what keeps that signal
+// unambiguous.
+process.env.RATE_LIMIT_USER_PER_MIN = "600";
+process.env.RATE_LIMIT_MCP_PER_MIN = "1200";
+process.env.RATE_LIMIT_CREDENTIAL_MAX = "20";
+process.env.RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES = "5";

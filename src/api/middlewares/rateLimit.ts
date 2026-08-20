@@ -102,10 +102,60 @@ export const mcpTransportRateLimitMiddleware = () =>
     skip: (request) => !isMcpTransport(request),
   });
 
-export const strictRateLimitMiddleware = () =>
+// The routes where guessing IS the attack: a password, a signup, the one-time /setup token, and the
+// invite token, which travels unauthenticated on BOTH the endpoint that consumes it and the one that
+// merely validates it.
+//
+// NOTE: matched as METHOD + path rather than a path set gated on POST, because the credential does
+// not always travel in a body. `GET /auth/invite?token=` is declared `security: []`, looks the token
+// up, and answers 200 with the invited email and role when it exists and 404 when it does not: a
+// pure oracle, and cheaper to probe than the POST that consumes the token. Pairing the method with
+// the path is what lets that one in while still keeping every OTHER GET out, which matters because a
+// 404 spends whatever budget covers it, so covering `GET /auth/login` would let a crawler or a
+// broken link burn the login budget for every client sharing that address. The bucket is keyed by
+// IP, so that cost lands on the neighbours rather than on whoever sent the GETs.
+//
+// Everything else under /auth is out on purpose. `/auth/me` is polled by the frontend on every page
+// load, so it would lock the app out of itself. `/auth/password` sits behind a session, where
+// including it would let whoever stole that session lock the owner out of changing their password.
+// `/auth/google` needs a token Google signed, which is not a thing to guess.
+//
+// NOTE: matched at the mount point, which is the root app, so the paths carry the /api prefix.
+const CREDENTIAL_ROUTES = new Set([
+  "POST /api/auth/login",
+  "POST /api/auth/signup",
+  "POST /api/auth/setup",
+  "POST /api/auth/accept-invite",
+  "GET /api/auth/invite",
+]);
+
+// NOTE: HEAD is folded into GET rather than listed, because Elysia dispatches HEAD to the GET
+// handler: measured, `HEAD /auth/invite?token=` runs the same lookup and returns the same 200/404,
+// which is the whole oracle, since HEAD leaks the status and the status is the answer. Folding it
+// here means any GET route added to the set above covers its HEAD alias automatically, instead of
+// leaving the same omission to be rediscovered. It does not widen anything else: `HEAD /auth/login`
+// resolves to `GET /auth/login`, which is not in the set, so a crawler still cannot burn the login
+// budget with it.
+export const isCredentialRequest = (request: Request): boolean => {
+  const method = request.method === "HEAD" ? "GET" : request.method;
+  return CREDENTIAL_ROUTES.has(`${method} ${canonicalPath(request)}`);
+};
+
+// A SECOND, tighter bucket on the credential endpoints, layered ON TOP of the global one rather than
+// replacing it. Deliberate: a complementary pair (the global limiter skipping what this one covers)
+// would leave these endpoints with NO limit at all the moment the two budgets collided, while
+// layering means the worst case is the global budget, which is what they have today.
+//
+// NOTE: the window is minutes, not one minute, and that is the point. A per-minute ceiling resets 60
+// times an hour, so a 10/min credential limit still allows 600 password guesses an hour against one
+// account. config.ts rejects a budget that collides with another limiter's (max, duration) or that
+// is not tighter than the global one.
+export const credentialRateLimitMiddleware = () =>
   rateLimit({
     ...sharedLimiterOptions,
-    max: 10, // 10 requests per minute
+    duration: config.rateLimit.credentialWindowMinutes * 60_000,
+    max: config.rateLimit.credentialMax,
+    skip: (request) => !isCredentialRequest(request),
   });
 
 export const staticRateLimitMiddleware = () =>
@@ -114,6 +164,19 @@ export const staticRateLimitMiddleware = () =>
     max: 1000, // 1000 requests per minute
     skip: (request) => !isStaticRequest(request),
   });
+
+// NOTE: Elysia answers a path and that path with ONE trailing slash using the same handler, so any
+// limiter that decides by comparing the raw pathname is one character away from being bypassed.
+// Shared by the two limiters that gate specific paths. Nothing else in the alias space reaches a
+// route: measured server-side with `curl --path-as-is`, a doubled slash anywhere, a trailing `//`, a
+// percent-encoded letter and a different case all 404, and `./` is collapsed by the URL parser
+// before this sees it.
+const canonicalPath = (request: Request): string => {
+  const { pathname } = new URL(request.url);
+  return pathname.length > 1 && pathname.endsWith("/")
+    ? pathname.slice(0, -1)
+    : pathname;
+};
 
 const REGISTER_PATH = "/api/v1/mcp/oauth/register";
 
@@ -133,15 +196,8 @@ const REGISTER_PATH = "/api/v1/mcp/oauth/register";
 // 404 spends this budget like anything else, so without the method check a crawler or a broken link
 // doing GET here would burn the registration budget for every client sharing that address. Those
 // still pay the global limit, which is where an unmatched route belongs.
-export const isRegisterRequest = (request: Request): boolean => {
-  if (request.method !== "POST") return false;
-  const { pathname } = new URL(request.url);
-  const canonical =
-    pathname.length > 1 && pathname.endsWith("/")
-      ? pathname.slice(0, -1)
-      : pathname;
-  return canonical === REGISTER_PATH;
-};
+export const isRegisterRequest = (request: Request): boolean =>
+  request.method === "POST" && canonicalPath(request) === REGISTER_PATH;
 
 // Tight per-IP limit dedicated to DCR self-registration (RFC 7591). When the DCR endpoint is open,
 // anyone can mint OAuth client rows, so cap it to a low rate to bound abuse / table flooding. Applies

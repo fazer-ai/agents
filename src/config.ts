@@ -39,6 +39,8 @@ const {
   SSRF_ALLOW_PRIVATE_TARGETS,
   RATE_LIMIT_USER_PER_MIN,
   RATE_LIMIT_MCP_PER_MIN,
+  RATE_LIMIT_CREDENTIAL_MAX,
+  RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES,
   TRUST_PROXY,
   TRUSTED_PROXY_HOPS,
   BUN_PUBLIC_EDITION,
@@ -90,6 +92,47 @@ const parseTrustProxy = (raw: string | undefined, envName: string): boolean => {
 
 // A hop count selects WHICH X-Forwarded-For entry is believed to be the client, so a silently
 // defaulted bad value would change who shares a bucket. Fail by name at boot instead.
+// NOTE: the upper bound is not tidiness, it is the second half of the same defect. A window that
+// `Number.isInteger` accepts can still be one the limiter cannot honour: at 1e12 minutes the
+// millisecond duration passes Date's ±8.64e15 range, and the reset lands on an invalid date exactly
+// like Infinity does. Bounding the window at a day is well past any real throttle and puts every
+// unrepresentable value on the other side of the check. The budgets are bounded for the mirror-image
+// reason: an absurd ceiling is a bucket that never trips while reading as a configured one.
+//
+// NOTE: `Number.isInteger` is what makes the rest of this safe, not `> 0`. The pattern these budgets used to
+// share (`RAW && Number(RAW) > 0 ? Number(RAW) : fallback`) accepts `Infinity`, and `1e309` parses to
+// exactly that. Measured with an infinite window: the limiter advertises `RateLimit-Reset: NaN` and
+// the bucket NEVER resets, so the endpoints it guards answer 429 permanently once the budget is
+// spent. On a max instead of a window it is the mirror image, an unlimited bucket that reads as a
+// configured one. `isInteger` refuses Infinity, NaN and fractions in one go.
+//
+// NOTE: it also throws on garbage instead of falling back. Falling back is how a typo becomes a
+// budget nobody chose, silently: same reasoning as TRUST_PROXY above, where the quiet default is the
+// strict side and guessing would mean the opposite of what the operator wrote.
+// A day. Any real throttle is orders of magnitude under this, and every window whose millisecond
+// duration Date cannot represent is orders of magnitude over it.
+const MAX_WINDOW_MINUTES = 1440;
+// Generous enough that "effectively unlimited" is still expressible, small enough that a slipped
+// exponent is caught rather than silently disabling a limiter.
+const MAX_BUDGET = 1_000_000;
+
+export const parseBudget = (
+  raw: string | undefined,
+  envName: string,
+  fallback: number,
+  consequence: string,
+  upperBound: number,
+): number => {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0 || value > upperBound) {
+    throw new Error(
+      `${envName} must be a whole number between 1 and ${upperBound} (got "${raw}"). ${consequence}`,
+    );
+  }
+  return value;
+};
+
 const parseHops = (raw: string | undefined, envName: string): number => {
   if (raw === undefined || raw.trim() === "") return 1;
   const value = Number(raw);
@@ -294,15 +337,41 @@ const config = {
   // every tool call through a single address, so the buckets must be generous. CAVEAT: everyone
   // behind one NAT counts against the same bucket. The static (1000/min) and DCR (10/min) limits are
   // fixed in the middleware.
+  //
+  // NOTE: the credential budget is the exception, and it is deliberately NOT per-minute. A
+  // per-minute ceiling resets 60 times an hour, so 10/min is 600 password guesses an hour against
+  // one account; the window is what bounds brute force, not the number. 20 per 5 minutes is 240 an
+  // hour and still absorbs a burst, which is what an office arriving at once looks like through a
+  // single NAT.
   rateLimit: {
-    userPerMin:
-      RATE_LIMIT_USER_PER_MIN && Number(RATE_LIMIT_USER_PER_MIN) > 0
-        ? Number(RATE_LIMIT_USER_PER_MIN)
-        : 600,
-    mcpPerMin:
-      RATE_LIMIT_MCP_PER_MIN && Number(RATE_LIMIT_MCP_PER_MIN) > 0
-        ? Number(RATE_LIMIT_MCP_PER_MIN)
-        : 1200,
+    userPerMin: parseBudget(
+      RATE_LIMIT_USER_PER_MIN,
+      "RATE_LIMIT_USER_PER_MIN",
+      600,
+      "It is the ceiling every request that is not static or MCP transport counts against.",
+      MAX_BUDGET,
+    ),
+    mcpPerMin: parseBudget(
+      RATE_LIMIT_MCP_PER_MIN,
+      "RATE_LIMIT_MCP_PER_MIN",
+      1200,
+      "It is the ceiling the MCP JSON-RPC transport counts against.",
+      MAX_BUDGET,
+    ),
+    credentialMax: parseBudget(
+      RATE_LIMIT_CREDENTIAL_MAX,
+      "RATE_LIMIT_CREDENTIAL_MAX",
+      20,
+      "It is how many credential attempts one address gets per window.",
+      MAX_BUDGET,
+    ),
+    credentialWindowMinutes: parseBudget(
+      RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES,
+      "RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES",
+      5,
+      "It is the window the credential budget resets on, so a value the limiter cannot turn into a date leaves those endpoints answering 429 for good.",
+      MAX_WINDOW_MINUTES,
+    ),
   },
   // NOTE: Central fazer.ai hub (app.fazer.ai) that serves operator announcements (the top banner)
   // and the "new version available" check. Empty string DISABLES all hub communication (air-gapped,
@@ -343,6 +412,74 @@ if (
     }
   }
 }
+
+// NOTE: `elysia-rate-limit` registers itself as an Elysia plugin named "elysia-rate-limit" seeded
+// with `max:duration:scoping`, so ANY TWO of the five limiters mounted in src/app.ts that share all
+// three are DEDUPLICATED by Elysia and the later one silently never mounts. Measured on 4.6.3: two
+// limiters at max=3 guarding different paths, and the path guarded by the SECOND served 4 of 4
+// requests with no `RateLimit-*` header at all and nothing logged.
+//
+// The failure is not symmetric, which is why this throws instead of warning. Whichever limiter loses
+// is the ONLY one counting its traffic, so a collision never tightens anything, it deletes a bucket.
+// It is also exactly the trap the credential budget was walking into: the DCR limiter is
+// (10, 60000, scoped) and the limiter written for the credential endpoints shipped as
+// (10, 60000, scoped) and mounted nowhere, so mounting it as written would have left those endpoints
+// with the global budget they already had, while every test and every reader said otherwise.
+export function assertLimiterBudgetsAreDistinct(
+  seeds: readonly (readonly [name: string, max: number, durationMs: number])[],
+): void {
+  for (const [nameA, maxA, durationA] of seeds) {
+    for (const [nameB, maxB, durationB] of seeds) {
+      if (nameA < nameB && maxA === maxB && durationA === durationB) {
+        throw new Error(
+          `${nameA} and ${nameB} are both ${maxA} per ${durationA / 1000}s. elysia-rate-limit seeds its plugin with max:duration:scoping, and all of these are scoped, so two limiters sharing a budget AND a window are deduplicated by Elysia: one of them silently never mounts and its traffic goes unlimited. Give them different values.`,
+        );
+      }
+    }
+  }
+}
+
+// Beyond the collision above, a credential budget that is not tighter than the global one is
+// meaningless: the same requests are counted by BOTH limiters, so the looser one never trips first.
+// Compared as rates, because the two windows differ.
+export function assertCredentialBudgetIsTighter(
+  credentialMax: number,
+  windowMinutes: number,
+  userPerMin: number,
+): void {
+  const perMinute = credentialMax / windowMinutes;
+  if (perMinute >= userPerMin) {
+    throw new Error(
+      `RATE_LIMIT_CREDENTIAL_MAX (${credentialMax} per ${windowMinutes} min = ${perMinute}/min) must be below RATE_LIMIT_USER_PER_MIN (${userPerMin}/min): the credential endpoints are counted by both limiters, so a credential budget at or above the global one never applies.`,
+    );
+  }
+}
+
+assertLimiterBudgetsAreDistinct([
+  [
+    "the global budget (RATE_LIMIT_USER_PER_MIN)",
+    config.rateLimit.userPerMin,
+    60_000,
+  ],
+  [
+    "the MCP transport budget (RATE_LIMIT_MCP_PER_MIN)",
+    config.rateLimit.mcpPerMin,
+    60_000,
+  ],
+  ["the static asset budget", 1000, 60_000],
+  ["the DCR registration budget", 10, 60_000],
+  [
+    "the credential budget (RATE_LIMIT_CREDENTIAL_MAX / _WINDOW_MINUTES)",
+    config.rateLimit.credentialMax,
+    config.rateLimit.credentialWindowMinutes * 60_000,
+  ],
+]);
+
+assertCredentialBudgetIsTighter(
+  config.rateLimit.credentialMax,
+  config.rateLimit.credentialWindowMinutes,
+  config.rateLimit.userPerMin,
+);
 
 if (config.env === "production") {
   if (config.jwtSecret === "change-me-in-production") {

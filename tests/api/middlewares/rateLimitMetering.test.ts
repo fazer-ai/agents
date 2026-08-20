@@ -120,6 +120,16 @@ describe("rate-limit metering (what a rejected request costs)", () => {
   // reads 2 the moment that ordering is undone. What a second charge DOES at the ceiling is pinned
   // separately below, on a probe small enough to reach the ceiling.
   test("a matched route that throws a 404 is charged once, not twice", async () => {
+    // NOTE: the status is asserted before the cost, because the cost alone cannot tell this case
+    // from the case where the probe route is not there at all. It is registered on the shared app
+    // singleton in beforeAll, and credentialRateLimit.test.ts runs earlier in the SAME process and
+    // has already called `listen()` on it, so the route is added to a compiled app. Elysia routes it
+    // anyway, measured alone and under the full suite, but if that ever changed the request would
+    // fall through to the SPA catch-all, spend exactly the same 1, and leave this test green while
+    // it stopped testing a matched route entirely.
+    const answered = await send("GET", "/__metering/thrown-404");
+    expect(answered.status).toBe(404);
+    expect(await answered.json()).toEqual({ error: "gone" });
     expect(await costOf(() => send("GET", "/__metering/thrown-404"))).toBe(1);
   });
 });

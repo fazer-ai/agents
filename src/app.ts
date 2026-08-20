@@ -9,6 +9,7 @@ import logger from "@/api/lib/logger";
 import { parseOrigins } from "@/api/lib/origin";
 import { localeMiddleware } from "@/api/middlewares/locale";
 import {
+  credentialRateLimitMiddleware,
   mcpTransportRateLimitMiddleware,
   rateLimitMiddleware,
   registerRateLimitMiddleware,
@@ -122,6 +123,7 @@ const app = new Elysia({
   .use(rateLimitMiddleware())
   .use(mcpTransportRateLimitMiddleware())
   .use(registerRateLimitMiddleware())
+  .use(credentialRateLimitMiddleware())
   .use(staticRateLimitMiddleware())
   // NOTE: everything the AppError handler above does not answer, registered AFTER the limiters ON
   // PURPOSE. This is the mirror image of that split: a request rejected BEFORE the handler never

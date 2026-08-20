@@ -43,6 +43,17 @@ services:
       # configured to forward the chain it received; see .env.example.
       - TRUST_PROXY=${TRUST_PROXY:-false}
       - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-1}
+      # NOTE: rate-limit ceilings, per client address. The first two are runaway guards, generous on
+      # purpose. The credential pair is the tight one: it covers login, signup, the one-time /setup
+      # token and accept-invite, and its window is minutes rather than one minute because a
+      # per-minute ceiling resets 60 times an hour. Raise RATE_LIMIT_CREDENTIAL_MAX if a shared
+      # office address trips it; the bucket is keyed by IP, so everyone behind one NAT shares it.
+      # Boot refuses a credential budget that collides with another limiter's budget+window, or that
+      # is not tighter than RATE_LIMIT_USER_PER_MIN. See .env.example.
+      - RATE_LIMIT_USER_PER_MIN=${RATE_LIMIT_USER_PER_MIN:-600}
+      - RATE_LIMIT_MCP_PER_MIN=${RATE_LIMIT_MCP_PER_MIN:-1200}
+      - RATE_LIMIT_CREDENTIAL_MAX=${RATE_LIMIT_CREDENTIAL_MAX:-20}
+      - RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES=${RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES:-5}
       # First-run: disable the /setup token in this trusted, TLS-fronted onboarding window (the
       # advisory lock still caps /setup at one admin). Set to `true` to require it.
       - SETUP_TOKEN_REQUIRED=${SETUP_TOKEN_REQUIRED:-false}

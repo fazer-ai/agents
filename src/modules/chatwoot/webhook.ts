@@ -655,6 +655,9 @@ async function maybeConsumeCommandOrGate(params: {
   // test mode). Both resolved by the caller before the mirror ran.
   command: ControlCommand | null;
   commandActive: boolean;
+  // Our persona bot on this instance, for the live ownership fence below. Null = unknown, which
+  // makes the fence stricter (a conversation owned by ANOTHER bot cannot read as ours).
+  agentBotId: number | null;
   base: PrismaClient;
 }): Promise<boolean> {
   const { tenantId, instanceId, n, command, commandActive, base } = params;
@@ -754,10 +757,54 @@ async function maybeConsumeCommandOrGate(params: {
     });
   };
 
+  // Is the conversation still the bot's, RIGHT NOW? `act` upstream was decided from the payload
+  // Chatwoot sent, so a human who took the conversation between that event and this post is invisible
+  // to it — and on a re-delivered webhook that gap is not milliseconds. The mirror applies assignment
+  // events as they arrive, so a fresh read can see the handoff the payload could not. Same fence the
+  // runtime puts before its own reply; it needs one because a model call is slow, this path needs one
+  // because being fast is not being atomic.
+  const stillOurs = async (): Promise<boolean> => {
+    const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        },
+        // assigneeId is part of the question, not decoration: without it shouldBotHandle cannot tell
+        // OUR bot from another one, and a conversation handed to a different bot reads as ours.
+        select: { assigneeType: true, assigneeId: true, status: true },
+      }),
+    );
+    return shouldBotHandle(
+      {
+        assigneeType: conv?.assigneeType ?? null,
+        assigneeId: conv?.assigneeId ?? null,
+        status: conv?.status ?? null,
+      },
+      { ourAgentBotId: params.agentBotId ?? undefined },
+    );
+  };
+
   // Returns whether the message actually left. Every caller but the away message ignores it (a failed
   // ack or redirect has nothing to undo); the away message uses it to decide whether the day it just
-  // claimed was really settled.
+  // claimed was really settled — a message the fence stopped leaves the day unclaimed, so it is still
+  // owed once the conversation comes back.
+  //
+  // The fence lives HERE, not at the away branch, because all four customer-visible posts of this gate
+  // (test-mode notice, its reminder, the redirect link, the away message) ask the same question and
+  // none of them was asking it. Private notes are deliberately exempt: only the operator sees one, and
+  // a note that lands after a handoff explains the silence instead of talking over anybody.
   const postPublicMessage = async (text: string): Promise<boolean> => {
+    if (!(await stillOurs())) {
+      logger.info(
+        "chatwoot: public message withheld (conv=%s) — the conversation is no longer the bot's",
+        String(conversationId),
+      );
+      return false;
+    }
     try {
       const client = await personaClient();
       await client.sendMessage(conversationId, text);
@@ -1364,6 +1411,7 @@ export async function processChatwootDelivery(
       n,
       command,
       commandActive,
+      agentBotId: params.agentBotId,
       base,
     });
     if (!consumed) {

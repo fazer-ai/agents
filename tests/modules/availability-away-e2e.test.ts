@@ -480,6 +480,50 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
     expect(row?.awayMessageSentAt).toBeNull();
   });
 
+  // The window the fence closes is invisible to the attribution gate upstream, because that gate
+  // believes the PAYLOAD when the payload speaks. A re-delivered event says "unassigned" while a human
+  // has since taken the conversation, and the mirror — which knows better — refuses to apply the stale
+  // state and leaves its own record standing. Reading it again, right before the customer would see
+  // anything, is the only thing between the bot and talking over a human.
+  // Both shapes of "not ours any more": a human took it, or an automation handed it to a DIFFERENT
+  // bot. The second is why the fence is told which bot we are — without that, another bot's
+  // conversation reads as ours and we post into it.
+  test.each([
+    ["a human took the conversation", 9110, "User", 4242],
+    ["another bot took the conversation", 9111, "AgentBot", 77],
+  ])("%s: the message is withheld", async (_label, convId, type, assignee) => {
+    const ahead = new Date(Date.now() + 5 * 60_000);
+    const aheadEpoch = Math.floor(ahead.getTime() / 1000);
+    const row = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: inboxWithCopyId,
+        chatwootConversationId: convId,
+        status: "pending",
+        assigneeType: type,
+        assigneeId: assignee,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        lastEventAt: ahead,
+        chatwootStatusAt: aheadEpoch,
+        chatwootAssigneeAt: aheadEpoch,
+        lastInboundAt: new Date(Date.now() - 3 * 60_000),
+      },
+      select: { id: true },
+    });
+
+    await deliverCustomerMessage(convId, INBOX_WITH_COPY, convId - 9095);
+
+    expect(publicOn(convId)).toEqual([]);
+    // The day is given back: the customer is still owed the message once the bot has the floor again.
+    const after = await suDb.conversation.findUnique({
+      where: { id: row.id },
+      select: { awayMessageSentAt: true, assigneeType: true },
+    });
+    expect(after?.assigneeType).toBe(type);
+    expect(after?.awayMessageSentAt).toBeNull();
+  });
+
   // The dispatch is detached: two messages in a row can be processed by two invocations that both
   // read the same watermark. The claim is what stops the customer seeing the message twice.
   test("the day is claimed once, so a concurrent invocation posts nothing", async () => {

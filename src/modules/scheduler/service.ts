@@ -312,10 +312,18 @@ export async function reapStaleJobs(
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
   tenantId?: bigint,
+  // Restrict the reap to one kind. A lane with its own worker reaps its OWN stale claims, because
+  // the worker flags are independent: with the scheduler disabled and that lane enabled, nothing
+  // else re-pends a row left CLAIMED by a process that died mid-job, and the dedicated tick only
+  // claims PENDING ones. Reaping the same kind from both places is harmless — the second pass finds
+  // the row already re-pended.
+  kind?: ClaimedJob["kind"],
 ): Promise<ReapedJob[]> {
   const cutoff = new Date(now.getTime() - staleMs);
   const tenantClause =
     tenantId != null ? Prisma.sql`AND tenant_id = ${tenantId}` : Prisma.empty;
+  const kindClause =
+    kind != null ? Prisma.sql`AND kind = ${kind}` : Prisma.empty;
   return asSuperAdminOn(base, async (db) => {
     const rows = await db.$queryRaw<
       Array<{
@@ -332,7 +340,7 @@ export async function reapStaleJobs(
           attempts = attempts + 1,
           claimed_at = NULL,
           updated_at = now()
-      WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause}
+      WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
       RETURNING id, tenant_id, kind, payload, attempts, status`);
     return rows.map((r) => ({
       id: r.id,

@@ -46,6 +46,7 @@ import {
 import { armDebounce, resolveDebounceConfig } from "@/modules/debounce/service";
 import { advanceHandledWatermark } from "@/modules/debounce/watermark";
 import { armCompaction } from "@/modules/memory/compact";
+import { clearContactMemory } from "@/modules/memory/reset";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { cancelPendingJob } from "@/modules/scheduler/service";
 import {
@@ -817,29 +818,26 @@ async function maybeConsumeCommandOrGate(params: {
       // wrote) or it finds the AgentThread row gone and drops the summary. The checkpointer call is a
       // separate connection, which is exactly why the advisory lock — and not the transaction — is
       // what serializes here.
+      //
+      // The order the three deletions run in is load-bearing and lives with its reasoning in
+      // src/modules/memory/reset.ts.
       await step("clear agent memory", "memória", () =>
         runScopedOn(base, sysCtx(tenantId), (db) =>
           withEntityLock(
             db,
             `ingest:${contactInboxThreadId(tenantId, instanceId, contactInboxId)}`,
             async () => {
-              const cp = await getCheckpointer();
-              await cp.deleteThread(
-                contactInboxThreadId(tenantId, instanceId, contactInboxId),
-              );
-              await db.attendanceSummary.deleteMany({
-                where: {
+              await clearContactMemory({
+                db,
+                checkpointer: await getCheckpointer(),
+                tenantId,
+                instanceId,
+                contactInboxId,
+                threadId: contactInboxThreadId(
                   tenantId,
-                  chatwootInstanceId: instanceId,
+                  instanceId,
                   contactInboxId,
-                },
-              });
-              await db.agentThread.deleteMany({
-                where: {
-                  tenantId,
-                  chatwootInstanceId: instanceId,
-                  contactInboxId,
-                },
+                ),
               });
             },
           ),

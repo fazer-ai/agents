@@ -34,6 +34,7 @@ describe("runCompactionTick", () => {
     const out = await runCompactionTick(base, 20, {
       claim: async () => jobs,
       run,
+      reap: async () => [],
     });
 
     expect(out.claimed).toBe(3);
@@ -53,6 +54,7 @@ describe("runCompactionTick", () => {
     const out = await runCompactionTick(base, 20, {
       claim: async () => jobs,
       run,
+      reap: async () => [],
     });
 
     expect(out.claimed).toBe(3);
@@ -66,8 +68,40 @@ describe("runCompactionTick", () => {
       run: async () => {
         calls += 1;
       },
+      reap: async () => [],
     });
-    expect(out).toEqual({ claimed: 0 });
+    expect(out).toEqual({ claimed: 0, reaped: 0 });
     expect(calls).toBe(0);
+  });
+
+  // The two worker flags are independent, so with the scheduler off nothing else re-pends a row left
+  // CLAIMED by a process that died mid-summary — and this tick only claims PENDING ones. That
+  // attendance would wait on a future boundary that, for a resolved conversation, may never come.
+  test("reaps its own stale claims, and only its own kind", async () => {
+    const seen: (string | undefined)[] = [];
+    const out = await runCompactionTick(
+      base,
+      20,
+      {
+        claim: async () => [],
+        run: async () => {},
+        reap: async (_stale, _base, _now, _tenant, kind) => {
+          seen.push(kind);
+          return [
+            {
+              id: 9n,
+              tenantId: 1n,
+              kind: "MEMORY_COMPACT",
+              payload: {},
+              attempts: 1,
+              status: "PENDING" as const,
+            },
+          ];
+        },
+      },
+      60_000,
+    );
+    expect(seen).toEqual(["MEMORY_COMPACT"]);
+    expect(out.reaped).toBe(1);
   });
 });

@@ -1057,6 +1057,20 @@ export interface CallbacksArgs {
   tools?: StructuredToolInterface[];
 }
 
+// `??` was wrong here, and the case it got wrong is the one the override exists for: compaction
+// passes an explicit null when the segment it summarized belongs to a conversation whose mirrored row
+// is gone (an owed backlog, a conversation deleted since). Coalescing that back to the config's own
+// conversation charges the generation to an unrelated attendance — louder than the bug the override
+// was added to fix. Omitted and explicitly-null are different answers, so they are read differently.
+function resolveUsageConversation(
+  cfg: AgentConfig,
+  args: CallbacksArgs,
+): bigint | null {
+  return args.conversationId !== undefined
+    ? args.conversationId
+    : cfg.conversationDbId;
+}
+
 export function buildCallbacks(
   cfg: AgentConfig,
   args: CallbacksArgs,
@@ -1064,7 +1078,7 @@ export function buildCallbacks(
   const usage = new UsageCapture({
     tenantId: args.tenantId,
     agentId: cfg.agentId,
-    conversationId: args.conversationId ?? cfg.conversationDbId,
+    conversationId: resolveUsageConversation(cfg, args),
     inboxId: cfg.inboxDbId,
     threadId: args.threadId,
     model: args.model ?? cfg.mc.model,
@@ -1077,7 +1091,7 @@ export function buildCallbacks(
   const langfuse = buildLangfuseHandler(cfg.langfuseCfg, {
     tenantId: args.tenantId,
     threadId: args.threadId,
-    conversationId: args.conversationId ?? cfg.conversationDbId,
+    conversationId: resolveUsageConversation(cfg, args),
     agentId: cfg.agentId,
     userId: cfg.langfuseCfg?.tenantSlug,
     turnId: args.turnId,

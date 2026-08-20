@@ -1272,6 +1272,67 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     expect(row?.conversationId).toBe(segmentIs);
   });
 
+  // The override exists to say "not the payload's conversation", and NULL is one of its answers: the
+  // segment can belong to a conversation whose mirrored row is gone (an owed backlog, a conversation
+  // deleted since). Coalescing that back to the config's own conversation charges the generation to
+  // an unrelated attendance — louder than the misattribution the override was added to fix.
+  test("a segment whose conversation row is gone is billed to nobody, not to the payload", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 5021;
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    const armedFor = 740;
+    const segmentIs = 741; // deliberately NOT mirrored
+    const openNow = 742;
+    // The PAYLOAD's conversation is mirrored, so the config carries a real conversation id — which is
+    // exactly what a coalescing override would fall back to.
+    const payloadRow = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: armedFor,
+        status: "resolved",
+        threadId: `${tenantId}:${instanceId}:${armedFor}`,
+        lastEventAt: new Date("2026-03-05T10:00:00Z"),
+      },
+      select: { id: true },
+    });
+    expect(payloadRow.id).toBeDefined();
+    await seedThread(saver, threadId, [
+      new HumanMessage({
+        content: `quanto custa? ${SEEDED_TEXT}`,
+        additional_kwargs: conversationStamp(armedFor),
+      }),
+      new AIMessage("R$ 250."),
+      new HumanMessage({
+        content: "e o horário de sábado?",
+        additional_kwargs: conversationStamp(segmentIs),
+      }),
+      new AIMessage("Temos 09h."),
+      conversationDividerMessage(openNow, "oi, voltei"),
+      new AIMessage("Oi! Como posso ajudar?"),
+    ]);
+
+    await runCompaction(
+      tenantId,
+      payload(contactInboxId, armedFor, "new_attendance"),
+      appDb,
+      {
+        checkpointer: saver,
+        makeModel: () => new UsageReportingModel(["resumo"]),
+      },
+    );
+
+    let usage = null;
+    for (let i = 0; i < 40 && !usage; i++) {
+      usage = await suDb.llmUsage.findFirst({
+        where: { tenantId, threadId, node: "memory_compact" },
+      });
+      if (!usage) await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(usage).not.toBeNull();
+    expect(usage?.conversationId).toBeNull();
+  });
+
   // cancelPendingJob only reaches a job still PENDING, so a compaction already claimed — provider
   // call in flight — outlives the /reset that ran a second ago. Writing its row anyway would restore
   // memory the operator explicitly deleted, with nothing to say where it came from.

@@ -19,7 +19,13 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-export type RedirectGateOutcome = "sent" | "silent" | "misconfigured";
+export type RedirectGateOutcome =
+  | "sent"
+  | "silent"
+  | "misconfigured"
+  // The link was composed but the sender declined to deliver it (the conversation stopped being the
+  // bot's). Distinct from "silent", which means it was not time to send: this one still owes a link.
+  | "withheld";
 
 // Cap the cloned WhatsApp message stored in the redirect token so it stays a sane single message.
 const MAX_CLONE_CHARS = 1000;
@@ -122,8 +128,10 @@ export interface RunRedirectGateParams {
   clonedMessage: string | null;
   now: Date;
   base: PrismaClient;
-  // Sends a message as the persona bot (the webhook's postAck). Reused so the reply is attributed to the bot.
-  send: (text: string) => Promise<void>;
+  // Sends a message as the persona bot (the webhook's public post). Reused so the reply is attributed
+  // to the bot. Returns whether it actually left: the caller's send can decline (a conversation taken
+  // over mid-flight) or fail, and the watermark below is what makes that difference permanent.
+  send: (text: string) => Promise<boolean>;
 }
 
 export async function runRedirectGate(
@@ -170,7 +178,16 @@ export async function runRedirectGate(
   });
   if (url === null) return "misconfigured";
 
-  await p.send(interpolateLink(cfg.redirectMessage, url));
+  // The stamp belongs to the DELIVERY, not to the attempt. `redirectSentAt` closes the one-shot and
+  // `redirectCount` spends one of `maxResends`, so stamping a link nobody received costs the lead the
+  // link outright — permanently at the default maxResends of 0.
+  if (!(await p.send(interpolateLink(cfg.redirectMessage, url)))) {
+    logger.info(
+      "channel-redirect: link withheld, watermark untouched (conv=%s)",
+      String(p.conversationId),
+    );
+    return "withheld";
+  }
 
   await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.conversation.update({

@@ -82,6 +82,9 @@ const posted: Posted[] = [];
 // Conversations whose PUBLIC posts the double rejects, and the attempts it saw.
 const failPublicFor = new Set<number>();
 const publicAttempts: number[] = [];
+// Same, for the operator's PRIVATE note: it carries its own one-shot watermark, so a note that never
+// arrived must not stamp one either.
+const failPrivateFor = new Set<number>();
 let realFetch: typeof globalThis.fetch;
 
 // The double AUTHENTICATES like Chatwoot: a client built without the persona's bot token gets the same
@@ -109,6 +112,9 @@ function installChatwootDouble(): void {
       const convId = Number(messages[1]);
       if (body.private !== true && failPublicFor.has(convId)) {
         publicAttempts.push(convId);
+        return json({ error: "boom" }, 500);
+      }
+      if (body.private === true && failPrivateFor.has(convId)) {
         return json({ error: "boom" }, 500);
       }
       posted.push({
@@ -526,6 +532,27 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
     });
     expect(after?.assigneeType).toBe(type);
     expect(after?.awayMessageSentAt).toBeNull();
+  });
+
+  // The operator's note carries the same kind of watermark as the customer's message, and the same
+  // rule applies to it: a note the API refused was not delivered, so stamping it would spend the one
+  // shot this conversation gets and leave the operator permanently unaware that the agent went quiet.
+  test("a note the API refused does not spend its one shot", async () => {
+    const convId = 9114;
+    const rowId = await seedConversation(convId, inboxWithCopyId);
+    failPrivateFor.add(convId);
+    await deliverCustomerMessage(convId, INBOX_WITH_COPY, 19);
+    expect(notesOn(convId)).toEqual([]);
+    const after = await suDb.conversation.findUnique({
+      where: { id: rowId },
+      select: { outOfHoursNoticeSentAt: true },
+    });
+    expect(after?.outOfHoursNoticeSentAt).toBeNull();
+
+    // Still owed: with the double healthy again the next message delivers it.
+    failPrivateFor.delete(convId);
+    await deliverCustomerMessage(convId, INBOX_WITH_COPY, 20);
+    expect(notesOn(convId)).toHaveLength(1);
   });
 
   // Not knowing which bot we are is not the same as being every bot. When the delivery carries no

@@ -794,10 +794,10 @@ async function maybeConsumeCommandOrGate(params: {
     );
   };
 
-  // Returns whether the message actually left. Every caller but the away message ignores it (a failed
-  // ack or redirect has nothing to undo); the away message uses it to decide whether the day it just
-  // claimed was really settled — a message the fence stopped leaves the day unclaimed, so it is still
-  // owed once the conversation comes back.
+  // Returns whether the message actually left. Whoever records that it was sent has to read this: the
+  // away message would otherwise burn the day it just claimed, and the redirect gate would close its
+  // one-shot and spend a resend on a link nobody received. The two command acks ignore it on purpose —
+  // their effect (test mode on, memory cleared) is already committed and a lost ack undoes none of it.
   //
   // The fence lives HERE, not at the away branch, because all four customer-visible posts of this gate
   // (test-mode notice, its reminder, the redirect link, the away message) ask the same question and
@@ -829,17 +829,23 @@ async function maybeConsumeCommandOrGate(params: {
   };
 
   // Private note (operator-only, invisible to the customer) posted as the persona bot. Used for the
-  // one-shot "agent is in test mode" notice on a silenced conversation.
-  const postPrivateNote = async (text: string): Promise<void> => {
+  // one-shot "agent is in test mode" and "agent is out of hours" notices on a silenced conversation.
+  // Returns whether it left, for the same reason the public post does: both notices are stamped once
+  // per conversation, and a stamp on a note that never arrived spends the only shot the operator gets.
+  // The fence does NOT apply here — a note that lands after a handoff explains the silence to whoever
+  // took over instead of talking over them.
+  const postPrivateNote = async (text: string): Promise<boolean> => {
     try {
       const client = await personaClient();
       await client.sendPrivateNote(conversationId, text);
+      return true;
     } catch (err) {
       logger.warn(
         "chatwoot: private note failed (conv=%s): %s",
         String(conversationId),
         errMsg(err),
       );
+      return false;
     }
   };
 
@@ -1066,10 +1072,12 @@ async function maybeConsumeCommandOrGate(params: {
   if (ctx.mode === "test" && ctx.conv.testActivatedAt === null) {
     // One-shot private note (operator-only) so whoever watches the inbox knows WHY the bot is quiet
     // and how to activate it. Anti-spam: posted once per conversation (testNoticeSentAt watermark).
-    if (ctx.conv.testNoticeSentAt === null) {
-      await postPrivateNote(
+    if (
+      ctx.conv.testNoticeSentAt === null &&
+      (await postPrivateNote(
         "🧪 Este agente está em modo teste. Ele não responde automaticamente nesta conversa. Envie /teste para ativar as respostas aqui.",
-      );
+      ))
+    ) {
       try {
         await runScopedOn(base, sysCtx(tenantId), (db) =>
           db.conversation.update({
@@ -1115,11 +1123,7 @@ async function maybeConsumeCommandOrGate(params: {
         clonedMessage: n.message?.content ?? null,
         now: new Date(),
         base,
-        // The redirect gate has nothing to undo on a failed send (its own resend cooldown is the
-        // retry), so the delivery flag is dropped here rather than widening its contract.
-        send: async (text: string) => {
-          await postPublicMessage(text);
-        },
+        send: postPublicMessage,
       });
       if (outcome !== "misconfigured") return true;
     }
@@ -1186,10 +1190,12 @@ async function maybeConsumeCommandOrGate(params: {
       }
     }
     // ── The operator note, unchanged: one shot per conversation, stamped after it is posted. ──
-    if (availability.postNote) {
-      await postPrivateNote(
+    if (
+      availability.postNote &&
+      (await postPrivateNote(
         "🌙 Mensagem recebida fora do horário de atendimento. O agente não respondeu automaticamente; ele volta a responder no próximo horário disponível.",
-      );
+      ))
+    ) {
       try {
         await runScopedOn(base, sysCtx(tenantId), (db) =>
           db.conversation.update({

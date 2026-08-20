@@ -113,18 +113,19 @@ let routeToken = "";
 let deliverySeq = 0;
 const originalFetch = globalThis.fetch;
 
-// Drives one /reset through the receiver and the processor, exactly as a live delivery would.
-async function sendReset(): Promise<void> {
+// Drives one incoming message through the receiver and the processor, exactly as a live delivery
+// would. Defaults to the /reset this suite is named for.
+async function sendReset(content = "/reset", convId = CONV_ID): Promise<void> {
   deliverySeq += 1;
   const nowSeconds = Math.floor(Date.now() / 1000);
   const body = JSON.stringify({
     event: "message_created",
     id: 9000 + deliverySeq,
-    content: "/reset",
+    content,
     message_type: "incoming",
     private: false,
     conversation: {
-      id: CONV_ID,
+      id: convId,
       inbox_id: INBOX_ID,
       status: "pending",
       contact_inbox: { id: 301 },
@@ -436,6 +437,59 @@ describe.skipIf(!dbUp)(
         "🔄 Memória, preferência de áudio e etiquetas/atributos desta conversa foram limpos.",
       );
       expect(text).toMatch(/atributos/i);
+    });
+
+    // The test-mode gate's private note carries a one-shot watermark, and the note is the only thing
+    // that tells whoever watches the inbox WHY the bot is silent and how to activate it. A note the
+    // API refused was never delivered, so stamping it would spend that one shot on nothing.
+    test("a test-mode notice the API refused does not spend its one shot", async () => {
+      const convId = 43;
+      const inbox = await suDb.inbox.findFirstOrThrow({
+        where: { tenantId, chatwootInboxId: INBOX_ID },
+        select: { id: true },
+      });
+      const row = await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          inboxId: inbox.id,
+          chatwootConversationId: convId,
+          contactInboxId: 302,
+          status: "pending",
+          threadId: `${tenantId}:${instanceId}:${convId}`,
+        },
+        select: { id: true },
+      });
+
+      const failing = fakeChatwoot(/\/messages$/);
+      globalThis.fetch = failing.impl;
+      await sendReset("oi, tem alguém?", convId);
+      expect(
+        (
+          await suDb.conversation.findUniqueOrThrow({
+            where: { id: row.id },
+            select: { testNoticeSentAt: true },
+          })
+        ).testNoticeSentAt,
+      ).toBeNull();
+
+      // Still owed: the next message delivers it, and only then is the shot spent.
+      const healthy = fakeChatwoot();
+      globalThis.fetch = healthy.impl;
+      await sendReset("alguém aí?", convId);
+      expect(
+        (
+          await suDb.conversation.findUniqueOrThrow({
+            where: { id: row.id },
+            select: { testNoticeSentAt: true },
+          })
+        ).testNoticeSentAt,
+      ).not.toBeNull();
+      expect(
+        healthy.calls.filter(
+          (c) => c.method === "POST" && c.path.endsWith("/messages"),
+        ),
+      ).toHaveLength(1);
     });
 
     test("a clean reset still announces the full success", async () => {

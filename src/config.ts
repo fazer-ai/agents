@@ -22,6 +22,8 @@ const {
   SCHEDULER_WORKER_ENABLED,
   SCHEDULER_WORKER_INTERVAL_MS,
   DEBOUNCE_WORKER_ENABLED,
+  COMPACTION_WORKER_ENABLED,
+  COMPACTION_WORKER_INTERVAL_MS,
   DEBOUNCE_WORKER_INTERVAL_MS,
   ALERT_WORKER_ENABLED,
   ALERT_WORKER_INTERVAL_MS,
@@ -225,6 +227,18 @@ const config = {
     intervalMs: DEBOUNCE_WORKER_INTERVAL_MS
       ? Number(DEBOUNCE_WORKER_INTERVAL_MS)
       : 2_500,
+  },
+  // NOTE: Dedicated tick that drains only MEMORY_COMPACT jobs. Separate from the scheduler for the
+  // mirror image of the debounce reason: the scheduler awaits its jobs one at a time, a summary is a
+  // model call with a 60s ceiling, and compaction fires for every agent on every closed attendance.
+  // Nothing here is time-sensitive (the resolve trigger already waits out a 15-minute grace), so the
+  // cadence matches the scheduler's rather than the fast lane's. Operational, NOT a per-agent
+  // setting; the per-agent switch is agent.settings.memory.compaction.
+  compactionWorker: {
+    enabled: COMPACTION_WORKER_ENABLED !== "false",
+    intervalMs: COMPACTION_WORKER_INTERVAL_MS
+      ? Number(COMPACTION_WORKER_INTERVAL_MS)
+      : 15_000,
   },
   // NOTE: Cadence of the periodic `heartbeat` outbound webhook (a liveness ping). Runs on the
   // scheduler worker (no separate process); a per-tenant HEARTBEAT job is armed lazily only while

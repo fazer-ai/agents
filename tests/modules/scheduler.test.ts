@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import {
+  claimDueCompactionJobs,
   claimDueJobs,
   completeJob,
   enqueueJob,
@@ -130,6 +131,48 @@ describe.skipIf(!dbUp)("scheduler", () => {
       select: { payload: true },
     });
     expect(b.payload).toEqual({ threadId: "1:2:3" });
+  });
+
+  // THE LANE SPLIT. The scheduler tick awaits its claimed jobs one at a time, so a kind that takes
+  // seconds per job holds up everything behind it. Two kinds are drained by their own workers for
+  // opposite reasons — DEBOUNCE because it must be fast, MEMORY_COMPACT because it is slow and fires
+  // for every agent on every closed attendance — and neither may be picked up here, or the split
+  // buys nothing.
+  test("the shared lane claims neither debounce nor compaction jobs", async () => {
+    const shared = await enqueueJob({
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-lane-shared",
+      runAt: past(),
+      base: appDb,
+    });
+    const debounce = await enqueueJob({
+      tenantId,
+      kind: "DEBOUNCE",
+      dedupeKey: "dk-lane-debounce",
+      runAt: past(),
+      base: appDb,
+    });
+    const compaction = await enqueueJob({
+      tenantId,
+      kind: "MEMORY_COMPACT",
+      dedupeKey: "dk-lane-compaction",
+      runAt: past(),
+      base: appDb,
+    });
+
+    const claimed = await claimDueJobs(50, appDb, new Date(), tenantId);
+    const ids = claimed.map((j) => j.id);
+    expect(ids).toContain(shared);
+    expect(ids).not.toContain(debounce);
+    expect(ids).not.toContain(compaction);
+    // Still PENDING, waiting for their own lane — not skipped, not lost.
+    expect((await statusOf(compaction)).status).toBe("PENDING");
+
+    // And the compaction lane claims that one, and only that one.
+    const mine = await claimDueCompactionJobs(50, appDb, new Date(), tenantId);
+    const mineIds = mine.map((j) => j.id);
+    expect(mineIds).toEqual([compaction]);
   });
 
   test("claim → complete", async () => {

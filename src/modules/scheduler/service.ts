@@ -186,7 +186,13 @@ export function claimDueJobs(
   now: Date = new Date(),
   tenantId?: bigint,
 ): Promise<ClaimedJob[]> {
-  return claimWhere(limit, base, now, Prisma.sql`kind <> 'DEBOUNCE'`, tenantId);
+  return claimWhere(
+    limit,
+    base,
+    now,
+    Prisma.sql`kind NOT IN ('DEBOUNCE', 'MEMORY_COMPACT')`,
+    tenantId,
+  );
 }
 
 // The fast debounce tick claims ONLY debounce jobs.
@@ -197,6 +203,27 @@ export function claimDueDebounceJobs(
   tenantId?: bigint,
 ): Promise<ClaimedJob[]> {
   return claimWhere(limit, base, now, Prisma.sql`kind = 'DEBOUNCE'`, tenantId);
+}
+
+// The compaction lane claims ONLY compaction jobs, and exists for the same reason the debounce lane
+// does — different reason, opposite direction. `runSchedulerTick` awaits its claimed jobs one at a
+// time, and a summary is a model call with a 60s ceiling. Compaction is also the first job kind that
+// fires for EVERY agent on EVERY closed attendance (it ships on by default), so a batch of them on
+// the shared lane would hold up the jobs that are actually time-sensitive — a follow-up, an
+// appointment reminder — by minutes. Its own lane keeps that arithmetic off them entirely.
+export function claimDueCompactionJobs(
+  limit: number,
+  base: PrismaClient = basePrisma,
+  now: Date = new Date(),
+  tenantId?: bigint,
+): Promise<ClaimedJob[]> {
+  return claimWhere(
+    limit,
+    base,
+    now,
+    Prisma.sql`kind = 'MEMORY_COMPACT'`,
+    tenantId,
+  );
 }
 
 // Terminal success.

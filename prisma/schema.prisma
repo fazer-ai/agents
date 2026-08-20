@@ -571,7 +571,13 @@ model AttendanceSummary {
   // ran. Compaction can run months after the fact — the boundary trigger fires only when the contact
   // comes back — and dating the memory by the job would tell the model a returning customer's
   // history happened today.
-  attendanceAt       DateTime @map("attendance_at")
+  //
+  // NULLABLE because that rule has to hold when the date cannot be read at all: with the mirrored
+  // conversation gone, `now()` is not a fallback, it is the exact lie the rule above forbids, and it
+  // would also sort the oldest attendance to the FRONT of the window the head renders. Unknown sorts
+  // last on the descending window (so it never displaces a genuinely newer entry) and renders with
+  // no date attribute.
+  attendanceAt       DateTime? @map("attendance_at")
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 

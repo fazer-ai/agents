@@ -474,7 +474,7 @@ export async function runCompaction(
             lastMessageId,
             summary,
             messageCount: cut.closed.length,
-            attendanceAt: segmentAt ?? new Date(),
+            attendanceAt: segmentAt,
           },
           update: { summary, messageCount: cut.closed.length },
         });
@@ -530,7 +530,13 @@ export async function runCompaction(
             chatwootInstanceId: instanceId,
             contactInboxId,
           },
-          orderBy: [{ attendanceAt: "desc" }, { id: "desc" }],
+          // Unknown date sorts LAST on this descending window, never first. Postgres puts NULLs
+          // first on DESC by default, which would let a row we could not date displace a genuinely
+          // newer attendance out of the twenty the head renders.
+          orderBy: [
+            { attendanceAt: { sort: "desc", nulls: "last" } },
+            { id: "desc" },
+          ],
           take: MEMORY_HEAD_MAX_ATTENDANCES,
           select: { conversationId: true, summary: true, attendanceAt: true },
         })

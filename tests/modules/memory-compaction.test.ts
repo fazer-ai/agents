@@ -1568,10 +1568,111 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     const row = await suDb.attendanceSummary.findFirst({
       where: { tenantId, contactInboxId },
     });
-    expect(row?.attendanceAt.toISOString()).toBe(longAgo.toISOString());
+    expect(row?.attendanceAt?.toISOString()).toBe(longAgo.toISOString());
     expect((await readThread(saver, threadId))[0]).toContain(
       '<atendimento data="2026-02-03">',
     );
+  });
+
+  // The other half of the same rule: with the mirrored conversation gone there is nothing to read the
+  // date OFF, and `now()` is not a neutral fallback — it is exactly the lie the test above forbids,
+  // asserted at the one moment the code cannot check itself against a seeded date.
+  test("an attendance whose mirror row is gone is stored undated, not dated today", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 5041;
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    // 7152 exists (the job was armed for it); 7082, which the closed turns are stamped with, does not.
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 7152,
+        status: "resolved",
+        threadId: `${tenantId}:${instanceId}:7152`,
+        lastEventAt: new Date(),
+      },
+    });
+    await seedThread(saver, threadId, twoAttendances(7082, 7092));
+
+    await runCompaction(
+      tenantId,
+      payload(contactInboxId, 7152, "new_attendance"),
+      appDb,
+      { checkpointer: saver, makeModel: () => new SummarizerModel("resumo") },
+    );
+
+    const row = await suDb.attendanceSummary.findFirst({
+      where: { tenantId, contactInboxId },
+    });
+    expect(row).not.toBeNull();
+    expect(row?.attendanceAt).toBeNull();
+    const head = (await readThread(saver, threadId))[0] ?? "";
+    expect(head).toContain("<atendimento>");
+    expect(head).not.toContain("data=");
+  });
+
+  // An undated row must never displace a dated one out of the window the head renders. Postgres puts
+  // NULLs FIRST on a descending sort by default, so the row we could not date would otherwise be
+  // taken as the newest of all.
+  test("an undated attendance sorts last, never ahead of a dated one", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 5042;
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    const conversationId = 6501;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conversationId,
+        status: "resolved",
+        threadId: `${tenantId}:${instanceId}:${conversationId}`,
+        lastEventAt: new Date(),
+      },
+    });
+    const total = MEMORY_HEAD_MAX_ATTENDANCES;
+    const base = Date.parse("2026-01-01T12:00:00Z");
+    // One undated row plus a full window of dated ones: the undated one is what has to fall off.
+    await suDb.attendanceSummary.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+        conversationId: 6400,
+        lastMessageId: "seed-undated",
+        summary: "atendimento sem data",
+        messageCount: 2,
+        attendanceAt: null,
+      },
+    });
+    for (let i = 0; i < total; i++) {
+      await suDb.attendanceSummary.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+          conversationId: 6410 + i,
+          lastMessageId: `seed-dated-${i}`,
+          summary: `atendimento datado ${i}`,
+          messageCount: 2,
+          attendanceAt: new Date(base + i * 3_600_000),
+        },
+      });
+    }
+    await seedThread(saver, threadId, [
+      new HumanMessage("voltei"),
+      new AIMessage("Oi! Como posso ajudar?"),
+    ]);
+
+    await runCompaction(
+      tenantId,
+      payload(contactInboxId, conversationId, "resolved"),
+      appDb,
+      { checkpointer: saver, makeModel: () => new SummarizerModel("Voltou.") },
+    );
+
+    const head = (await readThread(saver, threadId))[0] ?? "";
+    expect(head).not.toContain("atendimento sem data");
+    expect(head).toContain(`atendimento datado ${total - 1}`);
   });
 
   test("the switch is honored at execution, not only at arming time", async () => {

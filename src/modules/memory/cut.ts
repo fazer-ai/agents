@@ -111,8 +111,9 @@ export interface SummaryRow {
   summary: string;
   // When the ATTENDANCE happened, not when its summary was written. Compaction can run months after
   // the fact, and a memory dated by the job would tell the model a returning customer's history
-  // happened today.
-  attendanceAt: Date;
+  // happened today. NULL when the mirrored conversation is gone and there is nothing to read the
+  // date off: the line then renders WITHOUT a date rather than carrying a manufactured one.
+  attendanceAt: Date | null;
 }
 
 // Renders the compacted memory as the thread's first message. Ordered oldest-first, which is how the
@@ -130,6 +131,10 @@ export function renderMemoryHead(
     .map((r) => {
       const text = r.summary.replace(FENCE_TAG, "").trim();
       if (!text) return null;
+      // No date is a real answer here, and a better one than today's: the model reads this as fact,
+      // and "this happened today" about an attendance from March is worse than not saying when.
+      if (r.attendanceAt === null)
+        return `<atendimento>\n${text}\n</atendimento>`;
       const date = formatWithPattern(r.attendanceAt, timezone, "YYYY-MM-DD");
       return `<atendimento data="${date}">\n${text}\n</atendimento>`;
     })

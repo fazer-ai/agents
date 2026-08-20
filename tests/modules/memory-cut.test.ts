@@ -289,6 +289,35 @@ describe("renderMemoryHead", () => {
     );
   });
 
+  // A date we do not have is not today's. The mirrored conversation can be gone by the time the
+  // backlog compacts, and "this happened today" about an attendance from March is read by the model
+  // as fact, in every prompt from then on.
+  test("an attendance with no known date renders without one", () => {
+    const undated = {
+      conversationId: 7,
+      summary: "Cliente pediu segunda via do boleto.",
+      attendanceAt: null,
+    };
+    const text = String(renderMemoryHead([undated], "UTC")?.content);
+    expect(text).toContain("<atendimento>");
+    expect(text).toContain("Cliente pediu segunda via do boleto.");
+    expect(text).not.toContain("data=");
+  });
+
+  test("a known date is untouched by the undated case", () => {
+    const text = String(
+      renderMemoryHead(
+        [
+          { conversationId: 7, summary: "sem data", attendanceAt: null },
+          row(1, "com data"),
+        ],
+        "UTC",
+      )?.content,
+    );
+    expect(text).toContain("<atendimento>\nsem data\n</atendimento>");
+    expect(text).toContain('<atendimento data="2026-08-11">');
+  });
+
   // The summary is model output derived from customer text. If it could close the fence, one
   // attendance's memory could dictate how the rest of the block is read.
   test("a summary cannot close or forge the fence", () => {

@@ -11,7 +11,7 @@ CREATE TABLE "attendance_summaries" (
     "last_message_id" TEXT NOT NULL,
     "summary" TEXT NOT NULL,
     "message_count" INTEGER NOT NULL,
-    "attendance_at" TIMESTAMP(3) NOT NULL,
+    "attendance_at" TIMESTAMP(3),
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 

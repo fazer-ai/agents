@@ -26,9 +26,50 @@ describe("runCompactionTick", () => {
   // The summarizer takes permits from the SAME semaphore a customer's turn does, so a batch sized at
   // the whole model budget lets compaction hold every one of them and a turn that just arrived waits
   // behind summaries. Nobody waits on this lane; somebody always waits on the other.
-  test("the default batch leaves model capacity for customer turns", () => {
+  //
+  // Asserted ACROSS budgets, not only at the default: the invariant is "strictly less than the
+  // budget", and the setting that breaks it is the small one. A floor of 1 reads as harmless at 20
+  // and is 100% of the permits at 1, which src/config.ts accepts.
+  test.each([
+    [1, 0],
+    [2, 1],
+    [3, 1],
+    [4, 1],
+    [8, 2],
+    [20, 5],
+    [40, 10],
+  ])("budget %d gives a batch of %d", (budget, expected) => {
+    expect(defaultBatchSize(budget)).toBe(expected);
+    expect(defaultBatchSize(budget)).toBeLessThan(budget);
+  });
+
+  test("the configured default never takes the whole model budget", () => {
     expect(defaultBatchSize()).toBeLessThan(config.agent.modelConcurrency);
-    expect(defaultBatchSize()).toBeGreaterThanOrEqual(1);
+  });
+
+  // Batch 0 is the budget-of-1 case: the lane stands down rather than taking the only permit. It
+  // still reaps, because a row left CLAIMED before the budget was lowered has no other reaper.
+  test("a batch of 0 claims nothing and still reaps", async () => {
+    let claimed = false;
+    const out = await runCompactionTick(base, 0, {
+      claim: async () => {
+        claimed = true;
+        return [job(1)];
+      },
+      run: async () => {},
+      reap: async () => [
+        {
+          id: 9n,
+          tenantId: 1n,
+          kind: "MEMORY_COMPACT" as const,
+          payload: {},
+          attempts: 1,
+          status: "PENDING" as const,
+        },
+      ],
+    });
+    expect(claimed).toBe(false);
+    expect(out).toEqual({ claimed: 0, reaped: 1 });
   });
 
   test("drains the claimed batch concurrently, not serially", async () => {

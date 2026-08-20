@@ -41,8 +41,18 @@ const DEFAULT_STALE_MS = 5 * 60_000;
 // sized at that budget lets compaction hold every permit and a turn that just arrived waits behind
 // summaries — up to their 60s ceiling. Nobody is waiting on this lane; somebody is always waiting on
 // the other one, which is the whole reason the two are separated at all.
-export function defaultBatchSize(): number {
-  return Math.max(1, Math.floor(config.agent.modelConcurrency / 4));
+//
+// "Never the whole of it" is the part that has to survive a small budget, and a floor of 1 is exactly
+// what breaks it: AGENT_MODEL_CONCURRENCY=1 is accepted (src/config.ts), and a batch of 1 is then
+// 100% of the permits, held for up to the 60s a summary can take, by a lane whose entire purpose is
+// to never be in a customer's way. So the quarter is capped at budget-1, which is 0 at a budget of 1:
+// at that setting the lane cannot run without taking the only permit there is, so it does not run.
+// Said out loud at boot (startCompactionWorker) rather than left as a queue that silently never
+// drains — an operator who set the budget to 1 has to be able to see why memory stopped compacting.
+export function defaultBatchSize(
+  budget: number = config.agent.modelConcurrency,
+): number {
+  return Math.min(Math.max(1, Math.floor(budget / 4)), Math.max(0, budget - 1));
 }
 
 // The rows this process is executing RIGHT NOW, excluded from the CLAIM ITSELF rather than filtered
@@ -78,6 +88,8 @@ export async function runCompactionTick(
   const claim = deps.claim ?? claimDueCompactionJobs;
   const run = deps.run ?? runClaimed;
   const reap = deps.reap ?? reapStaleJobs;
+  // The reap runs even with nothing to claim: a row this process left CLAIMED before the budget was
+  // lowered would otherwise stay claimed forever, and this lane is the only reaper of its own kind.
   const reaped = await reap(
     staleMs,
     base,
@@ -85,6 +97,7 @@ export async function runCompactionTick(
     undefined,
     "MEMORY_COMPACT",
   );
+  if (batchSize <= 0) return { claimed: 0, reaped: reaped.length };
   const jobs = await claim(batchSize, base, new Date(), undefined, [
     ...inFlight,
   ]);
@@ -128,6 +141,12 @@ export function startCompactionWorker(opts: StartOptions = {}): () => void {
   const intervalMs = opts.intervalMs ?? config.compactionWorker.intervalMs;
   const batchSize = opts.batchSize ?? defaultBatchSize();
   const staleMs = opts.staleMs ?? DEFAULT_STALE_MS;
+  if (batchSize <= 0) {
+    logger.warn(
+      "compaction lane idle: agent.modelConcurrency=%d leaves no model capacity a customer turn is not already waiting on. Closed attendances will not be compacted at this setting.",
+      config.agent.modelConcurrency,
+    );
+  }
   h.timer = setInterval(() => {
     if (h.running) return;
     h.running = true;

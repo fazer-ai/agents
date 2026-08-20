@@ -5,6 +5,16 @@
 Guia detalhado por subsistema vive em [`docs/`](docs/); as seções abaixo cobrem o que não cabe lá ou que você deve manter em memória de trabalho.
 
 
+## Uma PR fecha uma issue, e issue que nenhuma PR fecha está errada
+
+Toda PR sai com `Fixes #N`. O par é o teste de granularidade dos dois lados: se você não consegue apontar a issue que **esta** PR fecha, ou a PR está fazendo mais de uma coisa, ou a issue está pedindo mais de uma.
+
+Quando é a issue que não cabe, **reescrevê-la é parte do trabalho e vem antes do código**: uma issue com três entregáveis vira três issues, cada uma com o seu `Fixes`. Trocar por `Refs` e seguir em frente é o que produz a issue que ninguém consegue fechar, aberta pela metade e sem conseguir dizer o que falta.
+
+Isso é mais estrito do que o [`CONTRIBUTING.md`](CONTRIBUTING.md) pede de quem contribui de fora, e de propósito: lá a orientação é sobre como escrever uma issue, e uma PR sem issue continua bem-vinda; aqui vale para quem também escreve as issues.
+
+Quando de fato não couber, isso aparece pela necessidade concreta e se resolve ali. Não há lista de exceções, e não é esquecimento: a lista é o caminho pelo qual um default vira sugestão.
+
 ## Subsystem docs
 
 - [`docs/ui.md`](docs/ui.md): the operator console screen map (Dashboard KPIs, Conversations + detail, the progressive-disclosure Agent editor, Building blocks pools, Channels), the shared primitives (Select/Textarea/Switch/Tabs/FormField/ConfirmDialog/DataBoundary/EmptyState/Skeleton), the tool-selection grant model (replace-the-set; NATIVE/RAG semantics), and the i18n/extract gotchas (auto-added pt-BR keys need translating; conflicting defaults fail extract; `noJsxLiterals.allowedStrings`). Read before adding or changing any screen or client primitive.

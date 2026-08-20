@@ -18,6 +18,7 @@ Isso muda pouco para quem contribui, mas explica duas coisas:
 
 - Procure issues existentes (abertas e fechadas) antes de abrir uma nova.
 - Para bugs, inclua: passos de reprodução, comportamento esperado, comportamento observado e logs relevantes. Issues como a [#2](https://github.com/fazer-ai/agents/issues/2) são um bom modelo.
+- **Uma issue, uma coisa.** Dimensione a issue para que uma única pull request consiga fechá-la. Trabalho que se divide em várias pull requests são várias issues: issue que ninguém consegue fechar é issue que ninguém consegue terminar, e ela para de conseguir dizer o que falta. Isso é sobre como escrever uma, não uma exigência de que toda pull request tenha issue.
 - **Vulnerabilidades de segurança não vão em issue pública:** escreva para [support@fazer.ai](mailto:support@fazer.ai).
 
 ## Pull requests

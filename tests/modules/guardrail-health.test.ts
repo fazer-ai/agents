@@ -353,6 +353,72 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
     expect(health.lastError).toBe("second of the burst");
   });
 
+  // The rule that only concurrency can see. The two reads are ordered newest-row-first so the count
+  // can never exclude the row being quoted, and the count is capped at that row's timestamp to keep
+  // it that way. Both statements run at READ COMMITTED, so a row committing between them is real:
+  // this test forces exactly that interleaving by inserting a NEWER failure, from another
+  // connection, in the moment between the row read and the count.
+  test("a failure that commits mid-read cannot land in the count alone", async () => {
+    const late = (
+      await suDb.agent.create({
+        data: {
+          tenantId: tenantA,
+          name: "Late",
+          systemPrompt: "x",
+          modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        },
+        select: { id: true },
+      })
+    ).id;
+    await suDb.executionLog.create({
+      data: {
+        tenantId: tenantA,
+        turnId: "g11",
+        agentId: late,
+        stage: "guardrail",
+        level: "warn",
+        status: "error",
+        source: "inbox",
+        errorMessage: "the one that was read",
+        createdAt: ago(20),
+      },
+    });
+    let injected = false;
+    const racing = appDb.$extends({
+      query: {
+        executionLog: {
+          count: async ({ args, query }) => {
+            if (!injected) {
+              injected = true;
+              await suDb.executionLog.create({
+                data: {
+                  tenantId: tenantA,
+                  turnId: "g12",
+                  agentId: late,
+                  stage: "guardrail",
+                  level: "warn",
+                  status: "error",
+                  source: "inbox",
+                  errorMessage: "committed mid-read",
+                  createdAt: ago(1),
+                },
+              });
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const health = await readGuardrailHealth(ctx(tenantA), late, SINCE, racing);
+    expect(injected).toBe(true);
+    // One or the other, never a mix: the count must not include a failure newer than the one it is
+    // reporting, or the panel reads "2 failures, the most recent 20 minutes ago" while the newest is
+    // a minute old and said something else.
+    expect(health.failures).toBe(1);
+    expect(health.lastError).toBe("the one that was read");
+    expect(health.lastAt).toBe(ago(20).toISOString());
+  });
+
   test("RLS: a tenant only ever reads its own agent's failures", async () => {
     const health = await readGuardrailHealth(
       ctx(tenantB),

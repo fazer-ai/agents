@@ -679,8 +679,8 @@
       "ttsNormalize": "The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.",
       "vision": "Image/document reading is on but has no API key set."
     },
-    "configIssueGuardrailsFailing": "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. Check the model, the endpoint and the key.",
-    "configIssueGuardrailsFailingCause": "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. The last one said: {{error}}",
+    "configIssueGuardrailsFailing": "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that cannot run blocks nothing, so whatever it would have caught went through. Check the model, the endpoint and the key.",
+    "configIssueGuardrailsFailingCause": "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that cannot run blocks nothing, so whatever it would have caught went through. The last one said: {{error}}",
     "configIssueKnowledge": "Knowledge base \"{{name}}\" has documents that need indexing.",
     "configIssuePending": {
       "embedding": "A knowledge base needs indexing, but the embedding credential is not filled in yet.",

@@ -18,7 +18,11 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 // The `guardrail` stage writes exactly two shapes (graph/runtime.ts): status "ok" when a check
 // TRIPPED, and status "error" when the analysis itself could not be performed. Nothing is written
 // when a screen runs and approves, so this counts failures and never a ratio: the honest reading of
-// "3 rows" is "3 turns were delivered unscreened", not "3 out of N".
+// "3 rows" is "3 checks did not happen", not "3 out of N", and not "3 messages were delivered
+// unscreened" either. A failed INPUT check leaves the output check free to still screen the reply,
+// and a split output analysis can report an error from one half while the other half trips and
+// blocks the send. What every row does prove is the part that matters: fail-open means the check
+// that failed blocked nothing, so whatever it would have caught went through.
 export const GUARDRAIL_HEALTH_WINDOW_HOURS = 24;
 
 // The window's start, as a function so the unit conversion is reachable by a test. Written inline in
@@ -32,7 +36,8 @@ export function guardrailHealthWindowStart(now: Date = new Date()): Date {
 }
 
 export interface GuardrailHealth {
-  // Analyses that could not run inside the window. Each one is a turn delivered unscreened.
+  // Analyses that could not run inside the window. Each one is a check that did not happen, on a
+  // pass that is fail-open, so none of them blocked anything.
   failures: number;
   // When the most recent one was, so a count that stopped growing reads differently from one that
   // is still growing. Null exactly when `failures` is 0.
@@ -70,36 +75,31 @@ export async function readGuardrailHealth(
     if (!agent) {
       throw new NotFoundError("agent not found", "errors.agentNotFound");
     }
-    // The count and the newest timestamp come from ONE statement, because they have to agree. The
-    // rows are written fire-and-forget from other transactions and Postgres reads at READ COMMITTED,
-    // so two separate statements can straddle a commit and answer "2 failures, the most recent at
-    // <the third one's time>". The error is then read AT that timestamp rather than "the newest
-    // row", which keeps it part of the same answer instead of a third snapshot.
+    // Newest row FIRST, then a count bounded by that row's timestamp. The order is the whole point.
+    // These rows are written fire-and-forget from other transactions and Postgres reads at READ
+    // COMMITTED, so a row can commit between two statements; taken in this order the second
+    // statement can only ever be a superset of the first, so the row being quoted is always inside
+    // the count. Counting first and quoting second is what lets the pair disagree, reporting "2
+    // failures" beside an error from the third one. A row that commits after this makes the reading
+    // a moment stale, which is what a snapshot is, and leaves it internally consistent.
     //
     // Newest by createdAt, never by id: the writes are independent transactions and `now()` is the
     // TRANSACTION's start time, so a turn that began earlier can be inserted later and take a higher
     // id. The sequence would then name the wrong row as the most recent failure, which is the one
-    // field an operator reads to decide whether the screen is still failing.
-    const agg = await db.executionLog.aggregate({
+    // field an operator reads to decide whether the screen is still failing. id breaks ties.
+    const last = await db.executionLog.findFirst({
       where,
-      _count: { _all: true },
-      _max: { createdAt: true },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: { createdAt: true, errorMessage: true },
     });
-    const lastAt = agg._max.createdAt;
-    const last = lastAt
-      ? await db.executionLog.findFirst({
-          // Exact timestamp, so this can only ever return a row the aggregate already counted. Two
-          // rows can share it (the resolution is microseconds, but a burst is a burst), and then the
-          // later insert wins; either one is "the most recent failure" and they agree on the time.
-          where: { ...where, createdAt: lastAt },
-          orderBy: { id: "desc" },
-          select: { errorMessage: true },
-        })
-      : null;
+    if (!last) return { failures: 0, lastAt: null, lastError: null };
+    const failures = await db.executionLog.count({
+      where: { ...where, createdAt: { gte: since, lte: last.createdAt } },
+    });
     return {
-      failures: agg._count._all,
-      lastAt: lastAt ? lastAt.toISOString() : null,
-      lastError: last?.errorMessage ?? null,
+      failures,
+      lastAt: last.createdAt.toISOString(),
+      lastError: last.errorMessage,
     };
   });
 }

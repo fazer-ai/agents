@@ -1281,8 +1281,8 @@ function AgentEditor() {
   // t('editor.configIssue.guardrails', 'Guardrails are on but have no API key set, so messages go out unscreened.')
   // t('editor.configIssuePending.guardrails', 'The guardrails credential is referenced but not filled in yet, so messages go out unscreened.')
   // t('editor.configIssueUnresolved.guardrails', 'The guardrails credential no longer exists, so messages go out unscreened.')
-  // t('editor.configIssueGuardrailsFailing', 'Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. Check the model, the endpoint and the key.')
-  // t('editor.configIssueGuardrailsFailingCause', 'Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. The last one said: {{error}}')
+  // t('editor.configIssueGuardrailsFailing', 'Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that cannot run blocks nothing, so whatever it would have caught went through. Check the model, the endpoint and the key.')
+  // t('editor.configIssueGuardrailsFailingCause', 'Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that cannot run blocks nothing, so whatever it would have caught went through. The last one said: {{error}}')
   // t('editor.configIssuePending.model', 'The model credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.stt', 'The transcription credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.tts', 'The audio-reply credential is referenced but not filled in yet.')
@@ -1437,15 +1437,20 @@ function AgentEditor() {
       // The vendor's own words when they survived the write, generic advice when they did not. They
       // are what separates "look at this" from "fix this": "400 temperature is not supported" names
       // the setting, while a list of three things to check makes the operator try all of them.
+      //
+      // What the line does NOT say is that these messages were delivered unscreened. A failed input
+      // check leaves the output check free to still screen the reply, and a split output analysis
+      // can report an error from one half while the other half trips and blocks the send. Fail-open
+      // is what every row does prove: the check that failed blocked nothing.
       return params.error
         ? t(
             "editor.configIssueGuardrailsFailingCause",
-            "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. The last one said: {{error}}",
+            "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that cannot run blocks nothing, so whatever it would have caught went through. The last one said: {{error}}",
             params,
           )
         : t(
             "editor.configIssueGuardrailsFailing",
-            "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}), so those messages went out unscreened. Check the model, the endpoint and the key.",
+            "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that cannot run blocks nothing, so whatever it would have caught went through. Check the model, the endpoint and the key.",
             params,
           );
     }

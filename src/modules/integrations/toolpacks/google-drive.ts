@@ -165,8 +165,8 @@ const SEND_FILE_SCHEMA = z.object({
 });
 
 const DRIVE_TOOL_SPECS: ToolSpec[] = [
-  { name: "drive_find_file", risk: "low", schema: FIND_FILE_SCHEMA },
-  { name: "drive_send_file", risk: "medium", schema: SEND_FILE_SCHEMA },
+  { name: "drive_find_file", schema: FIND_FILE_SCHEMA },
+  { name: "drive_send_file", schema: SEND_FILE_SCHEMA },
 ];
 
 function buildFindFileTool(

@@ -390,7 +390,6 @@ describe.skipIf(!dbUp)("playground", () => {
     expect(byName.get("handoff_to_human")).toMatchObject({
       category: "native",
       simulated: true,
-      risk: "low",
     });
     // Utility native → runs real.
     expect(byName.get("calculator")).toMatchObject({

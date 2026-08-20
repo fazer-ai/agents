@@ -26,7 +26,6 @@ function legacyTool(over: Partial<Tool> = {}): Tool {
     body: {},
     credentialRef: null,
     enabled: true,
-    riskTier: "medium",
     ackEnabled: false,
     ackMessage: null,
     createdAt: new Date().toISOString(),

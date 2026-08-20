@@ -4,11 +4,11 @@ import {
   getToolpackToolViews,
 } from "@/modules/integrations/toolpacks";
 
-// Locks the UI-facing projection: names + risk + args (derived from each tool's zod schema, the
-// single source). This is what the integration modal and the agent Tools tab render.
+// Locks the UI-facing projection: names + args (derived from each tool's zod schema, the single
+// source). This is what the integration modal and the agent Tools tab render.
 
 describe("toolpack tool specs (UI projection)", () => {
-  test("ASAAS exposes its tools with risk + args derived from zod", () => {
+  test("ASAAS exposes its tools with args derived from zod", () => {
     const views = getToolpackToolViews("ASAAS");
     expect(views.map((v) => v.name).sort()).toEqual([
       "asaas_create_pix_charge",
@@ -16,7 +16,6 @@ describe("toolpack tool specs (UI projection)", () => {
       "asaas_payment_status",
     ]);
     const pix = views.find((v) => v.name === "asaas_create_pix_charge");
-    expect(pix?.riskTier).toBe("high");
     const value = pix?.args.find((a) => a.name === "value");
     expect(value).toMatchObject({ required: true });
     expect(value?.description).toContain("BRL");

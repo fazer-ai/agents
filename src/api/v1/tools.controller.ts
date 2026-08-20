@@ -104,12 +104,6 @@ export const writeBody = t.Object({
   enabled: t.Optional(
     t.Boolean({ description: "Whether the tool is available to agents." }),
   ),
-  riskTier: t.Optional(
-    t.Union([t.Literal("low"), t.Literal("medium"), t.Literal("high")], {
-      description:
-        "Risk tier; higher tiers can require an acknowledgement before the call runs.",
-    }),
-  ),
   expectedStatuses: t.Optional(
     t.Array(t.Integer(), {
       description:

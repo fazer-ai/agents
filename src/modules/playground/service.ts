@@ -25,11 +25,6 @@ import {
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import {
   CONVERSATION_NATIVE_TOOL_NAMES,
-  NATIVE_TOOL_RISK,
-  type NativeToolName,
-  RAG_TOOL_RISK,
-  type RagToolName,
-  type RiskTier,
   UTILITY_NATIVE_TOOL_NAMES,
 } from "@/graph/tools/catalog";
 import type { McpLoadDeps } from "@/graph/tools/mcp";
@@ -303,13 +298,12 @@ export interface PlaygroundToolInfo {
   name: string;
   description: string;
   category: PlaygroundToolCategory;
-  risk?: RiskTier;
   // True when auto-simulated in the playground (conversation natives have no real effect). Every
   // other category runs for real unless the operator supplies a mock (toolMocks) for it.
   simulated: boolean;
 }
 
-// Lists the tools the agent would have in a playground turn, with category/risk + whether each is
+// Lists the tools the agent would have in a playground turn, with category + whether each is
 // auto-simulated — so the console can render the simulate-a-return UI without the operator typing
 // tool names by hand. Loads the config + builds the SAME (simulated-native) toolset a turn builds,
 // then classifies each tool by the loaded grant name-sets. MCP is best-effort (same network a turn
@@ -348,29 +342,11 @@ export async function listPlaygroundTools(params: {
     const name = tl.name;
     const description = tl.description ?? "";
     if (conversation.has(name))
-      return {
-        name,
-        description,
-        category: "native",
-        risk: NATIVE_TOOL_RISK[name as NativeToolName],
-        simulated: true,
-      };
+      return { name, description, category: "native", simulated: true };
     if (utility.has(name))
-      return {
-        name,
-        description,
-        category: "utility",
-        risk: NATIVE_TOOL_RISK[name as NativeToolName],
-        simulated: false,
-      };
+      return { name, description, category: "utility", simulated: false };
     if (knowledge.has(name))
-      return {
-        name,
-        description,
-        category: "knowledge",
-        risk: RAG_TOOL_RISK[name as RagToolName],
-        simulated: false,
-      };
+      return { name, description, category: "knowledge", simulated: false };
     if (http.has(name))
       return { name, description, category: "http", simulated: false };
     if (mcp.has(name))

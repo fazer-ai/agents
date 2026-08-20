@@ -779,9 +779,11 @@ model ToolDefinition {
   body          Json     @default("{}")
   credentialRef String?  @map("credential_ref")
   enabled       Boolean  @default(true)
-  // NOTE: low|medium|high, LEGACY and purely descriptive. Nothing branches on it and the UI badge
-  // that surfaced it is gone; it stays because REST/MCP/export still carry the value. See the
-  // RiskTier docstring in src/graph/tools/catalog.ts.
+  // NOTE: RETIRED and unread. Nothing selects, writes or projects this any more (issue #137); the
+  // column survives one release on purpose, because an operator who rolls the image back would
+  // otherwise land a build that still selects it and gets `undefined_column` on every tool screen,
+  // with no way back except rolling forward. The default keeps inserts working for the code that no
+  // longer sets it. Dropped by migration in the release after this one; see issue #149.
   riskTier      String   @default("medium") @map("risk_tier")
   // HTTP statuses this tool declares as RESULTS rather than integration failures. Empty (the
   // default) keeps issue #40's behavior, where every non-2xx is logged warn and reaches the alert

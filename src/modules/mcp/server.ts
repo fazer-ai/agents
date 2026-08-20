@@ -579,7 +579,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "tool_list",
       {
         description:
-          "List the tenant's HTTP tool definitions (id, name, method, urlTemplate, riskTier, enabled, credentialRef as a vault NAME). No secrets.",
+          "List the tenant's HTTP tool definitions (id, name, method, urlTemplate, enabled, credentialRef as a vault NAME). No secrets.",
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await toolList(eff)),
@@ -1359,7 +1359,6 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           body: z.record(z.string(), z.unknown()).optional(),
           credential_ref: z.string().nullable().optional(),
           enabled: z.boolean().optional(),
-          risk_tier: z.enum(["low", "medium", "high"]).optional(),
           expected_statuses: z
             .array(z.number().int())
             .optional()
@@ -1386,7 +1385,6 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           body?: Record<string, unknown>;
           credential_ref?: string | null;
           enabled?: boolean;
-          risk_tier?: "low" | "medium" | "high";
           expected_statuses?: number[];
           ack_enabled?: boolean;
           ack_message?: string | null;
@@ -1418,7 +1416,6 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           body: z.record(z.string(), z.unknown()).optional(),
           credential_ref: z.string().nullable().optional(),
           enabled: z.boolean().optional(),
-          risk_tier: z.enum(["low", "medium", "high"]).optional(),
           expected_statuses: z
             .array(z.number().int())
             .optional()
@@ -1446,7 +1443,6 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           body?: Record<string, unknown>;
           credential_ref?: string | null;
           enabled?: boolean;
-          risk_tier?: "low" | "medium" | "high";
           expected_statuses?: number[];
           ack_enabled?: boolean;
           ack_message?: string | null;

@@ -46,7 +46,7 @@ export const integrationsAdminController = new Elysia({
     "/catalog",
     ({ tenantContext }) => {
       ctxOrThrow(tenantContext);
-      // Enrich each entry with its toolpack's tools (name + risk + arg specs) so the per-toolpack
+      // Enrich each entry with its toolpack's tools (name + arg specs) so the per-toolpack
       // modal can list what the integration exposes, with args, without a second request.
       const catalog = listCatalog().map((e) => ({
         ...e,

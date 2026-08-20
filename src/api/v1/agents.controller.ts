@@ -676,7 +676,7 @@ export const agentsController = new Elysia({
       }),
     },
   )
-  // Lists the agent's tools (name/description/category/risk + which are auto-simulated) so the
+  // Lists the agent's tools (name/description/category + which are auto-simulated) so the
   // playground can render the simulate-a-return UI without the operator typing tool names by hand.
   .get(
     "/:id/playground/tools",
@@ -693,7 +693,7 @@ export const agentsController = new Elysia({
     {
       detail: doc(
         "List playground tools",
-        "Returns the agent's tools (name, description, category, risk, auto-simulated flag) for the simulate-a-return UI.",
+        "Returns the agent's tools (name, description, category, auto-simulated flag) for the simulate-a-return UI.",
       ),
       response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",

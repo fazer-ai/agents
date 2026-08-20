@@ -84,10 +84,6 @@ export type SideEffectErrorReporter = (e: {
   err: unknown;
 }) => void;
 
-// LEGACY, descriptive only: nothing branches on a tool's risk tier. See the RiskTier docstring in
-// src/graph/tools/catalog.ts before relying on this for anything.
-export type ToolRisk = "low" | "medium" | "high";
-
 // A single tool argument, projected for the UI (mirrors how MCP tool args are shown): the name, the
 // model-facing description (the zod `.describe()`), and whether it is required.
 export interface ToolArgSpec {
@@ -96,12 +92,11 @@ export interface ToolArgSpec {
   required: boolean;
 }
 
-// A tool's declarative spec: name, risk, and input schema. SINGLE SOURCE of truth for a toolpack —
-// the tool names, per-tool risk, and the UI arg list all derive from here. The schema is a ZodObject
-// so argsFromZod can yield the arg list WITHOUT building the tool (no ctx, no side effects).
+// A tool's declarative spec: name and input schema. SINGLE SOURCE of truth for a toolpack — the
+// tool names and the UI arg list both derive from here. The schema is a ZodObject so argsFromZod
+// can yield the arg list WITHOUT building the tool (no ctx, no side effects).
 export interface ToolSpec {
   name: string;
-  risk: ToolRisk;
   schema: z.ZodObject<z.ZodRawShape>;
 }
 
@@ -109,7 +104,7 @@ export interface ToolSpec {
 // allowlist; each tool's body does its own network + scoped persistence at invoke time.
 export interface Toolpack {
   catalogType: string;
-  // Every tool this pack can expose, with its risk + input schema (for UI + fail-closed validation).
+  // Every tool this pack can expose, with its input schema (for UI + fail-closed validation).
   toolSpecs: readonly ToolSpec[];
   build(
     selection: IntegrationSelection,
@@ -130,10 +125,9 @@ export function argsFromZod(schema: z.ZodObject<z.ZodRawShape>): ToolArgSpec[] {
   });
 }
 
-// A toolpack tool projected for the UI: name + risk tier + arg specs.
+// A toolpack tool projected for the UI: name + arg specs.
 export interface ToolView {
   name: string;
-  riskTier: ToolRisk;
   args: ToolArgSpec[];
 }
 
@@ -169,14 +163,13 @@ export function getToolpackToolNames(catalogType: string): string[] {
   return getToolpack(catalogType)?.toolSpecs.map((s) => s.name) ?? [];
 }
 
-// The toolpack's tools projected for the UI: name + risk + args (label/description live in the
-// frontend's toolpackToolMeta, keyed by name).
+// The toolpack's tools projected for the UI: name + args (label/description live in the frontend's
+// toolpackToolMeta, keyed by name).
 export function getToolpackToolViews(catalogType: string): ToolView[] {
   const pack = getToolpack(catalogType);
   if (!pack) return [];
   return pack.toolSpecs.map((s) => ({
     name: s.name,
-    riskTier: s.risk,
     args: argsFromZod(s.schema),
   }));
 }

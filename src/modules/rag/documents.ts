@@ -546,7 +546,9 @@ async function runIngestJobForTenant(
     return { outcome: "done" };
   }
 
-  // Mark PROCESSING + emit event.
+  // Take the document: PENDING → PROCESSING marks it as owned by THIS run. The mark is what every
+  // write below is conditional on, so it is not just a badge for the console — see the release in
+  // step 4.
   await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.knowledgeDocument.updateMany({
       where: { id: documentId, status: "PENDING" },
@@ -568,8 +570,19 @@ async function runIngestJobForTenant(
     });
     const vectors = chunks.length ? await embedTexts(chunks, emb.config) : [];
 
-    // 4. Replace chunks + mark READY (scoped write).
-    await runScopedOn(base, sysCtx(tenantId), async (db) => {
+    // 4. Publish: release the mark, then replace the chunks (one scoped transaction).
+    const published = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      // NOTE: only the run still holding the mark may publish (issue #163). An edit landing during
+      // the embed above sets the row back to PENDING to ask for a re-index, and an unconditional
+      // `READY` erased that marker, leaving the new text in the row and the old text in the index.
+      // Releasing BEFORE the chunk writes is the rest of it: a stale run returns having written
+      // nothing, so the previous index survives until the re-armed job replaces it, and a live run
+      // holds this row lock for the rest of the transaction, so no edit lands mid-write.
+      const released = await db.knowledgeDocument.updateMany({
+        where: { id: documentId, status: "PROCESSING" },
+        data: { status: "READY", chunkCount: chunks.length, error: null },
+      });
+      if (released.count === 0) return false;
       // Delete old chunks for this document.
       await db.knowledgeChunk.deleteMany({ where: { documentId } });
       // Insert new chunks with documentId.
@@ -579,11 +592,9 @@ async function runIngestJobForTenant(
           INSERT INTO knowledge_chunks (tenant_id, knowledge_base_id, document_id, content, embedding, metadata, created_at)
           VALUES (${tenantId}, ${doc.knowledgeBaseId}, ${documentId}, ${chunks[i]}, ${vec}::vector, ${JSON.stringify({ documentId: String(documentId) })}::jsonb, now())`;
       }
-      await db.knowledgeDocument.updateMany({
-        where: { id: documentId },
-        data: { status: "READY", chunkCount: chunks.length, error: null },
-      });
+      return true;
     });
+    if (!published) return { outcome: "done" };
 
     broadcastDocumentEvent(tenantId, {
       knowledgeBaseId: String(doc.knowledgeBaseId),
@@ -603,18 +614,24 @@ async function runIngestJobForTenant(
           ? err.message.slice(0, 500)
           : String(err);
     logger.error({ err, documentId: String(documentId) }, "RAG ingest failed");
-    await runScopedOn(base, sysCtx(tenantId), (db) =>
+    // The same release, and for the same reason: a failure belongs to the content this run read, so
+    // stamping it on a document that has since been edited both reports the wrong thing and buries
+    // the re-index (FAILED is no more PENDING than READY is, and the re-armed job returns on it).
+    // Leaving the row PENDING lets the re-armed job try the new content and report on its own.
+    const stamped = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.knowledgeDocument.updateMany({
-        where: { id: documentId },
+        where: { id: documentId, status: "PROCESSING" },
         data: { status: "FAILED", error: message },
       }),
     );
-    broadcastDocumentEvent(tenantId, {
-      knowledgeBaseId: String(doc.knowledgeBaseId),
-      documentId: String(documentId),
-      status: "FAILED",
-      error: message,
-    });
+    if (stamped.count > 0) {
+      broadcastDocumentEvent(tenantId, {
+        knowledgeBaseId: String(doc.knowledgeBaseId),
+        documentId: String(documentId),
+        status: "FAILED",
+        error: message,
+      });
+    }
     return { outcome: "fail", error: message };
   }
 }

@@ -249,6 +249,11 @@ export interface LoadAgentArgs {
 // overridable in v1 (they need id/ownership re-validation); the playground uses the saved set.
 export interface AgentConfigOverrides {
   systemPrompt?: string;
+  // Playground: the Availability the operator has selected but not saved yet, as the console's own
+  // string ("" = none). Absent = read the saved column. Without it the playground answers
+  // {{esta_aberto}} & co. from the schedule the picker no longer shows, which is the same drift
+  // between description and enforcement these variables exist to remove.
+  businessHoursId?: string;
   modelConfig?: Record<string, unknown>;
   settings?: Record<string, unknown>;
   // Playground tool-simulation: tool name → canned result. Consumed by the playground graph builder
@@ -443,9 +448,19 @@ export async function loadAgentConfig(
   // and drifted from the gate the moment either changed. `null` = no Availability = always on.
   let timezone = DEFAULT_TIMEZONE;
   let schedule: Schedule | null = null;
-  if (agent.businessHoursId !== null) {
+  // A draft id is console input, so it is validated as digits and read through the SAME scoped
+  // client: another tenant's row simply does not come back, and the turn falls through to always-on
+  // rather than to the saved schedule — an unresolvable selection is "no schedule", not "the old one".
+  const draftHoursId = ov?.businessHoursId;
+  const hoursId =
+    draftHoursId === undefined
+      ? agent.businessHoursId
+      : /^\d+$/.test(draftHoursId)
+        ? BigInt(draftHoursId)
+        : null;
+  if (hoursId !== null) {
     const bh = await db.businessHours.findUnique({
-      where: { id: agent.businessHoursId },
+      where: { id: hoursId },
       select: { timezone: true, windows: true, exceptions: true },
     });
     if (bh) {

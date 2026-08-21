@@ -59,6 +59,10 @@ export type RecordState = "idle" | "recording" | "paused";
 // playground-owned, not part of the agent form; the hook merges them in at send time.
 export interface PlaygroundDraft {
   systemPrompt?: string;
+  // The Availability picker's current value ("" = none). A scalar column like systemPrompt, so it
+  // travels with the draft; empty vs absent is the difference between "no schedule" and "use the
+  // saved one".
+  businessHoursId?: string;
   modelConfig?: Record<string, unknown>;
   settings?: Record<string, unknown>;
   toolMocks?: Record<string, string>;

@@ -1789,6 +1789,7 @@ function AgentEditor() {
   // those need saving). Read fresh at send time inside the hook, so it always reflects the form.
   const getDraft = () => ({
     systemPrompt,
+    businessHoursId,
     modelConfig: buildModelConfig(),
     settings: buildSettings(),
   });

@@ -117,6 +117,7 @@ const playgroundDraftSchema = t.Object({
 
 type PlaygroundDraft = {
   systemPrompt?: string;
+  businessHoursId?: string;
   modelConfig?: Record<string, unknown>;
   settings?: Record<string, unknown>;
   toolMocks?: Record<string, string>;

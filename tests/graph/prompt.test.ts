@@ -245,6 +245,27 @@ describe("interpolatePromptVars — schedule variables", () => {
     ).toBe("sexta-feira, 21/08, 09:00");
   });
 
+  test("the schedule's timezone governs the time variables too", () => {
+    // The editor preview supplies a schedule and no timezone, so the two would otherwise land in
+    // different zones and the same prompt would disagree with itself about the hour. CLOSED is
+    // 22:00 in São Paulo and 01:00 the next day in UTC.
+    const utc = schedule({ timezone: "UTC" });
+    expect(
+      interpolatePromptVars(
+        "{{hora_atual}}",
+        {},
+        { now: CLOSED, availability: schedule() },
+      ),
+    ).toBe("22:00");
+    expect(
+      interpolatePromptVars(
+        "{{hora_atual}}",
+        {},
+        { now: CLOSED, availability: utc },
+      ),
+    ).toBe("01:00");
+  });
+
   test("leaves the placeholder alone when the caller resolves no schedule", () => {
     // The WhatsApp template path has no notion of a schedule. Answering "open" there would be a
     // guess; the operator's own literal is the honest outcome (same rule as an unknown variable).

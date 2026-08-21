@@ -243,12 +243,19 @@ export function interpolatePromptVars(
   } = {},
 ): string {
   const wrap = opts.wrap ?? ((v: string) => v);
+  // ONE timezone for the whole template. The schedule's own wins because its windows are wall times
+  // in it, and because the two are the same row on the real path (prepare.ts reads the clock from the
+  // BusinessHours it also reads the grid from). Resolving it per variable instead is how a caller that
+  // supplies a schedule and no timezone — the editor preview — ends up rendering {{hora_atual}} in the
+  // product default next to a {{proximo_atendimento}} in the agent's zone, disagreeing about the hour
+  // inside one prompt.
+  const tz =
+    opts.availability?.schedule?.timezone || opts.timezone || DEFAULT_TIMEZONE;
   return template.replace(
     PLACEHOLDER,
     (match, key: string, fmt: string | undefined) => {
       const timeVar = TIME_VARS[key];
       if (timeVar) {
-        const tz = opts.timezone || DEFAULT_TIMEZONE;
         const now = opts.now ?? new Date();
         const when = timeVar.rounded
           ? roundDownToMinutes(now, TIME_ROUND_MINUTES)
@@ -260,14 +267,10 @@ export function interpolatePromptVars(
       }
       const scheduleVar = SCHEDULE_VARS[key];
       if (scheduleVar && opts.availability) {
-        const schedule = opts.availability.schedule;
-        // The windows are wall times in the SCHEDULE's timezone, so that one wins. The two cannot
-        // disagree on the real path (prepare.ts reads both from the same BusinessHours row).
-        const tz = schedule?.timezone || opts.timezone || DEFAULT_TIMEZONE;
         return wrap(
           renderScheduleVar(
             scheduleVar,
-            schedule,
+            opts.availability.schedule,
             opts.now ?? new Date(),
             tz,
             fmt?.trim() || undefined,

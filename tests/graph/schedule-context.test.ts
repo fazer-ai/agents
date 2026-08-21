@@ -37,6 +37,7 @@ const suDb = su as PrismaClient;
 
 let tenantId = 0n;
 let instanceId = 0n;
+let hoursId = "";
 let agentScheduled = 0n;
 let agentAlwaysOn = 0n;
 const CONV_ID = 7810;
@@ -50,7 +51,7 @@ function ctx(t: bigint): TenantContext {
 // `promptNow` is the product's own time simulation (the playground's), and the only injection point
 // this path has. The two cases that do NOT use it assert values a schedule renders the same at any
 // instant, so the real, un-simulated path is covered too.
-const load = (agentId: bigint, promptNow?: string) =>
+const load = (agentId: bigint, promptNow?: string, businessHoursId?: string) =>
   runScopedOn(appDb, ctx(tenantId), (db) =>
     loadAgentConfig(
       db,
@@ -61,7 +62,9 @@ const load = (agentId: bigint, promptNow?: string) =>
         agentId,
         threadId: `${tenantId}:${instanceId}:${CONV_ID}`,
       },
-      promptNow ? { overrides: { promptNow } } : undefined,
+      promptNow || businessHoursId !== undefined
+        ? { overrides: { promptNow, businessHoursId } }
+        : undefined,
     ),
   );
 
@@ -106,6 +109,7 @@ describe.skipIf(!dbUp)("schedule variables in the system prompt", () => {
       },
       select: { id: true },
     });
+    hoursId = String(hours.id);
     agentScheduled = (
       await suDb.agent.create({
         data: {
@@ -170,6 +174,34 @@ describe.skipIf(!dbUp)("schedule variables in the system prompt", () => {
     expect(cfg?.systemPrompt).toBe(
       "Aberto: não | Volta: segunda-feira, 24/08, 09:00 | Horário: seg.–sex. 09:00–18:00",
     );
+  });
+
+  test("the playground's unsaved Availability wins over the saved column", async () => {
+    // The operator picked a schedule in the Behavior tab and hit the playground before saving. The
+    // agent has none saved, so without the draft this answers "sim / agora / sempre aberto" — the
+    // config the picker no longer shows, which is the exact drift these variables exist to remove.
+    const cfg = await load(agentAlwaysOn, "2026-08-20T22:00", hoursId);
+    expect(cfg?.systemPrompt).toBe(
+      "Aberto: não | Volta: segunda-feira, 24/08, 09:00 | Horário: seg.–sex. 09:00–18:00",
+    );
+  });
+
+  test("clearing the picker reads as no schedule, not as the saved one", async () => {
+    const cfg = await load(agentScheduled, "2026-08-20T22:00", "");
+    expect(cfg?.systemPrompt).toBe(
+      "Aberto: sim | Volta: agora | Horário: sempre aberto",
+    );
+  });
+
+  test("an unresolvable draft id falls through to always-on", async () => {
+    // Console input. A row this tenant cannot read (or an id that is not one) must not silently fall
+    // back to the saved schedule: the answer would then describe a config nobody selected.
+    for (const bogus of ["999999999", "../etc", "0x1"]) {
+      const cfg = await load(agentScheduled, "2026-08-20T22:00", bogus);
+      expect(cfg?.systemPrompt).toBe(
+        "Aberto: sim | Volta: agora | Horário: sempre aberto",
+      );
+    }
   });
 
   test("inside the window it reports open, with no future opening to promise", async () => {

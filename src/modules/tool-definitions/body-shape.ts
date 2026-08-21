@@ -42,18 +42,6 @@ function rowsProblem(rows: unknown): string | null {
   if (bad) {
     return 'body mode "kv" needs `rows` to be a list of {"key":"…","value":"…"}, both non-empty strings — a row whose key is blank is dropped, and its value with it.';
   }
-  // NOTE: the payload is keyed by the TRIMMED key, so two rows that trim to the same thing are one
-  // key: the later silently overwrites the earlier, and one of the two values never leaves.
-  const seen = new Set<string>();
-  const collided = new Set<string>();
-  for (const r of rows as { key: string }[]) {
-    const k = r.key.trim();
-    if (seen.has(k)) collided.add(k);
-    seen.add(k);
-  }
-  if (collided.size > 0) {
-    return `body mode "kv" keys the payload by the TRIMMED key, so ${[...collided].map((k) => JSON.stringify(k)).join(", ")} appears more than once and only the last value would be sent. Give each row its own key.`;
-  }
   return null;
 }
 
@@ -151,17 +139,15 @@ export function canonicalBodyShape(body: unknown): Record<string, unknown> {
     return { mode: "raw", raw: typeof body.raw === "string" ? body.raw : "" };
   }
   if (body.mode === "kv") {
-    // NOTE: last-wins on the trimmed key, mirroring `payload[k] = …` in the kv consumer: two rows
-    // that trim to the same key are one key, and the canonical form has to be a shape the authoring
-    // rule accepts as well as one that sends the same bytes.
-    const byKey = new Map<string, { key: string; value: string }>();
-    if (Array.isArray(body.rows)) {
-      for (const r of body.rows) {
-        const row = canonicalRow(r);
-        if (row) byKey.set(row.key.trim(), row);
-      }
-    }
-    return { mode: "kv", rows: [...byKey.values()] };
+    // NOTE: rows are kept in order and NOT deduplicated by key. Two rows on the same trimmed key are
+    // a deliberate fallback idiom — a row whose value is a lone {{aiField}} is SKIPPED when the model
+    // omitted that field, so an earlier constant survives as the default — and which of them wins is
+    // decided per call by the model's own arguments. Nothing static can mirror that, so nothing here
+    // tries: keeping both rows is what makes this byte-identical.
+    const rows = Array.isArray(body.rows)
+      ? body.rows.map(canonicalRow).filter((r) => r !== null)
+      : [];
+    return { mode: "kv", rows };
   }
   if (body.mode === "fields") return { mode: "fields" };
   return {};

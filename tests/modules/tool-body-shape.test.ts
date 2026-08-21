@@ -149,15 +149,7 @@ describe("the canonical form of a refused body sends what the original sent", ()
     // NOTE: the row the runtime filters out rather than sends.
     { mode: "kv", rows: [{ key: "  ", value: "{{valor}}" }] },
     { mode: "kv", rows: [null] },
-    // NOTE: round 6 review. Two rows that trim to ONE payload key: the runtime keeps the last, so
-    // the earlier value never leaves, and the canonical form has to keep the last too.
-    {
-      mode: "kv",
-      rows: [
-        { key: "a", value: "first" },
-        { key: " a ", value: "second" },
-      ],
-    },
+
     // NOTE: no mode at all, and a mode nothing executes.
     { contact: { email: "{{valor}}" } },
     { mode: "template", raw: "x" },
@@ -269,5 +261,68 @@ describe("a payload key that collides with Object.prototype", () => {
       rows: [{ key: "constructor", value: "x" }],
     });
     expect(JSON.parse(out)).toEqual({ constructor: "x" });
+  });
+});
+
+// NOTE: rounds 6 and 7. Round 6 asked for duplicate trimmed keys to be refused, on the grounds that
+// the later row overwrites the earlier and one authored value never leaves. Round 7 found the hole in
+// that, and measuring it turned the whole rule over: which row wins is decided PER CALL by the
+// model's own arguments, because a row whose value is a lone {{aiField}} is skipped when the model
+// omitted that field. So two rows on one key are not a mistake, they are a fallback idiom — and a
+// refusal would have broken it, while a canonicalizer that deduplicates could never be
+// byte-identical. The rule was removed rather than patched; these tests are what it left behind.
+describe("two kv rows on the same key are a fallback, not a collision", () => {
+  const BODY = {
+    mode: "kv",
+    rows: [
+      { key: "a", value: "fallback" },
+      { key: " a ", value: "{{opcional}}" },
+    ],
+  };
+
+  async function sent(input: Record<string, unknown>): Promise<string> {
+    let out = "";
+    const fetchImpl = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      out = String(init?.body ?? "");
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const tool = buildHttpTool(
+      {
+        name: "t",
+        method: "POST",
+        urlTemplate: "https://example.com/x",
+        allowedHosts: ["example.com"],
+        headers: {},
+        inputSchema: { opcional: { type: "string" } },
+        body: BODY,
+      } as never,
+      { fetchImpl, allowHttp: true, resolveCredential: async () => null },
+    );
+    await tool.invoke(input);
+    return out;
+  }
+
+  test("the model's value wins when it supplied one", async () => {
+    expect(JSON.parse(await sent({ opcional: "supplied" }))).toEqual({
+      a: "supplied",
+    });
+  });
+
+  test("the earlier row is the default when the model omitted it", async () => {
+    expect(JSON.parse(await sent({}))).toEqual({ a: "fallback" });
+  });
+
+  test("so it is not refused, and the canonical form keeps both rows", () => {
+    expect(unsupportedBodyShape(BODY)).toBeNull();
+    expect(canonicalBodyShape(BODY)).toEqual({
+      mode: "kv",
+      rows: [
+        { key: "a", value: "fallback" },
+        { key: " a ", value: "{{opcional}}" },
+      ],
+    });
   });
 });

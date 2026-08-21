@@ -1,5 +1,5 @@
 import { KeyRound, Link2, Plus, Search, Trash2, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router";
 import {
@@ -101,22 +101,40 @@ export function VaultPanel() {
 
   // Deeplink: /resources/vault?fill=<id> opens the fill modal for a pending entry once the list is
   // loaded, then strips the param so a re-render / back-nav doesn't re-open it.
+  //
+  // A MISS keeps the parameter and says so. The id belongs to a tenant, and the console resolves the
+  // tenant from localStorage: a link built for another one finds nothing here (issue #151). Stripping
+  // it on the way, which is what used to happen, spent the link on a page that then looked like an
+  // ordinary navigation, so there was nothing to retry and nothing on screen explaining it. Kept, the
+  // operator switches tenant in the header (a full reload) and the same URL resolves.
   const [searchParams, setSearchParams] = useSearchParams();
   const fillId = searchParams.get("fill");
+  const missReported = useRef<string | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs once per fill target; clearing the param makes fillId null so it won't re-fire.
   useEffect(() => {
     if (!fillId || loading) return;
     const entry = entries.find((e) => e.id === fillId);
-    if (entry) {
-      editModal.open({
-        id: entry.id,
-        name: entry.name,
-        kind: entry.kind,
-        baseUrl: entry.baseUrl,
-        paramName: entry.paramName,
-        fill: true,
-      });
+    if (!entry) {
+      if (missReported.current !== fillId) {
+        missReported.current = fillId;
+        showToast(
+          t(
+            "vault.fillLinkNotHere",
+            "That credential is not in the tenant you have open. Switch tenant and follow the link again.",
+          ),
+          "error",
+        );
+      }
+      return;
     }
+    editModal.open({
+      id: entry.id,
+      name: entry.name,
+      kind: entry.kind,
+      baseUrl: entry.baseUrl,
+      paramName: entry.paramName,
+      fill: true,
+    });
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);

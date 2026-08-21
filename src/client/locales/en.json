@@ -1821,6 +1821,7 @@
   },
   "tenant": {
     "create": "Create tenant",
+    "deepLinkUnavailable": "This link points at a tenant you cannot open. Nothing was switched.",
     "demo": "Demo",
     "label": "Tenant",
     "name": "Name",
@@ -2038,6 +2039,7 @@
       "secretKey": "Secret key"
     },
     "fill": "Fill",
+    "fillLinkNotHere": "That credential is not in the tenant you have open. Switch tenant and follow the link again.",
     "fillTitle": "Fill pending credential",
     "getKeyLink": "Get yours at {{service}}",
     "getKeyPrompt": "Need an API key?",

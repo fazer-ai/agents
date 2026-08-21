@@ -18,9 +18,9 @@ import {
   rejectApprovalItem,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
+import { vaultFillUrl } from "./console-links";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
-  consoleUrl,
   diffFields,
   err,
   gate,
@@ -392,7 +392,7 @@ export async function knowledgeReindex(
     if (result.blocked) {
       const fillAt =
         result.blocked.vaultId != null
-          ? consoleUrl(`/resources/vault?fill=${result.blocked.vaultId}`)
+          ? vaultFillUrl(tenantId, result.blocked.vaultId)
           : undefined;
       return ok({
         dryRun,

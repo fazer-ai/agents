@@ -2,6 +2,7 @@ import { Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router";
 import { Layout } from "@/client/components/Layout";
+import { TenantDeepLink } from "@/client/components/TenantDeepLink";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { isAdminRole } from "@/client/lib/roles";
 
@@ -40,5 +41,12 @@ export function ProtectedRoute({
     return <Navigate to="/conversations" replace />;
   }
 
-  return <Layout>{children}</Layout>;
+  // A console link can name the tenant it belongs to; applying that is the app shell's job, not any
+  // one page's, so every deeplink gets it (see TenantDeepLink).
+  return (
+    <Layout>
+      <TenantDeepLink />
+      {children}
+    </Layout>
+  );
 }

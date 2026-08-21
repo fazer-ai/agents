@@ -1828,6 +1828,7 @@
   },
   "tenant": {
     "create": "Criar tenant",
+    "deepLinkUnavailable": "Este link aponta para um tenant que você não pode abrir. Nada foi trocado.",
     "demo": "Demo",
     "label": "Tenant",
     "name": "Nome",
@@ -2045,6 +2046,7 @@
       "secretKey": "Secret key"
     },
     "fill": "Preencher",
+    "fillLinkNotHere": "Essa credencial não está no tenant que você tem aberto. Troque de tenant e siga o link de novo.",
     "fillTitle": "Preencher credencial pendente",
     "getKeyLink": "Pegue a sua em {{service}}",
     "getKeyPrompt": "Precisa de uma chave de API?",

@@ -22,9 +22,9 @@ import {
   updateWebhookSubscription,
 } from "@/modules/webhooks/outbound/subscriptions";
 import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
+import { integrationsUrl } from "./console-links";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
-  consoleUrl,
   diffFields,
   err,
   gate,
@@ -585,7 +585,7 @@ export async function integrationCreate(
       id: String(created.id),
       message:
         "Integration created. The inbound route token is shown once in the console; it is not returned here.",
-      configureAt: consoleUrl("/integrations"),
+      configureAt: integrationsUrl(ctx.tenantId),
     });
   } catch (e) {
     return failOf(e);

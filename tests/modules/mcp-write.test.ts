@@ -473,6 +473,10 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
       expect(r.data.status).toBe("pending");
       expect(String(r.data.ref)).toMatch(/^vault:\d+$/);
       expect(String(r.data.fillAt)).toContain("/resources/vault?fill=");
+      // Issue #151: the link has to name the tenant the entry belongs to. The console resolves the
+      // tenant from localStorage, so without this a fleet-level session's link opens whatever tenant
+      // the recipient's browser had selected, and the id is simply absent there.
+      expect(String(r.data.fillAt)).toContain(`&tenant=${tenantA}`);
     }
     const row = await suDb.vaultEntry.findFirst({
       where: { tenantId: tenantA, name: "mcp-pending", kind: "openai" },

@@ -196,6 +196,71 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     );
   });
 
+  // The other half of that same contract, which was not being kept (issue #141). An operator's HTTP
+  // tool returns `HTTP <status>\n<body>`, and the body is the other end's: a business API answers a
+  // failed lookup with the customer's own record in it. `detail.output` was already reduced to a
+  // shape; `errorMessage` was taking the identical string whole, so the row kept by one column what
+  // the column beside it had just refused. The diagnosis is the part we wrote: the status line.
+  test("a returned failure keeps the status line we wrote, never the body the other end sent", async () => {
+    const flow = flowCtx();
+    const logger = new ToolFlowLogger(flow);
+    logger.handleToolStart(
+      {} as never,
+      "{}",
+      "run-body",
+      undefined,
+      undefined,
+      undefined,
+      "consulta_paciente",
+    );
+    logger.handleToolEnd(
+      new ToolMessage({
+        status: "error",
+        content:
+          'HTTP 422\n{"erro":"paciente Zebrafina Quixotesca (CPF 12345678900) nao encontrado"}',
+        tool_call_id: "c2",
+        name: "consulta_paciente",
+      }),
+      "run-body",
+    );
+    const rows = await pollToolRows(flow.turnId, 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.level).toBe("warn");
+    // Still enough to alert on and to diagnose: which tool, and what the other end answered.
+    expect(rows[0]?.errorMessage).toBe("HTTP 422");
+    expect(rows[0]?.errorMessage).not.toContain("Zebrafina");
+    expect(rows[0]?.errorMessage).not.toContain("12345678900");
+    expect(JSON.stringify(rows[0]?.detail)).not.toContain("12345678900");
+  });
+
+  // `logToolValues` is the escape hatch the repo already gives an operator investigating one agent,
+  // and it has to reach this column too: switching it on and still getting a truncated cause would
+  // send them looking for a second switch that does not exist.
+  test("logToolValues keeps the whole failure, body included", async () => {
+    const flow = flowCtx();
+    const logger = new ToolFlowLogger(flow, { logValues: true });
+    logger.handleToolStart(
+      {} as never,
+      "{}",
+      "run-body-on",
+      undefined,
+      undefined,
+      undefined,
+      "consulta_paciente",
+    );
+    logger.handleToolEnd(
+      new ToolMessage({
+        status: "error",
+        content: 'HTTP 422\n{"erro":"registro 991 nao encontrado"}',
+        tool_call_id: "c3",
+        name: "consulta_paciente",
+      }),
+      "run-body-on",
+    );
+    const rows = await pollToolRows(flow.turnId, 1);
+    expect(rows[0]?.errorMessage).toContain("registro 991 nao encontrado");
+  });
+
   // A result is authored end to end by whatever answered the call, so no key in it has a declaration
   // behind it and none is ever named.
   test("a tool result never contributes key names, only its size", async () => {

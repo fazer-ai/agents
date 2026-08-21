@@ -428,11 +428,12 @@ export async function runLoadedTurn(
       stage: "guardrail",
       status: "ok",
       level: "warn",
+      // NOTE: no `rationale` here. It explains what in the message violated the policy, so it quotes
+      // the message; the private note below carries it in full, on the conversation it came from.
       detail: {
         direction,
         action: effectiveAction,
         categories: verdict.categories,
-        rationale: verdict.rationale,
       },
     });
     await client
@@ -601,10 +602,10 @@ export async function runLoadedTurn(
       {
         provider: loaded.mc.provider,
         model: loaded.mc.model,
-        // The fully-resolved system prompt the agent received THIS turn (item 15), so the operator can
-        // inspect it in the Logs page. Passes through redactSecretsDeep on write (secret-scrubbed +
-        // length-bounded); it is the tenant's own config, never customer PII.
-        detail: { systemPrompt: loaded.systemPrompt },
+        // The prompt the agent was given THIS turn (item 15), audited: the RESOLVED one is not the
+        // tenant's own config, it is where the contact's name, phone and attributes entered. See
+        // prompt-audit.ts.
+        detail: { systemPrompt: loaded.systemPromptAudit },
       },
       () =>
         graph.invoke(

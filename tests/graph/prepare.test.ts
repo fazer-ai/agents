@@ -35,6 +35,7 @@ function makeConfig(
     contactDbId: null,
     contactInboxId: null,
     systemPrompt: "Você é um assistente.",
+    systemPromptAudit: "Você é um assistente.",
     mc: {
       provider: "openai",
       model: "gpt-4o-mini",

@@ -21,6 +21,7 @@ import {
 import { parseSchedule, type Schedule } from "@/modules/business-hours/hours";
 import { readSchedule } from "@/modules/business-hours/service";
 import {
+  ATTRIBUTE_SCOPES,
   attributeBagsFrom,
   buildAttributeContextSection,
   isAttributeContextEmpty,
@@ -96,6 +97,7 @@ import {
   composeSystemPrompt,
   interpolatePromptVars,
 } from "./prompt";
+import { type AuditedSection, buildPromptAudit } from "./prompt-audit";
 import { DEFAULT_TIMEZONE, zonedWallClockToInstant } from "./time";
 import {
   buildHttpTools,
@@ -177,6 +179,9 @@ export interface AgentConfig {
   // graph memory thread (see resolveGraphThreadId). null on legacy rows / the playground.
   contactInboxId: number | null;
   systemPrompt: string;
+  // The same prompt with every customer-authored value replaced by its name and length, which is the
+  // only version `execution_logs.detail` is allowed to keep (prompt-audit.ts). Never given to a model.
+  systemPromptAudit: string;
   mc: ModelConfig;
   apiKey: string;
   // baseURL resolved from the credential entry (entry.baseUrl), taking precedence over mc.baseURL.
@@ -493,57 +498,60 @@ export async function loadAgentConfig(
   // prompt, with the (customer-controlled) values sanitized. Applied here so BOTH the turn and the
   // nudge paths get identical, injection-bounded substitution. Time variables use the agent's tz.
   // An explicit draft prompt wins over the A/B variant (the operator is testing this exact prompt).
-  const systemPrompt = interpolatePromptVars(
-    composeSystemPrompt(
-      ov?.systemPrompt ?? promptOverride ?? agent.systemPrompt,
-      {
-        grounded,
-      },
-    ),
-    buildPromptVars({
-      contactName: pickPromptVar(
-        ov?.promptVars,
-        ["nome_contato", "contact_name"],
-        conv?.contact?.name ?? null,
-      ),
-      contactEmail: pickPromptVar(
-        ov?.promptVars,
-        ["email_contato", "contact_email"],
-        conv?.contact?.email ?? null,
-      ),
-      contactPhone: pickPromptVar(
-        ov?.promptVars,
-        ["telefone_contato", "contact_phone"],
-        conv?.contact?.phone ?? null,
-      ),
-      inboxName: pickPromptVar(
-        ov?.promptVars,
-        ["canal", "inbox_name"],
-        conv?.inbox?.name ?? null,
-      ),
-      companyName: pickPromptVar(
-        ov?.promptVars,
-        ["nome_empresa", "company_name"],
-        tenant?.name ?? null,
-      ),
-      agentName: pickPromptVar(
-        ov?.promptVars,
-        ["nome_agente", "agent_name"],
-        agent.name,
-      ),
-    }),
-    // Playground time simulation: a valid wall-clock override replaces the real now for every time
-    // variable, interpreted in the agent's timezone; anything malformed falls back to the real now.
+  const promptTemplate = composeSystemPrompt(
+    ov?.systemPrompt ?? promptOverride ?? agent.systemPrompt,
     {
-      timezone,
-      now: ov?.promptNow
-        ? (zonedWallClockToInstant(ov.promptNow, timezone) ?? undefined)
-        : undefined,
-      // Passed on every real path, so a schedule variable is answered rather than left literal. The
-      // playground's time simulation reaches it through `now` above: an operator testing "what does
-      // it say at 22:00" sees the agent report itself closed, exactly as the gate would.
-      availability: { schedule },
+      grounded,
     },
+  );
+  const promptVars = buildPromptVars({
+    contactName: pickPromptVar(
+      ov?.promptVars,
+      ["nome_contato", "contact_name"],
+      conv?.contact?.name ?? null,
+    ),
+    contactEmail: pickPromptVar(
+      ov?.promptVars,
+      ["email_contato", "contact_email"],
+      conv?.contact?.email ?? null,
+    ),
+    contactPhone: pickPromptVar(
+      ov?.promptVars,
+      ["telefone_contato", "contact_phone"],
+      conv?.contact?.phone ?? null,
+    ),
+    inboxName: pickPromptVar(
+      ov?.promptVars,
+      ["canal", "inbox_name"],
+      conv?.inbox?.name ?? null,
+    ),
+    companyName: pickPromptVar(
+      ov?.promptVars,
+      ["nome_empresa", "company_name"],
+      tenant?.name ?? null,
+    ),
+    agentName: pickPromptVar(
+      ov?.promptVars,
+      ["nome_agente", "agent_name"],
+      agent.name,
+    ),
+  });
+  // Playground time simulation: a valid wall-clock override replaces the real now for every time
+  // variable, interpreted in the agent's timezone; anything malformed falls back to the real now.
+  const promptOpts = {
+    timezone,
+    now: ov?.promptNow
+      ? (zonedWallClockToInstant(ov.promptNow, timezone) ?? undefined)
+      : undefined,
+    // Passed on every real path, so a schedule variable is answered rather than left literal. The
+    // playground's time simulation reaches it through `now` above: an operator testing "what does
+    // it say at 22:00" sees the agent report itself closed, exactly as the gate would.
+    availability: { schedule },
+  };
+  const systemPrompt = interpolatePromptVars(
+    promptTemplate,
+    promptVars,
+    promptOpts,
   );
   // NOTE: The current values of the attribute keys the operator selected, rendered as an XML block
   // APPENDED to the FINISHED prompt — never interpolated, so a stored value containing
@@ -601,6 +609,23 @@ export async function loadAgentConfig(
   const promptSections = [attributeSection, appointmentSection].filter(
     (s): s is string => s !== null,
   );
+  // The same prompt with every customer-authored value taken out, for the row the Logs page shows.
+  // Built here, from the same parts, so the two can never describe different turns. The alternative
+  // (reconstructing it at the emit) would read a prompt that had already lost the seam between the
+  // operator's text and what was substituted into it. See prompt-audit.ts for the rule.
+  const auditedSections: AuditedSection[] = [];
+  if (attributeSection) {
+    auditedSections.push({
+      label: "atributos",
+      keys: ATTRIBUTE_SCOPES.flatMap((scope) =>
+        attributeContext[scope].map((k) => `${scope}:${k}`),
+      ),
+      text: attributeSection,
+    });
+  }
+  if (appointmentSection) {
+    auditedSections.push({ label: "agendamentos", text: appointmentSection });
+  }
   const limits = readLimitsConfig(effSettings);
   return {
     agentId: agent.id,
@@ -614,6 +639,13 @@ export async function loadAgentConfig(
     systemPrompt: promptSections.length
       ? `${systemPrompt}\n\n${promptSections.join("\n\n")}`
       : systemPrompt,
+    systemPromptAudit: buildPromptAudit({
+      template: promptTemplate,
+      vars: promptVars,
+      timezone: promptOpts.timezone,
+      now: promptOpts.now,
+      sections: auditedSections,
+    }),
     mc,
     apiKey,
     credentialBaseUrl,

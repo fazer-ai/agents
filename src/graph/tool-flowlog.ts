@@ -59,6 +59,21 @@ function toolOutputValue(output: unknown): unknown {
 // NOTE: A ToolMessage with status "error" is a tool-marked integration failure (failableTool/toolFailure —
 // the friendly string went to the model, but the call must be logged as a failure). Thrown errors
 // take the handleToolError path instead; this only classifies returned outputs.
+// The cause line of a failure a tool RETURNED (as opposed to threw). The string it returned serves
+// two contracts at once: the model needs the provider's body to answer, and this column is
+// documented to carry none of it. An operator's HTTP tool answers `HTTP 422\n{"erro":"CPF … não
+// encontrado"}` (`src/graph/tools/http.ts`), and its `detail.output` was already being reduced to a
+// shape on the very same emit. What is kept is the part WE wrote: `toolFailure(...)` is only ever
+// called with a message we compose, and the newline that follows it in the HTTP builder is ours too,
+// so the first line is the diagnosis (`HTTP 422`, `Google Calendar returned HTTP 401.`) and
+// everything after it came from the other end. `logToolValues` keeps the whole string, exactly as it
+// keeps the arguments and the result.
+function failureCause(value: unknown, logValues: boolean): string {
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (logValues) return text;
+  return (text ?? "").split("\n", 1)[0] ?? "";
+}
+
 function isErrorToolOutput(output: unknown): boolean {
   return (
     !!output &&
@@ -88,6 +103,9 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     value: unknown,
     declared: DeclaredKeys,
   ) => unknown;
+  // Same switch, read on the failure path: `describe` alone cannot carry it, because a failure's
+  // cause is a string the operator has to be able to read, not a shape.
+  private readonly logValues: boolean;
   private readonly declaredKeys: Map<string, ReadonlySet<string>>;
   private readonly starts = new Map<
     string,
@@ -103,7 +121,8 @@ export class ToolFlowLogger extends BaseCallbackHandler {
   ) {
     super();
     this.flow = flow;
-    this.describe = opts.logValues === true ? (value) => value : describeShape;
+    this.logValues = opts.logValues === true;
+    this.describe = this.logValues ? (value) => value : describeShape;
     this.declaredKeys = declaredKeysByTool(opts.tools ?? []);
   }
 
@@ -149,7 +168,7 @@ export class ToolFlowLogger extends BaseCallbackHandler {
       ...(failed
         ? {
             errorMessage: sanitizeErrorMessage(
-              typeof value === "string" ? value : JSON.stringify(value),
+              failureCause(value, this.logValues),
             ),
           }
         : {}),

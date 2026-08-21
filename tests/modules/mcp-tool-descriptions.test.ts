@@ -53,8 +53,12 @@ describe("MCP tool descriptions", () => {
     expect(d).toContain("PARTIAL patch MERGED");
     // Nothing is written unless dry_run is turned off.
     expect(d).toContain("dry_run");
-    // A model id and a key belong to the vendor they were picked from.
-    expect(d).toContain("must be sent WITH normalizeProvider");
+    // A model id and a key belong to the vendor they were picked from — and this one is NOT a
+    // refusal. resolveNormalizeModel decides it at READ time (`override_without_provider`), so the
+    // write succeeds and the rewrite silently never runs; the description that called it a refusal
+    // was the one thing a caller could not have found out by trying. Trimming the "never runs" half
+    // is how it got there: the text this replaced said "refused AND the rewrite is skipped".
+    expect(d).toContain("stored without complaint and the rewrite NEVER RUNS");
     // Over-long operator text is refused rather than silently shortened.
     expect(d).toContain("refused, not trimmed");
     // A credential travels as a name or a stable ref, never as a secret.

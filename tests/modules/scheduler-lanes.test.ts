@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import { JOB_LANE, type SchedulerLane } from "@/modules/scheduler/lanes";
 import {
   claimDueCompactionJobs,
@@ -25,6 +26,10 @@ import {
 // The DRAIN, because "the shared lane is concurrent" is a claim about ordering that no unit test of
 // a pure function can make. The handlers below deadlock a serial drain on purpose: the first job
 // cannot finish until the second one starts. Serially that is a hang; concurrently it is a pass.
+//
+// Both tests fence on this file's tenant. The claim is cross-tenant by design, so a second DB-backed
+// suite running at the same time is not a hypothetical: its rows fill the batch, and a deadlock test
+// whose pair never got claimed together times out exactly like a serial drain would.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -169,7 +174,13 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     });
 
     // A serial drain hangs here rather than failing an assertion, so the deadline is the assertion.
-    const tick = runSchedulerTick(appDb, { staleMs: 300_000, batchSize: 20 });
+    // Fenced to this tenant: without it the batch fills with another concurrent suite's rows, and
+    // the pair below never gets claimed together — the deadlock then reads as a real serial drain.
+    const tick = runSchedulerTick(appDb, {
+      staleMs: 300_000,
+      batchSize: 20,
+      tenantId,
+    });
     const timedOut = Symbol("timeout");
     const outcome = await Promise.race([
       tick.then(() => "finished" as const),
@@ -178,4 +189,106 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     expect(outcome).toBe("finished");
     expect(bothRan).toBe(true);
   }, 15_000);
+
+  test("the tick claims only its fenced tenant's jobs", async () => {
+    // The fence is test-only isolation, and a mutation removing it survives any single-file run —
+    // its whole point is what happens when ANOTHER suite has rows due at the same moment. A second
+    // tenant reproduces that without needing a second process.
+    const other = await suDb.tenant.create({
+      data: { name: "LANES2", slug: `lanes2-${process.pid}` },
+    });
+    try {
+      const foreign = await enqueueJob({
+        tenantId: other.id,
+        kind: "WEBHOOK_RETRY",
+        dedupeKey: "foreign",
+        runAt: past(),
+        base: appDb,
+      });
+      let touched = false;
+      registerJobHandler("WEBHOOK_RETRY", async () => {
+        touched = true;
+        return { outcome: "done" };
+      });
+      await runSchedulerTick(appDb, {
+        staleMs: 300_000,
+        batchSize: 20,
+        tenantId,
+      });
+      expect(touched).toBe(false);
+      const row = await suDb.schedulerJob.findUniqueOrThrow({
+        where: { id: foreign },
+        select: { status: true },
+      });
+      expect(row.status).toBe("PENDING");
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM scheduler_jobs WHERE tenant_id = ${other.id}`,
+      );
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${other.id}`,
+      );
+    }
+  });
+
+  test("a write that cannot reach the database is logged, and the batch still drains", async () => {
+    // The regression `allSettled` introduces if nothing reads its results: the serial loop let an
+    // infrastructure failure propagate out of the tick, where startScheduler logged it. runClaimed
+    // swallows a HANDLER's error (it fails the job instead), so a rejection here is the database
+    // being unreachable under completeJob — and the row is left CLAIMED for the reaper. Discarded,
+    // that is a job silently stuck for minutes with nothing in the log saying why.
+    let ran = 0;
+    registerJobHandler("WEBHOOK_RETRY", async () => {
+      ran += 1;
+      return { outcome: "done" };
+    });
+
+    for (const key of ["reject-a", "reject-b"]) {
+      await enqueueJob({
+        tenantId,
+        kind: "WEBHOOK_RETRY",
+        dedupeKey: key,
+        runAt: past(),
+        base: appDb,
+      });
+    }
+
+    // Every finishing write goes through schedulerJob.updateMany; the claim and the reap are raw SQL
+    // and still work, so the batch is claimed normally and then cannot be closed.
+    const broken = appDb.$extends({
+      query: {
+        schedulerJob: {
+          updateMany() {
+            throw new Error("connection terminated");
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    const errors: unknown[] = [];
+    const realError = logger.error;
+    (logger as { error: unknown }).error = (...args: unknown[]) => {
+      errors.push(args[0]);
+    };
+    try {
+      const out = await runSchedulerTick(broken, {
+        staleMs: 300_000,
+        batchSize: 20,
+        tenantId,
+      });
+      // The tick RESOLVES (one unreachable row must not decide the other nineteen) and reports what
+      // it claimed, so the count alone can never be the signal that something went wrong.
+      expect(out.claimed).toBe(2);
+    } finally {
+      (logger as { error: unknown }).error = realError;
+    }
+
+    expect(ran).toBe(2);
+    // One line per job that was left unfinished, naming it.
+    expect(errors).toHaveLength(2);
+    for (const e of errors) {
+      expect((e as { kind?: string }).kind).toBe("WEBHOOK_RETRY");
+      expect((e as { jobId?: string }).jobId).toBeTruthy();
+    }
+  });
 });

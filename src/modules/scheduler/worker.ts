@@ -160,13 +160,23 @@ function supersededWarning(job: ClaimedJob, outcome: string): void {
 export interface TickOptions {
   staleMs: number;
   batchSize: number;
+  // NOTE: test-only isolation, the same fence claimDueJobs and reapStaleJobs already document. The
+  // tick is cross-tenant by design (single leader in production), so two DB-backed suites running at
+  // once claim each other's rows: the batch fills with the other run's jobs, or this process
+  // executes them. Leave it unset in production.
+  tenantId?: bigint;
 }
 
 export async function runSchedulerTick(
   base: PrismaClient,
   opts: TickOptions,
 ): Promise<{ claimed: number; reaped: number }> {
-  const reaped = await reapStaleJobs(opts.staleMs, base);
+  const reaped = await reapStaleJobs(
+    opts.staleMs,
+    base,
+    new Date(),
+    opts.tenantId,
+  );
   // NOTE: The reaper is the other road to DEAD — a claim that crashed or hung never reaches failJob,
   // so without this a job that exhausts its attempts by hanging dies unannounced.
   for (const job of reaped) {
@@ -174,7 +184,12 @@ export async function runSchedulerTick(
       await dispatchDeadLetter(job, "reaped: the claim never finished", base);
     }
   }
-  const jobs = await claimDueJobs(opts.batchSize, base);
+  const jobs = await claimDueJobs(
+    opts.batchSize,
+    base,
+    new Date(),
+    opts.tenantId,
+  );
   // NOTE: The batch drains CONCURRENTLY, which is what the debounce and compaction lanes always did
   // and this one did not (issue #165). Serially, the lane advanced at the speed of whatever was
   // running: one large document being indexed, or one follow-up whose model call is slow, delayed
@@ -192,7 +207,23 @@ export async function runSchedulerTick(
   //
   // allSettled: runClaimed never re-throws (it fails the job internally), but a stray throw must not
   // stall the tick.
-  await Promise.allSettled(jobs.map((job) => runClaimed(job, base)));
+  const settled = await Promise.allSettled(
+    jobs.map((job) => runClaimed(job, base)),
+  );
+  // NOTE: allSettled DISCARDS rejections, and the serial loop this replaced did not: an `await` that
+  // threw propagated out of the tick and startScheduler logged it. runClaimed swallows a handler's
+  // own error (it fails the job instead), so a rejection here is the infrastructure underneath —
+  // completeJob/failJob unable to reach the database — and the row stays CLAIMED until the reaper
+  // takes it minutes later. Logged per job rather than re-thrown, because one unreachable row must
+  // not decide the outcome of the other nineteen.
+  for (const [i, r] of settled.entries()) {
+    if (r.status !== "rejected") continue;
+    const job = jobs[i];
+    logger.error(
+      { err: r.reason, kind: job?.kind, jobId: job ? String(job.id) : null },
+      "scheduler: job left unfinished by a failed write",
+    );
+  }
   return { claimed: jobs.length, reaped: reaped.length };
 }
 

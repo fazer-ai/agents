@@ -113,21 +113,47 @@ const parseTrustProxy = (raw: string | undefined, envName: string): boolean => {
 // duration Date cannot represent is orders of magnitude over it.
 const MAX_WINDOW_MINUTES = 1440;
 // Generous enough that "effectively unlimited" is still expressible, small enough that a slipped
-// exponent is caught rather than silently disabling a limiter.
-const MAX_BUDGET = 1_000_000;
+// exponent is caught rather than silently disabling a limiter. Used for every count: budgets, pool
+// sizes, concurrency, character caps.
+const MAX_COUNT = 1_000_000;
+// The runtime's own limit for the five that reach `setInterval` (the webhook, scheduler, debounce,
+// compaction and alert workers), and a generous ceiling for the three other millisecond spans.
+// `setInterval` takes a 32-bit signed delay and anything it cannot represent it sets to 1: measured
+// in Bun, twenty ticks at a NaN delay took 23.6ms and twenty at Infinity took 22.8ms, about 1.15ms
+// each, against the 15_000ms the operator wrote. A worker whose tick claims jobs then spins against
+// the database instead of idling. The other three are date and cache arithmetic, where the same
+// values produce an Invalid Date rather than a hot loop; 24 days is past any real span for them too.
+const MAX_DURATION_MS = 2_147_483_647;
+// The protocol's own limit.
+const MAX_PORT = 65_535;
+// A century. Any real retention policy is orders of magnitude under this, and every span whose
+// millisecond value Date cannot represent is orders of magnitude over it.
+const MAX_RETENTION_DAYS = 36_500;
 
-export const parseBudget = (
+// NOTE: every numeric environment variable in this file goes through here, and tests/config.test.ts
+// reads this source to keep that true: it asserts that `raw`, this function's own input, is the only
+// thing the file ever hands to `Number`. The shape this replaced was `RAW ? Number(RAW) : fallback`,
+// which converts and asks nothing, so `Number("15s")` reached consumers as NaN and `Number("1e309")`
+// as Infinity. See MAX_DURATION_MS for what that did to the seven that feed a timer.
+//
+// NOTE: `minimum` is 1 for every setting but one. Zero is admitted only where the CONSUMER treats it
+// as a value rather than as an absence, which is a narrower test than "the old code let it through":
+// the old code let zero through on nine of these, and on eight of the nine it was the pathology, not
+// a setting. `setInterval(fn, 0)` is the same 1ms tick as NaN, a heartbeat due at `now` is a storm,
+// and `PORT=0` binds an ephemeral port nothing can route to.
+export const parseIntSetting = (
   raw: string | undefined,
   envName: string,
   fallback: number,
   consequence: string,
   upperBound: number,
+  minimum = 1,
 ): number => {
   if (raw === undefined || raw.trim() === "") return fallback;
   const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0 || value > upperBound) {
+  if (!Number.isInteger(value) || value < minimum || value > upperBound) {
     throw new Error(
-      `${envName} must be a whole number between 1 and ${upperBound} (got "${raw}"). ${consequence}`,
+      `${envName} must be a whole number between ${minimum} and ${upperBound} (got "${raw}"). ${consequence}`,
     );
   }
   return value;
@@ -146,17 +172,26 @@ const parseHops = (raw: string | undefined, envName: string): number => {
 
 const googleClientId = (GOOGLE_CLIENT_ID ?? "").trim();
 
-// NOTE: strict parse — anything but a finite positive integer (Infinity, NaN, 0, negatives,
-// fractions) falls back to the default, so the prompt-size guard can never be disabled by a
-// malformed value.
-const agentPromptMaxChars = Number(AGENT_PROMPT_MAX_CHARS);
+const agentPromptMaxChars = parseIntSetting(
+  AGENT_PROMPT_MAX_CHARS,
+  "AGENT_PROMPT_MAX_CHARS",
+  100_000,
+  "It is the ceiling on an agent's system prompt, so a malformed value would disable the guard.",
+  MAX_COUNT,
+);
 
 const config = {
   packageInfo: {
     name: packageInfo.name,
     version: packageInfo.version,
   },
-  port: PORT ? Number(PORT) : 3000,
+  port: parseIntSetting(
+    PORT,
+    "PORT",
+    3000,
+    "It is the port the server binds.",
+    MAX_PORT,
+  ),
   publicUrl: PUBLIC_URL || "http://localhost:3000",
   env: (NODE_ENV || "development") as "development" | "production",
   // NOTE: Distribution edition. Single source of truth shared with the frontend bundle
@@ -204,7 +239,13 @@ const config = {
   // parallel without the pool becoming the bottleneck (pairs with agent.modelConcurrency). Total
   // connections per leader replica are ~2×this; keep it under the server's max_connections (pg
   // default 100). To go well beyond ~40, raise max_connections on the Postgres image instead.
-  dbPoolMax: DB_POOL_MAX && Number(DB_POOL_MAX) > 0 ? Number(DB_POOL_MAX) : 30,
+  dbPoolMax: parseIntSetting(
+    DB_POOL_MAX,
+    "DB_POOL_MAX",
+    30,
+    "It sizes both Postgres pools, and total connections per replica are about twice it.",
+    MAX_COUNT,
+  ),
   cdnUrl: CDN_URL ?? "",
   googleClientId,
   googleOAuthEnabled: googleClientId.length > 0,
@@ -229,18 +270,18 @@ const config = {
   // across every entrypoint (debounce/webhook/nudge/playground) so a burst does not hammer the
   // provider. Per-process (single-replica). Pair with dbPoolMax so the DB pool is not the effective cap.
   agent: {
-    modelConcurrency:
-      AGENT_MODEL_CONCURRENCY && Number(AGENT_MODEL_CONCURRENCY) > 0
-        ? Number(AGENT_MODEL_CONCURRENCY)
-        : 20,
+    modelConcurrency: parseIntSetting(
+      AGENT_MODEL_CONCURRENCY,
+      "AGENT_MODEL_CONCURRENCY",
+      20,
+      "It is the only throttle on concurrent model calls, process-wide.",
+      MAX_COUNT,
+    ),
     // NOTE: Hard cap (characters) on an agent's system prompt, enforced at the service layer for
     // every transport (console/REST/MCP) and at import. A deliberate checkpoint, not a technical
     // ceiling: prompts past tens of KB usually hold knowledge-base content and degrade instruction
     // adherence. Intentionally surfaced only as a save error — no UI affordance points here.
-    promptMaxChars:
-      Number.isSafeInteger(agentPromptMaxChars) && agentPromptMaxChars > 0
-        ? agentPromptMaxChars
-        : 100_000,
+    promptMaxChars: agentPromptMaxChars,
   },
   // NOTE: Outbound webhook delivery worker. Single-replica by construction (a reentrancy
   // guard + interval; see docs/deploy.md "Single replica" for the leader pattern when scaling).
@@ -248,18 +289,26 @@ const config = {
   // with full-jitter backoff. Disable for CLIs/one-off scripts that import the app graph.
   webhookWorker: {
     enabled: WEBHOOK_WORKER_ENABLED !== "false",
-    intervalMs: WEBHOOK_WORKER_INTERVAL_MS
-      ? Number(WEBHOOK_WORKER_INTERVAL_MS)
-      : 5_000,
+    intervalMs: parseIntSetting(
+      WEBHOOK_WORKER_INTERVAL_MS,
+      "WEBHOOK_WORKER_INTERVAL_MS",
+      5_000,
+      "It is how often the outbound webhook worker claims due deliveries.",
+      MAX_DURATION_MS,
+    ),
   },
   // NOTE: Follow-up/sweep scheduler worker. Single-replica by construction (a globalThis
   // singleton + non-overlapping tick); the claim uses FOR UPDATE SKIP LOCKED so it is still
   // correct if briefly doubled. Disable for CLIs/one-off scripts that import the app graph.
   schedulerWorker: {
     enabled: SCHEDULER_WORKER_ENABLED !== "false",
-    intervalMs: SCHEDULER_WORKER_INTERVAL_MS
-      ? Number(SCHEDULER_WORKER_INTERVAL_MS)
-      : 15_000,
+    intervalMs: parseIntSetting(
+      SCHEDULER_WORKER_INTERVAL_MS,
+      "SCHEDULER_WORKER_INTERVAL_MS",
+      15_000,
+      "It is how often the scheduler worker claims due jobs.",
+      MAX_DURATION_MS,
+    ),
   },
   // NOTE: Dedicated FAST tick that drains only DEBOUNCE jobs (inbound message coalescing). It is
   // separate from the scheduler so the per-agent debounce window (seconds) is honored without
@@ -267,9 +316,13 @@ const config = {
   // + non-overlapping tick + FOR UPDATE SKIP LOCKED claim). Operational, NOT a per-agent setting.
   debounceWorker: {
     enabled: DEBOUNCE_WORKER_ENABLED !== "false",
-    intervalMs: DEBOUNCE_WORKER_INTERVAL_MS
-      ? Number(DEBOUNCE_WORKER_INTERVAL_MS)
-      : 2_500,
+    intervalMs: parseIntSetting(
+      DEBOUNCE_WORKER_INTERVAL_MS,
+      "DEBOUNCE_WORKER_INTERVAL_MS",
+      2_500,
+      "It is how often the debounce lane drains inbound message coalescing.",
+      MAX_DURATION_MS,
+    ),
   },
   // NOTE: Dedicated tick that drains only MEMORY_COMPACT jobs. Separate from the scheduler for the
   // mirror image of the debounce reason: the scheduler awaits its jobs one at a time, a summary is a
@@ -279,32 +332,60 @@ const config = {
   // setting; the per-agent switch is agent.settings.memory.compaction.
   compactionWorker: {
     enabled: COMPACTION_WORKER_ENABLED !== "false",
-    intervalMs: COMPACTION_WORKER_INTERVAL_MS
-      ? Number(COMPACTION_WORKER_INTERVAL_MS)
-      : 15_000,
+    intervalMs: parseIntSetting(
+      COMPACTION_WORKER_INTERVAL_MS,
+      "COMPACTION_WORKER_INTERVAL_MS",
+      15_000,
+      "It is how often the compaction lane claims MEMORY_COMPACT jobs.",
+      MAX_DURATION_MS,
+    ),
   },
   // NOTE: Cadence of the periodic `heartbeat` outbound webhook (a liveness ping). Runs on the
   // scheduler worker (no separate process); a per-tenant HEARTBEAT job is armed lazily only while
   // the tenant has an enabled subscription to the event, and self-terminates otherwise. Default 1 min.
   heartbeat: {
-    intervalMs: HEARTBEAT_INTERVAL_MS ? Number(HEARTBEAT_INTERVAL_MS) : 60_000,
+    intervalMs: parseIntSetting(
+      HEARTBEAT_INTERVAL_MS,
+      "HEARTBEAT_INTERVAL_MS",
+      60_000,
+      "It is the cadence of the heartbeat outbound webhook.",
+      MAX_DURATION_MS,
+    ),
   },
   // NOTE: External alert delivery worker (execution-flow warnings/errors → Discord / webhook).
   // Same single-replica discipline as the outbound worker; OFF on extra replicas. The coalesce
   // window lets a burst accumulate into one delivery's count before the single POST.
   alertWorker: {
     enabled: ALERT_WORKER_ENABLED !== "false",
-    intervalMs: ALERT_WORKER_INTERVAL_MS
-      ? Number(ALERT_WORKER_INTERVAL_MS)
-      : 10_000,
-    coalesceWindowMs: ALERT_COALESCE_WINDOW_MS
-      ? Number(ALERT_COALESCE_WINDOW_MS)
-      : 30_000,
+    intervalMs: parseIntSetting(
+      ALERT_WORKER_INTERVAL_MS,
+      "ALERT_WORKER_INTERVAL_MS",
+      10_000,
+      "It is how often the alert worker claims due deliveries.",
+      MAX_DURATION_MS,
+    ),
+    // NOTE: the one setting here where ZERO is a value, not an absence. It means deliver without
+    // buffering, the consumer takes it as such (`Math.max(0, Math.floor(ms / 1000))` in claimDue),
+    // and there is no other way to ask for it. Everything else in this file takes a minimum of 1.
+    coalesceWindowMs: parseIntSetting(
+      ALERT_COALESCE_WINDOW_MS,
+      "ALERT_COALESCE_WINDOW_MS",
+      30_000,
+      "It is how long a burst accumulates into one delivery before the POST; 0 delivers without buffering.",
+      MAX_DURATION_MS,
+      0,
+    ),
   },
   // NOTE: Retention for the high-write execution_logs table (+ terminal alert_deliveries). A daily
   // per-tenant FLOWLOG_SWEEP job deletes rows older than this. Default 30 days.
   flowlog: {
-    retentionDays: FLOWLOG_RETENTION_DAYS ? Number(FLOWLOG_RETENTION_DAYS) : 30,
+    retentionDays: parseIntSetting(
+      FLOWLOG_RETENTION_DAYS,
+      "FLOWLOG_RETENTION_DAYS",
+      30,
+      "It is the cutoff the daily sweep deletes execution_logs against, so a malformed value leaves the highest-write table growing forever.",
+      MAX_RETENTION_DAYS,
+    ),
   },
   // NOTE: stdio MCP transport spawns a local process — arbitrary command execution on the host.
   // In multi-tenant hosting that is an RCE vector, so it is OFF by default; enable only on a
@@ -344,28 +425,28 @@ const config = {
   // hour and still absorbs a burst, which is what an office arriving at once looks like through a
   // single NAT.
   rateLimit: {
-    userPerMin: parseBudget(
+    userPerMin: parseIntSetting(
       RATE_LIMIT_USER_PER_MIN,
       "RATE_LIMIT_USER_PER_MIN",
       600,
       "It is the ceiling every request that is not static or MCP transport counts against.",
-      MAX_BUDGET,
+      MAX_COUNT,
     ),
-    mcpPerMin: parseBudget(
+    mcpPerMin: parseIntSetting(
       RATE_LIMIT_MCP_PER_MIN,
       "RATE_LIMIT_MCP_PER_MIN",
       1200,
       "It is the ceiling the MCP JSON-RPC transport counts against.",
-      MAX_BUDGET,
+      MAX_COUNT,
     ),
-    credentialMax: parseBudget(
+    credentialMax: parseIntSetting(
       RATE_LIMIT_CREDENTIAL_MAX,
       "RATE_LIMIT_CREDENTIAL_MAX",
       20,
       "It is how many credential attempts one address gets per window.",
-      MAX_BUDGET,
+      MAX_COUNT,
     ),
-    credentialWindowMinutes: parseBudget(
+    credentialWindowMinutes: parseIntSetting(
       RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES,
       "RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES",
       5,
@@ -386,12 +467,14 @@ const config = {
     // NOTE: Optional override for the VERSION check only (a fork with its own release cadence points
     // this at a URL returning `{ latestVersion, releaseUrl? }`). Empty = derive from `url`.
     updateCheckUrl: (AGENTS_UPDATE_CHECK_URL ?? "").trim().replace(/\/+$/, ""),
-    // NOTE: Cache TTL (ms) for the hub announcements/version fetch. Default 1h. A non-numeric or
-    // non-positive value falls back to the default (Number("x") > 0 is false for NaN), never NaN.
-    updatesTtlMs:
-      HUB_UPDATES_TTL_MS && Number(HUB_UPDATES_TTL_MS) > 0
-        ? Number(HUB_UPDATES_TTL_MS)
-        : 3_600_000,
+    // NOTE: Cache TTL (ms) for the hub announcements/version fetch. Default 1h.
+    updatesTtlMs: parseIntSetting(
+      HUB_UPDATES_TTL_MS,
+      "HUB_UPDATES_TTL_MS",
+      3_600_000,
+      "It is how long the hub announcements and version check are cached.",
+      MAX_DURATION_MS,
+    ),
   },
 };
 

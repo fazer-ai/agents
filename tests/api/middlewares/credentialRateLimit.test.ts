@@ -4,7 +4,7 @@ import app from "@/app";
 import {
   assertCredentialBudgetIsTighter,
   assertLimiterBudgetsAreDistinct,
-  parseBudget,
+  parseIntSetting,
 } from "@/config";
 
 // The credential endpoints had no bucket of their own: `strictRateLimitMiddleware` was written for
@@ -219,7 +219,7 @@ describe("boot refuses a configuration that would delete a bucket", () => {
 
 describe("boot refuses a budget the limiter cannot honour", () => {
   const parse = (raw: string | undefined) =>
-    parseBudget(
+    parseIntSetting(
       raw,
       "RATE_LIMIT_CREDENTIAL_WINDOW_MINUTES",
       5,

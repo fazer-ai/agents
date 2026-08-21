@@ -170,6 +170,11 @@ export interface TickOptions {
   // once claim each other's rows: the batch fills with the other run's jobs, or this process
   // executes them. Leave it unset in production.
   tenantId?: bigint;
+  // NOTE: test-only, like tenantId. Production sizes this from the model budget
+  // (sharedProviderConcurrency); a test that scaled its workload to that budget would be asserting
+  // whatever AGENT_MODEL_CONCURRENCY happens to be on the machine running it — at 400 the bound is
+  // 100 and the batch it would need exceeds the claim's own hard cap. Leave it unset in production.
+  providerConcurrency?: number;
 }
 
 export async function runSchedulerTick(
@@ -217,7 +222,8 @@ export async function runSchedulerTick(
   // removed — and leaving the costly ones unbounded lets a batch of twenty hold every model permit
   // while a customer's reply waits (see JOB_SPENDS_PROVIDER).
   const gate = new Semaphore(
-    sharedProviderConcurrency(config.agent.modelConcurrency),
+    opts.providerConcurrency ??
+      sharedProviderConcurrency(config.agent.modelConcurrency),
   );
   const settled = await Promise.allSettled(
     jobs.map((job) =>

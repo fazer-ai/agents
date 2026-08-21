@@ -229,13 +229,19 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     // every permit in the process-wide model semaphore while a customer's reply queued behind a
     // proactive nudge — the serial drain took at most one, and that was the only thing protecting
     // the interactive path.
-    const bound = sharedProviderConcurrency(config.agent.modelConcurrency);
-    const N = bound + 3;
+    //
+    // The bound is INJECTED and the workload is a constant. Deriving either from
+    // AGENT_MODEL_CONCURRENCY made the test assert whatever that machine was configured to: at 400
+    // the bound is 100, the workload would be 206 rows, and claimWhere hard-caps a tick at 100.
+    const BOUND = 2;
+    const N = 5;
 
     let live = 0;
     let peak = 0;
+    let costlyStarted = 0;
     let cheapLive = 0;
     let cheapPeak = 0;
+    let cheapStarted = 0;
     const release: Array<() => void> = [];
     const gate = () =>
       new Promise<void>((r) => {
@@ -243,6 +249,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
       });
 
     registerJobHandler("APPOINTMENT_REMINDER", async () => {
+      costlyStarted += 1;
       live += 1;
       peak = Math.max(peak, live);
       await gate();
@@ -250,6 +257,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
       return { outcome: "done" };
     });
     registerJobHandler("HEARTBEAT", async () => {
+      cheapStarted += 1;
       cheapLive += 1;
       cheapPeak = Math.max(cheapPeak, cheapLive);
       await gate();
@@ -278,35 +286,60 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
       staleMs: 300_000,
       batchSize: 100,
       tenantId,
+      providerConcurrency: BOUND,
     });
-    // Let everything that is going to start, start, and read the peak BEFORE releasing anything.
-    await new Promise((r) => setTimeout(r, 150));
+
+    // RENDEZVOUS, not a sleep. A fixed wait samples the counters before the reap and the claim have
+    // returned on a slow or contended database, which is a red that says nothing about concurrency.
+    // Waiting for the cheap ones to ALL have started is the signal that the drain is under way, and
+    // it does not presuppose the bound: if the bound were broken the costly count would race past it
+    // and the peak assertion below is what catches that.
+    const deadline = Date.now() + 10_000;
+    while (
+      (cheapStarted < N || costlyStarted < BOUND) &&
+      Date.now() < deadline
+    ) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    // One more turn of the loop, so a broken bound has had the chance to start more than BOUND.
+    await new Promise((r) => setTimeout(r, 30));
     const costlyAtRest = peak;
     const cheapAtRest = cheapPeak;
 
-    // Then drain until the tick is done, rather than in a fixed number of waves. How many waves
-    // there are is `ceil(N / bound)`, and `bound` comes from AGENT_MODEL_CONCURRENCY — so two passes
-    // is only enough at the budget this machine happens to have. At a budget of 4 the bound is 1 and
-    // there are N waves, and the test would hang on a config it never mentions.
+    // Then drain until the tick is done, rather than in a fixed number of waves: how many waves
+    // there are is ceil(N / BOUND), and teardown must not be what decides whether the test finishes.
     let finished = false;
     void tick.then(() => {
       finished = true;
     });
-    const deadline = Date.now() + 10_000;
-    while (!finished && Date.now() < deadline) {
+    const drainDeadline = Date.now() + 10_000;
+    while (!finished && Date.now() < drainDeadline) {
       for (const r of release.splice(0)) r();
       await new Promise((r) => setTimeout(r, 10));
     }
     await tick;
 
-    expect(costlyAtRest).toBe(bound);
-    // Which kinds the bound APPLIES to, stated independently of the source. One kind is exercised
-    // above; the rest are only ever covered here.
-    expect(JOB_SPENDS_PROVIDER).toEqual(EXPECTED_SPENDS_PROVIDER);
+    expect(costlyAtRest).toBe(BOUND);
     // The cheap kind is deliberately NOT gated: bounding the whole drain would put a heartbeat back
     // behind a nudge, which is the blocking this change removed.
     expect(cheapAtRest).toBe(N);
-  }, 20_000);
+    // Which kinds the bound APPLIES to, stated independently of the source. One kind is exercised
+    // above; the rest are only ever covered here.
+    expect(JOB_SPENDS_PROVIDER).toEqual(EXPECTED_SPENDS_PROVIDER);
+  }, 30_000);
+
+  // The production sizing, which the test above deliberately does not exercise: never the whole
+  // budget (a lane nobody waits on must not be able to starve the turn somebody is waiting on),
+  // never zero (proactive work that never runs is worse than proactive work that runs slowly).
+  test("the production bound never takes the whole model budget, and never none", () => {
+    for (const budget of [1, 2, 4, 8, 20, 100, 400]) {
+      const bound = sharedProviderConcurrency(budget);
+      expect(bound).toBeGreaterThanOrEqual(1);
+      if (budget > 1) expect(bound).toBeLessThan(budget);
+    }
+    expect(sharedProviderConcurrency(20)).toBe(5);
+    expect(sharedProviderConcurrency(1)).toBe(1);
+  });
 
   test("the tick claims only its fenced tenant's jobs", async () => {
     // The fence is test-only isolation, and a mutation removing it survives any single-file run —

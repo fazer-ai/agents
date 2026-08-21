@@ -927,7 +927,96 @@ describe("buildGuardrailGate", () => {
       }),
       apiKey: "k",
     },
+    // The gate drops answer_relevance when there is no customer message to judge against (every
+    // proactive message), and an agent whose only output check is that one is then left asking
+    // nothing. The model answers an empty policy list anyway, so this is not a saved call: it is a
+    // `violated: true` that could replace or suppress a message no rule objected to.
+    {
+      name: "the only output check needs a customer message and there is none",
+      cfg: enabledCfg({
+        output: {
+          ...GUARDRAILS_DEFAULTS.output,
+          enabled: true,
+          checks: {
+            toxicity: false,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+            answerRelevance: true,
+          },
+        },
+      }),
+      apiKey: "k",
+    },
   ];
+
+  // The same hole on the other direction, which the prompt closes for its own reason: both of these
+  // checks describe a REPLY, so an input prompt never lists them however the agent is configured.
+  test("builds no model when every input check only means something on a reply", async () => {
+    const f = countingFactory(() => {
+      throw new Error("should never be constructed");
+    });
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg({
+        input: {
+          ...GUARDRAILS_DEFAULTS.input,
+          enabled: true,
+          checks: {
+            toxicity: false,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: true,
+            answerRelevance: true,
+          },
+        },
+      }),
+      apiKey: "k",
+      client,
+      conversationId: 1,
+      flow,
+      makeModel: f.make,
+    });
+    expect(await gate("input", "olá")).toEqual({ kind: "not-run" });
+    expect(f.calls()).toBe(0);
+  });
+
+  // ...and the operator's own policy is a policy: it has no check to switch on, so a config that
+  // relies on it alone must still be screened.
+  test("a custom policy alone is enough to screen", async () => {
+    const f = countingFactory(() =>
+      guardrailModel(async () => ({
+        content: JSON.stringify({
+          violated: false,
+          categories: [],
+          rationale: "",
+          suggestedReply: null,
+        }),
+      })),
+    );
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg({
+        customPolicy: "  never promise a delivery date  ",
+        output: {
+          ...GUARDRAILS_DEFAULTS.output,
+          enabled: true,
+          checks: {
+            toxicity: false,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+            answerRelevance: false,
+          },
+        },
+      }),
+      apiKey: "k",
+      client,
+      conversationId: 1,
+      flow,
+      makeModel: f.make,
+    });
+    expect(await gate("output", "olá")).toEqual({ kind: "clean" });
+    expect(f.calls()).toBe(1);
+  });
 
   for (const c of cases) {
     test(`builds no model when ${c.name}`, async () => {

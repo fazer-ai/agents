@@ -11,6 +11,7 @@ import {
   customerMessageForReview,
   fenceCustomerMessage,
   type GuardrailPromptParams,
+  judgesAnything,
 } from "./prompts";
 import {
   type GuardrailVerdict,
@@ -64,8 +65,10 @@ export function splitAnalyses(p: AnalysisParams): {
     return { policies: p, relevance: null };
   }
   const otherChecks = { ...p.checks, answerRelevance: false };
-  const judgesTheReply =
-    Object.values(otherChecks).some(Boolean) || p.customPolicy.trim() !== "";
+  // Same question the gate asks before screening at all, from the same definition: whether a prompt
+  // built from these checks would list anything. Two copies of it would differ the day a check
+  // becomes direction-specific, and the copy that forgot would send an empty policy list.
+  const judgesTheReply = judgesAnything({ ...p, checks: otherChecks });
   return {
     policies: judgesTheReply
       ? { ...p, checks: otherChecks, customerMessage: undefined }

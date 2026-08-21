@@ -5,6 +5,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { analyzeGuardrail } from "./analyze";
 import { loggableCategories } from "./log-categories";
+import { judgesAnything } from "./prompts";
 import type { GuardrailsConfig } from "./settings";
 
 // The moderation gate both runtimes call. It was a closure inside runLoadedTurn until the proactive
@@ -125,17 +126,27 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   return async (direction, subject) => {
     const dir = gr[direction];
     if (!gr.enabled || !p.apiKey || !dir.enabled) return { kind: "not-run" };
+    const judgesRelevance = direction === "output" && !!p.customerMessage;
+    const checks = judgesRelevance
+      ? dir.checks
+      : { ...dir.checks, answerRelevance: false };
+    // Nothing left to ask about, so nothing is asked: the line above can empty the list on its own
+    // (an agent whose only output check is `answer_relevance`, screening a proactive message that
+    // answers no question), and so can a direction that never carries the check the operator
+    // enabled. An empty prompt is not a cheap screening — the model answers it anyway, and a
+    // `violated: true` with no policy behind it would replace or suppress a message that broke no
+    // rule, having cost a model call and, on the proactive path, an ownership probe to do it.
+    if (!judgesAnything({ direction, checks, customPolicy: gr.customPolicy })) {
+      return { kind: "not-run" };
+    }
     const model = resolveModel(direction);
     if (!model) return { kind: "unavailable" };
-    const judgesRelevance = direction === "output" && !!p.customerMessage;
     const verdict = await analyzeGuardrail(
       model,
       {
         direction,
         text: subject,
-        checks: judgesRelevance
-          ? dir.checks
-          : { ...dir.checks, answerRelevance: false },
+        checks,
         competitors: gr.competitors,
         customPolicy: gr.customPolicy,
         systemPrompt: direction === "output" ? p.systemPrompt : undefined,

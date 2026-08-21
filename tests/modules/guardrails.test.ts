@@ -413,15 +413,14 @@ describe("splitAnalyses", () => {
   });
 });
 
-// Everything below exercises the PROSE path, which is what an endpoint that we cannot ask for a
-// constrained answer still gets (see @/graph/model-config: deepseek, openrouter, openai-compatible).
-// The constrained path has its own describe at the end of this file.
+// Everything below exercises the PROSE path, which is what every endpoint we cannot ask for a
+// constrained answer still gets (see @/graph/model-config: deepseek, openrouter, openai-compatible,
+// google). The constrained path has its own file, tests/modules/guardrail-constrained.test.ts,
+// because it is asserted against the vendor adapters rather than against a double.
 const analyzeProse = (
-  ...args: [
-    Parameters<typeof analyzeGuardrail>[0],
-    Parameters<typeof analyzeGuardrail>[1],
-  ]
-) => analyzeGuardrail(args[0], args[1], "prose");
+  model: Parameters<typeof analyzeGuardrail>[0],
+  params: Parameters<typeof analyzeGuardrail>[1],
+) => analyzeGuardrail(model, params, "prose");
 
 describe("analyzeGuardrail", () => {
   const base = {

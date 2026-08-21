@@ -20,8 +20,6 @@ import {
   type VerdictMode,
 } from "./verdict";
 
-export type { GuardrailVerdict } from "./verdict";
-
 const ANALYZE_TIMEOUT_MS = 15_000;
 
 function messageText(content: BaseMessage["content"]): string {

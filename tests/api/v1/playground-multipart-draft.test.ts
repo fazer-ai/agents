@@ -1,23 +1,28 @@
 import { describe, expect, test } from "bun:test";
 import { Elysia, t } from "elysia";
+import { playgroundDraftSchema } from "@/api/v1/agents.controller";
 
 // Regression for the playground audio/file endpoints. Elysia's multipart parser auto-parses any
 // form field whose value starts with `{`/`[` and is valid JSON into an object (see
 // adapter/web-standard formData). The live-edit `draft` rides multipart as `JSON.stringify(...)`,
 // so it arrives ALREADY as an object — typing it `t.String()` 422s ("Expected string but found
 // [object Object]"). The body schema must accept the object (union with string for the malformed-
-// JSON degrade path). This mirrors the schema in src/api/v1/agents.controller.ts.
-const playgroundDraftSchema = t.Object({
-  systemPrompt: t.Optional(t.String({ maxLength: 50_000 })),
-  modelConfig: t.Optional(t.Record(t.String(), t.Unknown())),
-  settings: t.Optional(t.Record(t.String(), t.Unknown())),
-});
+// JSON degrade path).
+//
+// The REAL schema is imported, never mirrored. A copy here validated its own fields and told us
+// nothing about the endpoint's: a draft field declared in TypeScript but missing from the schema is
+// stripped by Elysia's normalize before the handler runs, and a mirrored schema cannot see that.
 
 const app = new Elysia().post(
   "/upload",
   ({ body }) => {
     const draft = (body as { draft?: unknown }).draft;
-    return { draftType: draft === undefined ? "undefined" : typeof draft };
+    return {
+      draftType: draft === undefined ? "undefined" : typeof draft,
+      // What actually survived normalization, which is the only thing the handler can act on.
+      keys:
+        draft && typeof draft === "object" ? Object.keys(draft).sort() : null,
+    };
   },
   {
     body: t.Object({
@@ -57,6 +62,35 @@ describe("playground multipart draft schema", () => {
     // The parser turned the `{`-leading field into an object before validation — exactly why
     // t.String() would reject it.
     expect((await res.json()).draftType).toBe("object");
+  });
+
+  test("every declared draft field survives normalization", async () => {
+    // The failure this guards is silent: Elysia strips a field the schema does not declare, the
+    // handler sees `undefined`, and the turn runs against the saved config while the operator
+    // believes they are testing their unsaved edit. Asserting the type compiles proves nothing —
+    // only what comes back out of the parser does.
+    const sent = {
+      systemPrompt: "p",
+      businessHoursId: "42",
+      modelConfig: { provider: "openai" },
+      settings: { tts: { mode: "mirror" } },
+      toolMocks: { t: "r" },
+      promptVars: { nome_contato: "Maria" },
+      promptNow: "2026-08-20T22:00",
+    };
+    const res = await app.handle(
+      new Request("http://localhost/upload", {
+        method: "POST",
+        body: buildForm(sent),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).keys).toEqual(Object.keys(sent).sort());
+    // And the fixture is checked against the schema itself, so this guard covers the fields added
+    // after it was written: a new draft field fails here until it is exercised above.
+    expect(Object.keys(sent).sort()).toEqual(
+      Object.keys(playgroundDraftSchema.properties).sort(),
+    );
   });
 
   test("absent draft still validates (override is optional)", async () => {

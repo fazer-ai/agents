@@ -99,10 +99,17 @@ export function splitAgentUpdateBody(
 
 // Live, non-persisted playground override (the "edit live" popup): the unsaved prompt/model/settings
 // draft. The secret never travels — modelConfig carries only a credentialRef, resolved server-side.
-const playgroundDraftSchema = t.Object({
+// NOTE: Elysia normalizes `draft` against this schema, so a field that is missing HERE is stripped
+// from the request before the handler ever sees it — silently, with the turn then running against
+// the saved config. The type below is derived from this object precisely so the two cannot drift:
+// declaring a draft field in TypeScript alone does not carry it over the wire.
+export const playgroundDraftSchema = t.Object({
   systemPrompt: t.Optional(
     t.String({ maxLength: config.agent.promptMaxChars }),
   ),
+  // The Availability picker's current value ("" = none). Semantic validation lives at the one place
+  // that resolves it (prepare.ts: digits only, scoped read, anything else reads as no schedule).
+  businessHoursId: t.Optional(t.String({ maxLength: 20 })),
   modelConfig: t.Optional(t.Record(t.String(), t.Unknown())),
   settings: t.Optional(t.Record(t.String(), t.Unknown())),
   // Playground tool-simulation: tool name → canned result (overrides any real/simulated execution).
@@ -115,15 +122,7 @@ const playgroundDraftSchema = t.Object({
   promptNow: t.Optional(t.String({ maxLength: 40 })),
 });
 
-type PlaygroundDraft = {
-  systemPrompt?: string;
-  businessHoursId?: string;
-  modelConfig?: Record<string, unknown>;
-  settings?: Record<string, unknown>;
-  toolMocks?: Record<string, string>;
-  promptVars?: Record<string, string>;
-  promptNow?: string;
-};
+type PlaygroundDraft = typeof playgroundDraftSchema.static;
 
 // `draft` rides the multipart request as a JSON string. Elysia's multipart parser auto-parses any
 // field whose value starts with `{`/`[` and is valid JSON (see adapter/web-standard formData), so a

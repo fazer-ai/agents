@@ -7043,6 +7043,10 @@
                         "maxLength": 100000,
                         "type": "string"
                       },
+                      "businessHoursId": {
+                        "maxLength": 20,
+                        "type": "string"
+                      },
                       "modelConfig": {
                         "type": "object",
                         "patternProperties": {
@@ -7110,6 +7114,10 @@
                         "maxLength": 100000,
                         "type": "string"
                       },
+                      "businessHoursId": {
+                        "maxLength": 20,
+                        "type": "string"
+                      },
                       "modelConfig": {
                         "type": "object",
                         "patternProperties": {
@@ -7175,6 +7183,10 @@
                     "properties": {
                       "systemPrompt": {
                         "maxLength": 100000,
+                        "type": "string"
+                      },
+                      "businessHoursId": {
+                        "maxLength": 20,
                         "type": "string"
                       },
                       "modelConfig": {
@@ -7468,6 +7480,10 @@
                         "maxLength": 100000,
                         "type": "string"
                       },
+                      "businessHoursId": {
+                        "maxLength": 20,
+                        "type": "string"
+                      },
                       "modelConfig": {
                         "type": "object",
                         "patternProperties": {
@@ -7527,6 +7543,10 @@
                         "maxLength": 100000,
                         "type": "string"
                       },
+                      "businessHoursId": {
+                        "maxLength": 20,
+                        "type": "string"
+                      },
                       "modelConfig": {
                         "type": "object",
                         "patternProperties": {
@@ -7584,6 +7604,10 @@
                     "properties": {
                       "systemPrompt": {
                         "maxLength": 100000,
+                        "type": "string"
+                      },
+                      "businessHoursId": {
+                        "maxLength": 20,
                         "type": "string"
                       },
                       "modelConfig": {
@@ -7763,6 +7787,10 @@
                             "maxLength": 100000,
                             "type": "string"
                           },
+                          "businessHoursId": {
+                            "maxLength": 20,
+                            "type": "string"
+                          },
                           "modelConfig": {
                             "type": "object",
                             "patternProperties": {
@@ -7830,6 +7858,10 @@
                             "maxLength": 100000,
                             "type": "string"
                           },
+                          "businessHoursId": {
+                            "maxLength": 20,
+                            "type": "string"
+                          },
                           "modelConfig": {
                             "type": "object",
                             "patternProperties": {
@@ -7895,6 +7927,10 @@
                         "properties": {
                           "systemPrompt": {
                             "maxLength": 100000,
+                            "type": "string"
+                          },
+                          "businessHoursId": {
+                            "maxLength": 20,
                             "type": "string"
                           },
                           "modelConfig": {
@@ -8083,6 +8119,10 @@
                             "maxLength": 100000,
                             "type": "string"
                           },
+                          "businessHoursId": {
+                            "maxLength": 20,
+                            "type": "string"
+                          },
                           "modelConfig": {
                             "type": "object",
                             "patternProperties": {
@@ -8162,6 +8202,10 @@
                             "maxLength": 100000,
                             "type": "string"
                           },
+                          "businessHoursId": {
+                            "maxLength": 20,
+                            "type": "string"
+                          },
                           "modelConfig": {
                             "type": "object",
                             "patternProperties": {
@@ -8239,6 +8283,10 @@
                         "properties": {
                           "systemPrompt": {
                             "maxLength": 100000,
+                            "type": "string"
+                          },
+                          "businessHoursId": {
+                            "maxLength": 20,
                             "type": "string"
                           },
                           "modelConfig": {
@@ -8431,6 +8479,10 @@
                             "maxLength": 100000,
                             "type": "string"
                           },
+                          "businessHoursId": {
+                            "maxLength": 20,
+                            "type": "string"
+                          },
                           "modelConfig": {
                             "type": "object",
                             "patternProperties": {
@@ -8498,6 +8550,10 @@
                             "maxLength": 100000,
                             "type": "string"
                           },
+                          "businessHoursId": {
+                            "maxLength": 20,
+                            "type": "string"
+                          },
                           "modelConfig": {
                             "type": "object",
                             "patternProperties": {
@@ -8563,6 +8619,10 @@
                         "properties": {
                           "systemPrompt": {
                             "maxLength": 100000,
+                            "type": "string"
+                          },
+                          "businessHoursId": {
+                            "maxLength": 20,
                             "type": "string"
                           },
                           "modelConfig": {
@@ -8751,6 +8811,10 @@
                             "maxLength": 100000,
                             "type": "string"
                           },
+                          "businessHoursId": {
+                            "maxLength": 20,
+                            "type": "string"
+                          },
                           "modelConfig": {
                             "type": "object",
                             "patternProperties": {
@@ -8834,6 +8898,10 @@
                             "maxLength": 100000,
                             "type": "string"
                           },
+                          "businessHoursId": {
+                            "maxLength": 20,
+                            "type": "string"
+                          },
                           "modelConfig": {
                             "type": "object",
                             "patternProperties": {
@@ -8915,6 +8983,10 @@
                         "properties": {
                           "systemPrompt": {
                             "maxLength": 100000,
+                            "type": "string"
+                          },
+                          "businessHoursId": {
+                            "maxLength": 20,
                             "type": "string"
                           },
                           "modelConfig": {

@@ -57,6 +57,9 @@ export type RecordState = "idle" | "recording" | "paused";
 // Unsaved draft (the live-edit popup): non-persisted prompt/model/settings sent with each turn.
 // `toolMocks` (tool name → canned result) and `promptVars` (context-var simulation) are
 // playground-owned, not part of the agent form; the hook merges them in at send time.
+// NOTE: the wire contract is `playgroundDraftSchema` in api/v1/agents.controller.ts, not this
+// interface. Elysia normalizes the request against that schema, so a field declared only here is
+// stripped before the handler runs — silently, with the turn falling back to the saved config.
 export interface PlaygroundDraft {
   systemPrompt?: string;
   // The Availability picker's current value ("" = none). A scalar column like systemPrompt, so it

@@ -42,20 +42,44 @@ export interface GuardrailGateParams {
 
 export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   const gr = p.cfg;
-  const model: BaseChatModel | null =
-    gr.enabled && p.apiKey
-      ? (p.makeModel ?? createChatModel)({
-          provider: gr.provider,
-          model: gr.model,
-          baseURL: p.credentialBaseUrl ?? gr.baseURL ?? undefined,
-          apiKey: p.apiKey,
-          temperature: 0,
-        })
-      : null;
+  // Built on FIRST CALL, not here, and never twice: a gate is constructed for every turn and every
+  // follow-up, while a direction that is switched off never reaches the model. `createChatModel`
+  // throws synchronously on a configuration it cannot satisfy (an `openai-compatible` provider with
+  // no base URL reaches it as one), so building eagerly made that configuration fail turns whose
+  // moderation was off — and on the proactive path the throw landed in the caller's catch, which
+  // reports the follow-up as delivered. `undefined` is "not attempted yet"; `null` is "attempted
+  // and unavailable", which is the same fail-open answer an analysis that could not run gives.
+  let model: BaseChatModel | null | undefined;
+  const resolveModel = (
+    direction: "input" | "output",
+  ): BaseChatModel | null => {
+    if (model !== undefined) return model;
+    try {
+      model = (p.makeModel ?? createChatModel)({
+        provider: gr.provider,
+        model: gr.model,
+        baseURL: p.credentialBaseUrl ?? gr.baseURL ?? undefined,
+        apiKey: p.apiKey,
+        temperature: 0,
+      });
+    } catch (e) {
+      model = null;
+      emitFlowEvent(p.flow, {
+        stage: "guardrail",
+        status: "error",
+        level: "warn",
+        detail: { direction, outcome: "model_unavailable" },
+        errorMessage: e instanceof Error ? e.message : String(e),
+      });
+    }
+    return model;
+  };
 
   return async (direction, subject) => {
     const dir = gr[direction];
-    if (!model || !dir.enabled) return null;
+    if (!gr.enabled || !p.apiKey || !dir.enabled) return null;
+    const model = resolveModel(direction);
+    if (!model) return null;
     const judgesRelevance = direction === "output" && !!p.customerMessage;
     const verdict = await analyzeGuardrail(model, {
       direction,

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { analyzeGuardrail, splitAnalyses } from "@/modules/guardrails/analyze";
+import { buildGuardrailGate } from "@/modules/guardrails/gate";
 import { buildGuardrailSystemPrompt } from "@/modules/guardrails/prompts";
 import {
   GUARDRAILS_DEFAULTS,
@@ -856,5 +857,133 @@ describe("analyzeGuardrail", () => {
       base,
     );
     expect(v.error).toBeUndefined();
+  });
+});
+
+// The gate both runtimes call. What is tested here is the part that runs BEFORE any analysis: who
+// gets a model built for them and who does not. It is a decision table rather than a wiring test
+// because the cost of getting it wrong is not a missed moderation — it is a turn that fails on a
+// model it was never going to call (see the header of gate.ts).
+describe("buildGuardrailGate", () => {
+  const flow = {
+    tenantId: 1n,
+    turnId: "gate-test",
+    source: "playground" as const,
+    // A base that cannot write: emitFlowEvent is fire-and-forget and swallows its own failures, so
+    // the gate's decisions are observable without a database.
+    base: {} as never,
+  };
+  const client = {
+    sendPrivateNote: async () => {},
+  } as never;
+
+  // Counts construction attempts, so "never built" and "built and unused" stay distinguishable.
+  function countingFactory(impl: () => BaseChatModel) {
+    let calls = 0;
+    return {
+      calls: () => calls,
+      make: ((..._args: unknown[]) => {
+        calls += 1;
+        return impl();
+      }) as never,
+    };
+  }
+
+  const enabledCfg = (over: Partial<typeof GUARDRAILS_DEFAULTS> = {}) => ({
+    ...GUARDRAILS_DEFAULTS,
+    enabled: true,
+    ...over,
+  });
+
+  const cases: {
+    name: string;
+    cfg: typeof GUARDRAILS_DEFAULTS;
+    apiKey: string;
+  }[] = [
+    {
+      name: "guardrails are switched off entirely",
+      cfg: { ...GUARDRAILS_DEFAULTS, enabled: false },
+      apiKey: "k",
+    },
+    {
+      name: "the guardrails agent has no credential",
+      cfg: enabledCfg(),
+      apiKey: "",
+    },
+    {
+      name: "this direction is switched off",
+      cfg: enabledCfg({
+        output: { ...GUARDRAILS_DEFAULTS.output, enabled: false },
+      }),
+      apiKey: "k",
+    },
+  ];
+
+  for (const c of cases) {
+    test(`builds no model when ${c.name}`, async () => {
+      const f = countingFactory(() => {
+        throw new Error("should never be constructed");
+      });
+      const gate = buildGuardrailGate({
+        cfg: c.cfg,
+        apiKey: c.apiKey,
+        client,
+        conversationId: 1,
+        flow,
+        makeModel: f.make,
+      });
+      expect(await gate("output", "olá")).toBeNull();
+      expect(f.calls()).toBe(0);
+    });
+  }
+
+  // The reason the check above is not just an optimization: createChatModel throws SYNCHRONOUSLY on
+  // a configuration it cannot satisfy, and this gate is built on every turn and every follow-up.
+  test("a model that cannot be constructed is fail-open, not a failed turn", async () => {
+    const f = countingFactory(() => {
+      throw new Error("openai-compatible provider requires a base URL");
+    });
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg(),
+      apiKey: "k",
+      client,
+      conversationId: 1,
+      flow,
+      makeModel: f.make,
+    });
+    expect(await gate("output", "olá")).toBeNull();
+    expect(f.calls()).toBe(1);
+  });
+
+  test("a construction that failed is not retried on the next call", async () => {
+    const f = countingFactory(() => {
+      throw new Error("nope");
+    });
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg(),
+      apiKey: "k",
+      client,
+      conversationId: 1,
+      flow,
+      makeModel: f.make,
+    });
+    await gate("output", "um");
+    await gate("output", "dois");
+    expect(f.calls()).toBe(1);
+  });
+
+  test("one model serves both directions of the same turn", async () => {
+    const f = countingFactory(() => fakeModel('{"violated": false}'));
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg(),
+      apiKey: "k",
+      client,
+      conversationId: 1,
+      flow,
+      makeModel: f.make,
+    });
+    expect(await gate("input", "olá")).toBeNull();
+    expect(await gate("output", "oi")).toBeNull();
+    expect(f.calls()).toBe(1);
   });
 });

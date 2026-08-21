@@ -1035,10 +1035,30 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         persistUsage: async () => {},
       },
     });
-    expect(outcome).toBe("messaged");
+    // "silent", not "messaged": the customer received nothing, and this outcome is what the caller
+    // stamps on the turn trail as an `ok` row. The failure has its own error row (emitted inside
+    // deliverPromisedLine), so reporting a delivery here would be the operator's only record of the
+    // send saying it worked.
+    expect(outcome).toBe("silent");
     expect(s.labelSets).toEqual([["follow-up"]]);
     // The resolve still falls with the transfer: the only status call is the handoff's own `open`.
     expect(s.resolved).toEqual([9908]);
+    // And the trail carries no `messaged` line for this step. Checked after the run returned, so
+    // there is no write left in flight: markFollowUp is called synchronously or not at all.
+    const rows = await suDb.executionLog.findMany({
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:9908`,
+      },
+      select: { detail: true },
+    });
+    expect(
+      rows.some((r) => {
+        const d = r.detail as Record<string, unknown> | null;
+        return d?.outcome === "messaged";
+      }),
+    ).toBe(false);
   });
 
   test("a follow-up that did NOT hand off still fails the job on a failed send", async () => {

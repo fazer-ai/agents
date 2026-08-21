@@ -610,7 +610,12 @@ export async function runAgentNudge(
         detail: { outcome: "handoff_closing_line_undelivered" },
         errorMessage: e instanceof Error ? e.message : String(e),
       });
-      return "messaged";
+      // "silent" and not "messaged", because the caller stamps this on the turn trail as an `ok`
+      // row: "messaged" here would tell the operator a sentence reached the customer on the one
+      // path where it demonstrably did not. The union has no member for "tried and failed", and
+      // it does not need one — the error row emitted just above is that record, and "silent" is
+      // already this function's answer for "the customer received nothing from the promise".
+      return "silent";
     }
   };
 

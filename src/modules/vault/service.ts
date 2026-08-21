@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import basePrisma from "@/api/lib/prisma";
+import { parseDbId } from "@/lib/db-id";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
@@ -238,8 +239,6 @@ export async function resolveVaultRefByName(
 //
 // Deleting an entry still strands every ref that named it. That is a different cause for the same
 // state, answered by the vault list and the picker, not here.
-const VAULT_ID_RE = /^\d+$/;
-const MAX_VAULT_ID = 9223372036854775807n;
 
 export async function requireVaultRef(
   db: ScopedDb,
@@ -258,9 +257,8 @@ export async function requireVaultRef(
   // the DATABASE instead, as a 500 for what is plainly a malformed field. Readers tolerate the
   // lenient spellings on purpose (canonicalVaultRef); a column takes ONE, so the rest are refused
   // here rather than normalized, and "stored canonically" stops depending on the writer.
-  if (!VAULT_ID_RE.test(raw)) throw malformed();
-  const id = BigInt(raw);
-  if (id > MAX_VAULT_ID) throw malformed();
+  const id = parseDbId(raw);
+  if (id === null) throw malformed();
   const entry = await db.vaultEntry.findFirst({
     where: { id },
     select: { id: true },

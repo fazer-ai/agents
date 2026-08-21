@@ -6,6 +6,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import config from "@/config";
+import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { readToolGuidance } from "@/modules/agents/tool-guidance";
@@ -448,16 +449,16 @@ export async function loadAgentConfig(
   // and drifted from the gate the moment either changed. `null` = no Availability = always on.
   let timezone = DEFAULT_TIMEZONE;
   let schedule: Schedule | null = null;
-  // A draft id is console input, so it is validated as digits and read through the SAME scoped
-  // client: another tenant's row simply does not come back, and the turn falls through to always-on
-  // rather than to the saved schedule — an unresolvable selection is "no schedule", not "the old one".
+  // A draft id is console input, so it goes through parseDbId (digits AND range: a value past 2^63-1
+  // parses as a BigInt and then fails in the query BIND, turning a bad field into a 500) and is read
+  // through the SAME scoped client: another tenant's row simply does not come back, and the turn
+  // falls through to always-on rather than to the saved schedule — an unresolvable selection is "no
+  // schedule", not "the old one".
   const draftHoursId = ov?.businessHoursId;
   const hoursId =
     draftHoursId === undefined
       ? agent.businessHoursId
-      : /^\d+$/.test(draftHoursId)
-        ? BigInt(draftHoursId)
-        : null;
+      : parseDbId(draftHoursId);
   if (hoursId !== null) {
     const bh = await db.businessHours.findUnique({
       where: { id: hoursId },

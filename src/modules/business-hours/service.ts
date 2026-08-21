@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
@@ -175,10 +176,11 @@ export async function readSchedule(
   id: string,
   base: PrismaClient = basePrisma,
 ): Promise<Schedule | null> {
-  if (!/^\d+$/.test(id)) return null;
+  const parsed = parseDbId(id);
+  if (parsed === null) return null;
   const row = await runScopedOn(base, ctx, (db) =>
     db.businessHours.findUnique({
-      where: { id: BigInt(id) },
+      where: { id: parsed },
       select: { windows: true, exceptions: true, timezone: true },
     }),
   );

@@ -1579,6 +1579,12 @@ function AgentEditor() {
           'Business hours "{{name}}" already existed and were reused; check the schedule is right.',
           p,
         );
+      case "httpToolBodyIgnored":
+        return t(
+          "editor.importWarning.httpToolBodyIgnored",
+          'Tool "{{name}}" had a request body in a shape this version does not send, so it was cleared. Set it again under Body.',
+          p,
+        );
       case "httpToolReused":
         return t(
           "editor.importWarning.httpToolReused",

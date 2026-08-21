@@ -851,6 +851,7 @@
       "hoursNotFound": "O horário \"{{name}}\" não foi encontrado aqui, então ficou em branco.",
       "hoursReused": "O horário \"{{name}}\" já existia e foi reaproveitado; confira se a agenda está certa.",
       "httpGrantNotFound": "A ferramenta \"{{name}}\" não foi encontrada, então a concessão foi ignorada.",
+      "httpToolBodyIgnored": "A ferramenta \"{{name}}\" tinha um corpo de requisição num formato que esta versão não envia, então ele foi limpo. Configure-o de novo em Corpo da requisição.",
       "httpToolCredNotFound": "A credencial \"{{credential}}\" da ferramenta \"{{tool}}\" não foi encontrada aqui, então ficou em branco.",
       "httpToolReused": "A ferramenta \"{{name}}\" já existia e foi reaproveitada; confira se está certa.",
       "integrationGrantNotFound": "A integração \"{{name}}\" não foi encontrada, então a concessão foi ignorada.",

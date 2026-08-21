@@ -8,7 +8,7 @@ import logger from "@/api/lib/logger";
 import config from "@/config";
 import type { ModelOverride } from "@/graph/model-override";
 import { parseDbId } from "@/lib/db-id";
-import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import type { ScopedDb, TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { readToolGuidance } from "@/modules/agents/tool-guidance";
 import {
@@ -37,6 +37,10 @@ import {
   type ChatwootVocab,
   loadChatwootVocab,
 } from "@/modules/chatwoot/vocab";
+import {
+  type ContactAuthConfig,
+  readContactAuthConfig,
+} from "@/modules/contact-auth/settings";
 import type { ObservedConversation } from "@/modules/conversations/record-resolution";
 import { resolveVariantOverride } from "@/modules/experiments/service";
 import {
@@ -77,8 +81,7 @@ import { readSplitConfig, type SplitConfig } from "@/modules/split/service";
 import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 import { readTtsConfig, type TtsConfig } from "@/modules/tts/settings";
-import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
-import { ensureFreshMcpAccessToken } from "@/modules/vault/mcp-oauth";
+import { resolveInjectableCredential } from "@/modules/vault/injectable";
 import { tryResolveVaultEntry } from "@/modules/vault/service";
 import { chatwootThreadId, getCheckpointer } from "./checkpointer";
 import { buildAgentGraph } from "./graph";
@@ -124,32 +127,6 @@ import { UsageCapture, type UsagePersist, type UsageSource } from "./usage";
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
-// Resolves a credential ref into the string that gets injected (bearer/header/etc). For most kinds
-// this is the stored string secret. For the managed-OAuth kinds (`google_oauth`, `mcp_oauth`) the
-// stored value is a JSON object, so we auto-refresh and return the fresh access token (the bearer
-// value). Returns null when the entry is missing. The refresh paths do their own scoped reads/writes
-// + a refresh network call OUTSIDE any caller tx, so this must not be invoked inside one.
-async function resolveInjectableCredential(
-  base: PrismaClient,
-  tenantId: bigint,
-  ref: string,
-): Promise<string | null> {
-  const entry = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    tryResolveVaultEntry<unknown>(db, ref),
-  );
-  if (!entry) return null;
-  if (entry.kind === "google_oauth" || entry.kind === "mcp_oauth") {
-    const id = ref.startsWith("vault:")
-      ? BigInt(ref.slice("vault:".length))
-      : null;
-    if (id === null) return null;
-    return entry.kind === "mcp_oauth"
-      ? ensureFreshMcpAccessToken(sysCtx(tenantId), id, base)
-      : ensureFreshGoogleAccessToken(sysCtx(tenantId), id, base);
-  }
-  return typeof entry.secret === "string" ? entry.secret : null;
 }
 
 // Optional grounding threshold from agent.settings.grounding.maxDistance (a positive cosine
@@ -214,6 +191,9 @@ export interface AgentConfig {
   // WhatsApp 24h service-window gate for proactive sends + the contact name for template params.
   serviceWindowConfig: ServiceWindowConfig;
   handoffConfig: HandoffConfig;
+  // Contact authorization gate (docs/contact-auth.md). Enforced by the webhook gate and the
+  // proactive nudge, NOT here; carried on the config so the nudge needs no second settings read.
+  contactAuthConfig: ContactAuthConfig;
   // Hosts the send_image tool may fetch an image from (operator-set; empty = the tool refuses).
   sendImageConfig: SendImageConfig;
   // Per-agent kanban guidance (operator funnel note), surfaced in the kanban_move_card description.
@@ -701,6 +681,7 @@ export async function loadAgentConfig(
     splitConfig: readSplitConfig(effSettings),
     serviceWindowConfig: readServiceWindowConfig(effSettings),
     handoffConfig: readHandoffConfig(effSettings),
+    contactAuthConfig: readContactAuthConfig(effSettings),
     sendImageConfig: readSendImageConfig(effSettings),
     kanbanConfig: readKanbanConfig(effSettings),
     toolGuidance: readToolGuidance(effSettings),

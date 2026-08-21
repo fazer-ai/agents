@@ -114,6 +114,8 @@ export interface RuntimeDeps {
   mcp?: McpLoadDeps;
   // Injectable fetch for the TTS provider (tests); real fetch in production.
   ttsFetch?: typeof fetch;
+  // Injectable fetch for the contact-authorization check (tests); real fetch in production.
+  contactAuthFetch?: typeof fetch;
   // Injectable download + SSRF assertion for send_image (tests); the real ones in production.
   imageDeps?: ImageFetchDeps;
   // Injectable LLM speech normalizer (tests); production builds one from the agent's model when the

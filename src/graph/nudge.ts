@@ -11,6 +11,10 @@ import {
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import {
+  authorizeContact,
+  contactAuthFlowEvent,
+} from "@/modules/contact-auth/service";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
@@ -278,7 +282,12 @@ export async function runAgentNudge(
     if (!conv?.inboxId) return null;
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
-      select: { agentId: true, channelType: true, provider: true },
+      select: {
+        agentId: true,
+        channelType: true,
+        provider: true,
+        chatwootInboxId: true,
+      },
     });
     if (!inbox?.agentId) return null;
     // Test-mode gate: a "test" agent must not send proactive messages in a conversation that
@@ -310,6 +319,7 @@ export async function runAgentNudge(
       lastInboundAt: conv.lastInboundAt,
       channelType: inbox.channelType,
       provider: inbox.provider,
+      chatwootInboxId: inbox.chatwootInboxId,
     };
   });
   if (loaded === "silenced") {
@@ -455,6 +465,34 @@ export async function runAgentNudge(
         },
         { ourAgentBotId: cfg.agentBotId },
       );
+
+  // The contact authorization gate applies to proactive sends too (docs/contact-auth.md): a
+  // follow-up is a turn the agent starts, and a contact the reactive gate would refuse must not be
+  // reached out to either. Denied and cannot-tell alike end in silence: fail-closed has no
+  // "note instead" downgrade here, because the nudge's own text was written FOR the customer.
+  // Asked after the live-ownership probe (a conversation that is no longer the bot's costs no
+  // call) and before any tool/model work, so a refused nudge spends nothing.
+  if (cfg.contactAuthConfig.enabled) {
+    const auth = await authorizeContact({
+      tenantId,
+      agentId: cfg.agentId,
+      contactDbId: cfg.contactDbId,
+      conversationId,
+      inboxId: loaded.chatwootInboxId,
+      cfg: cfg.contactAuthConfig,
+      base,
+      fetchImpl: params.deps?.contactAuthFetch,
+    });
+    emitFlowEvent(flow, contactAuthFlowEvent(auth));
+    if (auth.outcome !== "allowed") {
+      logger.info(
+        "agentNudge: contact not authorized (conv=%s outcome=%s), skipping",
+        String(conversationId),
+        auth.outcome,
+      );
+      return "silent";
+    }
+  }
 
   const handoffState = {
     customerMessage: null as string | null,

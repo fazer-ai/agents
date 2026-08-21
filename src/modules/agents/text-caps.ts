@@ -107,6 +107,17 @@ function cappedFields(settings: unknown): CappedField[] {
       TEMPLATE_MESSAGE_MAX,
     );
   }
+  // The refusal copy the CUSTOMER reads when the authorization gate denies them: same nature as the
+  // away message above, so it gets the same ceiling.
+  const contactAuth = bagOf(root.contactAuth);
+  if (contactAuth) {
+    add(
+      contactAuth,
+      "denyMessage",
+      "contactAuth.denyMessage",
+      TEMPLATE_MESSAGE_MAX,
+    );
+  }
   const kanban = bagOf(root.kanban);
   if (kanban) {
     add(kanban, "instructions", "kanban.instructions", TOOL_INSTRUCTIONS_MAX);

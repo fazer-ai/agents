@@ -17,6 +17,11 @@ import type { BehaviorSettingsPatch } from "./behavior-settings";
 // without showing the field it is about.
 export const SETTINGS_CREDENTIAL_PATHS = [
   { path: ["stt", "credentialRef"], tab: "behavior", sectionId: "stt" },
+  {
+    path: ["contactAuth", "credentialRef"],
+    tab: "behavior",
+    sectionId: "contactAuth",
+  },
   { path: ["tts", "credentialRef"], tab: "behavior", sectionId: "tts" },
   {
     path: ["tts", "normalizeCredentialRef"],

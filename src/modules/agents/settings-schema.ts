@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
+import { CONTACT_AUTH_METHODS } from "@/modules/contact-auth/settings";
 import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
@@ -273,6 +274,29 @@ const availability = z.looseObject({
     ),
 });
 
+const contactAuth = z.looseObject({
+  enabled: z.boolean().optional(),
+  url: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("the authorization endpoint; fixed origin, no placeholders"),
+  method: oneOf(CONTACT_AUTH_METHODS).optional(),
+  credentialRef: credentialRef(),
+  timeoutMs: z.number().optional().describe("1000-10000, clamped"),
+  cacheTtlSeconds: z
+    .number()
+    .optional()
+    .describe("how long a verdict is reused; 0 = ask every message"),
+  denyMessage: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("what a REFUSED contact receives; null = say nothing"),
+  handoffEnabled: z.boolean().optional(),
+  handoffTeamId: chatwootId().describe("Chatwoot team id for the refused open"),
+});
+
 const channelRedirect = z.looseObject({
   enabled: z.boolean().optional(),
   entryInboxId: chatwootId().describe(
@@ -355,7 +379,7 @@ const memory = z.looseObject({
     .optional(),
 });
 
-// The 16 behavior blocks of `agent_settings_set`, each a partial patch over the stored block.
+// The 17 behavior blocks of `agent_settings_set`, each a partial patch over the stored block.
 export const BEHAVIOR_PATCH_SHAPE = {
   debounce: debounce.optional(),
   stt: stt.optional(),
@@ -368,6 +392,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   handoff: handoff.optional(),
   limits: limits.optional(),
   availability: availability.optional(),
+  contactAuth: contactAuth.optional(),
   channelRedirect: channelRedirect.optional(),
   attributeContext: attributeContext.optional(),
   sendImage: sendImage.optional(),

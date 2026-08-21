@@ -4,6 +4,9 @@ import { computeConfigIssues, issueHasAction } from "@/client/lib/configHealth";
 // Phase E: detect features turned on without the credential they need (the import that strips
 // secrets is the common trigger), each carrying a deep-link target (tab + section anchor).
 const base = {
+  // The agent's saved on/off. Only the out-of-hours collision reads it (see the interface), and this
+  // fixture is the enabled case; the rows that turn it off say so.
+  agentEnabled: true,
   modelProvider: "openai",
   modelCredentialRef: "vault:1",
   // What the rewrite inherits is the STORED model, which is a different input from the one above
@@ -1035,6 +1038,28 @@ describe("computeConfigIssues — Chatwoot already answers out of hours", () => 
     });
     expect(issues.map((i) => i.key)).toEqual(["outOfHoursChatwoot"]);
   });
+
+  // Review round 2. A disabled agent says nothing to the customer at all — the runtime gates the away
+  // message on it and refuses the turn a few lines later — so Chatwoot's message is the only one that
+  // arrives and NEITHER spelling is true. This is the one line in this panel that claims something
+  // about what the customer receives rather than about the configuration, which is why it is also the
+  // only one that has to care.
+  for (const [label, settings] of [
+    ["with its away message on", AWAY_ON],
+    ["with nothing of its own to say", {}],
+  ] as Array<[string, unknown]>) {
+    test(`a disabled agent ${label} raises nothing`, () => {
+      expect(
+        computeConfigIssues({
+          ...base,
+          agentEnabled: false,
+          settings,
+          savedSchedule: CLOSES,
+          outOfOfficeInboxes: ONE,
+        }),
+      ).toEqual([]);
+    });
+  }
 
   // Every other line in the panel offers a fix; these two must as well, or the operator reads a
   // problem with no way in.

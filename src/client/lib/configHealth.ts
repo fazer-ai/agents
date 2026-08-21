@@ -142,6 +142,13 @@ export interface ConfigHealthInput {
   // which is a question about what the General tab is about to save.
   modelProvider: string;
   modelCredentialRef: string;
+  // The agent's own on/off, AS SAVED. Required rather than optional, and read by exactly one check:
+  // the out-of-hours collision is the only line in this panel that claims something about what the
+  // CUSTOMER receives. Every other line describes the configuration ("on, but no key"), which stays
+  // true of an agent nobody has switched on; a disabled agent, though, says nothing to anybody, so
+  // both spellings of that collision would be false. Required because the only thing that could
+  // catch a caller dropping it is the compiler — no test mounts the editor.
+  agentEnabled: boolean;
   // The agent's model as STORED, with its EFFECTIVE endpoint (a credential that carries one wins
   // over the typed field). Separate from the pair above on purpose: the speech rewrite inherits
   // from the SAVED model, because the editor's tabs save independently and a Behavior save carries
@@ -472,7 +479,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // configuration that does not exist yet. The same reading the runtime uses, because a second
   // reading of the same bag is a second answer waiting to happen.
   const outOfOffice = input.outOfOfficeInboxes ?? [];
-  if (outOfOffice.length > 0) {
+  if (input.agentEnabled && outOfOffice.length > 0) {
     const away = readAvailabilityConfig(input.settings);
     // The switch and the copy are only two thirds of it. The away message rides the SAME gate that
     // silences replies, so an agent whose schedule never closes — none picked, or one with no windows

@@ -1409,6 +1409,9 @@ function AgentEditor() {
     vaultBaseUrl(savedModel.credentialRef) ?? savedModel.baseURL;
   const configIssues = computeConfigIssues({
     settings: syncedAgentRef.current?.settings,
+    // Saved, like the settings above. Absent only before the first load lands, and nothing that
+    // reads it can be non-empty that early.
+    agentEnabled: syncedAgentRef.current?.enabled ?? true,
     modelProvider: model.provider,
     modelCredentialRef: model.credentialRef,
     sttEnabled: stt.enabled,

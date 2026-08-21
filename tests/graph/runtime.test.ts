@@ -2385,6 +2385,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(health.failures).toBeGreaterThan(0);
       expect(
         computeConfigIssues({
+          agentEnabled: true,
           modelProvider: "openai",
           modelCredentialRef: "vault:1",
           savedModelProvider: "openai",

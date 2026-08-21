@@ -61,6 +61,16 @@ Flow:
 - **Freshness**: the mirror is refreshed by the very event that triggers the turn, so a reactive turn always reads current values. `set_custom_attribute` additionally write-throughs into the mirrored bag (`mirrorAttributeWrite`), which closes the only real gap: a nudge fired without a preceding inbound event, and the contact scope (Chatwoot does not deliver `contact_updated` to agent bots). That write-through is a single `jsonb || jsonb` UPDATE, not a read-modify-write: a turn's tool calls run concurrently, so two `set_custom_attribute` calls on the same scope would otherwise clobber each other's key. On the CONTACT scope the same statement also advances the watermark (`custom_attributes_at = GREATEST(custom_attributes_at, NOW())`), because Chatwoot accepted the key a moment ago and every event generated before that carries a pre-write snapshot: one of those, delivered late but still stamped after the last mirrored event, would otherwise pass the compare-and-set above and erase what was just written, with no `contact_updated` ever to put it back. Chatwoot remains the source of truth — the next event overwrites the bag.
 - **Card caveat (`task` scope).** `Kanban::Task#dispatch_conversation_events` only re-dispatches `conversation_updated` when a card is LINKED or UNLINKED from a conversation; moving it between steps or editing its fields/attributes goes out over ActionCable (`kanban.task.updated`), which agent bots never receive. So the mirrored `kanbanAttributes` advance only when some conversation event arrives — in practice the next customer message, which is also what triggers the turn, so a reactive turn is still current. This is ALSO why `loadKanbanContext` still reads the card live instead of using the mirror: `kanban_move_card` must act on the step the operator sees right now, and a board-side drag leaves no trace in the webhook stream.
 
+## Pre-turn gates in the receiver
+
+Before a new incoming message reaches debounce/the runtime, `maybeConsumeCommandOrGate` evaluates
+the operator-facing gates in a fixed order: redirect **cross-link** → **test-mode** (`/teste`,
+`/reset`) → the WhatsApp→chat **redirect** ([`channel-redirect.md`](channel-redirect.md)) →
+**availability** (business hours + away message) → **contact authorization**
+([`contact-auth.md`](contact-auth.md), the external allowed/denied check). A gate that consumes the
+delivery still advances the handled watermark, and the message is folded into the memory thread
+like any other unanswered one.
+
 ## Attribution gate (`shouldBotHandle`)
 
 The bot owns a conversation only while it is `pending` **and** no human is assigned. The gate is ours to enforce: Chatwoot delivers the event even when a human is assigned. With multiple bots, Chatwoot also delivers to a conversation's `assignee_agent_bot`, so we additionally require, when `ourAgentBotId` is known, that the conversation be unassigned or assigned to **our** bot — never to a different `AgentBot`:

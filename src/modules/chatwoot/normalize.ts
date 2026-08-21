@@ -258,10 +258,17 @@ export function isNewIncomingMessage(e: NormalizedChatwootEvent): boolean {
 // dialogue with the contact. Private notes are the operator talking to their own team, not to the
 // customer, so they never enter the contact's memory. Templates and activities are not `outgoing` and
 // never reach here.
+//
+// A REACTION is the one exclusion that is not obvious from the shape. The fork stores an emoji react
+// as a real message — `MessageBuilder` with `message_type: "outgoing"`, `content` = the emoji,
+// `content_attributes.is_reaction`, sender `Current.user` — so an operator reacting 👍 matches every
+// other clause here (confirmed on live rows). Ingested, the permanent memory of that attendance would
+// carry a line reading `atendente: 👍`. It is an acknowledgement, not something the team said.
 export function isHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
   return (
     e.message?.messageType === "outgoing" &&
     e.message.private !== true &&
+    e.message.isReaction !== true &&
     e.message.sender?.type === "user"
   );
 }

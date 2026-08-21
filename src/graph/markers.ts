@@ -141,12 +141,14 @@ export function nudgeMessage(
 // words as something the CONTACT said. The summarizer read it that way too, and wrote it into the
 // permanent memory of the contact — issue #187, the failure the issue calls worse than the omission.
 //
-// The note is a constant and carries no attendant NAME. Which colleague answered changes no decision
-// the agent makes, and the name is operator-controlled text that would go into every prompt of that
-// attendance from then on; a constant prefix is also what lets the transcript trim it back off by
-// exact match (../modules/memory/summarize.ts).
+// The note is a constant, carries no attendant NAME, and is kept short. It is prepended to EVERY
+// attendant message and travels in every prompt of that attendance until compaction, so its length is
+// a recurring cost, unlike the divider's (once per attendance). The name would be a second recurring
+// cost for something that changes no decision the agent makes, on operator-controlled text; and a
+// constant prefix is what lets the transcript trim it back off by exact match
+// (../modules/memory/summarize.ts).
 export const HUMAN_AGENT_NOTE =
-  "(Contexto do sistema: a mensagem a seguir foi enviada ao cliente por um atendente humano da equipe, não pelo agente e não pelo cliente.)";
+  "(Contexto do sistema: mensagem enviada ao cliente por um atendente humano da equipe.)";
 
 export function humanAgentMessage(
   conversationId: number,

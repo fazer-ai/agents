@@ -198,6 +198,12 @@ describe.skipIf(!dbUp)(
       message_type: "outgoing",
       sender: { id: 5, name: "Ana", type: "user" },
     });
+    const reactionFromHumanAgent = (emoji: string) => ({
+      content: emoji,
+      message_type: "outgoing",
+      sender: { id: 5, name: "Ana", type: "user" },
+      content_attributes: { is_reaction: true },
+    });
     const fromOurBot = (content: string) => ({
       content,
       message_type: "outgoing",
@@ -272,6 +278,19 @@ describe.skipIf(!dbUp)(
       const transcript = renderTranscript(await threadMessages(convId));
       expect(transcript).toContain("cliente: tem em azul?");
       expect(transcript).not.toContain("Temos sim!");
+    });
+
+    // An emoji react is an acknowledgement, not something the team said. It reaches this seam looking
+    // exactly like a reply (outgoing, public, sender type "user"), so it is excluded on the one field
+    // that tells them apart.
+    test("a reaction from a human agent is not stored as something they said", async () => {
+      const convId = 505;
+      await deliver(convId, fromCustomer("obrigada, era isso"));
+      await deliver(convId, reactionFromHumanAgent("👍"));
+
+      const transcript = renderTranscript(await threadMessages(convId));
+      expect(transcript).toContain("cliente: obrigada, era isso");
+      expect(transcript).not.toContain("👍");
     });
 
     // A private note is the operator talking to their own team. It is not part of the dialogue with the

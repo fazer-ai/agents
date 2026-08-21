@@ -33,7 +33,8 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 // let the next writer inherit "customer" silently, which is exactly the attribution bug back again.
 //
 // At-most-once: the delivery ledger dedups re-deliveries, message_created gating ignores edits, and a
-// monotonic per-thread watermark (AgentThread.lastSyncedMessageId, CAS under a per-thread advisory
+// monotonic per-thread watermark PER DIRECTION (AgentThread.lastSyncedMessageId /
+// lastAgentMessageId, CAS under a per-thread advisory
 // lock) is defense-in-depth against a re-delivery that slips a new delivery UUID. The lock also
 // serializes concurrent ingestions on one thread so two appends can't clobber each other's checkpoint.
 
@@ -125,13 +126,24 @@ export async function ingestMessageIntoThread(
       };
       const row = await db.agentThread.findUnique({
         where: key,
-        select: { lastSyncedMessageId: true, lastConversationId: true },
+        select: {
+          lastSyncedMessageId: true,
+          lastAgentMessageId: true,
+          lastConversationId: true,
+        },
       });
-      // Monotonic watermark: never re-append a message already folded into the thread.
-      if (
-        row?.lastSyncedMessageId != null &&
-        messageId <= row.lastSyncedMessageId
-      ) {
+      // Monotonic watermark: never re-append a message already folded into the thread. ONE PER
+      // DIRECTION, because monotonic only guards while the ids reaching it arrive in order, and the
+      // two writers do not share a latency: a customer's message waits on the eager media pass (a
+      // provider round-trip for STT/vision) and an agent's reply waits on nothing. An attendant
+      // answering a voice note lands FIRST, so a shared column would advance past the customer's id
+      // and drop THEIR message from the memory for good — trading a duplicated attendant line, which
+      // is what this guard is actually for, against a lost customer message.
+      const watermark =
+        params.role === "human_agent"
+          ? row?.lastAgentMessageId
+          : row?.lastSyncedMessageId;
+      if (watermark != null && messageId <= watermark) {
         return { outcome: "skipped" as const, closedConversationId: null };
       }
 
@@ -181,7 +193,12 @@ export async function ingestMessageIntoThread(
         THREAD_STATE_NODE,
       );
 
-      // Advance the watermark; customer messages also advance the divider marker (turns do the same).
+      // Advance THIS direction's watermark, and only it. Both messages also advance the divider
+      // marker (turns do the same).
+      const advance =
+        params.role === "human_agent"
+          ? { lastAgentMessageId: messageId }
+          : { lastSyncedMessageId: messageId };
       await db.agentThread.upsert({
         where: key,
         create: {
@@ -189,11 +206,11 @@ export async function ingestMessageIntoThread(
           chatwootInstanceId: instanceId,
           contactInboxId,
           threadId: graphThreadId,
-          lastSyncedMessageId: messageId,
+          ...advance,
           lastConversationId: conversationId,
         },
         update: {
-          lastSyncedMessageId: messageId,
+          ...advance,
           // Held back when the claim declined the boundary (./attendance-boundary.ts). The synced
           // watermark still advances — it guards at-most-once append, and rewinding it would trade a
           // lost divider for a duplicated message.

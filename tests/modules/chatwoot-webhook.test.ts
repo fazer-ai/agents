@@ -464,6 +464,19 @@ describe("isNewHumanAgentMessage (issue #187)", () => {
     }
   });
 
+  // Round-1 review finding (P2), confirmed on live rows. The fork stores an emoji react as a real
+  // message: MessageBuilder with message_type "outgoing", content = the emoji, sender Current.user,
+  // and content_attributes.is_reaction. Every other clause here matches it, so without this the
+  // permanent memory of the attendance would carry a line reading `atendente: 👍`.
+  test("false for a reaction, which is an outgoing message from a real user", () => {
+    const n = message({
+      content: "👍",
+      content_attributes: { is_reaction: true },
+    });
+    expect(n?.message?.isReaction).toBe(true);
+    expect(n && isNewHumanAgentMessage(n)).toBe(false);
+  });
+
   // A sender we cannot classify is not assumed to be a person. Attributing an unknown author to the
   // team writes words into the memory that nobody on the team said.
   test("false when the payload carries no sender", () => {

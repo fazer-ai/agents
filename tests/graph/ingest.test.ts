@@ -356,6 +356,75 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     expect(cut.open.map((m) => String(m.content))).toEqual(["queria remarcar"]);
   });
 
+  // Round-1 review finding (P1). The watermark is monotonic, which only guards at-most-once while
+  // the ids reaching it arrive in order — and the two writers do not share a latency. The customer's
+  // path waits on the eager media pass (STT/vision, a provider round-trip) and an agent's reply waits
+  // on nothing, so an attendant answering a voice note is folded in FIRST. On one shared column that
+  // higher id advances the watermark and the customer's message is skipped for good: the fix for a
+  // memory missing the team's half would have started losing the customer's.
+  test("an attendant's reply does not suppress a customer message ingested after it", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12399;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingest = (
+      messageId: number,
+      text: string,
+      role: "customer" | "human_agent",
+    ) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: 960,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId,
+        text,
+        role,
+      });
+
+    // The attendant answers the voice note while its transcription is still running, so the REPLY
+    // (id 101) is folded in before the customer's message (id 100).
+    expect(
+      await ingest(101, "Já te respondo sobre o áudio", "human_agent"),
+    ).toBe("ingested");
+    expect(await ingest(100, "<audio> quanto custa o plano?", "customer")).toBe(
+      "ingested",
+    );
+
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const contents = (
+      ((cp?.channel_values as { messages?: BaseMessage[] })?.messages ??
+        []) as BaseMessage[]
+    ).map((m) => String(m.content));
+    expect(contents.some((c) => c.includes("quanto custa o plano?"))).toBe(
+      true,
+    );
+    expect(contents.some((c) => c.includes("Já te respondo"))).toBe(true);
+
+    // Each direction still guards its OWN re-delivery.
+    expect(await ingest(101, "DUP-ATENDENTE", "human_agent")).toBe("skipped");
+    expect(await ingest(100, "DUP-CLIENTE", "customer")).toBe("skipped");
+
+    const at = await suDb.agentThread.findUniqueOrThrow({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { lastSyncedMessageId: true, lastAgentMessageId: true },
+    });
+    expect(at.lastSyncedMessageId).toBe(100);
+    expect(at.lastAgentMessageId).toBe(101);
+  });
+
   // The decision issue #187 asked to make EXPLICITLY rather than as a side effect: a human agent's
   // reply is visible to the TURN, not only to the summarizer. An agent resuming a conversation after
   // a handoff and not knowing what its own team promised is the same defect one turn earlier — it

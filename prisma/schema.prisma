@@ -523,8 +523,13 @@ model Conversation {
 //     thread, so a NEW conversation reusing the thread gets the "fresh attendance" divider. Tracking
 //     this per-thread (not per-contact) is what stops a multi-channel contact from getting spurious
 //     dividers mid-conversation when they speak on another channel.
-//   - lastSyncedMessageId: (Fase 2) the ingestion watermark — highest message id already folded into
-//     the thread by the continuous-sync path, so turns and the sync never double-append a message.
+//   - lastSyncedMessageId / lastAgentMessageId: the ingestion watermarks — highest message id already
+//     folded into the thread by the continuous-sync path, so turns and the sync never double-append a
+//     message. ONE PER DIRECTION, and that is not redundancy: a monotonic watermark only holds while
+//     the ids reaching it arrive in order, and the two writers do not share a latency. A customer's
+//     message waits on the eager media pass (a provider round-trip for STT/vision); an agent's reply
+//     waits on nothing. An attendant answering a voice note therefore lands FIRST, and a single
+//     column would advance past the customer's id and drop their message from the memory for good.
 model AgentThread {
   id                  BigInt   @id @default(autoincrement())
   tenantId            BigInt   @map("tenant_id")
@@ -533,6 +538,7 @@ model AgentThread {
   threadId            String   @map("thread_id")
   lastConversationId  Int?     @map("last_conversation_id")
   lastSyncedMessageId Int?     @map("last_synced_message_id")
+  lastAgentMessageId  Int?     @map("last_agent_message_id")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 

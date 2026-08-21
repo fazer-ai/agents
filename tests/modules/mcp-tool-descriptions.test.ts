@@ -34,7 +34,8 @@ async function descriptions(): Promise<Map<string, string>> {
   return new Map(tools.map((t) => [t.name, t.description ?? ""]));
 }
 
-// NOTE: headroom over the current 3,416 for an ordinary edit, well under the 6,107 this replaced.
+// NOTE: headroom over the current 3,534 for an ordinary edit, well under the 6,107 this replaced.
+// Round 1's correction spent 118 of that headroom, which is the kind of edit it is there for.
 const SETTINGS_DESC_CEILING = 3800;
 
 describe("MCP tool descriptions", () => {
@@ -49,19 +50,19 @@ describe("MCP tool descriptions", () => {
   // of trimming them is a failed write the caller cannot diagnose.
   test("the rules that refuse a call survive the trim", async () => {
     const d = (await descriptions()).get("agent_settings_set") as string;
-    // The patch is merged, not a replacement — the difference is the caller's whole mental model.
+    // NOTE: the patch is merged, not a replacement, and the difference is the caller's whole mental model.
     expect(d).toContain("PARTIAL patch MERGED");
-    // Nothing is written unless dry_run is turned off.
+    // NOTE: nothing is written unless dry_run is turned off.
     expect(d).toContain("dry_run");
-    // A model id and a key belong to the vendor they were picked from — and this one is NOT a
+    // NOTE: a model id and a key belong to the vendor they were picked from, and this one is NOT a
     // refusal. resolveNormalizeModel decides it at READ time (`override_without_provider`), so the
     // write succeeds and the rewrite silently never runs; the description that called it a refusal
     // was the one thing a caller could not have found out by trying. Trimming the "never runs" half
     // is how it got there: the text this replaced said "refused AND the rewrite is skipped".
     expect(d).toContain("stored without complaint and the rewrite NEVER RUNS");
-    // Over-long operator text is refused rather than silently shortened.
+    // NOTE: over-long operator text is refused rather than silently shortened.
     expect(d).toContain("refused, not trimmed");
-    // A credential travels as a name or a stable ref, never as a secret.
+    // NOTE: a credential travels as a name or a stable ref, never as a secret.
     expect(d).toContain("NAME or a stable vault:<id>");
   });
 

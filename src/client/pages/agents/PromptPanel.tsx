@@ -12,10 +12,12 @@ import {
   findExactTimeVarUsages,
   interpolatePromptVars,
   PROMPT_CONTEXT_VARS,
+  PROMPT_SCHEDULE_VARS_DISPLAY,
   PROMPT_TIME_VARS_DISPLAY,
   TIME_ROUND_MINUTES,
   timeVarKind,
 } from "@/graph/prompt";
+import type { Schedule } from "@/modules/business-hours/hours";
 import { HighlightedPromptEditor } from "./HighlightedPromptEditor";
 
 // Rich tooltip content for the {{var:FORMAT}} suffix help: the format tokens with descriptions, the
@@ -117,6 +119,11 @@ interface PromptPanelProps {
   // Fallbacks for {{nome_empresa}} / {{nome_agente}} when previewVars doesn't override them.
   companyFallback: string | null;
   agentFallback: string;
+  // The agent's Availability, so the preview resolves {{esta_aberto}} & co. to what the runtime would
+  // say right now. Mirrors interpolatePromptVars' own option: a null schedule means no Availability
+  // configured (always on). Omitted → the schedule placeholders stay literal in the preview, which is
+  // the honest render for a caller that cannot know.
+  availability?: { schedule: Schedule | null };
   // "inline" → fixed-height editor + capped, scrollable preview (the editor card).
   // "fill"   → editor and preview grow to fill a tall flex parent (the expand-to-modal view).
   variant?: "inline" | "fill";
@@ -135,6 +142,7 @@ export function PromptPanel({
   previewVars,
   companyFallback,
   agentFallback,
+  availability,
   variant = "inline",
   onExpand,
 }: PromptPanelProps) {
@@ -244,18 +252,20 @@ export function PromptPanel({
               </Tooltip>
             </span>
             <div className="flex flex-wrap gap-1.5">
-              {[...PROMPT_CONTEXT_VARS, ...PROMPT_TIME_VARS_DISPLAY].map(
-                (v) => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => insertVariable(v)}
-                    className="rounded border border-border bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary"
-                  >
-                    {`{{${v}}}`}
-                  </button>
-                ),
-              )}
+              {[
+                ...PROMPT_CONTEXT_VARS,
+                ...PROMPT_TIME_VARS_DISPLAY,
+                ...PROMPT_SCHEDULE_VARS_DISPLAY,
+              ].map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => insertVariable(v)}
+                  className="rounded border border-border bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs hover:bg-bg-hover hover:text-text-primary"
+                >
+                  {`{{${v}}}`}
+                </button>
+              ))}
             </div>
             {exactUsages.length > 0 && (
               <div className="flex flex-col gap-1">
@@ -307,7 +317,7 @@ export function PromptPanel({
                     ),
                     inboxName: previewVar("canal", "WhatsApp"),
                   }),
-                  { wrap: wrapPreviewVar },
+                  { wrap: wrapPreviewVar, availability },
                 )}
               </Markdown>
             ) : (

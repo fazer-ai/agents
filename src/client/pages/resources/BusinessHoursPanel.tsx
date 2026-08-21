@@ -15,8 +15,8 @@ import {
 } from "@/client/components";
 import { BusinessHoursForm } from "@/client/components/BusinessHoursForm";
 import { api } from "@/client/lib/api";
-import { formatWindowsSummary } from "@/client/lib/schedulePreview";
 import { formatTimezoneLabel } from "@/client/lib/timezones";
+import { formatWindowsSummary } from "@/modules/business-hours/announce";
 
 type HoursData = Awaited<
   ReturnType<(typeof api.api.v1)["business-hours"]["get"]>

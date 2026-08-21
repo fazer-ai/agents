@@ -17,7 +17,7 @@ import {
   cancelAppointmentReminders,
   enqueueAppointmentReminders,
 } from "@/modules/appointments/reminders";
-import type { Schedule } from "@/modules/business-hours/hours";
+import { parseSchedule, type Schedule } from "@/modules/business-hours/hours";
 import { readSchedule } from "@/modules/business-hours/service";
 import {
   attributeBagsFrom,
@@ -436,15 +436,22 @@ export async function loadAgentConfig(
     },
     select: { chatwootAgentBotId: true, accessToken: true },
   });
-  // Timezone for the clock (get_current_time tool + {{hora_atual}} var): the agent's BusinessHours,
-  // falling back to the product default. A single small scoped read when configured.
+  // The agent's Availability, in one scoped read when configured. It feeds the clock (get_current_time
+  // tool + {{hora_atual}} var) through its timezone, and the schedule variables ({{esta_aberto}},
+  // {{proximo_atendimento}}, {{horario_atendimento}}) through the grid and its exceptions. Until this
+  // read carried more than the timezone, the agent described its own hours from the operator's prose
+  // and drifted from the gate the moment either changed. `null` = no Availability = always on.
   let timezone = DEFAULT_TIMEZONE;
+  let schedule: Schedule | null = null;
   if (agent.businessHoursId !== null) {
     const bh = await db.businessHours.findUnique({
       where: { id: agent.businessHoursId },
-      select: { timezone: true },
+      select: { timezone: true, windows: true, exceptions: true },
     });
-    if (bh?.timezone) timezone = bh.timezone;
+    if (bh) {
+      schedule = parseSchedule(bh);
+      if (bh.timezone) timezone = bh.timezone;
+    }
   }
   // Company name for the {{nome_empresa}} prompt variable (the tenant's own row under RLS).
   const tenant = await db.tenant.findFirst({ select: { name: true } });
@@ -516,6 +523,10 @@ export async function loadAgentConfig(
       now: ov?.promptNow
         ? (zonedWallClockToInstant(ov.promptNow, timezone) ?? undefined)
         : undefined,
+      // Passed on every real path, so a schedule variable is answered rather than left literal. The
+      // playground's time simulation reaches it through `now` above: an operator testing "what does
+      // it say at 22:00" sees the agent report itself closed, exactly as the gate would.
+      availability: { schedule },
     },
   );
   // NOTE: The current values of the attribute keys the operator selected, rendered as an XML block

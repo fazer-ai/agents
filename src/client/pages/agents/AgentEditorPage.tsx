@@ -14,7 +14,7 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Link,
@@ -62,6 +62,7 @@ import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
+import type { Schedule } from "@/modules/business-hours/hours";
 import {
   CHANNEL_REDIRECT_DEFAULTS,
   type ChannelRedirectConfig,
@@ -731,6 +732,24 @@ function AgentEditor() {
 
   // Pools
   const [hours, setHours] = useState<Hours[]>([]);
+  // The Availability the prompt preview resolves {{esta_aberto}} & co. against: the schedule this
+  // agent is bound to, as the Behavior tab currently has it (unsaved changes included, so the preview
+  // answers for the schedule the operator is looking at). Not configured → null, which the runtime and
+  // the gate both read as always on.
+  const promptAvailability = useMemo(() => {
+    const h = hours.find((x) => String(x.id) === businessHoursId);
+    // Built field by field rather than passed through: the sibling picker guards windows/exceptions
+    // with `?? []` for rows that come back without them, and a preview is not the place to find out.
+    return {
+      schedule: h
+        ? {
+            windows: (h.windows ?? []) as Schedule["windows"],
+            exceptions: (h.exceptions ?? []) as Schedule["exceptions"],
+            timezone: h.timezone,
+          }
+        : null,
+    };
+  }, [hours, businessHoursId]);
 
   const confirm = useModalController<ConfirmPayload>();
   const cloneModal = useModalController();
@@ -2593,6 +2612,7 @@ function AgentEditor() {
 
             {tab === "general" && (
               <GeneralTab
+                availability={promptAvailability}
                 name={name}
                 setName={setName}
                 systemPrompt={systemPrompt}

@@ -8,12 +8,10 @@ import {
 } from "@/client/components/BusinessHoursForm";
 import { Button } from "@/client/components/Button";
 import { Modal, useModalController } from "@/client/components/Modal";
-import {
-  formatWindowsSummary,
-  type WindowSpec,
-} from "@/client/lib/schedulePreview";
 import { formatTimezoneLabel } from "@/client/lib/timezones";
 import { cn } from "@/client/lib/utils";
+import { formatWindowsSummary } from "@/modules/business-hours/announce";
+import type { WindowSpec } from "@/modules/business-hours/hours";
 
 export type ScheduleOption = {
   id: string;

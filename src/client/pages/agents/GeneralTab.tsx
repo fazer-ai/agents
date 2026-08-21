@@ -20,6 +20,7 @@ import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { REASONING_EFFORTS } from "@/graph/openai-reasoning";
+import type { Schedule } from "@/modules/business-hours/hours";
 import { CapabilityMap } from "./CapabilityMap";
 import { PromptPanel } from "./PromptPanel";
 import { TabActionBar } from "./TabActionBar";
@@ -59,6 +60,9 @@ interface GeneralTabProps {
   // preview and a playground turn resolve {{nome_contato}} etc. to the SAME values. Blank entries
   // fall back to the built-in examples / real company+agent.
   previewVars?: Record<string, string>;
+  // The agent's Availability (from the Behavior tab's schedule picker), so the prompt preview resolves
+  // {{esta_aberto}} & co. to what the runtime would say. null = no Availability configured.
+  availability?: { schedule: Schedule | null };
   // Resolved tool set, for the read-only capability map / agent graph shown at the bottom of this tab.
   catalog?: ToolCatalog;
   grants?: GrantState[];
@@ -83,6 +87,7 @@ export function GeneralTab({
   onOpenPlayground,
   onDelete,
   previewVars,
+  availability,
   catalog,
   grants,
 }: GeneralTabProps) {
@@ -158,6 +163,7 @@ export function GeneralTab({
             value={systemPrompt}
             onChange={setSystemPrompt}
             previewVars={previewVars}
+            availability={availability}
             companyFallback={tenantName}
             agentFallback={name}
             onExpand={() => promptModal.open()}
@@ -340,6 +346,7 @@ export function GeneralTab({
             value={systemPrompt}
             onChange={setSystemPrompt}
             previewVars={previewVars}
+            availability={availability}
             companyFallback={tenantName}
             agentFallback={name}
           />

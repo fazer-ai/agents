@@ -1,4 +1,11 @@
 import {
+  formatNextOpen,
+  formatWindowsSummary,
+  isOpenNow,
+  nextOpening,
+} from "@/modules/business-hours/announce";
+import type { Schedule } from "@/modules/business-hours/hours";
+import {
   DEFAULT_TIMEZONE,
   formatWithPattern,
   roundDownToMinutes,
@@ -123,6 +130,90 @@ const TIME_VARS: Record<
   current_datetime: { rounded: true, defaultFormat: "DD/MM/YYYY HH:mm" },
 };
 
+// ── schedule variables ──
+
+// The agent's own Availability, as the three questions a customer actually asks it: whether it is
+// open, when it opens next, and what its hours are. Without these the agent answers all three from
+// whatever the operator typed into the system prompt, which drifts from the schedule the gate
+// enforces the moment either one changes — and the customer is then told one thing by the agent and
+// another by the gate.
+//
+// The pt-BR and EN names are NOT two aliases of one value, the way {{nome_contato}}/{{contact_name}}
+// are: each answer is prose, and the name the operator reached for is the only signal of which
+// language the surrounding prompt is written in. An agent has no language of its own.
+type ScheduleVarKind = "is_open" | "next_open" | "summary";
+const SCHEDULE_VARS: Record<
+  string,
+  { kind: ScheduleVarKind; lang: "pt" | "en" }
+> = {
+  esta_aberto: { kind: "is_open", lang: "pt" },
+  is_open: { kind: "is_open", lang: "en" },
+  proximo_atendimento: { kind: "next_open", lang: "pt" },
+  next_open_at: { kind: "next_open", lang: "en" },
+  horario_atendimento: { kind: "summary", lang: "pt" },
+  business_hours: { kind: "summary", lang: "en" },
+};
+
+// Same locales the away message's two spellings pick (availability/away.ts), so an agent that tells
+// the customer "we are back {proximo_atendimento}" and one that answers "{{proximo_atendimento}}" in
+// its own words are never rendering the same instant two different ways.
+const SCHEDULE_WORDS: Record<
+  "pt" | "en",
+  {
+    locale: string;
+    yes: string;
+    no: string;
+    now: string;
+    never: string;
+    alwaysOpen: string;
+  }
+> = {
+  pt: {
+    locale: "pt-BR",
+    yes: "sim",
+    no: "não",
+    now: "agora",
+    never: "sem previsão",
+    alwaysOpen: "sempre aberto",
+  },
+  en: {
+    locale: "en-US",
+    yes: "yes",
+    no: "no",
+    now: "now",
+    never: "not scheduled",
+    alwaysOpen: "always open",
+  },
+};
+
+function renderScheduleVar(
+  v: { kind: ScheduleVarKind; lang: "pt" | "en" },
+  schedule: Schedule | null,
+  now: Date,
+  tz: string,
+  fmt: string | undefined,
+): string {
+  const w = SCHEDULE_WORDS[v.lang];
+  // An absent schedule and a schedule with no windows are the same always-on state, and
+  // formatWindowsSummary's own empty-input fallback is where that lands.
+  if (v.kind === "summary") {
+    return formatWindowsSummary(
+      schedule?.windows ?? [],
+      w.alwaysOpen,
+      w.locale,
+    );
+  }
+  if (v.kind === "is_open") return isOpenNow(schedule, now) ? w.yes : w.no;
+  const next = nextOpening(schedule, now);
+  if (next.kind === "now") return w.now;
+  if (next.kind === "never") return w.never;
+  // An explicit :FORMAT is the operator asking for a shape; the default is the one #154 argued for
+  // the away message (weekday AND date, because a bare weekday is ambiguous for exactly the closures
+  // #148 added). Both surfaces speak to the same customer, so they render the instant identically.
+  if (fmt) return formatWithPattern(next.when, tz, fmt);
+  return formatNextOpen(next.when, now, tz, w.locale);
+}
+
 // {{ var }} or {{ var:FORMAT }} — spaces optional, var is lowercase + underscores, format is any
 // run of non-`}` chars. Single-brace {x} is intentionally NOT matched (clean migration). Exported
 // as a source string (build a fresh RegExp per use — the global flag carries lastIndex) so the
@@ -144,6 +235,11 @@ export function interpolatePromptVars(
     // value and the variable name; its return replaces the value. Defaults to identity. Unknown
     // placeholders are left untouched and never wrapped. The preview uses it to mark dynamic text.
     wrap?: (resolved: string, name: string) => string;
+    // The agent's Availability, when this caller resolves one: a null `schedule` means no Availability
+    // is configured, which the gate treats as always on. Omitting the option entirely says this caller
+    // has no notion of a schedule (the WhatsApp template path), and the schedule placeholders are then
+    // left as the operator's own literal rather than answered with a guess.
+    availability?: { schedule: Schedule | null };
   } = {},
 ): string {
   const wrap = opts.wrap ?? ((v: string) => v);
@@ -159,6 +255,23 @@ export function interpolatePromptVars(
           : now;
         return wrap(
           formatWithPattern(when, tz, fmt?.trim() || timeVar.defaultFormat),
+          key,
+        );
+      }
+      const scheduleVar = SCHEDULE_VARS[key];
+      if (scheduleVar && opts.availability) {
+        const schedule = opts.availability.schedule;
+        // The windows are wall times in the SCHEDULE's timezone, so that one wins. The two cannot
+        // disagree on the real path (prepare.ts reads both from the same BusinessHours row).
+        const tz = schedule?.timezone || opts.timezone || DEFAULT_TIMEZONE;
+        return wrap(
+          renderScheduleVar(
+            scheduleVar,
+            schedule,
+            opts.now ?? new Date(),
+            tz,
+            fmt?.trim() || undefined,
+          ),
           key,
         );
       }
@@ -181,6 +294,14 @@ export const PROMPT_TIME_VARS_DISPLAY = [
   "data_hora_atual",
 ];
 
+// Canonical pt-BR schedule vars for the editor's "insert variable" helper, same rule as the time
+// vars: one name per concept, with the EN spellings still interpolating.
+export const PROMPT_SCHEDULE_VARS_DISPLAY = [
+  "esta_aberto",
+  "proximo_atendimento",
+  "horario_atendimento",
+];
+
 export const PROMPT_CONTEXT_VARS = [
   "nome_empresa",
   "nome_agente",
@@ -195,6 +316,7 @@ export const PROMPT_CONTEXT_VARS = [
 // highlighter can tell a real {{var}} from a typo. Derived from the same sources the runtime uses.
 const PROMPT_ALL_VARS = new Set<string>([
   ...PROMPT_TIME_VARS,
+  ...Object.keys(SCHEDULE_VARS),
   ...Object.keys(buildPromptVars({})),
 ]);
 

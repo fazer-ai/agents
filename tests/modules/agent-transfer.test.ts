@@ -778,11 +778,15 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
   });
 
-  test("a bundle this build produces still carries riskTier, for an older importer (issue #137)", async () => {
-    // The other direction of the same compatibility. The bundle format is versioned as a whole, so
-    // an instance one release behind parses OUR bundle with a schema where `riskTier` is REQUIRED —
-    // dropping the key from the export would make every bundle this build writes unimportable there.
-    // The literal below stands in for that older required-field check.
+  test("a bundle this build produces still carries riskTier, for an older importer (issues #137, #149)", async () => {
+    // The other direction of the same compatibility, and the reason the KEY outlives the column.
+    // The bundle format is versioned as a whole, so an instance one release behind parses OUR bundle
+    // with a schema where `riskTier` is REQUIRED — dropping the key from the export would make every
+    // bundle this build writes unimportable there. Since #149 the value is a constant rather than
+    // the row's, because the schema `@ignore`s the column so this build never names it in SQL, which
+    // is what lets the next release drop it. What this pins is the SHAPE the
+    // older importer requires, which is all that stands between a bundle and a validation failure at
+    // the destination. The literal below stands in for that older required-field check.
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
     });

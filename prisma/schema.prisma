@@ -839,12 +839,23 @@ model ToolDefinition {
   body          Json     @default("{}")
   credentialRef String?  @map("credential_ref")
   enabled       Boolean  @default(true)
-  // NOTE: RETIRED and unread. Nothing selects, writes or projects this any more (issue #137); the
-  // column survives one release on purpose, because an operator who rolls the image back would
-  // otherwise land a build that still selects it and gets `undefined_column` on every tool screen,
-  // with no way back except rolling forward. The default keeps inserts working for the code that no
-  // longer sets it. Dropped by migration in the release after this one; see issue #149.
-  riskTier      String   @default("medium") @map("risk_tier")
+  // NOTE: RETIRED (issue #137). `@ignore` is what retires it: the field leaves the generated client
+  // entirely, so no query this build sends NAMES the column and reading it is a compile error, while
+  // the column itself stays in the database and in the migration history (`migrate diff` across this
+  // attribute is an empty migration).
+  //
+  // Not naming it is the point, and it is a stronger condition than not reading it: a Prisma query
+  // without an explicit `select` asks for every scalar column of the model, and so does a relation
+  // pulled in as `toolDefinition: true`, so a call site that never touches the field still puts it
+  // in the SQL. An older image running such a query after the column is dropped answers
+  // `undefined_column`. Measured on v1.9.0 against a database with the column already gone: the
+  // agent export and saving a tool both failed, and only the one read with an explicit select kept
+  // working, which is the opposite of what auditing the SELECT lists suggests (issue #149).
+  //
+  // So the drop belongs one release after THIS attribute, not one release after #137: rolling back
+  // now lands on a build that still asks for the column. Dropping it is then this line's removal
+  // plus the migration `migrate diff` already writes.
+  riskTier      String   @default("medium") @map("risk_tier") @ignore
   // HTTP statuses this tool declares as RESULTS rather than integration failures. Empty (the
   // default) keeps issue #40's behavior, where every non-2xx is logged warn and reaches the alert
   // channels. A declarative lookup that answers 404 for "no record" lists it here so a healthy turn

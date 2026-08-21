@@ -924,7 +924,16 @@ export async function runAgentNudge(
     // human-owned thread exactly as hard as a delivered one would. Splitting the recheck per
     // outcome is what produced this same defect one branch over.
     const owned = await botStillOwnsIt();
-    if (owned === "unavailable") return "live-unavailable";
+    // A probe that cannot answer does NOT retry here, and that is the one place this differs from
+    // the probe before generation. That one retries because "nothing has been posted yet, so failing
+    // closed is free" — free is what makes the retry the right answer. It is not free after the
+    // judge has run: the trip has already written the operator note and emitted a warn (which can
+    // alert), and a retry re-runs the whole turn, so each attempt would repeat both. So an
+    // unverifiable owner degrades this step instead: the customer gets nothing, the conversation is
+    // not resolved, and the intended text goes to the operator as a note, once.
+    //
+    // A KNOWN takeover still ends the episode, because that outcome does not retry and so costs no
+    // repetition — and "the human owns it" is a different fact from "we could not ask".
     if (owned === "not-ours" && params.requireLiveBotOwnership) return "stale";
     canMessagePost = owned === "ours";
     if (screened === null) {

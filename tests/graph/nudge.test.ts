@@ -1404,9 +1404,10 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
-  // The other half of the recheck: a probe that cannot answer is not an answer. Nothing has reached
-  // the customer yet at this point, so failing closed costs a retry and nothing else — the same
-  // choice the pre-send probe makes, made again for the same reason.
+  // The other half of the recheck: a probe that cannot answer is not an answer. It stops the send
+  // WITHOUT asking for a retry, which is where it parts company with the probe before generation —
+  // by this point the trip has already written the operator note, and a retry re-runs the turn and
+  // writes it again, up to NUDGE_RETRY_LIMIT times.
   test("a live probe that cannot answer after moderation stops the send", async () => {
     await withGuardrails(
       {
@@ -1452,11 +1453,13 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
               cfg.model === GUARD_MODEL
                 ? guardrailModel(async () => {
                     judged = true;
+                    // A real trip: the operator note is written HERE, before the probe below fails.
+                    // That is what makes a retry expensive rather than free.
                     return {
                       content: JSON.stringify({
-                        violated: false,
-                        categories: [],
-                        rationale: "",
+                        violated: true,
+                        categories: ["toxicity"],
+                        rationale: "rude",
                         suggestedReply: null,
                       }),
                     };
@@ -1469,9 +1472,15 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
             persistUsage: async () => {},
           },
         });
-        expect(outcome).toBe("live-unavailable");
+        // Degraded, not retried. "live-unavailable" is the answer that asks the handler to run the
+        // whole step again, and running it again is what would write the note below a second time.
+        expect(outcome).toBe("noted");
         expect(s.messages).toEqual([]);
         expect(s.resolved).toEqual([]);
+        expect(s.labelSets).toEqual([]);
+        expect(
+          s.notes.filter(([, t]) => t.includes("Guardrail (output)")).length,
+        ).toBe(1);
       },
     );
   });

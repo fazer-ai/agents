@@ -39,6 +39,11 @@ export interface GuardrailGateParams {
   // check itself, structurally, the same way the input direction drops the replacement.
   customerMessage?: string;
   makeModel?: typeof createChatModel;
+  // Called whenever this gate leaves a mark an OPERATOR reads: the private note a trip writes, and
+  // the warn-level line a failed analysis emits (which can page). A caller that may still abandon
+  // the turn needs to know, because abandoning it means retrying it, and a retry writes the mark
+  // again — the gate is the only one who can say whether there is one.
+  onRecorded?: () => void;
 }
 
 export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
@@ -118,6 +123,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         detail: { direction, outcome: "analysis_failed" },
         errorMessage: verdict.error,
       });
+      p.onRecorded?.();
     }
     if (!verdict.violated) return null;
     // NOTE: The turn trail and the operator note report what the guardrail DID, not what it was
@@ -153,6 +159,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         `Guardrail (${direction}): ${verdict.categories.join(", ") || "policy"} — ${effectiveAction}. ${verdict.rationale}`,
       )
       .catch(() => {});
+    p.onRecorded?.();
     if (dir.action === "silent") return { reply: null };
     return { reply: replacement ?? dir.templateMessage };
   };

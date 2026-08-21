@@ -538,6 +538,9 @@ export async function runAgentNudge(
   // about to reach the CUSTOMER: the branches that fall back to a private note are writing to the
   // operator, and screening those would let a customer-facing template replace an internal notice,
   // or a `silent` verdict delete the alert that explains the bot's silence.
+  // Set when the judge left something an operator reads. Read by the ownership recheck below, which
+  // is the one place that has to know whether abandoning this turn is still free.
+  let guardrailLeftAMark = false;
   const screenOutput = async (text: string): Promise<string | null> => {
     const verdict = await buildGuardrailGate({
       cfg: cfg.guardrails,
@@ -548,6 +551,9 @@ export async function runAgentNudge(
       flow,
       systemPrompt: cfg.systemPrompt,
       makeModel: params.deps?.makeModel,
+      onRecorded: () => {
+        guardrailLeftAMark = true;
+      },
     })("output", text);
     return verdict ? verdict.reply : text;
   };
@@ -924,15 +930,19 @@ export async function runAgentNudge(
     // human-owned thread exactly as hard as a delivered one would. Splitting the recheck per
     // outcome is what produced this same defect one branch over.
     const owned = await botStillOwnsIt();
-    // A probe that cannot answer does NOT retry here, and that is the one place this differs from
-    // the probe before generation. That one retries because "nothing has been posted yet, so failing
-    // closed is free" — free is what makes the retry the right answer. It is not free after the
-    // judge has run: the trip has already written the operator note and emitted a warn (which can
-    // alert), and a retry re-runs the whole turn, so each attempt would repeat both. So an
-    // unverifiable owner degrades this step instead: the customer gets nothing, the conversation is
-    // not resolved, and the intended text goes to the operator as a note, once.
+    // A probe that cannot answer asks for a retry only while a retry is still FREE, which is the
+    // reason the probe before generation gives for asking ("nothing has been posted yet"). Whether
+    // it is free here is not a property of this line, it is whatever the judge just did: a clean
+    // verdict leaves no trace and the step is worth running again, while a trip has already written
+    // the operator note and emitted a warn that can page, and each retry would repeat both while
+    // spending two model calls to reach the same verdict.
     //
-    // A KNOWN takeover still ends the episode, because that outcome does not retry and so costs no
+    // So the answer is asked of the judge rather than assumed either way. Degrading costs the
+    // customer a follow-up nobody asked for; retrying costs the operator up to NUDGE_RETRY_LIMIT
+    // copies of the same alert. Neither is free, so neither is the default.
+    if (owned === "unavailable" && !guardrailLeftAMark)
+      return "live-unavailable";
+    // A KNOWN takeover ends the episode either way: that outcome does not retry, so it costs no
     // repetition — and "the human owns it" is a different fact from "we could not ask".
     if (owned === "not-ours" && params.requireLiveBotOwnership) return "stale";
     canMessagePost = owned === "ours";

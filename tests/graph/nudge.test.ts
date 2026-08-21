@@ -1404,6 +1404,141 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // A judge that could not run is fail-open for the CUSTOMER and a warn for the operator, and that
+  // warn is exactly the kind of mark a retry would repeat. "Nothing tripped" and "nothing was
+  // written" are different facts, and this is where they come apart.
+  test("an analysis that failed counts as a mark, so the step is not retried", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9970, null);
+        const s = stub();
+        const inner = await s.makeClient();
+        let judged = false;
+        const client = {
+          ...inner,
+          getConversation: async (c: number) => {
+            if (judged) throw new Error("chatwoot 503");
+            return { id: c, status: "pending", meta: {} };
+          },
+        } as unknown as ChatwootClient;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9970`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          requireLiveBotOwnership: true,
+          base: appDb,
+          deps: {
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    judged = true;
+                    throw new Error("guardrails provider 500");
+                  })
+                : new FakeListChatModel({
+                    responses: ["Ainda por aí?"],
+                  })) as never,
+            makeClient: async () => client,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("noted");
+        expect(s.messages).toEqual([]);
+        expect(s.resolved).toEqual([]);
+      },
+    );
+  });
+
+  // The other half of THAT: a clean verdict leaves nothing behind, so abandoning the step is still
+  // free and the follow-up is worth running again. Degrading here would drop a valid follow-up on a
+  // transient Chatwoot failure, silently, because the handler stamps every outcome but this one.
+  test("a clean verdict keeps an unavailable probe retryable", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9969, null);
+        const s = stub();
+        const inner = await s.makeClient();
+        let judged = false;
+        const client = {
+          ...inner,
+          getConversation: async (c: number) => {
+            if (judged) throw new Error("chatwoot 503");
+            return { id: c, status: "pending", meta: {} };
+          },
+        } as unknown as ChatwootClient;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9969`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          requireLiveBotOwnership: true,
+          base: appDb,
+          deps: {
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    judged = true;
+                    // Clean: no note, no warn, nothing for a retry to duplicate.
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({
+                    responses: ["Ainda por aí?"],
+                  })) as never,
+            makeClient: async () => client,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("live-unavailable");
+        expect(s.messages).toEqual([]);
+        expect(s.notes).toEqual([]);
+        expect(s.resolved).toEqual([]);
+      },
+    );
+  });
+
   // The other half of the recheck: a probe that cannot answer is not an answer. It stops the send
   // WITHOUT asking for a retry, which is where it parts company with the probe before generation —
   // by this point the trip has already written the operator note, and a retry re-runs the turn and

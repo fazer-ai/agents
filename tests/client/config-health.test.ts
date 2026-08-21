@@ -924,6 +924,92 @@ describe("computeConfigIssues — which endpoint refusals wait for the vault", (
 // only place it can surface. It has to surface from OUTSIDE the field: the boundary deliberately
 // lets an untouched legacy value save, and the field itself may not be on screen — several of these
 // notes have no control in the editor at all, and the sections that do only render when switched on.
+// Issue #166. The one check here that is not about a feature failing to run: both features run, and
+// it is the customer who gets the wrong experience. The list of inboxes comes from the server (a live
+// Chatwoot read), so everything below is about what the panel DOES with it.
+describe("computeConfigIssues — Chatwoot already answers out of hours", () => {
+  const ONE = [{ id: "5", name: "WhatsApp Vendas" }];
+
+  test("no inboxes, or an empty list, raises nothing", () => {
+    expect(computeConfigIssues(base)).toEqual([]);
+    expect(computeConfigIssues({ ...base, outOfOfficeInboxes: [] })).toEqual(
+      [],
+    );
+  });
+
+  // With the agent silent out of hours, the customer is told the business is closed and then served
+  // by a bot that reads a different calendar. Nothing about the agent's own message is needed for
+  // that, which is why this fires with the availability block untouched.
+  test("Chatwoot's alone → the contradiction, deep-linked to behavior/availability", () => {
+    expect(computeConfigIssues({ ...base, outOfOfficeInboxes: ONE })).toEqual([
+      {
+        key: "outOfHoursChatwoot",
+        tab: "behavior",
+        sectionId: "availability",
+        inboxNames: ["WhatsApp Vendas"],
+      },
+    ]);
+  });
+
+  test("both on → the duplicate, and the inboxes are named in order", () => {
+    const issues = computeConfigIssues({
+      ...base,
+      settings: {
+        availability: { enabled: true, awayMessage: "Estamos fechados." },
+      },
+      outOfOfficeInboxes: [
+        { id: "5", name: "WhatsApp Vendas" },
+        { id: "9", name: "Instagram" },
+      ],
+    });
+    expect(issues).toEqual([
+      {
+        key: "outOfHoursBoth",
+        tab: "behavior",
+        sectionId: "availability",
+        inboxNames: ["WhatsApp Vendas", "Instagram"],
+      },
+    ]);
+  });
+
+  // The switch is what the operator flipped; the copy is what actually goes out. Either one missing
+  // means the agent says nothing, so the collision is the contradiction and not the duplicate — and
+  // a bag that spells the switch any other way is off (readAvailabilityConfig is strict on purpose).
+  const SILENT: Array<[string, unknown]> = [
+    ["switched off", { enabled: false, awayMessage: "Estamos fechados." }],
+    ["no copy", { enabled: true, awayMessage: "" }],
+    ["copy that is only whitespace", { enabled: true, awayMessage: "   " }],
+    ["the switch as a string", { enabled: "true", awayMessage: "Fechados." }],
+    ["no availability block at all", undefined],
+  ];
+  for (const [label, availability] of SILENT) {
+    test(`an agent with ${label} gets the contradiction, not the duplicate`, () => {
+      const issues = computeConfigIssues({
+        ...base,
+        settings: availability === undefined ? {} : { availability },
+        outOfOfficeInboxes: ONE,
+      });
+      expect(issues.map((i) => i.key)).toEqual(["outOfHoursChatwoot"]);
+    });
+  }
+
+  // Every other line in the panel offers a fix; these two must as well, or the operator reads a
+  // problem with no way in.
+  test("both spellings offer an action", () => {
+    for (const settings of [
+      {},
+      { availability: { enabled: true, awayMessage: "x" } },
+    ]) {
+      const issue = computeConfigIssues({
+        ...base,
+        settings,
+        outOfOfficeInboxes: ONE,
+      })[0];
+      expect(issue && issueHasAction(issue)).toBe(true);
+    }
+  });
+});
+
 describe("computeConfigIssues — text stored over its cap", () => {
   const bag = (settings: Record<string, unknown>) => ({ ...base, settings });
 

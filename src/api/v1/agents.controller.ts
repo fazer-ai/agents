@@ -24,6 +24,7 @@ import {
   updateAgent,
 } from "@/modules/agents/service";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
+import { listOutOfOfficeInboxes } from "@/modules/chatwoot/management";
 import {
   GUARDRAIL_HEALTH_WINDOW_HOURS,
   guardrailHealthWindowStart,
@@ -272,6 +273,32 @@ export const agentsController = new Elysia({
         "Counts the guardrail analyses that could not run for this agent in the recent window, with the most recent one and the error it carried. Analysis is fail-open, so a check counted here caught nothing and held nothing back. It does not follow that the turn went out unscreened: the other direction may still have screened it, and a split output analysis can carry an error from one half and a violation from the other.",
       ),
       response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
+  // Which of this agent's bound inboxes ALREADY answer out of hours from Chatwoot's side. The editor's
+  // warning panel needs it for the same reason it needs guardrail health: the answer is not in this
+  // product's configuration at all, and the collision it warns about is invisible from either console.
+  .get(
+    "/:id/inboxes/out-of-office",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      inboxes: await listOutOfOfficeInboxes(
+        ctxOrThrow(tenantContext),
+        BigInt(params.id),
+      ),
+    }),
+    {
+      detail: doc(
+        "List inboxes that answer out of hours",
+        'The agent\'s bound inboxes whose Chatwoot inbox-level out-of-office reply is configured (working hours enabled AND a message set), read live from Chatwoot. Chatwoot\'s schedule is keyed on the day of the week alone, so it cannot express the dated closures this product\'s business hours can: the two calendars disagree on holidays by construction. An inbox on an unreachable Chatwoot account is omitted rather than reported, so an empty list means "nothing found", not "nothing to find".',
+      ),
+      response: errors(400, 401, 403),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({

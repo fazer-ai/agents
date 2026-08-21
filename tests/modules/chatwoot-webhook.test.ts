@@ -546,6 +546,10 @@ describe("parseInboxList", () => {
           name: "WhatsApp Vendas",
           channel_type: "Channel::Whatsapp",
           provider: "whatsapp_cloud",
+          // Chatwoot's own out-of-hours reply, both halves of it, on the same serializer
+          // (app/views/api/v1/models/_inbox.json.jbuilder in the fork).
+          working_hours_enabled: true,
+          out_of_office_message: "Estamos fechados.",
         },
         // baileys is a Channel::Whatsapp too, but an unofficial provider (no window).
         {
@@ -553,6 +557,8 @@ describe("parseInboxList", () => {
           name: "WhatsApp Bridge",
           channel_type: "Channel::Whatsapp",
           provider: "baileys",
+          working_hours_enabled: false,
+          out_of_office_message: "",
         },
         { id: 3, name: "Site", channel_type: "Channel::WebWidget" },
       ],
@@ -563,19 +569,50 @@ describe("parseInboxList", () => {
         name: "WhatsApp Vendas",
         channelType: "Channel::Whatsapp",
         provider: "whatsapp_cloud",
+        workingHoursEnabled: true,
+        outOfOfficeMessage: "Estamos fechados.",
       },
       {
         chatwootInboxId: 2,
         name: "WhatsApp Bridge",
         channelType: "Channel::Whatsapp",
         provider: "baileys",
+        workingHoursEnabled: false,
+        outOfOfficeMessage: "",
       },
       {
         chatwootInboxId: 3,
         name: "Site",
         channelType: "Channel::WebWidget",
         provider: null,
+        workingHoursEnabled: false,
+        outOfOfficeMessage: null,
       },
+    ]);
+  });
+
+  // The out-of-hours pair comes off a wire this product does not own, and the warning it feeds is
+  // about someone else's product. Anything but a real `true` reads as off, so a serializer that
+  // starts sending "true" can only make the warning disappear — never make one up about an inbox
+  // that answers nothing.
+  test("reads the out-of-hours switch strictly, and a non-string message as absent", () => {
+    const raw = [
+      { id: 1, working_hours_enabled: "true", out_of_office_message: "hi" },
+      { id: 2, working_hours_enabled: 1, out_of_office_message: "hi" },
+      { id: 3, working_hours_enabled: true, out_of_office_message: null },
+      { id: 4, working_hours_enabled: true, out_of_office_message: 42 },
+    ];
+    expect(
+      parseInboxList(raw).map((i) => [
+        i.chatwootInboxId,
+        i.workingHoursEnabled,
+        i.outOfOfficeMessage,
+      ]),
+    ).toEqual([
+      [1, false, "hi"],
+      [2, false, "hi"],
+      [3, true, null],
+      [4, true, null],
     ]);
   });
 
@@ -592,12 +629,16 @@ describe("parseInboxList", () => {
         name: "Stringy",
         channelType: null,
         provider: null,
+        workingHoursEnabled: false,
+        outOfOfficeMessage: null,
       },
       {
         chatwootInboxId: 9,
         name: "Inbox 9",
         channelType: null,
         provider: null,
+        workingHoursEnabled: false,
+        outOfOfficeMessage: null,
       },
     ]);
   });

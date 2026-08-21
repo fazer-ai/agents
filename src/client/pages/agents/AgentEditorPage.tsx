@@ -1311,6 +1311,37 @@ function AgentEditor() {
     };
   }, [id, guardrailsOn, serverSyncTick]);
 
+  // Chatwoot's OWN out-of-hours reply, on the inboxes this agent is bound to. Same snapshot rule as
+  // the reading above, and live on the server rather than read off the inbox mirror: the mirror is
+  // only as fresh as the last time somebody pressed Sync, so a mirrored copy would keep warning
+  // about a reply that was switched off weeks ago and there would be nowhere on this page to clear
+  // it. An unreachable Chatwoot comes back as an empty list, which is silence.
+  //
+  // NOT gated on this agent's own away message being on, because the collision does not need it: an
+  // agent with nothing to say out of hours still answers through the closure Chatwoot just announced.
+  const [outOfOfficeInboxes, setOutOfOfficeInboxes] = useState<
+    { id: string; name: string }[]
+  >([]);
+  useEffect(() => {
+    if (!id || serverSyncTick === 0) {
+      setOutOfOfficeInboxes([]);
+      return;
+    }
+    let alive = true;
+    api.api.v1
+      .agents({ id })
+      .inboxes["out-of-office"].get()
+      .then(({ data }) => {
+        if (alive) setOutOfOfficeInboxes(data?.inboxes ?? []);
+      })
+      .catch(() => {
+        if (alive) setOutOfOfficeInboxes([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [id, serverSyncTick]);
+
   // Live config-health (item 1): features turned on but missing the credential they need to run, OR
   // referencing a credential whose secret is not filled in yet (pending). The import that strips
   // secrets is the common trigger; each issue deep-links to its tab + section, or to the vault fill
@@ -1387,6 +1418,7 @@ function AgentEditor() {
     redirectEnabled: channelRedirect.enabled,
     redirectEntryInboxId: channelRedirect.entryInboxId,
     redirectWidgetInboxId: channelRedirect.widgetInboxId,
+    outOfOfficeInboxes,
   });
 
   // Deep-link to a config issue. For a PENDING credential the fix lives in the vault, so jump to the
@@ -1497,6 +1529,23 @@ function AgentEditor() {
             "editor.configIssueGuardrailsFailing",
             "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). Analysis is fail-open, so a check that could not run caught nothing and held nothing back. Check the model, the endpoint and the key.",
             params,
+          );
+    }
+    // Two out-of-hours messages on one inbox, or one announcing a closure the other serves through.
+    // The inboxes are NAMED, not counted: half of every fix is on Chatwoot's screen, and "two of
+    // your inboxes" does not tell anyone which two to open there.
+    if (issue.key === "outOfHoursBoth" || issue.key === "outOfHoursChatwoot") {
+      const inboxes = (issue.inboxNames ?? []).join(", ");
+      return issue.key === "outOfHoursBoth"
+        ? t(
+            "editor.configIssueOutOfHoursBoth",
+            "Chatwoot already replies out of hours on {{inboxes}}, and this agent's out-of-hours message is on as well, so the customer gets both. The two schedules are set in different products and Chatwoot's has no dates in it, so on a holiday they will disagree too.",
+            { inboxes },
+          )
+        : t(
+            "editor.configIssueOutOfHoursChatwoot",
+            "Chatwoot replies out of hours on {{inboxes}}, and this agent does not read that schedule: it answers whenever its own says it is open. The customer can be told the business is closed and served in the same breath.",
+            { inboxes },
           );
     }
     if (issue.pending) {
@@ -2656,7 +2705,13 @@ function AgentEditor() {
             )}
 
             {tab === "channels" && (
-              <ChannelsTab agentId={id} agentName={name} />
+              <ChannelsTab
+                agentId={id}
+                agentName={name}
+                onBindingChanged={() => {
+                  setServerSyncTick((n) => n + 1);
+                }}
+              />
             )}
 
             {tab === "tools" && (

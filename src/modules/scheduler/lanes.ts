@@ -45,6 +45,46 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   MEMORY_COMPACT: "compaction",
 };
 
+// Whether ONE job of this kind spends capacity at an external provider that the rest of the product
+// is also queueing for. A separate question from the lane, deliberately: the lane says which tick
+// drains it, this says how many may run at once inside that tick, and a single flag answering both
+// would be wrong exactly where they diverge (issue #180 review).
+//
+// It exists because making the shared drain concurrent created a BUDGET problem inside a lane —
+// twenty due follow-ups start twenty nudges, and with the default AGENT_MODEL_CONCURRENCY they can
+// hold every permit in the process-wide model semaphore while a customer's reply waits behind a
+// proactive one. The serial drain took at most one permit; that was its one virtue.
+//
+// RAG_INGEST is here for a different provider and a sharper reason: `embedTexts` does not go through
+// that semaphore at all, so nothing else bounds it. Twenty documents due at once (a bulk import, a
+// reindex) meant twenty embedding batches in flight, provider rate limits, and documents landing in
+// FAILED for no reason a reader could see.
+//
+// A kind NOT listed here is bounded only by the batch size, which is the point: HEARTBEAT and the
+// sweeps do a query and finish, and making them queue behind a nudge is the head-of-line blocking
+// this lane just stopped doing.
+export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
+  FOLLOWUP: true,
+  APPOINTMENT_REMINDER: true,
+  REDIRECT_FOLLOWUP: true,
+  RAG_INGEST: true,
+  FOLLOWUP_SWEEP: false,
+  WEBHOOK_RETRY: false,
+  HEARTBEAT: false,
+  FLOWLOG_SWEEP: false,
+  DEBOUNCE: false,
+  MEMORY_COMPACT: false,
+};
+
+// How many provider-spending jobs the shared lane may run at once, out of the model budget. NEVER
+// the whole of it, and never zero: the same arithmetic the compaction lane uses (see
+// defaultBatchSize), for the same reason — nobody is waiting on a proactive nudge, somebody is
+// always waiting on the turn it would starve. A floor of 1 keeps the lane alive at a budget of 1,
+// where the alternative is proactive work that never runs at all.
+export function sharedProviderConcurrency(budget: number): number {
+  return Math.max(1, Math.min(Math.floor(budget / 4), Math.max(1, budget - 1)));
+}
+
 export function kindsInLane(lane: SchedulerLane): SchedulerJobKind[] {
   return (Object.keys(JOB_LANE) as SchedulerJobKind[]).filter(
     (kind) => JOB_LANE[kind] === lane,

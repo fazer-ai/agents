@@ -2,7 +2,13 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
-import { JOB_LANE, type SchedulerLane } from "@/modules/scheduler/lanes";
+import config from "@/config";
+import {
+  JOB_LANE,
+  JOB_SPENDS_PROVIDER,
+  type SchedulerLane,
+  sharedProviderConcurrency,
+} from "@/modules/scheduler/lanes";
 import {
   claimDueCompactionJobs,
   claimDueDebounceJobs,
@@ -74,6 +80,24 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   MEMORY_COMPACT: "compaction",
 };
 
+// Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
+// exercise one costly kind end to end, so membership for the other three is asserted here or not at
+// all. Flipping RAG_INGEST in the source killed no test until this existed — and RAG_INGEST is the
+// one whose provider has NO other limiter (`embedTexts` never touches the model semaphore), so a
+// silent demotion means twenty embedding batches at once on a bulk import.
+const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
+  FOLLOWUP: true,
+  APPOINTMENT_REMINDER: true,
+  REDIRECT_FOLLOWUP: true,
+  RAG_INGEST: true,
+  FOLLOWUP_SWEEP: false,
+  WEBHOOK_RETRY: false,
+  HEARTBEAT: false,
+  FLOWLOG_SWEEP: false,
+  DEBOUNCE: false,
+  MEMORY_COMPACT: false,
+};
+
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];
 
 describe.skipIf(!dbUp)("scheduler lanes", () => {
@@ -140,21 +164,31 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
   });
 
   test("the shared lane drains its batch concurrently", async () => {
-    // Two jobs that can only both finish if they run at the same time. `first` refuses to return
-    // until `second` has started, so a serial drain never gets to `second` and this test times out.
-    let releaseFirst: (() => void) | undefined;
-    const secondStarted = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
+    // Two jobs that can only both finish if they run at the same time. Each ANNOUNCES its own start
+    // and then waits for the other's, so the deadlock does not depend on which one the claim returns
+    // first — `UPDATE … RETURNING` does not guarantee the subquery's order, and a one-sided
+    // rendezvous would let a serial drain pass whenever the resolver happened to run first.
+    let startedA: (() => void) | undefined;
+    let startedB: (() => void) | undefined;
+    const aStarted = new Promise<void>((r) => {
+      startedA = r;
     });
-    let bothRan = false;
+    const bStarted = new Promise<void>((r) => {
+      startedB = r;
+    });
+    let ranA = false;
+    let ranB = false;
 
     registerJobHandler("HEARTBEAT", async () => {
-      await secondStarted;
+      ranA = true;
+      startedA?.();
+      await bStarted;
       return { outcome: "done" };
     });
     registerJobHandler("FLOWLOG_SWEEP", async () => {
-      bothRan = true;
-      releaseFirst?.();
+      ranB = true;
+      startedB?.();
+      await aStarted;
       return { outcome: "done" };
     });
 
@@ -187,8 +221,81 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
       new Promise<typeof timedOut>((r) => setTimeout(() => r(timedOut), 5_000)),
     ]);
     expect(outcome).toBe("finished");
-    expect(bothRan).toBe(true);
+    expect(ranA && ranB).toBe(true);
   }, 15_000);
+
+  test("provider-spending kinds are bounded; the cheap ones are not", async () => {
+    // The bound the concurrent drain made necessary. Twenty due follow-ups used to be able to hold
+    // every permit in the process-wide model semaphore while a customer's reply queued behind a
+    // proactive nudge — the serial drain took at most one, and that was the only thing protecting
+    // the interactive path.
+    const bound = sharedProviderConcurrency(config.agent.modelConcurrency);
+    const N = bound + 3;
+
+    let live = 0;
+    let peak = 0;
+    let cheapLive = 0;
+    let cheapPeak = 0;
+    const release: Array<() => void> = [];
+    const gate = () =>
+      new Promise<void>((r) => {
+        release.push(r);
+      });
+
+    registerJobHandler("APPOINTMENT_REMINDER", async () => {
+      live += 1;
+      peak = Math.max(peak, live);
+      await gate();
+      live -= 1;
+      return { outcome: "done" };
+    });
+    registerJobHandler("HEARTBEAT", async () => {
+      cheapLive += 1;
+      cheapPeak = Math.max(cheapPeak, cheapLive);
+      await gate();
+      cheapLive -= 1;
+      return { outcome: "done" };
+    });
+
+    for (let i = 0; i < N; i++) {
+      await enqueueJob({
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: `bound-costly-${i}`,
+        runAt: past(),
+        base: appDb,
+      });
+      await enqueueJob({
+        tenantId,
+        kind: "HEARTBEAT",
+        dedupeKey: `bound-cheap-${i}`,
+        runAt: past(),
+        base: appDb,
+      });
+    }
+
+    const tick = runSchedulerTick(appDb, {
+      staleMs: 300_000,
+      batchSize: 100,
+      tenantId,
+    });
+    // Let everything that is going to start, start; then let it all finish.
+    await new Promise((r) => setTimeout(r, 150));
+    const costlyAtRest = peak;
+    const cheapAtRest = cheapPeak;
+    for (const r of release) r();
+    await new Promise((r) => setTimeout(r, 50));
+    for (const r of release) r();
+    await tick;
+
+    expect(costlyAtRest).toBe(bound);
+    // Which kinds the bound APPLIES to, stated independently of the source. One kind is exercised
+    // above; the rest are only ever covered here.
+    expect(JOB_SPENDS_PROVIDER).toEqual(EXPECTED_SPENDS_PROVIDER);
+    // The cheap kind is deliberately NOT gated: bounding the whole drain would put a heartbeat back
+    // behind a nudge, which is the blocking this change removed.
+    expect(cheapAtRest).toBe(N);
+  }, 20_000);
 
   test("the tick claims only its fenced tenant's jobs", async () => {
     // The fence is test-only isolation, and a mutation removing it survives any single-file run —

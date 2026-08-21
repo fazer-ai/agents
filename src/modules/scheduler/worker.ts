@@ -2,6 +2,11 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { Semaphore } from "@/lib/semaphore";
+import {
+  JOB_SPENDS_PROVIDER,
+  sharedProviderConcurrency,
+} from "@/modules/scheduler/lanes";
 import {
   type ClaimedJob,
   claimDueJobs,
@@ -207,8 +212,19 @@ export async function runSchedulerTick(
   //
   // allSettled: runClaimed never re-throws (it fails the job internally), but a stray throw must not
   // stall the tick.
+  // The kinds that spend provider capacity go through a bound; the rest do not. Bounding the whole
+  // drain would put a heartbeat back behind a nudge, which is the head-of-line blocking this change
+  // removed — and leaving the costly ones unbounded lets a batch of twenty hold every model permit
+  // while a customer's reply waits (see JOB_SPENDS_PROVIDER).
+  const gate = new Semaphore(
+    sharedProviderConcurrency(config.agent.modelConcurrency),
+  );
   const settled = await Promise.allSettled(
-    jobs.map((job) => runClaimed(job, base)),
+    jobs.map((job) =>
+      JOB_SPENDS_PROVIDER[job.kind]
+        ? gate.run(() => runClaimed(job, base))
+        : runClaimed(job, base),
+    ),
   );
   // NOTE: allSettled DISCARDS rejections, and the serial loop this replaced did not: an `await` that
   // threw propagated out of the tick and startScheduler logged it. runClaimed swallows a handler's

@@ -4,6 +4,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { acceptsConstrainedOutput } from "@/graph/model-config";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
@@ -393,20 +394,27 @@ export async function runLoadedTurn(
   ): Promise<{ reply: string | null } | null> => {
     const dir = gr[direction];
     if (!guardrailModel || !dir.enabled) return null;
-    const verdict = await analyzeGuardrail(guardrailModel, {
-      direction,
-      text: subject,
-      checks: dir.checks,
-      competitors: gr.competitors,
-      customPolicy: gr.customPolicy,
-      systemPrompt: direction === "output" ? loaded.systemPrompt : undefined,
-      // The raw inbound text, not `turnText`: on the first turn of a new conversation the latter
-      // carries CONVERSATION_DIVIDER, and handing the guardrail a system marker as the customer's
-      // words would make it judge the reply against something nobody said.
-      customerMessage: direction === "output" ? text : undefined,
-      generationPrompt:
-        dir.action === "generated" ? dir.generationPrompt : undefined,
-    });
+    const verdict = await analyzeGuardrail(
+      guardrailModel,
+      {
+        direction,
+        text: subject,
+        checks: dir.checks,
+        competitors: gr.competitors,
+        customPolicy: gr.customPolicy,
+        systemPrompt: direction === "output" ? loaded.systemPrompt : undefined,
+        // The raw inbound text, not `turnText`: on the first turn of a new conversation the latter
+        // carries CONVERSATION_DIVIDER, and handing the guardrail a system marker as the customer's
+        // words would make it judge the reply against something nobody said.
+        customerMessage: direction === "output" ? text : undefined,
+        generationPrompt:
+          dir.action === "generated" ? dir.generationPrompt : undefined,
+      },
+      // Constrained where the endpoint implements it, and asked for in the prompt everywhere else.
+      // The provider decides, not the model id: the same adapter serves OpenAI itself and whatever
+      // an operator points `openai-compatible` at (issue #131).
+      acceptsConstrainedOutput(gr.provider) ? "constrained" : "prose",
+    );
     // A guardrail that could not run reads exactly like one that ran and approved, so without this
     // line an expired credential is silent moderation for as long as nobody notices. The turn is
     // NOT blocked (fail-open stays), only recorded.

@@ -28,6 +28,36 @@ export const PROVIDERS_HONORING_BASE_URL = [
   "openrouter",
 ] as const;
 
+// The providers a call may ask for a SCHEMA-CONSTRAINED answer, instead of asking in the prompt and
+// reading the answer out of prose (see modules/guardrails/verdict.ts, issue #131). This is a claim
+// about the endpoint, never about how capable the model is, and each exclusion below was measured
+// or read off the vendor's own documentation:
+//
+//   * deepseek implements `json_object` only, and answers "unavailable now" to a json_schema;
+//   * openrouter's support is per ENDPOINT behind the router and changes without notice, so the
+//     same model id constrains today and fails the request tomorrow;
+//   * openai-compatible is an arbitrary server by definition. Measured against a local one that
+//     ignores the parameter: the client retried the same call six times across a minute and never
+//     settled, while the unconstrained call made today answered on the first try. One that refuses
+//     it outright (llama.cpp does, with a 400) fails immediately. Both of those are a guardrail
+//     that stops screening, on installs where it screens fine today.
+//
+// Getting a row wrong is not symmetric: a provider wrongly on this list stops screening, one
+// wrongly off it keeps exactly today's behaviour. When in doubt, leave it off.
+export const PROVIDERS_ACCEPTING_CONSTRAINED_OUTPUT = [
+  "openai",
+  "anthropic",
+  "google",
+] as const;
+
+export function acceptsConstrainedOutput(
+  provider: (typeof MODEL_PROVIDERS)[number],
+): boolean {
+  return (PROVIDERS_ACCEPTING_CONSTRAINED_OUTPUT as readonly string[]).includes(
+    provider,
+  );
+}
+
 export const modelConfigSchema = z
   .object({
     provider: z.enum(MODEL_PROVIDERS),

@@ -134,15 +134,17 @@ describe("agent_settings_set argument schema", () => {
   // the zod object instead would have missed that `tools/list` drops what it cannot express.
   test("the published choices are the registry's own", async () => {
     const published = await publishedSchema();
-    expect(keywordOf(published, "stt", "provider", "enum")).toEqual(
-      STT_PROVIDER_NAMES,
+    // NOTE: compared as sets. The claim is membership — every provider the build registers is
+    // offered, and nothing else is — and the registries are live arrays another test can reorder.
+    const choices = (block: string, field: string) =>
+      [...(keywordOf(published, block, field, "enum") as string[])].sort();
+    expect(choices("stt", "provider")).toEqual([...STT_PROVIDER_NAMES].sort());
+    expect(choices("vision", "provider")).toEqual(
+      [...VISION_PROVIDER_NAMES].sort(),
     );
-    expect(keywordOf(published, "vision", "provider", "enum")).toEqual(
-      VISION_PROVIDER_NAMES,
+    expect(choices("tts", "normalizeProvider")).toEqual(
+      [...MODEL_PROVIDERS].sort(),
     );
-    expect(keywordOf(published, "tts", "normalizeProvider", "enum")).toEqual([
-      ...MODEL_PROVIDERS,
-    ]);
   });
 
   // JSON Schema has no regex flags, so an `i` on the reader's pattern is DROPPED on the way out and

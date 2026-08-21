@@ -1334,6 +1334,148 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // The sibling of the test above, and the reason the recheck sits above the verdict instead of
+  // inside the branch that sends: a suppressed reply still runs the post-actions, and those resolve.
+  test("a suppressed follow-up does not resolve a conversation a human just took", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9968, null);
+        const s = stub();
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9968`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    await suDb.conversation.update({
+                      where: {
+                        tenantId_chatwootInstanceId_chatwootConversationId: {
+                          tenantId,
+                          chatwootInstanceId: instanceId,
+                          chatwootConversationId: 9968,
+                        },
+                      },
+                      data: { assigneeType: "User", status: "open" },
+                    });
+                    return {
+                      content: JSON.stringify({
+                        violated: true,
+                        categories: ["toxicity"],
+                        rationale: "rude",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({
+                    responses: ["Ainda por aí?"],
+                  })) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("silent");
+        expect(s.messages).toEqual([]);
+        // The point: neither of these belongs to us any more.
+        expect(s.resolved).toEqual([]);
+        expect(s.labelSets).toEqual([]);
+      },
+    );
+  });
+
+  // The other half of the recheck: a probe that cannot answer is not an answer. Nothing has reached
+  // the customer yet at this point, so failing closed costs a retry and nothing else — the same
+  // choice the pre-send probe makes, made again for the same reason.
+  test("a live probe that cannot answer after moderation stops the send", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9967, null);
+        const s = stub();
+        const inner = await s.makeClient();
+        // Keyed on the judge having run, not on a probe count: what is under test is the probe that
+        // happens AFTER moderation, and counting would silently follow any change to the ones before.
+        let judged = false;
+        const client = {
+          ...inner,
+          getConversation: async (c: number) => {
+            if (judged) throw new Error("chatwoot 503");
+            return { id: c, status: "pending", meta: {} };
+          },
+        } as unknown as ChatwootClient;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9967`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          requireLiveBotOwnership: true,
+          base: appDb,
+          deps: {
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    judged = true;
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({
+                    responses: ["Ainda por aí?"],
+                  })) as never,
+            makeClient: async () => client,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("live-unavailable");
+        expect(s.messages).toEqual([]);
+        expect(s.resolved).toEqual([]);
+      },
+    );
+  });
+
   // The suppressing action on the proactive path. A follow-up nobody asked for, that the policy then
   // refuses, is simply not sent — and the deterministic post-actions still fire, exactly as on the
   // branch where the agent chose to stay quiet.

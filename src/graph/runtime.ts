@@ -511,6 +511,13 @@ export async function runLoadedTurn(
     const line = handoffState.customerMessage as string;
     try {
       const guarded = await runGuardrail("output", line);
+      // A trip here drops the turn's queued images, which is the rule the main gate below already
+      // keeps ("the safe reply replaces what the model wrote, images included"). The closing line is
+      // screened on its own because it leaves before that gate, but a verdict on this turn's
+      // customer-facing text means the same thing wherever it is reached: a `silent` action that
+      // suppressed the goodbye and then let a photo through would be the operator's policy applied
+      // to one artefact and not the other.
+      if (guarded) turnState.pendingImages.length = 0;
       const screened = guarded ? guarded.reply : line;
       if (screened === null) return;
       deliveredBalloons = await deliverText(

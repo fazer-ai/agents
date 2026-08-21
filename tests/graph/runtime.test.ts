@@ -1459,6 +1459,79 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
   });
 
+  // The voice read sits on the path that must not fail. Reading the preference is a nicety; the
+  // sentence the transfer promised is the thing no later attempt can deliver, so a database that
+  // will not answer costs the customer the audio, never the message.
+  test("a handoff's closing line survives a voice-preference read that fails", async () => {
+    await withTtsPreference(async () => {
+      const contact = await suDb.contact.create({
+        data: {
+          tenantId,
+          chatwootContactId: 5562,
+          name: "Leitura Falha",
+          voiceReply: false,
+        },
+        select: { id: true },
+      });
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 959,
+          status: "pending",
+          contactId: contact.id,
+          threadId: `${tenantId}:${instanceId}:959`,
+          lastEventAt: new Date(),
+        },
+      });
+      // The FIRST contact read of the turn is the closing line's; the ownership recheck reads it
+      // again later and is left working, so what this asserts is the delivery and not a dead turn.
+      let firstRead = true;
+      const brittle = appDb.$extends({
+        query: {
+          contact: {
+            findUnique({ args, query }) {
+              if (firstRead) {
+                firstRead = false;
+                throw new Error("db went away");
+              }
+              return query(args);
+            },
+          },
+        },
+      }) as unknown as typeof appDb;
+      const calls: Array<[string, number]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 959 }),
+        base: brittle,
+        deps: {
+          makeModel: () =>
+            new SetVoiceThenHandoffModel(
+              "audio",
+              "Vou te passar para um atendente.",
+            ) as unknown as BaseChatModel,
+          makeClient: audioClient(calls),
+          checkpointer: new MemorySaver(),
+          ttsFetch: (async () =>
+            new Response(new Uint8Array([1, 2, 3]), {
+              status: 200,
+              headers: { "Content-Type": "audio/mpeg" },
+            })) as unknown as typeof fetch,
+        },
+      });
+      expect(outcome).toBe("posted");
+      // Written rather than spoken, because the fallback is the pre-turn snapshot — and written is
+      // the whole point: the customer was told.
+      expect(calls).toEqual([
+        ["toggleStatus", 959],
+        ["sendMessage", 959],
+      ]);
+    });
+  });
+
   // Issue #65 + review: the tool queues and the RUNTIME delivers, after the same gates the reply
   // passes. The customer sees the picture, then the sentence about it.
   test("a queued image is delivered before the reply, in the same turn", async () => {
@@ -2477,6 +2550,66 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     // Fail-open is about guardrail ERRORS, not verdicts: a policy that suppresses the text still may
     // not suppress the transfer. The customer gets silence, the human queue gets the conversation.
+    // The closing line is screened on its own because it leaves before the main gate, and that is
+    // exactly how a queued photo could outlive a `silent` verdict: the transfer's own webhook may
+    // not have reached the mirror yet, so the turn walks on to the branch that delivers images. A
+    // policy that suppressed the goodbye did not approve the photo.
+    test("a suppressed closing line takes the turn's queued image with it", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-OUT",
+        },
+      });
+      await seedConv(960);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const attachments: Array<[number, string]> = [];
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 960, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: branchingWith(
+            JSON.stringify({
+              violated: true,
+              categories: ["toxicity"],
+              rationale: "insulting",
+              suggestedReply: null,
+            }),
+            new SendImageThenHandoffModel(
+              IMG_URL,
+              "seu problema é chato, vou passar adiante",
+              "Camiseta azul",
+            ) as unknown as BaseChatModel,
+          ),
+          makeClient: guardStub(sent, notes, toggles, attachments),
+          checkpointer: new MemorySaver(),
+          imageDeps,
+        },
+      });
+      // The transfer still happened — it is the one thing the guardrail has no say over.
+      expect(toggles).toEqual([[960, "open"]]);
+      expect(sent).toEqual([]);
+      expect(attachments).toEqual([]);
+      expect(outcome).toBe("posted");
+    });
+
     test("a handoff whose closing line is suppressed still transfers the conversation", async () => {
       await setGuardrails({
         enabled: true,

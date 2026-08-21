@@ -919,14 +919,19 @@ export async function runAgentNudge(
     // send still throws here: nothing has been done to the conversation that a retry cannot repeat,
     // so the job should run again rather than swallow the miss.
     const screened = await screenOutput(reply);
+    // Asked BEFORE the verdict is acted on, not inside the branch that sends: the post-actions run
+    // on both branches and they resolve the conversation, so a suppressed reply closes a
+    // human-owned thread exactly as hard as a delivered one would. Splitting the recheck per
+    // outcome is what produced this same defect one branch over.
+    const owned = await botStillOwnsIt();
+    if (owned === "unavailable") return "live-unavailable";
+    if (owned === "not-ours" && params.requireLiveBotOwnership) return "stale";
+    canMessagePost = owned === "ours";
     if (screened === null) {
       await applyPostActions();
       return "silent";
     }
-    const owned = await botStillOwnsIt();
-    if (owned === "unavailable") return "live-unavailable";
-    if (owned === "not-ours" && params.requireLiveBotOwnership) return "stale";
-    if (owned === "ours") {
+    if (canMessagePost) {
       await client.sendMessage(conversationId, screened);
       logger.info(
         "agentNudge messaged: conv=%s source=%s",
@@ -938,8 +943,7 @@ export async function runAgentNudge(
       return "messaged";
     }
     // A human arrived while the judge was reading. Everything below already knows what to do with a
-    // conversation that is no longer ours, so this only has to stop claiming it is.
-    canMessagePost = false;
+    // conversation that is no longer ours, and `canMessagePost` already says so.
   }
 
   if (canMessagePre && canMessagePost) {

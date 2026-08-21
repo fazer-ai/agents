@@ -1897,6 +1897,69 @@ describe.skipIf(!dbUp)("memory compaction", () => {
       });
     });
 
+    // Same vendor, different model, which is the swap this whole knob exists for. `reasoningEffort`
+    // is OpenAI-only and picked for ONE model id, and an explicit value routes the call to
+    // /v1/responses carrying it (planOpenAITransport) — so carrying the agent's onto a model that
+    // does not take it fails every compaction on the agent, not one call. Found by review: the first
+    // version of this gated on the PROVIDER, and same-vendor is exactly the case it let through.
+    test("a model swap on the same vendor drops the agent's sampling too", async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          modelConfig: {
+            provider: "openai",
+            model: "gpt-5.4",
+            temperature: 0.7,
+            reasoningEffort: "high",
+          },
+          settings: {
+            memory: {
+              compaction: {
+                enabled: true,
+                provider: "openai",
+                model: "gpt-5.4-nano",
+              },
+            },
+          },
+        },
+      });
+      const swapped = captureModel();
+      expect(await compactWith(5307, swapped.makeModel)).toEqual({
+        outcome: "done",
+      });
+      expect(swapped.captured[0]).toMatchObject({
+        provider: "openai",
+        model: "gpt-5.4-nano",
+      });
+      expect(swapped.captured[0]?.temperature).toBeUndefined();
+      expect(swapped.captured[0]?.reasoningEffort).toBeUndefined();
+
+      // And the other half of the same rule: naming the provider WITHOUT naming a model is not a
+      // swap, so the measured baseline is still the one running and the sampling still travels.
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            memory: { compaction: { enabled: true, provider: "openai" } },
+          },
+        },
+      });
+      const pinned = captureModel();
+      expect(await compactWith(5308, pinned.makeModel)).toEqual({
+        outcome: "done",
+      });
+      expect(pinned.captured[0]).toMatchObject({
+        model: "gpt-5.4",
+        temperature: 0.7,
+        reasoningEffort: "high",
+      });
+
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { modelConfig: { provider: "openai", model: "gpt-5.4-mini" } },
+      });
+    });
+
     // The spend has to be filed under the model that ACTUALLY ran. Without this the cost break-down
     // reports the summariser's tokens against the agent's model, which is the exact number an
     // operator would consult to decide whether pointing the summariser somewhere cheaper worked —

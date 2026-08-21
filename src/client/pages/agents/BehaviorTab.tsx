@@ -55,6 +55,8 @@ import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import {
+  overrideBaseUrlInvalid,
+  overrideBaseUrlUnsupported,
   overrideNeedsOwnCredential,
   overridePicked,
   overridePickerSource,
@@ -881,6 +883,20 @@ export function BehaviorTab({
   );
   const memoryEffectiveProvider = memory.provider || agentModelProvider;
   const memoryNeedsOwnCredential = overrideNeedsOwnCredential(
+    memoryOverride,
+    agentModel,
+    memoryCredBaseUrl,
+  );
+  // The endpoint half of the same resolution, and the reason it is here rather than only on the
+  // field: the summariser is the second override in this tab, and the first one already blocks the
+  // save on both of these. A section that renders the picker without them saves a configuration the
+  // runtime refuses, and the operator's only signal is attendances quietly staying raw.
+  const memoryBaseUrlInvalid = overrideBaseUrlInvalid(
+    memoryOverride,
+    agentModel,
+    memoryCredBaseUrl,
+  );
+  const memoryBaseUrlUnsupported = overrideBaseUrlUnsupported(
     memoryOverride,
     agentModel,
     memoryCredBaseUrl,
@@ -2098,6 +2114,49 @@ export function BehaviorTab({
                     }
                   />
                 </FormField>
+                {(memoryEffectiveProvider === "openai-compatible" ||
+                  !!memoryCredBaseUrl ||
+                  !!memory.baseURL.trim()) && (
+                  <FormField
+                    label={t("editor.baseURL", "Base URL")}
+                    description={
+                      memoryCredBaseUrl
+                        ? t(
+                            "editor.baseURLFromCredential",
+                            "Defined by the selected credential.",
+                          )
+                        : t(
+                            "editor.memoryBaseURLHint",
+                            "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+                          )
+                    }
+                    error={
+                      memoryBaseUrlUnsupported
+                        ? t(
+                            "editor.baseURLNotSentByProvider",
+                            "This provider does not send a base URL: the request would go to its own endpoint instead. Pick a credential without one, or use an OpenAI-compatible provider.",
+                          )
+                        : memoryBaseUrlInvalid && memory.baseURL.trim()
+                          ? t(
+                              "common.invalidUrl",
+                              "Must be a valid http(s) URL.",
+                            )
+                          : null
+                    }
+                  >
+                    <Input
+                      value={memoryCredBaseUrl ?? memory.baseURL}
+                      onChange={(e) =>
+                        setMemory((prev) => ({
+                          ...prev,
+                          baseURL: e.target.value,
+                        }))
+                      }
+                      disabled={!!memoryCredBaseUrl}
+                      placeholder="https://api.groq.com/openai/v1"
+                    />
+                  </FormField>
+                )}
               </div>
             )}
           </Section>
@@ -2343,7 +2402,9 @@ export function BehaviorTab({
           sttBaseUrlInvalid ||
           visionBaseUrlInvalid ||
           normalizeBaseUrlInvalid ||
-          normalizeBaseUrlUnsupported
+          normalizeBaseUrlUnsupported ||
+          memoryBaseUrlInvalid ||
+          memoryBaseUrlUnsupported
         }
         onOpenPlayground={onOpenPlayground}
       />

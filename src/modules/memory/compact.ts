@@ -445,7 +445,13 @@ export async function runCompaction(
         error: "memory compaction model: credential_not_found",
       };
     }
-    const switched = resolved.provider !== cfg.mc.provider;
+    // Same VENDOR is not enough to carry the agent's sampling: `reasoningEffort` is an OpenAI-only
+    // setting picked for one model id, and `planOpenAITransport` turns any explicit value into a
+    // /v1/responses call carrying that effort. Handed to a different model on the same account —
+    // the cheap-swap this knob exists for — that is a request the endpoint can refuse, and the
+    // refusal costs every compaction on the agent, not one call.
+    const sameModel =
+      resolved.provider === cfg.mc.provider && resolved.model === cfg.mc.model;
     const mc: ResolvedModelConfig = {
       provider: resolved.provider as ModelConfig["provider"],
       model: resolved.model,
@@ -456,19 +462,21 @@ export async function runCompaction(
             ? cfg.apiKey
             : "",
       baseURL: resolved.baseURL ?? undefined,
-      // Carried from the agent while the vendor is UNCHANGED, dropped on a switch. Not a style
-      // choice: with nothing configured this is the whole of what keeps the summaries identical to
-      // the ones this install was already producing, and the prompt behind them was chosen by an A/B
-      // battery (see ./summarize.ts) measured at whatever the agent was set to. Silently moving the
-      // temperature would invalidate that measurement for every existing install. On a switch they
-      // are dropped for the same reason the model id is: a reasoning effort was picked for the
-      // vendor that offers it.
-      ...(switched
-        ? {}
-        : {
+      // Carried from the agent only while the call lands on the SAME model. Not a style choice: with
+      // nothing configured this is the whole of what keeps the summaries identical to the ones this
+      // install was already producing, and the prompt behind them was chosen by an A/B battery (see
+      // ./summarize.ts) measured at whatever the agent was set to. Silently moving the temperature
+      // would invalidate that measurement for every existing install.
+      //
+      // And that reason stops applying the instant the operator names a different model, which is
+      // what makes "same vendor" the wrong test: the measurement being preserved was taken on the
+      // agent's model, and a knob chosen for it is not a setting the new one has to accept.
+      ...(sameModel
+        ? {
             temperature: cfg.mc.temperature,
             reasoningEffort: cfg.mc.reasoningEffort,
-          }),
+          }
+        : {}),
     };
     const makeModel = deps.makeModel ?? createChatModel;
     // createChatModel REJECTS some configurations synchronously (openai-compatible with no effective

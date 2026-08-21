@@ -191,6 +191,98 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
     ]);
   });
 
+  // The attendance summariser's own model. Its failure is louder than the rewrite's (the job fails
+  // and retries to DEAD) and more expensive: what is lost is not one reply's delivery but the
+  // contact's memory of an attendance that already ended, and nothing ever goes back for it. The
+  // console is still the only place an operator would see it before it happens.
+  describe("attendance summary model", () => {
+    const mem = (compaction: Record<string, unknown>) => ({
+      ...base,
+      settings: { memory: { compaction: { enabled: true, ...compaction } } },
+    });
+
+    // Nothing configured IS the agent's model, and an agent model that cannot run is the "model"
+    // issue. A second line for it would send the operator to fix the summariser when what is broken
+    // is the agent.
+    test("no override configured raises nothing", () => {
+      expect(computeConfigIssues(mem({}))).toEqual([]);
+      expect(computeConfigIssues({ ...base, settings: {} })).toEqual([]);
+    });
+
+    test("the agent's own provider, picked explicitly, needs no credential of its own", () => {
+      expect(computeConfigIssues(mem({ provider: "openai" }))).toEqual([]);
+    });
+
+    test("a different provider with no key of its own is flagged", () => {
+      expect(computeConfigIssues(mem({ provider: "anthropic" }))).toEqual([
+        { key: "memoryModel", tab: "behavior", sectionId: "memory" },
+      ]);
+    });
+
+    test("a different provider WITH its own key is fine", () => {
+      expect(
+        computeConfigIssues(
+          mem({ provider: "anthropic", credentialRef: "vault:3" }),
+        ),
+      ).toEqual([]);
+    });
+
+    // The reason this check exists at all: REST and MCP write the bag directly, so a model id or a
+    // key with no provider arrives here from paths the editor never validated, and the runtime
+    // stores it without complaint and then never summarises.
+    test("a model with no provider is flagged, not silently inherited", () => {
+      expect(computeConfigIssues(mem({ model: "gpt-5.4-nano" }))).toEqual([
+        { key: "memoryModel", tab: "behavior", sectionId: "memory" },
+      ]);
+    });
+
+    // The editor's strictness, not the runtime's: `llama:8080` is a non-empty string, so the runtime
+    // says "there is something there" and the summariser dies at the first closed attendance.
+    test("an openai-compatible endpoint that is not a URL is flagged", () => {
+      expect(
+        computeConfigIssues(
+          mem({ provider: "openai-compatible", baseURL: "llama:8080" }),
+        ),
+      ).toEqual([{ key: "memoryModel", tab: "behavior", sectionId: "memory" }]);
+    });
+
+    test("an openai-compatible endpoint with no address at all is flagged", () => {
+      expect(
+        computeConfigIssues(mem({ provider: "openai-compatible" })),
+      ).toEqual([{ key: "memoryModel", tab: "behavior", sectionId: "memory" }]);
+    });
+
+    // Compaction off means there is no call to configure, so a leftover override is not a problem
+    // the operator has to act on now.
+    test("compaction turned off raises nothing, whatever the override holds", () => {
+      expect(
+        computeConfigIssues({
+          ...base,
+          settings: {
+            memory: { compaction: { enabled: false, provider: "anthropic" } },
+          },
+        }),
+      ).toEqual([]);
+    });
+
+    test("its credential being a pending vault entry is flagged as pending", () => {
+      expect(
+        computeConfigIssues({
+          ...mem({ provider: "openai", credentialRef: "vault:3" }),
+          pendingRefs: new Set(["vault:3"]),
+        }),
+      ).toEqual([
+        {
+          key: "memoryModel",
+          tab: "behavior",
+          sectionId: "memory",
+          pending: true,
+          vaultId: "3",
+        },
+      ]);
+    });
+  });
+
   // The speech rewrite fails SILENTLY when it cannot run (best-effort: the audio still goes out,
   // just unrewritten), so the editor is the only place this can be caught.
   describe("speech rewrite model", () => {

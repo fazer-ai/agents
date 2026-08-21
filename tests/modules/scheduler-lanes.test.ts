@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
-import config from "@/config";
 import {
   JOB_LANE,
   JOB_SPENDS_PROVIDER,

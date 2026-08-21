@@ -538,11 +538,16 @@ export async function loadAgentConfig(
   });
   // Playground time simulation: a valid wall-clock override replaces the real now for every time
   // variable, interpreted in the agent's timezone; anything malformed falls back to the real now.
+  // NOTE: one instant for BOTH renderings, and never `undefined`. `interpolatePromptVars` falls
+  // back to its own `new Date()` per call, and the audited prompt is built further down, after the
+  // appointment read: an exact-time variable would otherwise cross a minute (or a date) boundary
+  // and the logged prompt would report an hour the model never saw.
   const promptOpts = {
     timezone,
-    now: ov?.promptNow
-      ? (zonedWallClockToInstant(ov.promptNow, timezone) ?? undefined)
-      : undefined,
+    now:
+      (ov?.promptNow
+        ? zonedWallClockToInstant(ov.promptNow, timezone)
+        : null) ?? new Date(),
     // Passed on every real path, so a schedule variable is answered rather than left literal. The
     // playground's time simulation reaches it through `now` above: an operator testing "what does
     // it say at 22:00" sees the agent report itself closed, exactly as the gate would.

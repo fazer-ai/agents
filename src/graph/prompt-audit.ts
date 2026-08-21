@@ -60,7 +60,11 @@ export function buildPromptAudit(args: {
   // The context variables offered to this turn, by placeholder name.
   vars: Record<string, string>;
   timezone?: string;
-  now?: Date;
+  // REQUIRED, unlike `interpolatePromptVars`'s: the audited prompt is built after the real one, with
+  // a DB read in between, and both fall back to their own `new Date()` when this is absent. An exact
+  // time variable would then cross a minute boundary and the logged prompt would report an hour the
+  // model never saw. Taking the instant instead of defaulting it makes that a type error.
+  now: Date;
   // The blocks appended to the finished prompt, in the order they were appended.
   sections: readonly AuditedSection[];
 }): string {

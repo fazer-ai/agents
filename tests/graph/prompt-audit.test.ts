@@ -110,6 +110,27 @@ describe("buildPromptAudit", () => {
     ).toBe('Seja breve.\n\n<agendamentos chars="20"/>');
   });
 
+  // The audited prompt is built after the real one, with a DB read in between, so the instant has to
+  // come from the caller rather than from each rendering's own `new Date()`. `now` is required on
+  // purpose; this pins the behavior that makes requiring it worth anything.
+  test("the instant comes from the caller, never from the call", () => {
+    const render = (now: Date) =>
+      buildPromptAudit({
+        template: "Agora são {{hora_atual_exata:HH:mm:ss}}.",
+        vars: VARS,
+        timezone: TZ,
+        now,
+        sections: [],
+      });
+    expect(render(NOW)).toBe(render(NOW));
+    expect(render(NOW)).toBe("Agora são 15:07:00.");
+    // A different instant renders differently, so the assertion above is about the input and not
+    // about the variable being inert.
+    expect(render(new Date("2026-08-20T15:08:30Z"))).toBe(
+      "Agora são 15:08:30.",
+    );
+  });
+
   test("no blocks means nothing is appended", () => {
     expect(
       buildPromptAudit({

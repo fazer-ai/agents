@@ -69,9 +69,13 @@ function toolOutputValue(output: unknown): unknown {
 // everything after it came from the other end. `logToolValues` keeps the whole string, exactly as it
 // keeps the arguments and the result.
 function failureCause(value: unknown, logValues: boolean): string {
-  const text = typeof value === "string" ? value : JSON.stringify(value);
+  // NOTE: `JSON.stringify` is TYPED as string but returns undefined for `undefined`, and this
+  // callback takes `unknown` from LangChain, so the coalesce is a runtime guard the type does not
+  // give us.
+  const text =
+    typeof value === "string" ? value : (JSON.stringify(value) ?? "");
   if (logValues) return text;
-  return (text ?? "").split("\n", 1)[0] ?? "";
+  return text.split("\n", 1)[0] ?? "";
 }
 
 function isErrorToolOutput(output: unknown): boolean {

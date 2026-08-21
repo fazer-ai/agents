@@ -22,15 +22,21 @@ function extraKeys(obj: Record<string, unknown>, known: string[]): string[] {
   return Object.keys(obj).filter((k) => !known.includes(k));
 }
 
+function rowIsMalformed(r: unknown): boolean {
+  return (
+    !isPlainObject(r) ||
+    typeof r.key !== "string" ||
+    // NOTE: `parseBody` drops a row whose key trims to nothing, so a blank key loses the value
+    // exactly as silently as a key the runtime never reads.
+    r.key.trim() === "" ||
+    typeof r.value !== "string" ||
+    extraKeys(r, ["key", "value"]).length > 0
+  );
+}
+
 function rowsAreMalformed(rows: unknown): boolean {
   if (!Array.isArray(rows)) return true;
-  return rows.some(
-    (r) =>
-      !isPlainObject(r) ||
-      typeof r.key !== "string" ||
-      typeof r.value !== "string" ||
-      extraKeys(r, ["key", "value"]).length > 0,
-  );
+  return rows.some(rowIsMalformed);
 }
 
 const SHAPES =
@@ -64,7 +70,7 @@ export function unsupportedBodyShape(body: unknown): string | null {
 
   if (body.mode === "kv") {
     if (body.rows !== undefined && rowsAreMalformed(body.rows)) {
-      return 'body mode "kv" needs `rows` to be a list of {"key":"…","value":"…"}, both strings.';
+      return 'body mode "kv" needs `rows` to be a list of {"key":"…","value":"…"}, both non-empty strings — a row whose key is blank is dropped, and its value with it.';
     }
     const extra = extraKeys(body, ["mode", "rows"]);
     return extra.length > 0
@@ -97,4 +103,24 @@ export function unsupportedBodyShape(body: unknown): string | null {
     "out assembled from the declared input fields instead — which is also what {} does, so {} is not " +
     `a way to send nothing. ${NESTED_HINT}`
   );
+}
+
+// What `parseBody` actually executes for a body this file refuses, spelled canonically. The bundle
+// import uses it instead of blanking the row: `{}` is behavior-preserving only for a body with no
+// recognized mode (both select the legacy `fields` branch), and a `{mode:"raw", raw:"…", extra:…}`
+// WAS sending its template — replacing that with `{}` would switch the tool to the fields assembly,
+// changing the outbound request of a tool that was merely stored untidily.
+export function canonicalBodyShape(body: unknown): Record<string, unknown> {
+  if (!isPlainObject(body)) return {};
+  if (body.mode === "raw") {
+    return { mode: "raw", raw: typeof body.raw === "string" ? body.raw : "" };
+  }
+  if (body.mode === "kv") {
+    const rows = Array.isArray(body.rows)
+      ? body.rows.filter((r) => !rowIsMalformed(r))
+      : [];
+    return { mode: "kv", rows };
+  }
+  if (body.mode === "fields") return { mode: "fields" };
+  return {};
 }

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { unsupportedBodyShape } from "@/modules/tool-definitions/body-shape";
+import { buildHttpTool } from "@/graph/tools/http";
+import {
+  canonicalBodyShape,
+  unsupportedBodyShape,
+} from "@/modules/tool-definitions/body-shape";
 
 // Issue #150. The decision table for what a tool body may be, kept apart from the transports that
 // act on it: REST and the console refuse it in the service, MCP refuses it in the dry-run preview
@@ -119,4 +123,59 @@ describe("tool body shape", () => {
     expect(reason).toContain("order_id");
     expect(reason).toContain("dropped");
   });
+});
+
+// NOTE: round 4 review, P2. The bundle import does not refuse a legacy body, it reduces it — and the
+// only thing that makes that safe is the reduction sending exactly what the original sent. Blanking
+// to `{}` passed the earlier reasoning and does not survive this: `{mode:"raw", raw, extra}` WAS
+// sending its template, and `{}` would switch it to the fields assembly. So the property is asserted
+// against the wire, not against the shape.
+describe("the canonical form of a refused body sends what the original sent", () => {
+  const REFUSED: unknown[] = [
+    { mode: "raw", raw: '{"a":1}', extra: "x" },
+    { mode: "raw", raw: 7 },
+    { mode: "kv", rows: [{ key: "a", value: "{{valor}}" }], stray: "x" },
+    { mode: "kv", rows: [{ key: "  ", value: "{{valor}}" }] },
+    { mode: "fields", order_id: "{{order_id}}" },
+    { contact: { email: "{{valor}}" } },
+    { mode: "template", raw: "x" },
+  ];
+
+  async function sent(body: unknown): Promise<string> {
+    let out = "";
+    const fetchImpl = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      out = String(init?.body ?? "");
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const tool = buildHttpTool(
+      {
+        name: "t",
+        method: "POST",
+        urlTemplate: "https://example.com/x",
+        allowedHosts: ["example.com"],
+        headers: {},
+        inputSchema: { valor: { type: "string", required: true } },
+        body,
+      } as never,
+      {
+        fetchImpl,
+        allowHttp: true,
+        resolveCredential: async () => null,
+      },
+    );
+    await tool.invoke({ valor: "TESTE" });
+    return out;
+  }
+
+  for (const [i, body] of REFUSED.entries()) {
+    test(`case ${i} is refused, and its canonical form is on the wire`, async () => {
+      expect(unsupportedBodyShape(body)).not.toBeNull();
+      const canonical = canonicalBodyShape(body);
+      expect(unsupportedBodyShape(canonical)).toBeNull();
+      expect(await sent(canonical)).toBe(await sent(body));
+    });
+  }
 });

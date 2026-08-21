@@ -133,6 +133,37 @@ export class HandoffThenReplyModel {
   }
 }
 
+// Hands off successfully and then blows up on the next step. The transfer is done, the closing line
+// is recorded, and the exception leaves through the graph — the shape where the promise has nobody
+// left to deliver it unless the caller delivers on its failure path too.
+export class HandoffThenThrowModel {
+  constructor(private customerMessage: string) {}
+  async invoke(): Promise<AIMessage> {
+    throw new Error("model blew up");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1)
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "handoff_to_human",
+                args: { customerMessage: self.customerMessage },
+                id: "call_handoff",
+              },
+            ],
+          });
+        throw new Error("model blew up");
+      },
+    };
+  }
+}
+
 // Calls send_image once (a product photo the agent already has the URL for), then answers with text.
 // Mirrors ResolveThenReplyModel: the point is the ORDER of what reaches Chatwoot, not the content.
 export class SendImageThenReplyModel {

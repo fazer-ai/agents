@@ -34,6 +34,7 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
   HandoffThenReplyModel,
+  HandoffThenThrowModel,
 } from "../utils/scripted-models";
 
 describe("renderNudge (prompt-injection boundary)", () => {
@@ -839,6 +840,70 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.labelSets).toEqual([["follow-up"]]);
     // Exactly one status call: the handoff's own `open`. A second one would be the resolve.
     expect(s.resolved).toEqual([9905]);
+  });
+
+  // The episode has to leave a trace the operator can read. A handed-off follow-up that posted a
+  // line and then logged nothing would be invisible on the Logs page, which is the one place the
+  // operator goes to find out why the bot went quiet on a conversation.
+  test("a handed-off follow-up records its outcome on the turn trail", async () => {
+    await seedConv(9912, null);
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9912`,
+      nudge: { source: "followup", kind: "inactivity", step: 2 },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffThenReplyModel(
+            "Vou te encaminhar!",
+            "Um humano vai te atender.",
+          ) as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+    let logged = false;
+    for (let i = 0; i < 30 && !logged; i++) {
+      const rows = await suDb.executionLog.findMany({
+        where: { tenantId, stage: "generate" },
+        select: { detail: true },
+      });
+      logged = rows.some((r) => {
+        const d = r.detail as Record<string, unknown> | null;
+        return d?.outcome === "messaged" && d?.step === 2;
+      });
+      if (!logged) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(logged).toBe(true);
+  });
+
+  // Same failure on the proactive path: the tool completes the transfer and the model's next step
+  // throws. The label and the follow-up stamp are deliberately not applied — the turn failed — but
+  // the sentence the customer was promised is the one thing no retry can deliver later.
+  test("a throw after the transfer still delivers the promised line", async () => {
+    await seedConv(9911, null);
+    const s = stub();
+    await expect(
+      runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9911`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        postActions: { assignLabels: ["follow-up"], resolve: true },
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new HandoffThenThrowModel("Um humano vai te atender.") as never,
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      }),
+    ).rejects.toThrow();
+    expect(s.messages).toEqual([[9911, "Um humano vai te atender."]]);
+    expect(s.labelSets).toEqual([]);
   });
 
   // The live ownership probe failing is not the same as the bot having lost the conversation, and

@@ -26,6 +26,7 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
   HandoffThenReplyModel,
+  HandoffThenThrowModel,
   ResolveThenReplyModel,
   SendImageAndResolveModel,
   SendImageBatchModel,
@@ -895,6 +896,47 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls).toEqual([
       ["toggleStatus", 9703, "open"],
       ["sendMessage", 9703, "Um humano já te atende."],
+    ]);
+  });
+
+  // The last of the four failures, and the only one that happens INSIDE the graph: the tool completes
+  // the transfer and the model's next step throws. The exception ends the turn, and the sentence the
+  // customer was promised has nobody left to deliver it — no retry can, because the conversation
+  // reads `open` from the moment the tool set it.
+  test("a throw after the transfer still delivers the promised line", async () => {
+    await seedConversation(9704, null);
+    const calls: Array<[string, number, string]> = [];
+    const client = {
+      sendMessage: async (c: number, content: string) => {
+        calls.push(["sendMessage", c, content]);
+        return {};
+      },
+      toggleStatus: async (c: number, status: string) => {
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    await expect(
+      runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9704 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new HandoffThenThrowModel(
+              "Um humano já te atende.",
+            ) as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+      }),
+    ).rejects.toThrow();
+    // The turn still fails — the operator has to hear about it — but not in silence.
+    expect(calls).toEqual([
+      ["toggleStatus", 9704, "open"],
+      ["sendMessage", 9704, "Um humano já te atende."],
     ]);
   });
 

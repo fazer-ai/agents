@@ -472,6 +472,48 @@ export async function runLoadedTurn(
   // How many balloons the (text) reply was delivered as, surfaced on `finished` so the UI can hold a
   // "delivering" indicator until the paced balloons land. 1 for audio / single send; null on no post.
   let deliveredBalloons: number | null = null;
+
+  // The sentence the transfer promised the customer, delivered on the way OUT of the turn — whatever
+  // the way out is. Nothing downstream may take it back, and nothing downstream can be retried into
+  // sending it: the conversation reads `open` from the moment the tool set it, so every later
+  // attempt stops at its own ownership gate. Four findings on this change were this one loss
+  // arriving through four different failures, which is why the delivery sits outside the flow
+  // instead of each failure getting a fence.
+  //
+  // Two call sites, and they are exclusive: the failure path always rethrows, so the normal one is
+  // unreachable after it. Anything that adds a third owns the at-most-once question, because a
+  // promise delivered twice is the duplicate #158 was about.
+  const deliverHandoffPromise = async (): Promise<void> => {
+    if (!handoffAnsweredTheTurn(handoffState)) return;
+    const line = handoffState.customerMessage as string;
+    try {
+      const guarded = await runGuardrail("output", line);
+      const screened = guarded ? guarded.reply : line;
+      if (screened === null) return;
+      // The pre-turn voice preference, not the fresh one: reading it live is one of the failures
+      // this delivery had to move above. A customer who asked for audio DURING this same turn and
+      // was handed off in it reads the closing line instead of hearing it.
+      deliveredBalloons = await deliverText(screened, loaded.contactVoiceReply);
+    } catch (e) {
+      // Best-effort, the semantics the line had while the tool sent it. The transfer succeeded, so
+      // branding the turn as errored would stamp lastError and announce "a human has to take over"
+      // on a thread a human already owns — and on the failure path this must never mask the error
+      // that actually ended the turn.
+      logger.warn(
+        "handoff closing line failed to deliver (conv=%s): %s",
+        String(conversationId),
+        e instanceof Error ? e.message : String(e),
+      );
+      emitFlowEvent(flow, {
+        stage: "split",
+        status: "error",
+        level: "warn",
+        detail: { outcome: "handoff_closing_line_undelivered" },
+        errorMessage: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
+
   status.started();
   // Mark this conversation's turn as in-flight so a concurrently-fired follow-up backs off instead
   // of nudging mid-turn (cleared in the finally on every exit). See ./inflight.
@@ -620,6 +662,10 @@ export async function runLoadedTurn(
     }
 
     // Invoke the thread (network: LLM + any tool calls). The checkpointer resumes prior history.
+    //
+    // Wrapped so a throw from INSIDE the graph still delivers what a handoff already promised: the
+    // tool can complete the transfer and the model's next step can then fail, and the exception
+    // leaves through here with the line still unsent and no later attempt able to send it.
     const result = await withFlowStage(
       flow,
       "generate",
@@ -648,66 +694,26 @@ export async function runLoadedTurn(
             callbacks: [...callbacks, status, toolLogger],
           },
         ),
-    );
+    ).catch(async (e) => {
+      await deliverHandoffPromise();
+      throw e;
+    });
     let reply = lastAssistantText(result.messages).trim();
 
-    // The handoff already answered, so this final text would be a second copy of a line the
-    // customer has read — and the mirror recheck below cannot catch it, because Chatwoot's
-    // open/assignee event may still be in flight and the row still reads bot-owned.
-    //
-    // Blanked rather than returned early, so every gate after this point still applies. An image
-    // queued earlier in the same turn is not a duplicate of anything and still belongs to the
-    // customer, and its caption is model-written customer-facing text the output guardrail screens.
-    // An early return would deliver that image unscreened, or not at all.
-    // Dropped on the TRANSFER, not on the suppression: a conversation the human queue now owns is
-    // not ours to close, and that holds even when the closing line failed to send. The two questions
-    // have different answers exactly there.
+    // The deferred resolve falls with the TRANSFER, not with the suppression of the final text: a
+    // conversation the human queue now owns is not ours to close, and that holds even when the
+    // closing line never reached the customer. The two questions have different answers exactly
+    // there.
     if (handoffState.completed) turnState.resolveRequested = false;
     const handedOff = handoffAnsweredTheTurn(handoffState);
-    // The transfer is done and this is the sentence it promised the customer. It is delivered HERE,
-    // before every gate and before every read that can fail, because nothing downstream may take it
-    // away and nothing downstream can be retried into delivering it: the conversation reads `open`
-    // now, so each retry path stops at its own ownership gate and the line would be lost for good.
-    // Three review findings were the same loss arriving through three different failures, which is
-    // what moved the delivery out of the flow instead of fencing each failure.
-    //
-    // This is also exactly where the tool used to send it, so nothing about the order changed for the
-    // customer. What changed is that it is screened, spoken and paced on the way out. The model's own
-    // final text is the duplicate #158 is about and is dropped; everything ELSE the turn produced
-    // still passes every gate below, now with no text of its own.
-    if (handedOff) {
-      reply = "";
-      const line = handoffState.customerMessage as string;
-      const guarded = await runGuardrail("output", line);
-      const screenedLine = guarded ? guarded.reply : line;
-      if (screenedLine !== null) {
-        try {
-          // The pre-turn voice preference, not the fresh one: reading it live is one of the failures
-          // this delivery moved above. A customer who asked for audio DURING this same turn and was
-          // handed off in it reads the closing line instead of hearing it.
-          deliveredBalloons = await deliverText(
-            screenedLine,
-            loaded.contactVoiceReply,
-          );
-        } catch (e) {
-          // Best-effort, the semantics the line had while the tool sent it. The transfer succeeded,
-          // so branding the turn as errored would stamp lastError and announce "a human has to take
-          // over" on a thread a human already owns.
-          logger.warn(
-            "handoff closing line failed to deliver (conv=%s): %s",
-            String(conversationId),
-            e instanceof Error ? e.message : String(e),
-          );
-          emitFlowEvent(flow, {
-            stage: "split",
-            status: "error",
-            level: "warn",
-            detail: { outcome: "handoff_closing_line_undelivered" },
-            errorMessage: e instanceof Error ? e.message : String(e),
-          });
-        }
-      }
-    }
+    // The model's own final text after a handoff is a second copy of a line the customer is about to
+    // read (#158), and the mirror recheck below cannot catch it: Chatwoot's open/assignee event may
+    // still be in flight and the row still reads bot-owned. Blanked rather than returned early, so
+    // everything ELSE the turn produced still passes every gate below — a queued image is not a
+    // duplicate of anything, and its caption is model-written customer-facing text the output
+    // guardrail has to screen.
+    if (handedOff) reply = "";
+    await deliverHandoffPromise();
 
     // Re-check the live assignee (mirror) before posting: a human may have taken over during
     // the LLM call. NOTE: small TOCTOU between this read and the POST (the post is network and

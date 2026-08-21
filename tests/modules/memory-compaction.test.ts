@@ -1754,4 +1754,218 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     expect(detail).not.toContain(SEEDED_TEXT);
     expect(detail).not.toContain("resumo do atendimento");
   });
+
+  // WHICH model the summariser runs on. Nothing pinned this before: all 34 makeModel injections in
+  // this file are `() => model`, and none of them looks at the argument. A change to where the model
+  // config comes from therefore passed green by construction — including one that hands the agent's
+  // key to a different vendor, which is the failure this file has no other way to see.
+  //
+  // The summary is not a reply that is read once and gone: it becomes the memory head, position 0 of
+  // every future turn for this contact, written once and never rewritten. So the model behind it is
+  // worth pinning by name.
+  describe("which model the summariser runs on", () => {
+    function captureModel(reply = "Ana marcou avaliação terça, R$ 250.") {
+      const captured: Record<string, unknown>[] = [];
+      const model = new SummarizerModel(reply);
+      return {
+        captured,
+        makeModel: (cfg: Record<string, unknown>) => {
+          captured.push(cfg);
+          return model;
+        },
+      };
+    }
+
+    async function compactWith(
+      contactInboxId: number,
+      makeModel: (cfg: Record<string, unknown>) => BaseChatModel,
+    ) {
+      const saver = new MemorySaver();
+      const threadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      await seedThread(saver, threadId, twoAttendances());
+      return runCompaction(
+        tenantId,
+        payload(contactInboxId, 708, "new_attendance"),
+        appDb,
+        {
+          checkpointer: saver,
+          makeModel: makeModel as never,
+        },
+      );
+    }
+
+    afterAll(async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { memory: { compaction: { enabled: true } } } },
+      });
+    });
+
+    test("with nothing configured it is the agent's own model, unchanged", async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: { memory: { compaction: { enabled: true } } } },
+      });
+      const { captured, makeModel } = captureModel();
+      expect(await compactWith(5301, makeModel)).toEqual({ outcome: "done" });
+      expect(captured.length).toBe(1);
+      expect(captured[0]).toMatchObject({
+        provider: "openai",
+        model: "gpt-5.4-mini",
+      });
+    });
+
+    test("a model named for the same provider replaces only the model", async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            memory: {
+              compaction: {
+                enabled: true,
+                provider: "openai",
+                model: "gpt-5.4-nano",
+              },
+            },
+          },
+        },
+      });
+      const { captured, makeModel } = captureModel();
+      expect(await compactWith(5302, makeModel)).toEqual({ outcome: "done" });
+      expect(captured[0]).toMatchObject({
+        provider: "openai",
+        model: "gpt-5.4-nano",
+      });
+    });
+
+    // The behaviour-preservation claim, spelled out. An install that configures nothing must keep
+    // producing the summaries it already produced, and the temperature is the part of that which a
+    // rewrite of this call site can silently move: the prompt was chosen by an A/B battery measured
+    // at whatever the agent was set to (summarize.ts), and the summary it writes is permanent.
+    test("the agent's own sampling travels when nothing is configured, and is dropped on a switch", async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          modelConfig: {
+            provider: "openai",
+            model: "gpt-5.4-mini",
+            temperature: 0.7,
+          },
+          settings: { memory: { compaction: { enabled: true } } },
+        },
+      });
+      const inherited = captureModel();
+      expect(await compactWith(5304, inherited.makeModel)).toEqual({
+        outcome: "done",
+      });
+      expect(inherited.captured[0]).toMatchObject({ temperature: 0.7 });
+
+      // Switched vendor: a temperature picked for one vendor is not a promise to the next, and the
+      // resolver already refuses to carry the key or the model id across that line.
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            memory: {
+              compaction: {
+                enabled: true,
+                provider: "openai-compatible",
+                model: "local-small",
+                baseURL: "https://llm.internal.example/v1",
+              },
+            },
+          },
+        },
+      });
+      const switched = captureModel();
+      expect(await compactWith(5305, switched.makeModel)).toEqual({
+        outcome: "done",
+      });
+      expect(switched.captured[0]).toMatchObject({
+        provider: "openai-compatible",
+        model: "local-small",
+      });
+      expect(switched.captured[0]?.temperature).toBeUndefined();
+
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { modelConfig: { provider: "openai", model: "gpt-5.4-mini" } },
+      });
+    });
+
+    // The spend has to be filed under the model that ACTUALLY ran. Without this the cost break-down
+    // reports the summariser's tokens against the agent's model, which is the exact number an
+    // operator would consult to decide whether pointing the summariser somewhere cheaper worked —
+    // and it would show no change. Caught as a surviving mutation: every other assertion in this
+    // file passed with the ledger naming the agent's model.
+    test("the usage row names the model the summary was actually written by", async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            memory: {
+              compaction: {
+                enabled: true,
+                provider: "openai",
+                model: "gpt-5.4-nano",
+              },
+            },
+          },
+        },
+      });
+      const saver = new MemorySaver();
+      const contactInboxId = 5306;
+      const threadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      await seedThread(saver, threadId, twoAttendances());
+      await runCompaction(
+        tenantId,
+        payload(contactInboxId, 708, "new_attendance"),
+        appDb,
+        {
+          checkpointer: saver,
+          makeModel: () => new UsageReportingModel(["resumo"]),
+        },
+      );
+      let usage = null;
+      for (let i = 0; i < 40 && !usage; i++) {
+        usage = await suDb.llmUsage.findFirst({
+          where: { tenantId, threadId, node: "memory_compact" },
+        });
+        if (!usage) await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(usage?.model).toBe("gpt-5.4-nano");
+    });
+
+    // The one that matters. A summariser pointed at another vendor with no credential of its own
+    // must NOT run on the agent's key: that sends an OpenAI secret to Anthropic and fails auth
+    // AFTER the secret has left. Nothing is built at all.
+    test("a switched provider with no credential of its own builds nothing", async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            memory: {
+              compaction: {
+                enabled: true,
+                provider: "anthropic",
+                model: "claude-haiku-4-5-20251001",
+              },
+            },
+          },
+        },
+      });
+      const { captured, makeModel } = captureModel();
+      const res = await compactWith(5303, makeModel);
+      expect(captured.length).toBe(0);
+      expect(res.outcome).not.toBe("done");
+    });
+  });
 });

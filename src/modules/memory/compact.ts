@@ -1,3 +1,4 @@
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { type BaseMessage, RemoveMessage } from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
@@ -10,7 +11,9 @@ import {
 import { isTurnInFlight } from "@/graph/inflight";
 import { memoryHeadMessage, stampedConversationId } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
-import { createChatModel } from "@/graph/models";
+import type { ModelConfig } from "@/graph/model-config";
+import { resolveModelOverride } from "@/graph/model-override";
+import { createChatModel, type ResolvedModelConfig } from "@/graph/models";
 import { buildCallbacks, loadAgentConfig } from "@/graph/prepare";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { withEntityLock } from "@/lib/locks";
@@ -408,12 +411,81 @@ export async function runCompaction(
   if (existing) {
     summary = existing.summary;
   } else {
+    // WHICH model writes the memory. Everything the summariser may inherit from the agent comes back
+    // through the resolver BY NAME, and the config below is built from that alone rather than spread
+    // from `cfg.mc`: a spread carries whatever else the agent's config holds — today its
+    // credentialRef, tomorrow any field the schema grows — across a provider switch, which is the
+    // one thing the resolution exists to refuse. The speech rewrite is built the same way.
+    const resolved = resolveModelOverride(
+      cfg.memoryCompactionOverride,
+      {
+        provider: cfg.mc.provider,
+        model: cfg.mc.model,
+        baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
+      },
+      { ownCredentialBaseURL: cfg.memoryCompactionCredentialBaseUrl },
+    );
+    // FAIL, where the speech rewrite SKIPS. Skipping the rewrite costs one reply its delivery in
+    // speech; skipping the summary would leave the thread raw while reporting success, and the next
+    // run would find the same turns and pay for them again. Failing keeps the thread intact, retries
+    // with backoff, and — because a configuration this refuses will not become runnable by retrying —
+    // reaches DEAD after five attempts with the reason on the line. The next attendance re-arms with
+    // a fresh budget, so a corrected configuration recovers on its own.
+    if (!resolved.runnable) {
+      return {
+        outcome: "fail",
+        error: `memory compaction model not runnable: ${resolved.reason ?? "unknown"}`,
+      };
+    }
+    // Its own credential was configured and did not resolve. Falling back to the AGENT's key would be
+    // a silent substitution on a provider that may not even accept it.
+    if (resolved.credential === "own" && !cfg.memoryCompactionApiKey) {
+      return {
+        outcome: "fail",
+        error: "memory compaction model: credential_not_found",
+      };
+    }
+    const switched = resolved.provider !== cfg.mc.provider;
+    const mc: ResolvedModelConfig = {
+      provider: resolved.provider as ModelConfig["provider"],
+      model: resolved.model,
+      apiKey:
+        resolved.credential === "own"
+          ? cfg.memoryCompactionApiKey
+          : resolved.credential === "agent"
+            ? cfg.apiKey
+            : "",
+      baseURL: resolved.baseURL ?? undefined,
+      // Carried from the agent while the vendor is UNCHANGED, dropped on a switch. Not a style
+      // choice: with nothing configured this is the whole of what keeps the summaries identical to
+      // the ones this install was already producing, and the prompt behind them was chosen by an A/B
+      // battery (see ./summarize.ts) measured at whatever the agent was set to. Silently moving the
+      // temperature would invalidate that measurement for every existing install. On a switch they
+      // are dropped for the same reason the model id is: a reasoning effort was picked for the
+      // vendor that offers it.
+      ...(switched
+        ? {}
+        : {
+            temperature: cfg.mc.temperature,
+            reasoningEffort: cfg.mc.reasoningEffort,
+          }),
+    };
     const makeModel = deps.makeModel ?? createChatModel;
-    const model = makeModel({
-      ...cfg.mc,
-      apiKey: cfg.apiKey,
-      baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
-    });
+    // createChatModel REJECTS some configurations synchronously (openai-compatible with no effective
+    // base URL throws), and this config is separately editable, so that throw is reachable without
+    // the agent's own model being broken. Uncaught it would escape as an unhandled job error rather
+    // than a named one.
+    let model: BaseChatModel;
+    try {
+      model = makeModel(mc);
+    } catch (err) {
+      return {
+        outcome: "fail",
+        error: `memory compaction model could not be built: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      };
+    }
     // Outside every lock: this is a provider round-trip, and holding a Postgres advisory lock across
     // the wire would block ingestion on this thread for as long as the model takes.
     // The same usage/trace handlers a turn's generation carries, with its own node label: this call
@@ -431,7 +503,10 @@ export async function runCompaction(
         // usage row and a trace that said something else would put this spend on an attendance that
         // was never summarized here.
         conversationId: segment?.id ?? null,
-        model: cfg.mc.model,
+        // The model that ACTUALLY ran, not the agent's: this row is what the cost break-down reads,
+        // and naming the agent's model here would file the summariser's spend under a model that
+        // never saw the transcript.
+        model: mc.model,
         source: "inbox",
         base,
       }),

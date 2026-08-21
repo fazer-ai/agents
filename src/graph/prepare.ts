@@ -6,6 +6,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import config from "@/config";
+import type { ModelOverride } from "@/graph/model-override";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
@@ -236,6 +237,11 @@ export interface AgentConfig {
   // the thread (agent.settings.memory.compaction). Read here so the turn that CROSSES an
   // attendance boundary can arm the compaction job without a second query.
   memoryCompaction: boolean;
+  // The summariser's own model, as an override of the agent's, plus the credential it names. Same
+  // three-field shape as the speech rewrite above; resolved through graph/model-override.ts.
+  memoryCompactionOverride: ModelOverride;
+  memoryCompactionApiKey: string;
+  memoryCompactionCredentialBaseUrl: string | null;
   // Whether this agent's tool lines log the VALUES the model sent instead of their shape
   // (agent.settings.observability.logToolValues; off by default — see src/modules/flowlog/shape.ts).
   logToolValues: boolean;
@@ -393,6 +399,30 @@ export async function loadAgentConfig(
         "agent %s: tts normalize credentialRef %s did not resolve, so the speech rewrite is skipped",
         String(args.agentId),
         ttsCfg.normalizeCredentialRef,
+      );
+    }
+  }
+  // The summariser's own credential, when it runs on a separate model. Same fail-open shape as the
+  // two above: an unresolvable ref leaves the key empty, and runCompaction then FAILS the job rather
+  // than quietly falling back to the agent's key on a provider that may not accept it. Failing is
+  // right here where skipping is right for the rewrite: a skipped rewrite costs one sentence's
+  // delivery, a summary written by the wrong model is memory this contact carries forever.
+  const memoryCfg = readMemoryConfig(effSettings).compaction;
+  let memoryCompactionApiKey = "";
+  let memoryCompactionCredentialBaseUrl: string | null = null;
+  if (memoryCfg.enabled && memoryCfg.credentialRef) {
+    const mEntry = await tryResolveVaultEntry<string>(
+      db,
+      memoryCfg.credentialRef,
+    );
+    if (mEntry) {
+      memoryCompactionApiKey = mEntry.secret;
+      memoryCompactionCredentialBaseUrl = mEntry.baseUrl;
+    } else {
+      logger.warn(
+        "agent %s: memory compaction credentialRef %s did not resolve, so the attendance summary is not written",
+        String(args.agentId),
+        memoryCfg.credentialRef,
       );
     }
   }
@@ -691,7 +721,15 @@ export async function loadAgentConfig(
     timezone,
     maxToolCalls: limits.maxToolCalls,
     maxHistoryTokens: limits.maxHistoryTokens,
-    memoryCompaction: readMemoryConfig(effSettings).compaction.enabled,
+    memoryCompaction: memoryCfg.enabled,
+    memoryCompactionOverride: {
+      provider: memoryCfg.provider,
+      model: memoryCfg.model,
+      credentialRef: memoryCfg.credentialRef,
+      baseURL: memoryCfg.baseURL,
+    },
+    memoryCompactionApiKey,
+    memoryCompactionCredentialBaseUrl,
     logToolValues: readObservabilityConfig(effSettings).logToolValues,
   };
 }

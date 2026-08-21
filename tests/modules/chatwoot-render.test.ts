@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   cleanTranscription,
+  renderAttendantMessage,
   renderInboundMessage,
 } from "@/modules/chatwoot/render";
 
@@ -187,5 +188,44 @@ describe("location markers (issue #45)", () => {
       location: null,
     });
     expect(out).toContain("arquivo do tipo 'location'");
+  });
+});
+
+// Round-2 review finding (P2). The other direction (issue #187): what the memory keeps of a message a
+// HUMAN AGENT sent. The wording is deliberately not shared with renderInboundMessage — every marker
+// there is written from the customer's side.
+describe("renderAttendantMessage", () => {
+  test("plain text goes in verbatim", () => {
+    expect(
+      renderAttendantMessage({
+        text: "  fecho por R$ 1.200  ",
+        attachmentTypes: [],
+      }),
+    ).toBe("fecho por R$ 1.200");
+  });
+
+  // The defect: an attendant who answers with a PDF and no caption produced an empty string, and the
+  // caller dropped the message — the memory then records that the team said nothing, which is the
+  // same failure the whole change is about.
+  test("an attachment with no caption is still a message", () => {
+    expect(
+      renderAttendantMessage({ text: "", attachmentTypes: ["file"] }),
+    ).toBe("<atendente enviou um arquivo do tipo 'file'>");
+  });
+
+  test("a caption keeps the fact that a file went with it", () => {
+    expect(
+      renderAttendantMessage({
+        text: "segue o orçamento",
+        attachmentTypes: ["file"],
+      }),
+    ).toBe("segue o orçamento\n<atendente enviou um arquivo do tipo 'file'>");
+  });
+
+  // Nothing said and nothing attached: the caller skips it, as it does for the customer.
+  test("an empty message renders nothing", () => {
+    expect(renderAttendantMessage({ text: "   ", attachmentTypes: [] })).toBe(
+      "",
+    );
   });
 });

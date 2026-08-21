@@ -293,6 +293,25 @@ describe.skipIf(!dbUp)(
       expect(transcript).not.toContain("👍");
     });
 
+    // Round-2 review finding (P2): outgoing webhook events carry `attachments`, so an attendant who
+    // answers with a file and no caption used to render to an empty string and be dropped on the spot.
+    test("an attendant's attachment-only reply still reaches the memory", async () => {
+      const convId = 506;
+      await deliver(convId, fromCustomer("me manda o contrato"));
+      await deliver(convId, {
+        content: "",
+        message_type: "outgoing",
+        sender: { id: 5, name: "Ana", type: "user" },
+        attachments: [
+          { id: 1, file_type: "file", data_url: "https://x/c.pdf" },
+        ],
+      });
+
+      const transcript = renderTranscript(await threadMessages(convId));
+      expect(transcript).toContain("cliente: me manda o contrato");
+      expect(transcript).toContain("atendente: <atendente enviou um arquivo");
+    });
+
     // A private note is the operator talking to their own team. It is not part of the dialogue with the
     // customer, and putting it in the contact's permanent memory would leak internal notes into a
     // future prompt.

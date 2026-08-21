@@ -32,6 +32,22 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 // `role` is required, not defaulted. It reaches every call site of this module, and a default would
 // let the next writer inherit "customer" silently, which is exactly the attribution bug back again.
 //
+// WHAT THIS MODULE DOES NOT PROMISE, so the next reader does not rediscover it as a surprise. All
+// three predate the second writer and hold identically for a customer's message on main today; they
+// are properties of appending to a checkpointer channel on webhook arrival, not of `role`:
+//
+//   - A message appended while a graph turn is IN FLIGHT is erased when that turn saves the channel
+//     it loaded (see ./inflight.ts). The watermark has already advanced, so nothing restores it. The
+//     in-flight claim is consulted here only to hold back the DIVIDER (./attendance-boundary.ts).
+//   - Arrival order is not Chatwoot order. Two messages of the same direction can invert (the eager
+//     media pass makes one wait on a provider round-trip and the other not), and the monotonic
+//     watermark then skips the later-arriving lower id entirely.
+//   - Across directions the watermarks keep both messages, but the channel is append-only, so an
+//     inverted pair stays inverted: a reply can sit above the question it answers.
+//
+// Closing any of them means deferring or reordering, which is a change to continuous ingestion as a
+// whole and would reintroduce the first item at a far higher rate. Tracked separately.
+
 // At-most-once: the delivery ledger dedups re-deliveries, message_created gating ignores edits, and a
 // monotonic per-thread watermark PER DIRECTION (AgentThread.lastSyncedMessageId /
 // lastAgentMessageId, CAS under a per-thread advisory

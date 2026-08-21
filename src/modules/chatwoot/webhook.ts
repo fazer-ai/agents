@@ -84,7 +84,7 @@ import {
   normalizeChatwootEvent,
   shouldBotHandle,
 } from "./normalize";
-import { renderInboundMessage } from "./render";
+import { renderAttendantMessage, renderInboundMessage } from "./render";
 import {
   CHATWOOT_DELIVERY_HEADER,
   CHATWOOT_SIGNATURE_HEADER,
@@ -543,12 +543,19 @@ async function ingestUnhandledMessage(args: {
       ? "human_agent"
       : null;
   if (role === null) return;
-  // An agent's own words go in raw. renderInboundMessage folds a CUSTOMER's attachments,
-  // transcription, extracted text and quoted context into one readable message; an outgoing message
-  // has none of that shape, and the eager media pass never ran on it.
+  // One renderer per direction (../chatwoot/render.ts). The customer's folds in transcription,
+  // vision and quoted context; the attendant's only has to name an attachment, because the eager
+  // media pass never runs on an outgoing message — and every marker on the customer's side is
+  // written from the customer's point of view, so reusing it would tell the agent to ask its own
+  // colleague to retype the file they just sent.
   const text =
     role === "human_agent"
-      ? (n.message.content ?? "").trim()
+      ? renderAttendantMessage({
+          text: n.message.content ?? "",
+          attachmentTypes: (n.message.attachments ?? [])
+            .map((a) => a.fileType)
+            .filter((t): t is string => t !== null),
+        })
       : renderInboundMessage({
           text: n.message.content ?? "",
           transcribedText: n.message.transcribedText,

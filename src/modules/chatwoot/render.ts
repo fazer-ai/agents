@@ -37,6 +37,32 @@ export interface RenderableMessage {
   isReaction?: boolean;
 }
 
+// The same job as renderInboundMessage, for the OTHER direction: one message a human agent sent,
+// turned into the text the agent's memory keeps of it (issue #187).
+//
+// A separate function rather than a flag on its sibling, because every marker there is written from
+// the CUSTOMER's side and reads wrong from this one: an attendant who sends a photo would be
+// rendered as "usuário enviou uma imagem; peça que envie a informação por texto", instructing the
+// agent to ask its own colleague to retype the file it just sent. What survives from the sibling is
+// the shape of the problem, not the wording.
+//
+// The eager media pass never runs on an outgoing message (no transcription, no vision), so there is
+// nothing to extract and nothing to wait for. What matters is only that an attachment-only reply is
+// not silently dropped: an attendant who answers with a PDF and no caption would otherwise leave the
+// memory recording that the team said nothing, which is the same defect this whole change is about.
+export function renderAttendantMessage(m: {
+  text: string;
+  attachmentTypes: string[];
+}): string {
+  const text = (m.text ?? "").trim();
+  const type = m.attachmentTypes[0];
+  if (!type) return text;
+  // Named even when there IS a caption: the caption alone loses the fact that a file went with it,
+  // and "segue o orçamento" with no record of an attachment reads as a promise never kept.
+  const marker = `<atendente enviou um arquivo do tipo '${type}'>`;
+  return text ? `${text}\n${marker}` : marker;
+}
+
 const AMARA = /amara\.org/i;
 
 // Whisper hallucinates "…Amara.org" subtitle credits on silent/near-silent audio. Drop it.

@@ -16,9 +16,9 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import {
-  clearContactAuthCache,
-  contactAuthCacheEntries,
-} from "@/modules/contact-auth/cache";
+  clearContactAuthState,
+  contactAuthNoticeEntries,
+} from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The contact authorization gate, wired end to end through processChatwootDelivery: what a denied /
@@ -58,12 +58,15 @@ const DENY_COPY = "Este canal atende apenas clientes cadastrados.";
 const PHONE = "+5511977776666";
 const INBOX_FULL = 771; // deny message + handoff to team 77
 const INBOX_NO_COPY = 772; // denyMessage null, handoff on
+const INBOX_UNLOCK = 773; // POST + includeMessageText, handoff off (the unlock flow)
 const TEAM_ID = 77;
+const UNLOCK_COPY = "Envie seu código de acesso para ser atendido.";
 
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxFullDbId = 0n;
 let inboxNoCopyDbId = 0n;
+let inboxUnlockDbId = 0n;
 
 interface Sent {
   conversationId: number;
@@ -120,16 +123,23 @@ function stubChatwoot() {
   };
 }
 
-// The authorization endpoint double: a FIFO of canned responses plus what it saw.
+// The authorization endpoint double: a FIFO of canned responses plus what it saw (URLs and, for
+// POST, the parsed JSON bodies).
 function authDouble(...responses: Array<() => Response | Promise<Response>>) {
   const calls: string[] = [];
-  const fetchImpl = (async (input: RequestInfo | URL) => {
+  const bodies: Array<Record<string, unknown> | null> = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     calls.push(String(input));
+    bodies.push(
+      init?.body
+        ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+        : null,
+    );
     const next = responses.shift();
     if (!next) throw new Error("authDouble: no response queued");
     return next();
   }) as unknown as typeof fetch;
-  return { calls, fetchImpl };
+  return { calls, bodies, fetchImpl };
 }
 
 const authorized = () => new Response('{"authorized":true}', { status: 200 });
@@ -163,6 +173,7 @@ async function deliverCustomerMessage(params: {
   chatwootInboxId: number;
   senderId: number;
   phone: string | null;
+  content?: string;
   fetchImpl: typeof fetch;
   makeClient: (cfg: { botToken: string }) => Promise<ChatwootClient>;
   makeModel?: () => BaseChatModel;
@@ -171,7 +182,7 @@ async function deliverCustomerMessage(params: {
   const n = normalizeChatwootEvent({
     event: "message_created",
     id: 7000 + seq,
-    content: "olá, preciso de ajuda",
+    content: params.content ?? "olá, preciso de ajuda",
     message_type: "incoming",
     private: false,
     conversation: {
@@ -278,7 +289,7 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       url: AUTH_URL,
       method: "GET",
       credentialRef: `vault:${authKey.id}`,
-      cacheTtlSeconds: 300,
+      noticeCooldownSeconds: 300,
     };
     const full = await suDb.agent.create({
       data: {
@@ -314,9 +325,28 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       },
       select: { id: true },
     });
+    const unlock = await suDb.agent.create({
+      data: {
+        ...baseAgent,
+        name: "Destravável",
+        settings: {
+          debounce: { enabled: false },
+          split: { enabled: false },
+          contactAuth: {
+            ...contactAuthBase,
+            method: "POST",
+            includeMessageText: true,
+            denyMessage: UNLOCK_COPY,
+            handoffEnabled: false,
+          },
+        },
+      },
+      select: { id: true },
+    });
     for (const [agentId, botId] of [
       [full.id, 21],
       [noCopy.id, 22],
+      [unlock.id, 23],
     ] as const) {
       await suDb.chatwootAgentBot.create({
         data: {
@@ -353,10 +383,21 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       select: { id: true },
     });
     inboxNoCopyDbId = b.id;
+    const c = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: INBOX_UNLOCK,
+        name: "Destravável",
+        agentId: unlock.id,
+      },
+      select: { id: true },
+    });
+    inboxUnlockDbId = c.id;
   });
 
   beforeEach(() => {
-    clearContactAuthCache();
+    clearContactAuthState();
   });
 
   afterAll(async () => {
@@ -430,12 +471,12 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(rows[0]?.level).toBe("info");
     expect(rows[0]?.detail).toMatchObject({
       outcome: "denied",
-      cached: false,
+      shared: false,
       status: 200,
       reason: "not_customer",
     });
-    // The cache remembers ids and the verdict, never the phone.
-    expect(JSON.stringify(contactAuthCacheEntries())).not.toContain(
+    // The notice cooldown remembers ids and timestamps, never the phone.
+    expect(JSON.stringify(contactAuthNoticeEntries())).not.toContain(
       PHONE.slice(1),
     );
   });
@@ -492,11 +533,14 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(conv.lastHandledMessageId).toBe(7000 + seq);
   });
 
-  test("two messages inside the TTL cost one request, and the customer is told once", async () => {
+  test("two refused messages cost TWO requests but voice ONE notice (the cooldown)", async () => {
     const convId = 9304;
     await seedConversation(convId, inboxFullDbId);
     const cw = stubChatwoot();
-    const auth = authDouble(() => denied());
+    const auth = authDouble(
+      () => denied(),
+      () => denied(),
+    );
     await deliverCustomerMessage({
       convId,
       chatwootInboxId: INBOX_FULL,
@@ -513,18 +557,78 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       fetchImpl: auth.fetchImpl,
       makeClient: cw.makeClient,
     });
-    expect(auth.calls).toHaveLength(1);
+    // No verdict cache: every message re-asks the endpoint (this is what makes revocation and the
+    // unlock instantaneous)...
+    expect(auth.calls).toHaveLength(2);
+    // ...but the cooldown keeps the burst from being answered twice with the same copy.
     expect(cw.publicOn(convId)).toHaveLength(1);
     expect(cw.notesOn(convId)).toHaveLength(1);
-    // Both deliveries were consumed; the second shows up as the cached verdict.
+    // The handoff is NOT behind the cooldown: a failed open must be retried, so each fresh denial
+    // attempts it again (idempotent on Chatwoot's side).
+    expect(cw.statusToggles).toEqual([
+      [convId, "open"],
+      [convId, "open"],
+    ]);
+    // Both verdicts were fresh: sequential messages never coalesce.
     const rows = await flowRows(convId);
-    expect(rows.map((r) => (r.detail as { cached: boolean }).cached)).toEqual([
+    expect(rows.map((r) => (r.detail as { shared: boolean }).shared)).toEqual([
       false,
-      true,
+      false,
     ]);
   });
 
-  test("a contact with no phone is refused with its own reason, no copy, still handed off", async () => {
+  test("the unlock flow: denied without the code, authorized on the message that carries it", async () => {
+    const convId = 9307;
+    await seedConversation(convId, inboxUnlockDbId);
+    const cw = stubChatwoot();
+    const auth = authDouble(() => denied("code_required"), authorized);
+    await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_UNLOCK,
+      senderId: 807,
+      phone: PHONE,
+      content: "olá, preciso de ajuda",
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+    });
+    await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_UNLOCK,
+      senderId: 807,
+      phone: PHONE,
+      content: "meu código é ABC-123",
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+      makeModel: () => new FakeListChatModel({ responses: ["Bem-vindo!"] }),
+    });
+    // Two checks, one per message, each carrying ITS message under `message` and the mirrored
+    // identity under `contact` (the separation is the contract).
+    expect(auth.calls).toHaveLength(2);
+    interface SeenBody {
+      contact: { phone: string };
+      message: { text: string };
+    }
+    const first = auth.bodies[0] as unknown as SeenBody;
+    const second = auth.bodies[1] as unknown as SeenBody;
+    expect(first.message.text).toBe("olá, preciso de ajuda");
+    expect(first.contact.phone).toBe(PHONE);
+    expect(second.message.text).toBe("meu código é ABC-123");
+    expect(JSON.stringify(second.contact)).not.toContain("ABC-123");
+    // The customer heard the unlock instruction once, then the agent's own reply.
+    expect(cw.publicOn(convId).map((s) => s.content)).toEqual([
+      UNLOCK_COPY,
+      "Bem-vindo!",
+    ]);
+    // Handoff off: the conversation stayed with the bot the whole way.
+    expect(cw.statusToggles).toEqual([]);
+    const rows = await flowRows(convId);
+    expect(rows.map((r) => (r.detail as { outcome: string }).outcome)).toEqual([
+      "denied",
+      "allowed",
+    ]);
+  });
+
+  test("a contact with no identifiers is refused with its own reason, no copy, still handed off", async () => {
     const convId = 9305;
     await seedConversation(convId, inboxFullDbId);
     const cw = stubChatwoot();
@@ -542,12 +646,12 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(cw.statusToggles).toEqual([[convId, "open"]]);
     const notes = cw.notesOn(convId);
     expect(notes).toHaveLength(1);
-    expect(notes[0]?.content).toContain("telefone");
+    expect(notes[0]?.content).toContain("identificador");
     const rows = await flowRows(convId);
     expect(rows[0]?.level).toBe("warn");
     expect(rows[0]?.detail).toMatchObject({
       outcome: "no_identity",
-      reason: "no_phone",
+      reason: "no_identifiers",
     });
   });
 

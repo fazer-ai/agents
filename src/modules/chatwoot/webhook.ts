@@ -50,6 +50,10 @@ import {
 } from "@/modules/contact-auth/service";
 import { readContactAuthConfig } from "@/modules/contact-auth/settings";
 import {
+  claimContactAuthNotice,
+  contactAuthNoticeKey,
+} from "@/modules/contact-auth/state";
+import {
   clearConversationError,
   recordConversationError,
 } from "@/modules/conversations/error";
@@ -706,7 +710,7 @@ export function contactAuthNoteText(
     : "";
   if (verdict.outcome === "no_identity") {
     return (
-      "🔒 Autorização do contato: não foi possível verificar porque o contato não tem telefone cadastrado. O agente não respondeu automaticamente." +
+      "🔒 Autorização do contato: não foi possível verificar porque o contato não tem telefone, e-mail nem identificador cadastrados. O agente não respondeu automaticamente." +
       handoffLine
     );
   }
@@ -775,6 +779,7 @@ async function maybeConsumeCommandOrGate(params: {
     if (!conv) return null;
     let agentId: bigint | null = null;
     let inboxChatwootId: number | null = null;
+    let channelType: string | null = null;
     let agentSettings: unknown = null;
     let mode = "production";
     let agentEnabled = true;
@@ -782,9 +787,10 @@ async function maybeConsumeCommandOrGate(params: {
     if (conv.inboxId !== null) {
       const inbox = await db.inbox.findUnique({
         where: { id: conv.inboxId },
-        select: { agentId: true, chatwootInboxId: true },
+        select: { agentId: true, chatwootInboxId: true, channelType: true },
       });
       inboxChatwootId = inbox?.chatwootInboxId ?? null;
+      channelType = inbox?.channelType ?? null;
       if (inbox?.agentId) {
         agentId = inbox.agentId;
         const agent = await db.agent.findUnique({
@@ -819,6 +825,7 @@ async function maybeConsumeCommandOrGate(params: {
       agentEnabled,
       hours,
       inboxChatwootId,
+      channelType,
       agentSettings,
     };
   });
@@ -1379,12 +1386,15 @@ async function maybeConsumeCommandOrGate(params: {
   // ── Contact authorization gate: an agent that may only serve contacts a system outside the
   //    console knows about (docs/contact-auth.md) asks it before spending a turn. Last of the gates
   //    on purpose: a conversation an earlier gate already silenced costs no authorization call. The
-  //    identity is the phone Chatwoot mirrored for the contact, never anything the customer typed.
-  //    Denied ⇒ the operator's fixed copy + a handoff to humans; cannot-tell (an endpoint failure, a
-  //    contact with no phone) ⇒ fail-closed silence toward the customer, with a private note telling
-  //    the operator why. Message, note and handoff fire only on a FRESH verdict; while one is
-  //    cached the message is consumed silently, so a customer writing in a burst is told once and
-  //    `cacheTtlSeconds` bounds how often they are told again. ──
+  //    identity is what Chatwoot mirrored for the contact (phone, email, the operator's own
+  //    identifier), never anything the customer typed; under POST with includeMessageText the
+  //    triggering text rides along too, in its own `message` field, so the endpoint can accept an
+  //    unlock code. EVERY message is re-checked (no verdict outlives its request), so a revocation
+  //    or an unlock on the endpoint's side takes effect on the very next message. Denied ⇒ the
+  //    operator's fixed copy + a handoff to humans; cannot-tell (an endpoint failure, a contact
+  //    with no identifiers) ⇒ fail-closed silence toward the customer, with a private note telling
+  //    the operator why. Copy and note sit behind a cooldown (noticeCooldownSeconds), the verdict
+  //    never does: a refused burst is re-checked every time but voiced once per window. ──
   if (ctx.agentId !== null && ctx.agentEnabled && isNewIncomingMessage(n)) {
     const authCfg = readContactAuthConfig(ctx.agentSettings);
     if (authCfg.enabled) {
@@ -1423,6 +1433,8 @@ async function maybeConsumeCommandOrGate(params: {
         contactDbId: ctx.conv.contactId,
         conversationId,
         inboxId: ctx.inboxChatwootId,
+        channelType: ctx.channelType,
+        messageText: n.message?.content ?? null,
         cfg: authCfg,
         base,
         fetchImpl: deps?.contactAuthFetch,
@@ -1441,26 +1453,36 @@ async function maybeConsumeCommandOrGate(params: {
         contactAuthFlowEvent(verdict),
       );
       if (verdict.outcome !== "allowed") {
-        if (!verdict.cached) {
-          // NOTE: Customer copy first (after the open the conversation is no longer the bot's and
-          // the fence would rightly withhold it), then the handoff, then the note, so the note can
-          // say what actually happened. An ERROR hands nothing off: it is transient by contract
-          // (the short error cache), and escalating every blip of the endpoint would page humans
-          // for conversations the next message answers.
-          if (verdict.outcome === "denied" && authCfg.denyMessage) {
+        // NOTE: The leader of a coalesced burst acts; a sharer stays silent (its delivery is
+        // consumed all the same). Actions in this order: customer copy first (after the open the
+        // conversation is no longer the bot's and the fence would rightly withhold it), then the
+        // handoff, then the note, so the note can say what actually happened. An ERROR hands
+        // nothing off: it is transient by contract (the next message retries), and escalating
+        // every blip of the endpoint would page humans for conversations the next message answers.
+        if (!verdict.shared) {
+          const voice = claimContactAuthNotice(
+            contactAuthNoticeKey(tenantId, agentId, ctx.conv.id),
+            authCfg.noticeCooldownSeconds * 1000,
+          );
+          if (voice && verdict.outcome === "denied" && authCfg.denyMessage) {
             await postPublicMessage(authCfg.denyMessage);
           }
           let handedOff = false;
           if (verdict.outcome !== "error" && authCfg.handoffEnabled) {
+            // NOTE: Outside the cooldown on purpose: the open is what ends the bot's
+            // attribution, and a first attempt that failed must be retried on the next refused
+            // message, notice or no notice.
             handedOff = await openForHumans(authCfg.handoffTeamId);
           }
-          await postPrivateNote(contactAuthNoteText(verdict, handedOff));
+          if (voice) {
+            await postPrivateNote(contactAuthNoteText(verdict, handedOff));
+          }
         }
         logger.info(
-          "chatwoot: contact-auth silent (conv=%s outcome=%s cached=%s)",
+          "chatwoot: contact-auth silent (conv=%s outcome=%s shared=%s)",
           String(conversationId),
           verdict.outcome,
-          String(verdict.cached),
+          String(verdict.shared),
         );
         return true;
       }

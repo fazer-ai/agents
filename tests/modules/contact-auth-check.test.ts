@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { SsrfError } from "@/lib/ssrf";
 import {
   buildAuthorizationRequest,
+  type ContactIdentity,
+  channelSlug,
   checkContactAuthorization,
   classifyAuthorizationResponse,
   MAX_RESPONSE_BYTES,
+  MESSAGE_TEXT_MAX,
   reasonSlug,
 } from "@/modules/contact-auth/check";
 import {
@@ -17,11 +20,16 @@ import {
 // boolean, prose where a code belongs, a body too big to be a verdict) must land on the fail-closed
 // side deliberately, not by accident of a parser.
 
-const IDENTITY = {
+const IDENTITY: ContactIdentity = {
   phone: "+5511988887777",
-  contactId: 42,
+  name: "Cliente Exemplo",
+  email: "cliente@example.com",
+  identifier: "client-4821",
+  chatwootContactId: 42,
   conversationId: 901,
   inboxId: 7,
+  channel: "whatsapp",
+  messageText: null,
 };
 
 function cfg(over: Partial<ContactAuthConfig> = {}): ContactAuthConfig {
@@ -122,8 +130,19 @@ describe("reasonSlug", () => {
   });
 });
 
+describe("channelSlug", () => {
+  test("slugs the mirror's raw channel_type", () => {
+    expect(channelSlug("Channel::Whatsapp")).toBe("whatsapp");
+    expect(channelSlug("Channel::WebWidget")).toBe("web_widget");
+    expect(channelSlug("Channel::FacebookPage")).toBe("facebook_page");
+    expect(channelSlug("Channel::Api")).toBe("api");
+    expect(channelSlug(null)).toBeNull();
+    expect(channelSlug("")).toBeNull();
+  });
+});
+
 describe("buildAuthorizationRequest", () => {
-  test("GET appends phone + contact_id and preserves the existing query", () => {
+  test("GET appends the scalar identifiers and preserves the existing query", () => {
     const { url, init } = buildAuthorizationRequest(
       cfg({ url: "https://api.example.com/authorize?tenant=t1" }),
       IDENTITY,
@@ -132,21 +151,48 @@ describe("buildAuthorizationRequest", () => {
     expect(url.searchParams.get("tenant")).toBe("t1");
     expect(url.searchParams.get("phone")).toBe(IDENTITY.phone);
     expect(url.searchParams.get("contact_id")).toBe("42");
+    expect(url.searchParams.get("identifier")).toBe("client-4821");
+    expect(url.searchParams.get("email")).toBe("cliente@example.com");
+    // Never on a query string: the name, and anything the customer typed.
+    expect(url.searchParams.has("name")).toBe(false);
     expect(init.method).toBe("GET");
     expect(init.body).toBeUndefined();
   });
 
-  test("GET omits contact_id when the mirror never learned it", () => {
+  test("GET omits what the mirror never learned", () => {
     const { url } = buildAuthorizationRequest(
       cfg(),
-      { ...IDENTITY, contactId: null },
+      {
+        ...IDENTITY,
+        phone: null,
+        email: null,
+        chatwootContactId: null,
+      },
       null,
     );
-    expect(url.searchParams.get("phone")).toBe(IDENTITY.phone);
+    expect(url.searchParams.has("phone")).toBe(false);
     expect(url.searchParams.has("contact_id")).toBe(false);
+    expect(url.searchParams.has("email")).toBe(false);
+    expect(url.searchParams.get("identifier")).toBe("client-4821");
   });
 
-  test("POST carries the identity in a JSON body, not on the URL", () => {
+  test("GET never carries the message text, even when the flag leaks in", () => {
+    // The reader already forces includeMessageText off under GET; the builder does not rely on it.
+    const { url } = buildAuthorizationRequest(
+      cfg({ includeMessageText: true }),
+      { ...IDENTITY, messageText: "meu código é 4821" },
+      null,
+    );
+    expect(url.toString()).not.toContain("4821%20");
+    expect([...url.searchParams.keys()].sort()).toEqual([
+      "contact_id",
+      "email",
+      "identifier",
+      "phone",
+    ]);
+  });
+
+  test("POST separates trusted contact, conversation coordinates and no message by default", () => {
     const { url, init } = buildAuthorizationRequest(
       cfg({ method: "POST" }),
       IDENTITY,
@@ -154,14 +200,59 @@ describe("buildAuthorizationRequest", () => {
     );
     expect(url.searchParams.has("phone")).toBe(false);
     expect(JSON.parse(String(init.body))).toEqual({
-      phone: IDENTITY.phone,
-      contactId: 42,
-      conversationId: 901,
-      inboxId: 7,
+      contact: {
+        phone: IDENTITY.phone,
+        name: "Cliente Exemplo",
+        email: "cliente@example.com",
+        identifier: "client-4821",
+        chatwootContactId: 42,
+      },
+      conversation: { id: 901, inboxId: 7, channel: "whatsapp" },
     });
     expect((init.headers as Record<string, string>)["content-type"]).toContain(
       "application/json",
     );
+  });
+
+  test("POST with includeMessageText carries the text under message, apart from contact", () => {
+    const { init } = buildAuthorizationRequest(
+      cfg({ method: "POST", includeMessageText: true }),
+      { ...IDENTITY, messageText: "  meu código é ABC-123  " },
+      null,
+    );
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    expect(body.message).toEqual({ text: "meu código é ABC-123" });
+    // The customer's text never bleeds into the trusted half.
+    expect(JSON.stringify(body.contact)).not.toContain("ABC-123");
+  });
+
+  test("the forwarded text is capped, and an empty text sends no message at all", () => {
+    const { init } = buildAuthorizationRequest(
+      cfg({ method: "POST", includeMessageText: true }),
+      { ...IDENTITY, messageText: "x".repeat(MESSAGE_TEXT_MAX + 500) },
+      null,
+    );
+    const body = JSON.parse(String(init.body)) as {
+      message: { text: string };
+    };
+    expect(body.message.text.length).toBe(MESSAGE_TEXT_MAX);
+    const empty = buildAuthorizationRequest(
+      cfg({ method: "POST", includeMessageText: true }),
+      { ...IDENTITY, messageText: "   " },
+      null,
+    );
+    expect(
+      JSON.parse(String(empty.init.body)) as Record<string, unknown>,
+    ).not.toHaveProperty("message");
+  });
+
+  test("POST without the opt-in sends no message even when text exists", () => {
+    const { init } = buildAuthorizationRequest(
+      cfg({ method: "POST" }),
+      { ...IDENTITY, messageText: "meu código é ABC-123" },
+      null,
+    );
+    expect(String(init.body)).not.toContain("ABC-123");
   });
 
   test.each([

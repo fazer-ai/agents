@@ -363,6 +363,11 @@ async function upsertContact(
       ...(c.name != null ? { name: c.name } : {}),
       ...(c.email != null ? { email: c.email } : {}),
       ...(c.phone != null ? { phone: c.phone } : {}),
+      // NOTE: The operator identifier is usually stamped AFTER the contact exists (their system
+      // links the customer, then writes it back through the Chatwoot API), so the create-time
+      // snapshot cannot be the last word. The bag holds nothing else today; the day it does, this
+      // wholesale write must become a merge.
+      ...(c.identifier ? { attributes } : {}),
     },
     select: { id: true },
   });

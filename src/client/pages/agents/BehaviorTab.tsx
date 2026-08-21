@@ -139,7 +139,8 @@ export interface ContactAuthState {
   method: string;
   credentialRef: string;
   timeoutMs: string;
-  cacheTtlSeconds: string;
+  noticeCooldownSeconds: string;
+  includeMessageText: boolean;
   denyMessage: string;
   handoffEnabled: boolean;
   handoffTeamId: string;
@@ -1194,7 +1195,7 @@ export function BehaviorTab({
             title={t("editor.contactAuth", "Contact authorization")}
             description={t(
               "editor.contactAuthHint",
-              "Before answering, ask an external system whether this contact may be served, by the phone number Chatwoot holds for them. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
+              "Before answering, ask an external system whether this contact may be served, by the identity Chatwoot holds for them (phone, email, identifier). Every message is re-checked, so revoking on your side takes effect immediately. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
             )}
           >
             <SwitchField
@@ -1214,7 +1215,7 @@ export function BehaviorTab({
                     label={t("editor.contactAuthUrl", "Authorization URL")}
                     description={t(
                       "editor.contactAuthUrlHint",
-                      'GET receives phone and contact_id on the query string; POST receives them in a JSON body. The endpoint answers { "authorized": true | false }.',
+                      'GET receives phone, contact_id, identifier and email on the query string; POST receives the identity in a JSON body (contact, conversation, message). The endpoint answers { "authorized": true | false }.',
                     )}
                     error={
                       contactAuthUrlInvalid
@@ -1296,25 +1297,50 @@ export function BehaviorTab({
                     />
                   </FormField>
                   <FormField
-                    label={t("editor.contactAuthCacheTtl", "Reuse verdict (s)")}
+                    label={t(
+                      "editor.contactAuthNoticeCooldown",
+                      "Notice cooldown (s)",
+                    )}
                     description={t(
-                      "editor.contactAuthCacheTtlHint",
-                      "How long an answer is reused for the same contact before asking again. 0-86,400; 0 asks on every message.",
+                      "editor.contactAuthNoticeCooldownHint",
+                      "Every message is re-checked; this only spaces the deny message and the private note for the same conversation. 0-3,600; 0 notifies on every refused message.",
                     )}
                   >
                     <Input
                       type="number"
                       min={0}
-                      max={86400}
-                      value={contactAuth.cacheTtlSeconds}
+                      max={3600}
+                      value={contactAuth.noticeCooldownSeconds}
                       onChange={(e) =>
                         setContactAuth({
                           ...contactAuth,
-                          cacheTtlSeconds: e.target.value,
+                          noticeCooldownSeconds: e.target.value,
                         })
                       }
                     />
                   </FormField>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <SwitchField
+                    checked={
+                      contactAuth.method === "POST" &&
+                      contactAuth.includeMessageText
+                    }
+                    onCheckedChange={(v) =>
+                      setContactAuth({ ...contactAuth, includeMessageText: v })
+                    }
+                    disabled={contactAuth.method !== "POST"}
+                    label={t(
+                      "editor.contactAuthIncludeText",
+                      "Send the customer's message text",
+                    )}
+                  />
+                  <p className="text-text-muted text-xs">
+                    {t(
+                      "editor.contactAuthIncludeTextHint",
+                      "POST only. The triggering message travels as its own message.text field, apart from the mirrored identity, so your endpoint can accept an unlock code the customer sends. It is never logged.",
+                    )}
+                  </p>
                 </div>
                 <FormField
                   label={t(
@@ -1323,7 +1349,7 @@ export function BehaviorTab({
                   )}
                   description={t(
                     "editor.contactAuthDenyMessageHint",
-                    "Sent when the check denies the contact, once per verdict. Leave empty to send nothing.",
+                    "Sent when the check denies the contact, at most once per notice cooldown. Leave empty to send nothing.",
                   )}
                 >
                   <Textarea

@@ -350,9 +350,10 @@ function readBehaviorState(a: Agent) {
       method: str(ca.method).toUpperCase() === "POST" ? "POST" : "GET",
       credentialRef: str(ca.credentialRef),
       timeoutMs: num(ca.timeoutMs) || "5000",
-      // NOTE: "0" is meaningful (ask on every message), and num(0) is the truthy string "0", so the
-      // fallback only fills a genuinely absent value.
-      cacheTtlSeconds: num(ca.cacheTtlSeconds) || "300",
+      // NOTE: "0" is meaningful (notify on every refused message), and num(0) is the truthy
+      // string "0", so the fallback only fills a genuinely absent value.
+      noticeCooldownSeconds: num(ca.noticeCooldownSeconds) || "60",
+      includeMessageText: ca.includeMessageText === true,
       denyMessage: str(ca.denyMessage),
       handoffEnabled:
         typeof ca.handoffEnabled === "boolean" ? ca.handoffEnabled : true,
@@ -641,7 +642,8 @@ function AgentEditor() {
     method: "GET",
     credentialRef: "",
     timeoutMs: "5000",
-    cacheTtlSeconds: "300",
+    noticeCooldownSeconds: "60",
+    includeMessageText: false,
     denyMessage: "",
     handoffEnabled: true,
     handoffTeamId: "",
@@ -1134,12 +1136,15 @@ function AgentEditor() {
         method: contactAuth.method === "POST" ? "POST" : "GET",
         credentialRef: contactAuth.credentialRef || null,
         timeoutMs: Number(contactAuth.timeoutMs) || 5000,
-        // NOTE: 0 is meaningful (ask on every message), so `|| 300` would erase it; only an emptied
-        // field falls back to the default.
-        cacheTtlSeconds:
-          contactAuth.cacheTtlSeconds.trim() === ""
-            ? 300
-            : Math.max(0, Number(contactAuth.cacheTtlSeconds) || 0),
+        // NOTE: 0 is meaningful (notify on every refused message), so `|| 60` would erase it;
+        // only an emptied field falls back to the default.
+        noticeCooldownSeconds:
+          contactAuth.noticeCooldownSeconds.trim() === ""
+            ? 60
+            : Math.max(0, Number(contactAuth.noticeCooldownSeconds) || 0),
+        // NOTE: Stored even under GET (the runtime reader ignores it there), so flipping the
+        // method back and forth does not lose the choice.
+        includeMessageText: contactAuth.includeMessageText,
         denyMessage: contactAuth.denyMessage.trim() || null,
         handoffEnabled: contactAuth.handoffEnabled,
         handoffTeamId: Number(contactAuth.handoffTeamId) || null,

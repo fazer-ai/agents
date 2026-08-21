@@ -13,7 +13,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { runAgentNudge } from "@/graph/nudge";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import { clearContactAuthCache } from "@/modules/contact-auth/cache";
+import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The gate on the PROACTIVE side: a follow-up is a turn the agent starts, so a contact the reactive
@@ -163,7 +163,7 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
   });
 
   beforeEach(() => {
-    clearContactAuthCache();
+    clearContactAuthState();
   });
 
   afterAll(async () => {

@@ -479,6 +479,9 @@ export async function runAgentNudge(
       contactDbId: cfg.contactDbId,
       conversationId,
       inboxId: loaded.chatwootInboxId,
+      channelType: loaded.channelType,
+      // A nudge is a turn the agent starts: there is no customer message to forward.
+      messageText: null,
       cfg: cfg.contactAuthConfig,
       base,
       fetchImpl: params.deps?.contactAuthFetch,

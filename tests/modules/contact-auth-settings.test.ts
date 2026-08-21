@@ -47,23 +47,46 @@ describe("readContactAuthConfig", () => {
 
   test("numbers clamp into their documented ranges", () => {
     const c = readContactAuthConfig({
-      contactAuth: { timeoutMs: 50, cacheTtlSeconds: 999_999 },
+      contactAuth: { timeoutMs: 50, noticeCooldownSeconds: 999_999 },
     });
     expect(c.timeoutMs).toBe(1000);
-    expect(c.cacheTtlSeconds).toBe(86_400);
+    expect(c.noticeCooldownSeconds).toBe(3600);
     const d = readContactAuthConfig({
-      contactAuth: { timeoutMs: 60_000, cacheTtlSeconds: -5 },
+      contactAuth: { timeoutMs: 60_000, noticeCooldownSeconds: -5 },
     });
     expect(d.timeoutMs).toBe(10_000);
-    expect(d.cacheTtlSeconds).toBe(0);
-    // NOTE: 0 is a meaningful TTL (ask on every message), not a fallback to the default.
+    expect(d.noticeCooldownSeconds).toBe(0);
+    // NOTE: 0 is a meaningful cooldown (notify on every refused message), not a fallback.
     expect(
-      readContactAuthConfig({ contactAuth: { cacheTtlSeconds: 0 } })
-        .cacheTtlSeconds,
+      readContactAuthConfig({ contactAuth: { noticeCooldownSeconds: 0 } })
+        .noticeCooldownSeconds,
     ).toBe(0);
     expect(
       readContactAuthConfig({ contactAuth: { timeoutMs: "fast" } }).timeoutMs,
     ).toBe(5000);
+  });
+
+  test("includeMessageText needs POST and a real boolean; GET reads it as off", () => {
+    expect(
+      readContactAuthConfig({
+        contactAuth: { method: "POST", includeMessageText: true },
+      }).includeMessageText,
+    ).toBe(true);
+    // Stored true under GET survives in the bag but the reader never surfaces it.
+    expect(
+      readContactAuthConfig({
+        contactAuth: { method: "GET", includeMessageText: true },
+      }).includeMessageText,
+    ).toBe(false);
+    expect(
+      readContactAuthConfig({
+        contactAuth: { method: "POST", includeMessageText: "true" },
+      }).includeMessageText,
+    ).toBe(false);
+    expect(
+      readContactAuthConfig({ contactAuth: { method: "POST" } })
+        .includeMessageText,
+    ).toBe(false);
   });
 
   test("method is GET unless POST was stored (case-insensitively)", () => {
@@ -271,7 +294,8 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
             method: "post",
             credentialRef: `vault:${credId}`,
             timeoutMs: 99_999,
-            cacheTtlSeconds: 0,
+            noticeCooldownSeconds: 0,
+            includeMessageText: true,
             denyMessage: "  Atendemos apenas clientes.  ",
             handoffEnabled: false,
             handoffTeamId: 12,
@@ -290,7 +314,8 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
       method: "POST",
       credentialRef: `vault:${credId}`,
       timeoutMs: 10_000,
-      cacheTtlSeconds: 0,
+      noticeCooldownSeconds: 0,
+      includeMessageText: true,
       denyMessage: "Atendemos apenas clientes.",
       handoffEnabled: false,
       handoffTeamId: 12,
@@ -328,7 +353,7 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
       principal(),
       {
         agent_id: String(agentId),
-        contactAuth: { credentialRef: "auth-key", cacheTtlSeconds: 60 },
+        contactAuth: { credentialRef: "auth-key", noticeCooldownSeconds: 120 },
         dry_run: false,
       },
       { base: appDb },
@@ -340,7 +365,7 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
     });
     const ca = readContactAuthConfig(row.settings);
     expect(ca.credentialRef).toBe(`vault:${credId}`);
-    expect(ca.cacheTtlSeconds).toBe(60);
+    expect(ca.noticeCooldownSeconds).toBe(120);
     // The rest of the block survived the partial patch.
     expect(ca.url).toBe("https://api.example.com/check?tenant=t1");
   });

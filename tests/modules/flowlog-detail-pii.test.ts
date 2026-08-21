@@ -10,7 +10,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
-import { clearContactAuthCache } from "@/modules/contact-auth/cache";
+import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { guardrailModel, UsageReportingModel } from "../utils/scripted-models";
 
@@ -250,6 +250,10 @@ describe.skipIf(!dbUp)(
             contactAuth: {
               enabled: true,
               url: "https://203.0.113.9:9443/check",
+              // POST + includeMessageText: the harshest shape, because the request now CARRIES the
+              // message the customer typed, and none of it may come back out through the log.
+              method: "POST",
+              includeMessageText: true,
               denyMessage: "Atendemos apenas clientes cadastrados.",
               handoffEnabled: false,
             },
@@ -457,7 +461,7 @@ describe.skipIf(!dbUp)(
     // about, the contact's name and the customer's own words. The slug guard is what keeps all of
     // it out of the row; this is the check that it held on the write path.
     test("a contact_auth line carries no phone even when the endpoint's reason quotes it", async () => {
-      clearContactAuthCache();
+      clearContactAuthState();
       const convId = 9604;
       await suDb.conversation.create({
         data: {
@@ -533,7 +537,7 @@ describe.skipIf(!dbUp)(
       const line = rows.find((r) => r.stage === "contact_auth");
       expect(line?.detail).toMatchObject({
         outcome: "denied",
-        cached: false,
+        shared: false,
         status: 200,
       });
       expect(

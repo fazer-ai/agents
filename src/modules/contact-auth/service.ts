@@ -8,25 +8,20 @@ import {
   resolveInjectableCredentialEntry,
 } from "@/modules/vault/injectable";
 import {
-  contactAuthCacheKey,
-  ERROR_TTL_MS,
-  readCachedVerdict,
-  type StoredVerdict,
-  singleFlight,
-  storeVerdict,
-} from "./cache";
-import {
   type CheckDeps,
-  type ContactAuthOutcome,
+  type ContactAuthVerdict,
+  channelSlug,
   checkContactAuthorization,
   reasonSlug,
 } from "./check";
 import type { ContactAuthConfig } from "./settings";
+import { contactAuthFlightKey, singleFlight } from "./state";
 
 // The contact authorization check as the runtime calls it: identity from the mirrored contact,
-// credential from the vault, one request per contact per TTL (cache + single-flight), and a verdict
-// the two callers (the webhook gate, the proactive nudge) act on the same way. The DB reads here
-// are short and scoped; the network call runs outside any transaction (docs/tenancy.md, rule 3).
+// credential from the vault, one request per incoming message (single-flight coalesces concurrent
+// deliveries; no verdict is cached, so the endpoint's answer is always current), and a verdict the
+// two callers (the webhook gate, the proactive nudge) act on the same way. The DB reads here are
+// short and scoped; the network call runs outside any transaction (docs/tenancy.md, rule 3).
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -34,11 +29,11 @@ function sysCtx(tenantId: bigint): TenantContext {
 
 export type { ContactAuthOutcome } from "./check";
 
-export interface ContactAuthResult extends StoredVerdict {
-  // True when this verdict was not asked for by this call: a cache hit, or a concurrent call that
-  // was coalesced into another's request. The gate acts (message, handoff, note) only on a fresh
-  // verdict, so a contact who writes three times in a row is told once.
-  cached: boolean;
+export interface ContactAuthResult extends ContactAuthVerdict {
+  // True when this call did not ask the endpoint itself: it was coalesced into a concurrent call's
+  // request (single-flight). The gate acts (message, handoff, note) only on the leader's verdict,
+  // so two deliveries racing do not act twice.
+  shared: boolean;
 }
 
 export interface AuthorizeContactParams {
@@ -49,97 +44,113 @@ export interface AuthorizeContactParams {
   conversationId: number;
   // The Chatwoot inbox id, for the POST body. null when unknown.
   inboxId: number | null;
+  // The inbox's raw channel_type ("Channel::Whatsapp", ...); slugged before it travels.
+  channelType: string | null;
+  // The triggering message's text; null on a proactive nudge. Forwarded only under POST with
+  // includeMessageText (check.ts caps and places it), and never retained or logged here.
+  messageText: string | null;
   cfg: ContactAuthConfig;
   base?: PrismaClient;
   fetchImpl?: typeof fetch;
   assertSafe?: CheckDeps["assertSafe"];
-  // Injectable clock for the cache (tests).
-  now?: () => number;
 }
 
-// How long a verdict is kept. An error is remembered briefly whatever the agent's TTL says: the
-// next message after the short window has to retry, or an outage of the endpoint would silence a
-// contact for the whole configured TTL.
-function ttlMsFor(outcome: ContactAuthOutcome, cfg: ContactAuthConfig): number {
-  return outcome === "error" ? ERROR_TTL_MS : cfg.cacheTtlSeconds * 1000;
+function trimmed(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
 export async function authorizeContact(
   params: AuthorizeContactParams,
 ): Promise<ContactAuthResult> {
   const base = params.base ?? basePrisma;
-  const now = params.now ?? Date.now;
   const { tenantId, agentId, cfg } = params;
   if (params.contactDbId === null) {
-    return { outcome: "no_identity", cached: false, reason: "no_contact" };
+    return { outcome: "no_identity", shared: false, reason: "no_contact" };
   }
   const contactDbId = params.contactDbId;
-  const key = contactAuthCacheKey(tenantId, agentId, contactDbId);
-  const hit = readCachedVerdict(key, now());
-  if (hit) return { ...hit, cached: true };
-
-  const { verdict, shared } = await singleFlight(key, async () => {
-    const remember = (v: StoredVerdict): StoredVerdict => {
-      storeVerdict(key, v, ttlMsFor(v.outcome, cfg), now());
-      return v;
-    };
-    // NOTE: Read inside the single-flight, so a burst resolves the identity once too. The phone is
-    // what Chatwoot mirrored for the contact; nothing the customer typed can stand in for it.
-    const contact = await runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.contact.findUnique({
-        where: { id: contactDbId },
-        select: { phone: true, chatwootContactId: true },
-      }),
-    );
-    const phone = contact?.phone?.trim() ?? "";
-    if (!phone) return remember({ outcome: "no_identity", reason: "no_phone" });
-    if (!cfg.url)
-      return remember({ outcome: "error", reason: "not_configured" });
-    let credential: InjectableCredential | null = null;
-    if (cfg.credentialRef) {
-      try {
-        // NOTE: Outside any tx: a managed-OAuth entry may refresh its token here.
-        credential = await resolveInjectableCredentialEntry(
-          base,
-          tenantId,
-          cfg.credentialRef,
-        );
-      } catch (err) {
-        logger.warn(
-          "contact-auth: credential resolution failed (agent=%s): %s",
-          String(agentId),
-          err instanceof Error ? err.message : String(err),
-        );
+  const key = contactAuthFlightKey(tenantId, agentId, contactDbId);
+  const { verdict, shared } = await singleFlight(
+    key,
+    async (): Promise<ContactAuthVerdict> => {
+      // NOTE: Read inside the single-flight, so a burst resolves the identity once too. Everything
+      // under `contact` is what Chatwoot mirrored; nothing the customer typed can stand in for it.
+      const contact = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.contact.findUnique({
+          where: { id: contactDbId },
+          select: {
+            phone: true,
+            name: true,
+            email: true,
+            chatwootContactId: true,
+            attributes: true,
+          },
+        }),
+      );
+      const phone = trimmed(contact?.phone);
+      const email = trimmed(contact?.email);
+      const attrs = contact?.attributes;
+      const identifier = trimmed(
+        attrs && typeof attrs === "object" && !Array.isArray(attrs)
+          ? (attrs as Record<string, unknown>).identifier
+          : null,
+      );
+      // NOTE: The Chatwoot contact id alone is NOT identity: it names the row to us and says
+      // nothing to the operator's system. Without a phone, an email or an operator identifier
+      // there is nothing to ask about.
+      if (!phone && !email && !identifier) {
+        return { outcome: "no_identity", reason: "no_identifiers" };
       }
-      // A missing, pending or unreadable credential is an error, not a request without it: the
-      // endpoint would answer 401 and the gate would read that as "denied", telling the customer
-      // they are not registered because of a key the operator has not filled in.
-      if (!credential) {
-        return remember({ outcome: "error", reason: "credential_unavailable" });
+      if (!cfg.url) return { outcome: "error", reason: "not_configured" };
+      let credential: InjectableCredential | null = null;
+      if (cfg.credentialRef) {
+        try {
+          // NOTE: Outside any tx: a managed-OAuth entry may refresh its token here.
+          credential = await resolveInjectableCredentialEntry(
+            base,
+            tenantId,
+            cfg.credentialRef,
+          );
+        } catch (err) {
+          logger.warn(
+            "contact-auth: credential resolution failed (agent=%s): %s",
+            String(agentId),
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+        // A missing, pending or unreadable credential is an error, not a request without it: the
+        // endpoint would answer 401 and the gate would read that as "denied", telling the customer
+        // they are not registered because of a key the operator has not filled in.
+        if (!credential) {
+          return { outcome: "error", reason: "credential_unavailable" };
+        }
       }
-    }
-    return remember(
-      await checkContactAuthorization(
+      return checkContactAuthorization(
         cfg,
         {
           phone,
-          contactId: contact?.chatwootContactId ?? null,
+          name: trimmed(contact?.name),
+          email,
+          identifier,
+          chatwootContactId: contact?.chatwootContactId ?? null,
           conversationId: params.conversationId,
           inboxId: params.inboxId,
+          channel: channelSlug(params.channelType),
+          messageText: params.messageText,
         },
         credential,
         { fetchImpl: params.fetchImpl, assertSafe: params.assertSafe },
-      ),
-    );
-  });
-  return { ...verdict, cached: shared };
+      );
+    },
+  );
+  return { ...verdict, shared };
 }
 
 // The execution-log line for a verdict. `detail` is PII-free by construction: an outcome enum, a
 // boolean, an HTTP status and a reason that passed the slug guard (prose from the endpoint never
-// gets this far, but the guard runs again here because this is the write). A denial is ordinary
-// operation (info); a check that could not run, or a contact that could not be asked about, is
-// something the operator should hear (warn, so alert channels fire on inbox traffic).
+// gets this far, but the guard runs again here because this is the write). The customer's text
+// never appears: it travels to the endpoint and nowhere else. A denial is ordinary operation
+// (info); a check that could not run, or a contact that could not be asked about, is something the
+// operator should hear (warn, so alert channels fire on inbox traffic).
 export function contactAuthFlowEvent(result: ContactAuthResult): FlowEvent {
   const reason = reasonSlug(result.reason);
   const failed = result.outcome === "error";
@@ -150,7 +161,7 @@ export function contactAuthFlowEvent(result: ContactAuthResult): FlowEvent {
     status: failed ? "error" : unidentified ? "skipped" : "ok",
     detail: {
       outcome: result.outcome,
-      cached: result.cached,
+      shared: result.shared,
       ...(result.status !== undefined ? { status: result.status } : {}),
       ...(reason ? { reason } : {}),
     },

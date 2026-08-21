@@ -4,9 +4,10 @@ import { clipText, TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 // (same pattern as availability / limits). Some agents may only serve contacts that a system outside
 // the console knows about: the customers of a platform, the policyholders of an insurer, the patients
 // of a clinic. Leaving that to the prompt is not a gate, so the runtime asks that system itself,
-// before the turn, with the contact's phone from Chatwoot, and only a positive answer lets the model
-// run (docs/contact-auth.md). Off by default; every other field clamps rather than throws, so a
-// malformed write can never break the webhook.
+// before the turn, with the identity Chatwoot mirrored for the contact, and only a positive answer
+// lets the model run (docs/contact-auth.md). Every incoming message is re-checked: the endpoint owns
+// the verdict, so revoking there takes effect on the customer's next message. Off by default; every
+// other field clamps rather than throws, so a malformed write can never break the webhook.
 
 export type ContactAuthMethod = "GET" | "POST";
 // A lista existe para o schema do MCP não repetir os dois valores por conta própria: o par
@@ -24,9 +25,15 @@ export interface ContactAuthConfig {
   // header / query). null = the endpoint needs none.
   credentialRef: string | null;
   timeoutMs: number;
-  // How long a verdict (allowed AND denied) is reused for the same contact before asking again.
-  // 0 = ask on every message.
-  cacheTtlSeconds: number;
+  // Cooldown on the NOTICES for a refused message (the customer copy and the operator note), never
+  // on the verdict: the endpoint is asked on every message regardless. Without it, a burst of five
+  // messages from a refused contact with handoff off would be answered with the same copy five
+  // times. 0 = notify on every refused message.
+  noticeCooldownSeconds: number;
+  // POST only: forward the triggering message's text as `message.text`, so an endpoint can accept
+  // something the customer sends to unlock themselves (an access code, a protocol number). Read as
+  // false under GET, where the text would land on the query string and in access logs.
+  includeMessageText: boolean;
   // What the customer receives when the endpoint denies them. null = say nothing.
   denyMessage: string | null;
   // Whether a refused conversation is opened for humans (the handoff_to_human mechanics), and the
@@ -43,7 +50,8 @@ export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
   method: "GET",
   credentialRef: null,
   timeoutMs: 5000,
-  cacheTtlSeconds: 300,
+  noticeCooldownSeconds: 60,
+  includeMessageText: false,
   denyMessage: null,
   handoffEnabled: true,
   handoffTeamId: null,
@@ -51,7 +59,7 @@ export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
 
 export const CONTACT_AUTH_TIMEOUT_MIN_MS = 1000;
 export const CONTACT_AUTH_TIMEOUT_MAX_MS = 10_000;
-export const CONTACT_AUTH_CACHE_TTL_MAX_SECONDS = 86_400;
+export const CONTACT_AUTH_NOTICE_COOLDOWN_MAX_SECONDS = 3600;
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
@@ -96,12 +104,14 @@ export function readContactAuthConfig(settings: unknown): ContactAuthConfig {
     typeof b.denyMessage === "string"
       ? clipText(b.denyMessage.trim(), TEMPLATE_MESSAGE_MAX)
       : "";
+  const method: ContactAuthMethod =
+    str(b.method)?.toUpperCase() === "POST" ? "POST" : "GET";
   return {
     // Strict boolean, like the availability switch: a malformed write can only ever leave the gate
     // off, never start refusing customers nobody asked it to.
     enabled: b.enabled === true,
     url: readContactAuthUrl(b.url),
-    method: str(b.method)?.toUpperCase() === "POST" ? "POST" : "GET",
+    method,
     credentialRef: str(b.credentialRef),
     timeoutMs: clampInt(
       b.timeoutMs,
@@ -109,12 +119,15 @@ export function readContactAuthConfig(settings: unknown): ContactAuthConfig {
       CONTACT_AUTH_TIMEOUT_MIN_MS,
       CONTACT_AUTH_TIMEOUT_MAX_MS,
     ),
-    cacheTtlSeconds: clampInt(
-      b.cacheTtlSeconds,
-      CONTACT_AUTH_DEFAULTS.cacheTtlSeconds,
+    noticeCooldownSeconds: clampInt(
+      b.noticeCooldownSeconds,
+      CONTACT_AUTH_DEFAULTS.noticeCooldownSeconds,
       0,
-      CONTACT_AUTH_CACHE_TTL_MAX_SECONDS,
+      CONTACT_AUTH_NOTICE_COOLDOWN_MAX_SECONDS,
     ),
+    // NOTE: Read as false whenever the method is GET, not refused: the stored flag survives a
+    // method round-trip, but a GET request never carries customer text.
+    includeMessageText: method === "POST" && b.includeMessageText === true,
     denyMessage: deny || null,
     handoffEnabled:
       typeof b.handoffEnabled === "boolean"

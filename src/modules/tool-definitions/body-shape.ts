@@ -23,11 +23,12 @@ function describe(body: Record<string, unknown>): string {
 }
 
 // Returns null when the body is one the runtime executes, otherwise the reason, written for whoever
-// authored it. Absent and `{}` are legitimate: both mean "no body configuration".
+// authored it. Absent and `{}` are legitimate, and they do NOT mean "no body": both select the legacy
+// `fields` branch, which assembles the payload from the declared input fields.
 export function unsupportedBodyShape(body: unknown): string | null {
   if (body === undefined || body === null) return null;
   if (typeof body !== "object" || Array.isArray(body)) {
-    return 'body must be an object: {"mode":"kv","rows":[…]}, {"mode":"raw","raw":"…"}, or {} for none.';
+    return 'body must be an object: {"mode":"kv","rows":[…]}, {"mode":"raw","raw":"…"}, or {} to keep the legacy assembly from the declared input fields.';
   }
   const obj = body as Record<string, unknown>;
   if (Object.keys(obj).length === 0) return null;
@@ -38,7 +39,8 @@ export function unsupportedBodyShape(body: unknown): string | null {
     `body must declare a mode the runtime executes — got ${describe(obj)}. ` +
     'Use {"mode":"kv","rows":[{"key":"…","value":"…"}]} for a flat payload, or {"mode":"raw","raw":"…"} ' +
     "for anything else. A body written as a plain JSON object is not a template: it is discarded, and " +
-    "the request goes out assembled from the declared input fields instead. For a nested payload, " +
+    "the request goes out assembled from the declared input fields instead — which is also what {} " +
+    "does, so {} is not a way to send nothing. For a nested payload, " +
     'write it with mode "raw" — e.g. {"mode":"raw","raw":"{\\"contact\\":{\\"email\\":\\"{{contact_email}}\\"}}"} ' +
     "— where placeholders interpolate at any depth."
   );

@@ -7,8 +7,10 @@ import { unsupportedBodyShape } from "@/modules/tool-definitions/body-shape";
 // failing a whole bundle. All three ask this one function.
 
 const CASES: { name: string; body: unknown; ok: boolean }[] = [
-  // NOTE: Legitimate absences. `{}` is what the code itself writes for "no body configuration", so
-  // refusing it would refuse every GET tool the console has ever saved.
+  // NOTE: legitimate absences — and NOT "no body". `{}` is what the code itself writes when nothing
+  // is configured, and it selects the legacy `fields` branch (the payload is assembled from the
+  // declared input fields; pinned in tests/graph/tools-http.test.ts). Refusing it would refuse
+  // every tool the console has ever saved.
   { name: "absent", body: undefined, ok: true },
   { name: "null", body: null, ok: true },
   { name: "empty object", body: {}, ok: true },

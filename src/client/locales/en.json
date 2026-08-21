@@ -849,7 +849,7 @@
       "hoursNotFound": "Business hours \"{{name}}\" were not found here, so they were left unset.",
       "hoursReused": "Business hours \"{{name}}\" already existed and were reused; check the schedule is right.",
       "httpGrantNotFound": "Tool \"{{name}}\" was not found, so its grant was skipped.",
-      "httpToolBodyIgnored": "Tool \"{{name}}\" had a request body in a shape this version does not send, so it was cleared. Set it again under Body.",
+      "httpToolBodyIgnored": "Tool \"{{name}}\" had a request body in a shape this version does not send, so the request goes out assembled from the tool's input fields. Open it under Body to set the payload you want.",
       "httpToolCredNotFound": "Tool \"{{tool}}\" credential \"{{credential}}\" was not found here, so it was left unset.",
       "httpToolReused": "Tool \"{{name}}\" already existed and was reused; check it is right.",
       "integrationGrantNotFound": "Integration \"{{name}}\" was not found, so its grant was skipped.",

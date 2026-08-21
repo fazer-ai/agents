@@ -1100,8 +1100,10 @@ async function createMissingComponents(
     // inputSchema / single-brace placeholders.
     // A body shape the runtime does not execute is DROPPED rather than refused, the same trade the
     // expectedStatuses line below makes: refusing would fail a whole bundle over a body that was
-    // already inert on the instance that exported it. The warning is what makes the drop visible,
-    // and storing `{}` is what stops the row from holding something nothing reads (issue #150).
+    // already inert on the instance that exported it. `{}` is the canonical spelling of what the
+    // row was ALREADY doing — both it and the unsupported shape select the legacy `fields` branch —
+    // so the request is unchanged and only the storage stops holding a shape nothing executes. The
+    // warning says that, rather than claiming the body was cleared (issue #150).
     const badBody = unsupportedBodyShape(tdef.body);
     if (badBody) {
       warnings.push({

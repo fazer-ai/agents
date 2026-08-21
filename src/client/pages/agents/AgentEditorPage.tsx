@@ -1582,7 +1582,7 @@ function AgentEditor() {
       case "httpToolBodyIgnored":
         return t(
           "editor.importWarning.httpToolBodyIgnored",
-          'Tool "{{name}}" had a request body in a shape this version does not send, so it was cleared. Set it again under Body.',
+          'Tool "{{name}}" had a request body in a shape this version does not send, so the request goes out assembled from the tool\'s input fields. Open it under Body to set the payload you want.',
           p,
         );
       case "httpToolReused":

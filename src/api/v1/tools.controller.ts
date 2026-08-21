@@ -98,7 +98,7 @@ export const writeBody = t.Object({
   body: t.Optional(
     t.Record(t.String(), t.Unknown(), {
       description:
-        'Request body. `{"mode":"kv","rows":[{"key":…,"value":…}]}` assembles a flat JSON payload from the rows; `{"mode":"raw","raw":"…"}` sends the template as written, which is how a NESTED payload is built. In both, {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time, and single-brace {param} is normalized when it matches a declared input field or context variable. `{}` means no body. Any other shape is refused: a plain JSON object reads like a template and is not one — it would be discarded and the request sent assembled from the declared input fields instead.',
+        'Request body. `{"mode":"kv","rows":[{"key":…,"value":…}]}` assembles a flat JSON payload from the rows; `{"mode":"raw","raw":"…"}` sends the template as written, which is how a NESTED payload is built. In both, {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time, and single-brace {param} is normalized when it matches a declared input field or context variable. `{}` (or absent) is the legacy fallback and does NOT mean an empty request: it assembles the payload from the declared input fields. For an empty JSON payload use `{"mode":"kv","rows":[]}`; for no body content at all, `{"mode":"raw","raw":""}`. Any other shape is refused: a plain JSON object reads like a template and is not one — it would be discarded and the request sent assembled from the declared input fields instead.',
     }),
   ),
   credentialRef: t.Optional(

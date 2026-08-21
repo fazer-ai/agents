@@ -918,6 +918,32 @@ describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_sch
     });
   });
 
+  // NOTE: the three "empty" spellings send three different things, and a body-shape refusal that
+  // called `{}` "no body" got the first one wrong (issue #150). Pinned together so the contract the
+  // REST/MCP descriptions state has something to be checked against.
+  test("the three empty body spellings are not interchangeable", async () => {
+    const cases: [unknown, string][] = [
+      // `{}` is the legacy fallback, NOT an empty request.
+      [{}, JSON.stringify({ valor: "TESTE123" })],
+      [{ mode: "kv", rows: [] }, "{}"],
+      [{ mode: "raw", raw: "" }, ""],
+    ];
+    for (const [body, want] of cases) {
+      const captured: Captured = {};
+      const tool = buildHttpTool(
+        def({
+          method: "POST",
+          urlTemplate: `https://${PUBLIC}/v1/x`,
+          inputSchema: JSON_SCHEMA_INPUT,
+          body,
+        }),
+        { resolveCredential: async () => null, fetchImpl: stubFetch(captured) },
+      );
+      await tool.invoke({ valor: "TESTE123" });
+      expect(captured.init?.body ?? "").toBe(want);
+    }
+  });
+
   test("single-brace context var resolves in the URL", async () => {
     const captured: Captured = {};
     const tool = buildHttpTool(

@@ -93,7 +93,11 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         competitors: gr.competitors,
         customPolicy: gr.customPolicy,
         systemPrompt: direction === "output" ? p.systemPrompt : undefined,
-        customerMessage: judgesRelevance ? p.customerMessage : undefined,
+        // Passed as-is: `customerMessageForReview` refuses to let it travel unless the direction is
+        // output AND the relevance check is on, and the line above is what decides the second half.
+        // Repeating the condition here was tested by removing it, and nothing failed — one decision
+        // written twice, two lines apart, where only one of the two can ever be reached first.
+        customerMessage: p.customerMessage,
         generationPrompt:
           dir.action === "generated" ? dir.generationPrompt : undefined,
       },

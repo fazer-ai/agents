@@ -1259,6 +1259,81 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // The window this change opened, and the reason ownership is asked again rather than remembered.
+  // Moderation is a model round-trip, so the ownership answered before generation is seconds old by
+  // the time the message goes out — and the post-actions that follow it RESOLVE the conversation.
+  // The takeover happens inside the judge's own call, which is a real ordering rather than a race:
+  // the guardrail model is what runs between the two reads.
+  test("a human who takes over while the guardrail reads is not messaged over, nor resolved", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9966, null);
+        const s = stub();
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9966`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    // The takeover lands here, inside the judge's own call: between the ownership
+                    // read taken before the send and the one taken after moderation.
+                    await suDb.conversation.update({
+                      where: {
+                        tenantId_chatwootInstanceId_chatwootConversationId: {
+                          tenantId,
+                          chatwootInstanceId: instanceId,
+                          chatwootConversationId: 9966,
+                        },
+                      },
+                      data: { assigneeType: "User", status: "open" },
+                    });
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({
+                    responses: ["Ainda por aí?"],
+                  })) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("noted");
+        // Nothing reached the customer, and the conversation the human now owns was not closed.
+        expect(s.messages).toEqual([]);
+        expect(s.resolved).toEqual([]);
+        expect(s.labelSets).toEqual([]);
+      },
+    );
+  });
+
   // The suppressing action on the proactive path. A follow-up nobody asked for, that the policy then
   // refuses, is simply not sent — and the deterministic post-actions still fire, exactly as on the
   // branch where the agent chose to stay quiet.

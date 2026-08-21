@@ -164,6 +164,51 @@ export class HandoffThenThrowModel {
   }
 }
 
+// Sets the customer's voice preference and only then hands off, both in the same turn. The pair that
+// tells a closing line read from the pre-turn snapshot apart from one read at delivery time: the
+// preference the customer just stated is in the database, and nowhere else yet.
+export class SetVoiceThenHandoffModel {
+  constructor(
+    private preference: "audio" | "text" | "default",
+    private customerMessage: string,
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage("");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1)
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "set_voice_preference",
+                args: { preference: self.preference },
+                id: "call_voice",
+              },
+            ],
+          });
+        if (n === 2)
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "handoff_to_human",
+                args: { customerMessage: self.customerMessage },
+                id: "call_handoff",
+              },
+            ],
+          });
+        return new AIMessage("");
+      },
+    };
+  }
+}
+
 // Calls send_image once (a product photo the agent already has the URL for), then answers with text.
 // Mirrors ResolveThenReplyModel: the point is the ORDER of what reaches Chatwoot, not the content.
 export class SendImageThenReplyModel {

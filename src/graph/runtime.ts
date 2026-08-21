@@ -483,6 +483,29 @@ export async function runLoadedTurn(
   // Two call sites, and they are exclusive: the failure path always rethrows, so the normal one is
   // unreachable after it. Anything that adds a third owns the at-most-once question, because a
   // promise delivered twice is the duplicate #158 was about.
+  // The contact's voice preference as of NOW. `set_voice_preference` writes it DURING the invoke, so
+  // the pre-turn snapshot is stale for a customer who asked for audio in the very turn that handed
+  // them over — the reply path already rereads it (inside the ownership recheck below, in that
+  // read's transaction), and the closing line has the same claim to the fresh value.
+  //
+  // Best-effort, which is the difference from that one: this read sits on the path that must not
+  // fail. The promised sentence has to leave even when the database will not answer, so a failure
+  // falls back to the snapshot instead of ending the turn.
+  const currentVoiceReply = async (): Promise<boolean | null> => {
+    if (loaded.contactDbId == null) return loaded.contactVoiceReply;
+    try {
+      const c = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.contact.findUnique({
+          where: { id: loaded.contactDbId as bigint },
+          select: { voiceReply: true },
+        }),
+      );
+      return c?.voiceReply ?? null;
+    } catch {
+      return loaded.contactVoiceReply;
+    }
+  };
+
   const deliverHandoffPromise = async (): Promise<void> => {
     if (!handoffAnsweredTheTurn(handoffState)) return;
     const line = handoffState.customerMessage as string;
@@ -490,10 +513,10 @@ export async function runLoadedTurn(
       const guarded = await runGuardrail("output", line);
       const screened = guarded ? guarded.reply : line;
       if (screened === null) return;
-      // The pre-turn voice preference, not the fresh one: reading it live is one of the failures
-      // this delivery had to move above. A customer who asked for audio DURING this same turn and
-      // was handed off in it reads the closing line instead of hearing it.
-      deliveredBalloons = await deliverText(screened, loaded.contactVoiceReply);
+      deliveredBalloons = await deliverText(
+        screened,
+        await currentVoiceReply(),
+      );
     } catch (e) {
       // Best-effort, the semantics the line had while the tool sent it. The transfer succeeded, so
       // branding the turn as errored would stamp lastError and announce "a human has to take over"

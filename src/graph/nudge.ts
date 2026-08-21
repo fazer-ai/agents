@@ -779,16 +779,21 @@ export async function runAgentNudge(
   // these checks exist for, and it does not reach the one conversation we just handed to one. Every
   // OTHER kind of proactive text is still decided by them.
   const handedOff = handoffAnsweredTheTurn(handoffState);
-  let canMessagePost: boolean;
-  if (handedOff) {
-    canMessagePost = true;
-  } else if (params.requireLiveBotOwnership) {
-    const post = await probeLiveOwnership();
-    if (post === "unavailable") return "live-unavailable";
-    if (post === "not-owned") return "stale";
-    canMessagePost = true;
-  } else {
-    canMessagePost = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+
+  // Asked once before the send and once after moderation, which is why it is a closure and not two
+  // reads: the answer has to be produced the same way both times, or the second one would be a
+  // different question wearing the first one's name. Each mode keeps its own semantics — the
+  // live-gated path re-probes Chatwoot itself (the pre-invoke GET only covers the window BEFORE the
+  // model ran), the event-nudge path reads the mirror.
+  const botStillOwnsIt = async (): Promise<
+    "ours" | "not-ours" | "unavailable"
+  > => {
+    if (params.requireLiveBotOwnership) {
+      const post = await probeLiveOwnership();
+      if (post === "unavailable") return "unavailable";
+      return post === "not-owned" ? "not-ours" : "ours";
+    }
+    const ours = await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
         where: {
           tenantId_chatwootInstanceId_chatwootConversationId: {
@@ -808,6 +813,21 @@ export async function runAgentNudge(
         { ourAgentBotId: cfg.agentBotId },
       );
     });
+    return ours ? "ours" : "not-ours";
+  };
+
+  let canMessagePost: boolean;
+  if (handedOff) {
+    canMessagePost = true;
+  } else {
+    const owned = await botStillOwnsIt();
+    // Fail closed: nothing has been posted yet, so a probe that could not run costs a retry and
+    // nothing else.
+    if (owned === "unavailable") return "live-unavailable";
+    // The live-gated caller asked for certainty and gets an abort; an event nudge downgrades to a
+    // private note instead, which is the shape it has always had.
+    if (owned === "not-ours" && params.requireLiveBotOwnership) return "stale";
+    canMessagePost = owned === "ours";
   }
 
   // Deterministic post-actions applied by the SYSTEM whenever the step fires and the bot still owns
@@ -876,24 +896,37 @@ export async function runAgentNudge(
 
   // Message the customer ONLY when the bot still owns the conversation AND we were in message mode;
   // otherwise it becomes a private note (never message over a human).
-  if (canMessagePre && canMessagePost) {
-    // WhatsApp 24h service window: free-form only within it. Outside → an approved template (HSM) if
-    // configured, else fall through to a private note (never a free-form message WhatsApp rejects).
-    const mode = proactiveSendMode(
-      cfg.serviceWindowConfig,
-      loaded.lastInboundAt,
-      new Date(),
-      { channelType: loaded.channelType, provider: loaded.provider },
-    );
-    if (mode === "freeform") {
-      // The one branch whose text the CUSTOMER reads, so the one branch that is screened. A failed
-      // send still throws here: nothing has been done to the conversation that a retry cannot
-      // repeat, so the job should run again rather than swallow the miss.
-      const screened = await screenOutput(reply);
-      if (screened === null) {
-        await applyPostActions();
-        return "silent";
-      }
+  // WhatsApp 24h service window: free-form only within it. Outside → an approved template (HSM) if
+  // configured, else fall through to a private note (never a free-form message WhatsApp rejects).
+  const mode = proactiveSendMode(
+    cfg.serviceWindowConfig,
+    loaded.lastInboundAt,
+    new Date(),
+    { channelType: loaded.channelType, provider: loaded.provider },
+  );
+
+  // Screened BEFORE the last word on ownership, so the ownership answer is the newer of the two.
+  // Moderation is a model round-trip with a 15s ceiling, and it was added to this path by the same
+  // change that reads this comment: the ownership taken before generation used to be consumed
+  // immediately, and now it would be consumed seconds later — by the send AND by the post-actions,
+  // which resolve the conversation. Closing a thread a human took over during those seconds is not
+  // a message landing late, it is the human's conversation being shut.
+  //
+  // A completed transfer is exempt, as it is everywhere else here: its closing line left through
+  // `deliverPromisedLine` above and never reaches this branch.
+  if (canMessagePre && canMessagePost && mode === "freeform") {
+    // The one branch whose text the CUSTOMER reads, so the one branch that is screened. A failed
+    // send still throws here: nothing has been done to the conversation that a retry cannot repeat,
+    // so the job should run again rather than swallow the miss.
+    const screened = await screenOutput(reply);
+    if (screened === null) {
+      await applyPostActions();
+      return "silent";
+    }
+    const owned = await botStillOwnsIt();
+    if (owned === "unavailable") return "live-unavailable";
+    if (owned === "not-ours" && params.requireLiveBotOwnership) return "stale";
+    if (owned === "ours") {
       await client.sendMessage(conversationId, screened);
       logger.info(
         "agentNudge messaged: conv=%s source=%s",
@@ -904,6 +937,12 @@ export async function runAgentNudge(
       await applyPostActions();
       return "messaged";
     }
+    // A human arrived while the judge was reading. Everything below already knows what to do with a
+    // conversation that is no longer ours, so this only has to stop claiming it is.
+    canMessagePost = false;
+  }
+
+  if (canMessagePre && canMessagePost) {
     if (mode === "template") {
       const payload = buildTemplatePayload(
         cfg.serviceWindowConfig,

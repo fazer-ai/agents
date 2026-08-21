@@ -34,6 +34,7 @@ import {
   SendImageOnlyModel,
   SendImageThenHandoffModel,
   SendImageThenReplyModel,
+  SetVoiceThenHandoffModel,
 } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -1245,7 +1246,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
     });
 
-  async function withTtsMirror(fn: () => Promise<void>) {
+  async function withTtsMode(
+    mode: "mirror" | "preference",
+    fn: () => Promise<void>,
+  ) {
     const agent = await suDb.agent.findFirstOrThrow({
       where: { tenantId },
       select: { id: true },
@@ -1260,7 +1264,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         settings: {
           split: { enabled: false },
           tts: {
-            mode: "mirror",
+            mode,
             provider: "openai",
             credentialRef: `vault:${key.id}`,
           },
@@ -1276,6 +1280,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
     }
   }
+
+  const withTtsMirror = (fn: () => Promise<void>) => withTtsMode("mirror", fn);
+  const withTtsPreference = (fn: () => Promise<void>) =>
+    withTtsMode("preference", fn);
 
   function audioClient(calls: Array<[string, number]>) {
     return async () =>
@@ -1390,6 +1398,63 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(calls).toEqual([
         ["toggleStatus", 915],
         ["sendAudioMessage", 915],
+      ]);
+    });
+  });
+
+  // The closing line is customer-facing text, so it is delivered the way this customer asked to be
+  // spoken to — including when they asked DURING the turn that transferred them. The preference the
+  // tool just wrote is in the database and nowhere else, so a delivery reading the pre-turn snapshot
+  // answers the customer they were before they spoke.
+  test("a handoff's closing line honours a voice preference set in the same turn", async () => {
+    await withTtsPreference(async () => {
+      const contact = await suDb.contact.create({
+        data: {
+          tenantId,
+          chatwootContactId: 5561,
+          name: "Quer Áudio",
+          voiceReply: false,
+        },
+        select: { id: true },
+      });
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 958,
+          status: "pending",
+          contactId: contact.id,
+          threadId: `${tenantId}:${instanceId}:958`,
+          lastEventAt: new Date(),
+        },
+      });
+      const calls: Array<[string, number]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 958 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new SetVoiceThenHandoffModel(
+              "audio",
+              "Vou te passar para um atendente.",
+            ) as unknown as BaseChatModel,
+          makeClient: audioClient(calls),
+          checkpointer: new MemorySaver(),
+          ttsFetch: (async () =>
+            new Response(new Uint8Array([1, 2, 3]), {
+              status: 200,
+              headers: { "Content-Type": "audio/mpeg" },
+            })) as unknown as typeof fetch,
+        },
+      });
+      expect(outcome).toBe("posted");
+      // Spoken, not written: the row said `false` when the turn started and `true` when it ended.
+      expect(calls).toEqual([
+        ["toggleStatus", 958],
+        ["sendAudioMessage", 958],
       ]);
     });
   });

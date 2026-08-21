@@ -4,12 +4,20 @@ Some agents may only serve contacts that a system **outside** the console knows 
 of a platform, the policyholders of an insurer, the patients of a clinic. Writing "only help
 registered customers" into the prompt is not a gate: the model can be talked around, and every
 attempt still costs a turn. This feature is the deterministic version: **before** the turn, the
-runtime asks an operator-configured endpoint whether the contact may be served, caches the verdict,
-and only a positive answer lets the model run. Everything else (an explicit denial, an endpoint
-failure, a contact with no phone) ends in **no turn** (fail-closed), with the operator told why.
+runtime asks an operator-configured endpoint whether the contact may be served, and only a positive
+answer lets the model run. Everything else (an explicit denial, an endpoint failure, a contact with
+no identifiers) ends in **no turn** (fail-closed), with the operator told why.
+
+**Every incoming message is re-checked.** No verdict is cached: the endpoint owns the answer, so a
+revocation on the operator's side takes effect on the contact's very next message, and an unlock
+(below) is honored the moment it happens. The flip side is sizing: the endpoint receives **one
+request per incoming message** on gated inboxes (plus one per proactive follow-up), and must be
+provisioned for that rate. Concurrent deliveries for one contact are single-flighted into one
+request; sequential messages are not.
 
 Lives in `src/modules/contact-auth/` (`settings.ts` the config reader, `check.ts` the request +
-decision table, `cache.ts` the verdict cache, `service.ts` the orchestration both callers share).
+decision table, `state.ts` the single-flight + notice cooldown, `service.ts` the orchestration both
+callers share).
 
 ## Configuration (`agent.settings.contactAuth`)
 
@@ -17,28 +25,55 @@ Per agent, on the shared behavior surface (editor Behavior tab → "Contact auth
 `PATCH /v1/agents/:id`, MCP `agent_settings_set`). Defaults in parentheses; every field clamps on
 read, so a malformed bag can never break the webhook.
 
-| Field             | Default | Meaning                                                                   |
-| ----------------- | ------- | ------------------------------------------------------------------------- |
-| `enabled`         | `false` | The gate as a whole. Strict boolean: anything else reads as off.          |
-| `url`             | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
-| `method`          | `GET`   | `GET` or `POST` (the two request shapes below).                           |
-| `credentialRef`   | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). |
-| `timeoutMs`       | `5000`  | Clamped 1000-10000. Past it the check counts as an error.                 |
-| `cacheTtlSeconds` | `300`   | Clamped 0-86400; how long a verdict (allowed AND denied) is reused for the same contact. 0 = ask on every message. |
-| `denyMessage`     | `null`  | Fixed copy the CUSTOMER receives on a denial (≤ `TEMPLATE_MESSAGE_MAX`). `null` = say nothing. |
-| `handoffEnabled`  | `true`  | Open a refused conversation for humans (the `handoff_to_human` mechanics: bot-token `toggle_status open`). |
-| `handoffTeamId`   | `null`  | Chatwoot team assigned after the open (bot-token `assignments`). `null` = inbox routing. Flat beside `handoffEnabled` for the mergeBehaviorSettings one-level-merge reason the tts block documents. |
+| Field                   | Default | Meaning                                                             |
+| ----------------------- | ------- | ------------------------------------------------------------------- |
+| `enabled`               | `false` | The gate as a whole. Strict boolean: anything else reads as off.    |
+| `url`                   | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
+| `method`                | `GET`   | `GET` or `POST` (the two request shapes below).                     |
+| `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). |
+| `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error.           |
+| `noticeCooldownSeconds` | `60`    | Clamped 0-3600. Cooldown on the NOTICES for a refused message (the customer copy and the operator note, per conversation), never on the verdict: the endpoint is asked on every message regardless. 0 = notify on every refused message. |
+| `includeMessageText`    | `false` | POST only (read as false under GET): forward the triggering message's text as `message.text`, so the endpoint can accept an unlock code the customer sends. |
+| `denyMessage`           | `null`  | Fixed copy the CUSTOMER receives on a denial (≤ `TEMPLATE_MESSAGE_MAX`). `null` = say nothing. |
+| `handoffEnabled`        | `true`  | Open a refused conversation for humans (the `handoff_to_human` mechanics: bot-token `toggle_status open`). |
+| `handoffTeamId`         | `null`  | Chatwoot team assigned after the open (bot-token `assignments`). `null` = inbox routing. Flat beside `handoffEnabled` for the mergeBehaviorSettings one-level-merge reason the tts block documents. |
 
 ## Request / response contract
 
-The identity is **always trusted context**, the phone Chatwoot mirrored for the contact
-(`Contact.phone`), never an argument the model chose and never anything the customer typed.
+The request separates two kinds of data, and the separation IS the contract:
 
-- **GET**: `phone=<E.164>` and `contact_id=<Chatwoot contact id>` are appended to the configured
-  URL's query string (an existing query survives; `contact_id` is omitted on the rare mirror row
-  that never learned it).
-- **POST**: JSON body `{ "phone", "contactId", "conversationId", "inboxId" }`
-  (`content-type: application/json`).
+- **`contact` is trusted context**: what Chatwoot mirrored for the contact (never an argument the
+  model chose). `phone` is the number the channel attributed; `email` and `name` are the mirrored
+  columns; `identifier` is the Chatwoot contact `identifier`, i.e. **the operator's own id for this
+  customer**, the strongest key an endpoint can receive; `chatwootContactId` is Chatwoot's row id
+  (context only, it says nothing to the operator's system).
+- **`message` is what the customer typed.** It is the one field the customer controls. An endpoint
+  must never read identity out of it; its use is an **unlock**: "send your access code to be
+  served", where the endpoint validates the code against its own records.
+
+Shapes:
+
+- **GET**: the short scalar identifiers are appended to the configured URL's query string (an
+  existing query survives): `phone`, `contact_id`, `identifier`, `email`, each omitted when the
+  mirror does not hold it. No `name` and no message text on GET: a query string lands in the
+  endpoint's access logs.
+- **POST** (`content-type: application/json`):
+
+  ```jsonc
+  {
+    "contact": {
+      "phone": "+55...",            // or null
+      "name": "...",                // or null
+      "email": "...",               // or null
+      "identifier": "client-4821",  // or null: the operator's own id
+      "chatwootContactId": 1234     // or null
+    },
+    "conversation": { "id": 987, "inboxId": 12, "channel": "whatsapp" },
+    "message": { "text": "..." }    // only with includeMessageText, capped at 4000 chars
+  }
+  ```
+
+  `conversation.channel` is the inbox's channel as a slug (`whatsapp`, `web_widget`, `api`, ...).
 - **Answer**: a 2xx with JSON `{ "authorized": boolean, "reason"?: string }`. A 2xx without the
   boolean is an **error**, not a pass. `401`/`403`/`404` read as **denied** (so an endpoint may
   answer REST-style without a body). Any other status, a timeout, a network failure, a redirect
@@ -46,8 +81,12 @@ The identity is **always trusted context**, the phone Chatwoot mirrored for the 
   where `SSRF_ALLOW_PRIVATE_TARGETS` applies, like HTTP tools), an unresolvable/pending credential,
   or a body over 64 KB is an **error**.
 - `reason` must be a short **code** (`/^[a-z0-9][a-z0-9._-]{0,63}$/i`). Prose is dropped before it
-  reaches the log, the cache or the operator note, because free text from the endpoint could quote
-  the customer.
+  reaches the log or the operator note, because free text from the endpoint could quote the
+  customer.
+
+A contact whose mirror holds **no phone, no email and no identifier** is `no_identity`: there is
+nothing to ask the endpoint about, and fail-closed means nobody unidentified is served.
+`chatwootContactId` alone does not count as identity.
 
 ## Where the gate runs
 
@@ -55,50 +94,67 @@ The identity is **always trusted context**, the phone Chatwoot mirrored for the 
 pre-turn gates, in this order: redirect cross-link → test-mode (`/teste`, `/reset`) → WhatsApp→chat
 redirect → availability → **contact auth**. Last on purpose: a conversation an earlier gate already
 silenced costs no authorization call. It runs only for a new incoming message on an enabled,
-agent-bound inbox. Consuming outcomes advance the handled watermark and the message is folded into
-the memory thread like any other unanswered one.
+agent-bound inbox that the bot still owns (the attribution gate runs first, so a conversation in
+human hands never triggers a check). Consuming outcomes advance the handled watermark and the
+message is folded into the memory thread like any other unanswered one.
 
 - **allowed** → the delivery proceeds (debounce / turn).
 - **denied** → the `denyMessage` (when set) goes to the customer under the same `stillOurs` fence and
   persona token every gate message uses; the conversation is opened for humans (+ team) when
   `handoffEnabled`; a pt-BR private note tells the operator, with the `reason` code when one came.
-- **error** → nothing to the customer, no handoff (it is transient by contract, see the cache), a
-  private note + a `warn` flow line. The next message after the short error TTL retries.
-- **no_identity** (contact with no phone) → nothing to the customer (the deny copy would mislead an
-  unidentified web visitor), but the conversation IS opened for humans when `handoffEnabled`: a
-  contact the gate can never authorize would otherwise stay pending and unanswered forever.
+- **error** → nothing to the customer, no handoff (transient by contract: the next message retries),
+  a private note + a `warn` flow line.
+- **no_identity** (no phone, email or identifier) → nothing to the customer (the deny copy would
+  mislead an unidentified web visitor), but the conversation IS opened for humans when
+  `handoffEnabled`: a contact the gate can never authorize would otherwise stay pending and
+  unanswered forever.
 
-Customer message, handoff and note fire only on a **fresh** verdict; while a verdict is cached the
-message is consumed silently. So a customer writing in a burst is told once, and `cacheTtlSeconds`
-also bounds how often they are told again.
+The verdict is per message; the **notices** are not. The customer copy and the private note sit
+behind `noticeCooldownSeconds` (per conversation, in process memory), so a refused burst is voiced
+once per window instead of once per message. The handoff is NOT behind the cooldown: it is
+idempotent, and a first attempt that failed must be retried. With handoff on the cooldown rarely
+matters (the open ends the bot's attribution and the gate stops running); with handoff off it is
+what keeps five messages from drawing five identical replies. Losing the cooldown on a restart
+merely repeats a notice.
+
+**The unlock flow** (`includeMessageText`, POST only): a denied customer is told, via `denyMessage`,
+how to unlock (for example "send the access code from your invoice"). Their next message arrives,
+the gate runs again (nothing was cached), and the endpoint now sees `message.text` carrying the
+code: it validates the code against its own records, links the contact, answers
+`{ "authorized": true }`, and the turn runs. No special case in the runtime: it is just the next
+check.
 
 **Proactive nudge** (`runAgentNudge` in `src/graph/nudge.ts`): the same check before any tool or
 model work: a follow-up is a turn the agent starts, and a contact the reactive gate would refuse
 must not be reached out to either. Denied/error/no-identity all end as the `silent` outcome (no
-note downgrade: the nudge's text was written FOR the customer), with the same flow line.
+note downgrade: the nudge's text was written FOR the customer), with the same flow line. A nudge
+has no triggering message, so it never carries `message`.
 
 **Playground**: the gate does not run; there is no Chatwoot contact to ask about, and the
 playground exists to test the agent's own behavior.
 
-## Cache
+## In-process state (`state.ts`)
 
-In-memory, per process (single-replica invariant), keyed `${tenantId}:${agentId}:${contactDbId}` →
-verdict + expiry. Allowed, denied and no-identity verdicts live `cacheTtlSeconds`; an **error**
-lives 30 s whatever the TTL says, so an endpoint outage never silences a contact for the whole
-window. Concurrent checks for one contact are single-flighted (one request, followers share the
-verdict). Expiry is active: a rescheduled, unref'd sweep wakes at the earliest expiry
-(`sweepContactAuthCache` / `nextSweepDelayMs`, exported for tests). The cache stores ids and
-verdicts only, never the phone.
+Not a cache. Two things live here, both in memory (single-replica invariant), both harmless to
+lose on a restart:
+
+- **Single-flight** per `${tenantId}:${agentId}:${contactDbId}`: concurrent deliveries for one
+  contact coalesce into one request; the leader acts on the verdict, followers are consumed
+  silently. Dedupe of work in flight; nothing outlives the promise.
+- **Notice cooldown** per `${tenantId}:${agentId}:${conversationRowId}`: when a refusal was last
+  voiced. Swept actively (a rescheduled, unref'd timer wakes at the earliest lapse) and capped in
+  size. Stores ids and timestamps only.
 
 ## Observability
 
 One `contact_auth` flow line per evaluation (`src/modules/flowlog/stages.ts`), `detail` =
-`{ outcome: "allowed"|"denied"|"error"|"no_identity", cached, status?, reason? }`: enums, a
-boolean, a status and a slug; no PII (covered by `tests/modules/flowlog-detail-pii.test.ts`).
-Denied is `info` (ordinary operation); error and no-identity are `warn`, so alert channels page on
-inbox traffic. Errors deliberately do **not** stamp `Conversation.lastError`: the re-engage button
-that field offers replays the turn *without* re-running this gate, which is not the right retry for
-a refused contact; the retry here is the next message, after the error TTL.
+`{ outcome: "allowed"|"denied"|"error"|"no_identity", shared, status?, reason? }`: enums, a
+boolean (`shared` = this call was coalesced into another's request), a status and a slug; no PII
+(covered by `tests/modules/flowlog-detail-pii.test.ts`), and never the message text. Denied is
+`info` (ordinary operation); error and no-identity are `warn`, so alert channels page on inbox
+traffic. Errors deliberately do **not** stamp `Conversation.lastError`: the re-engage button that
+field offers replays the turn *without* re-running this gate, which is not the right retry for a
+refused contact; the retry here is simply the contact's next message.
 
 ## What this is NOT
 
@@ -106,7 +162,9 @@ a refused contact; the retry here is the next message, after the error TTL.
   it does not exchange the contact's identity for a token, vary HTTP-tool credentials per contact,
   or forward anything to the toolset. Tools keep their own credential model.
 - **Not an identity verification.** The phone is whatever WhatsApp/Chatwoot attributed to the
-  contact; the gate trusts the channel's identity, it does not prove it.
+  contact; the gate trusts the channel's identity, it does not prove it. `message.text` in
+  particular is customer-typed and must only ever be validated against the endpoint's own records
+  (an unlock code), never believed as identity.
 - **Not a spend firewall for media.** Eager STT/vision run before the gate (they feed the memory
   thread even for silenced messages), so a denied contact's voice note still gets transcribed.
   Known, accepted: the LLM turn is the cost the gate exists to stop.

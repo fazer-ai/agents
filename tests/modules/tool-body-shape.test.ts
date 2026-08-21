@@ -39,6 +39,46 @@ const CASES: { name: string; body: unknown; ok: boolean }[] = [
     ok: false,
   },
   { name: "unknown mode", body: { mode: "template", raw: "…" }, ok: false },
+
+  // NOTE: round 3 review, P1. A mode-only check accepted every one of these, and each loses the
+  // author's payload in silence — the half-conversion is the likeliest of them all, because the
+  // refusal above tells people to reach for mode "raw".
+  {
+    name: "raw with the old plain object still attached",
+    body: { mode: "raw", contact: { email: "{{contact_email}}" } },
+    ok: false,
+  },
+  {
+    name: "kv with the old plain object still attached",
+    body: { mode: "kv", rows: [], order_id: "{{order_id}}" },
+    ok: false,
+  },
+  {
+    name: "fields with keys it will never read",
+    body: { mode: "fields", order_id: "{{order_id}}" },
+    ok: false,
+  },
+  {
+    name: "raw whose raw is not a string",
+    body: { mode: "raw", raw: 1 },
+    ok: false,
+  },
+  {
+    name: "kv whose rows are not a list",
+    body: { mode: "kv", rows: {} },
+    ok: false,
+  },
+  {
+    name: "kv with a malformed row",
+    body: { mode: "kv", rows: [{ key: "a" }] },
+    ok: false,
+  },
+  {
+    name: "kv with a row carrying an extra key",
+    body: { mode: "kv", rows: [{ key: "a", value: "b", note: "c" }] },
+    ok: false,
+  },
+  { name: "raw with no raw at all", body: { mode: "raw" }, ok: true },
   { name: "non-string mode", body: { mode: 1 }, ok: false },
   { name: "array", body: [{ key: "a" }], ok: false },
   { name: "string", body: '{"a":1}', ok: false },
@@ -65,5 +105,18 @@ describe("tool body shape", () => {
   test("the refusal names what it got", () => {
     expect(unsupportedBodyShape({ mode: "template" })).toContain('"template"');
     expect(unsupportedBodyShape({ contact: 1, order: 2 })).toContain("contact");
+  });
+
+  // NOTE: the half-conversion refusal has to name the keys being dropped, or the author reads it as
+  // a complaint about the mode they just fixed.
+  test("a half-converted body names the keys that would be lost", () => {
+    const reason = unsupportedBodyShape({
+      mode: "raw",
+      contact: { email: "{{e}}" },
+      order_id: "{{o}}",
+    });
+    expect(reason).toContain("contact");
+    expect(reason).toContain("order_id");
+    expect(reason).toContain("dropped");
   });
 });

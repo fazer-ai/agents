@@ -2,24 +2,45 @@
 //
 // `parseBody` (src/graph/tools/http.ts) executes three: "kv" assembles JSON from explicit rows,
 // "raw" sends an interpolated template, and absent/"fields" assembles JSON from the declared input
-// fields. Anything else falls through to that last branch, which is why an unsupported shape was
-// never noticed: the request still went out, assembled from the field names, looking plausible and
-// carrying nothing the operator had written (issue #150).
+// fields. It reads a fixed set of keys and ignores every other, which is why an unsupported shape
+// was never noticed: the request still went out, assembled from the field names, looking plausible
+// and carrying nothing the operator had written (issue #150).
 //
-// The reported case is a body authored as a plain JSON object — `{"contact":{"email":"{{email}}"}}`
-// — which reads like a template and is not one. It was accepted by the write, stored, echoed back
-// by the dry-run preview and then discarded at invocation, so the only visible symptom was the
-// upstream API complaining about a field the operator could see in their own tool definition.
-// Checking the shape where it is authored is what turns that into an answer the author can act on.
+// The rule is therefore not "declare a known mode" but the stricter one: the body must be exactly an
+// executable shape, with NO key the runtime does not read. Both halves are load-bearing, and the
+// second is what catches a half-conversion. A body authored as a plain JSON object
+// (`{"contact":{"email":"{{email}}"}}`) reads like a template and is not one; the same object with
+// `mode: "raw"` bolted on is worse, because it declares a mode a mode-only check would accept while
+// `parseBody` sends an empty body and drops every key the author actually wrote. A key the runtime
+// does not read is a payload somebody believes they are sending.
 
-const KNOWN_MODES = ["kv", "raw", "fields"] as const;
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
 
-function describe(body: Record<string, unknown>): string {
-  const mode = body.mode;
-  if (mode !== undefined) return `mode ${JSON.stringify(mode)}`;
-  const keys = Object.keys(body);
-  const shown = keys.slice(0, 4).join(", ");
-  return `an object with no mode (keys: ${shown}${keys.length > 4 ? ", …" : ""})`;
+function extraKeys(obj: Record<string, unknown>, known: string[]): string[] {
+  return Object.keys(obj).filter((k) => !known.includes(k));
+}
+
+function rowsAreMalformed(rows: unknown): boolean {
+  if (!Array.isArray(rows)) return true;
+  return rows.some(
+    (r) =>
+      !isPlainObject(r) ||
+      typeof r.key !== "string" ||
+      typeof r.value !== "string" ||
+      extraKeys(r, ["key", "value"]).length > 0,
+  );
+}
+
+const SHAPES =
+  '{"mode":"kv","rows":[{"key":"…","value":"…"}]}, {"mode":"raw","raw":"…"}, or {} to keep the legacy assembly from the declared input fields';
+
+const NESTED_HINT =
+  'For a nested payload, use mode "raw" and write the JSON yourself — e.g. {"mode":"raw","raw":"{\\"contact\\":{\\"email\\":\\"{{contact_email}}\\"}}"} — where placeholders interpolate at any depth.';
+
+function dropped(mode: string, reads: string, extra: string[]): string {
+  return `body mode "${mode}" ${reads}, so ${extra.join(", ")} would be dropped without a trace. ${NESTED_HINT}`;
 }
 
 // Returns null when the body is one the runtime executes, otherwise the reason, written for whoever
@@ -27,21 +48,53 @@ function describe(body: Record<string, unknown>): string {
 // `fields` branch, which assembles the payload from the declared input fields.
 export function unsupportedBodyShape(body: unknown): string | null {
   if (body === undefined || body === null) return null;
-  if (typeof body !== "object" || Array.isArray(body)) {
-    return 'body must be an object: {"mode":"kv","rows":[…]}, {"mode":"raw","raw":"…"}, or {} to keep the legacy assembly from the declared input fields.';
+  if (!isPlainObject(body)) return `body must be an object: ${SHAPES}.`;
+  const keys = Object.keys(body);
+  if (keys.length === 0) return null;
+
+  if (body.mode === "raw") {
+    if (body.raw !== undefined && typeof body.raw !== "string") {
+      return 'body mode "raw" needs `raw` to be a string: the template is sent as written.';
+    }
+    const extra = extraKeys(body, ["mode", "raw"]);
+    return extra.length > 0
+      ? dropped("raw", "sends the `raw` template and nothing else", extra)
+      : null;
   }
-  const obj = body as Record<string, unknown>;
-  if (Object.keys(obj).length === 0) return null;
-  if (typeof obj.mode === "string" && KNOWN_MODES.includes(obj.mode as never)) {
-    return null;
+
+  if (body.mode === "kv") {
+    if (body.rows !== undefined && rowsAreMalformed(body.rows)) {
+      return 'body mode "kv" needs `rows` to be a list of {"key":"…","value":"…"}, both strings.';
+    }
+    const extra = extraKeys(body, ["mode", "rows"]);
+    return extra.length > 0
+      ? dropped(
+          "kv",
+          "assembles the payload from `rows` and nothing else",
+          extra,
+        )
+      : null;
   }
+
+  if (body.mode === "fields") {
+    const extra = extraKeys(body, ["mode"]);
+    return extra.length > 0
+      ? dropped(
+          "fields",
+          "assembles the payload from the declared input fields and nothing else",
+          extra,
+        )
+      : null;
+  }
+
+  const seen =
+    body.mode !== undefined
+      ? `mode ${JSON.stringify(body.mode)}`
+      : `an object with no mode (keys: ${keys.slice(0, 4).join(", ")}${keys.length > 4 ? ", …" : ""})`;
   return (
-    `body must declare a mode the runtime executes — got ${describe(obj)}. ` +
-    'Use {"mode":"kv","rows":[{"key":"…","value":"…"}]} for a flat payload, or {"mode":"raw","raw":"…"} ' +
-    "for anything else. A body written as a plain JSON object is not a template: it is discarded, and " +
-    "the request goes out assembled from the declared input fields instead — which is also what {} " +
-    "does, so {} is not a way to send nothing. For a nested payload, " +
-    'write it with mode "raw" — e.g. {"mode":"raw","raw":"{\\"contact\\":{\\"email\\":\\"{{contact_email}}\\"}}"} ' +
-    "— where placeholders interpolate at any depth."
+    `body must declare a mode the runtime executes — got ${seen}. Use ${SHAPES}. ` +
+    "A body written as a plain JSON object is not a template: it is discarded, and the request goes " +
+    "out assembled from the declared input fields instead — which is also what {} does, so {} is not " +
+    `a way to send nothing. ${NESTED_HINT}`
   );
 }

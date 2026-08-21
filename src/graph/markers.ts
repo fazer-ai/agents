@@ -19,7 +19,7 @@ import { type BaseMessage, HumanMessage } from "@langchain/core/messages";
 // words would be deleted without ever having been summarized. Metadata cannot be typed into a chat.
 
 const MARKER_KWARG = "fazerMarker";
-type SystemMarker = "divider" | "memory_head" | "nudge";
+type SystemMarker = "divider" | "memory_head" | "nudge" | "human_agent";
 
 function hasMarker(message: BaseMessage, marker: SystemMarker): boolean {
   return message.additional_kwargs?.[MARKER_KWARG] === marker;
@@ -135,6 +135,32 @@ export function nudgeMessage(
   });
 }
 
+// A message a HUMAN AGENT sent to the customer while the bot was silent. It rides as a HumanMessage
+// for the reason at the top of this file (a system role is dropped before the model call), and that
+// is precisely what makes the note below load-bearing: without it the model reads the operator's own
+// words as something the CONTACT said. The summarizer read it that way too, and wrote it into the
+// permanent memory of the contact — issue #187, the failure the issue calls worse than the omission.
+//
+// The note is a constant and carries no attendant NAME. Which colleague answered changes no decision
+// the agent makes, and the name is operator-controlled text that would go into every prompt of that
+// attendance from then on; a constant prefix is also what lets the transcript trim it back off by
+// exact match (../modules/memory/summarize.ts).
+export const HUMAN_AGENT_NOTE =
+  "(Contexto do sistema: a mensagem a seguir foi enviada ao cliente por um atendente humano da equipe, não pelo agente e não pelo cliente.)";
+
+export function humanAgentMessage(
+  conversationId: number,
+  text: string,
+): HumanMessage {
+  return new HumanMessage({
+    content: `${HUMAN_AGENT_NOTE}\n\n${text}`,
+    additional_kwargs: {
+      [MARKER_KWARG]: "human_agent" satisfies SystemMarker,
+      ...conversationStamp(conversationId),
+    },
+  });
+}
+
 export function isConversationDivider(message: BaseMessage): boolean {
   return hasMarker(message, "divider");
 }
@@ -145,4 +171,8 @@ export function isMemoryHead(message: BaseMessage): boolean {
 
 export function isNudgeTurn(message: BaseMessage): boolean {
   return hasMarker(message, "nudge");
+}
+
+export function isHumanAgentTurn(message: BaseMessage): boolean {
+  return hasMarker(message, "human_agent");
 }

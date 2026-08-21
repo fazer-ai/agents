@@ -247,6 +247,32 @@ export function isNewIncomingMessage(e: NormalizedChatwootEvent): boolean {
   return e.event === "message_created" && isIncomingMessage(e);
 }
 
+// A message the BUSINESS sent to the customer, typed by a HUMAN agent rather than produced by a bot.
+// `sender.type` is the fork's own discriminator and was read from its source: User#webhook_data emits
+// "user", AgentBot#webhook_data emits "agent_bot", and Contact#webhook_data carries no `type` key at
+// all, so an incoming message normalizes to null there.
+//
+// Our own bot's outgoing is excluded because the turn that produced it already wrote it to the memory
+// thread — ingesting it again would duplicate every answer the agent ever gave. Another account bot's
+// outgoing is excluded by the same clause, and deliberately: whatever it is doing is not this agent's
+// dialogue with the contact. Private notes are the operator talking to their own team, not to the
+// customer, so they never enter the contact's memory. Templates and activities are not `outgoing` and
+// never reach here.
+export function isHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
+  return (
+    e.message?.messageType === "outgoing" &&
+    e.message.private !== true &&
+    e.message.sender?.type === "user"
+  );
+}
+
+// message_created only, for the same reason isNewIncomingMessage is: our own attachment write-backs
+// make the fork re-dispatch a message_updated for a message already handled, and acting on those is
+// how the voice-note loop happened. An edit to an agent's reply is not a new thing said.
+export function isNewHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
+  return e.event === "message_created" && isHumanAgentMessage(e);
+}
+
 // The control commands an operator types into the conversation to drive the agent (matched on the
 // trimmed, case-insensitive text content — text-only by design). `/teste` activates a test agent for
 // THIS conversation; `/reset` clears its memory/state. Both are handled by the webhook gate.

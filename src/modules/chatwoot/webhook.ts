@@ -13,7 +13,7 @@ import {
   getCheckpointer,
   resolveGraphThreadId,
 } from "@/graph/checkpointer";
-import { ingestMessageIntoThread } from "@/graph/ingest";
+import { type IngestRole, ingestMessageIntoThread } from "@/graph/ingest";
 import { runAgentTurn } from "@/graph/runtime";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { withEntityLock } from "@/lib/locks";
@@ -79,6 +79,7 @@ import {
   firstLocationAttachment,
   firstVisualAttachment,
   isIncomingMessage,
+  isNewHumanAgentMessage,
   isNewIncomingMessage,
   normalizeChatwootEvent,
   shouldBotHandle,
@@ -524,23 +525,41 @@ async function ingestUnhandledMessage(args: {
       base,
     }).then(() => undefined);
 
-  // A customer incoming message the bot will NOT answer: silenced out of hours (act && consumed) or
-  // not bot-handled (!act — a human owns it, or it is not pending). An answered/debounced message is
-  // covered by its turn and is NOT re-ingested here.
+  // WHAT gets folded in, and AS WHOM. Two disjoint cases:
+  //
+  //  - a customer incoming message the bot will NOT answer: silenced out of hours (act && consumed)
+  //    or not bot-handled (!act — a human owns it, or it is not pending). An answered/debounced
+  //    message is covered by its own turn and is NOT re-ingested here.
+  //  - a HUMAN agent's reply to the customer, whatever the gate decided. No turn ever covers one:
+  //    the bot did not write it. On the most ordinary shape of a real deployment — the agent
+  //    qualifies a lead, a human takes over, the human closes the sale — this is the entire business
+  //    half of the attendance, and without it the memory of that attendance is a conversation in
+  //    which only the customer spoke (issue #187).
   const incomingUnhandled =
     isNewIncomingMessage(n) && ((act && consumed) || !act);
-  if (!incomingUnhandled) return;
-  const text = renderInboundMessage({
-    text: n.message.content ?? "",
-    transcribedText: n.message.transcribedText,
-    imageDescription: n.message.imageDescription,
-    extractedText: n.message.extractedText,
-    attachmentTypes: (n.message.attachments ?? [])
-      .map((a) => a.fileType)
-      .filter((t): t is string => t !== null),
-    location: firstLocationAttachment(n.message.attachments),
-    inReplyTo: n.message.inReplyTo,
-  });
+  const role: IngestRole | null = incomingUnhandled
+    ? "customer"
+    : isNewHumanAgentMessage(n)
+      ? "human_agent"
+      : null;
+  if (role === null) return;
+  // An agent's own words go in raw. renderInboundMessage folds a CUSTOMER's attachments,
+  // transcription, extracted text and quoted context into one readable message; an outgoing message
+  // has none of that shape, and the eager media pass never ran on it.
+  const text =
+    role === "human_agent"
+      ? (n.message.content ?? "").trim()
+      : renderInboundMessage({
+          text: n.message.content ?? "",
+          transcribedText: n.message.transcribedText,
+          imageDescription: n.message.imageDescription,
+          extractedText: n.message.extractedText,
+          attachmentTypes: (n.message.attachments ?? [])
+            .map((a) => a.fileType)
+            .filter((t): t is string => t !== null),
+          location: firstLocationAttachment(n.message.attachments),
+          inReplyTo: n.message.inReplyTo,
+        });
   if (!text.trim()) return;
   try {
     await ingestMessageIntoThread({
@@ -551,12 +570,14 @@ async function ingestUnhandledMessage(args: {
       graphThreadId,
       messageId,
       text,
+      role,
       base,
       onAttendanceClosed: armOnBoundary,
     });
   } catch (err) {
     logger.warn(
-      "ingest (customer, unhandled) failed (conv=%s): %s",
+      "ingest (%s) failed (conv=%s): %s",
+      role,
       String(conversationId),
       errMsg(err),
     );
@@ -1294,9 +1315,22 @@ export async function processChatwootDelivery(
   const isNewIncoming = isNewIncomingMessage(n);
   const hasLateMedia = hasPendingInboundMediaUpdate(n);
 
-  // Resolve the bound agent for a new message or a late-media update. The latter never drives a turn.
+  // A human agent's reply is folded into the contact's memory too (ingestUnhandledMessage), and the
+  // inbox's agent is what says whether to ingest at all.
+  const isNewHumanAgent = isNewHumanAgentMessage(n);
+
+  // Resolve the bound agent for a new message (from either side) or a late-media update. The latter
+  // never drives a turn.
+  //
+  // WIDENING THIS IS THE RISKY HALF of issue #187: `rt` turning non-null for a class of event it was
+  // always null for can wake code that was unreachable, not just the code the change is for. Every
+  // other reader of `rt` was checked against an outgoing message and none of them moves — the
+  // eager-media and test-mode gates require isNewIncoming or hasLateMedia, `commandActive` reads a
+  // `command` that is null off anything but a new incoming message, and the channel-redirect
+  // follow-up arm sits inside `if (act && isNewIncoming)`. The only branch this reaches is the
+  // ingestion one at the bottom of this function.
   const rt =
-    isNewIncoming || hasLateMedia
+    isNewIncoming || hasLateMedia || isNewHumanAgent
       ? await inboxAgentRuntime(
           params.tenantId,
           params.instanceId,

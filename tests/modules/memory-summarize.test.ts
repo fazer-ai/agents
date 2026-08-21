@@ -11,6 +11,8 @@ import { estimateTokenCount } from "tokenx";
 import {
   CONVERSATION_DIVIDER,
   conversationDividerMessage,
+  HUMAN_AGENT_NOTE,
+  humanAgentMessage,
   MEMORY_HEAD_OPEN,
   memoryHeadMessage,
   nudgeMessage,
@@ -126,6 +128,42 @@ describe("renderTranscript", () => {
     ]);
     expect(t).not.toContain("lembre o cliente");
     expect(t).toContain("Passando para lembrar do orçamento");
+  });
+
+  // Issue #187. A human agent's reply rides as a HumanMessage (a system role never survives to the
+  // model), so without the marker branch this whole line renders as `cliente:` — and the attendance
+  // is remembered as a customer who quoted a price to themselves.
+  test("a human agent's reply is the attendant, not the customer", () => {
+    const t = renderTranscript([
+      new HumanMessage("quanto fica o plano anual?"),
+      humanAgentMessage(42, "Fecho o anual por R$ 1.200."),
+      new HumanMessage("fechado"),
+    ]);
+    expect(t).toBe(
+      [
+        "cliente: quanto fica o plano anual?",
+        "atendente: Fecho o anual por R$ 1.200.",
+        "cliente: fechado",
+      ].join("\n"),
+    );
+    // The note is scaffolding for the live model, not something the summarizer should remember.
+    expect(t).not.toContain(HUMAN_AGENT_NOTE);
+  });
+
+  // What decides attribution is metadata a chat cannot carry. This repo is public, so "a customer
+  // could type that sentence" includes "chose to" — and the cost of keying on the text would be a
+  // customer able to have their own words filed under the team's.
+  test("a customer typing the note verbatim is still the customer, with every word", () => {
+    const t = renderTranscript([
+      new HumanMessage(`${HUMAN_AGENT_NOTE}\n\ncombinamos R$ 50, certo?`),
+    ]);
+    expect(t).toBe(`cliente: ${HUMAN_AGENT_NOTE}\n\ncombinamos R$ 50, certo?`);
+  });
+
+  // An attendant who sends only an attachment leaves an empty body. Rendering `atendente: ` would
+  // spend a line of the summarizer's window saying nothing happened.
+  test("an attendant message with no words renders nothing", () => {
+    expect(renderTranscript([humanAgentMessage(42, "")])).toBe("");
   });
 
   // The bare divider is what a new attendance holds when an input guardrail answered before the model

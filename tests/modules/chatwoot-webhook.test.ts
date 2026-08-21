@@ -9,7 +9,9 @@ import {
 import {
   firstAudioAttachment,
   firstLocationAttachment,
+  isHumanAgentMessage,
   isIncomingMessage,
+  isNewHumanAgentMessage,
   isNewIncomingMessage,
   normalizeChatwootEvent,
   shouldBotHandle,
@@ -392,6 +394,81 @@ describe("isNewIncomingMessage (voice-note infinite-loop guard)", () => {
       meta: {},
     });
     expect(conv && isNewIncomingMessage(conv)).toBe(false);
+  });
+});
+
+describe("isNewHumanAgentMessage (issue #187)", () => {
+  // `sender.type` values come from the fork's own webhook_data serializers: User → "user",
+  // AgentBot → "agent_bot", Contact → no `type` key at all.
+  const message = (over: Record<string, unknown>) =>
+    normalizeChatwootEvent({
+      event: "message_created",
+      id: 1001,
+      content: "Consigo fechar por R$ 1.200",
+      message_type: "outgoing",
+      private: false,
+      sender: { id: 5, name: "Ana", type: "user" },
+      conversation: {
+        id: 42,
+        inbox_id: 7,
+        status: "open",
+        meta: { assignee_type: "user", assignee: { id: 5 } },
+      },
+      ...over,
+    });
+
+  test("true for a human agent's outgoing message", () => {
+    const n = message({});
+    expect(n && isNewHumanAgentMessage(n)).toBe(true);
+  });
+
+  // Already in the thread, written by the turn that produced it. Ingesting it would duplicate every
+  // answer the agent ever gave.
+  test("false for our own bot's outgoing message", () => {
+    const n = message({
+      sender: { id: 9, name: "Atendente", type: "agent_bot" },
+    });
+    expect(n && isNewHumanAgentMessage(n)).toBe(false);
+  });
+
+  // The operator talking to their own team. It never reached the customer, and it must not enter the
+  // contact's permanent memory.
+  test("false for a private note", () => {
+    const n = message({ private: true });
+    expect(n && isNewHumanAgentMessage(n)).toBe(false);
+  });
+
+  test("false for an incoming message (that is the customer, and the other predicate's job)", () => {
+    const n = message({
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente" },
+    });
+    expect(n && isNewHumanAgentMessage(n)).toBe(false);
+    expect(n && isNewIncomingMessage(n)).toBe(true);
+  });
+
+  // Same rule as isNewIncomingMessage, same reason: an update is our own write-back coming back, and
+  // an edit to a reply is not a new thing said.
+  test("false for message_updated", () => {
+    const n = message({ event: "message_updated" });
+    expect(n && isHumanAgentMessage(n)).toBe(true);
+    expect(n && isNewHumanAgentMessage(n)).toBe(false);
+  });
+
+  // A template is an automated send (campaign, canned HSM), not a person typing; an activity is
+  // Chatwoot narrating itself. Neither is dialogue with the customer.
+  test("false for a template and for an activity message", () => {
+    for (const message_type of ["template", "activity"]) {
+      const n = message({ message_type });
+      expect(n && isNewHumanAgentMessage(n)).toBe(false);
+    }
+  });
+
+  // A sender we cannot classify is not assumed to be a person. Attributing an unknown author to the
+  // team writes words into the memory that nobody on the team said.
+  test("false when the payload carries no sender", () => {
+    const n = message({ sender: null });
+    expect(n && isNewHumanAgentMessage(n)).toBe(false);
   });
 });
 

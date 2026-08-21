@@ -892,7 +892,7 @@
     "limitsNoCeiling": "No ceiling",
     "memory": "Memory",
     "memoryCompaction": "Summarize attendances that have ended",
-    "memoryHint": "The agent remembers every conversation it has had with this contact on this channel. When an attendance ends, its messages are replaced by a summary of it, so the memory becomes \"N summarized attendances + the current one\". What survives a summary is the useful part: who the contact is, what was agreed, what was left open. Exact wording does not, so turn this off if the agent must be able to quote an old conversation word for word. The summary is written by the agent's own model, after the reply is sent, so no customer waits for it.",
+    "memoryHint": "The agent remembers every conversation it has had with this contact on this channel. When an attendance ends, its messages are replaced by a summary of it, so the memory becomes \"N summarized attendances + the current one\". What survives a summary is the useful part: who the contact is, what was agreed, what was left open. Exact wording does not, so turn this off if the agent must be able to quote an old conversation word for word. The summary is written by the agent's own model, after the reply is sent, so no customer waits for it. It runs once for every attendance that ends, including the ones your team handled without the agent.",
     "mode": "Mode",
     "modeHint": "A test agent stays silent in a conversation until the customer sends /teste; production answers normally.",
     "model": "Model",

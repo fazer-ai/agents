@@ -1404,6 +1404,125 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // The mirror path's version of the same failure. There is no live probe here, so the read that can
+  // fail is the database one — and a throw would escape to the scheduler, which retries the whole
+  // job and writes the guardrail's note again on every attempt. It degrades instead, exactly as an
+  // unanswerable live probe does, because the reason is the same one.
+  test("a mirror read that throws after moderation degrades instead of failing the job", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9972, null);
+        const s = stub();
+        // Only the ownership read is broken, and only its SECOND call: the first one is what decides
+        // the turn may post at all, and breaking that would test a different branch entirely.
+        let ownershipReads = 0;
+        const brittle = appDb.$extends({
+          query: {
+            conversation: {
+              findUnique({ args, query }) {
+                // botStillOwnsIt's read, identified by its exact projection: the config load reads
+                // the same row with more columns, and matching that one would break the turn before
+                // it reaches what this test is about.
+                const sel = args.select as Record<string, unknown> | undefined;
+                const isOwnershipRead =
+                  !!sel &&
+                  Object.keys(sel).length === 3 &&
+                  sel.assigneeType === true &&
+                  sel.assigneeId === true &&
+                  sel.status === true;
+                if (isOwnershipRead && ++ownershipReads === 2) {
+                  throw new Error("db went away");
+                }
+                return query(args);
+              },
+            },
+          },
+        }) as unknown as typeof appDb;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9972`,
+          nudge: { source: "event", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: brittle,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: true,
+                categories: ["toxicity"],
+                rationale: "rude",
+                suggestedReply: null,
+              }),
+              new FakeListChatModel({ responses: ["Ainda por aí?"] }),
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        // The job finished. Nothing for the customer, nothing resolved, and one guardrail note.
+        expect(outcome).toBe("noted");
+        expect(s.messages).toEqual([]);
+        expect(s.resolved).toEqual([]);
+        expect(
+          s.notes.filter(([, t]) => t.includes("Guardrail (output)")).length,
+        ).toBe(1);
+        expect(ownershipReads).toBe(2);
+      },
+    );
+  });
+
+  // The recheck is the price of the judge's model call, so an agent with no output moderation — the
+  // default — must not pay it. Before this, every free-form inactivity follow-up made a third live
+  // GET for a window of zero length, and could be rescheduled on nothing but that request failing.
+  test("no moderation means no second ownership probe", async () => {
+    await seedConv(9971, null);
+    const s = stub();
+    const inner = await s.makeClient();
+    let probes = 0;
+    const client = {
+      ...inner,
+      getConversation: async (c: number) => {
+        probes++;
+        return { id: c, status: "pending", meta: {} };
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9971`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      requireLiveBotOwnership: true,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["Ainda por aí?"] }) as never,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+    expect(s.messages).toEqual([[9971, "Ainda por aí?"]]);
+    // The two the live-gated path has always made: one before the model ran, one after it.
+    expect(probes).toBe(2);
+  });
+
   // A judge that could not run is fail-open for the CUSTOMER and a warn for the operator, and that
   // warn is exactly the kind of mark a retry would repeat. "Nothing tripped" and "nothing was
   // written" are different facts, and this is where they come apart.

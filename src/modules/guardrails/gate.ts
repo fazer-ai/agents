@@ -13,13 +13,56 @@ import type { GuardrailsConfig } from "./settings";
 // made the two paths drift on the day one of them changed, which is why this is a unit and not a
 // second copy.
 //
-// Returns null when nothing tripped, { reply: string } to send in place of the subject, or
-// { reply: null } to suppress the send entirely (the "silent" action). Fail-open: an analysis that
-// could not run answers null (see analyzeGuardrail) and is recorded, never blocks.
+// What one screening DID, as a single value. It used to be a nullable reply, and callers then grew
+// side channels for the two questions that value cannot answer — a flag for "was anything written
+// down", set through a callback. Three consecutive review rounds found a caller reading one of the
+// three for another's question, so they became one union with the three answers in it.
+export type GuardrailDecision =
+  // Nothing was screened: guardrails off, no credential, or this direction switched off. No model
+  // call, no delay, nothing written.
+  | { kind: "not-run" }
+  // Screened and approved. A model call happened; nothing was written down.
+  | { kind: "clean" }
+  // Could NOT be screened: the model would not build, or the analysis failed. Fail-open, so the
+  // subject still goes out — but a warn was written, and a warn pages.
+  | { kind: "unavailable" }
+  // Tripped: send this instead of the subject. The operator note was written.
+  | { kind: "replaced"; reply: string }
+  // Tripped with the `silent` action: send nothing. The operator note was written.
+  | { kind: "suppressed" };
+
+// The text to send in place of `subject`, or null to send nothing.
+export function screenedText(
+  d: GuardrailDecision,
+  subject: string,
+): string | null {
+  if (d.kind === "suppressed") return null;
+  return d.kind === "replaced" ? d.reply : subject;
+}
+
+// The policy acted on this text: it replaced it or removed it. The caller's OWN artefacts of the
+// same turn (a queued image and its caption) fall with it.
+export function guardrailTripped(d: GuardrailDecision): boolean {
+  return d.kind === "replaced" || d.kind === "suppressed";
+}
+
+// Something an operator reads was written: the private note a trip leaves, or the warn an
+// unavailable screening emits. A caller that can still abandon the turn has to know, because
+// abandoning it means running it again, and running it again writes this again.
+export function guardrailLeftAMark(d: GuardrailDecision): boolean {
+  return guardrailTripped(d) || d.kind === "unavailable";
+}
+
+// A model call was attempted, so whatever the caller read before this is now as old as that call.
+// The only answer that is NOT stale afterwards is the one where no judge ran at all.
+export function guardrailRan(d: GuardrailDecision): boolean {
+  return d.kind !== "not-run";
+}
+
 export type GuardrailGate = (
   direction: "input" | "output",
   subject: string,
-) => Promise<{ reply: string | null } | null>;
+) => Promise<GuardrailDecision>;
 
 export interface GuardrailGateParams {
   cfg: GuardrailsConfig;
@@ -39,11 +82,6 @@ export interface GuardrailGateParams {
   // check itself, structurally, the same way the input direction drops the replacement.
   customerMessage?: string;
   makeModel?: typeof createChatModel;
-  // Called whenever this gate leaves a mark an OPERATOR reads: the private note a trip writes, and
-  // the warn-level line a failed analysis emits (which can page). A caller that may still abandon
-  // the turn needs to know, because abandoning it means retrying it, and a retry writes the mark
-  // again — the gate is the only one who can say whether there is one.
-  onRecorded?: () => void;
 }
 
 export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
@@ -79,13 +117,16 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       });
     }
     return model;
+    // NOTE: The warn above is what makes this "unavailable" and not "not-run" to the caller: a
+    // configuration this gate cannot use is indistinguishable from a working one until it is tried,
+    // and by then the operator has been told.
   };
 
   return async (direction, subject) => {
     const dir = gr[direction];
-    if (!gr.enabled || !p.apiKey || !dir.enabled) return null;
+    if (!gr.enabled || !p.apiKey || !dir.enabled) return { kind: "not-run" };
     const model = resolveModel(direction);
-    if (!model) return null;
+    if (!model) return { kind: "unavailable" };
     const judgesRelevance = direction === "output" && !!p.customerMessage;
     const verdict = await analyzeGuardrail(
       model,
@@ -123,9 +164,10 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         detail: { direction, outcome: "analysis_failed" },
         errorMessage: verdict.error,
       });
-      p.onRecorded?.();
     }
-    if (!verdict.violated) return null;
+    if (!verdict.violated) {
+      return verdict.error ? { kind: "unavailable" } : { kind: "clean" };
+    }
     // NOTE: The turn trail and the operator note report what the guardrail DID, not what it was
     // configured to do. `generated` with no replacement in hand sends the template — when the model
     // returns none, and on the input direction every time (see ./analyze.ts) — and an operator
@@ -159,8 +201,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         `Guardrail (${direction}): ${verdict.categories.join(", ") || "policy"} — ${effectiveAction}. ${verdict.rationale}`,
       )
       .catch(() => {});
-    p.onRecorded?.();
-    if (dir.action === "silent") return { reply: null };
-    return { reply: replacement ?? dir.templateMessage };
+    if (dir.action === "silent") return { kind: "suppressed" };
+    return { kind: "replaced", reply: replacement ?? dir.templateMessage };
   };
 }

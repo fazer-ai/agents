@@ -28,7 +28,11 @@ import {
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
-import { buildGuardrailGate } from "@/modules/guardrails/gate";
+import {
+  buildGuardrailGate,
+  guardrailTripped,
+  screenedText,
+} from "@/modules/guardrails/gate";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
 import { deliverReply } from "@/modules/split/service";
@@ -517,8 +521,8 @@ export async function runLoadedTurn(
       // customer-facing text means the same thing wherever it is reached: a `silent` action that
       // suppressed the goodbye and then let a photo through would be the operator's policy applied
       // to one artefact and not the other.
-      if (guarded) turnState.pendingImages.length = 0;
-      const screened = guarded ? guarded.reply : line;
+      if (guardrailTripped(guarded)) turnState.pendingImages.length = 0;
+      const screened = screenedText(guarded, line);
       if (screened === null) return;
       deliveredBalloons = await deliverText(
         screened,
@@ -674,17 +678,19 @@ export async function runLoadedTurn(
 
     // INPUT guardrail: screen the customer message BEFORE the agent processes it. On a violation,
     // send the configured template / a guardrails-generated safe reply and skip the graph, or stay
-    // silent (send nothing). null ⇒ nothing tripped, proceed as normal.
+    // silent (send nothing). Anything short of a trip proceeds as normal — including a screening
+    // that could not run, which is the fail-open half of the policy.
     const inGuard = await runGuardrail("input", text);
-    if (inGuard) {
-      if (inGuard.reply !== null) {
+    if (guardrailTripped(inGuard)) {
+      const inReply = screenedText(inGuard, text);
+      if (inReply !== null) {
         // NOTE: The guardrail reply is a post like any other, so it claims the trigger through the
         // same gate: without this, two concurrent deliveries that both trip the guardrail each post
         // their template, and a stale one posts over newer customer input.
         if (params.shouldPost && !(await params.shouldPost())) {
           return "superseded";
         }
-        await client.sendMessage(conversationId, inGuard.reply);
+        await client.sendMessage(conversationId, inReply);
         deliveredBalloons = 1;
         return "posted";
       }
@@ -813,10 +819,11 @@ export async function runLoadedTurn(
       .filter((c): c is string => !!c);
     const screened = [reply, ...captions].filter(Boolean).join("\n");
     const outGuard = screened ? await runGuardrail("output", screened) : null;
-    if (outGuard) {
+    if (outGuard && guardrailTripped(outGuard)) {
       turnState.pendingImages.length = 0;
-      if (outGuard.reply === null) return "blocked";
-      reply = outGuard.reply;
+      const replacement = screenedText(outGuard, screened);
+      if (replacement === null) return "blocked";
+      reply = replacement;
     }
 
     // Empty reply: no text to post, but the queued images and a deferred resolve intent still apply

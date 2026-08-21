@@ -7,6 +7,7 @@ import {
   GUARDRAILS_DEFAULTS,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
+import { guardrailModel } from "../utils/scripted-models";
 
 // A minimal fake chat model: invoke returns a message with the given content (or throws).
 function fakeModel(content: string): BaseChatModel {
@@ -941,7 +942,9 @@ describe("buildGuardrailGate", () => {
         flow,
         makeModel: f.make,
       });
-      expect(await gate("output", "olá")).toBeNull();
+      // "not-run", not "clean": nothing was judged and nothing was delayed, and a caller that has
+      // to decide whether re-running the turn is free reads exactly this difference.
+      expect(await gate("output", "olá")).toEqual({ kind: "not-run" });
       expect(f.calls()).toBe(0);
     });
   }
@@ -960,7 +963,9 @@ describe("buildGuardrailGate", () => {
       flow,
       makeModel: f.make,
     });
-    expect(await gate("output", "olá")).toBeNull();
+    // Fail-open for the customer, and "unavailable" rather than "clean" for the operator: the warn
+    // it just emitted is the mark a retry would repeat.
+    expect(await gate("output", "olá")).toEqual({ kind: "unavailable" });
     expect(f.calls()).toBe(1);
   });
 
@@ -982,7 +987,19 @@ describe("buildGuardrailGate", () => {
   });
 
   test("one model serves both directions of the same turn", async () => {
-    const f = countingFactory(() => fakeModel('{"violated": false}'));
+    // The shared stub, which answers in either dialect: `fakeModel` only speaks prose, and the
+    // default provider asks for a schema, so it would report "unavailable" — a true answer about a
+    // broken double, and not the one this test is asking about.
+    const f = countingFactory(() =>
+      guardrailModel(async () => ({
+        content: JSON.stringify({
+          violated: false,
+          categories: [],
+          rationale: "",
+          suggestedReply: null,
+        }),
+      })),
+    );
     const gate = buildGuardrailGate({
       cfg: enabledCfg(),
       apiKey: "k",
@@ -991,8 +1008,8 @@ describe("buildGuardrailGate", () => {
       flow,
       makeModel: f.make,
     });
-    expect(await gate("input", "olá")).toBeNull();
-    expect(await gate("output", "oi")).toBeNull();
+    expect(await gate("input", "olá")).toEqual({ kind: "clean" });
+    expect(await gate("output", "oi")).toEqual({ kind: "clean" });
     expect(f.calls()).toBe(1);
   });
 });

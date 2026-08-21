@@ -12,7 +12,13 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
-import { buildGuardrailGate } from "@/modules/guardrails/gate";
+import {
+  buildGuardrailGate,
+  type GuardrailDecision,
+  guardrailLeftAMark,
+  guardrailRan,
+  screenedText,
+} from "@/modules/guardrails/gate";
 import { armCompaction } from "@/modules/memory/compact";
 import {
   buildTemplatePayload,
@@ -534,15 +540,16 @@ export async function runAgentNudge(
   // minus the customer's message, because there is none: gate.ts explains why that absence has to
   // drop the relevance check rather than merely skip its call.
   //
-  // Returns the text to send, or null when the policy suppressed it. Called ONLY where the text is
-  // about to reach the CUSTOMER: the branches that fall back to a private note are writing to the
-  // operator, and screening those would let a customer-facing template replace an internal notice,
-  // or a `silent` verdict delete the alert that explains the bot's silence.
-  // Set when the judge left something an operator reads. Read by the ownership recheck below, which
-  // is the one place that has to know whether abandoning this turn is still free.
-  let guardrailLeftAMark = false;
-  const screenOutput = async (text: string): Promise<string | null> => {
-    const verdict = await buildGuardrailGate({
+  // Called ONLY where the text is about to reach the CUSTOMER: the branches that fall back to a
+  // private note are writing to the operator, and screening those would let a customer-facing
+  // template replace an internal notice, or a `silent` verdict delete the alert that explains the
+  // bot's silence.
+  //
+  // Returns the whole decision, not just the text. What follows a screening on this path depends on
+  // whether a judge ran at all and on whether it wrote anything down, and those are questions only
+  // the decision answers.
+  const screenOutput = (text: string): Promise<GuardrailDecision> =>
+    buildGuardrailGate({
       cfg: cfg.guardrails,
       apiKey: cfg.guardrailsApiKey,
       credentialBaseUrl: cfg.guardrailsCredentialBaseUrl,
@@ -551,12 +558,7 @@ export async function runAgentNudge(
       flow,
       systemPrompt: cfg.systemPrompt,
       makeModel: params.deps?.makeModel,
-      onRecorded: () => {
-        guardrailLeftAMark = true;
-      },
     })("output", text);
-    return verdict ? verdict.reply : text;
-  };
 
   // What the transfer promised the customer, delivered on the way OUT of the turn — whatever the way
   // out is. Called once on the normal path and once from the failure path, because the tool can
@@ -591,9 +593,9 @@ export async function runAgentNudge(
         );
         return "noted-window";
       }
-      const screened = await screenOutput(line);
-      if (screened === null) return "silent";
-      await client.sendMessage(conversationId, screened);
+      const line2 = screenedText(await screenOutput(line), line);
+      if (line2 === null) return "silent";
+      await client.sendMessage(conversationId, line2);
       logger.info(
         "agentNudge handed off: conv=%s source=%s",
         String(conversationId),
@@ -924,28 +926,37 @@ export async function runAgentNudge(
     // The one branch whose text the CUSTOMER reads, so the one branch that is screened. A failed
     // send still throws here: nothing has been done to the conversation that a retry cannot repeat,
     // so the job should run again rather than swallow the miss.
-    const screened = await screenOutput(reply);
-    // Asked BEFORE the verdict is acted on, not inside the branch that sends: the post-actions run
-    // on both branches and they resolve the conversation, so a suppressed reply closes a
-    // human-owned thread exactly as hard as a delivered one would. Splitting the recheck per
-    // outcome is what produced this same defect one branch over.
-    const owned = await botStillOwnsIt();
-    // A probe that cannot answer asks for a retry only while a retry is still FREE, which is the
-    // reason the probe before generation gives for asking ("nothing has been posted yet"). Whether
-    // it is free here is not a property of this line, it is whatever the judge just did: a clean
-    // verdict leaves no trace and the step is worth running again, while a trip has already written
-    // the operator note and emitted a warn that can page, and each retry would repeat both while
-    // spending two model calls to reach the same verdict.
+    const decision = await screenOutput(reply);
+    const screened = screenedText(decision, reply);
+
+    // The recheck exists for ONE window: the judge's own model call, between the ownership answered
+    // before generation and everything below that consumes it — the send, and the post-actions that
+    // resolve the conversation. So it is asked exactly when that window exists, and skipped when no
+    // judge ran, which is the default configuration and would otherwise pay a live Chatwoot GET per
+    // follow-up for a window of zero length.
     //
-    // So the answer is asked of the judge rather than assumed either way. Degrading costs the
-    // customer a follow-up nobody asked for; retrying costs the operator up to NUDGE_RETRY_LIMIT
-    // copies of the same alert. Neither is free, so neither is the default.
-    if (owned === "unavailable" && !guardrailLeftAMark)
-      return "live-unavailable";
-    // A KNOWN takeover ends the episode either way: that outcome does not retry, so it costs no
-    // repetition — and "the human owns it" is a different fact from "we could not ask".
-    if (owned === "not-ours" && params.requireLiveBotOwnership) return "stale";
-    canMessagePost = owned === "ours";
+    // Asked BEFORE the verdict is acted on, not inside the branch that sends: a suppressed reply
+    // runs the post-actions too, so it closes a human-owned thread exactly as hard as a delivered
+    // one would.
+    if (guardrailRan(decision)) {
+      const owned = await botStillOwnsIt().catch(() => "unavailable" as const);
+      // Whether abandoning the turn is still free is whatever the judge just did, so the judge is
+      // asked rather than assumed: a clean verdict leaves no trace and the step is worth running
+      // again, while a trip or a failed screening has already written the operator note or a warn
+      // that pages, and every retry repeats it while spending two model calls to reach the same
+      // verdict. Degrading costs the customer a follow-up nobody asked for; retrying costs the
+      // operator up to NUDGE_RETRY_LIMIT copies of one alert. Neither is free, so neither is the
+      // default. (The read itself failing is answered the same way, for the same reason.)
+      if (owned === "unavailable" && !guardrailLeftAMark(decision)) {
+        return "live-unavailable";
+      }
+      // A KNOWN takeover ends the episode either way: that outcome does not retry, so it costs no
+      // repetition — and "the human owns it" is a different fact from "we could not ask".
+      if (owned === "not-ours" && params.requireLiveBotOwnership)
+        return "stale";
+      canMessagePost = owned === "ours";
+    }
+
     if (screened === null) {
       await applyPostActions();
       return "silent";

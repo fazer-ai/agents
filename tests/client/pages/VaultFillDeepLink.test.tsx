@@ -37,11 +37,18 @@ function json(body: unknown): Response {
   });
 }
 
+let vaultFails = false;
+
 function installFetchStub() {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("/vault/references")) return json({ references: [] });
-    if (url.includes("/vault")) return json({ entries: entriesPayload });
+    if (url.includes("/vault")) {
+      if (vaultFails) {
+        return new Response(JSON.stringify({ error: "boom" }), { status: 500 });
+      }
+      return json({ entries: entriesPayload });
+    }
     return realFetch(input as RequestInfo | URL, init);
   }) as typeof fetch;
 }
@@ -90,6 +97,7 @@ function renderPanel(search: string) {
 describe("vault fill deeplink", () => {
   beforeEach(() => {
     seenSearch = "";
+    vaultFails = false;
     installFetchStub();
   });
   afterEach(cleanup);
@@ -108,6 +116,24 @@ describe("vault fill deeplink", () => {
         screen.queryAllByText(/not in the tenant you have open/i).length,
       ).toBeGreaterThan(0);
     });
+    expect(seenSearch).toBe("?fill=5");
+  });
+
+  // A failed load leaves the list empty, which looks exactly like "the tenant does not have it" and
+  // is a different claim: nothing authoritative was read. Saying it anyway would send the operator
+  // switching tenants over what is really a 500, past the panel's own error state and its retry.
+  test("a failed load reports nothing about tenants, and keeps the parameter", async () => {
+    vaultFails = true;
+    entriesPayload = [];
+    renderPanel("?fill=5");
+    await waitFor(() => {
+      expect(seenSearch).toBe("?fill=5");
+    });
+    // Give the effect every chance to fire before concluding it did not.
+    await new Promise((r) => setTimeout(r, 40));
+    expect(
+      document.body.textContent?.includes("not in the tenant you have open"),
+    ).toBe(false);
     expect(seenSearch).toBe("?fill=5");
   });
 

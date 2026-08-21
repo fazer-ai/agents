@@ -58,6 +58,8 @@ describe("tenantDeepLinkAction", () => {
       expected: { kind: "switch", tenantId: B },
     },
     {
+      // Ordering matters here: a tenant-scoped user never fetches the list, so this has to answer
+      // before the pending case or such a session would wait forever on something it never asked for.
       name: "not a SUPER_ADMIN: the parameter is inert, since the backend ignores X-Tenant-Id for anyone else",
       input: {
         requested: B,
@@ -73,9 +75,12 @@ describe("tenantDeepLinkAction", () => {
       expected: { kind: "unavailable", tenantId: B },
     },
     {
-      name: "the accessible list has not arrived: decide nothing yet, or a slow fetch reads as unavailable",
+      // "pending", NOT "none": the caller cleans the parameter off the URL on "none", and doing that
+      // mid-flight removes the input the pending fetch was going to be judged against, so the switch
+      // never happens and the link behaves exactly like the tenant-less one it replaced.
+      name: "the accessible list has not arrived: nothing is decided yet, and the parameter must survive",
       input: { requested: B, active: A, accessible: null, isSuperAdmin: true },
-      expected: { kind: "none" },
+      expected: { kind: "pending" },
     },
     {
       name: "an empty accessible list is an answer, unlike a missing one",

@@ -70,6 +70,9 @@ export function TenantDeepLink() {
       window.location.reload();
       return;
     }
+    // Still loading the tenant list: keep the parameter, or the fetch it is waiting on would come
+    // back to a URL that no longer names a tenant.
+    if (action.kind === "pending") return;
     if (decided.current === requested) return;
     decided.current = requested;
     if (action.kind === "unavailable") {

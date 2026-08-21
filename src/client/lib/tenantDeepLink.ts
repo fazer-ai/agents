@@ -16,7 +16,12 @@
 // be reported instead of applied.
 
 export type TenantDeepLinkAction =
+  // Nothing to do, and nothing left to wait for: the caller may clean the parameter off the URL.
   | { kind: "none" }
+  // Not decidable YET. Distinct from "none" for one reason that is easy to get wrong: the caller
+  // cleans the parameter up on "none", and cleaning it up while the answer is still loading removes
+  // the very input the pending fetch was going to be judged against, so the switch never happens.
+  | { kind: "pending" }
   | { kind: "switch"; tenantId: string }
   | { kind: "unavailable"; tenantId: string };
 
@@ -25,9 +30,9 @@ export function tenantDeepLinkAction(params: {
   requested: string | null;
   // The tenant the console currently has selected.
   active: string | null;
-  // The tenants this session can actually open. `null` means "not loaded yet": nothing is decided
-  // until it is, since deciding early would report a tenant as unavailable that simply had not
-  // arrived.
+  // The tenants this session can actually open. `null` means "not loaded yet", which is `pending`
+  // and not `none`: deciding early would report a tenant as unavailable that simply had not arrived,
+  // and answering `none` would have the caller discard the parameter mid-flight.
   accessible: readonly string[] | null;
   isSuperAdmin: boolean;
 }): TenantDeepLinkAction {
@@ -35,7 +40,7 @@ export function tenantDeepLinkAction(params: {
   if (!requested) return { kind: "none" };
   if (requested === active) return { kind: "none" };
   if (!isSuperAdmin) return { kind: "none" };
-  if (accessible === null) return { kind: "none" };
+  if (accessible === null) return { kind: "pending" };
   if (!accessible.includes(requested)) {
     return { kind: "unavailable", tenantId: requested };
   }

@@ -113,6 +113,10 @@ export function VaultPanel() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: runs once per fill target; clearing the param makes fillId null so it won't re-fire.
   useEffect(() => {
     if (!fillId || loading) return;
+    // A failed load leaves `entries` empty, which is indistinguishable from "the tenant does not
+    // have it" and is not the same claim at all. Say nothing and leave the parameter: the panel's
+    // own error state is already on screen with its retry, and it is the honest diagnosis.
+    if (error) return;
     const entry = entries.find((e) => e.id === fillId);
     if (!entry) {
       if (missReported.current !== fillId) {
@@ -143,7 +147,7 @@ export function VaultPanel() {
       },
       { replace: true },
     );
-  }, [fillId, loading, entries]);
+  }, [fillId, loading, entries, error]);
 
   function openCreate() {
     editModal.open({});

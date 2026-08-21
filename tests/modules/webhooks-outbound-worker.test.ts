@@ -283,7 +283,17 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     const { fetchImpl, calls } = stubFetch(200);
     // Real SSRF guard (not the passthrough): the metadata/loopback URL must be rejected.
     await processOutboundBatch({ base: appDb, tenantId, fetchImpl });
-    expect(calls.length).toBe(0); // never reached fetch
+    // NOTE: THIS delivery never reached fetch. Asserting on the total instead made the test a
+    // stopwatch: the retry test above leaves a PENDING row whose backoff is `Math.random() * 2000`,
+    // so once more than that elapses before this line the batch legitimately claims it too, and the
+    // count stops being about the blocked URL. Same shape as the disabled-subscription test below.
+    expect(
+      calls.some(
+        (c) =>
+          (c.init?.headers as Record<string, string>)?.[DELIVERY_HEADER] ===
+          String(id),
+      ),
+    ).toBe(false);
     const row = await readDelivery(id);
     expect(row.status).toBe("DEAD");
     expect(row.lastError).toContain("Blocked outbound URL");

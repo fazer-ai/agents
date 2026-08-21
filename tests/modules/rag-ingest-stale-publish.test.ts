@@ -116,7 +116,7 @@ beforeAll(() => {
     port: 0,
     async fetch(req) {
       const url = new URL(req.url);
-      // The suite preloads happy-dom, so the OpenAI SDK takes the browser path and preflights.
+      // NOTE: The suite preloads happy-dom, so the OpenAI SDK takes the browser path and preflights.
       if (req.method === "OPTIONS") {
         return new BunRes(null, { status: 204, headers: cors });
       }
@@ -165,7 +165,7 @@ async function seedTenant(slug: string): Promise<{ id: bigint; kb: bigint }> {
     data: { name: slug, slug: `${slug}-${process.pid}` },
   });
   tenants.push(t.id);
-  // The credential carries the baseURL (resolveEmbeddingStatus reads it off the secret), which is
+  // NOTE: the credential carries the baseURL (resolveEmbeddingStatus reads it off the secret), which is
   // what points the ingest at the double above without unlocking the settings block.
   const cred = await suDb.vaultEntry.create({
     data: {
@@ -274,7 +274,7 @@ describe.skipIf(!dbUp)(
       expect(row.chunkCount).toBe(1);
     });
 
-    // The issue's sequence, end to end: the effect it names is that search keeps reading the old text
+    // NOTE: The issue's sequence, end to end: the effect it names is that search keeps reading the old text
     // forever, so the assertion is on the chunks after the re-armed job has had its turn.
     test("the edit lands in the index, not just in the row", async () => {
       const { id, kb } = await seedTenant("rag-edit");
@@ -292,20 +292,20 @@ describe.skipIf(!dbUp)(
       };
       await runIngest(id, doc.id);
 
-      // The in-flight run must not have published: the row still carries the operator's re-index
+      // NOTE: The in-flight run must not have published: the row still carries the operator's re-index
       // marker, which is the only thing that makes the re-armed job do any work.
       const midway = await readDoc(id, doc.id);
       expect(midway.content).toBe("EDITED TEXT");
       expect(midway.status).toBe("PENDING");
 
-      // The re-armed job (step 6 of the issue) — the one that used to find READY and return.
+      // NOTE: The re-armed job (step 6 of the issue) — the one that used to find READY and return.
       await runIngest(id, doc.id);
 
       expect(await readChunks(id, doc.id)).toEqual(["EDITED TEXT"]);
       expect((await readDoc(id, doc.id)).status).toBe("READY");
     });
 
-    // The same question one branch over: the FAILED write had no status guard either, so a stale run
+    // NOTE: The same question one branch over: the FAILED write had no status guard either, so a stale run
     // that errored stamped a failure for content the document no longer holds — and FAILED is just as
     // effective at swallowing the re-index marker as READY is.
     test("a stale run that fails does not stamp its failure on the edited document", async () => {
@@ -336,7 +336,7 @@ describe.skipIf(!dbUp)(
       expect((await readDoc(id, doc.id)).status).toBe("READY");
     });
 
-    // Why the guard runs FIRST in the transaction rather than last: a stale run that publishes nothing
+    // NOTE: Why the guard runs FIRST in the transaction rather than last: a stale run that publishes nothing
     // must also delete nothing, or every edit would blank the index for as long as the re-index takes.
     test("a stale run leaves the previous index intact while the re-index runs", async () => {
       const { id, kb } = await seedTenant("rag-keep");
@@ -357,14 +357,14 @@ describe.skipIf(!dbUp)(
       };
       await runIngest(id, doc.id);
 
-      // Search still answers from the last index that was consistent with a real document version.
+      // NOTE: Search still answers from the last index that was consistent with a real document version.
       expect(await readChunks(id, doc.id)).toEqual(["FIRST TEXT"]);
 
       await runIngest(id, doc.id);
       expect(await readChunks(id, doc.id)).toEqual(["THIRD TEXT"]);
     });
 
-    // Round 1 review, P2: the embed is not the only window. The run reads the document's text and
+    // NOTE: Round 1 review, P2: the embed is not the only window. The run reads the document's text and
     // takes the mark in two separate steps, and an edit landing BETWEEN them leaves the row PENDING
     // (the value it already had), so the claim still succeeds — carrying text the document no
     // longer has. The run then indexes the old text and publishes it legitimately, which is the
@@ -380,7 +380,7 @@ describe.skipIf(!dbUp)(
         base: appDb,
       });
 
-      // There is no network in this gap, so it needs a seam rather than the embedding double. The
+      // NOTE: There is no network in this gap, so it needs a seam rather than the embedding double. The
       // knowledge-base config read sits inside it, right after the document read.
       let fired = false;
       const hooked = appDb.$extends({

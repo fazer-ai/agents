@@ -547,11 +547,11 @@ async function runIngestJobForTenant(
     return { outcome: "done" };
   }
 
-  // Claim the document: PENDING → PROCESSING marks it as owned by THIS run, and the text to index
-  // is read back under the same transaction. The two are one step because an edit landing between
-  // them leaves the row PENDING — the value it already had — so a claim taken on separately-read
-  // text still succeeds, and the run would go on to index text the document no longer has while
-  // holding a mark that says it may publish. The UPDATE holds this row's lock for the rest of the
+  // NOTE: PENDING → PROCESSING marks the document as owned by THIS run, and the text to index is
+  // read back under the same transaction. The two are one step because an edit landing between them
+  // leaves the row PENDING — the value it already had — so a claim taken on separately-read text
+  // still succeeds, and the run would go on to index text the document no longer has while holding
+  // a mark that says it may publish. The UPDATE holds this row's lock for the rest of the
   // transaction, so the content read after it is the content as of the claim.
   const claimed = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const { count } = await db.knowledgeDocument.updateMany({
@@ -580,7 +580,7 @@ async function runIngestJobForTenant(
     });
     const vectors = chunks.length ? await embedTexts(chunks, emb.config) : [];
 
-    // 4. Publish: release the mark, then replace the chunks (one scoped transaction).
+    // NOTE: step 4, publish — release the mark, then replace the chunks (one scoped transaction).
     const published = await runScopedOn(base, sysCtx(tenantId), async (db) => {
       // NOTE: only the run still holding the mark may publish (issue #163). An edit landing during
       // the embed above sets the row back to PENDING to ask for a re-index, and an unconditional
@@ -624,10 +624,10 @@ async function runIngestJobForTenant(
           ? err.message.slice(0, 500)
           : String(err);
     logger.error({ err, documentId: String(documentId) }, "RAG ingest failed");
-    // The same release, and for the same reason: a failure belongs to the content this run read, so
-    // stamping it on a document that has since been edited both reports the wrong thing and buries
-    // the re-index (FAILED is no more PENDING than READY is, and the re-armed job returns on it).
-    // Leaving the row PENDING lets the re-armed job try the new content and report on its own.
+    // NOTE: the same release, and for the same reason. A failure belongs to the content this run
+    // read, so stamping it on a document that has since been edited both reports the wrong thing
+    // and buries the re-index (FAILED is no more PENDING than READY is, and the re-armed job
+    // returns on it). Leaving the row PENDING lets the re-armed job try the new content instead.
     const stamped = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.knowledgeDocument.updateMany({
         where: { id: documentId, status: "PROCESSING" },

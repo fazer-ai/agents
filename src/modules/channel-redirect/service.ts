@@ -116,7 +116,15 @@ function clampInt(
   return Math.min(Math.max(Math.round(v), min), max);
 }
 
-const VALID_DELAY_UNITS = new Set<string>(["minutes", "hours", "days"]);
+// Exported for the MCP argument schema (see modules/agents/settings-schema); the Set below is
+// derived from it so the two can never disagree.
+export const REDIRECT_DELAY_UNITS = [
+  "minutes",
+  "hours",
+  "days",
+] as const satisfies readonly RedirectDelayUnit[];
+
+const VALID_DELAY_UNITS = new Set<string>(REDIRECT_DELAY_UNITS);
 
 function delayUnit(v: unknown, fallback: RedirectDelayUnit): RedirectDelayUnit {
   return VALID_DELAY_UNITS.has(v as string)

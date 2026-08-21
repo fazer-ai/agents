@@ -47,7 +47,13 @@ export function readToolInstructions(v: unknown): string | null {
   return t ? clipText(t, TOOL_INSTRUCTIONS_MAX) : null;
 }
 
-const MODES: HandoffMode[] = ["route", "pinned", "agent_choice"];
+// Exported so the MCP argument schema can declare the choices without re-typing them: a mode
+// added here reaches that schema by import rather than by somebody remembering.
+export const HANDOFF_MODES = [
+  "route",
+  "pinned",
+  "agent_choice",
+] as const satisfies readonly HandoffMode[];
 
 function posInt(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : null;
@@ -62,7 +68,9 @@ export function readHandoffConfig(settings: unknown): HandoffConfig {
   const bag = s as Record<string, unknown>;
   const mode = typeof bag.mode === "string" ? bag.mode : "";
   return {
-    mode: MODES.includes(mode as HandoffMode) ? (mode as HandoffMode) : "route",
+    mode: (HANDOFF_MODES as readonly string[]).includes(mode)
+      ? (mode as HandoffMode)
+      : "route",
     targetAgentId: posInt(bag.targetAgentId),
     targetTeamId: posInt(bag.targetTeamId),
     targetInstanceId: posInt(bag.targetInstanceId),

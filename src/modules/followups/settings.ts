@@ -87,7 +87,15 @@ function clampInt(
   return Math.min(Math.max(Math.round(v), min), max);
 }
 
-const VALID_UNITS = new Set<string>(["minutes", "hours", "days"]);
+// Exported for the MCP argument schema (see modules/agents/settings-schema); the Set below is
+// derived from it so the two can never disagree.
+export const FOLLOW_UP_DELAY_UNITS = [
+  "minutes",
+  "hours",
+  "days",
+] as const satisfies readonly FollowUpDelayUnit[];
+
+const VALID_UNITS = new Set<string>(FOLLOW_UP_DELAY_UNITS);
 
 // Normalize one raw step (clamp delay, trim/bound instructions + label). Returns null only for a
 // non-object input; missing numeric/string fields collapse to defaults.

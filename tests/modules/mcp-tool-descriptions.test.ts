@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { buildMcpServer } from "@/modules/mcp/server";
 
@@ -15,7 +16,9 @@ import { buildMcpServer } from "@/modules/mcp/server";
 // is not legitimate is not noticing. The second asserts what must SURVIVE a trim, because a ceiling
 // on its own invites cutting whatever is easiest rather than whatever is cheapest.
 
-async function descriptions(): Promise<Map<string, string>> {
+async function listed(): Promise<
+  Map<string, { description: string; schema: string }>
+> {
   const principal: VerifiedToken = {
     userId: 1n,
     tenantId: 1n,
@@ -31,12 +34,34 @@ async function descriptions(): Promise<Map<string, string>> {
   await client.connect(clientT);
   const { tools } = await client.listTools();
   await client.close();
-  return new Map(tools.map((t) => [t.name, t.description ?? ""]));
+  return new Map(
+    tools.map((t) => [
+      t.name,
+      {
+        description: t.description ?? "",
+        schema: JSON.stringify(t.inputSchema),
+      },
+    ]),
+  );
 }
 
-// NOTE: headroom over the current 3,534 for an ordinary edit, well under the 6,107 this replaced.
-// Round 1's correction spent 118 of that headroom, which is the kind of edit it is there for.
-const SETTINGS_DESC_CEILING = 3800;
+async function descriptions(): Promise<Map<string, string>> {
+  return new Map([...(await listed())].map(([n, t]) => [n, t.description]));
+}
+
+// NOTE: headroom over the current 1,765 for an ordinary edit, the same slack the 3,800 carried over
+// 3,534. What was 6,107 before #161 and 3,534 after it came down again when #174 moved every field
+// name, choice and range into the schema; what is left is the rules a caller cannot read off either
+// the schema or docs/ — the ones that REFUSE a call, and the ones the write accepts and the runtime
+// then never acts on.
+const SETTINGS_DESC_CEILING = 2_000;
+
+// NOTE: the ratchet has to follow the content. A ceiling on the description alone would have watched
+// the half that shrank while the shape it moved into grew unwatched — `tools/list` ships both, and a
+// client pays for both before it knows whether the tool will be used. Headroom over the current
+// 9,297 is deliberately tighter than a whole block (~600 characters), so the next block declaring
+// its fields here is a decision rather than a reflex.
+const SETTINGS_SCHEMA_CEILING = 9_800;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -64,6 +89,42 @@ describe("MCP tool descriptions", () => {
     expect(d).toContain("refused, not trimmed");
     // NOTE: a credential travels as a name or a stable ref, never as a secret.
     expect(d).toContain("NAME or a stable vault:<id>");
+  });
+
+  test("agent_settings_set stays under its schema ceiling", async () => {
+    const t = (await listed()).get("agent_settings_set");
+    expect(t).toBeDefined();
+    expect((t as { schema: string }).schema.length).toBeLessThanOrEqual(
+      SETTINGS_SCHEMA_CEILING,
+    );
+  });
+
+  // NOTE: the two move together, or the maintenance doubles instead of halving. A field the schema
+  // declares and the paragraph repeats is a second copy that drifts silently — which is exactly how
+  // `vision.provider` came to be published as three providers while the registry had five. Only
+  // camelCase names are checked: they cannot appear in prose by accident, unlike "mode" or "model".
+  test("the description does not restate what the schema declares", async () => {
+    const declared = new Set<string>();
+    for (const key of Object.keys(BEHAVIOR_PATCH_SHAPE)) {
+      const block =
+        BEHAVIOR_PATCH_SHAPE[key as keyof typeof BEHAVIOR_PATCH_SHAPE].unwrap();
+      for (const field of Object.keys(block.shape)) declared.add(field);
+    }
+    // NOTE: the names a REFUSAL rule has to spell out. They are in the description because of what
+    // happens to the call, not because of what shape the field has.
+    const namedByARule = new Set([
+      "credentialRef",
+      "normalizeProvider",
+      "normalizeModel",
+      "normalizeCredentialRef",
+      "awayMessage",
+      "extractionPrompt",
+    ]);
+    const d = (await descriptions()).get("agent_settings_set") as string;
+    const restated = [...declared]
+      .filter((f) => /[a-z][A-Z]/.test(f) && !namedByARule.has(f))
+      .filter((f) => d.includes(f));
+    expect(restated).toEqual([]);
   });
 
   // NOTE: the norm is about WHERE content lives, not about length, so the check that matters for the

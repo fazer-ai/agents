@@ -1,0 +1,342 @@
+import { z } from "zod";
+import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
+import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
+import { HANDOFF_MODES } from "@/modules/handoff/settings";
+import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
+import { TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
+import { TTS_MODES } from "@/modules/tts/settings-shared";
+import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
+
+// The argument shape of the behavior blocks, as a schema instead of a paragraph.
+//
+// Every block used to be declared `z.record(z.string(), z.unknown())`, so a client was told "an
+// object" and every field name, choice, unit and default had to live in the tool description. That
+// is a place where a fact is easy to add and a stale one is impossible to find: `vision.provider`
+// was written up as `(openai|gemini|anthropic)` while the registry had grown to five, and nothing
+// could have caught it, because prose is not type-checked and the enum below is.
+//
+// WHAT GOES IN HERE, AND WHAT MUST NOT — the rule is type and choice, never size:
+//
+//   * A value the reader would THROW AWAY (wrong type, a provider that is not registered, a delay
+//     unit that does not exist) is declared, so the call is refused with the field named instead of
+//     succeeding and silently storing a default the caller never asked for.
+//   * A value the reader HONORS after measuring it (a number outside its band is clamped, operator
+//     text past its cap is refused only when the write CHANGES it, a list longer than its ceiling is
+//     truncated) must still parse. Copying those bounds here would turn a clamp into a refusal and
+//     break `agent_settings_set accepts a stored over-cap value it does not change`. They live in
+//     the field's `.describe()`, which reaches a client as the property's `description`.
+//
+// The blocks are LOOSE objects on purpose. An undeclared key still reaches the readers exactly as
+// before, so a field added to a reader by someone who never opened this file is merged rather than
+// silently dropped on the way in — the readers stay the authority, and this schema only says what is
+// already known about the shape.
+//
+// NOTE: the one place this is deliberately narrower than a reader. `observability.logToolValues` and
+// `memory.compaction.enabled` also accept the STRING spellings ("true"/"false"), which is a defense
+// for a bag written by an older build or edited by hand and stays true of anything already stored.
+// It was never an input contract — no description ever mentioned it — and publishing it here would
+// teach a model that a stringified boolean is a legitimate way to call the tool.
+
+// A registry list as a set of choices. `Object.keys` of a provider map is `string[]`, which is the
+// one shape `z.enum` cannot take; the registries are module-level literals and never empty.
+function oneOf(names: readonly string[]) {
+  return z.enum(names as [string, ...string[]]);
+}
+
+// Every credential field on every block: a vault entry NAME, or a `vault:<id>` ref when two entries
+// share a name. Never a secret — the MCP boundary resolves it before anything is stored.
+const credentialRef = () =>
+  z
+    .string()
+    .nullable()
+    .optional()
+    .describe("vault entry NAME or vault:<id>; null clears it");
+
+const baseURL = () =>
+  z
+    .string()
+    .nullable()
+    .optional()
+    .describe("compatible / self-hosted endpoint; null = the provider's own");
+
+const modelId = () =>
+  z.string().optional().describe("empty = the provider's default");
+
+const debounce = z.looseObject({
+  enabled: z.boolean().optional(),
+  windowSeconds: z
+    .number()
+    .optional()
+    .describe("3-120, clamped, after the LAST inbound message"),
+  maxMessagesPerBurst: z.number().optional().describe("1-50, clamped"),
+  maxWindowSeconds: z
+    .number()
+    .optional()
+    .describe("up to 600, clamped, from the START of the burst"),
+});
+
+const stt = z.looseObject({
+  enabled: z.boolean().optional(),
+  provider: oneOf(STT_PROVIDER_NAMES).optional(),
+  model: modelId(),
+  language: z.string().optional().describe('ISO-639-1, e.g. "pt"'),
+  credentialRef: credentialRef(),
+  baseURL: baseURL(),
+});
+
+const tts = z.looseObject({
+  mode: oneOf(TTS_MODES)
+    .optional()
+    .describe("mirror = audio when the customer sent audio"),
+  provider: oneOf(TTS_PROVIDER_NAMES).optional(),
+  model: modelId(),
+  voice: z
+    .string()
+    .optional()
+    .describe("empty = the default; ElevenLabs requires one"),
+  credentialRef: credentialRef(),
+  baseURL: baseURL(),
+  normalize: z
+    .boolean()
+    .optional()
+    .describe("rewrite the reply for natural speech first"),
+  normalizeProvider: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("the rewrite's own model; null inherits the agent's"),
+  normalizeModel: z.string().nullable().optional(),
+  normalizeCredentialRef: credentialRef(),
+  normalizeBaseURL: baseURL(),
+  stability: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("0-1, clamped; null = the voice's own"),
+  similarityBoost: z.number().nullable().optional().describe("0-1, clamped"),
+  style: z.number().nullable().optional().describe("0-1, clamped"),
+  speed: z.number().nullable().optional().describe("0.25-4, clamped"),
+  speakerBoost: z.boolean().nullable().optional(),
+});
+
+const vision = z.looseObject({
+  enabled: z.boolean().optional(),
+  provider: oneOf(VISION_PROVIDER_NAMES).optional(),
+  model: modelId(),
+  credentialRef: credentialRef(),
+  baseURL: baseURL(),
+  extractionPrompt: z
+    .string()
+    .optional()
+    .describe("what the vision model is asked to extract"),
+});
+
+const split = z.looseObject({
+  enabled: z.boolean().optional(),
+  maxChars: z.number().optional().describe("balloon size, 80-4000, clamped"),
+  typingWpm: z.number().optional().describe("40-1000, clamped"),
+  minDelayMs: z.number().optional().describe("0-10000, clamped"),
+  maxDelayMs: z.number().optional().describe("0-30000, clamped"),
+  maxChunks: z.number().optional().describe("1-12, clamped"),
+});
+
+const serviceWindow = z.looseObject({
+  enabled: z.boolean().optional(),
+  windowHours: z.number().optional().describe("1-168, clamped"),
+  templateName: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("approved HSM outside the window; null = a private note"),
+  templateLanguage: z.string().optional().describe('e.g. "pt_BR"'),
+  templateCategory: z.string().optional().describe('e.g. "UTILITY"'),
+  templateParams: z
+    .array(z.string())
+    .optional()
+    .describe("positional body params; {contact_name} interpolates"),
+  templateContent: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("dashboard-facing only; the send uses the params"),
+});
+
+const grounding = z.looseObject({
+  maxDistance: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("cosine ceiling for a knowledge hit; null = no filter"),
+});
+
+const followUpStep = z.looseObject({
+  delayValue: z.number().optional().describe("≥ 1, clamped"),
+  delayUnit: oneOf(FOLLOW_UP_DELAY_UNITS).optional(),
+  instructions: z
+    .string()
+    .optional()
+    .describe("what THIS step's nudge should say"),
+  assignLabels: z
+    .array(z.string())
+    .optional()
+    .describe("merged into the conversation's labels, never replacing"),
+  resolve: z.boolean().optional().describe("honored on the LAST step only"),
+});
+
+const followUp = z.looseObject({
+  enabled: z.boolean().optional(),
+  pauseWhileAppointment: z
+    .boolean()
+    .optional()
+    .describe("hold while a reminder is scheduled; default true"),
+  steps: z
+    .array(followUpStep)
+    .optional()
+    .describe("replaced as a unit, not merged; first 10 kept"),
+});
+
+const handoff = z.looseObject({
+  mode: oneOf(HANDOFF_MODES)
+    .optional()
+    .describe(
+      "route = Chatwoot's own assignment; agent_choice = the model names a target",
+    ),
+  targetAgentId: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("Chatwoot agent id, for pinned; wins over the team"),
+  targetTeamId: z.number().nullable().optional().describe("Chatwoot team id"),
+  targetInstanceId: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("the ChatwootInstance the pinned target came from"),
+  instructions: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("appended to the handoff_to_human tool description"),
+});
+
+const limits = z.looseObject({
+  maxToolCalls: z
+    .number()
+    .optional()
+    .describe("tool executions in ONE turn; 1-50, clamped"),
+  maxHistoryTokens: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("2000-1000000, clamped; null/0/absent = OFF"),
+});
+
+const availability = z.looseObject({
+  enabled: z.boolean().optional(),
+  awayMessage: z
+    .string()
+    .optional()
+    .describe(
+      "what the CUSTOMER gets outside the schedule, once per local day; {proximo_atendimento}/{next_open} interpolate the next opening",
+    ),
+});
+
+const channelRedirect = z.looseObject({
+  enabled: z.boolean().optional(),
+  entryInboxId: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("the WhatsApp chatwootInboxId leads arrive on"),
+  widgetInboxId: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("the widget chatwootInboxId; set via the console"),
+  redirectMessage: z.string().optional().describe("must carry {link}"),
+  resendDelayValue: z.number().optional().describe("≥ 1, clamped"),
+  resendDelayUnit: oneOf(REDIRECT_DELAY_UNITS).optional(),
+  maxResends: z.number().optional().describe("0-10, clamped"),
+  openWidget: z.boolean().optional(),
+  cloneWaMessage: z
+    .boolean()
+    .optional()
+    .describe("replay it as the first widget message"),
+  chatFollowupEnabled: z.boolean().optional(),
+  chatFollowupDelayValue: z.number().optional().describe("≥ 1, clamped"),
+  chatFollowupDelayUnit: oneOf(REDIRECT_DELAY_UNITS).optional(),
+  chatFollowupInstructions: z.string().optional(),
+  waFollowupEnabled: z.boolean().optional(),
+  waFollowupDelayValue: z.number().optional().describe("≥ 1, clamped"),
+  waFollowupDelayUnit: oneOf(REDIRECT_DELAY_UNITS).optional(),
+  waFollowupMessage: z.string().optional().describe("must carry {link}"),
+  closingEnabled: z.boolean().optional(),
+  closingDelayValue: z.number().optional().describe("≥ 1, clamped"),
+  closingDelayUnit: oneOf(REDIRECT_DELAY_UNITS).optional(),
+  closingMessage: z
+    .string()
+    .optional()
+    .describe("fixed, posted on BOTH channels"),
+});
+
+// The Chatwoot attribute KEYS injected into the prompt, per scope. The keys themselves are the
+// tenant's own, so they stay free strings; what is fixed is the three scopes.
+const attributeKeys = () =>
+  z.array(z.string()).optional().describe("first 20 kept; empty disables");
+
+const attributeContext = z.looseObject({
+  conversation: attributeKeys(),
+  contact: attributeKeys(),
+  task: attributeKeys(),
+});
+
+const sendImage = z.looseObject({
+  allowedHosts: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'one hostname per entry ("*." covers a domain and its subdomains); empty refuses every send_image call',
+    ),
+});
+
+const observability = z.looseObject({
+  logToolValues: z
+    .boolean()
+    .optional()
+    .describe("tool arguments as VALUES instead of shapes"),
+});
+
+const memory = z.looseObject({
+  compaction: z
+    .looseObject({
+      enabled: z
+        .boolean()
+        .optional()
+        .describe("summarize a closed attendance; default TRUE"),
+    })
+    .optional(),
+});
+
+// The 16 behavior blocks of `agent_settings_set`, each a partial patch over the stored block.
+export const BEHAVIOR_PATCH_SHAPE = {
+  debounce: debounce.optional(),
+  stt: stt.optional(),
+  tts: tts.optional(),
+  vision: vision.optional(),
+  split: split.optional(),
+  serviceWindow: serviceWindow.optional(),
+  grounding: grounding.optional(),
+  followUp: followUp.optional(),
+  handoff: handoff.optional(),
+  limits: limits.optional(),
+  availability: availability.optional(),
+  channelRedirect: channelRedirect.optional(),
+  attributeContext: attributeContext.optional(),
+  sendImage: sendImage.optional(),
+  observability: observability.optional(),
+  memory: memory.optional(),
+} satisfies z.ZodRawShape;
+
+export type BehaviorPatchArgs = z.infer<
+  z.ZodObject<typeof BEHAVIOR_PATCH_SHAPE>
+>;

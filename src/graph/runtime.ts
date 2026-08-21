@@ -387,6 +387,88 @@ export async function runLoadedTurn(
     makeModel: params.deps?.makeModel,
   });
 
+  // One piece of customer-facing text, delivered the way this agent delivers text: as audio when the
+  // modality calls for it, otherwise split into typing-paced balloons. Returns how many balloons
+  // landed (1 for audio). TTS is best-effort — a synthesis failure falls back to text and never
+  // drops the message.
+  const deliverText = async (
+    text: string,
+    voiceReply: boolean | null,
+  ): Promise<number> => {
+    const wantAudio = shouldReplyWithAudio(
+      loaded.ttsConfig.mode,
+      params.userSentAudio ?? false,
+      voiceReply,
+    );
+    if (wantAudio) {
+      try {
+        // Opt-in LLM speech normalization (or the injected normalizer in tests). Its callbacks are
+        // built fresh rather than reusing this turn's array: same usage/trace identity, different
+        // node and model, and a nested Langfuse generation instead of a second root update.
+        const normalizeSpeech =
+          params.deps?.normalizeSpeech ??
+          buildSpeechNormalizer(loaded, {
+            makeModel: params.deps?.makeModel,
+            callbacks: {
+              tenantId,
+              threadId,
+              base,
+              persistUsage: params.deps?.persistUsage,
+              turnId: flow.turnId,
+            },
+            flow,
+          });
+        const tts = await synthesizeReply({
+          tenantId,
+          cfg: loaded.ttsConfig,
+          text,
+          channelType: loaded.channelType,
+          base,
+          deps: { fetchImpl: params.deps?.ttsFetch, normalizeSpeech },
+          flow,
+        });
+        if (tts) {
+          await client.sendAudioMessage(
+            conversationId,
+            tts.audio,
+            tts.fileName,
+            tts.mime,
+            { transcribedText: text },
+          );
+          logger.info(
+            "chatwoot agent replied (audio): conv=%s thread=%s len=%d",
+            String(conversationId),
+            threadId,
+            text.length,
+          );
+          return 1;
+        }
+      } catch (e) {
+        logger.warn(
+          "tts failed (conv=%s), falling back to text: %s",
+          String(conversationId),
+          e instanceof Error ? e.message : String(e),
+        );
+      }
+    }
+    const balloons = await deliverReply(
+      client,
+      conversationId,
+      text,
+      loaded.splitConfig,
+      params.deps?.sleep,
+      flow,
+    );
+    logger.info(
+      "chatwoot agent replied: conv=%s thread=%s len=%d balloons=%d",
+      String(conversationId),
+      threadId,
+      text.length,
+      balloons,
+    );
+    return balloons;
+  };
+
   // How many balloons the (text) reply was delivered as, surfaced on `finished` so the UI can hold a
   // "delivering" indicator until the paced balloons land. 1 for audio / single send; null on no post.
   let deliveredBalloons: number | null = null;
@@ -582,10 +664,50 @@ export async function runLoadedTurn(
     // have different answers exactly there.
     if (handoffState.completed) turnState.resolveRequested = false;
     const handedOff = handoffAnsweredTheTurn(handoffState);
-    // The handoff SUPPLIES the turn's text rather than suppressing it: the model's own final message
-    // is the duplicate (#158), and the closing line is what the customer is owed. From here it is an
-    // ordinary reply and every gate below treats it as one.
-    if (handedOff) reply = handoffState.customerMessage as string;
+    // The transfer is done and this is the sentence it promised the customer. It is delivered HERE,
+    // before every gate and before every read that can fail, because nothing downstream may take it
+    // away and nothing downstream can be retried into delivering it: the conversation reads `open`
+    // now, so each retry path stops at its own ownership gate and the line would be lost for good.
+    // Three review findings were the same loss arriving through three different failures, which is
+    // what moved the delivery out of the flow instead of fencing each failure.
+    //
+    // This is also exactly where the tool used to send it, so nothing about the order changed for the
+    // customer. What changed is that it is screened, spoken and paced on the way out. The model's own
+    // final text is the duplicate #158 is about and is dropped; everything ELSE the turn produced
+    // still passes every gate below, now with no text of its own.
+    if (handedOff) {
+      reply = "";
+      const line = handoffState.customerMessage as string;
+      const guarded = await runGuardrail("output", line);
+      const screenedLine = guarded ? guarded.reply : line;
+      if (screenedLine !== null) {
+        try {
+          // The pre-turn voice preference, not the fresh one: reading it live is one of the failures
+          // this delivery moved above. A customer who asked for audio DURING this same turn and was
+          // handed off in it reads the closing line instead of hearing it.
+          deliveredBalloons = await deliverText(
+            screenedLine,
+            loaded.contactVoiceReply,
+          );
+        } catch (e) {
+          // Best-effort, the semantics the line had while the tool sent it. The transfer succeeded,
+          // so branding the turn as errored would stamp lastError and announce "a human has to take
+          // over" on a thread a human already owns.
+          logger.warn(
+            "handoff closing line failed to deliver (conv=%s): %s",
+            String(conversationId),
+            e instanceof Error ? e.message : String(e),
+          );
+          emitFlowEvent(flow, {
+            stage: "split",
+            status: "error",
+            level: "warn",
+            detail: { outcome: "handoff_closing_line_undelivered" },
+            errorMessage: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+    }
 
     // Re-check the live assignee (mirror) before posting: a human may have taken over during
     // the LLM call. NOTE: small TOCTOU between this read and the POST (the post is network and
@@ -623,33 +745,23 @@ export async function runLoadedTurn(
       }
       return { ours, voiceReply };
     });
-    // Both gates below drop a reply that is no longer wanted: a human took the conversation, or a
-    // newer customer message made this answer obsolete. The sentence the transfer committed to is
-    // neither — by the time these run the transfer is done and irreversible, so dropping it would
-    // leave the customer moved to a queue in silence, which is the exact failure the line exists to
-    // prevent. It also matches what shipped before #160, when the tool sent it before either gate
-    // could see it. The model's own final text still fails closed, which is the hole #159 closed.
+    // Both gates below drop what is no longer wanted: a human took the conversation, or a newer
+    // customer message made this answer obsolete. Neither can reach the closing line, which left
+    // before them — and neither has a carve-out, because a handed-off turn arrives here holding only
+    // what it has no special claim to: a queued photo is not something the transfer promised, and
+    // over a human who is already answering it is exactly what should not land.
     if (!recheck.ours) {
       emitFlowEvent(flow, {
         stage: "handoff",
         status: "ok",
         detail: { outcome: "taken_over" },
       });
-      if (!handedOff) return "taken-over";
-      // Our own transfer reads exactly like this, and the mirror records no reason for a status
-      // change, so a human who accepted the conversation in the window between the two is
-      // indistinguishable from it. The carve-out is therefore as narrow as the uncertainty: ONLY
-      // what the transfer promised goes out. A photo the model queued is not something it promised,
-      // and it would land on top of a human already answering.
-      turnState.pendingImages.length = 0;
+      return "taken-over";
     }
 
     // Last-moment supersede gate (debounce): a newer message arrived mid-turn → drop this reply
-    // AND any deferred resolve intent (the re-armed flush re-decides over the full burst). A handed
-    // off turn is exempt for the reason above, and the re-armed flush would not cover it: it reads
-    // the conversation as `open`, so it re-decides nothing.
-    if (!handedOff && params.shouldPost && !(await params.shouldPost()))
-      return "superseded";
+    // AND any deferred resolve intent (the re-armed flush re-decides over the full burst).
+    if (params.shouldPost && !(await params.shouldPost())) return "superseded";
 
     // OUTPUT guardrail: screen the model's reply BEFORE delivery. On a violation, replace it with the
     // template / a guardrails-generated safe reply, or suppress the send entirely ("silent"). A
@@ -707,109 +819,7 @@ export async function runLoadedTurn(
     // reply must not swallow the attachment.
     await deliverPendingImages(client, conversationId, turnState, flow);
 
-    // Reply modality: audio (TTS) per the agent's mode + the customer's modality/preference, else
-    // text. TTS is best-effort — any synthesis failure falls back to a text reply, never drops it.
-    const wantAudio = shouldReplyWithAudio(
-      loaded.ttsConfig.mode,
-      params.userSentAudio ?? false,
-      recheck.voiceReply,
-    );
-    if (wantAudio) {
-      try {
-        // Opt-in LLM speech normalization (or the injected normalizer in tests). Its callbacks are
-        // built fresh rather than reusing this turn's array: same usage/trace identity, different
-        // node and model, and a nested Langfuse generation instead of a second root update.
-        const normalizeSpeech =
-          params.deps?.normalizeSpeech ??
-          buildSpeechNormalizer(loaded, {
-            makeModel: params.deps?.makeModel,
-            callbacks: {
-              tenantId,
-              threadId,
-              base,
-              persistUsage: params.deps?.persistUsage,
-              turnId: flow.turnId,
-            },
-            flow,
-          });
-        const tts = await synthesizeReply({
-          tenantId,
-          cfg: loaded.ttsConfig,
-          text: reply,
-          channelType: loaded.channelType,
-          base,
-          deps: { fetchImpl: params.deps?.ttsFetch, normalizeSpeech },
-          flow,
-        });
-        if (tts) {
-          await client.sendAudioMessage(
-            conversationId,
-            tts.audio,
-            tts.fileName,
-            tts.mime,
-            { transcribedText: reply },
-          );
-          logger.info(
-            "chatwoot agent replied (audio): conv=%s thread=%s len=%d",
-            String(conversationId),
-            threadId,
-            reply.length,
-          );
-          deliveredBalloons = 1;
-          await applyDeferredResolve(client, conversationId, turnState, flow);
-          return "posted";
-        }
-      } catch (e) {
-        logger.warn(
-          "tts failed (conv=%s), falling back to text: %s",
-          String(conversationId),
-          e instanceof Error ? e.message : String(e),
-        );
-      }
-    }
-
-    // Post the reply via the bot token (network), reusing the client built for the tools. Split +
-    // typing-paced into balloons when the agent enables it (humanized delivery), else a single send.
-    //
-    // A handed-off turn degrades a delivery failure to a warn instead of throwing, which is the same
-    // rule the queued image follows above and the same semantics the closing line had while the tool
-    // sent it (swallowed, reported as a side effect). The transfer already succeeded: branding the
-    // turn as errored would stamp lastError and announce "a human has to take over" on a thread a
-    // human already owns.
-    let balloons: number;
-    try {
-      balloons = await deliverReply(
-        client,
-        conversationId,
-        reply,
-        loaded.splitConfig,
-        params.deps?.sleep,
-        flow,
-      );
-    } catch (e) {
-      if (!handedOff) throw e;
-      logger.warn(
-        "handoff closing line failed to deliver (conv=%s): %s",
-        String(conversationId),
-        e instanceof Error ? e.message : String(e),
-      );
-      emitFlowEvent(flow, {
-        stage: "split",
-        status: "error",
-        level: "warn",
-        detail: { outcome: "handoff_closing_line_undelivered" },
-        errorMessage: e instanceof Error ? e.message : String(e),
-      });
-      return "posted";
-    }
-    logger.info(
-      "chatwoot agent replied: conv=%s thread=%s len=%d balloons=%d",
-      String(conversationId),
-      threadId,
-      reply.length,
-      balloons,
-    );
-    deliveredBalloons = balloons;
+    deliveredBalloons = await deliverText(reply, recheck.voiceReply);
     await applyDeferredResolve(client, conversationId, turnState, flow);
     return "posted";
   } finally {

@@ -661,7 +661,7 @@ export async function runAgentNudge(
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
   const replyRaw = lastAssistantText(result.messages);
   const silent = isNudgeSilent(replyRaw);
-  let reply = silent
+  const reply = silent
     ? ""
     : replyRaw.split(FOLLOWUP_SKIP_SENTINEL).join("").trim();
 
@@ -673,39 +673,42 @@ export async function runAgentNudge(
   // human-owned conversation downgrades to a private note rather than aborting).
   // Our OWN transfer makes every ownership check below read "not ours", because it is: the tool set
   // the conversation to `open` moments ago. Those checks exist to catch a HUMAN who took over while
-  // the model was generating, and they keep failing closed for that — the carve-out is keyed on our
-  // own state, never on what the check sees, which cannot tell the two apart. It also requires a
-  // closing line to deliver, so a transfer with nothing to say still ends the episode right here.
+  // A completed transfer makes its closing line deliverable whatever these checks say, and whether
+  // or not they can run at all: the transfer already happened, that sentence is the last thing the
+  // bot owes the customer, and no later attempt can deliver it — the conversation reads `open` now,
+  // so every retry path stops at its own ownership gate. "Never message over a human" is the rule
+  // these checks exist for, and it does not reach the one conversation we just handed to one. Every
+  // OTHER kind of proactive text is still decided by them.
   const handedOff = handoffAnsweredTheTurn(handoffState);
   let canMessagePost: boolean;
-  if (params.requireLiveBotOwnership) {
+  if (handedOff) {
+    canMessagePost = true;
+  } else if (params.requireLiveBotOwnership) {
     const post = await probeLiveOwnership();
     if (post === "unavailable") return "live-unavailable";
-    if (post === "not-owned" && !handedOff) return "stale";
+    if (post === "not-owned") return "stale";
     canMessagePost = true;
   } else {
-    canMessagePost =
-      handedOff ||
-      (await runScopedOn(base, sysCtx(tenantId), async (db) => {
-        const conv = await db.conversation.findUnique({
-          where: {
-            tenantId_chatwootInstanceId_chatwootConversationId: {
-              tenantId,
-              chatwootInstanceId: instanceId,
-              chatwootConversationId: conversationId,
-            },
+    canMessagePost = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const conv = await db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
           },
-          select: { assigneeType: true, status: true, assigneeId: true },
-        });
-        return shouldBotHandle(
-          {
-            assigneeType: conv?.assigneeType ?? null,
-            assigneeId: conv?.assigneeId ?? null,
-            status: conv?.status ?? null,
-          },
-          { ourAgentBotId: cfg.agentBotId },
-        );
-      }));
+        },
+        select: { assigneeType: true, status: true, assigneeId: true },
+      });
+      return shouldBotHandle(
+        {
+          assigneeType: conv?.assigneeType ?? null,
+          assigneeId: conv?.assigneeId ?? null,
+          status: conv?.status ?? null,
+        },
+        { ourAgentBotId: cfg.agentBotId },
+      );
+    });
   }
 
   // Deterministic post-actions applied by the SYSTEM whenever the step fires and the bot still owns
@@ -751,49 +754,97 @@ export async function runAgentNudge(
     }
   };
 
-  // A handoff SUPPLIES this turn's customer-facing text, exactly as on the reactive path: the tool
-  // records the closing line and the caller delivers it, so it reaches the customer through the same
-  // gates and the same branches as any proactive message — including the 24h window ones below,
-  // which the tool's own send used to walk straight past.
-  if (handedOff) reply = handoffState.customerMessage as string;
+  // OUTPUT guardrail for proactive text (#160). A follow-up is a message the customer never asked
+  // for, which makes it the last one that should go out unmoderated — and until this unit existed
+  // the proactive path never called the guardrails module at all. Same gate the reactive turn uses,
+  // minus the customer's message, because there is none: gate.ts explains why that absence has to
+  // drop the relevance check rather than merely skip its call.
+  //
+  // Returns the text to send, or null when the policy suppressed it. Called ONLY where the text is
+  // about to reach the CUSTOMER: the branches that fall back to a private note are writing to the
+  // operator, and screening those would let a customer-facing template replace an internal notice,
+  // or a `silent` verdict delete the alert that explains the bot's silence.
+  const screenOutput = async (text: string): Promise<string | null> => {
+    const verdict = await buildGuardrailGate({
+      cfg: cfg.guardrails,
+      apiKey: cfg.guardrailsApiKey,
+      credentialBaseUrl: cfg.guardrailsCredentialBaseUrl,
+      client,
+      conversationId,
+      flow,
+      systemPrompt: cfg.systemPrompt,
+      makeModel: params.deps?.makeModel,
+    })("output", text);
+    return verdict ? verdict.reply : text;
+  };
+
+  // The transfer is done and this is the sentence it promised the customer. It gets its own path,
+  // because every question the branches below answer is about the MODEL's proactive text and none of
+  // them applies here: there is no silence to respect (the transfer spoke for this turn), and no
+  // ownership left to protect (we are the ones who just handed the conversation over). It does
+  // respect the 24h service window, which the tool's own send used to walk straight past.
+  if (handedOff) {
+    const line = handoffState.customerMessage as string;
+    const mode = proactiveSendMode(
+      cfg.serviceWindowConfig,
+      loaded.lastInboundAt,
+      new Date(),
+      { channelType: loaded.channelType, provider: loaded.provider },
+    );
+    if (mode === "freeform") {
+      const screened = await screenOutput(line);
+      if (screened === null) {
+        await applyPostActions();
+        return "silent";
+      }
+      try {
+        await client.sendMessage(conversationId, screened);
+      } catch (e) {
+        // Best-effort, the semantics the line had while the tool sent it. No later attempt can
+        // deliver it: the transfer set the conversation to `open`, so this job's retry stops at the
+        // ownership check above, and throwing would only cost the operator an alert on a thread that
+        // was correctly handed to a human.
+        logger.warn(
+          "agentNudge handoff closing line failed to deliver (conv=%s): %s",
+          String(conversationId),
+          e instanceof Error ? e.message : String(e),
+        );
+        emitFlowEvent(flow, {
+          stage: "split",
+          status: "error",
+          level: "warn",
+          detail: { outcome: "handoff_closing_line_undelivered" },
+          errorMessage: e instanceof Error ? e.message : String(e),
+        });
+      }
+      logger.info(
+        "agentNudge handed off: conv=%s source=%s",
+        String(conversationId),
+        params.nudge.source,
+      );
+      markFollowUp("messaged");
+      await applyPostActions();
+      return "messaged";
+    }
+    // Outside the window, a free-form send is the one the provider refuses and an approved template
+    // says nothing about a transfer, so neither reaches the customer. The operator gets the sentence
+    // instead, explained, exactly like any other proactive text that could not be sent.
+    await client.sendPrivateNote(
+      conversationId,
+      `${OUTSIDE_WINDOW_NOTE_PREFIX}${line}`,
+    );
+    markFollowUp("noted-window");
+    await applyPostActions();
+    return "noted-window";
+  }
 
   // Agent stayed silent: no message, but the deterministic actions still fire (covers "no reply on
   // the final follow-up: label + resolve").
-  //
-  // Asks only whether there is text to send. `silent` is what BLANKED `reply` a few lines up, so
-  // testing it here was a second reading of the same fact until a handoff started supplying the
-  // text: a model that hands off and then says nothing of its own is silent AND has a line to
-  // deliver, and the customer would have been transferred without a word.
-  if (!reply) {
+  if (silent || !reply) {
     // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
     // ours to close, even when the closing line never made it out.
     await applyPostActions();
     return "silent";
-  }
-
-  // OUTPUT guardrail on proactive text (#160). A follow-up is a message the customer never asked
-  // for, which makes it the last one that should go out unmoderated — and until this line the
-  // proactive path never called the guardrails module at all. The gate is the same unit the
-  // reactive turn uses, minus the customer's message, because there is none: see gate.ts for why
-  // that absence has to drop the relevance check rather than merely skip its call.
-  const outGuard = await buildGuardrailGate({
-    cfg: cfg.guardrails,
-    apiKey: cfg.guardrailsApiKey,
-    credentialBaseUrl: cfg.guardrailsCredentialBaseUrl,
-    client,
-    conversationId,
-    flow,
-    systemPrompt: cfg.systemPrompt,
-    makeModel: params.deps?.makeModel,
-  })("output", reply);
-  if (outGuard) {
-    // Suppressed: nothing reaches the customer, and the deterministic actions run as they do on any
-    // silent step. A handoff still forfeits the resolve — the transfer happened either way.
-    if (outGuard.reply === null) {
-      await applyPostActions();
-      return "silent";
-    }
-    reply = outGuard.reply;
   }
 
   // Message the customer ONLY when the bot still owns the conversation AND we were in message mode;
@@ -808,28 +859,15 @@ export async function runAgentNudge(
       { channelType: loaded.channelType, provider: loaded.provider },
     );
     if (mode === "freeform") {
-      try {
-        await client.sendMessage(conversationId, reply);
-      } catch (e) {
-        // A follow-up that did not hand off still throws, so the job's retry can deliver it. One
-        // that did cannot be retried into existence: the transfer set the conversation to `open`, so
-        // the next attempt stops at the ownership gate above and the line would be lost for good.
-        // Degrading to a warn is the same rule the reactive runtime applies, and the same semantics
-        // the closing line had while the tool sent it best-effort.
-        if (!handedOff) throw e;
-        logger.warn(
-          "agentNudge handoff closing line failed to deliver (conv=%s): %s",
-          String(conversationId),
-          e instanceof Error ? e.message : String(e),
-        );
-        emitFlowEvent(flow, {
-          stage: "split",
-          status: "error",
-          level: "warn",
-          detail: { outcome: "handoff_closing_line_undelivered" },
-          errorMessage: e instanceof Error ? e.message : String(e),
-        });
+      // The one branch whose text the CUSTOMER reads, so the one branch that is screened. A failed
+      // send still throws here: nothing has been done to the conversation that a retry cannot
+      // repeat, so the job should run again rather than swallow the miss.
+      const screened = await screenOutput(reply);
+      if (screened === null) {
+        await applyPostActions();
+        return "silent";
       }
+      await client.sendMessage(conversationId, screened);
       logger.info(
         "agentNudge messaged: conv=%s source=%s",
         String(conversationId),

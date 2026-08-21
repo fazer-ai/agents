@@ -855,6 +855,49 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(row?.status).toBe("pending");
   });
 
+  // The shape three review findings arrived in: something between the transfer and the delivery
+  // fails, and the sentence the transfer promised is lost for good, because the conversation now
+  // reads `open` and every retry path stops at its own ownership gate. Here the supersede re-fetch
+  // throws, which ends the turn — and the line is out before it, which is the whole point of
+  // delivering it where nothing downstream can reach it.
+  test("a failure after the transfer cannot take the closing line back", async () => {
+    await seedConversation(9703, null);
+    const calls: Array<[string, number, string]> = [];
+    const client = {
+      getMessages: async () => {
+        throw new Error("chatwoot 503");
+      },
+      sendMessage: async (c: number, content: string) => {
+        calls.push(["sendMessage", c, content]);
+        return {};
+      },
+      toggleStatus: async (c: number, status: string) => {
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9703 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffThenReplyModel(
+            "Vou te encaminhar!",
+            "Um humano já te atende.",
+          ) as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    }).catch(() => undefined);
+    expect(calls).toEqual([
+      ["toggleStatus", 9703, "open"],
+      ["sendMessage", 9703, "Um humano já te atende."],
+    ]);
+  });
+
   // The other half of the predicate, and the reason it is two conditions and not one. A transfer with
   // nothing to say does not own the turn's text, so the model's own final message is the only thing
   // the customer would get and it still has to go out. Reading `completed` alone here would drop it
@@ -897,8 +940,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   });
 
   // A photo the model queued earlier in the same turn is not a second copy of the closing line, and
-  // the tool already told the model it was on its way. With the runtime owning both, the handoff
-  // lands in the documented order every other turn uses: the picture, then the sentence about it.
+  // the tool already told the model it was on its way. The closing line goes out first because it
+  // leaves before the gates the photo still has to pass — the same order the tool produced before
+  // #160. "Image before the text that talks about it" is a rule about the model's own reply, and a
+  // handed-off turn has none.
   test("a handoff still delivers an image queued earlier in the same turn", async () => {
     await allowImageHost();
     await seedConversation(998, null);
@@ -924,8 +969,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(outcome).toBe("posted");
     expect(calls).toEqual([
       ["toggleStatus", 998, "open"],
-      ["sendFileAttachment", 998, "imagem.png"],
       ["sendMessage", 998, "Segue a foto. Vou te passar para um humano."],
+      ["sendFileAttachment", 998, "imagem.png"],
     ]);
   });
 
@@ -1012,14 +1057,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
-  // The bound on the carve-out, pinned so it is a decision and not a surprise. Once the mirror reads
-  // "not ours", our own transfer and a human who accepted the conversation in the same window are
-  // indistinguishable — the mirror records no reason for a status change. So only what the transfer
-  // PROMISED goes out: the closing line, which the tool used to send before any gate could see it.
-  // The queued photo was never part of that promise and fails closed with everything else, exactly
-  // as it did before #160. A turn that did NOT hand off stops here entirely ("taken over mid-turn
-  // discards the resolve intent" below).
-  test("past the takeover gate a handoff delivers its line and nothing else", async () => {
+  // The bound, pinned so it is a decision and not a surprise. The closing line left before this gate
+  // and is therefore untouched by it; everything the turn still holds when it arrives here does stop,
+  // photo included. Once the mirror reads "not ours" our own transfer and a human who accepted the
+  // conversation in the same window are indistinguishable — it records no reason for a status change
+  // — so the gate keeps failing closed for the one that matters, and the turn reports the takeover
+  // it saw. Identical to what shipped before #160, when the tool sent the line and the gate stopped
+  // the rest.
+  test("the takeover gate still stops everything the closing line did not carry", async () => {
     await allowImageHost();
     await seedConversation(9988, null);
     const calls: Array<[string, number, string]> = [];
@@ -1059,7 +1104,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         imageDeps,
       },
     });
-    expect(outcome).toBe("posted");
+    expect(outcome).toBe("taken-over");
     expect(calls).toEqual([
       ["toggleStatus", 9988, "open"],
       ["sendMessage", 9988, "Segue a foto. Vou te passar para um humano."],
@@ -1556,9 +1601,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   });
 
   // The bound on the case above. Supersede drops a reply the newest message made obsolete, and the
-  // re-armed flush answers the whole burst instead. A handoff is not obsolete and the flush will not
-  // cover it: by then the conversation reads `open`, so the flush re-decides nothing and the closing
-  // line the transfer already committed to would be lost for good.
+  // re-armed flush answers the whole burst instead. It cannot reach the closing line, which left
+  // before it — and it must not: by then the conversation reads `open`, so the flush re-decides
+  // nothing and the sentence the transfer promised would be lost for good. The turn still reports
+  // the supersede it saw.
   test("a newer message mid-turn does NOT supersede a handoff's closing line", async () => {
     await seedConversation(9701, null);
     const calls: Array<[string, number, string]> = [];
@@ -1599,7 +1645,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         checkpointer: new MemorySaver(),
       },
     });
-    expect(outcome).toBe("posted");
+    expect(outcome).toBe("superseded");
     expect(calls).toEqual([
       ["toggleStatus", 9701, "open"],
       ["sendMessage", 9701, "Um humano já te atende."],

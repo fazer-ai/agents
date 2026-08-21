@@ -841,6 +841,104 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.resolved).toEqual([9905]);
   });
 
+  // The live ownership probe failing is not the same as the bot having lost the conversation, and
+  // after a transfer neither answer may take the closing line away: the probe is skipped outright,
+  // so a transient Chatwoot GET cannot end the episode holding a sentence nobody will ever deliver.
+  test("a handoff delivers its closing line even when the live probe cannot run", async () => {
+    await seedConv(9910, null);
+    const s = stub();
+    const inner = await s.makeClient();
+    let probes = 0;
+    const client = {
+      ...inner,
+      // The PRE-invoke probe answers (an unavailable one there correctly stops the turn before any
+      // handoff exists). The one AFTER the model has already transferred is the failure under test.
+      getConversation: async (c: number) => {
+        if (probes++ > 0) throw new Error("chatwoot 503");
+        return { id: c, status: "pending", meta: {} };
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9910`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      requireLiveBotOwnership: true,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffThenReplyModel(
+            "Vou te encaminhar!",
+            "Um humano vai te atender.",
+          ) as never,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+    expect(s.messages).toEqual([[9910, "Um humano vai te atender."]]);
+  });
+
+  // The private note is written to the OPERATOR, so the customer-output policy has no business
+  // rewriting or deleting it: a `silent` verdict would remove the alert that explains why the bot
+  // stayed quiet, and a `generated` one would replace an internal notice with a customer-facing
+  // sentence.
+  test("the outside-window operator note is not screened by the customer policy", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9965, null, new Date(Date.now() - 48 * 3_600_000));
+        const s = stub();
+        const seen: string[] = [];
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9965`,
+          nudge: { source: "ASAAS", status: "paid" },
+          postActions: { assignLabels: ["follow-up"] },
+          base: appDb,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: true,
+                categories: ["toxicity"],
+                rationale: "rude",
+                suggestedReply: null,
+              }),
+              new FakeListChatModel({ responses: ["Pagamento confirmado!"] }),
+              seen,
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("noted-window");
+        expect(s.notes).toEqual([
+          [9965, `${OUTSIDE_WINDOW_NOTE_PREFIX}Pagamento confirmado!`],
+        ]);
+        // The judge was never even asked: this text was never going to the customer.
+        expect(seen).toEqual([]);
+      },
+    );
+  });
+
   // A follow-up that did not hand off throws on a failed send, so the job's retry can deliver it. A
   // handed-off one cannot be retried into existence — the transfer set the conversation to `open`,
   // so the next attempt stops at the ownership gate — and throwing would only cost the operator an

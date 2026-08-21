@@ -89,10 +89,16 @@ export const writeBody = t.Object({
         "Query-string params (any method); values may contain {{param}}/{{context}}/{{secret}} placeholders.",
     }),
   ),
+  // NOTE: deliberately a permissive Record, not a union of the three body modes. Declaring the modes
+  // structurally is the better contract on paper and is worse here: Elysia's `normalize` STRIPS what
+  // a schema does not declare (see the riskTier case in tools-controller.test.ts), so a body in an
+  // unsupported shape came back 200 with `body: {}` — the operator's payload silently emptied, which
+  // is issue #150 itself moved one layer earlier. Passing it through intact is what lets the service
+  // refuse it with a message that says what to write instead.
   body: t.Optional(
     t.Record(t.String(), t.Unknown(), {
       description:
-        "Request body template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
+        'Request body. `{"mode":"kv","rows":[{"key":…,"value":…}]}` assembles a flat JSON payload from the rows; `{"mode":"raw","raw":"…"}` sends the template as written, which is how a NESTED payload is built. In both, {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time, and single-brace {param} is normalized when it matches a declared input field or context variable. `{}` means no body. Any other shape is refused: a plain JSON object reads like a template and is not one — it would be discarded and the request sent assembled from the declared input fields instead.',
     }),
   ),
   credentialRef: t.Optional(

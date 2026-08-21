@@ -49,3 +49,58 @@ describe("a retired field still sent by an old client", () => {
     });
   });
 });
+
+// Issue #150. The REST schema described `body` as a "request body template" whose placeholders are
+// interpolated, which is what invited a plain JSON object — the one shape `parseBody` does not
+// execute. The contract now lives in the description, and the refusal lives in the service.
+//
+// It is NOT declared structurally, and this is what stops that from being tried again. Elysia's
+// `normalize` strips what a schema does not declare (the riskTier case above depends on it), so a
+// union of the three modes answered a plain-object body with 200 and `body: {}` — measured, not
+// assumed. The operator's payload emptied in silence is issue #150 itself, moved one layer earlier.
+// Passing it through intact is what lets the service refuse it with a message worth reading.
+describe("a request body in a shape the runtime does not execute", () => {
+  const app = new Elysia().post("/tools", ({ body }) => ({ body }), {
+    body: writeBody,
+  });
+
+  async function post(body: unknown) {
+    const res = await app.handle(
+      new Request("http://localhost/tools", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          label: "Lookup order",
+          urlTemplate: "https://shop.example.com/orders/{{id}}",
+          body,
+        }),
+      }),
+    );
+    return {
+      status: res.status,
+      json: (await res.json()) as { body?: { body?: unknown } },
+    };
+  }
+
+  test("reaches the service intact instead of being emptied on the way in", async () => {
+    const authored = {
+      order_id: "{{order_id}}",
+      contact: { email: "{{contact_email}}" },
+    };
+    const r = await post(authored);
+    expect(r.status).toBe(200);
+    expect(r.json.body?.body).toEqual(authored);
+  });
+
+  test("the three shapes the runtime executes still pass through intact", async () => {
+    for (const body of [
+      { mode: "kv", rows: [{ key: "order_id", value: "{{order_id}}" }] },
+      { mode: "raw", raw: '{"contact":{"email":"{{contact_email}}"}}' },
+      {},
+    ]) {
+      const r = await post(body);
+      expect(r.status).toBe(200);
+      expect(r.json.body?.body).toEqual(body);
+    }
+  });
+});

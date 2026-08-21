@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   BEHAVIOR_SETTINGS_KEYS,
+  behaviorSettingsMaxDepth,
+  MERGE_MAX_DEPTH_FOR_TESTS,
   mergeBehaviorSettings,
   readBehaviorSettings,
 } from "@/modules/agents/behavior-settings";
@@ -183,6 +185,32 @@ describe("behavior-settings — a patch into a nested block", () => {
     const output = (next.guardrails as Record<string, unknown>)
       .output as Record<string, unknown>;
     expect(output.templateMessage).toBe("Não posso responder.");
+  });
+
+  // The descent is BOUNDED. Both sides of the merge are caller-supplied and the settings schema
+  // accepts arbitrary nested `unknown`, so an unbounded recursion turns "store a deep object, then
+  // patch it" into a RangeError that escapes the write — and, because it escapes the write, leaves
+  // the agent's settings unwritable until the row is repaired by hand. Measured against this tree
+  // before the cap: 5_000 levels merged, 20_000 threw.
+  test("a pathologically deep patch is bounded instead of blowing the stack", () => {
+    const deep = (n: number): Record<string, unknown> => {
+      let o: Record<string, unknown> = { leaf: 1 };
+      for (let i = 0; i < n; i++) o = { k: o };
+      return o;
+    };
+    expect(() =>
+      mergeBehaviorSettings(
+        { memory: { compaction: deep(50_000) } },
+        { memory: { compaction: deep(50_000) } },
+      ),
+    ).not.toThrow();
+  });
+
+  // The cap is not a number someone liked: it has to clear the deepest shape the readers actually
+  // produce, or a block nested past it would silently lose the values this whole change exists to
+  // keep. Growing a deeper block fails HERE, where the fix is one constant, instead of in the field.
+  test("the depth cap clears the deepest shape the readers produce", () => {
+    expect(behaviorSettingsMaxDepth()).toBeLessThan(MERGE_MAX_DEPTH_FOR_TESTS);
   });
 
   // A list patch means the new list. Deep-merging arrays would make a shorter `steps` or a smaller

@@ -143,20 +143,55 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 // An ARRAY replaces, deliberately: a list patch means the new list. Merging element by element
 // would make a shorter `followUp.steps` or a smaller attribute scope impossible to express, which
 // is the opposite of what sending one means.
+// How deep the merge will follow a patch before it stops descending and simply replaces. Both halves
+// of that are load-bearing.
+//
+// It is BOUNDED because the settings bag is caller-supplied on both sides — the stored value and the
+// patch — and `agentUpdateSchema.settings` accepts arbitrary nested `unknown`. Recursing once per
+// level turns "store a deep object, then patch it" into `RangeError: Maximum call stack size
+// exceeded` (measured against this tree: 5_000 levels merge fine, 20_000 throw), and since the throw
+// escapes the write, the agent's settings would stay unwritable until the row was repaired by hand.
+//
+// The number comes from the shape the readers actually produce, not from the stack: the deepest is
+// `guardrails.input.checks.toxicity`, at 4. Eight is double that and four orders of magnitude short
+// of where the stack gives out. `mergeMaxDepthCoversReaders` in the tests ties the two together, so
+// a block that grows deeper than this fails there rather than silently losing values past the cap.
+//
+// Past the cap it REPLACES, which is what the merge did at every level before it learned to descend.
+// Nothing that used to work changes shape; only the runaway stops.
+const MERGE_MAX_DEPTH = 8;
+
 function mergeBlock(
   before: Record<string, unknown>,
   patch: Record<string, unknown>,
+  depth = 1,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...before };
   for (const [key, value] of Object.entries(patch)) {
     const prev = out[key];
     out[key] =
-      isPlainObject(prev) && isPlainObject(value)
-        ? mergeBlock(prev, value)
+      depth < MERGE_MAX_DEPTH && isPlainObject(prev) && isPlainObject(value)
+        ? mergeBlock(prev, value, depth + 1)
         : value;
   }
   return out;
 }
+
+// The deepest path any behavior reader produces, so the test can assert the cap clears it.
+export function behaviorSettingsMaxDepth(): number {
+  let deepest = 0;
+  const walk = (v: unknown, d: number): void => {
+    if (!isPlainObject(v)) {
+      if (d > deepest) deepest = d;
+      return;
+    }
+    for (const child of Object.values(v)) walk(child, d + 1);
+  };
+  walk(readBehaviorSettings({}) as unknown as Record<string, unknown>, 0);
+  return deepest;
+}
+
+export const MERGE_MAX_DEPTH_FOR_TESTS = MERGE_MAX_DEPTH;
 
 // Merge a behavior patch into the existing raw settings bag, then RE-READ each touched block through
 // its typed reader so the persisted value is always normalized + clamped (never the raw patch).

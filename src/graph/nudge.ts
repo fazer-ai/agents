@@ -12,6 +12,7 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
+import { buildGuardrailGate } from "@/modules/guardrails/gate";
 import { armCompaction } from "@/modules/memory/compact";
 import {
   buildTemplatePayload,
@@ -442,7 +443,10 @@ export async function runAgentNudge(
         { ourAgentBotId: cfg.agentBotId },
       );
 
-  const handoffState = { customerMessageSent: false, completed: false };
+  const handoffState = {
+    customerMessage: null as string | null,
+    completed: false,
+  };
   const tools = await buildToolset(
     cfg,
     {
@@ -657,7 +661,7 @@ export async function runAgentNudge(
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
   const replyRaw = lastAssistantText(result.messages);
   const silent = isNudgeSilent(replyRaw);
-  const reply = silent
+  let reply = silent
     ? ""
     : replyRaw.split(FOLLOWUP_SKIP_SENTINEL).join("").trim();
 
@@ -667,33 +671,41 @@ export async function runAgentNudge(
   // during execution with a delayed/lost webhook would leave the mirror bot-owned; nothing has been
   // posted yet, so failing closed here is free. Event nudges keep the mirror read (for them a
   // human-owned conversation downgrades to a private note rather than aborting).
+  // Our OWN transfer makes every ownership check below read "not ours", because it is: the tool set
+  // the conversation to `open` moments ago. Those checks exist to catch a HUMAN who took over while
+  // the model was generating, and they keep failing closed for that — the carve-out is keyed on our
+  // own state, never on what the check sees, which cannot tell the two apart. It also requires a
+  // closing line to deliver, so a transfer with nothing to say still ends the episode right here.
+  const handedOff = handoffAnsweredTheTurn(handoffState);
   let canMessagePost: boolean;
   if (params.requireLiveBotOwnership) {
     const post = await probeLiveOwnership();
     if (post === "unavailable") return "live-unavailable";
-    if (post === "not-owned") return "stale";
+    if (post === "not-owned" && !handedOff) return "stale";
     canMessagePost = true;
   } else {
-    canMessagePost = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      const conv = await db.conversation.findUnique({
-        where: {
-          tenantId_chatwootInstanceId_chatwootConversationId: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            chatwootConversationId: conversationId,
+    canMessagePost =
+      handedOff ||
+      (await runScopedOn(base, sysCtx(tenantId), async (db) => {
+        const conv = await db.conversation.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootConversationId: conversationId,
+            },
           },
-        },
-        select: { assigneeType: true, status: true, assigneeId: true },
-      });
-      return shouldBotHandle(
-        {
-          assigneeType: conv?.assigneeType ?? null,
-          assigneeId: conv?.assigneeId ?? null,
-          status: conv?.status ?? null,
-        },
-        { ourAgentBotId: cfg.agentBotId },
-      );
-    });
+          select: { assigneeType: true, status: true, assigneeId: true },
+        });
+        return shouldBotHandle(
+          {
+            assigneeType: conv?.assigneeType ?? null,
+            assigneeId: conv?.assigneeId ?? null,
+            status: conv?.status ?? null,
+          },
+          { ourAgentBotId: cfg.agentBotId },
+        );
+      }));
   }
 
   // Deterministic post-actions applied by the SYSTEM whenever the step fires and the bot still owns
@@ -704,7 +716,11 @@ export async function runAgentNudge(
   // never reached the customer AND ends the sequence, so auto-resolving there would close the
   // conversation on the back of a message nobody received.
   const applyPostActions = async ({
-    allowResolve = true,
+    // The resolve falls with the TRANSFER, on every branch: a conversation the human queue now owns
+    // is not ours to close, and that holds whether the closing line reached the customer, was
+    // suppressed by the guardrail or was left as a note outside the 24h window. Callers override
+    // only to take it away for a reason of their own, never to give it back.
+    allowResolve = !handoffState.completed,
   }: {
     allowResolve?: boolean;
   } = {}): Promise<void> => {
@@ -735,14 +751,44 @@ export async function runAgentNudge(
     }
   };
 
+  // A handoff SUPPLIES this turn's customer-facing text, exactly as on the reactive path: the tool
+  // records the closing line and the caller delivers it, so it reaches the customer through the same
+  // gates and the same branches as any proactive message — including the 24h window ones below,
+  // which the tool's own send used to walk straight past.
+  if (handedOff) reply = handoffState.customerMessage as string;
+
   // Agent stayed silent: no message, but the deterministic actions still fire (covers "no reply on
   // the final follow-up: label + resolve").
-  const handedOff = handoffAnsweredTheTurn(handoffState);
   if (silent || !reply) {
     // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
     // ours to close, even when the closing line never made it out.
-    await applyPostActions({ allowResolve: !handoffState.completed });
+    await applyPostActions();
     return "silent";
+  }
+
+  // OUTPUT guardrail on proactive text (#160). A follow-up is a message the customer never asked
+  // for, which makes it the last one that should go out unmoderated — and until this line the
+  // proactive path never called the guardrails module at all. The gate is the same unit the
+  // reactive turn uses, minus the customer's message, because there is none: see gate.ts for why
+  // that absence has to drop the relevance check rather than merely skip its call.
+  const outGuard = await buildGuardrailGate({
+    cfg: cfg.guardrails,
+    apiKey: cfg.guardrailsApiKey,
+    credentialBaseUrl: cfg.guardrailsCredentialBaseUrl,
+    client,
+    conversationId,
+    flow,
+    systemPrompt: cfg.systemPrompt,
+    makeModel: params.deps?.makeModel,
+  })("output", reply);
+  if (outGuard) {
+    // Suppressed: nothing reaches the customer, and the deterministic actions run as they do on any
+    // silent step. A handoff still forfeits the resolve — the transfer happened either way.
+    if (outGuard.reply === null) {
+      await applyPostActions();
+      return "silent";
+    }
+    reply = outGuard.reply;
   }
 
   // Message the customer ONLY when the bot still owns the conversation AND we were in message mode;
@@ -757,21 +803,6 @@ export async function runAgentNudge(
       { channelType: loaded.channelType, provider: loaded.provider },
     );
     if (mode === "freeform") {
-      // The handoff already answered, so this text is the second copy. Deliberately INSIDE the
-      // freeform branch: outside the 24h window the tool's own send is the one the provider
-      // refuses, so the operator still needs the note and the label the branches below leave, and
-      // a turn that returned earlier would leave a fenced handoff with no trace anywhere.
-      if (handedOff) {
-        logger.info(
-          "agentNudge handed off: conv=%s source=%s",
-          String(conversationId),
-          params.nudge.source,
-        );
-        markFollowUp("messaged");
-        // The label is how the operator triages what the bot left behind; the resolve is not ours.
-        await applyPostActions({ allowResolve: false });
-        return "messaged";
-      }
       await client.sendMessage(conversationId, reply);
       logger.info(
         "agentNudge messaged: conv=%s source=%s",

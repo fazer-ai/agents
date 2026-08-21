@@ -84,26 +84,28 @@ export interface TurnState {
 // Isolated from TurnState on purpose: reactive turns and proactive nudges share handoff delivery,
 // while resolve/image post-actions have different semantics on those two paths.
 export interface HandoffTurnState {
-  // The closing line reached the customer (best-effort send, so it can be false on a live handoff).
-  customerMessageSent: boolean;
+  // The closing line the model wants the customer to read before the transfer. RECORDED here, never
+  // sent from the tool: the runtime is the single writer of customer-facing text, so this line goes
+  // out through the same output guardrail, the same modality choice and the same pacing as any other
+  // reply (issue #160). Null when the model supplied none.
+  customerMessage: string | null;
   // The conversation left `pending`, so the human queue owns it and the bot is done talking.
   completed: boolean;
 }
 
-// Whether the handoff already said everything this turn had to say, which is the ONE question both
-// runtimes ask. Two bits and not one, because the tool's first step is not the caller's question:
-// only a handoff that both gave the customer a closing line AND completed makes the model's final
-// text a second copy of something already read.
+// Whether the handoff supplies this turn's customer-facing text, which is the ONE question both
+// runtimes ask. Two conditions and not one, because a transfer with nothing to say leaves the
+// model's own final text as the only thing the customer would get, and that text is still theirs.
 //
 // A transfer that threw halfway answers false, and has to. sendPrivateNote and toggleStatus are not
-// best-effort, so either can throw after the customer was already told a human is coming; the
+// best-effort, so either can throw AFTER the model composed a line promising a human; the
 // conversation then stays `pending`, i.e. still the bot's and queued to nobody, and the model gets
-// the tool error plus one more step. That recovery reply is the only thing standing between the
-// customer and a promise nobody is going to keep.
+// the tool error plus one more step. That recovery reply is what the customer reads instead, and
+// the undelivered promise is discarded with the turn that failed to keep it.
 export function handoffAnsweredTheTurn(
   state: HandoffTurnState | undefined,
 ): boolean {
-  return !!state && state.customerMessageSent && state.completed;
+  return !!state && !!state.customerMessage && state.completed;
 }
 
 export interface PendingImage {
@@ -250,27 +252,13 @@ function handoffTool(ctx: ToolCtx) {
       assignTo?: string;
       customerMessage?: string;
     }) => {
-      // Reply to the CUSTOMER first (the persona's closing line) so they are not left in silence once
-      // the bot goes quiet after the handoff. Best-effort — a send failure must not block the transfer.
-      if (customerMessage?.trim()) {
-        try {
-          await ctx.client.sendMessage(
-            ctx.conversationId,
-            customerMessage.trim(),
-          );
-          if (ctx.handoffState) ctx.handoffState.customerMessageSent = true;
-        } catch (e) {
-          logger.warn(
-            "handoff customer message failed (conv=%s): %s",
-            String(ctx.conversationId),
-            e instanceof Error ? e.message : String(e),
-          );
-          ctx.onSideEffectError?.({
-            tool: "handoff_to_human",
-            phase: "customer_message",
-            err: e,
-          });
-        }
+      // Record the persona's closing line for the caller to deliver; do NOT send it here. Sending it
+      // from inside the tool is what put the most rule-bound message of the turn outside the output
+      // guardrail, outside TTS and outside the pacing every other reply gets (#160). The cost is
+      // ordering: the customer reads it just after the transfer instead of just before, which
+      // Chatwoot never shows them.
+      if (ctx.handoffState && customerMessage?.trim()) {
+        ctx.handoffState.customerMessage = customerMessage.trim();
       }
       // Transfer-with-summary: a private note for the human BEFORE handing off, gated by the
       // per-agent toggle (default on).

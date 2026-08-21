@@ -28,8 +28,7 @@ import {
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
-import { analyzeGuardrail } from "@/modules/guardrails/analyze";
-import { loggableCategories } from "@/modules/guardrails/log-categories";
+import { buildGuardrailGate } from "@/modules/guardrails/gate";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
 import { deliverReply } from "@/modules/split/service";
@@ -52,7 +51,7 @@ import {
   markTurnInFlight,
 } from "./inflight";
 import { conversationDividerMessage, conversationStamp } from "./markers";
-import { createChatModel, type ResolvedModelConfig } from "./models";
+import type { ResolvedModelConfig } from "./models";
 import {
   type AgentConfig,
   buildCallbacks,
@@ -273,7 +272,10 @@ export async function runLoadedTurn(
     imagesInFlight: 0,
     imagesSeq: 0,
   };
-  const handoffState = { customerMessageSent: false, completed: false };
+  const handoffState = {
+    customerMessage: null as string | null,
+    completed: false,
+  };
   const tools = await buildToolset(
     loaded,
     {
@@ -367,95 +369,24 @@ export async function runLoadedTurn(
     tools,
   });
 
-  // Guardrails (input/output moderation): build the guardrails agent's model once (its OWN
-  // credential, resolved in loadAgentConfig). runGuardrail returns null when nothing tripped,
-  // { reply: string } to send/replace with, or { reply: null } to suppress (the "silent" action).
-  // A trip logs a `guardrail` flow line (warn → may alert) + posts a private operator note so a
-  // blocked/replaced reply is never invisible. Fail-open (see analyzeGuardrail).
-  const gr = loaded.guardrails;
-  const guardrailModel =
-    gr.enabled && loaded.guardrailsApiKey
-      ? (params.deps?.makeModel ?? createChatModel)({
-          provider: gr.provider,
-          model: gr.model,
-          baseURL:
-            loaded.guardrailsCredentialBaseUrl ?? gr.baseURL ?? undefined,
-          apiKey: loaded.guardrailsApiKey,
-          temperature: 0,
-        })
-      : null;
-  const runGuardrail = async (
-    direction: "input" | "output",
-    // NOTE: Named `subject` rather than `text` on purpose. As `text` it shadowed this function's
-    // enclosing `text` (the customer's message), and the answer_relevance check below needs BOTH:
-    // the reply under review and the message it is supposed to answer.
-    subject: string,
-  ): Promise<{ reply: string | null } | null> => {
-    const dir = gr[direction];
-    if (!guardrailModel || !dir.enabled) return null;
-    const verdict = await analyzeGuardrail(guardrailModel, {
-      direction,
-      text: subject,
-      checks: dir.checks,
-      competitors: gr.competitors,
-      customPolicy: gr.customPolicy,
-      systemPrompt: direction === "output" ? loaded.systemPrompt : undefined,
-      // The raw inbound text, not `turnText`: on the first turn of a new conversation the latter
-      // carries CONVERSATION_DIVIDER, and handing the guardrail a system marker as the customer's
-      // words would make it judge the reply against something nobody said.
-      customerMessage: direction === "output" ? text : undefined,
-      generationPrompt:
-        dir.action === "generated" ? dir.generationPrompt : undefined,
-    });
-    // A guardrail that could not run reads exactly like one that ran and approved, so without this
-    // line an expired credential is silent moderation for as long as nobody notices. The turn is
-    // NOT blocked (fail-open stays), only recorded.
-    if (verdict.error) {
-      emitFlowEvent(flow, {
-        stage: "guardrail",
-        status: "error",
-        level: "warn",
-        detail: { direction, outcome: "analysis_failed" },
-        errorMessage: verdict.error,
-      });
-    }
-    if (!verdict.violated) return null;
-    // NOTE: The turn trail and the operator note report what the guardrail DID, not what it was
-    // configured to do. `generated` with no replacement in hand sends the template — when the model
-    // returns none, and on the input direction every time (see modules/guardrails/analyze.ts) — and
-    // an operator reading "generated" on a line where the template went out is reading the config
-    // back, not the event.
-    const replacement =
-      dir.action === "generated" ? verdict.suggestedReply : null;
-    const effectiveAction =
-      dir.action === "generated" && replacement === null
-        ? "template"
-        : dir.action;
-    emitFlowEvent(flow, {
-      stage: "guardrail",
-      status: "ok",
-      level: "warn",
-      // NOTE: `categories` and `rationale` are both model-written, so neither can be copied into
-      // this row as it stands: `rationale` explains what in the message violated the policy, so it
-      // quotes the message, and `categories` is asked for as policy keys but arrives as whatever
-      // the model wrote. What goes in is the part with a known vocabulary, plus a COUNT of what did
-      // not match it, which is how "it violated something we cannot name here" stays visible. The
-      // private note two lines below carries both in full, on the conversation the text came from.
-      detail: {
-        direction,
-        action: effectiveAction,
-        ...loggableCategories(verdict.categories),
-      },
-    });
-    await client
-      .sendPrivateNote(
-        conversationId,
-        `Guardrail (${direction}): ${verdict.categories.join(", ") || "policy"} — ${effectiveAction}. ${verdict.rationale}`,
-      )
-      .catch(() => {});
-    if (dir.action === "silent") return { reply: null };
-    return { reply: replacement ?? dir.templateMessage };
-  };
+  // Guardrails (input/output moderation): one gate, shared with the proactive path (see
+  // modules/guardrails/gate.ts). A trip logs a `guardrail` flow line (warn → may alert) + posts a
+  // private operator note, so a blocked/replaced reply is never invisible.
+  const runGuardrail = buildGuardrailGate({
+    cfg: loaded.guardrails,
+    apiKey: loaded.guardrailsApiKey,
+    credentialBaseUrl: loaded.guardrailsCredentialBaseUrl,
+    client,
+    conversationId,
+    flow,
+    systemPrompt: loaded.systemPrompt,
+    // The raw inbound text, not `turnText`: on the first turn of a new conversation the latter
+    // carries CONVERSATION_DIVIDER, and handing the guardrail a system marker as the customer's
+    // words would make it judge the reply against something nobody said.
+    customerMessage: text,
+    makeModel: params.deps?.makeModel,
+  });
+
   // How many balloons the (text) reply was delivered as, surfaced on `finished` so the UI can hold a
   // "delivering" indicator until the paced balloons land. 1 for audio / single send; null on no post.
   let deliveredBalloons: number | null = null;
@@ -651,11 +582,10 @@ export async function runLoadedTurn(
     // have different answers exactly there.
     if (handoffState.completed) turnState.resolveRequested = false;
     const handedOff = handoffAnsweredTheTurn(handoffState);
-    if (handedOff) {
-      reply = "";
-      // The tool posted exactly one balloon, on every exit reachable from here.
-      deliveredBalloons = 1;
-    }
+    // The handoff SUPPLIES the turn's text rather than suppressing it: the model's own final message
+    // is the duplicate (#158), and the closing line is what the customer is owed. From here it is an
+    // ordinary reply and every gate below treats it as one.
+    if (handedOff) reply = handoffState.customerMessage as string;
 
     // Re-check the live assignee (mirror) before posting: a human may have taken over during
     // the LLM call. NOTE: small TOCTOU between this read and the POST (the post is network and
@@ -693,13 +623,19 @@ export async function runLoadedTurn(
       }
       return { ours, voiceReply };
     });
-    // NOTE: A handoff we completed this turn reads as "not ours" here too, and the mirror records
+    // Both gates below drop a reply that is no longer wanted: a human took the conversation, or a
+    // newer customer message made this answer obsolete. The handoff's closing line is neither. It is
+    // the sentence the transfer already committed to, and by the time these run the transfer is done
+    // and irreversible — dropping the line would leave the customer moved to a queue in silence,
+    // which is the exact failure the line exists to prevent. It also matches what shipped before
+    // #160, when the tool sent it before either gate could see it. `handedOff` is the ONLY carve-out:
+    // the model's own final text still fails closed, which is the hole #159 closed.
+    //
+    // NOTE: A handoff we completed this turn reads as "not ours" below too, and the mirror records
     // no reason for a status change, so there is nothing to tell our own transition apart from a
-    // human who grabbed the conversation in the same window. This gate exists for the second one,
-    // so it keeps failing closed for both: past this point the bot posts nothing, and an image the
-    // model queued before handing off is delivered only while Chatwoot's event is still in flight.
-    // Widening it on `handoffState.completed` would hand a genuine takeover back to the bot.
-    if (!recheck.ours) {
+    // human who grabbed the conversation in the same window. That is why the carve-out is keyed on
+    // OUR OWN state and not on the mirror.
+    if (!recheck.ours && !handedOff) {
       emitFlowEvent(flow, {
         stage: "handoff",
         status: "ok",
@@ -709,8 +645,11 @@ export async function runLoadedTurn(
     }
 
     // Last-moment supersede gate (debounce): a newer message arrived mid-turn → drop this reply
-    // AND any deferred resolve intent (the re-armed flush re-decides over the full burst).
-    if (params.shouldPost && !(await params.shouldPost())) return "superseded";
+    // AND any deferred resolve intent (the re-armed flush re-decides over the full burst). A handed
+    // off turn is exempt for the reason above, and the re-armed flush would not cover it: it reads
+    // the conversation as `open`, so it re-decides nothing.
+    if (!handedOff && params.shouldPost && !(await params.shouldPost()))
+      return "superseded";
 
     // OUTPUT guardrail: screen the model's reply BEFORE delivery. On a violation, replace it with the
     // template / a guardrails-generated safe reply, or suppress the send entirely ("silent"). A
@@ -831,14 +770,38 @@ export async function runLoadedTurn(
 
     // Post the reply via the bot token (network), reusing the client built for the tools. Split +
     // typing-paced into balloons when the agent enables it (humanized delivery), else a single send.
-    const balloons = await deliverReply(
-      client,
-      conversationId,
-      reply,
-      loaded.splitConfig,
-      params.deps?.sleep,
-      flow,
-    );
+    //
+    // A handed-off turn degrades a delivery failure to a warn instead of throwing, which is the same
+    // rule the queued image follows above and the same semantics the closing line had while the tool
+    // sent it (swallowed, reported as a side effect). The transfer already succeeded: branding the
+    // turn as errored would stamp lastError and announce "a human has to take over" on a thread a
+    // human already owns.
+    let balloons: number;
+    try {
+      balloons = await deliverReply(
+        client,
+        conversationId,
+        reply,
+        loaded.splitConfig,
+        params.deps?.sleep,
+        flow,
+      );
+    } catch (e) {
+      if (!handedOff) throw e;
+      logger.warn(
+        "handoff closing line failed to deliver (conv=%s): %s",
+        String(conversationId),
+        e instanceof Error ? e.message : String(e),
+      );
+      emitFlowEvent(flow, {
+        stage: "split",
+        status: "error",
+        level: "warn",
+        detail: { outcome: "handoff_closing_line_undelivered" },
+        errorMessage: e instanceof Error ? e.message : String(e),
+      });
+      return "posted";
+    }
     logger.info(
       "chatwoot agent replied: conv=%s thread=%s len=%d balloons=%d",
       String(conversationId),

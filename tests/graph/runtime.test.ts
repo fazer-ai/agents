@@ -789,18 +789,24 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
     });
     expect(outcome).toBe("posted");
+    // One balloon, the closing line, and the model's own final text discarded — that is #158. The
+    // transfer lands FIRST now: the runtime cannot deliver until the tool call returns, and Chatwoot
+    // never shows a status change to the customer, so what they read is unchanged.
     expect(calls).toEqual([
-      ["sendMessage", 996, CLOSING],
       ["toggleStatus", 996, "open"],
+      ["sendMessage", 996, CLOSING],
     ]);
   });
 
-  // The closing line going out is not the same event as the transfer happening. sendPrivateNote and
-  // toggleStatus are NOT best-effort inside the tool, so either can throw after the customer has
-  // already been told a human is coming. The conversation then stays `pending` — still the bot's,
-  // never queued to anyone — and the model gets the tool error plus one more step. That recovery
-  // reply is the only thing between the customer and a promise nobody is going to keep.
-  test("a handoff whose transfer throws still delivers the model's recovery reply", async () => {
+  // Composing the closing line is not the same event as the transfer happening. sendPrivateNote and
+  // toggleStatus are NOT best-effort inside the tool, so either can throw after the model already
+  // wrote a line promising a human. The conversation then stays `pending` — still the bot's, never
+  // queued to anyone — and the model gets the tool error plus one more step.
+  //
+  // Recording the line instead of sending it (#160) is what keeps the promise from going out at all:
+  // the customer reads the recovery reply and nothing else, where before they read both and the
+  // second contradicted the first.
+  test("a handoff whose transfer throws delivers the recovery reply and NOT the promise", async () => {
     await seedConversation(997, null);
     const CLOSING = "Um humano já te atende.";
     const RECOVERY =
@@ -834,7 +840,6 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     expect(calls).toEqual([
-      ["sendMessage", 997, CLOSING],
       ["toggleStatus", 997, "open"],
       ["sendMessage", 997, RECOVERY],
     ]);
@@ -850,8 +855,50 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(row?.status).toBe("pending");
   });
 
+  // The other half of the predicate, and the reason it is two conditions and not one. A transfer with
+  // nothing to say does not own the turn's text, so the model's own final message is the only thing
+  // the customer would get and it still has to go out. Reading `completed` alone here would drop it
+  // and leave the customer transferred in silence.
+  test("a handoff that supplies no closing line still delivers the model's final text", async () => {
+    await seedConversation(9702, null);
+    const calls: Array<[string, number, string]> = [];
+    const client = {
+      sendMessage: async (c: number, content: string) => {
+        calls.push(["sendMessage", c, content]);
+        return {};
+      },
+      toggleStatus: async (c: number, status: string) => {
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9702 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          // Empty customerMessage: the tool records nothing, so the handoff supplies no text.
+          new HandoffThenReplyModel(
+            "Já chamei alguém, um instante.",
+            "",
+          ) as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(calls).toEqual([
+      ["toggleStatus", 9702, "open"],
+      ["sendMessage", 9702, "Já chamei alguém, um instante."],
+    ]);
+  });
+
   // A photo the model queued earlier in the same turn is not a second copy of the closing line, and
-  // the tool already told the model it was on its way.
+  // the tool already told the model it was on its way. With the runtime owning both, the handoff
+  // lands in the documented order every other turn uses: the picture, then the sentence about it.
   test("a handoff still delivers an image queued earlier in the same turn", async () => {
     await allowImageHost();
     await seedConversation(998, null);
@@ -876,23 +923,27 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     expect(calls).toEqual([
-      ["sendMessage", 998, "Segue a foto. Vou te passar para um humano."],
       ["toggleStatus", 998, "open"],
       ["sendFileAttachment", 998, "imagem.png"],
+      ["sendMessage", 998, "Segue a foto. Vou te passar para um humano."],
     ]);
   });
 
-  // The deferred resolve falls with the TRANSFER, not with the suppression of the final text. The
-  // two come apart exactly when the closing line fails to send: the customer never heard it, so the
-  // model's reply still has to go out, but the conversation is already a human's and resolving it
-  // would close an open request out from under them.
-  test("a handoff never lets the deferred resolve close the conversation", async () => {
+  // The deferred resolve falls with the TRANSFER, and with nothing else. The hardest case for that
+  // rule is a closing line that fails to reach the customer: the conversation is a human's either
+  // way, so resolving it would close an open request out from under them, and a customer who heard
+  // nothing is the last one whose thread should be marked done.
+  //
+  // The failure is a warn and not a failed turn (#160): the transfer succeeded, so stamping
+  // lastError and announcing "a human has to take over" would point an operator at a thread that
+  // already has one. Same rule the queued image follows below.
+  test("a handoff whose closing line fails to send neither resolves nor errors the turn", async () => {
     await seedConversation(9977, null);
     const calls: Array<[string, number, string]> = [];
     let sends = 0;
     const client = {
       sendMessage: async (c: number, t: string) => {
-        // Only the tool's closing line fails; the fallback reply below must still be deliverable.
+        // The delivery of the closing line is the send that fails.
         if (sends++ === 0) {
           calls.push(["sendMessage-THREW", c, t]);
           throw new Error("chatwoot 500");
@@ -952,19 +1003,23 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     // The only toggleStatus is the handoff's `open`. A "resolved" here would be the deferred intent
-    // closing a conversation the human queue had just been handed.
+    // closing a conversation the human queue had just been handed. And the model's own final text
+    // is NOT a fallback: it is the duplicate #158 is about, so a failed closing line means silence,
+    // not a second attempt with different words.
     expect(calls).toEqual([
-      ["sendMessage-THREW", 9977, "Um humano já te atende."],
       ["toggleStatus", 9977, "open"],
-      ["sendMessage", 9977, "Já resolvo para você."],
+      ["sendMessage-THREW", 9977, "Um humano já te atende."],
     ]);
   });
 
-  // The bound on the case above, pinned so it is a decision and not a surprise: once the mirror
-  // reflects the status the tool set, the takeover gate ends the turn and the queued image does not
-  // go out. The gate cannot tell our own transition from a human grabbing the conversation in the
-  // same window, and it fails closed for the one that matters.
-  test("a handoff stops at the takeover gate once the mirror reflects it", async () => {
+  // The bound on the case above, pinned so it is a decision and not a surprise: our OWN handoff does
+  // not stop at the takeover gate. Both gates past this point drop a reply that is no longer wanted
+  // — a human took over, or a newer message made the answer obsolete — and this turn's output is
+  // neither: the transfer already committed to the closing line, and the photo was queued before it.
+  // The carve-out is keyed on our own state, never on the mirror, which cannot tell our transition
+  // from a human's. A turn that did NOT hand off still fails closed ("taken over mid-turn discards
+  // the resolve intent" below).
+  test("our own handoff does not stop at the takeover gate", async () => {
     await allowImageHost();
     await seedConversation(9988, null);
     const calls: Array<[string, number, string]> = [];
@@ -1004,10 +1059,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         imageDeps,
       },
     });
-    expect(outcome).toBe("taken-over");
+    expect(outcome).toBe("posted");
+    // Everything this turn produced reaches the customer, in the ordinary order, even though the
+    // mirror already reads `open` by the recheck.
     expect(calls).toEqual([
-      ["sendMessage", 9988, "Segue a foto. Vou te passar para um humano."],
       ["toggleStatus", 9988, "open"],
+      ["sendFileAttachment", 9988, "imagem.png"],
+      ["sendMessage", 9988, "Segue a foto. Vou te passar para um humano."],
     ]);
   });
 
@@ -1207,6 +1265,46 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(calls).toEqual([
         ["sendMessage", 914],
         ["toggleStatus", 914],
+      ]);
+    });
+  });
+
+  // #160, and the finding waived on #159: the closing line is a reply like any other, so a customer
+  // being answered in audio has to HEAR it. Today the tool writes it as text, so the one turn where
+  // the agent says the least is also the one where it drops the modality the customer asked for.
+  //
+  // The order is the visible cost of a single delivery owner: the transfer lands first and the line
+  // follows, because the runtime cannot deliver until the tool call returns. Chatwoot never shows a
+  // status change to the customer, so what they perceive is unchanged.
+  test("a handoff's closing line is spoken when the reply modality is audio", async () => {
+    await withTtsMirror(async () => {
+      await seedConversation(915, null);
+      const calls: Array<[string, number]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: audioIncoming(915),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new HandoffThenReplyModel(
+              "Fechado!",
+              "Vou te transferir para um atendente.",
+            ) as unknown as BaseChatModel,
+          makeClient: audioClient(calls),
+          checkpointer: new MemorySaver(),
+          ttsFetch: (async () =>
+            new Response(new Uint8Array([1, 2, 3]), {
+              status: 200,
+              headers: { "Content-Type": "audio/mpeg" },
+            })) as unknown as typeof fetch,
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(calls).toEqual([
+        ["toggleStatus", 915],
+        ["sendAudioMessage", 915],
       ]);
     });
   });
@@ -1460,6 +1558,57 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(conv.lastHandledMessageId).toBeNull();
   });
 
+  // The bound on the case above. Supersede drops a reply the newest message made obsolete, and the
+  // re-armed flush answers the whole burst instead. A handoff is not obsolete and the flush will not
+  // cover it: by then the conversation reads `open`, so the flush re-decides nothing and the closing
+  // line the transfer already committed to would be lost for good.
+  test("a newer message mid-turn does NOT supersede a handoff's closing line", async () => {
+    await seedConversation(9701, null);
+    const calls: Array<[string, number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [
+          { id: 1, content: "oi", message_type: 0, private: false },
+          {
+            id: 2,
+            content: "na verdade, esquece",
+            message_type: 0,
+            private: false,
+          },
+        ],
+      }),
+      sendMessage: async (c: number, content: string) => {
+        calls.push(["sendMessage", c, content]);
+        return {};
+      },
+      toggleStatus: async (c: number, status: string) => {
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9701 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffThenReplyModel(
+            "Vou te encaminhar para o time!",
+            "Um humano já te atende.",
+          ) as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(calls).toEqual([
+      ["toggleStatus", 9701, "open"],
+      ["sendMessage", 9701, "Um humano já te atende."],
+    ]);
+  });
+
   test("issue #49: a stale trigger loses the watermark CAS and does not double-post", async () => {
     await seedConversation(971, null);
     await suDb.conversation.updateMany({
@@ -1707,6 +1856,17 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
               invoke: async () => ({ content: verdictJson }),
             } as unknown as BaseChatModel)
           : new FakeListChatModel({ responses: [REPLY] });
+
+    // Same branching, but the caller supplies the MAIN model: the tests below need one that calls
+    // handoff_to_human, and `branchingModel` hardcodes a plain reply.
+    const branchingWith =
+      (verdictJson: string, main: BaseChatModel) =>
+      (cfg: ResolvedModelConfig): BaseChatModel =>
+        cfg.model === GUARD_MODEL
+          ? ({
+              invoke: async () => ({ content: verdictJson }),
+            } as unknown as BaseChatModel)
+          : main;
 
     const guardStub =
       (
@@ -2111,6 +2271,119 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // Same rule on this direction, and this case is older than the input one: a `generated` action
       // that produced nothing sent the template while the note claimed "generated".
       expect(notes[0]?.[1]).toContain("— template.");
+    });
+
+    // #160: the handoff's closing line is customer-facing text the MODEL wrote, so the output policy
+    // owns it exactly like any other reply. Today the tool posts it from inside the tool call, before
+    // the turn has a reply to moderate, so the most rule-bound message is the only unscreened one.
+    test("a handoff's closing line is screened by the output guardrail", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "generated",
+          checks: {
+            toxicity: false,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: true,
+          },
+          templateMessage: "TEMPLATE-OUT",
+        },
+      });
+      await seedConv(953);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["prompt_adherence"],
+        rationale: "markdown list, ends on a question",
+        suggestedReply: "GEN-HANDOFF-LINE",
+      });
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 953, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: branchingWith(
+            verdict,
+            new HandoffThenReplyModel(
+              REPLY,
+              "- vou te transferir\n- pode ser?",
+            ) as unknown as BaseChatModel,
+          ),
+          makeClient: guardStub(sent, notes, toggles),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      // The customer reads the screened line, once. The model's own final text is still discarded
+      // (that is #158) and the raw closing line never reaches Chatwoot.
+      expect(sent).toEqual([[953, "GEN-HANDOFF-LINE"]]);
+      // The transfer is not hostage to the moderation: it happened either way.
+      expect(toggles).toEqual([[953, "open"]]);
+    });
+
+    // Fail-open is about guardrail ERRORS, not verdicts: a policy that suppresses the text still may
+    // not suppress the transfer. The customer gets silence, the human queue gets the conversation.
+    test("a handoff whose closing line is suppressed still transfers the conversation", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-OUT",
+        },
+      });
+      await seedConv(954);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "insulting",
+        suggestedReply: null,
+      });
+      await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 954, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: branchingWith(
+            verdict,
+            new HandoffThenReplyModel(
+              REPLY,
+              "seu problema é chato, vou passar adiante",
+            ) as unknown as BaseChatModel,
+          ),
+          makeClient: guardStub(sent, notes, toggles),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(sent).toEqual([]);
+      expect(toggles).toEqual([[954, "open"]]);
+      // The operator is told why the customer heard nothing.
+      expect(notes.length).toBe(1);
     });
 
     test("output 'silent' discards the resolve intent (no toggle, no reply)", async () => {

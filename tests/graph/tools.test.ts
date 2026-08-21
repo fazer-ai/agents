@@ -93,24 +93,36 @@ describe("native tools", () => {
     expect(String(out)).toContain("human");
   });
 
-  test("handoff with customerMessage replies to the customer before the note and transfer", async () => {
+  // #160: the tool writes NOTHING to the customer. The closing line is recorded for the caller, which
+  // is what puts it through the output guardrail and the shared delivery path.
+  test("handoff with customerMessage sends only the note and the transfer", async () => {
     const { client, calls } = recordingClient();
-    const tools = buildNativeTools({ client, conversationId: 42 });
+    const handoffState: HandoffTurnState = {
+      customerMessage: null,
+      completed: false,
+    };
+    const tools = buildNativeTools({
+      client,
+      conversationId: 42,
+      handoffState,
+    });
     await byName(tools, "handoff_to_human").invoke({
       customerMessage: "Vou te transferir para um atendente, um momento.",
       reason: "cliente pediu humano",
     });
     expect(calls).toEqual([
-      ["sendMessage", [42, "Vou te transferir para um atendente, um momento."]],
       ["sendPrivateNote", [42, "cliente pediu humano"]],
       ["toggleStatus", [42, "open"]],
     ]);
+    expect(handoffState.customerMessage).toBe(
+      "Vou te transferir para um atendente, um momento.",
+    );
   });
 
-  test("a delivered handoff customerMessage marks the turn as terminal", async () => {
+  test("a recorded handoff customerMessage marks the turn as terminal", async () => {
     const { client } = recordingClient();
     const handoffState: HandoffTurnState = {
-      customerMessageSent: false,
+      customerMessage: null,
       completed: false,
     };
     const tools = buildNativeTools({
@@ -121,14 +133,16 @@ describe("native tools", () => {
     await byName(tools, "handoff_to_human").invoke({
       customerMessage: "Vou te transferir para um atendente, um momento.",
     });
-    expect(handoffState.customerMessageSent).toBe(true);
+    expect(handoffState.customerMessage).not.toBeNull();
     expect(handoffState.completed).toBe(true);
   });
 
-  // The two bits are not the same event. toggleStatus is where the conversation actually leaves
-  // `pending`, and it is not best-effort: a throw there means the customer was promised a human
-  // nobody was told about, and the caller must let the model speak again.
-  test("a handoff whose toggleStatus throws delivered the line but did NOT complete", async () => {
+  // The two conditions are not the same event. toggleStatus is where the conversation actually
+  // leaves `pending`, and it is not best-effort: a throw there means nobody was told about a
+  // customer the model was about to promise a human to, so the caller must let the model speak
+  // again — and the undelivered promise must NOT go out, which is what recording instead of
+  // sending buys.
+  test("a handoff whose toggleStatus throws recorded the line but did NOT complete", async () => {
     const client = {
       sendMessage: async () => ({}),
       sendPrivateNote: async () => ({}),
@@ -137,7 +151,7 @@ describe("native tools", () => {
       },
     } as unknown as ChatwootClient;
     const handoffState: HandoffTurnState = {
-      customerMessageSent: false,
+      customerMessage: null,
       completed: false,
     };
     const tools = buildNativeTools({
@@ -151,7 +165,7 @@ describe("native tools", () => {
         reason: "cliente pediu humano",
       }),
     ).rejects.toThrow();
-    expect(handoffState.customerMessageSent).toBe(true);
+    expect(handoffState.customerMessage).toBe("Um humano já te atende.");
     expect(handoffState.completed).toBe(false);
   });
 
@@ -849,40 +863,6 @@ describe("swallowed side effects reach onSideEffectError (issue #46)", () => {
     expect(effects[0]?.tool).toBe("handoff_to_human");
     expect(effects[0]?.phase).toBe("assign");
     expect(effects[0]?.err).toBeInstanceOf(Error);
-  });
-
-  test("handoff customer-message failure reports phase customer_message and the transfer proceeds", async () => {
-    const calls: string[] = [];
-    const client = {
-      sendMessage: async () => {
-        throw new Error("send blew up");
-      },
-      toggleStatus: async () => {
-        calls.push("toggleStatus");
-        return {};
-      },
-    } as unknown as ChatwootClient;
-    const effects: SideEffect[] = [];
-    const handoffState: HandoffTurnState = {
-      customerMessageSent: false,
-      completed: false,
-    };
-    const tools = buildNativeTools({
-      client,
-      conversationId: 5,
-      handoffState,
-      onSideEffectError: (e) => effects.push(e),
-    });
-    const out = String(
-      await byName(tools, "handoff_to_human").invoke({
-        customerMessage: "Um humano vai te atender.",
-      }),
-    );
-    expect(out).toContain("Handed off to a human");
-    expect(calls).toContain("toggleStatus");
-    expect(effects.map((e) => e.phase)).toEqual(["customer_message"]);
-    expect(effects[0]?.tool).toBe("handoff_to_human");
-    expect(handoffState.customerMessageSent).toBe(false);
   });
 
   test("set_custom_attribute mirror write-through failure reports phase mirror_write after the Chatwoot write", async () => {

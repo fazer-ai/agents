@@ -459,7 +459,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       },
     });
     expect(outcome).toBe("messaged");
-    // The tool's closing line, once: the model's final text is the second copy and never goes out.
+    // The closing line, once: the model's final text is the second copy and never goes out.
     expect(s.messages).toEqual([[999, "Vou te encaminhar para o time."]]);
     // The label DOES apply. It is how the operator triages what the bot left behind, and the branch
     // below (`noted-window`) keeps it for the same reason.
@@ -467,7 +467,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // The only status call is the handoff's own `open`: postActions.resolve must not close a
     // conversation the human queue now owns.
     expect(s.resolved).toEqual([999]);
-    expect(s.order).toEqual(["message", "resolve", "label"]);
+    // The transfer lands before the line now, because the caller cannot deliver until the tool call
+    // returns. Chatwoot never shows a status change to the customer.
+    expect(s.order).toEqual(["resolve", "message", "label"]);
   });
 
   test("invokes on the per-contact-inbox memory thread, not the per-conversation thread (unification)", async () => {
@@ -793,10 +795,19 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         persistUsage: async () => {},
       },
     });
-    expect(outcome).toBe("stale");
-    // Only the tool's closing line: the model's final text is never a second customer-facing post.
+    // "stale" was what this returned while the tool did its own sending: the live probe saw the
+    // conversation our own transfer had just opened and ended the episode, even though a message had
+    // already gone out. With one owner the two agree — the line was delivered, so the episode says
+    // so, and the probe still fails closed for a HUMAN who took over (`requireLiveBotOwnership`
+    // covers exactly that case in the tests above).
+    expect(outcome).toBe("messaged");
+    // Only the closing line: the model's final text is never a second customer-facing post.
     expect(s.messages).toEqual([[9907, "Um humano vai te atender."]]);
     expect(s.notes).toEqual([]);
+    // The label triages what the bot left behind; the resolve is not ours, so the only status call
+    // is the handoff's own `open`.
+    expect(s.labelSets).toEqual([["follow-up"]]);
+    expect(s.resolved).toEqual([9907]);
   });
 
   // The model can hand off and then say nothing of its own, which lands on the silent branch. The
@@ -825,6 +836,324 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.resolved).toEqual([9905]);
   });
 
+  // The nudge's own ownership check, with the mirror AHEAD instead of behind: the webhook for the
+  // status our transfer just set has already landed by the time the check runs. Same carve-out and
+  // same reason as the reactive path — the check is looking for a HUMAN, and our own transition is
+  // indistinguishable from one in the mirror, so it is answered from our own state.
+  test("a handoff still delivers its closing line once the mirror reflects the transfer", async () => {
+    await seedConv(9963, null);
+    const s = stub();
+    const inner = await s.makeClient();
+    const client = {
+      ...inner,
+      toggleStatus: async (c: number, status: string) => {
+        await suDb.conversation.updateMany({
+          where: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: c,
+          },
+          data: { status },
+        });
+        s.resolved.push(c);
+        s.order.push("resolve");
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9963`,
+      nudge: { source: "ASAAS", status: "paid" },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffThenReplyModel(
+            "Vou te encaminhar!",
+            "Um humano vai te atender.",
+          ) as never,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+    expect(s.messages).toEqual([[9963, "Um humano vai te atender."]]);
+    // The label triages what the bot left behind; the resolve falls with the transfer.
+    expect(s.labelSets).toEqual([["follow-up"]]);
+    expect(s.resolved).toEqual([9963]);
+  });
+
+  // #160: until this block, the proactive path never called the guardrails module at all. A
+  // follow-up is a message the customer never asked for, so it was the only customer-facing text in
+  // the product that nothing screened.
+  const GUARD_MODEL = "guard-sentinel-nudge";
+
+  async function withGuardrails(
+    g: Record<string, unknown>,
+    fn: () => Promise<void>,
+  ) {
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true },
+    });
+    const key = await suDb.vaultEntry.findFirstOrThrow({
+      where: { tenantId, name: "k" },
+      select: { id: true },
+    });
+    await suDb.agent.update({
+      where: { id: agent.id },
+      data: {
+        settings: { guardrails: { ...g, credentialRef: `vault:${key.id}` } },
+      },
+    });
+    try {
+      await fn();
+    } finally {
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: { settings: {} },
+      });
+    }
+  }
+
+  const guardBranch =
+    (verdictJson: string, main: BaseChatModel, seen?: string[]) =>
+    (cfg: { model: string }): BaseChatModel =>
+      cfg.model === GUARD_MODEL
+        ? ({
+            invoke: async (msgs: unknown) => {
+              if (seen)
+                seen.push(
+                  JSON.stringify(
+                    (msgs as { content?: unknown }[]).map((m) => m.content),
+                  ),
+                );
+              return { content: verdictJson };
+            },
+          } as unknown as BaseChatModel)
+        : main;
+
+  test("a follow-up's own reply is screened by the output guardrail", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "generated",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9960, null);
+        const s = stub();
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9960`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          base: appDb,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: true,
+                categories: ["toxicity"],
+                rationale: "rude",
+                suggestedReply: "GEN-NUDGE",
+              }),
+              new FakeListChatModel({ responses: ["Some sumido, hein?"] }),
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("messaged");
+        // What the customer reads is the replacement, not what the agent wrote.
+        expect(s.messages).toEqual([[9960, "GEN-NUDGE"]]);
+        // And the operator is told, exactly as on a reactive turn.
+        expect(s.notes.length).toBe(1);
+        expect(s.notes[0]?.[1]).toContain("Guardrail (output)");
+      },
+    );
+  });
+
+  // The suppressing action on the proactive path. A follow-up nobody asked for, that the policy then
+  // refuses, is simply not sent — and the deterministic post-actions still fire, exactly as on the
+  // branch where the agent chose to stay quiet.
+  test("a follow-up the guardrail suppresses is not sent, but still labels", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9964, null);
+        const s = stub();
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9964`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"] },
+          base: appDb,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: true,
+                categories: ["toxicity"],
+                rationale: "rude",
+                suggestedReply: null,
+              }),
+              new FakeListChatModel({ responses: ["Some sumido, hein?"] }),
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("silent");
+        expect(s.messages).toEqual([]);
+        expect(s.labelSets).toEqual([["follow-up"]]);
+        // The operator is told why the customer heard nothing.
+        expect(s.notes.length).toBe(1);
+        expect(s.notes[0]?.[1]).toContain("Guardrail (output)");
+      },
+    );
+  });
+
+  // A proactive message answers no question, so answer_relevance has nothing to judge. `splitAnalyses`
+  // already skips the relevance CALL when no customer message travels, but the POLICY would still be
+  // listed in the other call's prompt, where a model asked to score relevance against silence has
+  // only wrong answers available — and every follow-up in the product would start tripping it. The
+  // check is dropped structurally, so this asserts on what the judge was actually handed.
+  test("a proactive reply is never judged for answer relevance", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+            answerRelevance: true,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9961, null);
+        const s = stub();
+        const seen: string[] = [];
+        await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9961`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          base: appDb,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: false,
+                categories: [],
+                rationale: "",
+                suggestedReply: null,
+              }),
+              new FakeListChatModel({ responses: ["Tudo certo por aí?"] }),
+              seen,
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        // Exactly one analysis ran, and it did not carry the relevance policy.
+        expect(seen.length).toBe(1);
+        expect(seen[0]).toContain("toxicity");
+        expect(seen[0]).not.toContain("answer_relevance");
+      },
+    );
+  });
+
+  test("a handoff's closing line on the proactive path is screened too", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "generated",
+          checks: {
+            toxicity: false,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: true,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9962, null);
+        const s = stub();
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9962`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: true,
+                categories: ["prompt_adherence"],
+                rationale: "markdown list",
+                suggestedReply: "GEN-HANDOFF-NUDGE",
+              }),
+              new HandoffThenReplyModel(
+                "Vou te encaminhar!",
+                "- te passo para um humano\n- ok?",
+              ) as unknown as BaseChatModel,
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(outcome).toBe("messaged");
+        expect(s.messages).toEqual([[9962, "GEN-HANDOFF-NUDGE"]]);
+        // The transfer is not hostage to the moderation, and the resolve still falls with it.
+        expect(s.resolved).toEqual([9962]);
+      },
+    );
+  });
+
   test("outside the 24h window, a handoff still leaves the operator the note and the label", async () => {
     await seedConv(9903, null, new Date(Date.now() - 48 * 3_600_000));
     const s = stub();
@@ -846,8 +1175,13 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       },
     });
     expect(outcome).toBe("noted-window");
+    // The note carries the CLOSING LINE, which is what the bot meant the customer to read. It used
+    // to carry the model's final text while the tool free-form sent the closing line past this
+    // branch — outside the window, the one send WhatsApp refuses. Now nothing is sent and the
+    // operator sees the sentence that was meant for the customer.
+    expect(s.messages).toEqual([]);
     expect(s.notes).toEqual([
-      [9903, `${OUTSIDE_WINDOW_NOTE_PREFIX}Vou te encaminhar para o time!`],
+      [9903, `${OUTSIDE_WINDOW_NOTE_PREFIX}Um humano vai te atender.`],
     ]);
     expect(s.labelSets).toEqual([["follow-up"]]);
     // noted-window never resolves, handoff or not: nothing reached the customer.

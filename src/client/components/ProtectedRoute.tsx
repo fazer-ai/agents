@@ -41,12 +41,13 @@ export function ProtectedRoute({
     return <Navigate to="/conversations" replace />;
   }
 
-  // A console link can name the tenant it belongs to; applying that is the app shell's job, not any
-  // one page's, so every deeplink gets it (see TenantDeepLink).
+  // A console link can name the tenant it belongs to. Applying that is the app shell's job, not any
+  // one page's, and it WRAPS the content rather than sitting beside it: a page that mounts while the
+  // switch is still being decided fetches the tenant the console is about to leave (see
+  // TenantDeepLink).
   return (
-    <Layout>
-      <TenantDeepLink />
-      {children}
-    </Layout>
+    <TenantDeepLink>
+      <Layout>{children}</Layout>
+    </TenantDeepLink>
   );
 }

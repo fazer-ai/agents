@@ -80,10 +80,9 @@ function renderAt(search: string) {
           <Route
             path="/resources/vault"
             element={
-              <>
-                <TenantDeepLink />
+              <TenantDeepLink>
                 <div>panel</div>
-              </>
+              </TenantDeepLink>
             }
           />
         </Routes>
@@ -117,15 +116,47 @@ describe("TenantDeepLink", () => {
     globalThis.fetch = realFetch;
   });
 
+  // The gate is the reason this is a wrapper: while the switch is in play the page under it must not
+  // mount, or it fetches the tenant the console is about to leave and shows its controls live.
+  test("the page under it does not mount while a switch is being decided", async () => {
+    let open!: () => void;
+    tenantsGate = new Promise<void>((r) => {
+      open = r;
+    });
+    renderAt("?switchTenant=20&fill=5");
+    await new Promise((r) => setTimeout(r, 30));
+    expect(document.body.textContent?.includes("panel")).toBe(false);
+    open();
+    await waitFor(() => {
+      expect(reloads.length).toBe(1);
+    });
+    // Still held: a reload is coming, and the old tenant's page must not flash before it.
+    expect(document.body.textContent?.includes("panel")).toBe(false);
+  });
+
+  test("a page with no switch parameter renders immediately", async () => {
+    renderAt("?fill=5");
+    expect(document.body.textContent?.includes("panel")).toBe(true);
+  });
+
+  test("an unavailable target opens the gate: the console stays where it is", async () => {
+    tenantsPayload = [{ id: "10", name: "A" }];
+    renderAt("?switchTenant=20");
+    await waitFor(() => {
+      expect(document.body.textContent?.includes("panel")).toBe(true);
+    });
+    expect(reloads.length).toBe(0);
+  });
+
   test("a link for another tenant switches to it and reloads", async () => {
-    renderAt("?tenant=20&fill=5");
+    renderAt("?switchTenant=20&fill=5");
     await waitFor(() => {
       expect(reloads.length).toBe(1);
     });
     expect(localStorage.getItem(KEY)).toBe("20");
     // The parameter survives the switch on purpose: it is consumed only after the reload lands on
     // the tenant it names. Everything else on the URL rides along.
-    expect(seenSearch).toBe("?tenant=20&fill=5");
+    expect(seenSearch).toBe("?switchTenant=20&fill=5");
   });
 
   test("the parameter is not consumed while the tenant list is still loading", async () => {
@@ -133,10 +164,10 @@ describe("TenantDeepLink", () => {
     tenantsGate = new Promise<void>((r) => {
       open = r;
     });
-    renderAt("?tenant=20&fill=5");
+    renderAt("?switchTenant=20&fill=5");
     // Several frames with the answer still unknown: the parameter must still be there.
     await new Promise((r) => setTimeout(r, 30));
-    expect(seenSearch).toBe("?tenant=20&fill=5");
+    expect(seenSearch).toBe("?switchTenant=20&fill=5");
     expect(reloads.length).toBe(0);
     open();
     await waitFor(() => {
@@ -146,7 +177,7 @@ describe("TenantDeepLink", () => {
 
   test("a tenant this session cannot open is reported, and nothing is switched", async () => {
     tenantsPayload = [{ id: "10", name: "A" }];
-    renderAt("?tenant=20");
+    renderAt("?switchTenant=20");
     await waitFor(() => {
       expect(document.body.textContent?.includes("cannot open")).toBe(true);
     });
@@ -155,16 +186,32 @@ describe("TenantDeepLink", () => {
   });
 
   test("already on the tenant the link names: nothing happens and the parameter is cleaned up", async () => {
-    renderAt("?tenant=10&fill=5");
+    renderAt("?switchTenant=10&fill=5");
     await waitFor(() => {
       expect(seenSearch).toBe("?fill=5");
     });
     expect(reloads.length).toBe(0);
   });
 
+  // `/admin/users?tenant=<id>` is that page's fleet-wide filter and predates this component, and the
+  // tenants list links straight to it. A component mounted on every protected route that switched on
+  // sight of `tenant` would hijack that link: switch the console, reload, then strip the filter the
+  // operator had just chosen. Hence a parameter of this component's own.
+  test("the admin users filter is not a switch request", async () => {
+    renderAt("?tenant=20");
+    await waitFor(() => {
+      expect(document.body.textContent?.includes("panel")).toBe(true);
+    });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(reloads.length).toBe(0);
+    expect(localStorage.getItem(KEY)).toBe("10");
+    // And the filter is still on the URL for the page that owns it.
+    expect(seenSearch).toBe("?tenant=20");
+  });
+
   test("a tenant-scoped user never switches, and the inert parameter is cleaned up", async () => {
     role = "TENANT_ADMIN";
-    renderAt("?tenant=20&fill=5");
+    renderAt("?switchTenant=20&fill=5");
     await waitFor(() => {
       expect(seenSearch).toBe("?fill=5");
     });

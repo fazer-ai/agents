@@ -17,6 +17,12 @@ import config from "@/config";
 // operator on the dashboard with no explanation. Naming the destinations here is what keeps a route
 // rename from silently turning a link into a redirect again.
 
+// The query parameter that asks the console to OPEN a given tenant. Deliberately not `tenant`:
+// `/admin/users?tenant=<id>` already exists as that page's fleet-wide filter, linked to from the
+// tenants list, and a component that switches the whole console on sight of `tenant` would hijack
+// that link, reload, and then strip the filter the operator had just chosen.
+export const SWITCH_TENANT_PARAM = "switchTenant";
+
 export const CONSOLE_ROUTES = {
   vault: "/resources/vault",
   integrations: "/resources/integrations",
@@ -30,7 +36,7 @@ export function consoleUrl(
   const rel = path.startsWith("/") ? path : `/${path}`;
   if (opts.tenantId == null) return `${baseUrl}${rel}`;
   const sep = rel.includes("?") ? "&" : "?";
-  return `${baseUrl}${rel}${sep}tenant=${opts.tenantId}`;
+  return `${baseUrl}${rel}${sep}${SWITCH_TENANT_PARAM}=${opts.tenantId}`;
 }
 
 // Open the vault list for this tenant, with the fill modal for one pending entry already open.

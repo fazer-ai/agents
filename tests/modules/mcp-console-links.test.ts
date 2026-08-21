@@ -25,15 +25,16 @@ describe("console links", () => {
     expect(named.slice().sort()).toEqual(ROUTER_PATHS.slice().sort());
   });
 
-  test("the tenant rides as a query parameter", () => {
+  // Deliberately not `tenant`: `/admin/users?tenant=<id>` is already that page's fleet-wide filter.
+  test("the tenant rides as a query parameter of this feature's own", () => {
     expect(consoleUrl("/resources/vault", { tenantId: 42n })).toBe(
-      `${BASE}/resources/vault?tenant=42`,
+      `${BASE}/resources/vault?switchTenant=42`,
     );
   });
 
   test("a path that already has a query keeps it", () => {
     expect(consoleUrl("/resources/vault?fill=5", { tenantId: 42n })).toBe(
-      `${BASE}/resources/vault?fill=5&tenant=42`,
+      `${BASE}/resources/vault?fill=5&switchTenant=42`,
     );
   });
 
@@ -48,7 +49,7 @@ describe("console links", () => {
 
   test("the fill link carries both the entry and its tenant", () => {
     expect(vaultFillUrl(7n, 5n)).toBe(
-      `${BASE}/resources/vault?fill=5&tenant=7`,
+      `${BASE}/resources/vault?fill=5&switchTenant=7`,
     );
   });
 
@@ -56,7 +57,9 @@ describe("console links", () => {
   // is `/resources/vault` and integrations is `/resources/integrations`, so both dropped the
   // operator on the dashboard.
   test("the create and configure links land on the panel, not on the catch-all", () => {
-    expect(vaultCreateUrl(7n)).toBe(`${BASE}/resources/vault?tenant=7`);
-    expect(integrationsUrl(7n)).toBe(`${BASE}/resources/integrations?tenant=7`);
+    expect(vaultCreateUrl(7n)).toBe(`${BASE}/resources/vault?switchTenant=7`);
+    expect(integrationsUrl(7n)).toBe(
+      `${BASE}/resources/integrations?switchTenant=7`,
+    );
   });
 });

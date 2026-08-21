@@ -175,9 +175,24 @@ export async function runSchedulerTick(
     }
   }
   const jobs = await claimDueJobs(opts.batchSize, base);
-  for (const job of jobs) {
-    await runClaimed(job, base);
-  }
+  // NOTE: The batch drains CONCURRENTLY, which is what the debounce and compaction lanes always did
+  // and this one did not (issue #165). Serially, the lane advanced at the speed of whatever was
+  // running: one large document being indexed, or one follow-up whose model call is slow, delayed
+  // every other job claimed with it — and the one where lateness is customer-visible is the
+  // appointment reminder, which exists to arrive BEFORE something. The kinds that call a model are
+  // still throttled, by the process-wide model semaphore they already go through, so concurrency
+  // here does not widen that budget; it stops short jobs from queueing behind long ones.
+  //
+  // What this gives up is FIFO WITHIN a batch (the claim still orders by run_at; the drain no longer
+  // waits). It costs one thing, and only in a state that is already broken: two reminders for the
+  // same appointment can differ (`isLast` decides whether the last one asks for confirmation), so
+  // running them out of order reads oddly. Reaching that state needs both to be overdue at once,
+  // and enqueue skips offsets already past — so it takes the scheduler being hours behind, where the
+  // reminders are late no matter what order they land in.
+  //
+  // allSettled: runClaimed never re-throws (it fails the job internally), but a stray throw must not
+  // stall the tick.
+  await Promise.allSettled(jobs.map((job) => runClaimed(job, base)));
   return { claimed: jobs.length, reaped: reaped.length };
 }
 

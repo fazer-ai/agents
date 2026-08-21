@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { kindsInLane, type SchedulerLane } from "@/modules/scheduler/lanes";
 
 // Durable job store for the scheduler (follow-ups, sweeps, retries).
 //
@@ -23,6 +24,15 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 // for out-of-hours is free), and the reaper bounds crash loops by pushing exhausted jobs to DEAD.
 
 const MAX_ATTEMPTS = 5;
+
+// The lane's kinds as a SQL fragment, derived from the one table that assigns them (lanes.ts) rather
+// than written out per claim. Three hand-kept literals is how a kind added to the enum ends up in no
+// lane at all, or in two: nothing compared them, and the shared lane's was a NOT IN, so forgetting it
+// there silently WIDENED that lane. The values are enum members from a compile-time map, never user
+// input, so embedding them is safe — same property the literals had.
+function laneFilter(lane: SchedulerLane): Prisma.Sql {
+  return Prisma.sql`kind IN (${Prisma.join(kindsInLane(lane))})`;
+}
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -216,13 +226,7 @@ export function claimDueJobs(
   now: Date = new Date(),
   tenantId?: bigint,
 ): Promise<ClaimedJob[]> {
-  return claimWhere(
-    limit,
-    base,
-    now,
-    Prisma.sql`kind NOT IN ('DEBOUNCE', 'MEMORY_COMPACT')`,
-    tenantId,
-  );
+  return claimWhere(limit, base, now, laneFilter("shared"), tenantId);
 }
 
 // The fast debounce tick claims ONLY debounce jobs.
@@ -232,15 +236,14 @@ export function claimDueDebounceJobs(
   now: Date = new Date(),
   tenantId?: bigint,
 ): Promise<ClaimedJob[]> {
-  return claimWhere(limit, base, now, Prisma.sql`kind = 'DEBOUNCE'`, tenantId);
+  return claimWhere(limit, base, now, laneFilter("debounce"), tenantId);
 }
 
-// The compaction lane claims ONLY compaction jobs, and exists for the same reason the debounce lane
-// does — different reason, opposite direction. `runSchedulerTick` awaits its claimed jobs one at a
-// time, and a summary is a model call with a 60s ceiling. Compaction is also the first job kind that
-// fires for EVERY agent on EVERY closed attendance (it ships on by default), so a batch of them on
-// the shared lane would hold up the jobs that are actually time-sensitive — a follow-up, an
-// appointment reminder — by minutes. Its own lane keeps that arithmetic off them entirely.
+// The compaction lane claims ONLY compaction jobs. It exists for BUDGET, not for duration: it fires
+// for every agent on every closed attendance (it ships on by default) and takes permits from the same
+// model semaphore a customer's turn queues on, so its batch is sized to a fraction of that budget
+// (see defaultBatchSize). Duration alone would no longer justify it — the shared tick drains
+// concurrently now — which is exactly the rule written down in lanes.ts.
 export function claimDueCompactionJobs(
   limit: number,
   base: PrismaClient = basePrisma,
@@ -252,7 +255,7 @@ export function claimDueCompactionJobs(
     limit,
     base,
     now,
-    Prisma.sql`kind = 'MEMORY_COMPACT'`,
+    laneFilter("compaction"),
     tenantId,
     excludeIds,
   );

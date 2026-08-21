@@ -22,21 +22,39 @@ function extraKeys(obj: Record<string, unknown>, known: string[]): string[] {
   return Object.keys(obj).filter((k) => !known.includes(k));
 }
 
-// The AUTHORING rule for one row, which is deliberately stricter than what the runtime tolerates:
-// `parseBody` coerces a non-string value to "" and ignores any extra key, and both of those lose
-// something the author wrote. What the runtime does with such a row instead lives in `canonicalRow`.
-function rowsAreMalformed(rows: unknown): boolean {
-  if (!Array.isArray(rows)) return true;
-  return rows.some(
+// The AUTHORING rule for `rows`, deliberately stricter than what the runtime tolerates: `parseBody`
+// coerces a non-string value to "", ignores any extra key, drops a row whose key trims to nothing,
+// and lets a later row overwrite an earlier one on the same trimmed key. Every one of those loses
+// something the author wrote. What the runtime DOES with such rows instead lives in `canonicalRow`.
+// Returns the reason, so the message can name the row rather than the rule.
+function rowsProblem(rows: unknown): string | null {
+  if (!Array.isArray(rows)) {
+    return 'body mode "kv" needs `rows` to be a list of {"key":"…","value":"…"}, both non-empty strings — a row whose key is blank is dropped, and its value with it.';
+  }
+  const bad = rows.some(
     (r) =>
       !isPlainObject(r) ||
       typeof r.key !== "string" ||
-      // NOTE: `parseBody` drops a row whose key trims to nothing, so a blank key loses the value
-      // exactly as silently as a key the runtime never reads.
       r.key.trim() === "" ||
       typeof r.value !== "string" ||
       extraKeys(r, ["key", "value"]).length > 0,
   );
+  if (bad) {
+    return 'body mode "kv" needs `rows` to be a list of {"key":"…","value":"…"}, both non-empty strings — a row whose key is blank is dropped, and its value with it.';
+  }
+  // NOTE: the payload is keyed by the TRIMMED key, so two rows that trim to the same thing are one
+  // key: the later silently overwrites the earlier, and one of the two values never leaves.
+  const seen = new Set<string>();
+  const collided = new Set<string>();
+  for (const r of rows as { key: string }[]) {
+    const k = r.key.trim();
+    if (seen.has(k)) collided.add(k);
+    seen.add(k);
+  }
+  if (collided.size > 0) {
+    return `body mode "kv" keys the payload by the TRIMMED key, so ${[...collided].map((k) => JSON.stringify(k)).join(", ")} appears more than once and only the last value would be sent. Give each row its own key.`;
+  }
+  return null;
 }
 
 const SHAPES =
@@ -69,9 +87,8 @@ export function unsupportedBodyShape(body: unknown): string | null {
   }
 
   if (body.mode === "kv") {
-    if (body.rows !== undefined && rowsAreMalformed(body.rows)) {
-      return 'body mode "kv" needs `rows` to be a list of {"key":"…","value":"…"}, both non-empty strings — a row whose key is blank is dropped, and its value with it.';
-    }
+    const rowsBad = body.rows !== undefined ? rowsProblem(body.rows) : null;
+    if (rowsBad) return rowsBad;
     const extra = extraKeys(body, ["mode", "rows"]);
     return extra.length > 0
       ? dropped(
@@ -134,10 +151,17 @@ export function canonicalBodyShape(body: unknown): Record<string, unknown> {
     return { mode: "raw", raw: typeof body.raw === "string" ? body.raw : "" };
   }
   if (body.mode === "kv") {
-    const rows = Array.isArray(body.rows)
-      ? body.rows.map(canonicalRow).filter((r) => r !== null)
-      : [];
-    return { mode: "kv", rows };
+    // NOTE: last-wins on the trimmed key, mirroring `payload[k] = …` in the kv consumer: two rows
+    // that trim to the same key are one key, and the canonical form has to be a shape the authoring
+    // rule accepts as well as one that sends the same bytes.
+    const byKey = new Map<string, { key: string; value: string }>();
+    if (Array.isArray(body.rows)) {
+      for (const r of body.rows) {
+        const row = canonicalRow(r);
+        if (row) byKey.set(row.key.trim(), row);
+      }
+    }
+    return { mode: "kv", rows: [...byKey.values()] };
   }
   if (body.mode === "fields") return { mode: "fields" };
   return {};

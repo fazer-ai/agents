@@ -514,7 +514,11 @@ export function buildHttpTool(
           // original type (number/array/object/bool); a known aiField the model OMITTED is skipped
           // (matches the legacy fields behavior — never emit ""); anything else (context/secret/fixed/
           // mixed text) interpolates to a string.
-          const payload: Record<string, unknown> = {};
+          // NOTE: null-prototype, because `payload[k] = v` on a plain object hits the INHERITED
+          // setter when k is "__proto__" — the assignment succeeds, no own property is created, and
+          // JSON.stringify drops the row without a word. That is the same silent payload loss this
+          // area is about (issue #150), and fixing it here fixes it for rows already stored.
+          const payload: Record<string, unknown> = Object.create(null);
           for (const { key, value } of bodyCfg.rows) {
             const k = key.trim();
             if (!k) continue;
@@ -531,7 +535,11 @@ export function buildHttpTool(
         } else {
           // Legacy "fields": assemble JSON from the non-path input fields (AI input keeps its type; a
           // fixed field contributes its interpolated value).
-          const payload: Record<string, unknown> = {};
+          // NOTE: null-prototype, because `payload[k] = v` on a plain object hits the INHERITED
+          // setter when k is "__proto__" — the assignment succeeds, no own property is created, and
+          // JSON.stringify drops the row without a word. That is the same silent payload loss this
+          // area is about (issue #150), and fixing it here fixes it for rows already stored.
+          const payload: Record<string, unknown> = Object.create(null);
           for (const f of fields) {
             if (pathFields.has(f.name)) continue;
             if (f.source === "fixed") payload[f.name] = fixedValues[f.name];

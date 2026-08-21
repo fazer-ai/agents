@@ -149,6 +149,15 @@ describe("the canonical form of a refused body sends what the original sent", ()
     // NOTE: the row the runtime filters out rather than sends.
     { mode: "kv", rows: [{ key: "  ", value: "{{valor}}" }] },
     { mode: "kv", rows: [null] },
+    // NOTE: round 6 review. Two rows that trim to ONE payload key: the runtime keeps the last, so
+    // the earlier value never leaves, and the canonical form has to keep the last too.
+    {
+      mode: "kv",
+      rows: [
+        { key: "a", value: "first" },
+        { key: " a ", value: "second" },
+      ],
+    },
     // NOTE: no mode at all, and a mode nothing executes.
     { contact: { email: "{{valor}}" } },
     { mode: "template", raw: "x" },
@@ -194,4 +203,71 @@ describe("the canonical form of a refused body sends what the original sent", ()
       expect(await sent(canonical)).toBe(await sent(body));
     });
   }
+});
+
+// NOTE: round 6 review, second P2, and it is fixed in the runtime rather than refused at the write:
+// `payload[k] = v` on a plain object hits Object.prototype's setter when k is "__proto__", so the
+// assignment succeeds, no own property appears, and JSON.stringify drops the row. Refusing the key
+// would leave every already-stored row losing its value; a null-prototype payload makes the key
+// ordinary, which is what an operator writing it meant. `constructor` was never affected (an own
+// property simply shadows the inherited one) and is here so the fix is not mistaken for a ban.
+describe("a payload key that collides with Object.prototype", () => {
+  async function sent(body: unknown): Promise<string> {
+    let out = "";
+    const fetchImpl = (async (_u: RequestInfo | URL, init?: RequestInit) => {
+      out = String(init?.body ?? "");
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const tool = buildHttpTool(
+      {
+        name: "t",
+        method: "POST",
+        urlTemplate: "https://example.com/x",
+        allowedHosts: ["example.com"],
+        headers: {},
+        inputSchema: {},
+        body,
+      } as never,
+      { fetchImpl, allowHttp: true, resolveCredential: async () => null },
+    );
+    await tool.invoke({});
+    return out;
+  }
+
+  test("a __proto__ row is sent, not silently dropped", async () => {
+    const out = await sent({
+      mode: "kv",
+      rows: [
+        { key: "__proto__", value: "x" },
+        { key: "ok", value: "y" },
+      ],
+    });
+    // NOTE: compared as entries on purpose — an object LITERAL keyed "__proto__" sets the
+    // prototype instead of an own property, so the obvious expectation is the very trap this
+    // tests for (JSON.parse, unlike a literal, does create an own key).
+    expect(Object.entries(JSON.parse(out))).toEqual([
+      ["__proto__", "x"],
+      ["ok", "y"],
+    ]);
+  });
+
+  test("the authoring rule does not refuse it", () => {
+    expect(
+      unsupportedBodyShape({
+        mode: "kv",
+        rows: [{ key: "__proto__", value: "x" }],
+      }),
+    ).toBeNull();
+  });
+
+  test("constructor was never affected and stays sendable", async () => {
+    const out = await sent({
+      mode: "kv",
+      rows: [{ key: "constructor", value: "x" }],
+    });
+    expect(JSON.parse(out)).toEqual({ constructor: "x" });
+  });
 });

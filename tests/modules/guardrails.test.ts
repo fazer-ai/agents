@@ -582,18 +582,28 @@ describe("analyzeGuardrail", () => {
           suggestedReply: reply,
         });
 
+      // NOTE: each half reports a REAL policy key, the way the prompt asks for. The fixture used to
+      // reuse the half's own name ("policies"), which is not a key the prompt defines, and a verdict
+      // may no longer answer with one: `categories` reaches `execution_logs.detail` as an enum, so
+      // parseVerdict holds the model to the vocabulary (issue #141).
+      const HALF_CATEGORY = {
+        policies: "toxicity",
+        relevance: "answer_relevance",
+      } as const;
+
       test("a violation on either side wins, with its categories and rationale", async () => {
         for (const violatingHalf of ["policies", "relevance"] as const) {
+          const category = HALF_CATEGORY[violatingHalf];
           const r = recordingModel((c) =>
             (violatingHalf === "relevance") === isFenced(c)
-              ? violation(violatingHalf, "TROCA")
+              ? violation(category, "TROCA")
               : clean,
           );
           const v = await analyzeGuardrail(r.model, split);
           expect(r.calls().length).toBe(2);
           expect(v.violated).toBe(true);
-          expect(v.categories).toEqual([violatingHalf]);
-          expect(v.rationale).toBe(`r-${violatingHalf}`);
+          expect(v.categories).toEqual([category]);
+          expect(v.rationale).toBe(`r-${category}`);
           // A replacement is only ever taken from the half that judges the reply. The relevance
           // half would have to invent the answer, so its suggestion is dropped even when it writes
           // one unasked, and the runtime falls back to the configured template.
@@ -699,6 +709,40 @@ describe("analyzeGuardrail", () => {
     expect(v.violated).toBe(true);
     expect(v.categories).toEqual(["toxicity"]);
     expect(v.suggestedReply).toBeNull();
+  });
+
+  // `categories` is a closed vocabulary, and the prompt says so ("lists the violated policy keys").
+  // Nothing held the model to it, so a model answering the question in prose wrote free text into a
+  // field that `execution_logs.detail` exports as an enum, and the Logs page and GET /v1/logs are
+  // documented to carry no message text (issue #141). A stranger is dropped; the violation and any
+  // real key it came with are untouched, because what the guardrail DID is not in question.
+  test("a category outside the prompt's vocabulary is dropped", async () => {
+    const v = await analyzeGuardrail(
+      fakeModel(
+        '{"violated": true, "categories": ["toxicity", "o cliente citou o CPF 12345678900", "unsafeContent"], "rationale": "x", "suggestedReply": null}',
+      ),
+      base,
+    );
+    expect(v.violated).toBe(true);
+    // "unsafeContent" goes too: the prompt asks for `unsafe_content`, and a near-miss is still not
+    // a key anything can read.
+    expect(v.categories).toEqual(["toxicity"]);
+  });
+
+  test("every key the prompt names is accepted, spelled as the prompt spells it", async () => {
+    const v = await analyzeGuardrail(
+      fakeModel(
+        '{"violated": true, "categories": ["toxicity", "unsafe_content", "competitor_mention", "prompt_adherence", "answer_relevance"], "rationale": "x", "suggestedReply": null}',
+      ),
+      base,
+    );
+    expect(v.categories).toEqual([
+      "toxicity",
+      "unsafe_content",
+      "competitor_mention",
+      "prompt_adherence",
+      "answer_relevance",
+    ]);
   });
 
   test("tolerates prose / code fences around the JSON", async () => {

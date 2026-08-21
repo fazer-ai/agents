@@ -102,19 +102,25 @@ async function seedConv(convId: number) {
   });
 }
 
-// The emits are fire-and-forget, so the rows land shortly AFTER the turn returns. Waits for the
-// stage that always closes a posted turn, then reads everything written under that turn's thread.
-async function turnRows(convId: number) {
+// The emits are fire-and-forget, so the rows land shortly AFTER the turn returns, and they do not
+// land in one go: `guardrail` is written after `generate`, since the reply has to exist before it
+// can be screened. Waiting on `generate` alone therefore reads a turn that is still being written,
+// which fails the assertions that inspect the later line and, worse, would let the PII invariant
+// pass by simply not having seen the offending row yet. So the caller names every stage this turn
+// is expected to produce, and nothing is read until all of them are there.
+async function turnRows(convId: number, stages: readonly string[]) {
   const threadId = `${tenantId}:${instanceId}:${convId}`;
-  for (let i = 0; i < 150; i++) {
+  for (let i = 0; i < 200; i++) {
     const rows = await suDb.executionLog.findMany({
       where: { tenantId, threadId },
       select: { stage: true, detail: true, errorMessage: true },
     });
-    if (rows.some((r) => r.stage === "generate")) return rows;
+    if (stages.every((s) => rows.some((r) => r.stage === s))) return rows;
     await new Promise((r) => setTimeout(r, 20));
   }
-  return [];
+  throw new Error(
+    `turn ${convId} never produced all of [${stages.join(", ")}]`,
+  );
 }
 
 // The assertion itself: every marker, against every row of the turn, naming the stage that carries
@@ -291,7 +297,7 @@ describe.skipIf(!dbUp)(
         },
       });
       expect(outcome).toBe("posted");
-      const rows = await turnRows(9601);
+      const rows = await turnRows(9601, ["generate"]);
       expectNoMarkers(rows, [NAME, PHONE, ATTR, ASKED]);
     });
 
@@ -299,7 +305,7 @@ describe.skipIf(!dbUp)(
     // debugging "why did it answer that" needs to see the rules the agent was given and which
     // variables were in play. Only the VALUES go.
     test("the recorded system prompt keeps the operator's own text and names the variables", async () => {
-      const rows = await turnRows(9601);
+      const rows = await turnRows(9601, ["generate"]);
       const generate = rows.find((r) => r.stage === "generate");
       const prompt = String(
         (generate?.detail as Record<string, unknown> | null)?.systemPrompt ??
@@ -346,13 +352,54 @@ describe.skipIf(!dbUp)(
       });
       expect(outcome).toBe("posted");
       expect(sent).toEqual([[9602, "TEMPLATE-OUT"]]);
-      const rows = await turnRows(9602);
+      const rows = await turnRows(9602, ["generate", "guardrail"]);
       expectNoMarkers(rows, [NAME, PHONE, ATTR, ASKED]);
       // What the operator still gets on that line: what the guardrail DID.
       const guard = rows.find((r) => r.stage === "guardrail");
       const detail = guard?.detail as Record<string, unknown> | null;
       expect(detail?.direction).toBe("output");
       expect(detail?.action).toBe("template");
+      expect(detail?.categories).toEqual(["toxicity"]);
+    });
+
+    // `categories` is the other field the model fills in, and it was accepted as any string at all.
+    // A model that answers in prose instead of in policy keys ("o cliente citou o processo ...")
+    // therefore wrote that straight into a column the docs describe as enums, so dropping
+    // `rationale` alone would have left the same door open one field over.
+    test("a category outside the policy vocabulary is dropped, not logged", async () => {
+      await seedConv(9603);
+      const sent: Array<[number, string]> = [];
+      const model = new UsageReportingModel(["Resposta qualquer."]);
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: BOT,
+        event: incoming(9603),
+        base: appDb,
+        deps: {
+          makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+            cfg.model === GUARD_MODEL
+              ? ({
+                  invoke: async () => ({
+                    content: JSON.stringify({
+                      violated: true,
+                      categories: ["toxicity", `o cliente disse ${ASKED}`],
+                      rationale: "",
+                      suggestedReply: null,
+                    }),
+                  }),
+                } as unknown as BaseChatModel)
+              : (model as unknown as BaseChatModel),
+          makeClient: stub(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      const rows = await turnRows(9603, ["generate", "guardrail"]);
+      expectNoMarkers(rows, [NAME, PHONE, ATTR, ASKED]);
+      // The violation still stands and the key that WAS a key survives: only the stranger is gone.
+      const guard = rows.find((r) => r.stage === "guardrail");
+      const detail = guard?.detail as Record<string, unknown> | null;
       expect(detail?.categories).toEqual(["toxicity"]);
     });
   },

@@ -10,6 +10,7 @@ import {
   buildGuardrailSystemPrompt,
   customerMessageForReview,
   fenceCustomerMessage,
+  GUARDRAIL_CATEGORY_KEYS,
   type GuardrailPromptParams,
 } from "./prompts";
 
@@ -115,8 +116,15 @@ function parseVerdict(raw: string): GuardrailVerdict {
   }
   const obj = candidates[0] as Record<string, unknown>;
   if (obj.violated === false) return CLEAN;
+  // NOTE: the vocabulary is closed. The model is asked for policy KEYS, and a verdict that names
+  // something else is not naming a category: it is writing free text into a field that reaches
+  // `execution_logs.detail`, which is documented to carry enums. Dropping the stranger keeps the
+  // violation itself (`violated` is already true) and costs only a label nothing could read.
   const categories = Array.isArray(obj.categories)
-    ? obj.categories.filter((c): c is string => typeof c === "string")
+    ? obj.categories.filter(
+        (c): c is string =>
+          typeof c === "string" && GUARDRAIL_CATEGORY_KEYS.includes(c),
+      )
     : [];
   return {
     violated: true,

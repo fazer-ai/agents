@@ -196,11 +196,6 @@ describe("agent_settings_set argument schema", () => {
       { sendImage: { allowedHosts: ["not a host"] } },
     ],
     ["a language tag with a region", { stt: { language: "pt-BR" } }],
-    // `str()` trims before it compares, so padding is a value these readers honor. The three below
-    // reach their choice through it; the two in the refused table do not.
-    ["a padded provider, which str() trims", { stt: { provider: " openai " } }],
-    ["a padded reply mode", { tts: { mode: " mirror " } }],
-    ["a padded language tag", { stt: { language: " pt-BR " } }],
     [
       "null, the way the grounding filter is cleared",
       { grounding: { maxDistance: null } },
@@ -258,14 +253,16 @@ describe("agent_settings_set argument schema", () => {
       "a language that is not a language tag",
       { stt: { language: "portugues" } },
     ],
-    // The other half of the padding pair: these readers test the RAW value, so a padded one is
-    // thrown away there and refusing it here is the same answer, delivered earlier.
+    // Surrounding whitespace, uniformly. Some of these readers trim before comparing and some test
+    // the raw value, and the schema refuses all of them anyway: the trim cannot be PUBLISHED without
+    // replacing the enum with a pattern, and a rule the two ends read differently is worse than a
+    // narrower one they agree on. See the header, and the parity test below.
+    ["a padded provider", { stt: { provider: " openai " } }],
+    ["a padded reply mode", { tts: { mode: " mirror " } }],
+    ["a padded language tag", { stt: { language: " pt-BR " } }],
+    ["a padded handoff mode", { handoff: { mode: " route " } }],
     [
-      "a padded handoff mode, which its reader does NOT trim",
-      { handoff: { mode: " route " } },
-    ],
-    [
-      "a padded delay unit, which its reader does NOT trim",
+      "a padded delay unit",
       { followUp: { steps: [{ delayUnit: " minutes " }] } },
     ],
     // A model id where a model PROVIDER goes: stored without complaint today, and then
@@ -318,13 +315,22 @@ describe("agent_settings_set argument schema", () => {
     });
   });
 
-  // Parsing has to hand the handler the trimmed value, not merely accept the padded one: the block
-  // is spread into the stored bag before any reader sees it.
-  test("a padded choice reaches the handler trimmed", () => {
-    const parsed = patch.parse({
-      stt: { provider: " openai ", language: " pt-BR " },
-    });
-    expect(parsed.stt).toEqual({ provider: "openai", language: "pt-BR" });
+  // The second constraint, and the one that decided the padding rows above. A client may validate
+  // against `tools/list` before sending, so anything the server enforces and the published schema
+  // cannot express is a contract the two ends read differently. Leniency added with a `z.preprocess`
+  // is exactly that: invisible out there, so the server would accept what a client refuses.
+  test("what the schema enforces is what it publishes", async () => {
+    expect(patch.safeParse({ stt: { provider: " openai " } }).success).toBe(
+      false,
+    );
+    const choices = keywordOf(
+      await publishedSchema(),
+      "stt",
+      "provider",
+      "enum",
+    ) as string[];
+    expect(choices).toContain("openai");
+    expect(choices).not.toContain(" openai ");
   });
 
   // The partial-patch contract, at the parse boundary. zod 4 omits an absent optional rather than

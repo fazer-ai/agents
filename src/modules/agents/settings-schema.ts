@@ -43,30 +43,28 @@ import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
 // silently dropped on the way in — the readers stay the authority, and this schema only says what is
 // already known about the shape.
 //
-// NOTE: the one place this is deliberately narrower than a reader. `observability.logToolValues` and
-// `memory.compaction.enabled` also accept the STRING spellings ("true"/"false"), which is a defense
-// for a bag written by an older build or edited by hand and stays true of anything already stored.
-// It was never an input contract — no description ever mentioned it — and publishing it here would
-// teach a model that a stringified boolean is a legitimate way to call the tool.
+// WHAT THIS SCHEMA ENFORCES IS WHAT IT PUBLISHES, and that is a second constraint, not the same one.
+// `tools/list` ships the generated JSON Schema, so a client may validate a call before sending it;
+// anything zod enforces that JSON Schema cannot express becomes a contract the two ends read
+// differently. It has bitten twice here: a `/…/i` pattern loses its flag on the way out (so the
+// published pattern refused the documented "pt-BR"), and a `z.preprocess` that trims before an enum
+// is invisible out there (so a padded " openai " parsed on the server and would be refused by a
+// client). The first was fixed by spelling the case classes out in the reader's own constant. The
+// second cannot be fixed that way: encoding the whitespace means publishing a pattern INSTEAD of an
+// enum, which trades away the one thing worth publishing — the list of options a client renders.
+//
+// So the schema is deliberately narrower than a reader in exactly two places, both for the same
+// reason: `observability.logToolValues` / `memory.compaction.enabled` also honor the STRING
+// spellings ("true"/"false"), and every `str()`-backed choice also honors surrounding whitespace.
+// Both are normalizations of what is STORED — a bag written by an older build, a row edited by hand
+// — and both stay true of everything already stored, because the readers are untouched. Neither was
+// ever an input contract: no description offered them, and no console path can produce one (a
+// provider comes from a dropdown). What narrows is only what a caller may newly SEND.
 
 // A registry list as a set of choices. `Object.keys` of a provider map is `string[]`, which is the
 // one shape `z.enum` cannot take; the registries are module-level literals and never empty.
 function oneOf(names: readonly string[]) {
   return z.enum(names as [string, ...string[]]);
-}
-
-// The same choices, for the fields whose reader reaches them through `str()` — which TRIMS before it
-// compares, so " openai " is a value it honors and this boundary may not refuse. The trim runs
-// before the comparison here too; `toJSONSchema` still publishes the plain enum, so a client sees
-// the options rather than a preprocessing step.
-//
-// Deliberately NOT applied to `handoff.mode` or either delay unit: those readers test the RAW value
-// (`VALID_UNITS.has(bag.delayUnit)`), so a padded one is thrown away there and may be refused here.
-function trimmedOneOf(names: readonly string[]) {
-  return z.preprocess(
-    (v) => (typeof v === "string" ? v.trim() : v),
-    oneOf(names),
-  );
 }
 
 // Every credential field on every block: a vault entry NAME, or a `vault:<id>` ref when two entries
@@ -108,13 +106,11 @@ const debounce = z.looseObject({
 
 const stt = z.looseObject({
   enabled: z.boolean().optional(),
-  provider: trimmedOneOf(STT_PROVIDER_NAMES).optional(),
+  provider: oneOf(STT_PROVIDER_NAMES).optional(),
   model: modelId(),
   language: z
-    .preprocess(
-      (v) => (typeof v === "string" ? v.trim() : v),
-      z.string().regex(LANG_RE),
-    )
+    .string()
+    .regex(LANG_RE)
     .optional()
     .describe('ISO-639-1, e.g. "pt" or "pt-BR"'),
   credentialRef: credentialRef(),
@@ -122,10 +118,10 @@ const stt = z.looseObject({
 });
 
 const tts = z.looseObject({
-  mode: trimmedOneOf(TTS_MODES)
+  mode: oneOf(TTS_MODES)
     .optional()
     .describe("mirror = audio when the customer sent audio"),
-  provider: trimmedOneOf(TTS_PROVIDER_NAMES).optional(),
+  provider: oneOf(TTS_PROVIDER_NAMES).optional(),
   model: modelId(),
   voice: z
     .string()
@@ -140,7 +136,7 @@ const tts = z.looseObject({
   // The rewrite runs on a CHAT model, so this is a model provider and not one of the synthesis
   // providers above. An unregistered name is not refused anywhere downstream: resolveNormalizeModel
   // returns `provider_unknown` at READ time and the rewrite silently never runs.
-  normalizeProvider: trimmedOneOf(MODEL_PROVIDERS)
+  normalizeProvider: oneOf(MODEL_PROVIDERS)
     .nullable()
     .optional()
     .describe("the rewrite's model PROVIDER; null inherits the agent's"),
@@ -160,7 +156,7 @@ const tts = z.looseObject({
 
 const vision = z.looseObject({
   enabled: z.boolean().optional(),
-  provider: trimmedOneOf(VISION_PROVIDER_NAMES).optional(),
+  provider: oneOf(VISION_PROVIDER_NAMES).optional(),
   model: modelId(),
   credentialRef: credentialRef(),
   baseURL: baseURL(),

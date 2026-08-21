@@ -4,6 +4,10 @@ import {
   memoryToForm,
   memoryToStored,
 } from "@/client/pages/agents/memoryFormState";
+import {
+  overrideBaseUrlInvalid,
+  overrideBaseUrlUnsupported,
+} from "@/client/pages/agents/modelOverrideForm";
 import { readMemoryConfig } from "@/modules/memory/settings";
 
 // The Behavior save REPLACES the whole `memory` block with what the form holds, so a field the form
@@ -59,5 +63,56 @@ describe("agent editor memory round-trip", () => {
     expect(compactionReaderKeys()).toEqual(
       Object.keys(readMemoryConfig({}).compaction).sort(),
     );
+  });
+});
+
+// The Behavior tab's Save is blocked while either of these holds, and the summariser's fields live
+// inside a section the operator can switch OFF, which hides them. The TTS override already carried
+// this precondition, in its adapter and in its own tests; the summariser's arrived calling the
+// shared helper directly and skipped both, which is how review found it. The rule lives in the
+// shared helper now, as a required argument, so these are over that.
+const AGENT = { provider: "openai", credentialRef: "vault:1", baseURL: "" };
+const BROKEN = {
+  provider: "openai-compatible",
+  model: "local-small",
+  credentialRef: "",
+  baseURL: "llama:8080",
+};
+
+describe("the summariser's endpoint never freezes a hidden section", () => {
+  test("with compaction on, a broken endpoint blocks the save", () => {
+    expect(overrideBaseUrlInvalid(BROKEN, AGENT, null, true)).toBe(true);
+  });
+
+  // The state that has to stay reachable: an override saved through REST or MCP that cannot run,
+  // on an agent whose operator then turns compaction off. Reporting it would freeze the tab with
+  // nothing on screen to explain it, including the save that turns the section off.
+  test("with compaction off, the same bag reports nothing", () => {
+    expect(overrideBaseUrlInvalid(BROKEN, AGENT, null, false)).toBe(false);
+  });
+
+  test("the unsupported-endpoint half is gated the same way", () => {
+    const onKeyedVendor = {
+      provider: "anthropic",
+      model: "",
+      credentialRef: "vault:9",
+      baseURL: "",
+    };
+    expect(
+      overrideBaseUrlUnsupported(
+        onKeyedVendor,
+        AGENT,
+        "https://proxy.example/v1",
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      overrideBaseUrlUnsupported(
+        onKeyedVendor,
+        AGENT,
+        "https://proxy.example/v1",
+        false,
+      ),
+    ).toBe(false);
   });
 });

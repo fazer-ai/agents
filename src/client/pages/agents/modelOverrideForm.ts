@@ -113,23 +113,35 @@ export function overridePickerSource(
 // Whether the endpoint in play is one this provider will never send. The operator can reach it in
 // two clicks — pick a credential that carries a base URL while the call sits on a keyed vendor — and
 // the field that would explain it does not even render for that provider.
+//
+// `sectionOn` is REQUIRED, and it is the whole reason these two are not plain projections like the
+// rest of this file: both block the tab's Save, and each of these overrides lives inside a section
+// the operator can switch OFF, which HIDES its fields. Answering "yes" for a section that is off
+// freezes the Behavior tab with nothing on screen to explain it — including the save that turns the
+// section off, so the operator cannot even undo their way out. Asking for it rather than reading it
+// from the override is deliberate: the switch is not part of the model configuration, and the
+// compiler is the only thing that will put the question to the next feature that adds an override.
 export function overrideBaseUrlUnsupported(
   override: ModelOverride,
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
+  sectionOn: boolean,
 ): boolean {
+  if (!sectionOn) return false;
   const r = overrideResolution(override, agent, ownCredBaseUrl);
   return !r.runnable && r.reason === "endpoint_unsupported";
 }
 
 // No endpoint the call can be sent to: an openai-compatible one with no address at all, or an address
 // it brought itself that is not a dialable URL. Either way createChatModel refuses the configuration,
-// or the request never leaves.
+// or the request never leaves. `sectionOn` as above.
 export function overrideBaseUrlInvalid(
   override: ModelOverride,
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
+  sectionOn: boolean,
 ): boolean {
+  if (!sectionOn) return false;
   const r = overrideResolution(override, agent, ownCredBaseUrl);
   return !r.runnable && r.reason === "endpoint_unusable";
 }

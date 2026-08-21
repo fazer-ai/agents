@@ -895,11 +895,13 @@ export function BehaviorTab({
     memoryOverride,
     agentModel,
     memoryCredBaseUrl,
+    memory.compactionEnabled,
   );
   const memoryBaseUrlUnsupported = overrideBaseUrlUnsupported(
     memoryOverride,
     agentModel,
     memoryCredBaseUrl,
+    memory.compactionEnabled,
   );
   const normalizeBaseUrlInvalid = ttsNormalizerBaseUrlInvalid(
     tts,

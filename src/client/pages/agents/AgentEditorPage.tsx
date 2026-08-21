@@ -74,6 +74,7 @@ import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
 } from "@/modules/guardrails/settings";
+import { readMemoryConfig } from "@/modules/memory/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import {
   BehaviorTab,
@@ -1420,6 +1421,13 @@ function AgentEditor() {
     : model;
   const savedModelBaseUrl =
     vaultBaseUrl(savedModel.credentialRef) ?? savedModel.baseURL;
+  // The summariser override is judged on the STORED bag (see `settings` on the input), so the
+  // credential whose endpoint outranks it has to be the stored one too. Reading the form's instead
+  // would judge a saved configuration against a credential the row does not name.
+  const savedMemoryCredBaseUrl = vaultBaseUrl(
+    readMemoryConfig(syncedAgentRef.current?.settings).compaction
+      .credentialRef ?? "",
+  );
   const configIssues = computeConfigIssues({
     settings: syncedAgentRef.current?.settings,
     // Saved, like the settings above. Absent only before the first load lands, and nothing that
@@ -1434,6 +1442,7 @@ function AgentEditor() {
     savedModelProvider: savedModel.provider,
     savedModelBaseURL: savedModelBaseUrl,
     savedModelCredentialRef: savedModel.credentialRef,
+    savedMemoryCredentialBaseURL: savedMemoryCredBaseUrl,
     ttsNormalize: tts.normalize,
     ttsNormalizeProvider: tts.normalizeProvider,
     ttsNormalizeModel: tts.normalizeModel,

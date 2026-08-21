@@ -161,6 +161,12 @@ export interface ConfigHealthInput {
   // The saved model's credential, needed for one question only: whether an endpoint the rewrite
   // INHERITS could still arrive from that credential once the vault answers.
   savedModelCredentialRef?: string;
+  // The base URL carried by the SAVED summariser credential, which outranks the endpoint typed into
+  // the bag exactly as it does at runtime (`loadAgentConfig` reads it from the vault). Without it
+  // this check calls a summariser that runs perfectly well `endpoint_unusable` the moment the vault
+  // answers, and misses the opposite case — a credential endpoint on a vendor that never sends one.
+  // Null until the vault list lands, which is what the deferral below is for.
+  savedMemoryCredentialBaseURL?: string | null;
   sttEnabled: boolean;
   sttCredentialRef: string;
   // TTS has no boolean toggle — any mode other than "never" means audio replies are on.
@@ -431,7 +437,10 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
             model: "",
             baseURL: input.savedModelBaseURL ?? null,
           },
-          { isUsableBaseURL: isValidHttpUrl },
+          {
+            ownCredentialBaseURL: input.savedMemoryCredentialBaseURL ?? null,
+            isUsableBaseURL: isValidHttpUrl,
+          },
         )
       : null;
   const compactionIssue: ConfigIssue = {

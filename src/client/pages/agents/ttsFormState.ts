@@ -207,16 +207,23 @@ export function ttsNormalizerPickerSource(
   return overridePickerSource(toOverride(tts), agent, ownCredBaseUrl);
 }
 
-// The two guards below carry a TTS-specific precondition on top of the shared rule: with audio
-// replies off the whole block is hidden, so blocking Save here would freeze the Behavior tab with
-// nothing on screen to explain it — including the save that turns audio off in the first place.
+// The two guards below answer the shared rule's `sectionOn` question: with audio replies off, or the
+// rewrite switched off, the whole block is hidden, so blocking Save would freeze the Behavior tab
+// with nothing on screen to explain it — including the save that turns audio off in the first place.
+// That precondition used to live here as an early return, which is why the summariser's override
+// arrived without it; it is a required argument of the shared helper now, so the next feature to add
+// one has to answer it.
 export function ttsNormalizerBaseUrlUnsupported(
   tts: TtsFormState,
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
 ): boolean {
-  if (tts.mode === "never" || !tts.normalize) return false;
-  return overrideBaseUrlUnsupported(toOverride(tts), agent, ownCredBaseUrl);
+  return overrideBaseUrlUnsupported(
+    toOverride(tts),
+    agent,
+    ownCredBaseUrl,
+    tts.mode !== "never" && tts.normalize,
+  );
 }
 
 export function ttsNormalizerBaseUrlInvalid(
@@ -224,6 +231,10 @@ export function ttsNormalizerBaseUrlInvalid(
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
 ): boolean {
-  if (tts.mode === "never" || !tts.normalize) return false;
-  return overrideBaseUrlInvalid(toOverride(tts), agent, ownCredBaseUrl);
+  return overrideBaseUrlInvalid(
+    toOverride(tts),
+    agent,
+    ownCredBaseUrl,
+    tts.mode !== "never" && tts.normalize,
+  );
 }

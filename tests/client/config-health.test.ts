@@ -265,6 +265,43 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ).toEqual([]);
     });
 
+    // The endpoint the runtime will actually use comes off the CREDENTIAL when it carries one
+    // (`loadAgentConfig` reads it from the vault), and it outranks whatever the bag holds. A check
+    // that resolves without it calls a summariser that runs perfectly well broken, the moment the
+    // vault answers. Found by review, on the fix for the previous round.
+    test("an endpoint carried by the credential is not reported as missing", () => {
+      expect(
+        computeConfigIssues({
+          ...mem({ provider: "openai-compatible", credentialRef: "vault:3" }),
+          savedMemoryCredentialBaseURL: "https://llm.internal.example/v1",
+          knownRefs: new Set(["vault:1", "vault:3"]),
+        }),
+      ).toEqual([]);
+    });
+
+    // And the inverse the same omission hid: a credential that carries an endpoint on a vendor that
+    // never sends one. The request would go to that vendor's own host, not the operator's.
+    test("a credential endpoint on a keyed vendor is flagged as unsupported", () => {
+      expect(
+        computeConfigIssues({
+          ...mem({ provider: "anthropic", credentialRef: "vault:3" }),
+          savedMemoryCredentialBaseURL: "https://proxy.example/v1",
+          knownRefs: new Set(["vault:1", "vault:3"]),
+        }),
+      ).toEqual([{ key: "memoryModel", tab: "behavior", sectionId: "memory" }]);
+    });
+
+    // Before the vault answers, an endpoint that is merely unread looks absent. Announcing a
+    // runnable summariser as broken is the false alarm the deferral exists to prevent.
+    test("no verdict while the vault has not answered about its credential", () => {
+      expect(
+        computeConfigIssues({
+          ...mem({ provider: "openai-compatible", credentialRef: "vault:3" }),
+          knownRefs: null,
+        }),
+      ).toEqual([]);
+    });
+
     test("its credential being a pending vault entry is flagged as pending", () => {
       expect(
         computeConfigIssues({

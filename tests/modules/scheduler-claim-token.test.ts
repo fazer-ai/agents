@@ -127,12 +127,18 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
 
   test("a superseded run cannot complete the arm that replaced it", async () => {
     const { id, stale, current } = await staleAndCurrent("tok-complete");
-    await completeJob(tenantId, id, stale.claimSeq, appDb);
+    // `applied` is the only thing the superseded run can learn. Refusing in silence would leave the
+    // ordering exactly as invisible as it was before the token, which is what #164 is about.
+    expect(await completeJob(tenantId, id, stale.claimSeq, appDb)).toEqual({
+      applied: false,
+    });
     // Still CLAIMED: the arm belongs to the run that is working on it right now, and the work it
     // stands for has not been done. Under the old guard this row read DONE and nothing ever ran it.
     expect((await rowOf(id)).status).toBe("CLAIMED");
 
-    await completeJob(tenantId, id, current.claimSeq, appDb);
+    expect(await completeJob(tenantId, id, current.claimSeq, appDb)).toEqual({
+      applied: true,
+    });
     expect((await rowOf(id)).status).toBe("DONE");
   });
 
@@ -160,7 +166,9 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
     const { id, stale } = await staleAndCurrent("tok-reschedule");
     const before = await rowOf(id);
     const far = new Date(Date.now() + 86_400_000);
-    await rescheduleJob(tenantId, id, stale.claimSeq, far, undefined, appDb);
+    expect(
+      await rescheduleJob(tenantId, id, stale.claimSeq, far, undefined, appDb),
+    ).toEqual({ applied: false });
     const after = await rowOf(id);
     expect(after.status).toBe("CLAIMED");
     expect(after.runAt.getTime()).toBe(before.runAt.getTime());
@@ -192,7 +200,9 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
     // The reap re-pends without bumping, and it does not have to: the hung run's CAS also asks for
     // CLAIMED, which a re-pended row is not. What must not happen is the run coming back and marking
     // the re-pended row DONE.
-    await completeJob(tenantId, id, mine.claimSeq, appDb);
+    expect(await completeJob(tenantId, id, mine.claimSeq, appDb)).toEqual({
+      applied: false,
+    });
     expect((await rowOf(id)).status).toBe("PENDING");
   });
 

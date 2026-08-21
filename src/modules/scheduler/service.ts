@@ -261,24 +261,31 @@ export function claimDueCompactionJobs(
 // Terminal success. `claimSeq` is the token the claim handed out: without it the CAS matches
 // whatever CLAIMED row happens to exist, which is how a run that finished late marked SOMEONE ELSE'S
 // arm done (issue #164).
+//
+// Returns whether the write LANDED, for the same reason failJob returns whether it dead-lettered: a
+// CAS that refuses is the only evidence that this run was superseded, and refusing in silence is how
+// the ordering stays invisible — which is the complaint the token was added to answer, not one to
+// reproduce one layer down. The caller decides what to do with it; runClaimed logs it.
 export async function completeJob(
   tenantId: bigint,
   id: bigint,
   claimSeq: number,
   base: PrismaClient = basePrisma,
-): Promise<void> {
-  await runScopedOn(base, sysCtx(tenantId), (db) =>
+): Promise<{ applied: boolean }> {
+  const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
       where: { id, status: "CLAIMED", claimSeq },
       data: { status: "DONE" },
     }),
   );
+  return { applied: count > 0 };
 }
 
 // Not a failure (e.g. out-of-hours): back to PENDING at a new time, attempts UNCHANGED. An optional
 // `payload` REPLACES the row's payload (used to advance a multi-step follow-up's stepIndex on the
 // same row — the dedupeKey is stable, so this never races the upsert vs the completeJob CAS). Omit
 // it to keep the current payload.
+// Returns whether the write LANDED — see completeJob.
 export async function rescheduleJob(
   tenantId: bigint,
   id: bigint,
@@ -286,8 +293,8 @@ export async function rescheduleJob(
   runAt: Date,
   payload?: Record<string, unknown>,
   base: PrismaClient = basePrisma,
-): Promise<void> {
-  await runScopedOn(base, sysCtx(tenantId), (db) =>
+): Promise<{ applied: boolean }> {
+  const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
       where: { id, status: "CLAIMED", claimSeq },
       data: {
@@ -299,6 +306,7 @@ export async function rescheduleJob(
       },
     }),
   );
+  return { applied: count > 0 };
 }
 
 // Failure: attempts++; retry with backoff until the cap, then DEAD.

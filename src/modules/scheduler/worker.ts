@@ -120,9 +120,15 @@ export async function runClaimed(
     return;
   }
   if (result.outcome === "done") {
-    await completeJob(job.tenantId, job.id, job.claimSeq, base);
+    const { applied } = await completeJob(
+      job.tenantId,
+      job.id,
+      job.claimSeq,
+      base,
+    );
+    if (!applied) supersededWarning(job, "done");
   } else if (result.outcome === "reschedule") {
-    await rescheduleJob(
+    const { applied } = await rescheduleJob(
       job.tenantId,
       job.id,
       job.claimSeq,
@@ -130,9 +136,24 @@ export async function runClaimed(
       result.payload,
       base,
     );
+    if (!applied) supersededWarning(job, "reschedule");
   } else {
     await fail(job, result.error ?? "failed", base);
   }
+}
+
+// The claim this run held was no longer the current one, so its outcome was DISCARDED: the row now
+// belongs to a later claim, or to none. The handler still ran to completion, side effects included,
+// which is why this is worth a line — the whole reason issue #164 was filed is that these orderings
+// are invisible until someone traces them by hand, and a CAS that refuses in silence keeps them that
+// way. Not an error: refusing is the guard working. A handler whose work must not be repeated needs
+// its own exclusion (see the inFlight set in src/modules/memory/worker.ts); the token only decides
+// which write lands.
+function supersededWarning(job: ClaimedJob, outcome: string): void {
+  logger.warn(
+    { kind: job.kind, jobId: String(job.id), claimSeq: job.claimSeq, outcome },
+    "scheduler: claim superseded, outcome discarded",
+  );
 }
 
 export interface TickOptions {

@@ -19,9 +19,9 @@ export interface GuardrailPromptParams {
 }
 
 // The policy key each check is named by IN THE PROMPT, separate from its description, because the
-// key is also the vocabulary a verdict is allowed to answer with (GUARDRAIL_CATEGORY_KEYS below).
-// It used to be glued to the front of the description string, so the only place that knew the keys
-// was the model.
+// key is also the vocabulary the LOG is allowed to record (GUARDRAIL_CATEGORY_KEYS below). It used
+// to be glued to the front of the description string, so the only place that knew the keys was the
+// model.
 const CHECK_DEFINITIONS: Record<
   keyof GuardrailChecks,
   { key: string; description: string }
@@ -53,9 +53,15 @@ const CHECK_DEFINITIONS: Record<
   },
 };
 
-// The closed vocabulary a verdict's `categories` may use: exactly the keys the prompt asks for.
-// Read by `parseVerdict`, so a model answering in prose cannot write free text into a field that
-// reaches `execution_logs.detail` as an enum (issue #141).
+// The keys the prompt asks a verdict to answer with. `categories` is model-written and nothing holds
+// it to this list, which is fine for the private note (it lives on the conversation the text came
+// from) and NOT fine for `execution_logs.detail`, documented to carry enums and exported by
+// GET /v1/logs. So the log records the ones from this vocabulary and counts the rest (issue #141).
+//
+// NOTE: an operator's `customPolicy` is deliberately absent, because the prompt gives it no key
+// either ("Additional policy: …"). A violation of it therefore has no name the log can record, and
+// naming it would mean editing the prompt of a model that JUDGES, which this repo does not do
+// without an A/B battery. It shows up in the count, and in full on the private note.
 export const GUARDRAIL_CATEGORY_KEYS: readonly string[] = Object.values(
   CHECK_DEFINITIONS,
 ).map((d) => d.key);

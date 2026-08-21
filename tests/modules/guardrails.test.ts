@@ -583,9 +583,8 @@ describe("analyzeGuardrail", () => {
         });
 
       // NOTE: each half reports a REAL policy key, the way the prompt asks for. The fixture used to
-      // reuse the half's own name ("policies"), which is not a key the prompt defines, and a verdict
-      // may no longer answer with one: `categories` reaches `execution_logs.detail` as an enum, so
-      // parseVerdict holds the model to the vocabulary (issue #141).
+      // reuse the half's own name ("policies"), which is not a key the prompt defines anywhere, so
+      // it was asserting the merge over a category that could never occur.
       const HALF_CATEGORY = {
         policies: "toxicity",
         relevance: "answer_relevance",
@@ -709,40 +708,6 @@ describe("analyzeGuardrail", () => {
     expect(v.violated).toBe(true);
     expect(v.categories).toEqual(["toxicity"]);
     expect(v.suggestedReply).toBeNull();
-  });
-
-  // `categories` is a closed vocabulary, and the prompt says so ("lists the violated policy keys").
-  // Nothing held the model to it, so a model answering the question in prose wrote free text into a
-  // field that `execution_logs.detail` exports as an enum, and the Logs page and GET /v1/logs are
-  // documented to carry no message text (issue #141). A stranger is dropped; the violation and any
-  // real key it came with are untouched, because what the guardrail DID is not in question.
-  test("a category outside the prompt's vocabulary is dropped", async () => {
-    const v = await analyzeGuardrail(
-      fakeModel(
-        '{"violated": true, "categories": ["toxicity", "o cliente citou o CPF 12345678900", "unsafeContent"], "rationale": "x", "suggestedReply": null}',
-      ),
-      base,
-    );
-    expect(v.violated).toBe(true);
-    // "unsafeContent" goes too: the prompt asks for `unsafe_content`, and a near-miss is still not
-    // a key anything can read.
-    expect(v.categories).toEqual(["toxicity"]);
-  });
-
-  test("every key the prompt names is accepted, spelled as the prompt spells it", async () => {
-    const v = await analyzeGuardrail(
-      fakeModel(
-        '{"violated": true, "categories": ["toxicity", "unsafe_content", "competitor_mention", "prompt_adherence", "answer_relevance"], "rationale": "x", "suggestedReply": null}',
-      ),
-      base,
-    );
-    expect(v.categories).toEqual([
-      "toxicity",
-      "unsafe_content",
-      "competitor_mention",
-      "prompt_adherence",
-      "answer_relevance",
-    ]);
   });
 
   test("tolerates prose / code fences around the JSON", async () => {

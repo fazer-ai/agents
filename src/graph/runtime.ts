@@ -29,6 +29,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { analyzeGuardrail } from "@/modules/guardrails/analyze";
+import { loggableCategories } from "@/modules/guardrails/log-categories";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
 import { deliverReply } from "@/modules/split/service";
@@ -428,12 +429,16 @@ export async function runLoadedTurn(
       stage: "guardrail",
       status: "ok",
       level: "warn",
-      // NOTE: no `rationale` here. It explains what in the message violated the policy, so it quotes
-      // the message; the private note below carries it in full, on the conversation it came from.
+      // NOTE: `categories` and `rationale` are both model-written, so neither can be copied into
+      // this row as it stands: `rationale` explains what in the message violated the policy, so it
+      // quotes the message, and `categories` is asked for as policy keys but arrives as whatever
+      // the model wrote. What goes in is the part with a known vocabulary, plus a COUNT of what did
+      // not match it, which is how "it violated something we cannot name here" stays visible. The
+      // private note two lines below carries both in full, on the conversation the text came from.
       detail: {
         direction,
         action: effectiveAction,
-        categories: verdict.categories,
+        ...loggableCategories(verdict.categories),
       },
     });
     await client

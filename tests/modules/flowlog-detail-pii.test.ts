@@ -362,10 +362,10 @@ describe.skipIf(!dbUp)(
       expect(detail?.categories).toEqual(["toxicity"]);
     });
 
-    // `categories` is the other field the model fills in, and it was accepted as any string at all.
-    // A model that answers in prose instead of in policy keys ("o cliente citou o processo ...")
-    // therefore wrote that straight into a column the docs describe as enums, so dropping
-    // `rationale` alone would have left the same door open one field over.
+    // `categories` is the other field the model fills in, and it is model-written too: the prompt
+    // asks for policy keys, nothing holds the model to that, and a model answering in prose ("o
+    // cliente citou o processo ...") wrote that straight into a column the docs describe as enums.
+    // Dropping `rationale` alone would have left the same door open one field over.
     test("a category outside the policy vocabulary is dropped, not logged", async () => {
       await seedConv(9603);
       const sent: Array<[number, string]> = [];
@@ -397,10 +397,13 @@ describe.skipIf(!dbUp)(
       expect(outcome).toBe("posted");
       const rows = await turnRows(9603, ["generate", "guardrail"]);
       expectNoMarkers(rows, [NAME, PHONE, ATTR, ASKED]);
-      // The violation still stands and the key that WAS a key survives: only the stranger is gone.
+      // The violation still stands and the key that WAS a key survives. The stranger is gone from
+      // the row but not from the operator's view: it is counted, so a violation of something this
+      // column cannot name (the operator's own customPolicy has no key at all) still reads as one.
       const guard = rows.find((r) => r.stage === "guardrail");
       const detail = guard?.detail as Record<string, unknown> | null;
       expect(detail?.categories).toEqual(["toxicity"]);
+      expect(detail?.categoriesUnnamed).toBe(1);
     });
   },
 );

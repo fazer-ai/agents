@@ -1,4 +1,4 @@
-import { interpolatePromptVars } from "./prompt";
+import { interpolatePromptVars, type PromptRenderOpts } from "./prompt";
 
 // The system prompt as `execution_logs.detail` is allowed to keep it.
 //
@@ -25,7 +25,10 @@ import { interpolatePromptVars } from "./prompt";
 // customer's: the next entry added to that table would otherwise ship unmasked until someone
 // remembered this file, which is the failure mode `src/modules/flowlog/shape.ts` was written to
 // avoid. TIME variables are resolved as they were, because no person authored them and the hour the
-// agent believed it was is often the whole answer to "why did it say we were closed".
+// agent believed it was is often the whole answer to "why did it say we were closed". SCHEDULE
+// variables ({{esta_aberto}}, {{proximo_atendimento}}, {{horario_atendimento}}) are kept for the
+// same reason: they answer from the agent's OWN configured hours, which the operator wrote, and
+// they are the other half of that same answer.
 //
 // A placeholder that did NOT resolve stays literally as it was written, which is what the prompt
 // itself does with it, so a typo'd variable name still reads as a typo here and can never be
@@ -59,20 +62,25 @@ export function buildPromptAudit(args: {
   template: string;
   // The context variables offered to this turn, by placeholder name.
   vars: Record<string, string>;
-  timezone?: string;
-  // REQUIRED, unlike `interpolatePromptVars`'s: the audited prompt is built after the real one, with
-  // a DB read in between, and both fall back to their own `new Date()` when this is absent. An exact
-  // time variable would then cross a minute boundary and the logged prompt would report an hour the
-  // model never saw. Taking the instant instead of defaulting it makes that a type error.
-  now: Date;
+  // The SAME options the turn's own rendering was given, passed WHOLE rather than re-listed field by
+  // field. The two renderings have to answer every placeholder identically, and the one time this
+  // list was a copy it went out of date on the very next option added to the other one: the schedule
+  // variables resolved for the model and stayed literal here, so the row reported an unresolved
+  // placeholder the model had in fact been handed a value for.
+  //
+  // `now` is REQUIRED here, unlike on `interpolatePromptVars`: the audited prompt is built after the
+  // real one, with a DB read in between, and both fall back to their own `new Date()` when it is
+  // absent. An exact time variable would then cross a minute boundary and the logged prompt would
+  // report an hour the model never saw. Taking the instant instead of defaulting it makes that a
+  // type error.
+  opts: PromptRenderOpts & { now: Date };
   // The blocks appended to the finished prompt, in the order they were appended.
   sections: readonly AuditedSection[];
 }): string {
   const body = interpolatePromptVars(args.template, args.vars, {
-    timezone: args.timezone,
-    now: args.now,
-    // `wrap` fires for time variables too, and those are kept: `name in vars` is what tells the two
-    // apart, because `buildPromptVars` never answers a time name.
+    ...args.opts,
+    // `wrap` fires for time and schedule variables too, and those are kept: `name in vars` is what
+    // tells them apart, because `buildPromptVars` answers neither a time nor a schedule name.
     wrap: (resolved, name) =>
       name in args.vars ? auditedPromptVar(name, resolved) : resolved,
   });

@@ -1,4 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import {
+  buildPromptVars,
+  interpolatePromptVars,
+  PROMPT_ALL_VARS,
+} from "@/graph/prompt";
 import { buildPromptAudit } from "@/graph/prompt-audit";
 
 // Decision table for the rule that decides what the Logs page is allowed to keep of a turn's system
@@ -15,6 +20,13 @@ const VARS = {
 
 const NOW = new Date("2026-08-20T15:07:00Z");
 const TZ = "UTC";
+// The same shape the turn renders with. `schedule: null` is a real state, not a stub: it is what an
+// agent with no Availability configured has, and the gate reads it as always on.
+const OPTS = {
+  timezone: TZ,
+  now: NOW,
+  availability: { schedule: null },
+};
 
 describe("buildPromptAudit", () => {
   const cases: Array<{
@@ -49,6 +61,12 @@ describe("buildPromptAudit", () => {
       expected: "Agora são 15:00.",
     },
     {
+      name: "a schedule variable keeps its value: the operator configured it, not a person in the conversation",
+      template:
+        "Estamos abertos? {{esta_aberto}}. Horário: {{horario_atendimento}}.",
+      expected: "Estamos abertos? sim. Horário: sempre aberto.",
+    },
+    {
       name: "an unknown placeholder stays literal, exactly as the prompt leaves it",
       template: "Olá {{cliente_vip}}.",
       expected: "Olá {{cliente_vip}}.",
@@ -68,8 +86,7 @@ describe("buildPromptAudit", () => {
           // string the real builder produces for a contact with no name.
           template: c.template,
           vars: { ...VARS, primeiro_nome: "" },
-          timezone: TZ,
-          now: NOW,
+          opts: OPTS,
           sections: [],
         }),
       ).toBe(c.expected);
@@ -82,8 +99,7 @@ describe("buildPromptAudit", () => {
     const out = buildPromptAudit({
       template: "Seja breve.",
       vars: VARS,
-      timezone: TZ,
-      now: NOW,
+      opts: OPTS,
       sections: [
         {
           label: "atributos",
@@ -103,8 +119,7 @@ describe("buildPromptAudit", () => {
       buildPromptAudit({
         template: "Seja breve.",
         vars: VARS,
-        timezone: TZ,
-        now: NOW,
+        opts: OPTS,
         sections: [{ label: "agendamentos", text: "18/09 14:00 Maria S." }],
       }),
     ).toBe('Seja breve.\n\n<agendamentos chars="20"/>');
@@ -118,8 +133,7 @@ describe("buildPromptAudit", () => {
       buildPromptAudit({
         template: "Agora são {{hora_atual_exata:HH:mm:ss}}.",
         vars: VARS,
-        timezone: TZ,
-        now,
+        opts: { ...OPTS, now },
         sections: [],
       });
     expect(render(NOW)).toBe(render(NOW));
@@ -136,10 +150,46 @@ describe("buildPromptAudit", () => {
       buildPromptAudit({
         template: "Seja breve.",
         vars: VARS,
-        timezone: TZ,
-        now: NOW,
+        opts: OPTS,
         sections: [],
       }),
     ).toBe("Seja breve.");
   });
+});
+
+// The audited prompt and the prompt the model was actually given are two renderings of ONE template,
+// so they have to answer the same placeholders; only a context variable's VALUE may differ between
+// them. This is the test that fails when a rendering option is threaded into the turn and not into
+// the audit, which is how the schedule variables came to resolve for the model and stay literal in
+// the row — a log reporting an unresolved placeholder the model had been handed a value for.
+//
+// It reads the names from `PROMPT_ALL_VARS` rather than listing them, so a variable kind added later
+// is inside this test without anyone remembering to add it.
+describe("the audit answers the same placeholders the model's prompt did", () => {
+  const names = [...PROMPT_ALL_VARS].sort();
+  // Bracketed so a name is matched whole: the audit rewrites a resolved context var as
+  // `{{nome_contato: string(11)}}`, which must NOT read as the literal `{{nome_contato}}`.
+  const literal = (name: string) => `[{{${name}}}]`;
+  const template = names.map((n) => `${n}=${literal(n)}`).join(" ");
+  const vars = buildPromptVars({
+    contactName: "Maria Silva",
+    contactEmail: "maria@example.com",
+    contactPhone: "+5511999998888",
+    inboxName: "WhatsApp",
+    companyName: "Clínica Alfa",
+    agentName: "Alfa",
+  });
+  const real = interpolatePromptVars(template, vars, OPTS);
+  const audit = buildPromptAudit({ template, vars, opts: OPTS, sections: [] });
+
+  // Anchors the rows below: without this they would also pass if BOTH renderings stopped resolving.
+  test("every known variable resolves in the model's own prompt", () => {
+    expect(names.filter((n) => real.includes(literal(n)))).toEqual([]);
+  });
+
+  for (const name of names) {
+    test(`{{${name}}}`, () => {
+      expect(audit.includes(literal(name))).toBe(real.includes(literal(name)));
+    });
+  }
 });

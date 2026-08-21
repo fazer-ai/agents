@@ -222,24 +222,33 @@ export const PROMPT_PLACEHOLDER_SOURCE =
   "\\{\\{\\s*([a-z_]+)(?::([^}]+))?\\s*\\}\\}";
 const PLACEHOLDER = new RegExp(PROMPT_PLACEHOLDER_SOURCE, "g");
 
+// Everything that decides WHAT a placeholder resolves to. Named, rather than inline on the
+// signature, because a second caller has to render the same template to the same text: the audited
+// prompt the Logs page keeps (`src/graph/prompt-audit.ts`) reproduces this call and differs from it
+// only by `wrap`. Listing the fields twice is what let the schedule variables land resolved in the
+// prompt and literal in the audit, so `PromptRenderOpts` is passed WHOLE and an option added here
+// reaches both renderings without a second edit.
+export interface PromptRenderOpts {
+  timezone?: string;
+  now?: Date;
+  // The agent's Availability, when this caller resolves one: a null `schedule` means no Availability
+  // is configured, which the gate treats as always on. Omitting the option entirely says this caller
+  // has no notion of a schedule (the WhatsApp template path), and the schedule placeholders are then
+  // left as the operator's own literal rather than answered with a guess.
+  availability?: { schedule: Schedule | null };
+}
+
 // Replaces ONLY allowlisted {{placeholders}}; an unknown one is left untouched (the tenant sees its
 // own literal, never a leak/empty). Static values are pre-sanitized by buildPromptVars; time
 // variables are computed from `opts.now` (default: real now) in `opts.timezone`.
 export function interpolatePromptVars(
   template: string,
   vars: Record<string, string>,
-  opts: {
-    timezone?: string;
-    now?: Date;
+  opts: PromptRenderOpts & {
     // Called for every successfully-resolved placeholder (context or time var) with the resolved
     // value and the variable name; its return replaces the value. Defaults to identity. Unknown
     // placeholders are left untouched and never wrapped. The preview uses it to mark dynamic text.
     wrap?: (resolved: string, name: string) => string;
-    // The agent's Availability, when this caller resolves one: a null `schedule` means no Availability
-    // is configured, which the gate treats as always on. Omitting the option entirely says this caller
-    // has no notion of a schedule (the WhatsApp template path), and the schedule placeholders are then
-    // left as the operator's own literal rather than answered with a guess.
-    availability?: { schedule: Schedule | null };
   } = {},
 ): string {
   const wrap = opts.wrap ?? ((v: string) => v);
@@ -315,9 +324,13 @@ export const PROMPT_CONTEXT_VARS = [
   "canal",
 ];
 
-// Every interpolatable name (time vars + both EN/pt-BR context aliases), so the editor's syntax
-// highlighter can tell a real {{var}} from a typo. Derived from the same sources the runtime uses.
-const PROMPT_ALL_VARS = new Set<string>([
+// Every interpolatable name (time vars, schedule vars, and both EN/pt-BR context aliases), so the
+// editor's syntax highlighter can tell a real {{var}} from a typo. Derived from the same sources the
+// runtime uses. Exported because `tests/graph/prompt-audit.test.ts` renders one template naming ALL
+// of them: the audited prompt has to answer exactly the placeholders the model's prompt answered,
+// and reading the set from here is what puts a variable kind added later inside that test without
+// anyone remembering to add it.
+export const PROMPT_ALL_VARS = new Set<string>([
   ...PROMPT_TIME_VARS,
   ...Object.keys(SCHEDULE_VARS),
   ...Object.keys(buildPromptVars({})),

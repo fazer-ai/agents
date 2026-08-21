@@ -647,8 +647,7 @@ export async function loadAgentConfig(
     systemPromptAudit: buildPromptAudit({
       template: promptTemplate,
       vars: promptVars,
-      timezone: promptOpts.timezone,
-      now: promptOpts.now,
+      opts: promptOpts,
       sections: auditedSections,
     }),
     mc,

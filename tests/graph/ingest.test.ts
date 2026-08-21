@@ -1,9 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { BindToolsInput } from "@langchain/core/language_models/chat_models";
+import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import {
+  AIMessage,
   type BaseMessage,
   HumanMessage,
   RemoveMessage,
 } from "@langchain/core/messages";
+import type { ChatResult } from "@langchain/core/outputs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -12,8 +16,14 @@ import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { buildAgentGraph } from "@/graph/graph";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
-import { ingestMessageIntoThread } from "@/graph/ingest";
-import { isConversationDivider, stampedConversationId } from "@/graph/markers";
+import { ingestedMessages, ingestMessageIntoThread } from "@/graph/ingest";
+import {
+  CONVERSATION_DIVIDER,
+  HUMAN_AGENT_NOTE,
+  isConversationDivider,
+  isHumanAgentTurn,
+  stampedConversationId,
+} from "@/graph/markers";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -43,6 +53,99 @@ const suDb = su as PrismaClient;
 
 let tenantId = 0n;
 let instanceId = 0n;
+
+// Records the history the graph actually hands the model, which is the only way to assert what the
+// agent READS as opposed to what the thread stores.
+class CapturingModel extends BaseChatModel {
+  seen: BaseMessage[][] = [];
+  constructor() {
+    super({});
+  }
+  _llmType() {
+    return "fake-capture";
+  }
+  override bindTools(_tools: BindToolsInput[]) {
+    return this;
+  }
+  async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+    this.seen.push(messages);
+    return { generations: [{ text: "ok", message: new AIMessage("ok") }] };
+  }
+}
+
+// The pure half: WHO said it times WHETHER the attendance boundary asked for a divider. No database
+// here on purpose — this is the decision, and the cell that used to be missing (a human agent's
+// reply) is one whose wrong answer is a permanent memory with the operator's words in it.
+describe("ingestedMessages", () => {
+  const CONV = 77;
+
+  test("a customer message, no boundary: one stamped human turn, verbatim", () => {
+    const [msg, ...rest] = ingestedMessages(
+      "customer",
+      "quanto custa?",
+      CONV,
+      false,
+    );
+    expect(rest.length).toBe(0);
+    expect(String(msg?.content)).toBe("quanto custa?");
+    expect(msg && stampedConversationId(msg)).toBe(CONV);
+    expect(msg && isConversationDivider(msg)).toBe(false);
+    expect(msg && isHumanAgentTurn(msg)).toBe(false);
+  });
+
+  test("a customer message opening an attendance: the divider folds into their own turn", () => {
+    const msgs = ingestedMessages("customer", "voltei", CONV, true);
+    expect(msgs.length).toBe(1);
+    expect(msgs[0] && isConversationDivider(msgs[0])).toBe(true);
+    expect(String(msgs[0]?.content)).toContain("voltei");
+  });
+
+  test("a human agent's reply is marked as the attendant's and carries the note", () => {
+    const [msg, ...rest] = ingestedMessages(
+      "human_agent",
+      "fecho por R$ 1.200",
+      CONV,
+      false,
+    );
+    expect(rest.length).toBe(0);
+    expect(msg && isHumanAgentTurn(msg)).toBe(true);
+    expect(msg && isConversationDivider(msg)).toBe(false);
+    expect(msg && stampedConversationId(msg)).toBe(CONV);
+    expect(String(msg?.content)).toContain(HUMAN_AGENT_NOTE);
+    expect(String(msg?.content)).toContain("fecho por R$ 1.200");
+  });
+
+  // The split exists because a message carries ONE marker. Folding the attendant's words into the
+  // divider — the shape the customer path uses — would store them in a message that reads as the
+  // CONTACT's, which is the bug this whole change is about, reintroduced by an optimization.
+  test("a human agent opening an attendance: the divider is its OWN message and holds no words", () => {
+    const msgs = ingestedMessages(
+      "human_agent",
+      "oi, sou a Ana do financeiro",
+      CONV,
+      true,
+    );
+    expect(msgs.length).toBe(2);
+    const [divider, reply] = msgs;
+    expect(divider && isConversationDivider(divider)).toBe(true);
+    expect(String(divider?.content)).toBe(CONVERSATION_DIVIDER);
+    expect(String(divider?.content)).not.toContain("sou a Ana");
+    expect(reply && isHumanAgentTurn(reply)).toBe(true);
+    expect(String(reply?.content)).toContain("sou a Ana do financeiro");
+  });
+
+  // The stamp is what the compaction cut reads (src/modules/memory/cut.ts). A message written
+  // without one is invisible to the boundary, and the attendance it belongs to never closes.
+  test("every message written here carries the conversation stamp", () => {
+    for (const role of ["customer", "human_agent"] as const) {
+      for (const writeDivider of [false, true]) {
+        for (const m of ingestedMessages(role, "texto", CONV, writeDivider)) {
+          expect(stampedConversationId(m)).toBe(CONV);
+        }
+      }
+    }
+  });
+});
 
 describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
   beforeAll(async () => {
@@ -97,6 +200,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
         graphThreadId,
         base: appDb,
         checkpointer: saver,
+        role: "customer" as const,
         messageId,
         text,
       });
@@ -138,6 +242,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
         graphThreadId,
         base: appDb,
         checkpointer: saver,
+        role: "customer" as const,
         ...over,
       });
 
@@ -214,6 +319,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
         text,
         base: appDb,
         checkpointer: saver,
+        role: "customer" as const,
       });
 
     await ingest(820, 1, "atendimento antigo");
@@ -250,6 +356,130 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     expect(cut.open.map((m) => String(m.content))).toEqual(["queria remarcar"]);
   });
 
+  // Round-1 review finding (P1). The watermark is monotonic, which only guards at-most-once while
+  // the ids reaching it arrive in order — and the two writers do not share a latency. The customer's
+  // path waits on the eager media pass (STT/vision, a provider round-trip) and an agent's reply waits
+  // on nothing, so an attendant answering a voice note is folded in FIRST. On one shared column that
+  // higher id advances the watermark and the customer's message is skipped for good: the fix for a
+  // memory missing the team's half would have started losing the customer's.
+  test("an attendant's reply does not suppress a customer message ingested after it", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12399;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingest = (
+      messageId: number,
+      text: string,
+      role: "customer" | "human_agent",
+    ) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: 960,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId,
+        text,
+        role,
+      });
+
+    // The attendant answers the voice note while its transcription is still running, so the REPLY
+    // (id 101) is folded in before the customer's message (id 100).
+    expect(
+      await ingest(101, "Já te respondo sobre o áudio", "human_agent"),
+    ).toBe("ingested");
+    expect(await ingest(100, "<audio> quanto custa o plano?", "customer")).toBe(
+      "ingested",
+    );
+
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const contents = (
+      ((cp?.channel_values as { messages?: BaseMessage[] })?.messages ??
+        []) as BaseMessage[]
+    ).map((m) => String(m.content));
+    expect(contents.some((c) => c.includes("quanto custa o plano?"))).toBe(
+      true,
+    );
+    expect(contents.some((c) => c.includes("Já te respondo"))).toBe(true);
+
+    // Each direction still guards its OWN re-delivery.
+    expect(await ingest(101, "DUP-ATENDENTE", "human_agent")).toBe("skipped");
+    expect(await ingest(100, "DUP-CLIENTE", "customer")).toBe("skipped");
+
+    const at = await suDb.agentThread.findUniqueOrThrow({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { lastSyncedMessageId: true, lastAgentMessageId: true },
+    });
+    expect(at.lastSyncedMessageId).toBe(100);
+    expect(at.lastAgentMessageId).toBe(101);
+  });
+
+  // The decision issue #187 asked to make EXPLICITLY rather than as a side effect: a human agent's
+  // reply is visible to the TURN, not only to the summarizer. An agent resuming a conversation after
+  // a handoff and not knowing what its own team promised is the same defect one turn earlier — it
+  // would quote a price nobody agreed to. The note travels with it so the model can tell who spoke;
+  // stored bare, the words would read as the customer's here too.
+  test("the turn that resumes reads what the team promised, attributed", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12388;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingest = (
+      messageId: number,
+      text: string,
+      role: "customer" | "human_agent",
+    ) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: 950,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId,
+        text,
+        role,
+      });
+
+    expect(await ingest(1, "quanto fica o plano anual?", "customer")).toBe(
+      "ingested",
+    );
+    expect(await ingest(2, "Fecho o anual por R$ 1.200.", "human_agent")).toBe(
+      "ingested",
+    );
+
+    const model = new CapturingModel();
+    await buildAgentGraph({
+      model,
+      systemPrompt: "Você é prestativa.",
+      checkpointer: saver,
+      tools: [],
+    }).invoke(
+      { messages: [new HumanMessage("e o prazo de entrega?")] },
+      { configurable: { thread_id: graphThreadId } },
+    );
+
+    const seen = (model.seen[0] ?? []).map((m) => String(m.content));
+    const attendant = seen.find((c) => c.includes("R$ 1.200"));
+    expect(attendant).toBeDefined();
+    expect(attendant).toContain(HUMAN_AGENT_NOTE);
+  });
+
   test("a customer message starting a NEW conversation on the thread gets the fresh-attendance divider", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 23456;
@@ -267,6 +497,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       graphThreadId,
       messageId: 1,
       text: "primeira",
+      role: "customer",
       base: appDb,
       checkpointer: saver,
     });
@@ -279,6 +510,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       graphThreadId,
       messageId: 2,
       text: "segunda",
+      role: "customer",
       base: appDb,
       checkpointer: saver,
     });
@@ -321,6 +553,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
         text,
         base: appDb,
         checkpointer: saver,
+        role: "customer" as const,
         onAttendanceClosed: (prev) => {
           closed.push(prev);
         },

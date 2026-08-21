@@ -1,0 +1,11 @@
+-- A second ingestion watermark, for the messages a HUMAN AGENT sends (issue #187).
+--
+-- The existing `last_synced_message_id` is monotonic, which only guards at-most-once while the ids
+-- reaching it arrive in order. The customer's path waits on the eager media pass (STT/vision, a
+-- provider round-trip) and an agent's reply waits on nothing, so an attendant answering a voice note
+-- is folded in first — and a single shared column would then skip the customer's message for good.
+-- One column per direction keeps each writer's guarantee to itself.
+--
+-- Nullable with no backfill: an existing thread has never ingested an agent message, and NULL is
+-- exactly "no watermark yet", the same state a brand-new row starts in.
+ALTER TABLE "agent_threads" ADD COLUMN "last_agent_message_id" INTEGER;

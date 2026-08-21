@@ -9,6 +9,8 @@ import { estimateTokenCount } from "tokenx";
 import logger from "@/api/lib/logger";
 import {
   CONVERSATION_DIVIDER,
+  HUMAN_AGENT_NOTE,
+  isHumanAgentTurn,
   isMemoryHead,
   isNudgeTurn,
 } from "@/graph/markers";
@@ -161,6 +163,21 @@ export function renderTranscript(
     // summary — the trade runs the safe way, unlike leaving operator instructions in.
     if (isNudgeTurn(m) || (type === "human" && text.includes(DATA_FENCE)))
       continue;
+    // A HUMAN AGENT's reply, folded in by continuous ingestion. It rides as a HumanMessage as well
+    // (src/graph/markers.ts), so without this branch it renders as `cliente:` and the attendance is
+    // remembered with the operator's own words attributed to the contact — issue #187, and the one
+    // outcome that issue calls worse than the message being missing altogether.
+    //
+    // The note is trimmed by exact match but the BRANCH is marker-gated, which is the safe way round
+    // here: a customer who types that exact sentence still renders as `cliente:` and keeps every word
+    // of it, because what decides attribution is metadata a chat cannot carry.
+    if (isHumanAgentTurn(m)) {
+      if (text.startsWith(HUMAN_AGENT_NOTE)) {
+        text = text.slice(HUMAN_AGENT_NOTE.length).trim();
+      }
+      if (text) lines.push(`atendente: ${text}`);
+      continue;
+    }
     // System markers ride as HumanMessages (src/graph/markers.ts), and the ingestion path folds the
     // divider into the customer's own turn — so this strips the marker and keeps the words around it,
     // rather than dropping the message. Left in, the system's directive would be quoted back to the

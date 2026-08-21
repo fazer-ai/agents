@@ -6097,6 +6097,97 @@
         "operationId": "getV1AgentsByIdGuardrailsHealth"
       }
     },
+    "/v1/agents/{id}/inboxes/out-of-office": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "List inboxes that answer out of hours",
+        "description": "The agent's bound inboxes whose Chatwoot inbox-level out-of-office reply is configured (working hours enabled AND a message set), read live from Chatwoot. Chatwoot's schedule is keyed on the day of the week alone, so it cannot express the dated closures this product's business hours can: the two calendars disagree on holidays by construction. An inbox on an unreachable Chatwoot account is omitted rather than reported, so an empty list means \"nothing found\", not \"nothing to find\".",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Agent id, a BigInt encoded as a decimal string.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1AgentsByIdInboxesOut-of-office"
+      }
+    },
     "/v1/agents/{id}/clone": {
       "post": {
         "tags": [

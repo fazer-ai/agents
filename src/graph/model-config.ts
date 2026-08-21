@@ -28,6 +28,48 @@ export const PROVIDERS_HONORING_BASE_URL = [
   "openrouter",
 ] as const;
 
+// How each provider is asked for a schema-constrained answer, or that it is not asked at all. A
+// claim about the ENDPOINT, never about how capable the model is, and every row was measured or
+// read off the vendor's own documentation. The consumer today is the guardrail verdict
+// (modules/guardrails/verdict.ts, issue #131):
+//
+//   * openai and anthropic take the json-schema dialect: a `strict` json_schema on one, a forced
+//     tool call on the other;
+//   * google takes the OpenAPI 3.0 subset instead, where `type` holds one value and nullability is
+//     `nullable: true`. Measured live on gemini-3.5-flash and -flash-lite: asked in the json-schema
+//     dialect the request comes back 400 and the analysis is remade in prose, so every screen costs
+//     two calls; asked in this one, a single call answers;
+//   * deepseek implements `json_object` only, and answers "unavailable now" to a json_schema;
+//   * openrouter's support is per ENDPOINT behind the router and changes without notice, so the
+//     same model id constrains today and fails the request tomorrow;
+//   * openai-compatible is an arbitrary server by definition. Measured against a local one that
+//     ignores the parameter: the client retried the same call six times across a minute and never
+//     settled, while the unconstrained call made today answered on the first try. One that refuses
+//     it outright (llama.cpp does, with a 400) fails immediately.
+//
+// Getting a row wrong is not symmetric. A provider wrongly on "prose" keeps exactly today's
+// behaviour; one asked in the wrong dialect pays a refusal on every screen, and only survives it
+// because the analysis is remade in prose when a request comes back refused.
+export type VerdictAskMode = "prose" | "json-schema" | "openapi";
+
+const VERDICT_ASK_MODE: Record<
+  (typeof MODEL_PROVIDERS)[number],
+  VerdictAskMode
+> = {
+  openai: "json-schema",
+  anthropic: "json-schema",
+  google: "openapi",
+  deepseek: "prose",
+  openrouter: "prose",
+  "openai-compatible": "prose",
+};
+
+export function verdictAskMode(
+  provider: (typeof MODEL_PROVIDERS)[number],
+): VerdictAskMode {
+  return VERDICT_ASK_MODE[provider];
+}
+
 export const modelConfigSchema = z
   .object({
     provider: z.enum(MODEL_PROVIDERS),

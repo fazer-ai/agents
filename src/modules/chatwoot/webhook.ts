@@ -29,6 +29,7 @@ import {
   NEXT_OPEN_SCAN_DAYS,
   parseSchedule,
   type Schedule,
+  scheduleCanClose,
 } from "@/modules/business-hours/hours";
 import { linkRedirectConversations } from "@/modules/channel-redirect/cross-link";
 import {
@@ -576,7 +577,7 @@ export function outOfHoursGate(
   now: Date,
   noticeAlreadySent: boolean,
 ): { silence: boolean; postNote: boolean } {
-  if (!hours || hours.windows.length === 0) {
+  if (!scheduleCanClose(hours)) {
     return { silence: false, postNote: false };
   }
   if (isOpenAt(hours, now)) {

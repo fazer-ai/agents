@@ -12,27 +12,16 @@ import {
   fenceCustomerMessage,
   type GuardrailPromptParams,
 } from "./prompts";
+import {
+  type GuardrailVerdict,
+  readVerdict,
+  unanalyzed,
+  VERDICT_SCHEMA,
+  VERDICT_SCHEMA_OPENAPI,
+  type VerdictMode,
+} from "./verdict";
 
 const ANALYZE_TIMEOUT_MS = 15_000;
-
-export interface GuardrailVerdict {
-  violated: boolean;
-  categories: string[];
-  rationale: string;
-  // A safe replacement reply the model proposed (used when the direction's action is "generated").
-  suggestedReply: string | null;
-  // Set when the analysis could not be performed (model error, timeout, unusable output). The
-  // verdict is still non-violating — fail-open is the policy — but the caller must be able to tell
-  // "screened and approved" from "never screened", which are the same value without this.
-  error?: string;
-}
-
-const CLEAN: GuardrailVerdict = {
-  violated: false,
-  categories: [],
-  rationale: "",
-  suggestedReply: null,
-};
 
 function messageText(content: BaseMessage["content"]): string {
   if (typeof content === "string") return content;
@@ -48,85 +37,6 @@ function messageText(content: BaseMessage["content"]): string {
       .join("");
   }
   return "";
-}
-
-const unanalyzed = (error: string): GuardrailVerdict => ({ ...CLEAN, error });
-
-// Every TOP-LEVEL balanced object in the response, in order. Nested objects are not returned (they
-// belong to their parent), braces inside strings do not count, and \" does not close one.
-function topLevelObjects(raw: string): string[] {
-  const out: string[] = [];
-  let start = -1;
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = 0; i < raw.length; i++) {
-    const c = raw[i];
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (c === "\\") {
-      if (inString) escaped = true;
-      continue;
-    }
-    if (c === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (inString) continue;
-    if (c === "{") {
-      if (depth === 0) start = i;
-      depth++;
-    } else if (c === "}" && depth > 0 && --depth === 0) {
-      out.push(raw.slice(start, i + 1));
-    }
-  }
-  return out;
-}
-
-// The response must contain EXACTLY ONE verdict, and anything else is "we did not get an answer".
-// One rule, because three rounds of review found three ways to read a non-answer as an approval, and
-// they were all the same mistake: for a moderation feature, ambiguity has to fail towards "unknown",
-// never towards "clean". What it settles, in order of how they were found:
-//
-//   * a verdict followed by prose that carries braces ("the policy {toxicity} applies") — the prose
-//     is not a parseable verdict, so it drops out and the real one is still found;
-//   * `{}` or `{"violated": "true"}` — parseable and unusable, so neither of them is a candidate;
-//   * a self-correction (`{"violated": true}` … `Correction: {"violated": false}`) — two candidates,
-//     and picking either one is a guess about which the model meant.
-//
-// The alternative for the last case, taking the last object, is a guess in the other direction: the
-// same shape would silently approve a real violation whenever the trailing object is the stale one.
-function parseVerdict(raw: string): GuardrailVerdict {
-  const candidates: Record<string, unknown>[] = [];
-  for (const slice of topLevelObjects(raw)) {
-    try {
-      const obj = JSON.parse(slice) as Record<string, unknown>;
-      if (typeof obj.violated === "boolean") candidates.push(obj);
-    } catch {
-      // NOTE: Not a verdict; prose and half-written objects are expected here.
-    }
-  }
-  if (candidates.length === 0)
-    return unanalyzed("no usable verdict in response");
-  if (candidates.length > 1) {
-    return unanalyzed(`${candidates.length} conflicting verdicts in response`);
-  }
-  const obj = candidates[0] as Record<string, unknown>;
-  if (obj.violated === false) return CLEAN;
-  const categories = Array.isArray(obj.categories)
-    ? obj.categories.filter((c): c is string => typeof c === "string")
-    : [];
-  return {
-    violated: true,
-    categories,
-    rationale: typeof obj.rationale === "string" ? obj.rationale : "",
-    suggestedReply:
-      typeof obj.suggestedReply === "string" && obj.suggestedReply.trim()
-        ? obj.suggestedReply.trim()
-        : null,
-  };
 }
 
 type AnalysisParams = GuardrailPromptParams & { text: string };
@@ -235,10 +145,14 @@ function mergeVerdicts(
 export async function analyzeGuardrail(
   model: BaseChatModel,
   params: AnalysisParams,
+  // How the verdict is asked for. Decided from the PROVIDER by the caller
+  // (`acceptsConstrainedOutput`), and passed rather than inferred here: the same adapter serves an
+  // endpoint we own and one we know nothing about, so the instance cannot answer this.
+  mode: VerdictMode,
 ): Promise<GuardrailVerdict> {
   const { policies, relevance } = splitAnalyses(params);
   if (relevance === null) {
-    const verdict = await runAnalysis(model, policies as AnalysisParams);
+    const verdict = await runAnalysis(model, policies as AnalysisParams, mode);
     // NOTE: The INPUT direction never delivers a replacement. There is no assistant reply to repair
     // there — the analyzed text is the CUSTOMER's message — so "write a safe replacement" has no
     // referent and the model composes one from an empty desk. Measured live against eight models
@@ -269,12 +183,12 @@ export async function analyzeGuardrail(
     return params.direction === "input" ? withoutReplacement(verdict) : verdict;
   }
   if (policies === null) {
-    return withoutReplacement(await runAnalysis(model, relevance));
+    return withoutReplacement(await runAnalysis(model, relevance, mode));
   }
   // NOTE: In parallel: the operator is paying for a turn a customer is waiting on.
   const [byPolicy, byRelevance] = await Promise.all([
-    runAnalysis(model, policies),
-    runAnalysis(model, relevance).then(withoutReplacement),
+    runAnalysis(model, policies, mode),
+    runAnalysis(model, relevance, mode).then(withoutReplacement),
   ]);
   // NOTE: A rewrite from the policy half PRESERVES the substance of the reply and repairs its form, which
   // is the whole reason it is allowed to write one. When relevance also tripped, the substance is
@@ -286,9 +200,79 @@ export async function analyzeGuardrail(
   );
 }
 
+// A 400 means "this request, as written, is not one this model takes" — a permanent answer, unlike
+// a rate limit or a timeout, which is why only this status earns a second call. Read off the error
+// rather than predicted from the model id: every attempt in this repository to predict a vendor's
+// parameter rules from the id has aged badly, and a wrong prediction here is a guardrail that stops
+// screening rather than a wrong parameter.
+function isRequestRefused(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { status?: unknown }).status === 400
+  );
+}
+
+// One call, in whichever shape this endpoint accepts. Returns the schema's answer when there was
+// one, and ALWAYS the model's own text: a constrained answer that failed validation still leaves
+// the text readable, and dropping it would turn a recoverable reply into "never screened".
+//
+// The provider list says which ENDPOINT implements constrained decoding; it cannot say that every
+// model an operator may type into the guardrail's model field does. When the request comes back
+// refused, the analysis is retried the way it was made before this existed, so the worst case is
+// one extra call rather than a screen that quietly stops running.
+async function invokeForVerdict(
+  model: BaseChatModel,
+  mode: VerdictMode,
+  messages: BaseMessage[],
+): Promise<{ parsed: Record<string, unknown> | null; raw: string }> {
+  const asProse = async () => {
+    const res = await model.invoke(messages, {
+      signal: AbortSignal.timeout(ANALYZE_TIMEOUT_MS),
+    });
+    return { parsed: null, raw: messageText(res.content).trim() };
+  };
+  if (mode === "prose") return asProse();
+  // Same verdict, in the dialect this endpoint speaks. See ./verdict and graph/model-config: asking
+  // in the wrong one is not a soft failure, it is a refusal on every screen.
+  const schema = mode === "openapi" ? VERDICT_SCHEMA_OPENAPI : VERDICT_SCHEMA;
+  try {
+    const res = (await model
+      .withStructuredOutput(schema, {
+        name: schema.title,
+        // NOTE: `strict` is what turns the schema from a request into a constraint on OpenAI; the
+        // other adapter on the list ignores the flag (Anthropic forces the tool call), and both
+        // were checked to accept the option rather than throw.
+        strict: true,
+        // NOTE: keeps the model's own text reachable when the schema produced nothing, which is what
+        // lets `readVerdict` recover a verdict an adapter's parser could not build. See verdict.ts
+        // for how far that reaches on each adapter.
+        includeRaw: true,
+      })
+      .invoke(messages, {
+        signal: AbortSignal.timeout(ANALYZE_TIMEOUT_MS),
+      })) as {
+      raw: BaseMessage;
+      parsed: Record<string, unknown> | null;
+    };
+    return {
+      parsed: res.parsed ?? null,
+      raw: messageText(res.raw.content).trim(),
+    };
+  } catch (err) {
+    if (!isRequestRefused(err)) throw err;
+    logger.warn(
+      { err },
+      "guardrails: model refused the constrained verdict, retrying in prose",
+    );
+    return asProse();
+  }
+}
+
 async function runAnalysis(
   model: BaseChatModel,
   params: AnalysisParams,
+  mode: VerdictMode,
 ): Promise<GuardrailVerdict> {
   const system = buildGuardrailSystemPrompt(params);
   // NOTE: The customer's message rides at USER level, fenced and named, never inside the system prompt:
@@ -299,12 +283,10 @@ async function runAnalysis(
   if (customer !== null) messages.push(new HumanMessage(customer));
   messages.push(new HumanMessage(params.text));
   try {
-    const res = await runModelCall(() =>
-      model.invoke(messages, {
-        signal: AbortSignal.timeout(ANALYZE_TIMEOUT_MS),
-      }),
+    const { parsed, raw } = await runModelCall(() =>
+      invokeForVerdict(model, mode, messages),
     );
-    return parseVerdict(messageText(res.content).trim());
+    return readVerdict(parsed, raw);
   } catch (err) {
     logger.warn(
       { err },

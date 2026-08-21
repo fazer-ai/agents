@@ -123,6 +123,7 @@ describe.skipIf(!dbUp)("a vault entry deleted out from under an agent", () => {
   test("the editor's health panel flags it from the vault list alone", async () => {
     const rows = await listVaultEntryInfos(ctx(), appDb);
     const issues = computeConfigIssues({
+      agentEnabled: true,
       modelProvider: "openai",
       modelCredentialRef: ref(keyId),
       savedModelProvider: "openai",

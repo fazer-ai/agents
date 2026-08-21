@@ -12,6 +12,7 @@ import {
 } from "@/modules/channel-redirect/link";
 import { type ChatwootClient, fetchChatwootProfile } from "./client";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
+import { chatwootAutoRepliesOutOfHours } from "./out-of-office";
 import { ensureAgentBot } from "./provisioning";
 
 // Chatwoot deployment + account + inbox management (per-tenant). A DEPLOYMENT (base URL + shared admin
@@ -664,6 +665,86 @@ export async function listInboxes(
   return rows.map(toInboxDto);
 }
 
+// The agent's bound inboxes on which CHATWOOT sends an out-of-hours reply of its own, read LIVE from
+// Chatwoot rather than from the mirror. Feeds one configuration warning in the agent editor: the
+// customer can be told the business is closed by one product and then served by the other, and nothing
+// in either console says so, because the two settings live on opposite sides of the boundary.
+//
+// Live, and not a column on Inbox, because of what the warning IS. `syncInboxes` runs when an account
+// is connected and when an operator presses the button, so a mirrored copy of this flag would keep
+// warning about an inbox whose out-of-hours reply was switched off weeks ago, and the only way to
+// clear it would be to find a sync button on another page. A warning that outlives the thing it names
+// is how a whole panel gets ignored.
+//
+// An instance that cannot be read contributes NOTHING instead of failing the call: a Chatwoot that is
+// down is not evidence that anything is misconfigured, and this is a warning nobody is waiting on. The
+// same call answers "checked, all clear" and "could not check" with an empty list on purpose — both
+// render as silence, so a status field here would exist only to be ignored.
+export async function listOutOfOfficeInboxes(
+  ctx: TenantContext,
+  agentId: bigint,
+  deps: LoadChatwootClientDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<{ id: string; name: string }[]> {
+  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  const tenantId = ctx.tenantId;
+  const bound = await runScopedOn(base, ctx, (db) =>
+    db.inbox.findMany({
+      where: { agentId },
+      orderBy: { id: "asc" },
+      select: { id: true, chatwootInstanceId: true, chatwootInboxId: true },
+    }),
+  );
+
+  // One list call per distinct account, not per inbox: GET /inboxes is account-wide, and an agent
+  // bound to six inboxes of one account must not cost six round trips.
+  //
+  // Concurrent, because the ceiling here is a timeout and not a duration. Every Chatwoot request
+  // carries a 15s abort, so reading two accounts in sequence makes an unreachable server cost 30s of
+  // an editor-load request that is producing a warning nobody is waiting on — and the second account
+  // being healthy would not help, it would just be answered late. Unbounded on purpose: the fan-out
+  // is the number of Chatwoot accounts the operator connected, a small number they chose, not
+  // anything that grows with traffic.
+  const armedByInstance = new Map(
+    (
+      await Promise.all(
+        [...new Set(bound.map((b) => b.chatwootInstanceId))].map(
+          async (instanceId) => {
+            try {
+              const client = await loadChatwootClient(tenantId, instanceId, {
+                base,
+                makeClient: deps.makeClient,
+              });
+              const armed = new Map<number, string>();
+              for (const remote of parseInboxList(await client.listInboxes())) {
+                if (chatwootAutoRepliesOutOfHours(remote)) {
+                  armed.set(remote.chatwootInboxId, remote.name);
+                }
+              }
+              return [instanceId, armed] as const;
+            } catch {
+              // unreachable / unauthorized — say nothing about this account's inboxes, and do not
+              // let it decide the answer for the others
+              return null;
+            }
+          },
+        ),
+      )
+    ).filter((entry) => entry !== null),
+  );
+
+  // Chatwoot's name, not the mirror's: this reading exists because the mirror can be stale, and the
+  // inbox the operator has to go find is the one named on the other side.
+  const out: { id: string; name: string }[] = [];
+  for (const row of bound) {
+    const name = armedByInstance
+      .get(row.chatwootInstanceId)
+      ?.get(row.chatwootInboxId);
+    if (name !== undefined) out.push({ id: String(row.id), name });
+  }
+  return out;
+}
+
 export type { WidgetHealth, WidgetHealthStatus };
 
 // Live health of a web-widget inbox's website_url (the WhatsApp→website-chat redirect target).
@@ -1199,6 +1280,12 @@ export interface RemoteInbox {
   // WhatsApp provider (whatsapp_cloud | default | baileys | zapi) — only meaningful for
   // Channel::Whatsapp; null otherwise. Surfaced by the inbox serializer (json.provider).
   provider: string | null;
+  // Chatwoot's OWN out-of-hours auto-reply, the two halves of it that are configuration
+  // (json.working_hours_enabled / json.out_of_office_message on the same serializer). Kept because an
+  // agent can be bound to an inbox that already answers out of hours on a schedule this product
+  // cannot see — chatwootAutoRepliesOutOfHours (./out-of-office.ts) is the rule that reads them.
+  workingHoursEnabled: boolean;
+  outOfOfficeMessage: string | null;
 }
 
 // Pure parse of the Chatwoot inbox-list response. Confirmed against the chatwoot-pro fork:
@@ -1223,6 +1310,14 @@ export function parseInboxList(raw: unknown): RemoteInbox[] {
       channelType:
         typeof item.channel_type === "string" ? item.channel_type : null,
       provider: typeof item.provider === "string" ? item.provider : null,
+      // Strict boolean, like every other operator switch read off a wire we do not own: absent,
+      // "true" and 1 all read as off, so a shape change can only ever stop the warning, never invent
+      // one about an inbox that answers nothing.
+      workingHoursEnabled: item.working_hours_enabled === true,
+      outOfOfficeMessage:
+        typeof item.out_of_office_message === "string"
+          ? item.out_of_office_message
+          : null,
     });
   }
   return out;

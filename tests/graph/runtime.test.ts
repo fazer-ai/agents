@@ -25,6 +25,7 @@ import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
+  guardrailModel,
   HandoffThenReplyModel,
   HandoffThenThrowModel,
   ResolveThenReplyModel,
@@ -1842,6 +1843,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // real-model steering of `generationPrompt` is a separate live check.
   describe("guardrails 'generated' action", () => {
     const GUARD_MODEL = "guard-sentinel";
+
     const G_BOT = 91;
     const G_INBOX = 71;
     let gTenantId = 0n;
@@ -1937,9 +1939,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       (verdictJson: string) =>
       (cfg: ResolvedModelConfig): BaseChatModel =>
         cfg.model === GUARD_MODEL
-          ? ({
-              invoke: async () => ({ content: verdictJson }),
-            } as unknown as BaseChatModel)
+          ? guardrailModel(async () => ({ content: verdictJson }))
           : new FakeListChatModel({ responses: [REPLY] });
 
     // Same branching, but the caller supplies the MAIN model: the tests below need one that calls
@@ -1948,9 +1948,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       (verdictJson: string, main: BaseChatModel) =>
       (cfg: ResolvedModelConfig): BaseChatModel =>
         cfg.model === GUARD_MODEL
-          ? ({
-              invoke: async () => ({ content: verdictJson }),
-            } as unknown as BaseChatModel)
+          ? guardrailModel(async () => ({ content: verdictJson }))
           : main;
 
     const guardStub =
@@ -2051,9 +2049,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         deps: {
           makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
             cfg.model === GUARD_MODEL
-              ? ({
-                  invoke: async () => ({ content: verdict }),
-                } as unknown as BaseChatModel)
+              ? guardrailModel(async () => ({ content: verdict }))
               : (new SendImageThenReplyModel(
                   REPLY,
                   IMG_URL,
@@ -2109,9 +2105,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         deps: {
           makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
             cfg.model === GUARD_MODEL
-              ? ({
-                  invoke: async () => ({ content: verdict }),
-                } as unknown as BaseChatModel)
+              ? guardrailModel(async () => ({ content: verdict }))
               : (new SendImageOnlyModel(
                   IMG_URL,
                   "legenda proibida",
@@ -2380,7 +2374,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           templateMessage: "TEMPLATE-OUT",
         },
       });
-      await seedConv(953);
+      await seedConv(956);
       const sent: Array<[number, string]> = [];
       const notes: Array<[number, string]> = [];
       const toggles: Array<[number, string]> = [];
@@ -2394,7 +2388,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         tenantId: gTenantId,
         instanceId: gInstanceId,
         agentBotId: G_BOT,
-        event: incoming({ conversationId: 953, inboxId: G_INBOX }),
+        event: incoming({ conversationId: 956, inboxId: G_INBOX }),
         base: appDb,
         deps: {
           makeModel: branchingWith(
@@ -2411,9 +2405,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(outcome).toBe("posted");
       // The customer reads the screened line, once. The model's own final text is still discarded
       // (that is #158) and the raw closing line never reaches Chatwoot.
-      expect(sent).toEqual([[953, "GEN-HANDOFF-LINE"]]);
+      expect(sent).toEqual([[956, "GEN-HANDOFF-LINE"]]);
       // The transfer is not hostage to the moderation: it happened either way.
-      expect(toggles).toEqual([[953, "open"]]);
+      expect(toggles).toEqual([[956, "open"]]);
     });
 
     // Fail-open is about guardrail ERRORS, not verdicts: a policy that suppresses the text still may
@@ -2437,7 +2431,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           templateMessage: "TEMPLATE-OUT",
         },
       });
-      await seedConv(954);
+      await seedConv(957);
       const sent: Array<[number, string]> = [];
       const notes: Array<[number, string]> = [];
       const toggles: Array<[number, string]> = [];
@@ -2451,7 +2445,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         tenantId: gTenantId,
         instanceId: gInstanceId,
         agentBotId: G_BOT,
-        event: incoming({ conversationId: 954, inboxId: G_INBOX }),
+        event: incoming({ conversationId: 957, inboxId: G_INBOX }),
         base: appDb,
         deps: {
           makeModel: branchingWith(
@@ -2466,7 +2460,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         },
       });
       expect(sent).toEqual([]);
-      expect(toggles).toEqual([[954, "open"]]);
+      expect(toggles).toEqual([[957, "open"]]);
       // The operator is told why the customer heard nothing.
       expect(notes.length).toBe(1);
     });
@@ -2506,9 +2500,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         cfg: ResolvedModelConfig,
       ): BaseChatModel =>
         cfg.model === GUARD_MODEL
-          ? ({
-              invoke: async () => ({ content: verdict }),
-            } as unknown as BaseChatModel)
+          ? guardrailModel(async () => ({ content: verdict }))
           : (new ResolveThenReplyModel(
               "Fechado, obrigado!",
             ) as unknown as BaseChatModel);
@@ -2569,14 +2561,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       const providerLike = (cfg: ResolvedModelConfig): BaseChatModel =>
         cfg.model === "gpt-4o-mini"
           ? new FakeListChatModel({ responses: [REPLY] })
-          : ({
-              invoke: async () => {
-                if (!cfg.model.trim()) {
-                  throw new Error("400 invalid value for 'model': ''");
-                }
-                return { content: verdict };
-              },
-            } as unknown as BaseChatModel);
+          : guardrailModel(async () => {
+              if (!cfg.model.trim()) {
+                throw new Error("400 invalid value for 'model': ''");
+              }
+              return { content: verdict };
+            });
       const outcome = await runAgentTurn({
         tenantId: gTenantId,
         instanceId: gInstanceId,
@@ -2595,6 +2585,96 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     // Fail-open stays fail-open: a guardrail that cannot run must never cost the customer the reply.
     // But it also must not be indistinguishable from a guardrail that ran and approved, or an
+    // Which shape the call takes is decided from the guardrail's PROVIDER, and this is the only
+    // place that decision becomes an actual request. Asserting it on the table alone would leave
+    // the wiring untested, which is how a provider ends up correctly classified and still asked the
+    // wrong way — the classification is one call away from the runtime, and nothing else reads it.
+    describe("the provider decides how the verdict is asked for", () => {
+      const shapes = [
+        // Constrained, in the dialect this endpoint speaks.
+        { provider: "openai", conversationId: 953, expected: "json-schema" },
+        { provider: "google", conversationId: 955, expected: "openapi" },
+        // Off it: json_schema is refused by this API, so the call has to stay the one that works.
+        { provider: "deepseek", conversationId: 954, expected: "prose" },
+      ] as const;
+
+      for (const { provider, conversationId, expected } of shapes) {
+        test(`${provider} is asked in the ${expected} shape`, async () => {
+          await setGuardrails({
+            enabled: true,
+            provider,
+            model: GUARD_MODEL,
+            credentialRef: gVaultRef,
+            input: { enabled: false },
+            output: {
+              enabled: true,
+              action: "template",
+              checks: {
+                toxicity: true,
+                unsafeContent: false,
+                competitorMentions: false,
+                promptAdherence: false,
+              },
+              templateMessage: "TEMPLATE-SHAPE",
+            },
+          });
+          await seedConv(conversationId);
+          const sent: Array<[number, string]> = [];
+          const notes: Array<[number, string]> = [];
+          const shapesSeen: string[] = [];
+          const clean = JSON.stringify({
+            violated: false,
+            categories: [],
+            rationale: "",
+            suggestedReply: null,
+          });
+          const recordingGuard = (cfg: ResolvedModelConfig): BaseChatModel =>
+            cfg.model === GUARD_MODEL
+              ? ({
+                  invoke: async () => {
+                    shapesSeen.push("prose");
+                    return { content: clean };
+                  },
+                  // The dialect is visible in the schema it is handed, which is the whole point:
+                  // asking Gemini in OpenAI's dialect is refused on every screen.
+                  withStructuredOutput: (schema: {
+                    properties: Record<string, { nullable?: unknown }>;
+                  }) => ({
+                    invoke: async () => {
+                      shapesSeen.push(
+                        schema.properties.suggestedReply?.nullable === true
+                          ? "openapi"
+                          : "json-schema",
+                      );
+                      return {
+                        raw: { content: clean },
+                        parsed: JSON.parse(clean),
+                      };
+                    },
+                  }),
+                } as unknown as BaseChatModel)
+              : new FakeListChatModel({ responses: [REPLY] });
+          const outcome = await runAgentTurn({
+            tenantId: gTenantId,
+            instanceId: gInstanceId,
+            agentBotId: G_BOT,
+            event: incoming({ conversationId, inboxId: G_INBOX }),
+            base: appDb,
+            deps: {
+              makeModel: recordingGuard,
+              makeClient: guardStub(sent, notes),
+              checkpointer: new MemorySaver(),
+            },
+          });
+          expect(outcome).toBe("posted");
+          // The verdict was clean either way, so the customer reads the agent, not the template.
+          // Without this the assertion above would also pass on a guardrail that never ran.
+          expect(sent).toEqual([[conversationId, REPLY]]);
+          expect(shapesSeen).toEqual([expected]);
+        });
+      }
+    });
+
     // operator whose credential expired reads "no violations" forever. Same argument that put
     // `retriedEmptyResponse` in the trail on #63.
     test("a guardrail that cannot run is reported on the screen that enabled it", async () => {
@@ -2621,11 +2701,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       const notes: Array<[number, string]> = [];
       const unreachable = (cfg: ResolvedModelConfig): BaseChatModel =>
         cfg.model === GUARD_MODEL
-          ? ({
-              invoke: async () => {
-                throw new Error("401 incorrect api key provided");
-              },
-            } as unknown as BaseChatModel)
+          ? guardrailModel(async () => {
+              throw new Error("401 incorrect api key provided");
+            })
           : new FakeListChatModel({ responses: [REPLY] });
       const outcome = await runAgentTurn({
         tenantId: gTenantId,
@@ -2663,6 +2741,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(health.failures).toBeGreaterThan(0);
       expect(
         computeConfigIssues({
+          agentEnabled: true,
           modelProvider: "openai",
           modelCredentialRef: "vault:1",
           savedModelProvider: "openai",
@@ -2699,16 +2778,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ): ((cfg: ResolvedModelConfig) => BaseChatModel) =>
       (cfg: ResolvedModelConfig): BaseChatModel =>
         cfg.model === GUARD_MODEL
-          ? ({
-              invoke: async (msgs: { content: unknown }[]) => {
-                // Every message, not just the system prompt: the customer's words ride at user
-                // level now, and the point of these tests is WHAT the reviewer received.
-                captured.push(
-                  msgs.map((m) => String(m.content)).join("\n---\n"),
-                );
-                return { content: verdictJson };
-              },
-            } as unknown as BaseChatModel)
+          ? guardrailModel(async (msgs) => {
+              // Every message, not just the system prompt: the customer's words ride at user
+              // level now, and the point of these tests is WHAT the reviewer received.
+              captured.push(msgs.map((m) => String(m.content)).join("\n---\n"));
+              return { content: verdictJson };
+            })
           : new FakeListChatModel({ responses: [REPLY] });
 
     const RELEVANCE_CHECKS = {
@@ -3003,30 +3078,28 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       const captured: string[] = [];
       const nameSpotter = (cfg: ResolvedModelConfig): BaseChatModel =>
         cfg.model === GUARD_MODEL
-          ? ({
-              invoke: async (msgs: { content: unknown }[]) => {
-                const system = String(msgs[0]?.content ?? "");
-                // Everything under review, without the policy text that names the list itself.
-                const material = msgs
-                  .slice(1)
-                  .map((m) => String(m.content))
-                  .join("\n");
-                captured.push(
-                  `${system.includes("competitor_mention") ? "POLICY" : "no-policy"}::${material}`,
-                );
-                const flags =
-                  system.includes("competitor_mention") &&
-                  material.includes("Zenvia");
-                return {
-                  content: JSON.stringify({
-                    violated: flags,
-                    categories: flags ? ["competitor_mention"] : [],
-                    rationale: flags ? "named a competitor" : "",
-                    suggestedReply: null,
-                  }),
-                };
-              },
-            } as unknown as BaseChatModel)
+          ? guardrailModel(async (msgs) => {
+              const system = String(msgs[0]?.content ?? "");
+              // Everything under review, without the policy text that names the list itself.
+              const material = msgs
+                .slice(1)
+                .map((m) => String(m.content))
+                .join("\n");
+              captured.push(
+                `${system.includes("competitor_mention") ? "POLICY" : "no-policy"}::${material}`,
+              );
+              const flags =
+                system.includes("competitor_mention") &&
+                material.includes("Zenvia");
+              return {
+                content: JSON.stringify({
+                  violated: flags,
+                  categories: flags ? ["competitor_mention"] : [],
+                  rationale: flags ? "named a competitor" : "",
+                  suggestedReply: null,
+                }),
+              };
+            })
           : new FakeListChatModel({ responses: [REPLY] });
       const outcome = await runAgentTurn({
         tenantId: gTenantId,
@@ -3089,23 +3162,21 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // that also names the banned competitor.
       const fabricator = (cfg: ResolvedModelConfig): BaseChatModel =>
         cfg.model === GUARD_MODEL
-          ? ({
-              invoke: async (msgs: { content: unknown }[]) => {
-                const relevance = String(msgs[0]?.content ?? "").includes(
-                  "<customer_message>",
-                );
-                return {
-                  content: JSON.stringify({
-                    violated: relevance,
-                    categories: relevance ? ["answer_relevance"] : [],
-                    rationale: relevance ? "does not answer" : "",
-                    suggestedReply: relevance
-                      ? "Sim, trabalhamos com a Zenvia."
-                      : null,
-                  }),
-                };
-              },
-            } as unknown as BaseChatModel)
+          ? guardrailModel(async (msgs) => {
+              const relevance = String(msgs[0]?.content ?? "").includes(
+                "<customer_message>",
+              );
+              return {
+                content: JSON.stringify({
+                  violated: relevance,
+                  categories: relevance ? ["answer_relevance"] : [],
+                  rationale: relevance ? "does not answer" : "",
+                  suggestedReply: relevance
+                    ? "Sim, trabalhamos com a Zenvia."
+                    : null,
+                }),
+              };
+            })
           : new FakeListChatModel({ responses: [REPLY] });
       const outcome = await runAgentTurn({
         tenantId: gTenantId,

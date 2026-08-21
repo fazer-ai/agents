@@ -1,4 +1,5 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { verdictAskMode } from "@/graph/model-config";
 import { createChatModel } from "@/graph/models";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
@@ -81,19 +82,27 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     const model = resolveModel(direction);
     if (!model) return null;
     const judgesRelevance = direction === "output" && !!p.customerMessage;
-    const verdict = await analyzeGuardrail(model, {
-      direction,
-      text: subject,
-      checks: judgesRelevance
-        ? dir.checks
-        : { ...dir.checks, answerRelevance: false },
-      competitors: gr.competitors,
-      customPolicy: gr.customPolicy,
-      systemPrompt: direction === "output" ? p.systemPrompt : undefined,
-      customerMessage: judgesRelevance ? p.customerMessage : undefined,
-      generationPrompt:
-        dir.action === "generated" ? dir.generationPrompt : undefined,
-    });
+    const verdict = await analyzeGuardrail(
+      model,
+      {
+        direction,
+        text: subject,
+        checks: judgesRelevance
+          ? dir.checks
+          : { ...dir.checks, answerRelevance: false },
+        competitors: gr.competitors,
+        customPolicy: gr.customPolicy,
+        systemPrompt: direction === "output" ? p.systemPrompt : undefined,
+        customerMessage: judgesRelevance ? p.customerMessage : undefined,
+        generationPrompt:
+          dir.action === "generated" ? dir.generationPrompt : undefined,
+      },
+      // Constrained where the endpoint implements it, in the dialect it speaks, and asked for in
+      // the prompt everywhere else. The provider decides, not the model id: the same adapter serves
+      // OpenAI itself and whatever an operator points `openai-compatible` at (issue #131). Reaching
+      // it through the gate is what puts the proactive path on the same footing as the reactive one.
+      verdictAskMode(gr.provider),
+    );
     // A guardrail that could not run reads exactly like one that ran and approved, so without this
     // line an expired credential is silent moderation for as long as nobody notices. The turn is
     // NOT blocked (fail-open stays), only recorded.

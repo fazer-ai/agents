@@ -33,6 +33,7 @@ import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
+  guardrailModel,
   HandoffThenReplyModel,
   HandoffThenThrowModel,
 } from "../utils/scripted-models";
@@ -1197,17 +1198,13 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     (verdictJson: string, main: BaseChatModel, seen?: string[]) =>
     (cfg: { model: string }): BaseChatModel =>
       cfg.model === GUARD_MODEL
-        ? ({
-            invoke: async (msgs: unknown) => {
-              if (seen)
-                seen.push(
-                  JSON.stringify(
-                    (msgs as { content?: unknown }[]).map((m) => m.content),
-                  ),
-                );
-              return { content: verdictJson };
-            },
-          } as unknown as BaseChatModel)
+        ? // The shared stub, not a bare `invoke`: since #179 the verdict is asked for as a schema
+          // wherever the provider implements one, so a double that only speaks prose fails on the
+          // default provider rather than on anything this test is about.
+          guardrailModel(async (msgs) => {
+            if (seen) seen.push(JSON.stringify(msgs.map((m) => m.content)));
+            return { content: verdictJson };
+          })
         : main;
 
   test("a follow-up's own reply is screened by the output guardrail", async () => {

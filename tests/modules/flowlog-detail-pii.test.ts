@@ -9,7 +9,7 @@ import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
-import { UsageReportingModel } from "../utils/scripted-models";
+import { guardrailModel, UsageReportingModel } from "../utils/scripted-models";
 
 // `docs/logs.md` promises that `execution_logs.detail` carries allowlisted ids, counts and enums and
 // NEVER message text or PII. The column is served by the Logs page and by `GET /v1/logs`, so the
@@ -281,16 +281,14 @@ describe.skipIf(!dbUp)(
         deps: {
           makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
             cfg.model === GUARD_MODEL
-              ? ({
-                  invoke: async () => ({
-                    content: JSON.stringify({
-                      violated: false,
-                      categories: [],
-                      rationale: "",
-                      suggestedReply: null,
-                    }),
+              ? guardrailModel(async () => ({
+                  content: JSON.stringify({
+                    violated: false,
+                    categories: [],
+                    rationale: "",
+                    suggestedReply: null,
                   }),
-                } as unknown as BaseChatModel)
+                }))
               : (model as unknown as BaseChatModel),
           makeClient: stub(sent),
           checkpointer: new MemorySaver(),
@@ -333,18 +331,16 @@ describe.skipIf(!dbUp)(
         deps: {
           makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
             cfg.model === GUARD_MODEL
-              ? ({
-                  invoke: async () => ({
-                    content: JSON.stringify({
-                      violated: true,
-                      categories: ["toxicity"],
-                      // A rationale in the shape the prompt asks for: one sentence, quoting the
-                      // customer back.
-                      rationale: `O cliente disse "${ASKED}" e a resposta repetiu o dado.`,
-                      suggestedReply: null,
-                    }),
+              ? guardrailModel(async () => ({
+                  content: JSON.stringify({
+                    violated: true,
+                    categories: ["toxicity"],
+                    // A rationale in the shape the prompt asks for: one sentence, quoting the
+                    // customer back.
+                    rationale: `O cliente disse "${ASKED}" e a resposta repetiu o dado.`,
+                    suggestedReply: null,
                   }),
-                } as unknown as BaseChatModel)
+                }))
               : (model as unknown as BaseChatModel),
           makeClient: stub(sent),
           checkpointer: new MemorySaver(),
@@ -379,16 +375,14 @@ describe.skipIf(!dbUp)(
         deps: {
           makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
             cfg.model === GUARD_MODEL
-              ? ({
-                  invoke: async () => ({
-                    content: JSON.stringify({
-                      violated: true,
-                      categories: ["toxicity", `o cliente disse ${ASKED}`],
-                      rationale: "",
-                      suggestedReply: null,
-                    }),
+              ? guardrailModel(async () => ({
+                  content: JSON.stringify({
+                    violated: true,
+                    categories: ["toxicity", `o cliente disse ${ASKED}`],
+                    rationale: "",
+                    suggestedReply: null,
                   }),
-                } as unknown as BaseChatModel)
+                }))
               : (model as unknown as BaseChatModel),
           makeClient: stub(sent),
           checkpointer: new MemorySaver(),

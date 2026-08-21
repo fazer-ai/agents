@@ -688,6 +688,8 @@
     "configIssueGuardrailsFailing": "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). Analysis is fail-open, so a check that could not run caught nothing and held nothing back. Check the model, the endpoint and the key.",
     "configIssueGuardrailsFailingCause": "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). Analysis is fail-open, so a check that could not run caught nothing and held nothing back. The last one said: {{error}}",
     "configIssueKnowledge": "Knowledge base \"{{name}}\" has documents that need indexing.",
+    "configIssueOutOfHoursBoth": "Chatwoot already replies out of hours on {{inboxes}}, and this agent's out-of-hours message is on as well, so the customer gets both. The two schedules are set in different products and Chatwoot's has no dates in it, so on a holiday they will disagree too.",
+    "configIssueOutOfHoursChatwoot": "Chatwoot replies out of hours on {{inboxes}}, and this agent does not read that schedule: it answers whenever its own says it is open. The customer can be told the business is closed and served in the same breath.",
     "configIssuePending": {
       "embedding": "A knowledge base needs indexing, but the embedding credential is not filled in yet.",
       "guardrails": "The guardrails credential is referenced but not filled in yet, so messages go out unscreened.",

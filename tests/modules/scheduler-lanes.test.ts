@@ -279,13 +279,24 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
       batchSize: 100,
       tenantId,
     });
-    // Let everything that is going to start, start; then let it all finish.
+    // Let everything that is going to start, start, and read the peak BEFORE releasing anything.
     await new Promise((r) => setTimeout(r, 150));
     const costlyAtRest = peak;
     const cheapAtRest = cheapPeak;
-    for (const r of release) r();
-    await new Promise((r) => setTimeout(r, 50));
-    for (const r of release) r();
+
+    // Then drain until the tick is done, rather than in a fixed number of waves. How many waves
+    // there are is `ceil(N / bound)`, and `bound` comes from AGENT_MODEL_CONCURRENCY — so two passes
+    // is only enough at the budget this machine happens to have. At a budget of 4 the bound is 1 and
+    // there are N waves, and the test would hang on a config it never mentions.
+    let finished = false;
+    void tick.then(() => {
+      finished = true;
+    });
+    const deadline = Date.now() + 10_000;
+    while (!finished && Date.now() < deadline) {
+      for (const r of release.splice(0)) r();
+      await new Promise((r) => setTimeout(r, 10));
+    }
     await tick;
 
     expect(costlyAtRest).toBe(bound);

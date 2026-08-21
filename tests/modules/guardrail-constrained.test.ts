@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { ChatAnthropic } from "@langchain/anthropic";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import { analyzeGuardrail } from "@/modules/guardrails/analyze";
 
@@ -226,5 +227,68 @@ describe("an adapter that answers around the schema", () => {
     const v = await analyzeGuardrail(anthropicModel, BASE, "constrained");
     expect(v.violated).toBe(false);
     expect(v.error).toBe("no usable verdict in response");
+  });
+});
+
+// Why `google` is NOT on the list, kept as a test because the reason is a measurement and it will
+// stop being true the day the adapter converts the schema. It is not a missing feature on Gemini's
+// side: its responseSchema is the OpenAPI 3.0 subset, where `type` holds one value and nullability
+// is `nullable: true`. What this asserts is the half we own — what the adapter puts on the wire.
+//
+// The other direction was measured live and is what rules out simply switching dialects: asked
+// with `nullable: true`, OpenAI ignores the keyword, `suggestedReply` becomes a required string,
+// and the model is pushed into inventing one (8 runs on gpt-5.4-nano: `""` seven times, `"/"`
+// once) — on the direction whose entire rule is that it must never compose a reply.
+describe("the schema dialect Gemini would need", () => {
+  test("the adapter forwards our type union unconverted, so it would not be Gemini's", async () => {
+    let wire = "";
+    const server = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const pre = preflight(req);
+        if (pre) return pre;
+        wire = await req.text();
+        return BunResponse.json(
+          {
+            candidates: [
+              {
+                content: {
+                  role: "model",
+                  parts: [{ text: JSON.stringify(VIOLATION) }],
+                },
+                finishReason: "STOP",
+              },
+            ],
+            usageMetadata: {
+              promptTokenCount: 1,
+              candidatesTokenCount: 1,
+              totalTokenCount: 2,
+            },
+          },
+          { headers: CORS },
+        );
+      },
+    });
+    const gemini = new ChatGoogleGenerativeAI({
+      model: "gemini-3.5-flash",
+      apiKey: "x",
+      baseUrl: `http://localhost:${server.port}`,
+    });
+    try {
+      await analyzeGuardrail(gemini, BASE, "constrained");
+      const schema = (
+        JSON.parse(wire) as {
+          generationConfig?: {
+            responseSchema?: { properties?: Record<string, { type: unknown }> };
+          };
+        }
+      ).generationConfig?.responseSchema;
+      const nullableField = schema?.properties?.suggestedReply?.type;
+      // A type UNION reached the wire. Gemini's subset has no such form; it spells this
+      // `{ type: "string", nullable: true }`.
+      expect(Array.isArray(nullableField)).toBe(true);
+    } finally {
+      server.stop(true);
+    }
   });
 });

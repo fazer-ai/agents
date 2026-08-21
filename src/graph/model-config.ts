@@ -40,14 +40,21 @@ export const PROVIDERS_HONORING_BASE_URL = [
 //     ignores the parameter: the client retried the same call six times across a minute and never
 //     settled, while the unconstrained call made today answered on the first try. One that refuses
 //     it outright (llama.cpp does, with a 400) fails immediately. Both of those are a guardrail
-//     that stops screening, on installs where it screens fine today.
+//     that stops screening, on installs where it screens fine today;
+//   * google is out over a dialect, not a missing feature. Gemini's responseSchema is the OpenAPI
+//     3.0 subset, where `type` holds ONE value and nullability is `nullable: true`, and the adapter
+//     forwards a `type: ["string", "null"]` unconverted (measured on the wire). The other dialect
+//     is not a shared answer either: asked with `nullable`, OpenAI ignores the keyword and the
+//     field becomes a required string, so the model is pushed into inventing one — measured, 8 runs
+//     on gpt-5.4-nano, `""` seven times and `"/"` once, on the direction whose whole rule is that
+//     it must never compose a reply. One schema cannot serve both, and a per-vendor dialect is a
+//     mechanism nobody here can exercise against the live endpoint yet.
 //
 // Getting a row wrong is not symmetric: a provider wrongly on this list stops screening, one
 // wrongly off it keeps exactly today's behaviour. When in doubt, leave it off.
 export const PROVIDERS_ACCEPTING_CONSTRAINED_OUTPUT = [
   "openai",
   "anthropic",
-  "google",
 ] as const;
 
 export function acceptsConstrainedOutput(

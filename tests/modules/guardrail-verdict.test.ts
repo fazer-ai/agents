@@ -28,9 +28,12 @@ describe("which providers may be asked for a constrained verdict", () => {
     openai: true,
     // The adapter asks with a FORCED tool call, which every current Anthropic model implements.
     anthropic: true,
-    // Native responseSchema, and it does not travel through bindTools, so the gemini-tools carve-out
-    // (issue #64) is not in the way.
-    google: true,
+    // Out over a DIALECT: Gemini's responseSchema is the OpenAPI subset, where nullability is
+    // `nullable: true` and not a type union, and the adapter forwards ours unconverted (the wire is
+    // asserted in tests/modules/guardrail-constrained.test.ts). Asking with the other dialect is
+    // not a shared answer either: OpenAI ignores `nullable` and the field becomes a required
+    // string, which pushes the model into inventing a replacement.
+    google: false,
     // The API implements json_object only and answers "unavailable now" to json_schema.
     deepseek: false,
     // Support is per ENDPOINT behind the router, not per model, and it changes without notice; the

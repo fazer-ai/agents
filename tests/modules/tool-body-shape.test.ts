@@ -125,20 +125,36 @@ describe("tool body shape", () => {
   });
 });
 
-// NOTE: round 4 review, P2. The bundle import does not refuse a legacy body, it reduces it — and the
-// only thing that makes that safe is the reduction sending exactly what the original sent. Blanking
-// to `{}` passed the earlier reasoning and does not survive this: `{mode:"raw", raw, extra}` WAS
-// sending its template, and `{}` would switch it to the fields assembly. So the property is asserted
-// against the wire, not against the shape.
+// NOTE: rounds 4 and 5, both P2, both the same defect at a different depth: `canonicalBodyShape`
+// was written by reading the refusal rules instead of by reading `parseBody`, so the two disagreed
+// wherever the runtime TOLERATES what an author may not write — an extra key beside `raw`, an extra
+// key inside a row, a value of the wrong type. Each disagreement changes the request of a tool the
+// import was only supposed to tidy.
+//
+// So the cases below are enumerated by WHERE the two questions can diverge (mode level, row level,
+// field level, degenerate input) rather than picked by hand, and the property is asserted against
+// the wire: whatever the refusal rejects, its canonical form must send byte-identical bytes.
 describe("the canonical form of a refused body sends what the original sent", () => {
   const REFUSED: unknown[] = [
+    // NOTE: extra keys, at each level that has one.
     { mode: "raw", raw: '{"a":1}', extra: "x" },
-    { mode: "raw", raw: 7 },
     { mode: "kv", rows: [{ key: "a", value: "{{valor}}" }], stray: "x" },
-    { mode: "kv", rows: [{ key: "  ", value: "{{valor}}" }] },
+    { mode: "kv", rows: [{ key: "a", value: "{{valor}}", note: "legacy" }] },
     { mode: "fields", order_id: "{{order_id}}" },
+    // NOTE: wrong types, at each field the runtime coerces rather than rejects.
+    { mode: "raw", raw: 7 },
+    { mode: "kv", rows: [{ key: "a", value: 7 }] },
+    { mode: "kv", rows: [{ key: 7, value: "{{valor}}" }] },
+    { mode: "kv", rows: {} },
+    // NOTE: the row the runtime filters out rather than sends.
+    { mode: "kv", rows: [{ key: "  ", value: "{{valor}}" }] },
+    { mode: "kv", rows: [null] },
+    // NOTE: no mode at all, and a mode nothing executes.
     { contact: { email: "{{valor}}" } },
     { mode: "template", raw: "x" },
+    { mode: 7 },
+    [{ key: "a", value: "b" }],
+    "not an object",
   ];
 
   async function sent(body: unknown): Promise<string> {

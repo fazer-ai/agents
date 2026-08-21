@@ -22,21 +22,21 @@ function extraKeys(obj: Record<string, unknown>, known: string[]): string[] {
   return Object.keys(obj).filter((k) => !known.includes(k));
 }
 
-function rowIsMalformed(r: unknown): boolean {
-  return (
-    !isPlainObject(r) ||
-    typeof r.key !== "string" ||
-    // NOTE: `parseBody` drops a row whose key trims to nothing, so a blank key loses the value
-    // exactly as silently as a key the runtime never reads.
-    r.key.trim() === "" ||
-    typeof r.value !== "string" ||
-    extraKeys(r, ["key", "value"]).length > 0
-  );
-}
-
+// The AUTHORING rule for one row, which is deliberately stricter than what the runtime tolerates:
+// `parseBody` coerces a non-string value to "" and ignores any extra key, and both of those lose
+// something the author wrote. What the runtime does with such a row instead lives in `canonicalRow`.
 function rowsAreMalformed(rows: unknown): boolean {
   if (!Array.isArray(rows)) return true;
-  return rows.some(rowIsMalformed);
+  return rows.some(
+    (r) =>
+      !isPlainObject(r) ||
+      typeof r.key !== "string" ||
+      // NOTE: `parseBody` drops a row whose key trims to nothing, so a blank key loses the value
+      // exactly as silently as a key the runtime never reads.
+      r.key.trim() === "" ||
+      typeof r.value !== "string" ||
+      extraKeys(r, ["key", "value"]).length > 0,
+  );
 }
 
 const SHAPES =
@@ -106,10 +106,28 @@ export function unsupportedBodyShape(body: unknown): string | null {
 }
 
 // What `parseBody` actually executes for a body this file refuses, spelled canonically. The bundle
-// import uses it instead of blanking the row: `{}` is behavior-preserving only for a body with no
-// recognized mode (both select the legacy `fields` branch), and a `{mode:"raw", raw:"…", extra:…}`
-// WAS sending its template — replacing that with `{}` would switch the tool to the fields assembly,
-// changing the outbound request of a tool that was merely stored untidily.
+// import uses it instead of blanking the row, so a legacy tool keeps sending what it was sending.
+//
+// It is written as a MIRROR of parseBody's branches, not as a variation on the refusal above, and
+// that distinction is the whole reason this exists as its own function. The two answer different
+// questions — "may an author write this?" and "what does the runtime do with it?" — and they differ
+// at exactly the places a shape is *tolerated* rather than *read*: an extra key beside `raw`, an
+// extra key inside a row, a value of the wrong type. Deriving one from the other silently changes
+// the request every time they diverge, which is the thing this whole change exists to stop.
+//
+// Every rule below has a line of parseBody behind it:
+//   raw     -> `typeof b.raw === "string" ? b.raw : ""`
+//   kv rows -> key/value coerced to "" when not strings, then `.filter(r => r.key.trim())`
+//   else    -> the legacy `fields` branch
+function canonicalRow(r: unknown): { key: string; value: string } | null {
+  const row = isPlainObject(r) ? r : {};
+  const key = typeof row.key === "string" ? row.key : "";
+  // NOTE: parseBody filters on the TRIMMED key, and the kv consumer trims again before writing it,
+  // so a row that trims to nothing never reaches the payload.
+  if (key.trim() === "") return null;
+  return { key, value: typeof row.value === "string" ? row.value : "" };
+}
+
 export function canonicalBodyShape(body: unknown): Record<string, unknown> {
   if (!isPlainObject(body)) return {};
   if (body.mode === "raw") {
@@ -117,7 +135,7 @@ export function canonicalBodyShape(body: unknown): Record<string, unknown> {
   }
   if (body.mode === "kv") {
     const rows = Array.isArray(body.rows)
-      ? body.rows.filter((r) => !rowIsMalformed(r))
+      ? body.rows.map(canonicalRow).filter((r) => r !== null)
       : [];
     return { mode: "kv", rows };
   }

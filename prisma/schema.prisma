@@ -1075,6 +1075,10 @@ model SchedulerJob {
   runAt     DateTime           @map("run_at")
   attempts  Int                @default(0)
   claimedAt DateTime?          @map("claimed_at")
+  // Which claim on this row is the current one. The claim BUMPS it and hands the value to the
+  // handler; the three writes that finish a job CAS on it, so a run whose claim was superseded
+  // writes nothing instead of landing on work it does not own (issue #164).
+  claimSeq  Int                @default(0) @map("claim_seq")
   lastError String?            @map("last_error")
   createdAt DateTime           @default(now()) @map("created_at")
   updatedAt DateTime           @updatedAt @map("updated_at")

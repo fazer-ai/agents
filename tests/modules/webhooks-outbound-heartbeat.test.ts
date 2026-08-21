@@ -57,7 +57,14 @@ function heartbeatJobRows(): Promise<number> {
   return suDb.schedulerJob.count({ where: { tenantId, kind: "HEARTBEAT" } });
 }
 function claimedJob(): ClaimedJob {
-  return { id: 0n, tenantId, kind: "HEARTBEAT", payload: {}, attempts: 0 };
+  return {
+    id: 0n,
+    tenantId,
+    kind: "HEARTBEAT",
+    payload: {},
+    attempts: 0,
+    claimSeq: 0,
+  };
 }
 async function clearTenantWebhookState(): Promise<void> {
   await suDb.$executeRawUnsafe(

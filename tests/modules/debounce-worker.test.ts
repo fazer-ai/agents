@@ -16,6 +16,7 @@ function job(id: number): ClaimedJob {
     kind: "DEBOUNCE",
     payload: {},
     attempts: 0,
+    claimSeq: 0,
   };
 }
 

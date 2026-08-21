@@ -101,6 +101,7 @@ function jobFor(convId: number, stepIndex?: number): ClaimedJob {
         ? { threadId: threadOf(convId) }
         : { threadId: threadOf(convId), stepIndex },
     attempts: 0,
+    claimSeq: 0,
   };
 }
 
@@ -693,6 +694,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         kind: "FOLLOWUP_SWEEP",
         payload: {},
         attempts: 0,
+        claimSeq: 0,
       },
       appDb,
     );
@@ -836,7 +838,14 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(
-      { id: 998n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      {
+        id: 998n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
       appDb,
     );
     for (const convId of [1041, 1042]) {
@@ -877,7 +886,14 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(
-      { id: 997n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      {
+        id: 997n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
       appDb,
     );
     expect(
@@ -918,7 +934,14 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(
-      { id: 996n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      {
+        id: 996n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
       appDb,
     );
     expect(
@@ -964,7 +987,14 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(
-      { id: 995n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      {
+        id: 995n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
       appDb,
     );
     // NOTE: Garbage = not-future = not suppressed (fail-safe), and the sweep survives for everyone.
@@ -1011,7 +1041,14 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(
-      { id: 993n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      {
+        id: 993n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
       appDb,
     );
     expect(
@@ -1056,7 +1093,14 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(
-      { id: 994n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      {
+        id: 994n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
       appDb,
     );
     expect(
@@ -1098,7 +1142,14 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(
-      { id: 992n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      {
+        id: 992n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
       appDb,
     );
     expect(

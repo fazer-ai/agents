@@ -58,19 +58,24 @@ export function defaultBatchSize(
 // The rows this process is executing RIGHT NOW, excluded from the CLAIM ITSELF rather than filtered
 // after it. `enqueueJob` re-arms by upserting the same physical row back to PENDING, status and all,
 // so a new attendance arming this key while its summary is still running makes the row claimable
-// again. Claiming it a second time is what does the damage, in both directions: a second handler
-// cuts an overlapping raw prefix and writes a second durable summary under a different last-message
-// id (the memory head then describes the same events twice), and the handler still running completes
-// the newer arm out from under it, since both are guarded only by id + CLAIMED — after which no
-// future boundary re-arms that attendance and it is never compacted.
+// again, and claiming it a second time damages this kind in two directions.
 //
-// Never claimed, that same CAS becomes the protection: the stale completion does not match a PENDING
-// row, the re-arm survives, and the next tick picks it up once its owner is done.
+// The SECOND direction is now handled generally and no longer needs this set: the handler still
+// running used to complete the newer arm out from under it (both guarded only by id + CLAIMED),
+// after which no future boundary re-armed that attendance and it was never compacted. The claim
+// token added in issue #164 refuses that write for every kind.
+//
+// The FIRST direction is why this stays. Two handlers that overlap each cut a raw prefix and each
+// pay for a summary — a model call with a 60s ceiling, taken from the same semaphore a customer's
+// turn queues on — and the writes are settled downstream by the generation fence in compact.ts
+// rather than by anything up here, so the second one's model call is bought and thrown away. Nothing
+// about a claim token makes work cheaper; it decides which write lands. This kind is the one that
+// holds a claim long enough for the overlap to be ordinary rather than theoretical, which is exactly
+// the reason it was the first to need the set and still the only one that has it.
 //
 // Per-process, which is what these workers already are by construction (single replica, globalThis
-// singleton). The general form — any kind, any handler — needs a claim generation on the row and is
-// not this PR's to fix; this closes the window that is wide, because only this kind holds a claim
-// for up to a minute while every attendance boundary re-arms it.
+// singleton). A second replica reintroduces the overlap, and the token is what keeps that merely
+// wasteful instead of corrupting.
 const inFlight = new Set<bigint>();
 
 export interface CompactionTickDeps {

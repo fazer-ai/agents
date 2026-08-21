@@ -209,6 +209,7 @@ async function runIngestOn(
       kind: "RAG_INGEST",
       payload: { documentId: String(documentId) },
       attempts: 0,
+      claimSeq: 0,
     },
     base,
   );

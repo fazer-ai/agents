@@ -454,6 +454,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         runAt: new Date(),
         status: "CLAIMED",
         attempts: 0,
+        claimSeq: 0,
       },
       select: { id: true },
     });
@@ -472,7 +473,14 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
             data: { status: "CLAIMED", attempts },
           });
           await runClaimed(
-            { id: row.id, tenantId, kind: KIND, payload: {}, attempts },
+            {
+              id: row.id,
+              tenantId,
+              kind: KIND,
+              payload: {},
+              attempts,
+              claimSeq: 0,
+            },
             appDb,
           );
           expect(calls).toHaveLength(attempts === 4 ? 1 : 0);
@@ -497,6 +505,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         runAt: new Date(),
         status: "CLAIMED",
         attempts: 4,
+        claimSeq: 0,
       },
       select: { id: true },
     });
@@ -516,7 +525,14 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       },
       () =>
         runClaimed(
-          { id: row.id, tenantId, kind: KIND, payload: {}, attempts: 4 },
+          {
+            id: row.id,
+            tenantId,
+            kind: KIND,
+            payload: {},
+            attempts: 4,
+            claimSeq: 0,
+          },
           appDb,
         ),
     );
@@ -541,6 +557,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         // this very row on the next inbound message, and that queued flush will answer.
         status: "PENDING",
         attempts: 5,
+        claimSeq: 0,
       },
       select: { id: true },
     });
@@ -551,6 +568,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         kind: KIND,
         payload: { threadId: `${tenantId}:${instanceId}:${conv}` },
         attempts: 4,
+        claimSeq: 0,
       },
       "model provider returned 503",
       appDb,
@@ -572,6 +590,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         status: "CLAIMED",
         claimedAt: new Date(Date.now() - 600_000),
         attempts: 4,
+        claimSeq: 0,
       },
       select: { id: true },
     });
@@ -696,6 +715,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         runAt: new Date(),
         status: "DEAD",
         attempts: 5,
+        claimSeq: 0,
       },
       select: { id: true },
     });
@@ -705,6 +725,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       kind: KIND,
       payload: { threadId: `${tenantId}:${instanceId}:${conv}` },
       attempts: 4,
+      claimSeq: 0,
     };
     await announceDeadDebounceFlush(job, "model provider returned 503", appDb);
     expect(posted).toHaveLength(1);

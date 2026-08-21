@@ -88,6 +88,7 @@ function jobFor(convId: number): ClaimedJob {
     kind: "FOLLOWUP",
     payload: { threadId: threadOf(convId) },
     attempts: 0,
+    claimSeq: 0,
   };
 }
 
@@ -640,6 +641,7 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
       kind: "FOLLOWUP",
       payload: { threadId: threadOf(CONV), nudgeRetries: 7 },
       attempts: 0,
+      claimSeq: 0,
     };
     const result = await followUpHandler(job, appDb, handlerDeps(s));
     expect(result).toEqual({ outcome: "done" });
@@ -697,7 +699,14 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(sweep).toBeDefined();
     if (!sweep) throw new Error("unreachable");
     await sweep(
-      { id: 99n, tenantId, kind: "FOLLOWUP_SWEEP", payload: {}, attempts: 0 },
+      {
+        id: 99n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
       appDb,
     );
     const jobs = await suDb.schedulerJob.findMany({

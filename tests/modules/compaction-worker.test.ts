@@ -19,6 +19,7 @@ function job(id: number): ClaimedJob {
     kind: "MEMORY_COMPACT",
     payload: {},
     attempts: 0,
+    claimSeq: 0,
   };
 }
 
@@ -64,6 +65,7 @@ describe("runCompactionTick", () => {
           kind: "MEMORY_COMPACT" as const,
           payload: {},
           attempts: 1,
+          claimSeq: 1,
           status: "PENDING" as const,
         },
       ],
@@ -144,6 +146,7 @@ describe("runCompactionTick", () => {
               kind: "MEMORY_COMPACT",
               payload: {},
               attempts: 1,
+              claimSeq: 1,
               status: "PENDING" as const,
             },
           ];

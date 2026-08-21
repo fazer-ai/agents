@@ -94,6 +94,7 @@ async function fail(
   const { deadLettered } = await failJob(
     job.tenantId,
     job.id,
+    job.claimSeq,
     job.attempts,
     error,
     base,
@@ -119,11 +120,12 @@ export async function runClaimed(
     return;
   }
   if (result.outcome === "done") {
-    await completeJob(job.tenantId, job.id, base);
+    await completeJob(job.tenantId, job.id, job.claimSeq, base);
   } else if (result.outcome === "reschedule") {
     await rescheduleJob(
       job.tenantId,
       job.id,
+      job.claimSeq,
       result.runAt,
       result.payload,
       base,

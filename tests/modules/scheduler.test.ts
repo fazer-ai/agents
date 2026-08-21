@@ -46,6 +46,17 @@ async function statusOf(id: bigint) {
   return row;
 }
 
+// The claim token the row currently carries. The tests in this file assert STATUS transitions, so
+// they want whatever token is live at that moment; the token's own semantics — what a STALE one must
+// refuse — are asserted in tests/modules/scheduler-claim-token.test.ts.
+async function seqOf(id: bigint): Promise<number> {
+  const row = await suDb.schedulerJob.findUniqueOrThrow({
+    where: { id },
+    select: { claimSeq: true },
+  });
+  return row.claimSeq;
+}
+
 describe.skipIf(!dbUp)("scheduler", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
@@ -219,7 +230,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
     const mine = claimed.find((j) => j.id === id);
     expect(mine).toBeDefined();
     expect((await statusOf(id)).status).toBe("CLAIMED");
-    await completeJob(tenantId, id, appDb);
+    await completeJob(tenantId, id, await seqOf(id), appDb);
     expect((await statusOf(id)).status).toBe("DONE");
   });
 
@@ -235,6 +246,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
     await rescheduleJob(
       tenantId,
       id,
+      await seqOf(id),
       new Date(Date.now() + 3_600_000),
       undefined,
       appDb,
@@ -258,6 +270,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
     await rescheduleJob(
       tenantId,
       id,
+      await seqOf(id),
       past(),
       { threadId: "1:2:3", stepIndex: 1 },
       appDb,
@@ -271,7 +284,14 @@ describe.skipIf(!dbUp)("scheduler", () => {
 
     // Omitting the payload on a later reschedule keeps the current one.
     await claimDueJobs(10, appDb, new Date(), tenantId);
-    await rescheduleJob(tenantId, id, past(), undefined, appDb);
+    await rescheduleJob(
+      tenantId,
+      id,
+      await seqOf(id),
+      past(),
+      undefined,
+      appDb,
+    );
     const row2 = await suDb.schedulerJob.findUniqueOrThrow({
       where: { id },
       select: { payload: true },
@@ -288,14 +308,14 @@ describe.skipIf(!dbUp)("scheduler", () => {
       base: appDb,
     });
     await claimDueJobs(10, appDb, new Date(), tenantId);
-    await failJob(tenantId, id, 0, "boom", appDb);
+    await failJob(tenantId, id, await seqOf(id), 0, "boom", appDb);
     expect((await statusOf(id)).status).toBe("PENDING"); // retry
     // simulate near the cap
     await suDb.schedulerJob.update({
       where: { id },
       data: { attempts: 4, status: "CLAIMED" },
     });
-    await failJob(tenantId, id, 4, "boom again", appDb);
+    await failJob(tenantId, id, await seqOf(id), 4, "boom again", appDb);
     expect((await statusOf(id)).status).toBe("DEAD");
   });
 

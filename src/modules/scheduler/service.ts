@@ -2,7 +2,20 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 
-// Durable job store for the scheduler (follow-ups, sweeps, retries). The CLAIM is cross-tenant —
+// Durable job store for the scheduler (follow-ups, sweeps, retries).
+//
+// A claim carries a TOKEN (`claimSeq`), and the three writes that finish a job CAS on it. The reason
+// is that a row is re-armed IN PLACE: `enqueueJob` upserts the same physical row back to PENDING, so
+// "the row is CLAIMED" never distinguished the run holding the claim from a later one. Guarded on
+// status alone, a handler that finished late marked whatever arm existed DONE, and the work that arm
+// stood for was never done by anyone (issue #164).
+//
+// The bump lives on the CLAIM and nowhere else, which is enough for both orderings and is why
+// `enqueueJob` does not touch it. A re-arm that is not claimed again leaves the row PENDING, and the
+// old CAS already refuses that; a re-arm that IS claimed again bumps past the token the first run
+// holds. Adding a second bump on the re-arm would buy nothing and put a write on a hot path.
+//
+// The CLAIM is cross-tenant —
 // it must see every tenant's due jobs — so it runs via asSuperAdmin with FOR UPDATE SKIP LOCKED;
 // the GUC is transaction-local (set_config(...,true)) so it never leaks to the next request on a
 // pooled connection. Each job's EFFECT and status update run under the job's OWN tenant scope
@@ -33,6 +46,9 @@ export interface ClaimedJob {
   kind: SchedulerJobKind;
   payload: Record<string, unknown>;
   attempts: number;
+  // The token this claim holds. Hand it back to completeJob/rescheduleJob/failJob: those three CAS
+  // on it, so a run that was superseded while it worked writes nothing (issue #164).
+  claimSeq: number;
 }
 
 export interface EnqueueParams {
@@ -137,11 +153,12 @@ async function claimWhere(
   now: Date,
   kindFilter: Prisma.Sql,
   tenantId?: bigint,
-  // Rows this process is already executing. They must not be CLAIMED again: `enqueueJob` re-arms by
-  // upserting the same physical row back to PENDING, and claiming it a second time is what lets the
-  // handler still running complete the newer arm out from under it (both are guarded on
-  // id + CLAIMED). Left PENDING, that same CAS is what PROTECTS it — the stale completion simply
-  // does not match — and the row is claimed on a later tick, once its owner is done.
+  // Rows this process is already executing, kept out of the claim itself. Since `claimSeq` this is no
+  // longer what stops a stale completion — the CAS does that for every kind — so what it still buys
+  // is narrower and worth naming: it stops the same key from being EXECUTED twice at once. For a
+  // caller whose handler is expensive (a summary is a model call held for up to 60s while every
+  // attendance boundary re-arms the same key), two concurrent runs mean two model calls paid for,
+  // and only one of them can land. See src/modules/memory/worker.ts.
   excludeIds?: bigint[],
 ): Promise<ClaimedJob[]> {
   const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
@@ -159,9 +176,11 @@ async function claimWhere(
         kind: SchedulerJobKind;
         payload: unknown;
         attempts: number;
+        claimSeq: number;
       }>
     >(Prisma.sql`
-      UPDATE scheduler_jobs SET status = 'CLAIMED', claimed_at = ${now}, updated_at = now()
+      UPDATE scheduler_jobs
+      SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, updated_at = now()
       WHERE id IN (
         SELECT id FROM scheduler_jobs
         WHERE status = 'PENDING' AND run_at <= ${now} AND ${kindFilter}
@@ -170,13 +189,14 @@ async function claimWhere(
         FOR UPDATE SKIP LOCKED
         LIMIT ${lim}
       )
-      RETURNING id, tenant_id AS "tenantId", kind, payload, attempts`);
+      RETURNING id, tenant_id AS "tenantId", kind, payload, attempts, claim_seq AS "claimSeq"`);
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenantId,
       kind: r.kind,
       payload: (r.payload ?? {}) as Record<string, unknown>,
       attempts: r.attempts,
+      claimSeq: r.claimSeq,
     }));
   });
 }
@@ -238,15 +258,18 @@ export function claimDueCompactionJobs(
   );
 }
 
-// Terminal success.
+// Terminal success. `claimSeq` is the token the claim handed out: without it the CAS matches
+// whatever CLAIMED row happens to exist, which is how a run that finished late marked SOMEONE ELSE'S
+// arm done (issue #164).
 export async function completeJob(
   tenantId: bigint,
   id: bigint,
+  claimSeq: number,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
-      where: { id, status: "CLAIMED" },
+      where: { id, status: "CLAIMED", claimSeq },
       data: { status: "DONE" },
     }),
   );
@@ -259,13 +282,14 @@ export async function completeJob(
 export async function rescheduleJob(
   tenantId: bigint,
   id: bigint,
+  claimSeq: number,
   runAt: Date,
   payload?: Record<string, unknown>,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
-      where: { id, status: "CLAIMED" },
+      where: { id, status: "CLAIMED", claimSeq },
       data: {
         status: "PENDING",
         runAt,
@@ -279,13 +303,15 @@ export async function rescheduleJob(
 
 // Failure: attempts++; retry with backoff until the cap, then DEAD.
 // Returns whether this call is the one that DEAD-LETTERED the job — the attempt count alone does not
-// say so. The CAS is on `status = 'CLAIMED'`, and a job re-armed mid-run (`armDebounce` upserts the
-// claimed row back to PENDING) no longer matches it: the row survives with another run already
-// queued, so a caller reading `attempts` would call a live job dead. Anything hanging off "this work
-// is definitively lost" has to hang off this, not off the failure (issue #71).
+// say so. The CAS is on `status = 'CLAIMED'` AND on the claim's own token, so a job re-armed mid-run
+// (`armDebounce` upserts the claimed row back to PENDING) fails to match on either count: the row
+// survives with another run already queued, and a caller reading `attempts` would call a live job
+// dead. Anything hanging off "this work is definitively lost" has to hang off this, not off the
+// failure (issue #71).
 export async function failJob(
   tenantId: bigint,
   id: bigint,
+  claimSeq: number,
   attempts: number,
   error: string,
   base: PrismaClient = basePrisma,
@@ -295,7 +321,7 @@ export async function failJob(
   const dead = next >= MAX_ATTEMPTS;
   const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
-      where: { id, status: "CLAIMED" },
+      where: { id, status: "CLAIMED", claimSeq },
       data: dead
         ? { status: "DEAD", attempts: next, lastError: error.slice(0, 500) }
         : {
@@ -344,6 +370,7 @@ export async function reapStaleJobs(
         kind: string;
         payload: unknown;
         attempts: number;
+        claim_seq: number;
         status: "PENDING" | "DEAD";
       }>
     >(Prisma.sql`
@@ -353,13 +380,14 @@ export async function reapStaleJobs(
           claimed_at = NULL,
           updated_at = now()
       WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
-      RETURNING id, tenant_id, kind, payload, attempts, status`);
+      RETURNING id, tenant_id, kind, payload, attempts, claim_seq, status`);
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenant_id,
       kind: r.kind as ClaimedJob["kind"],
       payload: (r.payload ?? {}) as ClaimedJob["payload"],
       attempts: r.attempts,
+      claimSeq: r.claim_seq,
       status: r.status,
     }));
   });

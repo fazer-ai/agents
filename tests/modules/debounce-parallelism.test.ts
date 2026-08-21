@@ -175,6 +175,7 @@ function jobFor(convId: number): ClaimedJob {
     kind: "DEBOUNCE",
     payload: { threadId: threadOf(convId), agentBotId: 9, burstStartedAt: 1 },
     attempts: 0,
+    claimSeq: 0,
   };
 }
 

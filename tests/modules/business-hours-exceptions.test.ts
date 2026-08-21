@@ -344,6 +344,7 @@ describe.skipIf(!dbUp)("business-hours date exceptions (issue #129)", () => {
       kind: "FOLLOWUP",
       payload: { threadId: threadOf(convId) },
       attempts: 0,
+      claimSeq: 0,
     };
     const result = await followUpHandler(job, appDb, {
       makeModel: () => new FakeListChatModel({ responses: ["oi"] }),
@@ -476,6 +477,7 @@ describe.skipIf(!dbUp)("business-hours date exceptions (issue #129)", () => {
         kind: "FOLLOWUP",
         payload: { threadId: threadOf(convId) },
         attempts: 0,
+        claimSeq: 0,
       },
       appDb,
       {

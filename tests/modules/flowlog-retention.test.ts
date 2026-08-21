@@ -77,6 +77,7 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
       kind: "FLOWLOG_SWEEP",
       payload: {},
       attempts: 0,
+      claimSeq: 0,
     };
     const result = (await (handler as NonNullable<typeof handler>)(
       job,

@@ -195,6 +195,7 @@ function jobFor(
         : {}),
     },
     attempts: 0,
+    claimSeq: 0,
   };
 }
 

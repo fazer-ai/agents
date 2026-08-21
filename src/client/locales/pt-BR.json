@@ -1849,6 +1849,9 @@
     "light": "Claro"
   },
   "toolpackTools": {
+    "argNote": {
+      "calendarId": "O agente só recebe este argumento quando a integração permite vários calendários; com um só, ele é usado automaticamente."
+    },
     "asaas_create_pix_charge": {
       "desc": "Abre uma cobrança PIX e retorna o código copia-e-cola e a página de pagamento.",
       "label": "Gerar cobrança PIX"

@@ -35,7 +35,10 @@ import {
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { api } from "@/client/lib/api";
 import { credentialCompat } from "@/client/lib/credentialCompat";
-import { toolpackToolMeta } from "@/client/lib/toolpackTools";
+import {
+  toolpackToolMeta,
+  withToolpackArgNotes,
+} from "@/client/lib/toolpackTools";
 
 type CatalogData = Awaited<
   ReturnType<typeof api.api.v1.integrations.catalog.get>
@@ -1705,7 +1708,9 @@ export function IntegrationEditModal({
                           {meta.description}
                         </p>
                         {tool.args.length > 0 && (
-                          <ToolArgPills args={tool.args} />
+                          <ToolArgPills
+                            args={withToolpackArgNotes(tool.name, tool.args, t)}
+                          />
                         )}
                       </div>
                     );

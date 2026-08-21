@@ -34,6 +34,47 @@ export const TOOLPACK_TOOL_ICONS: Record<string, LucideIcon> = {
   drive_send_file: Send,
 };
 
+// An operator-only note about one ARGUMENT, shown on that argument's pill in the console.
+//
+// It lives here rather than in the tool's zod `.describe()` because the two audiences want opposite
+// things from that field: the model reads it on EVERY turn the tool is bound, and the operator reads
+// it once, in a list the console builds from the STATIC schema. `calendarId` is the case that made
+// the difference concrete (issue #118): `calendarArgSchema` removes the argument whenever the
+// integration has exactly one calendar, so the only context in which a model can read "this arg only
+// appears when there are several" is the one where it is already true — tokens spent every turn to
+// state a condition guaranteed by the fact that it can be read at all. The console shows the
+// argument regardless (it is keyed by catalogType, not by instance), so without this note an
+// operator has no way to know why their agent never receives an argument they can see documented.
+export function toolpackArgNote(
+  toolName: string,
+  argName: string,
+  t: TFunction,
+): string | null {
+  if (argName === "calendarId" && toolName.startsWith("calendar_")) {
+    return t(
+      "toolpackTools.argNote.calendarId",
+      "The agent only receives this argument when the integration allows several calendars; with a single one it is used automatically.",
+    );
+  }
+  return null;
+}
+
+// The backend's arg list (zod-derived) with the operator notes above folded into the description the
+// pill shows on hover. Every place that renders toolpack args goes through this, so a note is never
+// half-applied.
+export function withToolpackArgNotes<
+  A extends { name: string; description?: string | null },
+>(toolName: string, args: A[], t: TFunction): A[] {
+  return args.map((a) => {
+    const note = toolpackArgNote(toolName, a.name, t);
+    if (!note) return a;
+    return {
+      ...a,
+      description: a.description ? `${a.description} ${note}` : note,
+    };
+  });
+}
+
 export interface ToolpackToolMeta {
   label: string;
   description: string;

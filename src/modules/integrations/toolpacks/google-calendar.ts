@@ -517,10 +517,11 @@ const FOREIGN_EVENT =
 
 // NOTE: zod-optional but never optional in practice, for the tools that ACT on one calendar: the arg
 // is only ever EXPOSED when the integration allows several (calendarArgSchema), and then one of them
-// must be named or pickCalendarId refuses. The trailing sentence is for the operator reading the arg
-// list in the console, which is per-catalog and therefore always shows this field.
+// must be named or pickCalendarId refuses. What the model reads here is only what it needs to fill
+// the argument; the console's own explanation of WHY the arg can be absent is operator text and
+// lives in the frontend, translated, at `toolpackArgNote` (issue #118).
 const CALENDAR_ID_DESC =
-  "Which calendar to act on: name or id of one of the calendars in `<allowed_calendars>`. This arg only appears when the integration allows several calendars; with a single one it is used automatically.";
+  "Which calendar to act on: name or id of one of the calendars in `<allowed_calendars>`.";
 
 // NOTE: Availability is the ONE tool where omitting this is not a mistake but the default, and the
 // arg description is where that has to be said. The tool description already says so, but the model

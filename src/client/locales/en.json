@@ -1842,6 +1842,9 @@
     "light": "Light"
   },
   "toolpackTools": {
+    "argNote": {
+      "calendarId": "The agent only receives this argument when the integration allows several calendars; with a single one it is used automatically."
+    },
     "asaas_create_pix_charge": {
       "desc": "Open a PIX charge and return the copy-and-paste code plus the payment page.",
       "label": "PIX charge"

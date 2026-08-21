@@ -32,7 +32,10 @@ import {
 } from "@/client/components/mcp/DiscoveredMcpTools";
 import { api } from "@/client/lib/api";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
-import { toolpackToolMeta } from "@/client/lib/toolpackTools";
+import {
+  toolpackToolMeta,
+  withToolpackArgNotes,
+} from "@/client/lib/toolpackTools";
 import { cn } from "@/client/lib/utils";
 import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditModal";
 import { McpEditModal } from "@/client/pages/resources/McpEditModal";
@@ -1105,7 +1108,13 @@ export function ToolGrantsEditor({
                                   <span>{meta.description}</span>
                                 )}
                                 {tool.args.length > 0 && (
-                                  <ToolArgPills args={tool.args} />
+                                  <ToolArgPills
+                                    args={withToolpackArgNotes(
+                                      tool.name,
+                                      tool.args,
+                                      t,
+                                    )}
+                                  />
                                 )}
                               </span>
                             }

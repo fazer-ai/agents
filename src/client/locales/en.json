@@ -1822,6 +1822,8 @@
   "tenant": {
     "create": "Create tenant",
     "deepLinkUnavailable": "This link points at a tenant you cannot open. Nothing was switched.",
+    "deepLinkUnverified": "Could not check this link",
+    "deepLinkUnverifiedHelp": "This link opens a different tenant, and the list of tenants you can open could not be read. Nothing was switched.",
     "demo": "Demo",
     "label": "Tenant",
     "name": "Name",

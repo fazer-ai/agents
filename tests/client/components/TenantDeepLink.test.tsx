@@ -9,18 +9,24 @@ import {
   mock,
   test,
 } from "bun:test";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
 
 // The decision this applies has a table of its own (tests/client/lib/tenantDeepLink.test.ts). What
-// is tested HERE is the part a pure function cannot see: when the parameter is consumed.
+// is tested HERE is the part a pure function cannot see: when the parameter is consumed, and when
+// the page underneath is allowed to mount.
 //
-// It is the whole feature. The tenant list is fetched asynchronously, so on the first render the
-// answer is "cannot tell yet", and treating that as "nothing to do" (which it looked like) makes
-// this component strip `?tenant` on the spot. The value the pending fetch was going to be judged
-// against is then gone, the effect that fetches it is cancelled by its own dependency, and the
-// switch never happens: the link silently behaves exactly like the tenant-less link it replaced.
+// The gate is the whole point. Everything this component protects against comes down to one picture:
+// tenant A's page, with its buttons live, under a URL that names tenant B. So the rule is that the
+// gate opens when the answer is KNOWN, not when it is convenient — a tenant we cannot open is known
+// (stay put, say why), a tenant list we could not read is not (hold, offer a retry).
 //
 // NOTE: every assertion reduces to a boolean or a string BEFORE expect. A failing expectation that
 // holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
@@ -28,7 +34,10 @@ import { ToastProvider } from "@/client/components";
 const KEY = "@app:active-tenant";
 let tenantsPayload: Array<{ id: string; name: string }> = [];
 let tenantsGate: Promise<void> | null = null;
+let tenantsFails = false;
+let tenantsCalls = 0;
 let role = "SUPER_ADMIN";
+let userTenantId: string | null = null;
 const realFetch = globalThis.fetch;
 const reloads: number[] = [];
 
@@ -43,7 +52,11 @@ function installFetchStub() {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("/v1/tenants")) {
+      tenantsCalls += 1;
       if (tenantsGate) await tenantsGate;
+      if (tenantsFails) {
+        return new Response(JSON.stringify({ error: "boom" }), { status: 500 });
+      }
       return json({ tenants: tenantsPayload });
     }
     return realFetch(input as RequestInfo | URL, init);
@@ -60,7 +73,10 @@ mock.module("react-i18next", () => ({
 }));
 
 mock.module("@/client/contexts/AuthContext", () => ({
-  useAuth: () => ({ user: { id: "1", role }, loading: false }),
+  useAuth: () => ({
+    user: { id: "1", role, tenantId: userTenantId },
+    loading: false,
+  }),
 }));
 
 const { TenantDeepLink } = await import("@/client/components/TenantDeepLink");
@@ -91,12 +107,17 @@ function renderAt(search: string) {
   );
 }
 
+const shows = (s: string) => document.body.textContent?.includes(s) === true;
+
 describe("TenantDeepLink", () => {
   beforeEach(() => {
     seenSearch = "";
     reloads.length = 0;
+    tenantsCalls = 0;
     role = "SUPER_ADMIN";
+    userTenantId = null;
     tenantsGate = null;
+    tenantsFails = false;
     tenantsPayload = [
       { id: "10", name: "A" },
       { id: "20", name: "B" },
@@ -125,25 +146,25 @@ describe("TenantDeepLink", () => {
     });
     renderAt("?switchTenant=20&fill=5");
     await new Promise((r) => setTimeout(r, 30));
-    expect(document.body.textContent?.includes("panel")).toBe(false);
+    expect(shows("panel")).toBe(false);
     open();
     await waitFor(() => {
       expect(reloads.length).toBe(1);
     });
     // Still held: a reload is coming, and the old tenant's page must not flash before it.
-    expect(document.body.textContent?.includes("panel")).toBe(false);
+    expect(shows("panel")).toBe(false);
   });
 
   test("a page with no switch parameter renders immediately", async () => {
     renderAt("?fill=5");
-    expect(document.body.textContent?.includes("panel")).toBe(true);
+    expect(shows("panel")).toBe(true);
   });
 
   test("an unavailable target opens the gate: the console stays where it is", async () => {
     tenantsPayload = [{ id: "10", name: "A" }];
     renderAt("?switchTenant=20");
     await waitFor(() => {
-      expect(document.body.textContent?.includes("panel")).toBe(true);
+      expect(shows("panel")).toBe(true);
     });
     expect(reloads.length).toBe(0);
   });
@@ -179,7 +200,7 @@ describe("TenantDeepLink", () => {
     tenantsPayload = [{ id: "10", name: "A" }];
     renderAt("?switchTenant=20");
     await waitFor(() => {
-      expect(document.body.textContent?.includes("cannot open")).toBe(true);
+      expect(shows("cannot open")).toBe(true);
     });
     expect(reloads.length).toBe(0);
     expect(localStorage.getItem(KEY)).toBe("10");
@@ -200,7 +221,7 @@ describe("TenantDeepLink", () => {
   test("the admin users filter is not a switch request", async () => {
     renderAt("?tenant=20");
     await waitFor(() => {
-      expect(document.body.textContent?.includes("panel")).toBe(true);
+      expect(shows("panel")).toBe(true);
     });
     await new Promise((r) => setTimeout(r, 30));
     expect(reloads.length).toBe(0);
@@ -209,13 +230,91 @@ describe("TenantDeepLink", () => {
     expect(seenSearch).toBe("?tenant=20");
   });
 
-  test("a tenant-scoped user never switches, and the inert parameter is cleaned up", async () => {
+  // ── a session pinned to one tenant ──
+
+  test("a tenant-scoped session whose own tenant the link names: nothing to do, parameter cleaned up", async () => {
     role = "TENANT_ADMIN";
-    renderAt("?switchTenant=20&fill=5");
+    userTenantId = "10";
+    renderAt("?switchTenant=10&fill=5");
     await waitFor(() => {
       expect(seenSearch).toBe("?fill=5");
     });
     expect(reloads.length).toBe(0);
+    // It never asks: there is no list that could change the answer.
+    expect(tenantsCalls).toBe(0);
+  });
+
+  // `createAt` and `configureAt` name a ROUTE and carry no id, so nothing downstream can notice the
+  // mismatch the way the vault's `?fill` lookup does. Silence here is what puts the operator on their
+  // own tenant's page believing they followed the link, and creates the resource in the wrong tenant.
+  test("a tenant-scoped session handed another tenant's link is told, not left to guess", async () => {
+    role = "TENANT_ADMIN";
+    userTenantId = "10";
+    renderAt("?switchTenant=20");
+    await waitFor(() => {
+      expect(shows("cannot open")).toBe(true);
+    });
+    expect(reloads.length).toBe(0);
     expect(localStorage.getItem(KEY)).toBe("10");
+    // The console stays usable where it is, which is the only place it can be.
+    expect(shows("panel")).toBe(true);
+    // And the parameter stays, so the URL still says what it was for.
+    expect(seenSearch).toBe("?switchTenant=20");
+  });
+
+  test("a tenant-scoped session is judged by its own tenant, not by a stale stored selection", async () => {
+    role = "TENANT_ADMIN";
+    userTenantId = "10";
+    localStorage.setItem(KEY, "20");
+    renderAt("?switchTenant=20");
+    await waitFor(() => {
+      expect(shows("cannot open")).toBe(true);
+    });
+    expect(reloads.length).toBe(0);
+  });
+
+  // ── the list could not be read ──
+
+  test("a failed tenant list holds the gate instead of showing the wrong tenant's page", async () => {
+    tenantsFails = true;
+    renderAt("?switchTenant=20&fill=5");
+    await waitFor(() => {
+      expect(shows("Could not check this link")).toBe(true);
+    });
+    // The whole point: tenant 10's controls must NOT be mounted under a URL naming tenant 20.
+    expect(shows("panel")).toBe(false);
+    expect(reloads.length).toBe(0);
+    expect(localStorage.getItem(KEY)).toBe("10");
+    // And it must not claim the link is bad, which is a different thing from not knowing.
+    expect(shows("cannot open")).toBe(false);
+    expect(seenSearch).toBe("?switchTenant=20&fill=5");
+  });
+
+  test("the retry re-reads the list, and a switch follows once it answers", async () => {
+    tenantsFails = true;
+    renderAt("?switchTenant=20");
+    await waitFor(() => {
+      expect(shows("Could not check this link")).toBe(true);
+    });
+    expect(tenantsCalls).toBe(1);
+    tenantsFails = false;
+    fireEvent.click(screen.getByText("Retry"));
+    await waitFor(() => {
+      expect(reloads.length).toBe(1);
+    });
+    expect(tenantsCalls).toBe(2);
+    expect(localStorage.getItem(KEY)).toBe("20");
+  });
+
+  // Ordering inside the rule: "already there" is answered before anything that can fail, so a broken
+  // tenants endpoint cannot strand the operator on the tenant they successfully switched to.
+  test("a failed list does not block the page the switch already landed on", async () => {
+    tenantsFails = true;
+    renderAt("?switchTenant=10&fill=5");
+    await waitFor(() => {
+      expect(shows("panel")).toBe(true);
+    });
+    expect(shows("Could not check this link")).toBe(false);
+    expect(seenSearch).toBe("?fill=5");
   });
 });

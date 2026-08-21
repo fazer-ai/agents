@@ -1829,6 +1829,8 @@
   "tenant": {
     "create": "Criar tenant",
     "deepLinkUnavailable": "Este link aponta para um tenant que você não pode abrir. Nada foi trocado.",
+    "deepLinkUnverified": "Não foi possível conferir este link",
+    "deepLinkUnverifiedHelp": "Este link abre outro tenant, e não foi possível ler a lista de tenants que você pode abrir. Nada foi trocado.",
     "demo": "Demo",
     "label": "Tenant",
     "name": "Nome",

@@ -696,26 +696,42 @@ export async function listOutOfOfficeInboxes(
     }),
   );
 
-  // One list call per distinct instance, not per inbox: GET /inboxes is account-wide, and an agent
+  // One list call per distinct account, not per inbox: GET /inboxes is account-wide, and an agent
   // bound to six inboxes of one account must not cost six round trips.
-  const armedByInstance = new Map<bigint, Map<number, string>>();
-  for (const instanceId of new Set(bound.map((b) => b.chatwootInstanceId))) {
-    try {
-      const client = await loadChatwootClient(tenantId, instanceId, {
-        base,
-        makeClient: deps.makeClient,
-      });
-      const armed = new Map<number, string>();
-      for (const remote of parseInboxList(await client.listInboxes())) {
-        if (chatwootAutoRepliesOutOfHours(remote)) {
-          armed.set(remote.chatwootInboxId, remote.name);
-        }
-      }
-      armedByInstance.set(instanceId, armed);
-    } catch {
-      // unreachable / unauthorized — say nothing about this account's inboxes
-    }
-  }
+  //
+  // Concurrent, because the ceiling here is a timeout and not a duration. Every Chatwoot request
+  // carries a 15s abort, so reading two accounts in sequence makes an unreachable server cost 30s of
+  // an editor-load request that is producing a warning nobody is waiting on — and the second account
+  // being healthy would not help, it would just be answered late. Unbounded on purpose: the fan-out
+  // is the number of Chatwoot accounts the operator connected, a small number they chose, not
+  // anything that grows with traffic.
+  const armedByInstance = new Map(
+    (
+      await Promise.all(
+        [...new Set(bound.map((b) => b.chatwootInstanceId))].map(
+          async (instanceId) => {
+            try {
+              const client = await loadChatwootClient(tenantId, instanceId, {
+                base,
+                makeClient: deps.makeClient,
+              });
+              const armed = new Map<number, string>();
+              for (const remote of parseInboxList(await client.listInboxes())) {
+                if (chatwootAutoRepliesOutOfHours(remote)) {
+                  armed.set(remote.chatwootInboxId, remote.name);
+                }
+              }
+              return [instanceId, armed] as const;
+            } catch {
+              // unreachable / unauthorized — say nothing about this account's inboxes, and do not
+              // let it decide the answer for the others
+              return null;
+            }
+          },
+        ),
+      )
+    ).filter((entry) => entry !== null),
+  );
 
   // Chatwoot's name, not the mirror's: this reading exists because the mirror can be stale, and the
   // inbox the operator has to go find is the one named on the other side.

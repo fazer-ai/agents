@@ -304,6 +304,56 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
     expect(calls.sort()).toEqual([1, 2]);
   });
 
+  // Review round 1. Every Chatwoot request carries a 15s abort, so reading the accounts one after the
+  // other makes an unreachable server cost 15s PER ACCOUNT on a request the editor fires on load.
+  //
+  // Proved by deadlock, and by a rendezvous both sides announce: each account's list call publishes
+  // its own start and then waits for the other's, so a serial drain hangs whichever account it picks
+  // first. A one-sided version (only account 2 waits) would pass on a serial implementation that
+  // happened to read account 1 first, which is the shape of a temporal test that never goes red.
+  test("the accounts are read concurrently, not one timeout after another", async () => {
+    const arrive: Record<number, () => void> = {};
+    const started = new Map<number, Promise<void>>();
+    for (const id of [1, 2]) {
+      started.set(
+        id,
+        new Promise<void>((resolve) => {
+          arrive[id] = resolve;
+        }),
+      );
+    }
+    const makeClient = async (cfg: { accountId: number }) =>
+      ({
+        listInboxes: async () => {
+          arrive[cfg.accountId]?.();
+          await started.get(cfg.accountId === 1 ? 2 : 1);
+          return cfg.accountId === 1 ? ACCOUNT_1 : ACCOUNT_2;
+        },
+      }) as unknown as ChatwootClient;
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const found = await Promise.race([
+        listOutOfOfficeInboxes(ctx(tenantA), agent1, { makeClient }, appDb),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error("serial: the second account never got to start"),
+              ),
+            5_000,
+          );
+        }),
+      ]);
+      expect(found.map((f) => f.name)).toEqual([
+        "WhatsApp Vendas (Chatwoot)",
+        "Instagram (Chatwoot)",
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  });
+
   test("an agent with no bound inbox costs no call at all", async () => {
     const lonely = (
       await suDb.agent.create({

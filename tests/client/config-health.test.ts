@@ -929,6 +929,16 @@ describe("computeConfigIssues — which endpoint refusals wait for the vault", (
 // Chatwoot read), so everything below is about what the panel DOES with it.
 describe("computeConfigIssues — Chatwoot already answers out of hours", () => {
   const ONE = [{ id: "5", name: "WhatsApp Vendas" }];
+  // A schedule that actually closes. Without one the reactive gate never silences the agent, so its
+  // away message never goes out however the block is configured — which is review round 1's finding.
+  const CLOSES = {
+    windows: [{ day: 1, start: "09:00", end: "17:00" }],
+    exceptions: [],
+    timezone: "UTC",
+  };
+  const AWAY_ON = {
+    availability: { enabled: true, awayMessage: "Estamos fechados." },
+  };
 
   test("no inboxes, or an empty list, raises nothing", () => {
     expect(computeConfigIssues(base)).toEqual([]);
@@ -954,9 +964,8 @@ describe("computeConfigIssues — Chatwoot already answers out of hours", () => 
   test("both on → the duplicate, and the inboxes are named in order", () => {
     const issues = computeConfigIssues({
       ...base,
-      settings: {
-        availability: { enabled: true, awayMessage: "Estamos fechados." },
-      },
+      settings: AWAY_ON,
+      savedSchedule: CLOSES,
       outOfOfficeInboxes: [
         { id: "5", name: "WhatsApp Vendas" },
         { id: "9", name: "Instagram" },
@@ -987,11 +996,45 @@ describe("computeConfigIssues — Chatwoot already answers out of hours", () => 
       const issues = computeConfigIssues({
         ...base,
         settings: availability === undefined ? {} : { availability },
+        // A schedule that closes, so this row isolates the availability block: the only reason the
+        // agent stays quiet is the block itself.
+        savedSchedule: CLOSES,
         outOfOfficeInboxes: ONE,
       });
       expect(issues.map((i) => i.key)).toEqual(["outOfHoursChatwoot"]);
     });
   }
+
+  // Review round 1. The away message rides the SAME gate that silences replies, so an agent that
+  // never closes sends nothing out of hours with the switch on and the copy written. Claiming the
+  // duplicate there describes two messages where the customer gets a closure notice and then normal
+  // service — the contradiction, and the worse of the two.
+  const NEVER_CLOSES: Array<[string, unknown]> = [
+    ["no schedule at all (always on)", null],
+    ["a schedule with no windows", { ...CLOSES, windows: [] }],
+  ];
+  for (const [label, savedSchedule] of NEVER_CLOSES) {
+    test(`away copy on but ${label} → the contradiction`, () => {
+      const issues = computeConfigIssues({
+        ...base,
+        settings: AWAY_ON,
+        savedSchedule: savedSchedule as never,
+        outOfOfficeInboxes: ONE,
+      });
+      expect(issues.map((i) => i.key)).toEqual(["outOfHoursChatwoot"]);
+    });
+  }
+
+  // The mirror of the pair above: the schedule alone does not make it the duplicate either.
+  test("a closing schedule with the away message off is still the contradiction", () => {
+    const issues = computeConfigIssues({
+      ...base,
+      settings: { availability: { enabled: false, awayMessage: "Fechados." } },
+      savedSchedule: CLOSES,
+      outOfOfficeInboxes: ONE,
+    });
+    expect(issues.map((i) => i.key)).toEqual(["outOfHoursChatwoot"]);
+  });
 
   // Every other line in the panel offers a fix; these two must as well, or the operator reads a
   // problem with no way in.
@@ -1003,6 +1046,7 @@ describe("computeConfigIssues — Chatwoot already answers out of hours", () => 
       const issue = computeConfigIssues({
         ...base,
         settings,
+        savedSchedule: CLOSES,
         outOfOfficeInboxes: ONE,
       })[0];
       expect(issue && issueHasAction(issue)).toBe(true);

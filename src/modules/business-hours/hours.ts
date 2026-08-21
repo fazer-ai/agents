@@ -244,13 +244,30 @@ export function isOpenAt(schedule: Schedule, at: Date): boolean {
   );
 }
 
+// Can this schedule ever close? A schedule that does not exist and one with no windows are the same
+// answer — always open — and everything downstream of the reactive gate (the operator's private note,
+// the customer's away message) therefore never runs for either.
+//
+// Named because two very different places need it and only one of them is the gate. The console has
+// to say whether the away message an operator wrote can go out at all, and re-deriving "no windows
+// means always open" over there is how a console starts describing a runtime it no longer matches.
+//
+// Typed as a guard rather than a boolean, so the gate that asks it keeps the narrowing its old inline
+// null-check gave it. True is a stronger claim than the name promises — there IS a schedule, and it
+// closes — which is exactly the pair every caller needs before doing anything with it.
+export function scheduleCanClose(
+  schedule: Schedule | null | undefined,
+): schedule is Schedule {
+  return !!schedule && schedule.windows.length > 0;
+}
+
 // "Is this schedule currently CLOSED?" — true only when an availability schedule is configured (≥1
 // weekly window) AND `at` falls outside every range in force. No windows = always-on, so never out of
 // hours: an exception alone cannot close an always-on agent, because there is no schedule to except
 // from. Shared by the operator-facing "out of hours" badge (conversation header, lists) and the
 // reactive gate.
 export function isOutOfHoursNow(schedule: Schedule, at: Date): boolean {
-  if (schedule.windows.length === 0) return false;
+  if (!scheduleCanClose(schedule)) return false;
   return !isOpenAt(schedule, at);
 }
 

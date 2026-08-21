@@ -5,6 +5,10 @@ import {
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { readAvailabilityConfig } from "@/modules/availability/away";
+import {
+  type Schedule,
+  scheduleCanClose,
+} from "@/modules/business-hours/hours";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 
 // Live configuration-health checks for the agent editor (item 1): detect features that are turned on
@@ -203,6 +207,10 @@ export interface ConfigHealthInput {
   // deliberately the same value: a Chatwoot that could not be read reports no inboxes, and a warning
   // invented by an outage is worse than one that arrives a page load late.
   outOfOfficeInboxes?: { id: string; name: string }[];
+  // The schedule the agent is bound to AS SAVED, or null for "always on". Needed to answer which of
+  // the two collisions this is: the away message is gated by the same schedule that gates replies, so
+  // an agent that never closes never sends it however the block is configured.
+  savedSchedule?: Schedule | null;
 }
 
 // The three ways one credentialed feature can be unrunnable. Every credential ref on the agent goes
@@ -466,11 +474,18 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   const outOfOffice = input.outOfOfficeInboxes ?? [];
   if (outOfOffice.length > 0) {
     const away = readAvailabilityConfig(input.settings);
+    // The switch and the copy are only two thirds of it. The away message rides the SAME gate that
+    // silences replies, so an agent whose schedule never closes — none picked, or one with no windows
+    // — sends nothing out of hours no matter what the block says, and calling that the duplicate
+    // would describe two messages where the customer gets a closure notice and then normal service.
+    // The condition is asked of the schedule module rather than restated here, because a console that
+    // re-derives the gate's rule is a console that will disagree with it.
+    const agentAlsoReplies =
+      scheduleCanClose(input.savedSchedule) &&
+      away.enabled &&
+      away.awayMessage.trim() !== "";
     issues.push({
-      key:
-        away.enabled && away.awayMessage.trim() !== ""
-          ? "outOfHoursBoth"
-          : "outOfHoursChatwoot",
+      key: agentAlsoReplies ? "outOfHoursBoth" : "outOfHoursChatwoot",
       tab: "behavior",
       // The section holds both halves of the answer: the schedule the agent follows and the switch
       // for its own message. Neither is the whole fix — Chatwoot's side is the other product's

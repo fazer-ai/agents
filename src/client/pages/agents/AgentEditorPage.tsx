@@ -101,6 +101,24 @@ import type {
 } from "./types";
 import { usePlaygroundChat } from "./usePlaygroundChat";
 
+// The Schedule a saved businessHoursId points at, built field by field rather than passed through:
+// rows can come back without windows/exceptions (the sibling picker guards them the same way), and
+// the question asked of it — can this schedule ever close — must not turn on that.
+function scheduleOf(
+  hours: Hours[],
+  businessHoursId: string | null | undefined,
+): Schedule | null {
+  if (!businessHoursId) return null;
+  const h = hours.find((x) => String(x.id) === String(businessHoursId));
+  return h
+    ? {
+        windows: (h.windows ?? []) as Schedule["windows"],
+        exceptions: (h.exceptions ?? []) as Schedule["exceptions"],
+        timezone: h.timezone,
+      }
+    : null;
+}
+
 type AgentResp = Awaited<
   ReturnType<ReturnType<typeof api.api.v1.agents>["get"]>
 >;
@@ -1419,6 +1437,9 @@ function AgentEditor() {
     redirectEntryInboxId: channelRedirect.entryInboxId,
     redirectWidgetInboxId: channelRedirect.widgetInboxId,
     outOfOfficeInboxes,
+    // The SAVED schedule, next to the saved settings above and for the same reason: the panel
+    // describes the row, and a schedule picked but not saved gates nothing yet.
+    savedSchedule: scheduleOf(hours, syncedAgentRef.current?.businessHoursId),
   });
 
   // Deep-link to a config issue. For a PENDING credential the fix lives in the vault, so jump to the

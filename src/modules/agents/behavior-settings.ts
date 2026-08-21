@@ -126,6 +126,38 @@ export interface BehaviorSettingsPatch {
   memory?: Record<string, unknown>;
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// Merge a patch into a stored block key by key, at ANY depth (issue #184). Two objects merge;
+// anything else replaces.
+//
+// The depth is the whole point. One shallow spread kept the "untouched keys preserved" promise at
+// the top level of a block and broke it one step in, and the break was silent rather than loud:
+// each block is re-read through its typed reader afterwards, so a sub-object the patch replaced
+// came back FILLED WITH DEFAULTS instead of absent. Turning off a guardrail direction returned a
+// complete, plausible direction with the operator's refusal text swapped for the product's and
+// `action: "silent"` — send nothing — swapped for `template` — send this.
+//
+// An ARRAY replaces, deliberately: a list patch means the new list. Merging element by element
+// would make a shorter `followUp.steps` or a smaller attribute scope impossible to express, which
+// is the opposite of what sending one means.
+function mergeBlock(
+  before: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...before };
+  for (const [key, value] of Object.entries(patch)) {
+    const prev = out[key];
+    out[key] =
+      isPlainObject(prev) && isPlainObject(value)
+        ? mergeBlock(prev, value)
+        : value;
+  }
+  return out;
+}
+
 // Merge a behavior patch into the existing raw settings bag, then RE-READ each touched block through
 // its typed reader so the persisted value is always normalized + clamped (never the raw patch).
 // Untouched keys in the bag (and untouched blocks) are preserved verbatim — the REST/UI merge
@@ -149,7 +181,7 @@ export function mergeBehaviorSettings(
       current[key] && typeof current[key] === "object"
         ? (current[key] as Record<string, unknown>)
         : {};
-    next[key] = { ...before, ...sub };
+    next[key] = mergeBlock(before, sub);
   }
 
   // Re-read through the typed readers to clamp/validate, then write the normalized blocks back.

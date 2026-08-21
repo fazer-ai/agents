@@ -137,12 +137,15 @@ describe("native tools", () => {
     expect(handoffState.completed).toBe(true);
   });
 
-  // The two conditions are not the same event. toggleStatus is where the conversation actually
-  // leaves `pending`, and it is not best-effort: a throw there means nobody was told about a
-  // customer the model was about to promise a human to, so the caller must let the model speak
-  // again — and the undelivered promise must NOT go out, which is what recording instead of
-  // sending buys.
-  test("a handoff whose toggleStatus throws recorded the line but did NOT complete", async () => {
+  // toggleStatus is where the conversation actually leaves `pending`, and it is not best-effort: a
+  // throw there means nobody was told about a customer the model was about to promise a human to, so
+  // the caller must let the model speak again — and the undelivered promise must NOT go out, which is
+  // what recording instead of sending buys.
+  //
+  // It records NOTHING, and that is the point: the model is handed the error and calls the tool
+  // again, so a line left behind by the attempt that failed would be delivered by the attempt that
+  // worked, in place of whatever the model decided to say the second time.
+  test("a handoff whose toggleStatus throws records nothing at all", async () => {
     const client = {
       sendMessage: async () => ({}),
       sendPrivateNote: async () => ({}),
@@ -165,7 +168,7 @@ describe("native tools", () => {
         reason: "cliente pediu humano",
       }),
     ).rejects.toThrow();
-    expect(handoffState.customerMessage).toBe("Um humano já te atende.");
+    expect(handoffState.customerMessage).toBeNull();
     expect(handoffState.completed).toBe(false);
   });
 

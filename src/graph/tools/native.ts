@@ -252,14 +252,6 @@ function handoffTool(ctx: ToolCtx) {
       assignTo?: string;
       customerMessage?: string;
     }) => {
-      // Record the persona's closing line for the caller to deliver; do NOT send it here. Sending it
-      // from inside the tool is what put the most rule-bound message of the turn outside the output
-      // guardrail, outside TTS and outside the pacing every other reply gets (#160). The cost is
-      // ordering: the customer reads it just after the transfer instead of just before, which
-      // Chatwoot never shows them.
-      if (ctx.handoffState && customerMessage?.trim()) {
-        ctx.handoffState.customerMessage = customerMessage.trim();
-      }
       // Transfer-with-summary: a private note for the human BEFORE handing off, gated by the
       // per-agent toggle (default on).
       if (reason && ctx.transferWithSummary !== false) {
@@ -271,7 +263,23 @@ function handoffTool(ctx: ToolCtx) {
       // Only here: everything above can throw, and a handoff that did not reach this line has not
       // happened. The optional assignment below is best-effort by design — the conversation is
       // already out of `pending`, so a routing miss does not put it back.
-      if (ctx.handoffState) ctx.handoffState.completed = true;
+      //
+      // The closing line is recorded HERE, from THIS invocation's argument, and never above: the
+      // caller delivers it, and it must belong to the transfer that actually happened. A model whose
+      // first attempt threw is handed the error and calls the tool again, and a second attempt that
+      // succeeds with no line of its own would otherwise deliver the first one's promise and
+      // suppress the recovery text the model wrote instead.
+      //
+      // Recorded rather than sent from here: sending it from inside the tool is what put the most
+      // rule-bound message of the turn outside the output guardrail, outside TTS and outside the
+      // pacing every other reply gets (#160). The cost is ordering — the customer reads it just
+      // after the transfer instead of just before, which Chatwoot never shows them.
+      if (ctx.handoffState) {
+        if (customerMessage?.trim()) {
+          ctx.handoffState.customerMessage = customerMessage.trim();
+        }
+        ctx.handoffState.completed = true;
+      }
 
       // Optional targeting (best-effort: the handoff already happened, so an assignment failure must
       // not break the turn). In `route` mode nothing is assigned (Chatwoot routes).

@@ -26,6 +26,7 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
   guardrailModel,
+  HandoffRetryModel,
   HandoffThenReplyModel,
   HandoffThenThrowModel,
   ResolveThenReplyModel,
@@ -1400,6 +1401,52 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         ["sendAudioMessage", 915],
       ]);
     });
+  });
+
+  // A tool that throws is handed back to the model, which calls it again — so "the line the transfer
+  // promised" has to mean the transfer that actually happened. Recording it on the way IN would let
+  // a failed attempt's promise outlive it and silence the recovery text the model wrote instead.
+  test("a retried handoff delivers the attempt that succeeded, not the one that failed", async () => {
+    await seedConversation(961, null);
+    const calls: Array<[string, number, string]> = [];
+    let toggles = 0;
+    const client = {
+      sendMessage: async (c: number, t: string) => {
+        calls.push(["sendMessage", c, t]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleStatus: async (c: number, status: string) => {
+        // The first transfer fails after the tool has read its arguments; the second one works.
+        if (++toggles === 1) throw new Error("chatwoot 500");
+        calls.push(["toggleStatus", c, status]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 961 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffRetryModel(
+            "Um humano já vai te atender.",
+            "Pronto, te transferi.",
+          ) as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    // The second attempt promised nothing, so the turn is an ordinary one: the model's own text goes
+    // out, and the line the failed attempt wrote never does.
+    expect(calls).toEqual([
+      ["toggleStatus", 961, "open"],
+      ["sendMessage", 961, "Pronto, te transferi."],
+    ]);
   });
 
   // The closing line is customer-facing text, so it is delivered the way this customer asked to be

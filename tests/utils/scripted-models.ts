@@ -164,6 +164,47 @@ export class HandoffThenThrowModel {
   }
 }
 
+// Hands off twice: the first attempt carries a closing line and fails inside the tool, the second
+// carries none and succeeds, and the model then writes its own recovery text. The shape that tells a
+// line bound to the transfer that HAPPENED apart from one recorded by an attempt that did not.
+export class HandoffRetryModel {
+  constructor(
+    private firstMessage: string,
+    private recovery: string,
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(this.recovery);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1)
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "handoff_to_human",
+                args: { customerMessage: self.firstMessage },
+                id: "call_handoff_1",
+              },
+            ],
+          });
+        if (n === 2)
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              { name: "handoff_to_human", args: {}, id: "call_handoff_2" },
+            ],
+          });
+        return new AIMessage(self.recovery);
+      },
+    };
+  }
+}
+
 // Sets the customer's voice preference and only then hands off, both in the same turn. The pair that
 // tells a closing line read from the pre-turn snapshot apart from one read at delivery time: the
 // preference the customer just stated is in the database, and nowhere else yet.

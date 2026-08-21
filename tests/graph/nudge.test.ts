@@ -810,10 +810,14 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.resolved).toEqual([9907]);
   });
 
-  // The model can hand off and then say nothing of its own, which lands on the silent branch. The
-  // label still applies there; the resolve must not, or the follow-up closes a conversation it just
+  // The model can hand off and then say nothing of its own. Its silence is about ITS text, never
+  // about the line the transfer committed to, and reading the two as one fact is how a customer got
+  // transferred without a word: the branch below tested the flag that had blanked the model's reply,
+  // which stopped being the same question the moment the handoff started supplying the text.
+  //
+  // The label still applies; the resolve must not, or the follow-up closes a conversation it just
   // handed to a human.
-  test("a handoff with no final text labels but never resolves", async () => {
+  test("a handoff whose model then says nothing still delivers the closing line", async () => {
     await seedConv(9905, null);
     const s = stub();
     const outcome = await runAgentNudge({
@@ -830,10 +834,99 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         persistUsage: async () => {},
       },
     });
-    expect(outcome).toBe("silent");
+    expect(outcome).toBe("messaged");
+    expect(s.messages).toEqual([[9905, "Um humano vai te atender."]]);
     expect(s.labelSets).toEqual([["follow-up"]]);
     // Exactly one status call: the handoff's own `open`. A second one would be the resolve.
     expect(s.resolved).toEqual([9905]);
+  });
+
+  // A follow-up that did not hand off throws on a failed send, so the job's retry can deliver it. A
+  // handed-off one cannot be retried into existence — the transfer set the conversation to `open`,
+  // so the next attempt stops at the ownership gate — and throwing would only cost the operator an
+  // alert on a thread that was correctly handed to a human.
+  test("a proactive handoff whose closing line fails to send does not fail the job", async () => {
+    await seedConv(9908, null);
+    const s = stub();
+    const inner = await s.makeClient();
+    const client = {
+      ...inner,
+      sendMessage: async () => {
+        throw new Error("chatwoot 500");
+      },
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9908`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffThenReplyModel(
+            "Vou te encaminhar!",
+            "Um humano vai te atender.",
+          ) as never,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+    expect(s.labelSets).toEqual([["follow-up"]]);
+    // The resolve still falls with the transfer: the only status call is the handoff's own `open`.
+    expect(s.resolved).toEqual([9908]);
+  });
+
+  test("a follow-up that did NOT hand off still fails the job on a failed send", async () => {
+    await seedConv(9909, null);
+    const s = stub();
+    const inner = await s.makeClient();
+    const client = {
+      ...inner,
+      sendMessage: async () => {
+        throw new Error("chatwoot 500");
+      },
+    } as unknown as ChatwootClient;
+    await expect(
+      runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9909`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: ["Tudo certo?"] }),
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      }),
+    ).rejects.toThrow();
+  });
+
+  // And with nothing to say either way, the episode really is silent: the deterministic actions fire
+  // and the customer hears nothing, because there was nothing the transfer promised them.
+  test("a handoff with no closing line and no final text stays silent", async () => {
+    await seedConv(9906, null);
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9906`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: () => new HandoffThenReplyModel("", "") as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.messages).toEqual([]);
+    expect(s.labelSets).toEqual([["follow-up"]]);
+    expect(s.resolved).toEqual([9906]);
   });
 
   // The nudge's own ownership check, with the mirror AHEAD instead of behind: the webhook for the

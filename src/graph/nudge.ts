@@ -759,7 +759,12 @@ export async function runAgentNudge(
 
   // Agent stayed silent: no message, but the deterministic actions still fire (covers "no reply on
   // the final follow-up: label + resolve").
-  if (silent || !reply) {
+  //
+  // Asks only whether there is text to send. `silent` is what BLANKED `reply` a few lines up, so
+  // testing it here was a second reading of the same fact until a handoff started supplying the
+  // text: a model that hands off and then says nothing of its own is silent AND has a line to
+  // deliver, and the customer would have been transferred without a word.
+  if (!reply) {
     // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
     // ours to close, even when the closing line never made it out.
     await applyPostActions();
@@ -803,7 +808,28 @@ export async function runAgentNudge(
       { channelType: loaded.channelType, provider: loaded.provider },
     );
     if (mode === "freeform") {
-      await client.sendMessage(conversationId, reply);
+      try {
+        await client.sendMessage(conversationId, reply);
+      } catch (e) {
+        // A follow-up that did not hand off still throws, so the job's retry can deliver it. One
+        // that did cannot be retried into existence: the transfer set the conversation to `open`, so
+        // the next attempt stops at the ownership gate above and the line would be lost for good.
+        // Degrading to a warn is the same rule the reactive runtime applies, and the same semantics
+        // the closing line had while the tool sent it best-effort.
+        if (!handedOff) throw e;
+        logger.warn(
+          "agentNudge handoff closing line failed to deliver (conv=%s): %s",
+          String(conversationId),
+          e instanceof Error ? e.message : String(e),
+        );
+        emitFlowEvent(flow, {
+          stage: "split",
+          status: "error",
+          level: "warn",
+          detail: { outcome: "handoff_closing_line_undelivered" },
+          errorMessage: e instanceof Error ? e.message : String(e),
+        });
+      }
       logger.info(
         "agentNudge messaged: conv=%s source=%s",
         String(conversationId),

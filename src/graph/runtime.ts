@@ -624,24 +624,24 @@ export async function runLoadedTurn(
       return { ours, voiceReply };
     });
     // Both gates below drop a reply that is no longer wanted: a human took the conversation, or a
-    // newer customer message made this answer obsolete. The handoff's closing line is neither. It is
-    // the sentence the transfer already committed to, and by the time these run the transfer is done
-    // and irreversible — dropping the line would leave the customer moved to a queue in silence,
-    // which is the exact failure the line exists to prevent. It also matches what shipped before
-    // #160, when the tool sent it before either gate could see it. `handedOff` is the ONLY carve-out:
-    // the model's own final text still fails closed, which is the hole #159 closed.
-    //
-    // NOTE: A handoff we completed this turn reads as "not ours" below too, and the mirror records
-    // no reason for a status change, so there is nothing to tell our own transition apart from a
-    // human who grabbed the conversation in the same window. That is why the carve-out is keyed on
-    // OUR OWN state and not on the mirror.
-    if (!recheck.ours && !handedOff) {
+    // newer customer message made this answer obsolete. The sentence the transfer committed to is
+    // neither — by the time these run the transfer is done and irreversible, so dropping it would
+    // leave the customer moved to a queue in silence, which is the exact failure the line exists to
+    // prevent. It also matches what shipped before #160, when the tool sent it before either gate
+    // could see it. The model's own final text still fails closed, which is the hole #159 closed.
+    if (!recheck.ours) {
       emitFlowEvent(flow, {
         stage: "handoff",
         status: "ok",
         detail: { outcome: "taken_over" },
       });
-      return "taken-over";
+      if (!handedOff) return "taken-over";
+      // Our own transfer reads exactly like this, and the mirror records no reason for a status
+      // change, so a human who accepted the conversation in the window between the two is
+      // indistinguishable from it. The carve-out is therefore as narrow as the uncertainty: ONLY
+      // what the transfer promised goes out. A photo the model queued is not something it promised,
+      // and it would land on top of a human already answering.
+      turnState.pendingImages.length = 0;
     }
 
     // Last-moment supersede gate (debounce): a newer message arrived mid-turn → drop this reply

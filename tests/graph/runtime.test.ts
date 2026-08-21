@@ -1012,14 +1012,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
-  // The bound on the case above, pinned so it is a decision and not a surprise: our OWN handoff does
-  // not stop at the takeover gate. Both gates past this point drop a reply that is no longer wanted
-  // — a human took over, or a newer message made the answer obsolete — and this turn's output is
-  // neither: the transfer already committed to the closing line, and the photo was queued before it.
-  // The carve-out is keyed on our own state, never on the mirror, which cannot tell our transition
-  // from a human's. A turn that did NOT hand off still fails closed ("taken over mid-turn discards
-  // the resolve intent" below).
-  test("our own handoff does not stop at the takeover gate", async () => {
+  // The bound on the carve-out, pinned so it is a decision and not a surprise. Once the mirror reads
+  // "not ours", our own transfer and a human who accepted the conversation in the same window are
+  // indistinguishable — the mirror records no reason for a status change. So only what the transfer
+  // PROMISED goes out: the closing line, which the tool used to send before any gate could see it.
+  // The queued photo was never part of that promise and fails closed with everything else, exactly
+  // as it did before #160. A turn that did NOT hand off stops here entirely ("taken over mid-turn
+  // discards the resolve intent" below).
+  test("past the takeover gate a handoff delivers its line and nothing else", async () => {
     await allowImageHost();
     await seedConversation(9988, null);
     const calls: Array<[string, number, string]> = [];
@@ -1060,11 +1060,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
     });
     expect(outcome).toBe("posted");
-    // Everything this turn produced reaches the customer, in the ordinary order, even though the
-    // mirror already reads `open` by the recheck.
     expect(calls).toEqual([
       ["toggleStatus", 9988, "open"],
-      ["sendFileAttachment", 9988, "imagem.png"],
       ["sendMessage", 9988, "Segue a foto. Vou te passar para um humano."],
     ]);
   });

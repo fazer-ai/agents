@@ -324,7 +324,7 @@ export async function failJob(
   error: string,
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
-): Promise<{ deadLettered: boolean }> {
+): Promise<{ deadLettered: boolean; applied: boolean }> {
   const next = attempts + 1;
   const dead = next >= MAX_ATTEMPTS;
   const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
@@ -340,7 +340,11 @@ export async function failJob(
           },
     }),
   );
-  return { deadLettered: dead && count > 0 };
+  // `deadLettered` alone cannot carry this: false is also what a healthy non-terminal retry returns,
+  // so the caller cannot tell a recorded failure from one the guard refused. Reported separately for
+  // the same reason completeJob reports it (issue #164 review round 2) — the failure ordering is no
+  // less invisible than the success one.
+  return { deadLettered: dead && count > 0, applied: count > 0 };
 }
 
 // Reaper: a CLAIMED row older than `staleMs` is presumed crashed → back to PENDING (attempts++ so

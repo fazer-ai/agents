@@ -91,7 +91,7 @@ async function fail(
   error: string,
   base: PrismaClient,
 ): Promise<void> {
-  const { deadLettered } = await failJob(
+  const { deadLettered, applied } = await failJob(
     job.tenantId,
     job.id,
     job.claimSeq,
@@ -99,6 +99,7 @@ async function fail(
     error,
     base,
   );
+  if (!applied) supersededWarning(job, "fail");
   if (deadLettered) await dispatchDeadLetter(job, error, base);
 }
 

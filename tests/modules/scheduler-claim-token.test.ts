@@ -143,9 +143,9 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
   });
 
   test("a superseded run cannot fail the arm that replaced it", async () => {
-    const { id, stale } = await staleAndCurrent("tok-fail");
+    const { id, stale, current } = await staleAndCurrent("tok-fail");
     const before = await rowOf(id);
-    const { deadLettered } = await failJob(
+    const refused = await failJob(
       tenantId,
       id,
       stale.claimSeq,
@@ -153,13 +153,29 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
       "boom",
       appDb,
     );
-    expect(deadLettered).toBe(false);
+    expect(refused.deadLettered).toBe(false);
+    // `applied` has to be reported SEPARATELY: deadLettered is false for a healthy non-terminal
+    // retry too, so on its own it cannot tell a recorded failure from a refused one.
+    expect(refused.applied).toBe(false);
     const after = await rowOf(id);
     // Nothing of the failure sticks: not the status, not the retry budget, not the error text. A
     // stale failure that spent an attempt would walk an otherwise healthy key toward DEAD.
     expect(after.status).toBe("CLAIMED");
     expect(after.attempts).toBe(before.attempts);
     expect(after.lastError).toBeNull();
+
+    // And the live run's failure IS recorded, with the same two fields saying different things.
+    const landed = await failJob(
+      tenantId,
+      id,
+      current.claimSeq,
+      before.attempts,
+      "boom",
+      appDb,
+    );
+    expect(landed.applied).toBe(true);
+    expect(landed.deadLettered).toBe(false);
+    expect((await rowOf(id)).lastError).toBe("boom");
   });
 
   test("a superseded run cannot push the arm that replaced it into the future", async () => {

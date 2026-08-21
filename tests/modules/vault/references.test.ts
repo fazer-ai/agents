@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@/../generated/prisma/client";
+import { type Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
@@ -45,6 +45,17 @@ const ctx = (): TenantContext => ({
 // path the list knows and the query forgets shows up as an empty agent list for that key alone.
 const PATHS = SETTINGS_CREDENTIAL_PATHS;
 
+// A settings bag holding `value` at `path`. The bag is built by WALKING the path, because a
+// credential is not always a direct child of its block: `memory.compaction.credentialRef` is two
+// levels down, and a bag built as `{ [block]: { [field]: value } }` would put the leaf key at the
+// top and let the query pass while finding nothing.
+function nest(path: readonly string[], value: string): Prisma.InputJsonObject {
+  return path.reduceRight<Prisma.InputJsonValue>(
+    (acc, step) => ({ [step]: acc }),
+    value,
+  ) as Prisma.InputJsonObject;
+}
+
 const keyIds: Record<string, bigint> = {};
 
 let alertKeyId = 0n;
@@ -55,8 +66,8 @@ describe.skipIf(!dbUp)("vaultReferences", () => {
       data: { name: "VREF", slug: `vref-${process.pid}` },
     });
     tenantId = t.id;
-    for (const { block, field } of PATHS) {
-      const name = `${block}-${field}`;
+    for (const { path } of PATHS) {
+      const name = path.join("-");
       const entry = await suDb.vaultEntry.create({
         data: { tenantId, name, secret: encryptJson("sk-x") },
         select: { id: true },
@@ -68,7 +79,7 @@ describe.skipIf(!dbUp)("vaultReferences", () => {
           name: `agent-${name}`,
           systemPrompt: "p",
           modelConfig: {},
-          settings: { [block]: { [field]: `vault:${entry.id}` } },
+          settings: nest(path, `vault:${entry.id}`),
         },
       });
     }
@@ -105,9 +116,9 @@ describe.skipIf(!dbUp)("vaultReferences", () => {
     await appDb.$disconnect();
   });
 
-  for (const { block, field } of PATHS) {
-    const name = `${block}-${field}`;
-    test(`a key used only as ${block}.${field} is reported as in use`, async () => {
+  for (const { path } of PATHS) {
+    const name = path.join("-");
+    test(`a key used only as ${path.join(".")} is reported as in use`, async () => {
       const refs = await vaultReferences(ctx(), keyIds[name] as bigint, appDb);
       expect(refs.agents.map((a) => a.name)).toEqual([`agent-${name}`]);
     });

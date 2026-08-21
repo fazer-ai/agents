@@ -78,6 +78,7 @@ import { readMemoryConfig } from "@/modules/memory/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import {
   BehaviorTab,
+  type ContactAuthState,
   type MemoryState,
   type SendImageState,
 } from "./BehaviorTab";
@@ -313,6 +314,7 @@ function readBehaviorState(a: Agent) {
   const ac = (s.attributeContext ?? {}) as Record<string, unknown>;
   const si = (s.sendImage ?? {}) as Record<string, unknown>;
   const av = (s.availability ?? {}) as Record<string, unknown>;
+  const ca = (s.contactAuth ?? {}) as Record<string, unknown>;
 
   // NOTE: Attribute keys per scope: plain string lists (the runtime reader trims/dedups/caps them).
   const attrKeys = (v: unknown): string[] =>
@@ -341,6 +343,20 @@ function readBehaviorState(a: Agent) {
       language: str(st.language) || "pt",
       credentialRef: str(st.credentialRef),
       baseURL: str(st.baseURL),
+    },
+    contactAuth: {
+      enabled: ca.enabled === true,
+      url: str(ca.url),
+      method: str(ca.method).toUpperCase() === "POST" ? "POST" : "GET",
+      credentialRef: str(ca.credentialRef),
+      timeoutMs: num(ca.timeoutMs) || "5000",
+      // NOTE: "0" is meaningful (ask on every message), and num(0) is the truthy string "0", so the
+      // fallback only fills a genuinely absent value.
+      cacheTtlSeconds: num(ca.cacheTtlSeconds) || "300",
+      denyMessage: str(ca.denyMessage),
+      handoffEnabled:
+        typeof ca.handoffEnabled === "boolean" ? ca.handoffEnabled : true,
+      handoffTeamId: num(ca.handoffTeamId),
     },
     tts: readTtsFormState(tt),
     split: {
@@ -618,6 +634,18 @@ function AgentEditor() {
     credentialRef: "",
     baseURL: "",
   });
+  // Contact authorization gate. Mirrors agent.settings.contactAuth (modules/contact-auth).
+  const [contactAuth, setContactAuth] = useState<ContactAuthState>({
+    enabled: false,
+    url: "",
+    method: "GET",
+    credentialRef: "",
+    timeoutMs: "5000",
+    cacheTtlSeconds: "300",
+    denyMessage: "",
+    handoffEnabled: true,
+    handoffTeamId: "",
+  });
   // Text-to-speech (audio replies). Mode + provider mirror modules/tts.
   // Same reader the saved agent goes through, so a new field can never exist in one and not the
   // other: the Behavior save REPLACES this block wholesale.
@@ -857,6 +885,7 @@ function AgentEditor() {
     setSettings(b.settings);
     setDebounce(b.debounce);
     setStt(b.stt);
+    setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
     setServiceWindow(b.serviceWindow);
@@ -893,6 +922,7 @@ function AgentEditor() {
     setSettings(b.settings);
     setDebounce(b.debounce);
     setStt(b.stt);
+    setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
     setServiceWindow(b.serviceWindow);
@@ -1098,6 +1128,22 @@ function AgentEditor() {
         // displayed (credential's) value — keep the user's own config or null.
         baseURL: stt.baseURL.trim() || null,
       },
+      contactAuth: {
+        enabled: contactAuth.enabled,
+        url: contactAuth.url.trim() || null,
+        method: contactAuth.method === "POST" ? "POST" : "GET",
+        credentialRef: contactAuth.credentialRef || null,
+        timeoutMs: Number(contactAuth.timeoutMs) || 5000,
+        // NOTE: 0 is meaningful (ask on every message), so `|| 300` would erase it; only an emptied
+        // field falls back to the default.
+        cacheTtlSeconds:
+          contactAuth.cacheTtlSeconds.trim() === ""
+            ? 300
+            : Math.max(0, Number(contactAuth.cacheTtlSeconds) || 0),
+        denyMessage: contactAuth.denyMessage.trim() || null,
+        handoffEnabled: contactAuth.handoffEnabled,
+        handoffTeamId: Number(contactAuth.handoffTeamId) || null,
+      },
       tts: ttsSettingsFrom(tts),
       split: {
         enabled: split.enabled,
@@ -1201,6 +1247,7 @@ function AgentEditor() {
       followUpHoursId,
       debounce,
       stt,
+      contactAuth,
       tts,
       split,
       serviceWindow,
@@ -1392,6 +1439,8 @@ function AgentEditor() {
   // t('editor.configIssuePending.stt', 'The transcription credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.tts', 'The audio-reply credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.vision', 'The image-reading credential is referenced but not filled in yet.')
+  // t('editor.configIssuePending.contactAuth', 'The contact-authorization credential is referenced but not filled in yet, so the check fails and the agent stays silent.')
+  // t('editor.configIssueUnresolved.contactAuth', 'The contact-authorization credential no longer exists, so the check fails and the agent stays silent.')
   // t('editor.configIssue.embedding', 'A knowledge base needs indexing, but the tenant embedding is not configured.')
   // t('editor.configIssuePending.embedding', 'A knowledge base needs indexing, but the embedding credential is not filled in yet.')
   // t('editor.configIssue.redirect', 'Redirect is on but a WhatsApp or website-chat inbox is not set, so it will not run.')
@@ -1450,6 +1499,8 @@ function AgentEditor() {
     ttsNormalizeBaseURL: ttsNormalizeCredBaseUrl ?? tts.normalizeBaseURL,
     visionEnabled: vision.enabled,
     visionCredentialRef: vision.credentialRef,
+    contactAuthEnabled: contactAuth.enabled,
+    contactAuthCredentialRef: contactAuth.credentialRef,
     guardrailsEnabled: guardrails.enabled,
     guardrailsCredentialRef: guardrails.credentialRef ?? "",
     guardrailsFailures: guardrailHealth?.failures,
@@ -1929,6 +1980,7 @@ function AgentEditor() {
     setSettings(b.settings);
     setDebounce(b.debounce);
     setStt(b.stt);
+    setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
     setServiceWindow(b.serviceWindow);
@@ -2828,6 +2880,8 @@ function AgentEditor() {
                 stt={stt}
                 setStt={setStt}
                 sttCredBaseUrl={sttCredBaseUrl}
+                contactAuth={contactAuth}
+                setContactAuth={setContactAuth}
                 tts={tts}
                 setTts={setTts}
                 // The SAVED model, not the one being edited on General (see savedModel above), and

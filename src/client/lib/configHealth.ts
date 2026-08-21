@@ -27,6 +27,7 @@ export type ConfigIssueKey =
   | "vision"
   | "guardrails"
   | "guardrailsFailing"
+  | "contactAuth"
   | "knowledge"
   | "embedding"
   | "redirect"
@@ -183,6 +184,11 @@ export interface ConfigHealthInput {
   ttsNormalizeBaseURL?: string;
   visionEnabled: boolean;
   visionCredentialRef: string;
+  // The contact authorization gate. Its credential is OPTIONAL (a public or IP-fenced endpoint
+  // needs none), so an absent ref raises nothing; a ref that is pending or gone does, because the
+  // gate fails closed and the agent goes silent for every contact.
+  contactAuthEnabled?: boolean;
+  contactAuthCredentialRef?: string;
   // Guardrails run on a model of their own, and theirs is the one credential whose failure is not
   // just a feature going quiet: `loadAgentConfig` fails open, so the analysis is skipped and every
   // message is delivered as if it had been screened and approved.
@@ -477,6 +483,18 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   push(
     { key: "vision", tab: "behavior", sectionId: "vision" },
     credIssue(input.visionEnabled, input.visionCredentialRef, pending, known),
+  );
+  // NOTE: gated on the ref being present, so "missing" can never fire for this feature: enabled
+  // without a credential is a legitimate configuration here, unlike the blocks above.
+  push(
+    { key: "contactAuth", tab: "behavior", sectionId: "contactAuth" },
+    credIssue(
+      Boolean(input.contactAuthEnabled) &&
+        Boolean(input.contactAuthCredentialRef),
+      input.contactAuthCredentialRef ?? "",
+      pending,
+      known,
+    ),
   );
   const guardrailsCred = credIssue(
     Boolean(input.guardrailsEnabled),

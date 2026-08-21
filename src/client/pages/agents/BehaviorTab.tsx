@@ -13,6 +13,7 @@ import {
   Plus,
   Scissors,
   ScrollText,
+  ShieldCheck,
   Trash2,
   Volume2,
 } from "lucide-react";
@@ -130,6 +131,20 @@ interface SttState {
   baseURL: string;
 }
 
+// NOTE: The contact authorization gate (agent.settings.contactAuth). Numbers stay text so a
+// half-typed value survives editing; the runtime reader clamps on read and the save normalizes.
+export interface ContactAuthState {
+  enabled: boolean;
+  url: string;
+  method: string;
+  credentialRef: string;
+  timeoutMs: string;
+  cacheTtlSeconds: string;
+  denyMessage: string;
+  handoffEnabled: boolean;
+  handoffTeamId: string;
+}
+
 interface SplitState {
   enabled: boolean;
   maxChars: string;
@@ -217,6 +232,8 @@ interface BehaviorTabProps {
   stt: SttState;
   setStt: React.Dispatch<React.SetStateAction<SttState>>;
   sttCredBaseUrl: string | null;
+  contactAuth: ContactAuthState;
+  setContactAuth: React.Dispatch<React.SetStateAction<ContactAuthState>>;
   tts: TtsFormState;
   setTts: React.Dispatch<React.SetStateAction<TtsFormState>>;
   // The agent's own model, to render the speech rewrite's inherited default honestly (blank there
@@ -606,6 +623,97 @@ function AttributeContextPickers({
   );
 }
 
+// Team a refused conversation is assigned to after the open. Fed by the same live listing the
+// handoff pinned-target picker uses, which only lists when the agent serves exactly ONE Chatwoot
+// account (teams are account-scoped). A stored id that is not in the listing still shows, so a
+// saved choice is never silently hidden.
+function ContactAuthTeamSelect({
+  agentId,
+  value,
+  onChange,
+}: {
+  agentId: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [data, setData] = useState<{
+    teams: Array<{ id: number; name: string }>;
+    accountCount: number;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { data: d } = await api.api.v1.chatwoot["agents-teams"]({
+          agentId,
+        }).get();
+        if (!cancelled) {
+          setData(
+            d
+              ? { teams: d.teams, accountCount: d.accounts.length }
+              : { teams: [], accountCount: 0 },
+          );
+        }
+      } catch {
+        if (!cancelled) setData({ teams: [], accountCount: 0 });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
+  const teams = data?.teams ?? [];
+  const listed = teams.some((tm) => String(tm.id) === value);
+  return (
+    <FormField
+      label={t("editor.contactAuthTeam", "Assign to team")}
+      group
+      description={t(
+        "editor.contactAuthTeamHint",
+        "Optional. Without a team, Chatwoot's inbox routing decides who takes it.",
+      )}
+    >
+      <div className="flex flex-col gap-1.5">
+        <Select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          aria-label={t("editor.contactAuthTeam", "Assign to team")}
+        >
+          <option value="">
+            {t("editor.contactAuthNoTeam", "No team (inbox routing)")}
+          </option>
+          {!listed && value && (
+            <option value={value}>
+              {t("editor.contactAuthTeamStored", "Team #{{id}} (not listed)", {
+                id: value,
+              })}
+            </option>
+          )}
+          {teams.map((tm) => (
+            <option key={tm.id} value={String(tm.id)}>
+              {tm.name}
+            </option>
+          ))}
+        </Select>
+        {data && data.accountCount !== 1 && (
+          <span className="text-text-muted text-xs">
+            {data.accountCount === 0
+              ? t(
+                  "editor.handoffPinnedNoInbox",
+                  "Bind at least one inbox in the Channels tab first.",
+                )
+              : t(
+                  "editor.contactAuthTeamMultiAccount",
+                  "This agent serves more than one Chatwoot account, so teams can't be listed.",
+                )}
+          </span>
+        )}
+      </div>
+    </FormField>
+  );
+}
+
 // The multi-step follow-up editor: an ordered list of step cards (delay + instructions + optional
 // label, and a resolve toggle on the LAST step). Labels are fetched once per agent from the inbox.
 function FollowUpStepsEditor({
@@ -796,6 +904,8 @@ export function BehaviorTab({
   stt,
   setStt,
   sttCredBaseUrl,
+  contactAuth,
+  setContactAuth,
   tts,
   setTts,
   agentModelProvider,
@@ -842,6 +952,25 @@ export function BehaviorTab({
     stt.provider === "openai-compatible" &&
     !sttCredBaseUrl &&
     !isValidHttpUrl(stt.baseURL);
+
+  // Required while the gate is on: an enabled gate with no reachable URL fails closed on every
+  // message, which is the whole agent going silent with nothing on screen to explain it. A URL
+  // carrying `user:pass@` is refused here for the same reason the reader refuses it (credentials
+  // belong in the vault); without this check the save would succeed and the runtime would read the
+  // field as unconfigured.
+  const contactAuthUrlHasCredentials = (() => {
+    try {
+      const u = new URL(contactAuth.url.trim());
+      return Boolean(u.username || u.password);
+    } catch {
+      return false;
+    }
+  })();
+  const contactAuthUrlInvalid =
+    contactAuth.enabled &&
+    (!contactAuth.url.trim() ||
+      !isValidHttpUrl(contactAuth.url) ||
+      contactAuthUrlHasCredentials);
 
   const visionBaseUrlInvalid =
     vision.enabled &&
@@ -937,6 +1066,11 @@ export function BehaviorTab({
       id: "availability",
       icon: CalendarClock,
       label: t("editor.availability", "Availability"),
+    },
+    {
+      id: "contactAuth",
+      icon: ShieldCheck,
+      label: t("editor.contactAuth", "Contact authorization"),
     },
     {
       id: "debounce",
@@ -1051,6 +1185,183 @@ export function BehaviorTab({
                   )}
                 />
               </FormField>
+            )}
+          </Section>
+
+          <Section
+            id="contactAuth"
+            icon={ShieldCheck}
+            title={t("editor.contactAuth", "Contact authorization")}
+            description={t(
+              "editor.contactAuthHint",
+              "Before answering, ask an external system whether this contact may be served, by the phone number Chatwoot holds for them. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
+            )}
+          >
+            <SwitchField
+              checked={contactAuth.enabled}
+              onCheckedChange={(v) =>
+                setContactAuth({ ...contactAuth, enabled: v })
+              }
+              label={t(
+                "editor.contactAuthEnabled",
+                "Only answer contacts the external check authorizes",
+              )}
+            />
+            {contactAuth.enabled && (
+              <>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FormField
+                    label={t("editor.contactAuthUrl", "Authorization URL")}
+                    description={t(
+                      "editor.contactAuthUrlHint",
+                      'GET receives phone and contact_id on the query string; POST receives them in a JSON body. The endpoint answers { "authorized": true | false }.',
+                    )}
+                    error={
+                      contactAuthUrlInvalid
+                        ? t(
+                            "editor.contactAuthUrlInvalid",
+                            "Required: a valid http(s) URL, with any credential in the vault rather than in the URL.",
+                          )
+                        : null
+                    }
+                  >
+                    <Input
+                      value={contactAuth.url}
+                      onChange={(e) =>
+                        setContactAuth({ ...contactAuth, url: e.target.value })
+                      }
+                      placeholder="https://api.example.com/contacts/authorize"
+                    />
+                  </FormField>
+                  <FormField label={t("editor.contactAuthMethod", "Method")}>
+                    <Select
+                      value={contactAuth.method}
+                      onChange={(e) =>
+                        setContactAuth({
+                          ...contactAuth,
+                          method: e.target.value,
+                        })
+                      }
+                    >
+                      {(["GET", "POST"] as const).map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </Select>
+                  </FormField>
+                </div>
+                <FormField
+                  label={t("editor.contactAuthCredential", "Credential")}
+                  group
+                  description={t(
+                    "editor.contactAuthCredentialHint",
+                    "Optional. Sent the way the credential's type declares (Bearer, header or query parameter).",
+                  )}
+                >
+                  <CredentialPicker
+                    value={contactAuth.credentialRef}
+                    onChange={(v) =>
+                      setContactAuth({ ...contactAuth, credentialRef: v })
+                    }
+                    compatibleTypes={[
+                      "bearer_token",
+                      "header",
+                      "query",
+                      "basic_auth",
+                    ]}
+                    defaultCreateType="bearer_token"
+                    ariaLabel={t("editor.contactAuthCredential", "Credential")}
+                  />
+                </FormField>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FormField
+                    label={t("editor.contactAuthTimeout", "Timeout (ms)")}
+                    description={t(
+                      "editor.contactAuthTimeoutHint",
+                      "1,000-10,000. Past it the check counts as failed and the agent stays silent.",
+                    )}
+                  >
+                    <Input
+                      type="number"
+                      min={1000}
+                      max={10000}
+                      value={contactAuth.timeoutMs}
+                      onChange={(e) =>
+                        setContactAuth({
+                          ...contactAuth,
+                          timeoutMs: e.target.value,
+                        })
+                      }
+                    />
+                  </FormField>
+                  <FormField
+                    label={t("editor.contactAuthCacheTtl", "Reuse verdict (s)")}
+                    description={t(
+                      "editor.contactAuthCacheTtlHint",
+                      "How long an answer is reused for the same contact before asking again. 0-86,400; 0 asks on every message.",
+                    )}
+                  >
+                    <Input
+                      type="number"
+                      min={0}
+                      max={86400}
+                      value={contactAuth.cacheTtlSeconds}
+                      onChange={(e) =>
+                        setContactAuth({
+                          ...contactAuth,
+                          cacheTtlSeconds: e.target.value,
+                        })
+                      }
+                    />
+                  </FormField>
+                </div>
+                <FormField
+                  label={t(
+                    "editor.contactAuthDenyMessage",
+                    "Message to a denied contact",
+                  )}
+                  description={t(
+                    "editor.contactAuthDenyMessageHint",
+                    "Sent when the check denies the contact, once per verdict. Leave empty to send nothing.",
+                  )}
+                >
+                  <Textarea
+                    value={contactAuth.denyMessage}
+                    onChange={(e) =>
+                      setContactAuth({
+                        ...contactAuth,
+                        denyMessage: e.target.value,
+                      })
+                    }
+                    rows={2}
+                    maxLength={TEMPLATE_MESSAGE_MAX}
+                    placeholder={t(
+                      "editor.contactAuthDenyMessagePlaceholder",
+                      "This channel serves registered customers only.",
+                    )}
+                  />
+                </FormField>
+                <SwitchField
+                  checked={contactAuth.handoffEnabled}
+                  onCheckedChange={(v) =>
+                    setContactAuth({ ...contactAuth, handoffEnabled: v })
+                  }
+                  label={t(
+                    "editor.contactAuthHandoff",
+                    "Open refused conversations for humans",
+                  )}
+                />
+                {contactAuth.handoffEnabled && (
+                  <ContactAuthTeamSelect
+                    agentId={agentId}
+                    value={contactAuth.handoffTeamId}
+                    onChange={(v) =>
+                      setContactAuth({ ...contactAuth, handoffTeamId: v })
+                    }
+                  />
+                )}
+              </>
             )}
           </Section>
 
@@ -2401,6 +2712,7 @@ export function BehaviorTab({
         onSave={onSave}
         onDiscard={onDiscard}
         saveDisabled={
+          contactAuthUrlInvalid ||
           sttBaseUrlInvalid ||
           visionBaseUrlInvalid ||
           normalizeBaseUrlInvalid ||

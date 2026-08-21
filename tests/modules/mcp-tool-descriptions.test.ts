@@ -89,6 +89,14 @@ describe("MCP tool descriptions", () => {
     expect(d).toContain("refused, not trimmed");
     // NOTE: a credential travels as a name or a stable ref, never as a secret.
     expect(d).toContain("NAME or a stable vault:<id>");
+    // NOTE: the same read-time outcome on the summariser, and the one place it differs: an
+    // attendance ends and nothing is written, so the thread stays raw and the memory the whole
+    // feature exists to keep is the thing that goes missing. Asserted separately from the tts
+    // clause it shares a sentence with, because a trim that keeps one and drops the other reads
+    // as a smaller edit than it is.
+    expect(d).toContain(
+      "stops the SUMMARISER instead and the thread stays raw",
+    );
   });
 
   test("agent_settings_set stays under its schema ceiling", async () => {

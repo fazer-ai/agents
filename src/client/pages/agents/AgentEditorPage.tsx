@@ -74,9 +74,12 @@ import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
 } from "@/modules/guardrails/settings";
-import { readMemoryConfig } from "@/modules/memory/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
-import { BehaviorTab, type SendImageState } from "./BehaviorTab";
+import {
+  BehaviorTab,
+  type MemoryState,
+  type SendImageState,
+} from "./BehaviorTab";
 import {
   type ChannelRedirectFormState,
   ChannelRedirectTab,
@@ -87,6 +90,7 @@ import { GeneralTab } from "./GeneralTab";
 import { GuardrailsTab } from "./GuardrailsTab";
 import { readGuardrailsFormState } from "./guardrailsFormState";
 import { KnowledgeTab } from "./KnowledgeTab";
+import { memoryToForm, memoryToStored } from "./memoryFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
 import { ToolsTab } from "./ToolsTab";
@@ -402,7 +406,7 @@ function readBehaviorState(a: Agent) {
     // NOTE: Same reason as observability above — through the runtime's own reader, because this one
     // defaults to ON and a hand-rolled `=== true` would show the switch off on every agent whose bag
     // predates the feature, then persist that lie on the next save.
-    memory: { compactionEnabled: readMemoryConfig(s).compaction.enabled },
+    memory: memoryToForm(s),
   };
 }
 
@@ -657,9 +661,11 @@ function AgentEditor() {
   // Whether this agent's tool lines log the values the model sent instead of their shape. Mirrors
   // agent.settings.observability (modules/flowlog/settings).
   const [observability, setObservability] = useState({ logToolValues: false });
-  // Whether an attendance that ended is folded into a summary. Mirrors agent.settings.memory
-  // (modules/memory/settings), which defaults to ON.
-  const [memory, setMemory] = useState({ compactionEnabled: true });
+  // Whether an attendance that ended is folded into a summary, and which model writes it. Seeded
+  // from the reader over an empty bag rather than a literal: the pre-load state is the same shape
+  // the round-trip pair produces, so a field added to `compaction` cannot default differently here
+  // than it does everywhere else.
+  const [memory, setMemory] = useState<MemoryState>(() => memoryToForm({}));
   // NOTE: Hosts the send_image tool may fetch from. Mirrors agent.settings.sendImage
   // (modules/images/settings), edited as one host per line.
   const [sendImage, setSendImage] = useState<SendImageState>({
@@ -730,6 +736,7 @@ function AgentEditor() {
   const modelCredBaseUrl = vaultBaseUrl(model.credentialRef);
   const sttCredBaseUrl = vaultBaseUrl(stt.credentialRef);
   const visionCredBaseUrl = vaultBaseUrl(vision.credentialRef);
+  const memoryCredBaseUrl = vaultBaseUrl(memory.credentialRef);
   const ttsNormalizeCredBaseUrl = vaultBaseUrl(tts.normalizeCredentialRef);
 
   // Tool selection
@@ -1153,7 +1160,10 @@ function AgentEditor() {
         maxHistoryTokens: Number(limits.maxHistoryTokens) || null,
       },
       observability: { logToolValues: observability.logToolValues },
-      memory: { compaction: { enabled: memory.compactionEnabled } },
+      // NOTE: through the pair, not spelled out here. The Behavior save REPLACES the block, so a
+      // field the form dropped would be deleted on the next save — which is exactly how
+      // `tts.baseURL` was lost once, and the round-trip test over ./memoryFormState is the guard.
+      memory: memoryToStored(memory),
       attributeContext: {
         conversation: attributeContext.conversation,
         contact: attributeContext.contact,
@@ -2830,6 +2840,7 @@ function AgentEditor() {
                 vision={vision}
                 setVision={setVision}
                 visionCredBaseUrl={visionCredBaseUrl}
+                memoryCredBaseUrl={memoryCredBaseUrl}
                 limits={limits}
                 setLimits={setLimits}
                 memory={memory}

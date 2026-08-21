@@ -201,39 +201,70 @@ export async function analyzeGuardrail(
   );
 }
 
+// A 400 means "this request, as written, is not one this model takes" — a permanent answer, unlike
+// a rate limit or a timeout, which is why only this status earns a second call. Read off the error
+// rather than predicted from the model id: every attempt in this repository to predict a vendor's
+// parameter rules from the id has aged badly, and a wrong prediction here is a guardrail that stops
+// screening rather than a wrong parameter.
+function isRequestRefused(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { status?: unknown }).status === 400
+  );
+}
+
 // One call, in whichever shape this endpoint accepts. Returns the schema's answer when there was
 // one, and ALWAYS the model's own text: a constrained answer that failed validation still leaves
 // the text readable, and dropping it would turn a recoverable reply into "never screened".
+//
+// The provider list says which ENDPOINT implements constrained decoding; it cannot say that every
+// model an operator may type into the guardrail's model field does. When the request comes back
+// refused, the analysis is retried the way it was made before this existed, so the worst case is
+// one extra call rather than a screen that quietly stops running.
 async function invokeForVerdict(
   model: BaseChatModel,
   mode: VerdictMode,
   messages: BaseMessage[],
 ): Promise<{ parsed: Record<string, unknown> | null; raw: string }> {
-  const signal = AbortSignal.timeout(ANALYZE_TIMEOUT_MS);
-  if (mode === "prose") {
-    const res = await model.invoke(messages, { signal });
+  const asProse = async () => {
+    const res = await model.invoke(messages, {
+      signal: AbortSignal.timeout(ANALYZE_TIMEOUT_MS),
+    });
     return { parsed: null, raw: messageText(res.content).trim() };
+  };
+  if (mode === "prose") return asProse();
+  try {
+    const res = (await model
+      .withStructuredOutput(VERDICT_SCHEMA, {
+        name: VERDICT_SCHEMA.title,
+        // NOTE: `strict` is what turns the schema from a request into a constraint on OpenAI; the
+        // other adapter on the list ignores the flag (Anthropic forces the tool call), and both
+        // were checked to accept the option rather than throw.
+        strict: true,
+        // NOTE: keeps the model's own text reachable when the schema produced nothing, which is what
+        // lets `readVerdict` recover a verdict an adapter's parser could not build. See verdict.ts
+        // for how far that reaches on each adapter.
+        includeRaw: true,
+      })
+      .invoke(messages, {
+        signal: AbortSignal.timeout(ANALYZE_TIMEOUT_MS),
+      })) as {
+      raw: BaseMessage;
+      parsed: Record<string, unknown> | null;
+    };
+    return {
+      parsed: res.parsed ?? null,
+      raw: messageText(res.raw.content).trim(),
+    };
+  } catch (err) {
+    if (!isRequestRefused(err)) throw err;
+    logger.warn(
+      { err },
+      "guardrails: model refused the constrained verdict, retrying in prose",
+    );
+    return asProse();
   }
-  const res = (await model
-    .withStructuredOutput(VERDICT_SCHEMA, {
-      name: VERDICT_SCHEMA.title,
-      // NOTE: `strict` is what turns the schema from a request into a constraint on OpenAI; the
-      // other two adapters on the list ignore the flag (Anthropic forces the tool call, Google
-      // sends responseSchema), and all three were checked to accept the option rather than throw.
-      strict: true,
-      // NOTE: keeps the model's own text reachable when the schema produced nothing, which is what
-      // lets `readVerdict` recover a verdict an adapter's parser could not build. See verdict.ts
-      // for how far that reaches on each adapter.
-      includeRaw: true,
-    })
-    .invoke(messages, { signal })) as {
-    raw: BaseMessage;
-    parsed: Record<string, unknown> | null;
-  };
-  return {
-    parsed: res.parsed ?? null,
-    raw: messageText(res.raw.content).trim(),
-  };
 }
 
 async function runAnalysis(

@@ -57,7 +57,11 @@ const preflight = (req: Request) =>
 
 type Wire = Record<string, unknown>;
 let lastWire: Wire = {};
+let wires: Wire[] = [];
 let openaiBody = "";
+// Refuse only the call that carries the constraint, so the retry has something to succeed at.
+let refuseConstrained = false;
+let refuseWith = 400;
 
 const openaiServer = Bun.serve({
   port: 0,
@@ -65,6 +69,21 @@ const openaiServer = Bun.serve({
     const pre = preflight(req);
     if (pre) return pre;
     lastWire = (await req.json()) as Wire;
+    wires.push(lastWire);
+    if ((refuseConstrained || refuseWith !== 400) && lastWire.response_format) {
+      return BunResponse.json(
+        {
+          error: {
+            message:
+              refuseWith === 429
+                ? "Rate limit reached"
+                : "Unsupported parameter: 'response_format' is not supported with this model.",
+            type: "invalid_request_error",
+          },
+        },
+        { status: refuseWith, headers: CORS },
+      );
+    }
     return BunResponse.json(
       {
         id: "x",
@@ -136,6 +155,9 @@ afterAll(() => {
 describe("the verdict is asked for as a schema, not as prose", () => {
   beforeEach(() => {
     lastWire = {};
+    wires = [];
+    refuseConstrained = false;
+    refuseWith = 400;
     openaiBody = JSON.stringify(VIOLATION);
     anthropicContent = [];
   });
@@ -177,6 +199,31 @@ describe("the verdict is asked for as a schema, not as prose", () => {
     const v = await analyzeGuardrail(openaiModel, BASE, "constrained");
     expect(v.violated).toBe(false);
     expect(v.error).toBe("no usable verdict in response");
+  });
+
+  // The provider list is about the ENDPOINT; the model field next to it is free text, and a model
+  // that takes ordinary chat and refuses this request would otherwise turn a working screen into a
+  // silent one. A refusal is answered by making the call the way it was made before this existed.
+  test("a refused request is retried the way it used to be made", async () => {
+    refuseConstrained = true;
+    const v = await analyzeGuardrail(openaiModel, BASE, "constrained");
+    expect(v.violated).toBe(true);
+    expect(v.error).toBeUndefined();
+    // Two calls: the constrained one that was refused, then the one that works.
+    expect(wires.length).toBe(2);
+    expect(Boolean(wires[0]?.response_format)).toBe(true);
+    expect(Boolean(wires[1]?.response_format)).toBe(false);
+  });
+
+  // Only a 400 earns the retry. A rate limit or a timeout is the endpoint saying "not now", and
+  // answering that with a second call doubles the pressure on the thing that is already refusing,
+  // on a turn a customer is waiting on.
+  test("a rate limit is not retried in prose", async () => {
+    refuseWith = 429;
+    const v = await analyzeGuardrail(openaiModel, BASE, "constrained");
+    expect(v.error).toBeTruthy();
+    expect(v.violated).toBe(false);
+    expect(wires.length).toBe(1);
   });
 
   // The same call, in the shape every other endpoint keeps getting. Without this the change would

@@ -85,6 +85,8 @@ describe("agent_settings_set argument schema", () => {
       { debounce: { windowSeconds: 9999 } },
     ],
     ["a number under its floor (clamped to 80)", { split: { maxChars: 1 } }],
+    // Zero is a value only where the consumer treats it as one. Here it is the documented way to say
+    // OFF, which is why this row and "a zero Chatwoot id" below sit on opposite sides of the line.
     [
       "zero, which means OFF for the history ceiling",
       { limits: { maxHistoryTokens: 0 } },
@@ -111,13 +113,10 @@ describe("agent_settings_set argument schema", () => {
       "a host string the normalizer will drop",
       { sendImage: { allowedHosts: ["not a host"] } },
     ],
+    ["a language tag with a region", { stt: { language: "pt-BR" } }],
     [
-      "a language the reader will fall back on",
-      { stt: { language: "not-a-language" } },
-    ],
-    [
-      "a distance the reader reads as no filter",
-      { grounding: { maxDistance: -1 } },
+      "null, the way the grounding filter is cleared",
+      { grounding: { maxDistance: null } },
     ],
     // The blocks are loose on purpose: an undeclared key still reaches the readers, so a field added
     // to a reader by someone who never opened the schema is merged rather than dropped on the way in.
@@ -158,6 +157,20 @@ describe("agent_settings_set argument schema", () => {
       { attributeContext: { conversation: [1, 2] } },
     ],
     ["a block sent as an array", { debounce: [] }],
+    // The identifier family. `posInt`/`inboxRef` keep a positive integer and drop everything else, so
+    // each of these used to store as null: the pinned target the caller named, silently cleared.
+    ["a fractional Chatwoot id", { handoff: { targetAgentId: 1.5 } }],
+    ["a zero Chatwoot id", { handoff: { targetTeamId: 0 } }],
+    ["a negative Chatwoot id", { handoff: { targetInstanceId: -3 } }],
+    ["a fractional inbox id", { channelRedirect: { entryInboxId: 2.5 } }],
+    ["a zero widget inbox id", { channelRedirect: { widgetInboxId: 0 } }],
+    // Same question, two more readers: a non-positive distance is no filter rather than a nearer
+    // one, and a language failing the reader's own pattern comes back as "pt" without saying so.
+    ["a non-positive grounding distance", { grounding: { maxDistance: 0 } }],
+    [
+      "a language that is not a language tag",
+      { stt: { language: "portugues" } },
+    ],
   ];
 
   test.each(discarded)("refused: %s", (_label, value) => {

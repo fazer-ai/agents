@@ -25,7 +25,9 @@ export const STT_DEFAULTS: SttConfig = {
   baseURL: null,
 };
 
-const LANG_RE = /^[a-z]{2,3}(?:-[a-z]{2,4})?$/i;
+// Exported for the MCP argument schema (see modules/agents/settings-schema): the reader TESTS a
+// language and falls back to "pt" without saying so, so the boundary declares the same pattern.
+export const LANG_RE = /^[a-z]{2,3}(?:-[a-z]{2,4})?$/i;
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;

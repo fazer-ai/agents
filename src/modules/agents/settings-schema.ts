@@ -3,6 +3,7 @@ import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
+import { LANG_RE } from "@/modules/stt/settings";
 import { TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
 import { TTS_MODES } from "@/modules/tts/settings-shared";
 import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
@@ -25,6 +26,16 @@ import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
 //     truncated) must still parse. Copying those bounds here would turn a clamp into a refusal and
 //     break `agent_settings_set accepts a stored over-cap value it does not change`. They live in
 //     the field's `.describe()`, which reaches a client as the property's `description`.
+//
+// Two pairs where that question separates fields the eye reads as identical:
+//
+//   * `handoff.targetAgentId` is `.int().positive()` and `limits.maxHistoryTokens` is a bare number.
+//     `posInt` DISCARDS a 1.5 or a 0 — a pinned target silently cleared — while `readLimitsConfig`
+//     treats 0 as the documented way to say OFF. Zero is a value only where the consumer says so.
+//   * `stt.language` carries the reader's own pattern and `sendImage.allowedHosts` carries none.
+//     `LANG_RE` only TESTS, so "portugues" is thrown away and comes back as "pt"; the host
+//     normalizer TRANSFORMS what it accepts (a full URL, a port, a path all reduce to one host), so
+//     a pattern here would refuse spellings the reader honors.
 //
 // The blocks are LOOSE objects on purpose. An undeclared key still reaches the readers exactly as
 // before, so a field added to a reader by someone who never opened this file is merged rather than
@@ -62,6 +73,11 @@ const baseURL = () =>
 const modelId = () =>
   z.string().optional().describe("empty = the provider's default");
 
+// A Chatwoot-side id. `posInt`/`inboxRef` keep a positive integer and DISCARD everything else, so a
+// 0 or a 1.5 stores as null: the pinned target the caller asked for, silently cleared. null stays,
+// because that is how the field is cleared on purpose.
+const chatwootId = () => z.number().int().positive().nullable().optional();
+
 const debounce = z.looseObject({
   enabled: z.boolean().optional(),
   windowSeconds: z
@@ -79,7 +95,11 @@ const stt = z.looseObject({
   enabled: z.boolean().optional(),
   provider: oneOf(STT_PROVIDER_NAMES).optional(),
   model: modelId(),
-  language: z.string().optional().describe('ISO-639-1, e.g. "pt"'),
+  language: z
+    .string()
+    .regex(LANG_RE)
+    .optional()
+    .describe('ISO-639-1, e.g. "pt" or "pt-BR"'),
   credentialRef: credentialRef(),
   baseURL: baseURL(),
 });
@@ -164,6 +184,7 @@ const serviceWindow = z.looseObject({
 const grounding = z.looseObject({
   maxDistance: z
     .number()
+    .positive()
     .nullable()
     .optional()
     .describe("cosine ceiling for a knowledge hit; null = no filter"),
@@ -201,17 +222,13 @@ const handoff = z.looseObject({
     .describe(
       "route = Chatwoot's own assignment; agent_choice = the model names a target",
     ),
-  targetAgentId: z
-    .number()
-    .nullable()
-    .optional()
-    .describe("Chatwoot agent id, for pinned; wins over the team"),
-  targetTeamId: z.number().nullable().optional().describe("Chatwoot team id"),
-  targetInstanceId: z
-    .number()
-    .nullable()
-    .optional()
-    .describe("the ChatwootInstance the pinned target came from"),
+  targetAgentId: chatwootId().describe(
+    "Chatwoot agent id, for pinned; wins over the team",
+  ),
+  targetTeamId: chatwootId().describe("Chatwoot team id"),
+  targetInstanceId: chatwootId().describe(
+    "the ChatwootInstance the pinned target came from",
+  ),
   instructions: z
     .string()
     .nullable()
@@ -243,16 +260,12 @@ const availability = z.looseObject({
 
 const channelRedirect = z.looseObject({
   enabled: z.boolean().optional(),
-  entryInboxId: z
-    .number()
-    .nullable()
-    .optional()
-    .describe("the WhatsApp chatwootInboxId leads arrive on"),
-  widgetInboxId: z
-    .number()
-    .nullable()
-    .optional()
-    .describe("the widget chatwootInboxId; set via the console"),
+  entryInboxId: chatwootId().describe(
+    "the WhatsApp chatwootInboxId leads arrive on",
+  ),
+  widgetInboxId: chatwootId().describe(
+    "the widget chatwootInboxId; set via the console",
+  ),
   redirectMessage: z.string().optional().describe("must carry {link}"),
   resendDelayValue: z.number().optional().describe("≥ 1, clamped"),
   resendDelayUnit: oneOf(REDIRECT_DELAY_UNITS).optional(),

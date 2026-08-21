@@ -11,7 +11,7 @@ import {
 import { api } from "@/client/lib/api";
 import { tenantDeepLinkAction } from "@/client/lib/tenantDeepLink";
 import { suppressUnloadPrompt } from "@/client/lib/unsavedGuard";
-import { SWITCH_TENANT_PARAM } from "@/modules/mcp/console-links";
+import { SWITCH_TENANT_PARAM } from "@/lib/console-params";
 
 // Applies the `?switchTenant=<id>` a console link carries (`src/modules/mcp/console-links.ts`).
 // Wraps the app shell, so it covers every deeplink and not just the vault's.

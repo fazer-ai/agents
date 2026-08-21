@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import config from "@/config";
+import { CONSOLE_ROUTES } from "@/lib/console-params";
 import {
-  CONSOLE_ROUTES,
   consoleUrl,
   integrationsUrl,
   vaultCreateUrl,

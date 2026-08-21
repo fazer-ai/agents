@@ -18,6 +18,7 @@ const FORBIDDEN = [
   "src/modules/tts/providers.ts",
   // The synthesis path itself (fetch + audio encoding), reachable the same way.
   "src/modules/tts/normalize.ts",
+  "src/config.ts",
 ];
 const FORBIDDEN_PACKAGES = ["@langchain/", "langchain", "@prisma/client"];
 

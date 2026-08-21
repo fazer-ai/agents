@@ -1,4 +1,5 @@
 import config from "@/config";
+import { CONSOLE_ROUTES, SWITCH_TENANT_PARAM } from "@/lib/console-params";
 
 // The console links an MCP answer hands back to the operator, so the two things that make such a
 // link work are decided in one place instead of at each call site.
@@ -14,19 +15,11 @@ import config from "@/config";
 // A link also needs to name a route that EXISTS. `/vault` and `/integrations` are not routes: the
 // vault panel is `/resources/vault` and integrations is `/resources/integrations` (`App.tsx`), and
 // the `path="*"` catch-all redirects to `/`. So two of the four links we hand out dropped the
-// operator on the dashboard with no explanation. Naming the destinations here is what keeps a route
-// rename from silently turning a link into a redirect again.
-
-// The query parameter that asks the console to OPEN a given tenant. Deliberately not `tenant`:
-// `/admin/users?tenant=<id>` already exists as that page's fleet-wide filter, linked to from the
-// tenants list, and a component that switches the whole console on sight of `tenant` would hijack
-// that link, reload, and then strip the filter the operator had just chosen.
-export const SWITCH_TENANT_PARAM = "switchTenant";
-
-export const CONSOLE_ROUTES = {
-  vault: "/resources/vault",
-  integrations: "/resources/integrations",
-} as const;
+// operator on the dashboard with no explanation.
+//
+// The parameter name and the route names live in `@/lib/console-params`, which imports nothing: this
+// module needs `config`, and `config` cannot reach the browser (`docs/frontend-env-vars.md`), so a
+// constant shared through here would drag the whole server config into the SPA bundle.
 
 export function consoleUrl(
   path: string,

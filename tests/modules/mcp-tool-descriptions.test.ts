@@ -59,9 +59,9 @@ const SETTINGS_DESC_CEILING = 2_000;
 // NOTE: the ratchet has to follow the content. A ceiling on the description alone would have watched
 // the half that shrank while the shape it moved into grew unwatched — `tools/list` ships both, and a
 // client pays for both before it knows whether the tool will be used. Headroom over the current
-// 9,617 is deliberately tighter than a whole block (~600 characters), so the next block declaring
+// 9,711 is deliberately tighter than a whole block (~600 characters), so the next block declaring
 // its fields here is a decision rather than a reflex.
-const SETTINGS_SCHEMA_CEILING = 9_800;
+const SETTINGS_SCHEMA_CEILING = 10_200;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {

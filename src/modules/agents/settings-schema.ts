@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
@@ -54,6 +55,20 @@ function oneOf(names: readonly string[]) {
   return z.enum(names as [string, ...string[]]);
 }
 
+// The same choices, for the fields whose reader reaches them through `str()` — which TRIMS before it
+// compares, so " openai " is a value it honors and this boundary may not refuse. The trim runs
+// before the comparison here too; `toJSONSchema` still publishes the plain enum, so a client sees
+// the options rather than a preprocessing step.
+//
+// Deliberately NOT applied to `handoff.mode` or either delay unit: those readers test the RAW value
+// (`VALID_UNITS.has(bag.delayUnit)`), so a padded one is thrown away there and may be refused here.
+function trimmedOneOf(names: readonly string[]) {
+  return z.preprocess(
+    (v) => (typeof v === "string" ? v.trim() : v),
+    oneOf(names),
+  );
+}
+
 // Every credential field on every block: a vault entry NAME, or a `vault:<id>` ref when two entries
 // share a name. Never a secret — the MCP boundary resolves it before anything is stored.
 const credentialRef = () =>
@@ -93,11 +108,13 @@ const debounce = z.looseObject({
 
 const stt = z.looseObject({
   enabled: z.boolean().optional(),
-  provider: oneOf(STT_PROVIDER_NAMES).optional(),
+  provider: trimmedOneOf(STT_PROVIDER_NAMES).optional(),
   model: modelId(),
   language: z
-    .string()
-    .regex(LANG_RE)
+    .preprocess(
+      (v) => (typeof v === "string" ? v.trim() : v),
+      z.string().regex(LANG_RE),
+    )
     .optional()
     .describe('ISO-639-1, e.g. "pt" or "pt-BR"'),
   credentialRef: credentialRef(),
@@ -105,10 +122,10 @@ const stt = z.looseObject({
 });
 
 const tts = z.looseObject({
-  mode: oneOf(TTS_MODES)
+  mode: trimmedOneOf(TTS_MODES)
     .optional()
     .describe("mirror = audio when the customer sent audio"),
-  provider: oneOf(TTS_PROVIDER_NAMES).optional(),
+  provider: trimmedOneOf(TTS_PROVIDER_NAMES).optional(),
   model: modelId(),
   voice: z
     .string()
@@ -120,11 +137,13 @@ const tts = z.looseObject({
     .boolean()
     .optional()
     .describe("rewrite the reply for natural speech first"),
-  normalizeProvider: z
-    .string()
+  // The rewrite runs on a CHAT model, so this is a model provider and not one of the synthesis
+  // providers above. An unregistered name is not refused anywhere downstream: resolveNormalizeModel
+  // returns `provider_unknown` at READ time and the rewrite silently never runs.
+  normalizeProvider: trimmedOneOf(MODEL_PROVIDERS)
     .nullable()
     .optional()
-    .describe("the rewrite's own model; null inherits the agent's"),
+    .describe("the rewrite's model PROVIDER; null inherits the agent's"),
   normalizeModel: z.string().nullable().optional(),
   normalizeCredentialRef: credentialRef(),
   normalizeBaseURL: baseURL(),
@@ -141,7 +160,7 @@ const tts = z.looseObject({
 
 const vision = z.looseObject({
   enabled: z.boolean().optional(),
-  provider: oneOf(VISION_PROVIDER_NAMES).optional(),
+  provider: trimmedOneOf(VISION_PROVIDER_NAMES).optional(),
   model: modelId(),
   credentialRef: credentialRef(),
   baseURL: baseURL(),

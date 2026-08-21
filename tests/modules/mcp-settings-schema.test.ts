@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
+import { MODEL_PROVIDERS } from "@/graph/model-config";
 import {
   BEHAVIOR_SETTINGS_KEYS,
   readBehaviorSettings,
@@ -24,6 +25,66 @@ import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
 // it into a refusal, and the same write would then succeed in the console and fail through MCP.
 
 const patch = z.object(BEHAVIOR_PATCH_SHAPE);
+
+const principal: VerifiedToken = {
+  userId: 1n,
+  tenantId: 1n,
+  role: "TENANT_ADMIN",
+  scopes: ["mcp:read", "mcp:write"],
+  clientId: "c",
+  jti: "j",
+};
+
+async function withClient<T>(fn: (c: Client) => Promise<T>): Promise<T> {
+  const server = buildMcpServer(principal);
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverT);
+  const client = new Client({ name: "schema-check", version: "0" });
+  await client.connect(clientT);
+  try {
+    return await fn(client);
+  } finally {
+    await client.close();
+  }
+}
+
+type JsonSchemaProps = Record<string, Record<string, Record<string, unknown>>>;
+
+// The per-block properties of `agent_settings_set` as `tools/list` publishes them.
+async function publishedSchema(): Promise<JsonSchemaProps> {
+  const tools = await withClient(async (c) => (await c.listTools()).tools);
+  const tool = tools.find((t) => t.name === "agent_settings_set");
+  if (!tool) throw new Error("agent_settings_set is not listed");
+  const blocks = (tool.inputSchema as { properties: JsonSchemaProps })
+    .properties;
+  const out: JsonSchemaProps = {};
+  for (const [name, block] of Object.entries(blocks)) {
+    const props = (block as { properties?: JsonSchemaProps }).properties;
+    if (props) out[name] = props;
+  }
+  return out;
+}
+
+// One JSON Schema keyword of one published field. A NULLABLE field is published as
+// `anyOf: [<the type>, {"type":"null"}]`, so the keyword sits one level in, and a test that only
+// looked at the top would read `undefined` and pass against nothing.
+function keywordOf(
+  published: JsonSchemaProps,
+  block: string,
+  name: string,
+  keyword: string,
+): unknown {
+  const f = published[block]?.[name];
+  if (!f) throw new Error(`published schema has no ${block}.${name}`);
+  const branches = Array.isArray(f.anyOf)
+    ? (f.anyOf as Record<string, unknown>[])
+    : [f];
+  const hit = branches.find((b) => b[keyword] !== undefined);
+  if (!hit) {
+    throw new Error(`published ${block}.${name} declares no ${keyword}`);
+  }
+  return hit[keyword];
+}
 
 // The blocks `agent_settings_set` exposes. `guardrails` is the one behavior block the tool does not
 // take, so the drift check must not demand a schema for it.
@@ -68,12 +129,33 @@ describe("agent_settings_set argument schema", () => {
     expect(Object.keys(step)).toContain("assignLabels");
   });
 
-  // What the stale prose got wrong, asserted against the registry rather than against a copy of it.
-  test("the published choices are the registry's own", () => {
-    const providerOf = (block: "stt" | "vision") =>
-      BEHAVIOR_PATCH_SHAPE[block].unwrap().shape.provider.unwrap().options;
-    expect(providerOf("stt")).toEqual(STT_PROVIDER_NAMES);
-    expect(providerOf("vision")).toEqual(VISION_PROVIDER_NAMES);
+  // What the stale prose got wrong, asserted against the registry rather than against a copy of it —
+  // and read off the PUBLISHED schema, which is the artifact a client actually receives. Poking at
+  // the zod object instead would have missed that `tools/list` drops what it cannot express.
+  test("the published choices are the registry's own", async () => {
+    const published = await publishedSchema();
+    expect(keywordOf(published, "stt", "provider", "enum")).toEqual(
+      STT_PROVIDER_NAMES,
+    );
+    expect(keywordOf(published, "vision", "provider", "enum")).toEqual(
+      VISION_PROVIDER_NAMES,
+    );
+    expect(keywordOf(published, "tts", "normalizeProvider", "enum")).toEqual([
+      ...MODEL_PROVIDERS,
+    ]);
+  });
+
+  // JSON Schema has no regex flags, so an `i` on the reader's pattern is DROPPED on the way out and
+  // a client validating against the published pattern refuses what the server accepts. Compiled from
+  // the published string, with no flags, because that is what a client would do with it.
+  test("the published pattern accepts what the server accepts", async () => {
+    const published = await publishedSchema();
+    const pattern = keywordOf(published, "stt", "language", "pattern");
+    expect(typeof pattern).toBe("string");
+    const asClientWouldCompileIt = new RegExp(pattern as string);
+    expect(asClientWouldCompileIt.test("pt")).toBe(true);
+    expect(asClientWouldCompileIt.test("pt-BR")).toBe(true);
+    expect(asClientWouldCompileIt.test("portugues")).toBe(false);
   });
 
   // A value the readers HONOR has to parse. Each row is a real reader behavior, not a hypothetical:
@@ -114,6 +196,11 @@ describe("agent_settings_set argument schema", () => {
       { sendImage: { allowedHosts: ["not a host"] } },
     ],
     ["a language tag with a region", { stt: { language: "pt-BR" } }],
+    // `str()` trims before it compares, so padding is a value these readers honor. The three below
+    // reach their choice through it; the two in the refused table do not.
+    ["a padded provider, which str() trims", { stt: { provider: " openai " } }],
+    ["a padded reply mode", { tts: { mode: " mirror " } }],
+    ["a padded language tag", { stt: { language: " pt-BR " } }],
     [
       "null, the way the grounding filter is cleared",
       { grounding: { maxDistance: null } },
@@ -171,6 +258,22 @@ describe("agent_settings_set argument schema", () => {
       "a language that is not a language tag",
       { stt: { language: "portugues" } },
     ],
+    // The other half of the padding pair: these readers test the RAW value, so a padded one is
+    // thrown away there and refusing it here is the same answer, delivered earlier.
+    [
+      "a padded handoff mode, which its reader does NOT trim",
+      { handoff: { mode: " route " } },
+    ],
+    [
+      "a padded delay unit, which its reader does NOT trim",
+      { followUp: { steps: [{ delayUnit: " minutes " }] } },
+    ],
+    // A model id where a model PROVIDER goes: stored without complaint today, and then
+    // resolveNormalizeModel returns `provider_unknown` and the rewrite never runs.
+    [
+      "a model id in normalizeProvider",
+      { tts: { normalizeProvider: "gpt-4o-mini" } },
+    ],
   ];
 
   test.each(discarded)("refused: %s", (_label, value) => {
@@ -215,6 +318,15 @@ describe("agent_settings_set argument schema", () => {
     });
   });
 
+  // Parsing has to hand the handler the trimmed value, not merely accept the padded one: the block
+  // is spread into the stored bag before any reader sees it.
+  test("a padded choice reaches the handler trimmed", () => {
+    const parsed = patch.parse({
+      stt: { provider: " openai ", language: " pt-BR " },
+    });
+    expect(parsed.stt).toEqual({ provider: "openai", language: "pt-BR" });
+  });
+
   // The partial-patch contract, at the parse boundary. zod 4 omits an absent optional rather than
   // materializing it as `undefined`; if that ever changed, every sibling of a one-knob patch would
   // be spread over the stored block as undefined and the merge would wipe them.
@@ -233,24 +345,9 @@ describe("agent_settings_set argument schema", () => {
 async function callSettingsSet(
   args: Record<string, unknown>,
 ): Promise<{ isError: boolean; text: string }> {
-  const principal: VerifiedToken = {
-    userId: 1n,
-    tenantId: 1n,
-    role: "TENANT_ADMIN",
-    scopes: ["mcp:read", "mcp:write"],
-    clientId: "c",
-    jti: "j",
-  };
-  const server = buildMcpServer(principal);
-  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverT);
-  const client = new Client({ name: "schema-check", version: "0" });
-  await client.connect(clientT);
-  const res = (await client.callTool({
-    name: "agent_settings_set",
-    arguments: args,
-  })) as { isError?: boolean; content?: { text?: string }[] };
-  await client.close();
+  const res = (await withClient((c) =>
+    c.callTool({ name: "agent_settings_set", arguments: args }),
+  )) as { isError?: boolean; content?: { text?: string }[] };
   return {
     isError: res.isError === true,
     text: res.content?.[0]?.text ?? "",

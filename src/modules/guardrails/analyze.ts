@@ -17,6 +17,7 @@ import {
   readVerdict,
   unanalyzed,
   VERDICT_SCHEMA,
+  VERDICT_SCHEMA_OPENAPI,
   type VerdictMode,
 } from "./verdict";
 
@@ -232,10 +233,13 @@ async function invokeForVerdict(
     return { parsed: null, raw: messageText(res.content).trim() };
   };
   if (mode === "prose") return asProse();
+  // Same verdict, in the dialect this endpoint speaks. See ./verdict and graph/model-config: asking
+  // in the wrong one is not a soft failure, it is a refusal on every screen.
+  const schema = mode === "openapi" ? VERDICT_SCHEMA_OPENAPI : VERDICT_SCHEMA;
   try {
     const res = (await model
-      .withStructuredOutput(VERDICT_SCHEMA, {
-        name: VERDICT_SCHEMA.title,
+      .withStructuredOutput(schema, {
+        name: schema.title,
         // NOTE: `strict` is what turns the schema from a request into a constraint on OpenAI; the
         // other adapter on the list ignores the flag (Anthropic forces the tool call), and both
         // were checked to accept the option rather than throw.

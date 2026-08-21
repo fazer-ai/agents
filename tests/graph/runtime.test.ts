@@ -2235,8 +2235,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // wrong way — the classification is one call away from the runtime, and nothing else reads it.
     describe("the provider decides how the verdict is asked for", () => {
       const shapes = [
-        // On the list: the endpoint implements constrained decoding.
-        { provider: "openai", conversationId: 953, expected: "constrained" },
+        // Constrained, in the dialect this endpoint speaks.
+        { provider: "openai", conversationId: 953, expected: "json-schema" },
+        { provider: "google", conversationId: 955, expected: "openapi" },
         // Off it: json_schema is refused by this API, so the call has to stay the one that works.
         { provider: "deepseek", conversationId: 954, expected: "prose" },
       ] as const;
@@ -2278,9 +2279,17 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
                     shapesSeen.push("prose");
                     return { content: clean };
                   },
-                  withStructuredOutput: () => ({
+                  // The dialect is visible in the schema it is handed, which is the whole point:
+                  // asking Gemini in OpenAI's dialect is refused on every screen.
+                  withStructuredOutput: (schema: {
+                    properties: Record<string, { nullable?: unknown }>;
+                  }) => ({
                     invoke: async () => {
-                      shapesSeen.push("constrained");
+                      shapesSeen.push(
+                        schema.properties.suggestedReply?.nullable === true
+                          ? "openapi"
+                          : "json-schema",
+                      );
                       return {
                         raw: { content: clean },
                         parsed: JSON.parse(clean),

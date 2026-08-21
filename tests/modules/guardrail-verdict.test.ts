@@ -1,53 +1,53 @@
 import { describe, expect, test } from "bun:test";
 import {
-  acceptsConstrainedOutput,
   MODEL_PROVIDERS,
+  type VerdictAskMode,
+  verdictAskMode,
 } from "@/graph/model-config";
 import {
   type GuardrailVerdict,
   readVerdict,
   VERDICT_SCHEMA,
+  VERDICT_SCHEMA_OPENAPI,
   verdictFromObject,
 } from "@/modules/guardrails/verdict";
 
-// Two tables, and they answer the two halves of issue #131: WHERE the constrained verdict may be
-// asked for, and HOW a verdict is read once it comes back either way.
+// Two tables, and they answer the two halves of issue #131: HOW each endpoint is asked for the
+// verdict, and how a verdict is read once it comes back, in whichever shape it came.
 //
 // The axis both tables turn on is the one this module keeps getting wrong: a verdict that could not
 // be read must stay distinguishable from a verdict that says "clean". This is a moderation feature
 // and it fails OPEN, so every ambiguity that collapses into CLEAN is a message delivered unscreened
 // under a guardrail the operator believes is running.
 
-describe("which providers may be asked for a constrained verdict", () => {
-  // Measured, not assumed. What each row costs when it is wrong is not symmetric: a provider
-  // wrongly on the list stops screening (the call fails and the guardrail fails open), while a
-  // provider wrongly off it keeps exactly today's behaviour.
-  const table: Record<(typeof MODEL_PROVIDERS)[number], boolean> = {
+describe("how each provider is asked for the verdict", () => {
+  // Measured, not assumed. What a wrong row costs is not symmetric: a provider wrongly on "prose"
+  // keeps today's behaviour, while one asked in the wrong dialect is refused on every screen and
+  // only survives it because a refused request is remade in prose.
+  const table: Record<(typeof MODEL_PROVIDERS)[number], VerdictAskMode> = {
     // json_schema with strict is OpenAI's own; the adapter falls back to function calling on the
     // ids that predate it (gpt-4 and older), so no id is left without a constrained path.
-    openai: true,
+    openai: "json-schema",
     // The adapter asks with a FORCED tool call, which every current Anthropic model implements.
-    anthropic: true,
-    // Out over a DIALECT: Gemini's responseSchema is the OpenAPI subset, where nullability is
-    // `nullable: true` and not a type union, and the adapter forwards ours unconverted (the wire is
-    // asserted in tests/modules/guardrail-constrained.test.ts). Asking with the other dialect is
-    // not a shared answer either: OpenAI ignores `nullable` and the field becomes a required
-    // string, which pushes the model into inventing a replacement.
-    google: false,
+    anthropic: "json-schema",
+    // The OpenAPI 3.0 subset, where nullability is a flag and not a type union. Measured live on
+    // gemini-3.5-flash and -flash-lite: the other dialect is refused with a 400, this one answers
+    // in a single call.
+    google: "openapi",
     // The API implements json_object only and answers "unavailable now" to json_schema.
-    deepseek: false,
+    deepseek: "prose",
     // Support is per ENDPOINT behind the router, not per model, and it changes without notice; the
     // router simply fails the request when it lands on a provider that lacks it.
-    openrouter: false,
+    openrouter: "prose",
     // An arbitrary server by definition. Measured against a local one that ignores the parameter:
     // the client retried the same call six times over a minute and never settled, while the
     // unconstrained call it makes today answered on the first try.
-    "openai-compatible": false,
+    "openai-compatible": "prose",
   };
 
   for (const provider of MODEL_PROVIDERS) {
-    test(`${provider}: ${table[provider] ? "constrained" : "prose"}`, () => {
-      expect(acceptsConstrainedOutput(provider)).toBe(table[provider]);
+    test(`${provider}: ${table[provider]}`, () => {
+      expect(verdictAskMode(provider)).toBe(table[provider]);
     });
   }
 
@@ -195,5 +195,41 @@ describe("VERDICT_SCHEMA", () => {
       .filter(([, v]) => Array.isArray(v.type) && v.type.includes("null"))
       .map(([k]) => k);
     expect(nullable).toEqual(["suggestedReply"]);
+  });
+});
+
+// The two dialects are the same verdict, so they may differ ONLY in how a nullable field is
+// spelled. `VERDICT_SCHEMA_OPENAPI` is derived from the other one, which keeps the shared fields in
+// step by construction; what derivation cannot catch is a NEW nullable field, which would silently
+// keep its type union and be refused by Gemini on every screen. That is what this asserts.
+describe("VERDICT_SCHEMA_OPENAPI", () => {
+  const props = (s: { properties: Record<string, { type: unknown }> }) =>
+    Object.keys(s.properties).sort();
+
+  test("carries the same fields and the same required list", () => {
+    expect(props(VERDICT_SCHEMA_OPENAPI)).toEqual(props(VERDICT_SCHEMA));
+    expect([...VERDICT_SCHEMA_OPENAPI.required]).toEqual([
+      ...VERDICT_SCHEMA.required,
+    ]);
+  });
+
+  test("spells every nullable field as a flag, never as a type union", () => {
+    const unions = Object.entries(VERDICT_SCHEMA_OPENAPI.properties)
+      .filter(([, v]) => Array.isArray((v as { type: unknown }).type))
+      .map(([k]) => k);
+    expect(unions).toEqual([]);
+  });
+
+  test("keeps null reachable for the fields that had it", () => {
+    const nullableHere = Object.entries(VERDICT_SCHEMA_OPENAPI.properties)
+      .filter(([, v]) => (v as { nullable?: unknown }).nullable === true)
+      .map(([k]) => k);
+    const nullableThere = Object.entries(VERDICT_SCHEMA.properties)
+      .filter(([, v]) => {
+        const t = (v as { type: unknown }).type;
+        return Array.isArray(t) && (t as string[]).includes("null");
+      })
+      .map(([k]) => k);
+    expect(nullableHere.sort()).toEqual(nullableThere.sort());
   });
 });

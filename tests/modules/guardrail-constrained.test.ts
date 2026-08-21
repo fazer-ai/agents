@@ -163,7 +163,7 @@ describe("the verdict is asked for as a schema, not as prose", () => {
   });
 
   test("the schema travels with the call, closed and strict", async () => {
-    await analyzeGuardrail(openaiModel, BASE, "constrained");
+    await analyzeGuardrail(openaiModel, BASE, "json-schema");
     const format = lastWire.response_format as {
       type: string;
       json_schema: {
@@ -184,7 +184,7 @@ describe("the verdict is asked for as a schema, not as prose", () => {
   });
 
   test("the answer the schema produced is the verdict", async () => {
-    const v = await analyzeGuardrail(openaiModel, BASE, "constrained");
+    const v = await analyzeGuardrail(openaiModel, BASE, "json-schema");
     expect(v.violated).toBe(true);
     expect(v.categories).toEqual(["toxicity"]);
     expect(v.error).toBeUndefined();
@@ -196,7 +196,7 @@ describe("the verdict is asked for as a schema, not as prose", () => {
   // for a screen that produced no verdict at all.
   test("json that is not a verdict does not become a clean verdict", async () => {
     openaiBody = JSON.stringify({ violado: true, categorias: ["toxicity"] });
-    const v = await analyzeGuardrail(openaiModel, BASE, "constrained");
+    const v = await analyzeGuardrail(openaiModel, BASE, "json-schema");
     expect(v.violated).toBe(false);
     expect(v.error).toBe("no usable verdict in response");
   });
@@ -206,7 +206,7 @@ describe("the verdict is asked for as a schema, not as prose", () => {
   // silent one. A refusal is answered by making the call the way it was made before this existed.
   test("a refused request is retried the way it used to be made", async () => {
     refuseConstrained = true;
-    const v = await analyzeGuardrail(openaiModel, BASE, "constrained");
+    const v = await analyzeGuardrail(openaiModel, BASE, "json-schema");
     expect(v.violated).toBe(true);
     expect(v.error).toBeUndefined();
     // Two calls: the constrained one that was refused, then the one that works.
@@ -220,7 +220,7 @@ describe("the verdict is asked for as a schema, not as prose", () => {
   // on a turn a customer is waiting on.
   test("a rate limit is not retried in prose", async () => {
     refuseWith = 429;
-    const v = await analyzeGuardrail(openaiModel, BASE, "constrained");
+    const v = await analyzeGuardrail(openaiModel, BASE, "json-schema");
     expect(v.error).toBeTruthy();
     expect(v.violated).toBe(false);
     expect(wires.length).toBe(1);
@@ -250,7 +250,7 @@ describe("an adapter that answers around the schema", () => {
         input: VIOLATION,
       },
     ];
-    const v = await analyzeGuardrail(anthropicModel, BASE, "constrained");
+    const v = await analyzeGuardrail(anthropicModel, BASE, "json-schema");
     expect(v.violated).toBe(true);
     expect(v.categories).toEqual(["toxicity"]);
     expect(v.error).toBeUndefined();
@@ -264,30 +264,31 @@ describe("an adapter that answers around the schema", () => {
     anthropicContent = [
       { type: "text", text: `Analisei: ${JSON.stringify(VIOLATION)}` },
     ];
-    const v = await analyzeGuardrail(anthropicModel, BASE, "constrained");
+    const v = await analyzeGuardrail(anthropicModel, BASE, "json-schema");
     expect(v.violated).toBe(true);
     expect(v.error).toBeUndefined();
   });
 
   test("a text answer carrying no verdict is not clean either", async () => {
     anthropicContent = [{ type: "text", text: "não consegui analisar" }];
-    const v = await analyzeGuardrail(anthropicModel, BASE, "constrained");
+    const v = await analyzeGuardrail(anthropicModel, BASE, "json-schema");
     expect(v.violated).toBe(false);
     expect(v.error).toBe("no usable verdict in response");
   });
 });
 
-// Why `google` is NOT on the list, kept as a test because the reason is a measurement and it will
-// stop being true the day the adapter converts the schema. It is not a missing feature on Gemini's
-// side: its responseSchema is the OpenAPI 3.0 subset, where `type` holds one value and nullability
-// is `nullable: true`. What this asserts is the half we own — what the adapter puts on the wire.
+// Gemini is asked in its own dialect, and this is where that is pinned. The adapter forwards the
+// schema unconverted, so what we hand it is what Gemini validates: measured live on
+// gemini-3.5-flash and -flash-lite, the json-schema dialect comes back 400 ("Proto field is not
+// repeating, cannot start list") and every screen then costs two calls, while this one answers in
+// one.
 //
-// The other direction was measured live and is what rules out simply switching dialects: asked
-// with `nullable: true`, OpenAI ignores the keyword, `suggestedReply` becomes a required string,
-// and the model is pushed into inventing one (8 runs on gpt-5.4-nano: `""` seven times, `"/"`
-// once) — on the direction whose entire rule is that it must never compose a reply.
-describe("the schema dialect Gemini would need", () => {
-  test("the adapter forwards our type union unconverted, so it would not be Gemini's", async () => {
+// The reverse is why the two dialects are not interchangeable, also measured live: asked with
+// `nullable: true`, OpenAI ignores the keyword, `suggestedReply` becomes a required string, and the
+// model is pushed into inventing one (8 runs on gpt-5.4-nano: `""` seven times, `"/"` once) — on
+// the direction whose entire rule is that it must never compose a reply.
+describe("the schema dialect Gemini speaks", () => {
+  test("nullability reaches the wire as a flag, not as a type union", async () => {
     let wire = "";
     const server = Bun.serve({
       port: 0,
@@ -322,18 +323,25 @@ describe("the schema dialect Gemini would need", () => {
       baseUrl: `http://localhost:${server.port}`,
     });
     try {
-      await analyzeGuardrail(gemini, BASE, "constrained");
+      await analyzeGuardrail(gemini, BASE, "openapi");
       const schema = (
         JSON.parse(wire) as {
           generationConfig?: {
-            responseSchema?: { properties?: Record<string, { type: unknown }> };
+            responseSchema?: {
+              properties?: Record<
+                string,
+                { type?: unknown; nullable?: unknown }
+              >;
+            };
           };
         }
       ).generationConfig?.responseSchema;
-      const nullableField = schema?.properties?.suggestedReply?.type;
-      // A type UNION reached the wire. Gemini's subset has no such form; it spells this
-      // `{ type: "string", nullable: true }`.
-      expect(Array.isArray(nullableField)).toBe(true);
+      const field = schema?.properties?.suggestedReply as
+        | { type?: unknown; nullable?: unknown }
+        | undefined;
+      // One type value plus the flag. A type UNION here is the shape Gemini refuses.
+      expect(field?.type).toBe("string");
+      expect(field?.nullable).toBe(true);
     } finally {
       server.stop(true);
     }

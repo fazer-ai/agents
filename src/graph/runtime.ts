@@ -4,7 +4,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { acceptsConstrainedOutput } from "@/graph/model-config";
+import { verdictAskMode } from "@/graph/model-config";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
@@ -410,10 +410,10 @@ export async function runLoadedTurn(
         generationPrompt:
           dir.action === "generated" ? dir.generationPrompt : undefined,
       },
-      // Constrained where the endpoint implements it, and asked for in the prompt everywhere else.
-      // The provider decides, not the model id: the same adapter serves OpenAI itself and whatever
-      // an operator points `openai-compatible` at (issue #131).
-      acceptsConstrainedOutput(gr.provider) ? "constrained" : "prose",
+      // Constrained where the endpoint implements it, in the dialect it speaks, and asked for in
+      // the prompt everywhere else. The provider decides, not the model id: the same adapter serves
+      // OpenAI itself and whatever an operator points `openai-compatible` at (issue #131).
+      verdictAskMode(gr.provider),
     );
     // A guardrail that could not run reads exactly like one that ran and approved, so without this
     // line an expired credential is silent moderation for as long as nobody notices. The turn is

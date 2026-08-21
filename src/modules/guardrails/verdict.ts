@@ -12,10 +12,11 @@
 // Guardrails fail OPEN, so every ambiguity collapsed into CLEAN is a message delivered unscreened
 // under a control the operator believes is running. `error` is what keeps the two apart.
 
-// Which of the two shapes a call may ask for. Not a capability of the model: the same adapter
-// serves an endpoint we know and one we do not, so this is decided from the provider and travels
-// with the call.
-export type VerdictMode = "constrained" | "prose";
+// How a call asks for the verdict. Not a capability of the model: the same adapter serves an
+// endpoint we know and one we do not, so this is decided from the provider and travels with the
+// call. The two constrained values are the same shape in two DIALECTS, and the split is not
+// cosmetic — measured live, asking Gemini in the json-schema dialect is refused outright.
+export type VerdictMode = "prose" | "json-schema" | "openapi";
 
 export interface GuardrailVerdict {
   violated: boolean;
@@ -86,6 +87,23 @@ export const VERDICT_SCHEMA = {
     { type: string | readonly string[]; items?: unknown }
   >;
 };
+
+// The same verdict in the OpenAPI 3.0 subset, which is what Gemini's responseSchema speaks: `type`
+// holds ONE value and nullability is a flag beside it. Measured live on gemini-3.5-flash and
+// -flash-lite: asked with the type union above, the request comes back 400 ("Proto field is not
+// repeating, cannot start list") and the analysis has to be remade in prose, so every screen costs
+// two calls; asked like this, one call answers, with `suggestedReply` still allowed to be null.
+//
+// NOTE: derived from the schema above rather than written out, so the two cannot drift apart on the
+// fields they share. What derivation cannot catch is a NEW nullable field, which would keep its
+// type union here — tests/modules/guardrail-verdict.test.ts fails on exactly that.
+export const VERDICT_SCHEMA_OPENAPI = {
+  ...VERDICT_SCHEMA,
+  properties: {
+    ...VERDICT_SCHEMA.properties,
+    suggestedReply: { type: "string", nullable: true },
+  },
+} as const;
 
 // Every TOP-LEVEL balanced object in the response, in order. Nested objects are not returned (they
 // belong to their parent), braces inside strings do not count, and \" does not close one.

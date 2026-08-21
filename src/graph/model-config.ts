@@ -28,41 +28,46 @@ export const PROVIDERS_HONORING_BASE_URL = [
   "openrouter",
 ] as const;
 
-// The providers a call may ask for a SCHEMA-CONSTRAINED answer, instead of asking in the prompt and
-// reading the answer out of prose (see modules/guardrails/verdict.ts, issue #131). This is a claim
-// about the endpoint, never about how capable the model is, and each exclusion below was measured
-// or read off the vendor's own documentation:
+// How each provider is asked for a schema-constrained answer, or that it is not asked at all. A
+// claim about the ENDPOINT, never about how capable the model is, and every row was measured or
+// read off the vendor's own documentation. The consumer today is the guardrail verdict
+// (modules/guardrails/verdict.ts, issue #131):
 //
+//   * openai and anthropic take the json-schema dialect: a `strict` json_schema on one, a forced
+//     tool call on the other;
+//   * google takes the OpenAPI 3.0 subset instead, where `type` holds one value and nullability is
+//     `nullable: true`. Measured live on gemini-3.5-flash and -flash-lite: asked in the json-schema
+//     dialect the request comes back 400 and the analysis is remade in prose, so every screen costs
+//     two calls; asked in this one, a single call answers;
 //   * deepseek implements `json_object` only, and answers "unavailable now" to a json_schema;
 //   * openrouter's support is per ENDPOINT behind the router and changes without notice, so the
 //     same model id constrains today and fails the request tomorrow;
 //   * openai-compatible is an arbitrary server by definition. Measured against a local one that
 //     ignores the parameter: the client retried the same call six times across a minute and never
 //     settled, while the unconstrained call made today answered on the first try. One that refuses
-//     it outright (llama.cpp does, with a 400) fails immediately. Both of those are a guardrail
-//     that stops screening, on installs where it screens fine today;
-//   * google is out over a dialect, not a missing feature. Gemini's responseSchema is the OpenAPI
-//     3.0 subset, where `type` holds ONE value and nullability is `nullable: true`, and the adapter
-//     forwards a `type: ["string", "null"]` unconverted (measured on the wire). The other dialect
-//     is not a shared answer either: asked with `nullable`, OpenAI ignores the keyword and the
-//     field becomes a required string, so the model is pushed into inventing one — measured, 8 runs
-//     on gpt-5.4-nano, `""` seven times and `"/"` once, on the direction whose whole rule is that
-//     it must never compose a reply. One schema cannot serve both, and a per-vendor dialect is a
-//     mechanism nobody here can exercise against the live endpoint yet.
+//     it outright (llama.cpp does, with a 400) fails immediately.
 //
-// Getting a row wrong is not symmetric: a provider wrongly on this list stops screening, one
-// wrongly off it keeps exactly today's behaviour. When in doubt, leave it off.
-export const PROVIDERS_ACCEPTING_CONSTRAINED_OUTPUT = [
-  "openai",
-  "anthropic",
-] as const;
+// Getting a row wrong is not symmetric. A provider wrongly on "prose" keeps exactly today's
+// behaviour; one asked in the wrong dialect pays a refusal on every screen, and only survives it
+// because the analysis is remade in prose when a request comes back refused.
+export type VerdictAskMode = "prose" | "json-schema" | "openapi";
 
-export function acceptsConstrainedOutput(
+const VERDICT_ASK_MODE: Record<
+  (typeof MODEL_PROVIDERS)[number],
+  VerdictAskMode
+> = {
+  openai: "json-schema",
+  anthropic: "json-schema",
+  google: "openapi",
+  deepseek: "prose",
+  openrouter: "prose",
+  "openai-compatible": "prose",
+};
+
+export function verdictAskMode(
   provider: (typeof MODEL_PROVIDERS)[number],
-): boolean {
-  return (PROVIDERS_ACCEPTING_CONSTRAINED_OUTPUT as readonly string[]).includes(
-    provider,
-  );
+): VerdictAskMode {
+  return VERDICT_ASK_MODE[provider];
 }
 
 export const modelConfigSchema = z

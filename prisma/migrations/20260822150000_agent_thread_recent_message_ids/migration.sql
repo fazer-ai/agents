@@ -14,6 +14,18 @@ ALTER TABLE "agent_threads"
   ADD COLUMN "recent_synced_message_ids" INTEGER[] NOT NULL DEFAULT '{}',
   ADD COLUMN "recent_agent_message_ids"  INTEGER[] NOT NULL DEFAULT '{}';
 
+-- `agent_threads` carries FORCE ROW LEVEL SECURITY, so tenant isolation applies to the table OWNER
+-- too; only a superuser or a BYPASSRLS role is exempt. docs/deploy.md allows MIGRATION_DATABASE_URL
+-- to be superuser OR db owner, and on managed Postgres the administrative role is typically the
+-- owner WITHOUT rolsuper — where a bare UPDATE matches zero rows and reports success. That failure
+-- mode is not hypothetical here: it is what 20260818120000 exists to repair on another table, and
+-- it would land in exactly the place this backfill is protecting, leaving migrated threads looking
+-- like fresh ones and re-appending old ids on a re-delivery.
+--
+-- Plain SET, not SET LOCAL: outside a transaction SET LOCAL is a no-op with only a warning, which
+-- would reproduce the very silence this guards against.
+SET app.is_super_admin = 'on';
+
 UPDATE "agent_threads"
    SET "recent_synced_message_ids" = array_fill("last_synced_message_id", ARRAY[64])
  WHERE "last_synced_message_id" IS NOT NULL;
@@ -21,3 +33,5 @@ UPDATE "agent_threads"
 UPDATE "agent_threads"
    SET "recent_agent_message_ids" = array_fill("last_agent_message_id", ARRAY[64])
  WHERE "last_agent_message_id" IS NOT NULL;
+
+RESET app.is_super_admin;

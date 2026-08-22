@@ -245,6 +245,44 @@ describe.if(dbUp)("the identity the gate is given", () => {
     expect(row.attributes).toEqual({});
   });
 
+  // The tie is not about clearing, it is about DISAGREEING. Two snapshots inside one second, each
+  // naming a different phone: nothing can order them, so keeping either would be a coin toss about
+  // whose number this is — and the gate would carry the winner to the operator's endpoint as fact.
+  test("inside the same second, two different phones both lose", async () => {
+    await mirror(instB, {
+      conversationId: 8002,
+      phone: "+5511900000010",
+      identifier: "mesmo-cliente",
+      updatedAt: 1787081600,
+    });
+    await mirror(instB, {
+      conversationId: 8002,
+      phone: "+5511900000011",
+      identifier: "mesmo-cliente",
+      updatedAt: 1787081600,
+    });
+    const row = await contactOf(instB);
+    expect(row.phone).toBeNull();
+    // Only the field they disagree on: the identifier they BOTH state is not in dispute.
+    expect(row.attributes).toEqual({ identifier: "mesmo-cliente" });
+  });
+
+  // And the other half of the same rule, which is what keeps it from being "clear on every tie":
+  // a re-delivery is two payloads at one timestamp that agree, and agreement is not a conflict.
+  test("the same delivery twice keeps the identity it stated", async () => {
+    const again = {
+      conversationId: 8002,
+      phone: "+5511900000012",
+      identifier: "reentrega",
+      updatedAt: 1787085200,
+    };
+    await mirror(instB, again);
+    await mirror(instB, again);
+    const row = await contactOf(instB);
+    expect(row.phone).toBe("+5511900000012");
+    expect(row.attributes).toEqual({ identifier: "reentrega" });
+  });
+
   // Deliveries do arrive out of order, and this write runs before the conversation's stale guard.
   test("a late delivery does not restore an identifier a newer one cleared", async () => {
     await mirror(instA, {

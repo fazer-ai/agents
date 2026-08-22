@@ -205,7 +205,13 @@ async function readBodyCapped(
   max: number,
 ): Promise<string | null> {
   const declared = Number(res.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > max) return null;
+  if (Number.isFinite(declared) && declared > max) {
+    // Refusing by the header does not excuse leaving the stream open: without this the body (and
+    // the socket under it) stays live until the peer gives up, and every check against a chatty
+    // endpoint leaks another one. The streamed path below already cancels; this one returned first.
+    await res.body?.cancel().catch(() => undefined);
+    return null;
+  }
   const reader = res.body?.getReader();
   if (!reader) return "";
   const chunks: Uint8Array[] = [];
@@ -229,6 +235,21 @@ async function readBodyCapped(
   return new TextDecoder().decode(out);
 }
 
+// Awaits a promise, but never past the signal. `assertSafeOutboundUrl` resolves DNS and takes no
+// AbortSignal, so this is what puts it under the same deadline as the request it is vetting. The
+// lookup itself keeps running when we walk away from it — what matters is that the caller does not
+// wait on it.
+function underSignal<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error("aborted"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(resolve, reject).finally(() =>
+      signal.removeEventListener("abort", onAbort),
+    );
+  });
+}
+
 // Asks the endpoint once. Never throws: every failure is a verdict with outcome "error" and a reason
 // code, because the caller's only correct response to a failure is the same as to a denial without
 // the customer message (fail-closed), and a throw here would be a second path to the same place.
@@ -247,19 +268,24 @@ export async function checkContactAuthorization(
       // tools make (prepare.ts): a local endpoint works in development, production stays https.
       assertSafeOutboundUrl(u, { allowHttp: config.ssrf.allowPrivateTargets }));
   const { url, init } = buildAuthorizationRequest(cfg, identity, credential);
-  try {
-    // NOTE: On the FINAL URL, with the identity and any query credential already on it, immediately
-    // before the fetch. What is asserted is what is sent.
-    await assertSafe(url.toString());
-  } catch (err) {
-    return {
-      outcome: "error",
-      reason: err instanceof SsrfError ? "unsafe_url" : "invalid_url",
-    };
-  }
+  // NOTE: The deadline is armed BEFORE the URL check, because that check resolves DNS. One
+  // unreachable resolver would otherwise hold the pre-turn gate — and the webhook turn behind it —
+  // for as long as the resolver takes, with `timeoutMs` only starting to count afterwards. The
+  // budget covers every step that waits: the lookup, the fetch, and the body.
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
   try {
+    try {
+      // NOTE: On the FINAL URL, with the identity and any query credential already on it,
+      // immediately before the fetch. What is asserted is what is sent.
+      await underSignal(assertSafe(url.toString()), ctrl.signal);
+    } catch (err) {
+      if (ctrl.signal.aborted) return { outcome: "error", reason: "timeout" };
+      return {
+        outcome: "error",
+        reason: err instanceof SsrfError ? "unsafe_url" : "invalid_url",
+      };
+    }
     const res = await doFetch(url.toString(), {
       ...init,
       redirect: "error",

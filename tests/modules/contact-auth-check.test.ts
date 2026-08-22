@@ -382,6 +382,51 @@ describe("checkContactAuthorization", () => {
     ).toEqual({ outcome: "error", status: 200, reason: "body_too_large" });
   });
 
+  // The URL check resolves DNS, and a resolver that never answers used to hold the whole pre-turn
+  // gate: `timeoutMs` only started counting after it. The budget covers every step that waits.
+  test("a stalled url check does not outlast the timeout", async () => {
+    let fetched = 0;
+    const fetchImpl = (async (_input: RequestInfo | URL) => {
+      fetched += 1;
+      return new Response('{"authorized":true}');
+    }) as unknown as typeof fetch;
+    const started = Date.now();
+    const v = await checkContactAuthorization(
+      cfg({ timeoutMs: 25 }),
+      IDENTITY,
+      null,
+      { fetchImpl, assertSafe: () => new Promise<URL>(() => {}) },
+    );
+    expect(v).toEqual({ outcome: "error", reason: "timeout" });
+    expect(fetched).toBe(0);
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  // Refusing by the declared size returns before the read loop, which is where the cancel used to
+  // live: the stream, and the socket under it, stayed open on every check.
+  test("a body refused by its declared size is cancelled", async () => {
+    let cancelled = false;
+    const fetchImpl = (async (_input: RequestInfo | URL) => {
+      const body = new ReadableStream<Uint8Array>({
+        start() {},
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { "content-length": String(MAX_RESPONSE_BYTES + 1) },
+      });
+    }) as unknown as typeof fetch;
+    expect(
+      await checkContactAuthorization(cfg(), IDENTITY, null, {
+        fetchImpl,
+        assertSafe: okUrl,
+      }),
+    ).toEqual({ outcome: "error", status: 200, reason: "body_too_large" });
+    expect(cancelled).toBe(true);
+  });
+
   test("no url configured is an error, not a pass", async () => {
     const fetchImpl = (async (_input: RequestInfo | URL) =>
       new Response("{}")) as unknown as typeof fetch;

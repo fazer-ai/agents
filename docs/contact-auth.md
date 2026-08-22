@@ -31,7 +31,7 @@ read, so a malformed bag can never break the webhook.
 | `url`                   | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
 | `method`                | `GET`   | `GET` or `POST` (the two request shapes below).                     |
 | `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). A kind the vault marks as never-injected (`mcp_env`, `langfuse`) is refused as an error rather than falling back to a Bearer, which would hand an unrelated secret to the endpoint. |
-| `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error.           |
+| `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error. Covers every step that waits: the SSRF/DNS check on the final URL, the request, and the body. |
 | `noticeCooldownSeconds` | `60`    | Clamped 0-3600. Cooldown on the NOTICES for a refused message (the customer copy and the operator note, per conversation), never on the verdict: the endpoint is asked on every message regardless. 0 = notify on every refused message. |
 | `includeMessageText`    | `false` | POST only: forward the triggering message's text as `message.text`, so the endpoint can accept an unlock code the customer sends. The opt-in is stored as set; a GET request simply does not carry the text, and switching the method back to POST brings it back. |
 | `denyMessage`           | `null`  | Fixed copy the CUSTOMER receives on a denial (≤ `TEMPLATE_MESSAGE_MAX`). `null` = say nothing. |
@@ -91,12 +91,17 @@ nothing to ask the endpoint about, and fail-closed means nobody unidentified is 
 Every identity field follows one rule in the mirror: a payload that does not CARRY the field leaves
 what is stored (a degraded payload must not wipe identity), and one that carries it is written as
 Chatwoot says, cleared included — a phone kept after it was removed asks the endpoint about whoever
-used to have it. They share one source watermark (`contacts.identity_at`), and a tie is decided
-toward the CLEAR: `last_activity_at` has one-second resolution, so two events inside one second
-cannot be ordered by it, and the two directions are not symmetric here — a clear that loses leaves
-the gate asking about an identity the customer no longer has. The tie is decided per FIELD, not per
-payload: an older snapshot that happens to carry an unrelated cleared field must not ride that in to
-rewrite the rest of what it holds.
+used to have it. They share one source watermark (`contacts.identity_at`).
+
+`last_activity_at` has one-second resolution, so two events inside one second cannot be ordered by
+it at all, and a tie is settled per FIELD against the value already STORED: a stated value that
+matches changes nothing (a re-delivery is two payloads that agree), and a stated value that differs
+clears the field. That covers a clear losing to a stale value and two different values landing in
+the same second alike — in both, keeping either is a coin toss about who this customer is, and
+clearing is the side the gate can live with: it ends up asking about less, or about nobody, instead
+of asking the operator's endpoint about an identity that is not theirs. Per field, because an older
+snapshot that happens to carry an unrelated cleared field must not ride that in to rewrite the rest
+of what it holds.
 
 **On upgrade**, every contact's identity is cleared and its watermark seeded from the newest event
 that touched it. The old mirror wrote identity before the conversation's stale check, so what sits in

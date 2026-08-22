@@ -367,19 +367,49 @@ async function upsertContact(
         }
       : {}),
   };
-  // Only the fields actually being cleared. A single row-wide flag was wrong in a way worth naming:
-  // an OLDER snapshot carrying an unrelated `email: null` would set it, and at an equal timestamp
-  // that snapshot then rewrote EVERY field it carried — restoring, for instance, the phone a newer
-  // one had just cleared. The tie is decided per field, because it is per field that the two
-  // directions stop being symmetric.
-  const cleared: Prisma.ContactUpdateManyMutationInput = {
-    ...(c.name === null ? { name: null } : {}),
-    ...(c.email === null ? { email: null } : {}),
-    ...(c.phone === null ? { phone: null } : {}),
-    ...(c.identifier === null
-      ? { attributes: {} as Prisma.InputJsonValue }
-      : {}),
-  };
+  // What an equal timestamp writes, per field. A single row-wide flag was wrong in a way worth
+  // naming: an OLDER snapshot carrying an unrelated `email: null` would set it, and at an equal
+  // timestamp that snapshot then rewrote EVERY field it carried — restoring, for instance, the phone
+  // a newer one had just cleared. The tie is decided per field, because it is per field that two
+  // snapshots disagree.
+  //
+  // What decides it is the comparison against what is STORED, not whether this payload is clearing
+  // something. A stated value EQUAL to the stored one is the same event arriving twice and must
+  // change nothing. A stated value that DIFFERS is a conflict nothing can order — one snapshot says
+  // the phone is X, the other says Y, inside a second `last_activity_at` cannot split — and there
+  // both lose: keeping either is a coin toss about whose number this is, and the gate would carry
+  // the winner to the operator's endpoint as fact.
+  const ties: Array<{
+    where: Prisma.ContactWhereInput;
+    data: Prisma.ContactUpdateManyMutationInput;
+  }> = [];
+  if (c.name !== undefined) {
+    ties.push({
+      where: c.name === null ? {} : { name: { not: c.name } },
+      data: { name: null },
+    });
+  }
+  if (c.email !== undefined) {
+    ties.push({
+      where: c.email === null ? {} : { email: { not: c.email } },
+      data: { email: null },
+    });
+  }
+  if (c.phone !== undefined) {
+    ties.push({
+      where: c.phone === null ? {} : { phone: { not: c.phone } },
+      data: { phone: null },
+    });
+  }
+  if (c.identifier !== undefined) {
+    ties.push({
+      where:
+        c.identifier === null
+          ? {}
+          : { attributes: { not: { identifier: c.identifier } } },
+      data: { attributes: {} as Prisma.InputJsonValue },
+    });
+  }
 
   // Keyed by INSTANCE too: a Chatwoot contact id is unique inside one account, and two accounts
   // under the same tenant were collapsing contact 42 into one row.
@@ -418,11 +448,12 @@ async function upsertContact(
   // payload therefore only BOOTSTRAPS a contact nothing has positioned yet, and leaves the watermark
   // null so the first dated event still takes over.
   //
-  // The tie is decided toward CLEARING, not toward the last arrival. `last_activity_at` has
-  // one-second resolution, so two events inside one second cannot be ordered by it at all, and the
-  // two directions are not symmetric here: a clear that loses leaves the gate asking about an
-  // identity the customer no longer has, while a clear that wins leaves it asking about less, or
-  // about nobody, which is the fail-closed side this whole feature sits on.
+  // A tie is decided by DISAGREEMENT, not by arrival order. `last_activity_at` has one-second
+  // resolution, so two events inside one second cannot be ordered by it at all: two payloads that
+  // agree are one event delivered twice and settle nothing new, while two that state different
+  // values are a conflict nothing can break, and there the field is cleared. That is the
+  // fail-closed side this whole feature sits on — asking about less, or about nobody, instead of
+  // asking about whichever of the two arrived first.
   if (Object.keys(identity).length > 0) {
     await db.contact.updateMany({
       where: {
@@ -436,15 +467,18 @@ async function upsertContact(
     });
   }
 
-  // The tie, and ONLY the clears in it. The watermark does not move: an equal timestamp positions
-  // nothing new, it just fails to order the two payloads, and this is the direction that is safe to
-  // take on a coin toss — the gate ends up asking about less, or about nobody, instead of about an
-  // identity the customer no longer has.
-  if (eventAt && Object.keys(cleared).length > 0) {
-    await db.contact.updateMany({
-      where: { id: row.id, tenantId, identityAt: eventAt },
-      data: cleared,
-    });
+  // The tie. The watermark does not move: an equal timestamp positions nothing new, it just fails to
+  // order the two payloads. Each field is settled on its own against the value already stored —
+  // equal leaves it alone, different clears it. Clearing is the safe side of a coin toss: the gate
+  // ends up asking about less, or about nobody, instead of about an identity that is not this
+  // customer's.
+  if (eventAt) {
+    for (const tie of ties) {
+      await db.contact.updateMany({
+        where: { ...tie.where, id: row.id, tenantId, identityAt: eventAt },
+        data: tie.data,
+      });
+    }
   }
 
   if (c.customAttributes) {

@@ -137,6 +137,60 @@ function loadSim(agentId: string): PersistedSim {
   };
 }
 
+// The one definition of what an agent turn LOOKS like, shared by every path that produces one: the
+// text turn, the file turn, the voice note, the follow-up, and the reload that rebuilds them from
+// the server. The rule it carries — a turn the guardrail emptied renders as a NOTE carrying the
+// verdict, never as a bubble reading "(no reply)" — used to be written once per call site, and the
+// two media paths were born without it (issue #136): a suppressed file turn showed an empty bubble
+// live and a note after a reload. A bubble reads as the agent having had nothing to say, which is
+// precisely the distinction the transcript store exists to keep.
+//
+// NOTE: `silent` has no reload counterpart, and that predates this hook's guardrail work: a
+// follow-up the agent declined leaves an empty AI message, which the rebuild drops by design. Only
+// turns the guardrail acted on get a stored note.
+export function agentTurn(
+  t: (key: string, fallback: string) => string,
+  r: {
+    text: string;
+    // The guardrail removed a reply the agent DID write.
+    suppressed?: boolean;
+    // The agent itself chose to send nothing (follow-up only; no verdict to show).
+    silent?: boolean;
+    followup?: boolean;
+    audioUrl?: string;
+    trace: PlaygroundData["trace"];
+    sources: PlaygroundData["sources"];
+  },
+): PlaygroundTurn {
+  if (r.suppressed) {
+    return {
+      role: "note",
+      text: t(
+        "playground.suppressedNote",
+        "Nothing would be sent: the guardrail acted on this turn.",
+      ),
+      trace: r.trace,
+    };
+  }
+  if (r.silent) {
+    return {
+      role: "note",
+      text: t(
+        "playground.followup.silent",
+        "Follow-up: the agent chose not to send anything.",
+      ),
+    };
+  }
+  return {
+    role: "assistant",
+    text: r.text || t("playground.empty", "(no reply)"),
+    ...(r.followup ? { followup: true } : {}),
+    ...(r.audioUrl ? { audioUrl: r.audioUrl } : {}),
+    trace: r.trace,
+    sources: r.sources,
+  };
+}
+
 // All playground chat state + actions for ONE agent, in a single hook so the editor tab and the
 // floating popup can share the SAME conversation: lift this hook into the parent (AgentEditorPage)
 // and the state survives switching between them. `getDraft` (when provided) is read at send time so
@@ -338,29 +392,15 @@ export function usePlaygroundChat(
                 ...(rt.extracted ? { extracted: rt.extracted } : {}),
               };
             }
-            // One rule for both paths: a turn the guardrail emptied renders as a note carrying the
-            // verdict, never as a bubble saying "(no reply)". The bubble reads as the agent having
-            // nothing to say, which is the distinction this whole store exists to keep.
-            if (rt.suppressed) {
-              return {
-                role: "note",
-                text: t(
-                  "playground.suppressedNote",
-                  "Nothing would be sent: the guardrail acted on this turn.",
-                ),
-                trace: rt.trace,
-              };
-            }
             const ttsM = rt.media?.find((m) => m.kind === "tts_audio");
-            return {
-              role: "assistant",
-              // A turn the guardrail suppressed reloads with no text, the same as it rendered live.
-              text: rt.text || t("playground.empty", "(no reply)"),
-              ...(rt.followup ? { followup: true } : {}),
+            return agentTurn(t, {
+              text: rt.text,
+              suppressed: rt.suppressed,
+              followup: rt.followup,
               ...(ttsM ? { audioUrl: mediaUrl(ttsM.id) } : {}),
               trace: rt.trace,
               sources: rt.sources,
-            };
+            });
           }),
         );
       } finally {
@@ -450,24 +490,13 @@ export function usePlaygroundChat(
       threadId.current = data.threadId;
       setTurns((prev) => [
         ...prev,
-        data.suppressed
-          ? {
-              role: "note",
-              text: t(
-                "playground.suppressedNote",
-                "Nothing would be sent: the guardrail acted on this turn.",
-              ),
-              trace: data.trace,
-            }
-          : {
-              role: "assistant",
-              text: data.reply || t("playground.empty", "(no reply)"),
-              ...(data.ttsMediaId
-                ? { audioUrl: mediaUrl(data.ttsMediaId) }
-                : {}),
-              trace: data.trace,
-              sources: data.sources,
-            },
+        agentTurn(t, {
+          text: data.reply,
+          suppressed: data.suppressed,
+          ...(data.ttsMediaId ? { audioUrl: mediaUrl(data.ttsMediaId) } : {}),
+          trace: data.trace,
+          sources: data.sources,
+        }),
       ]);
       // A turn on a brand-new thread created a session row — surface it in the sidebar.
       if (wasNew) void refreshSessions();
@@ -506,41 +535,17 @@ export function usePlaygroundChat(
         return;
       }
       threadId.current = data.threadId;
-      setTurns((prev) =>
-        data.suppressed
-          ? [
-              ...prev,
-              {
-                role: "note",
-                text: t(
-                  "playground.suppressedNote",
-                  "Nothing would be sent: the guardrail acted on this turn.",
-                ),
-                trace: data.trace,
-              },
-            ]
-          : data.silent
-            ? [
-                ...prev,
-                {
-                  role: "note",
-                  text: t(
-                    "playground.followup.silent",
-                    "Follow-up: the agent chose not to send anything.",
-                  ),
-                },
-              ]
-            : [
-                ...prev,
-                {
-                  role: "assistant",
-                  text: data.reply || t("playground.empty", "(no reply)"),
-                  followup: true,
-                  trace: data.trace,
-                  sources: data.sources,
-                },
-              ],
-      );
+      setTurns((prev) => [
+        ...prev,
+        agentTurn(t, {
+          text: data.reply,
+          suppressed: data.suppressed,
+          silent: data.silent,
+          followup: true,
+          trace: data.trace,
+          sources: data.sources,
+        }),
+      ]);
     } catch {
       pushError();
     } finally {
@@ -657,13 +662,13 @@ export function usePlaygroundChat(
         threadId.current = data.threadId;
         setTurns((prev) => [
           ...prev,
-          {
-            role: "assistant",
-            text: data.reply || t("playground.empty", "(no reply)"),
+          agentTurn(t, {
+            text: data.reply,
+            suppressed: data.suppressed,
             ...(data.ttsMediaId ? { audioUrl: mediaUrl(data.ttsMediaId) } : {}),
             trace: data.trace,
             sources: data.sources,
-          },
+          }),
         ]);
         if (wasNew) void refreshSessions();
       } catch {
@@ -788,13 +793,13 @@ export function usePlaygroundChat(
         threadId.current = data.threadId;
         setTurns((prev) => [
           ...prev,
-          {
-            role: "assistant",
-            text: data.reply || t("playground.empty", "(no reply)"),
+          agentTurn(t, {
+            text: data.reply,
+            suppressed: data.suppressed,
             ...(data.ttsMediaId ? { audioUrl: mediaUrl(data.ttsMediaId) } : {}),
             trace: data.trace,
             sources: data.sources,
-          },
+          }),
         ]);
         if (wasNew) void refreshSessions();
       } catch {

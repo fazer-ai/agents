@@ -1696,7 +1696,7 @@
     },
     "goToGeneral": "Go to General",
     "guardrails": "Run guardrails",
-    "guardrailsHint": "Screens the message and the reply exactly as the inbox does, so you read what the customer would receive. Costs one extra model call per direction.",
+    "guardrailsHint": "Screens the message and the reply exactly as the inbox does, so you read what the customer would receive. Costs one extra model call per direction, plus one more when answer relevance runs alongside another reply check.",
     "guardrailsUnavailable": "Guardrails are off or have no credential. Configure them in the Guardrails tab to screen playground turns.",
     "hint": "Uses the saved config.",
     "historyEmpty": "No saved sessions yet.",

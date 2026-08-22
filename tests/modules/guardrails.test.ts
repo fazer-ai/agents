@@ -402,6 +402,22 @@ describe("splitAnalyses", () => {
     expect(relevance).not.toBeNull();
   });
 
+  // The playground's guardrail toggle publishes this ceiling to the operator, in a tooltip whose
+  // whole job is letting them decide whether to pay for the screening. It said one call per
+  // direction, which is what this table says only when relevance is off — so the number lives here,
+  // where changing the split changes the test, and the prose is copied from it.
+  test("the output direction costs two calls, and only answer relevance makes it two", () => {
+    const calls = (p: Parameters<typeof splitAnalyses>[0]) => {
+      const { policies, relevance } = splitAnalyses(p);
+      return (policies ? 1 : 0) + (relevance ? 1 : 0);
+    };
+    expect(calls(full)).toBe(2);
+    expect(
+      calls({ ...full, checks: { ...full.checks, answerRelevance: false } }),
+    ).toBe(1);
+    expect(calls({ ...full, direction: "input" as const })).toBe(1);
+  });
+
   // The operator's policy renders whether or not any check is on, so it alone keeps the call alive.
   test("a custom policy on its own still gets its call", () => {
     const { policies } = splitAnalyses({

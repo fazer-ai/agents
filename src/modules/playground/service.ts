@@ -1,5 +1,5 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { HumanMessage } from "@langchain/core/messages";
+import { type BaseMessage, HumanMessage } from "@langchain/core/messages";
 import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
@@ -64,7 +64,7 @@ import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { extractPlaygroundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
 import { type PlaygroundMediaKind, savePlaygroundMedia } from "./media";
-import { upsertPlaygroundSession } from "./sessions";
+import { rebuildPlaygroundTurns, upsertPlaygroundSession } from "./sessions";
 import { isValidPlaygroundThread, newPlaygroundThreadId } from "./thread";
 import { savePlaygroundTurnNote } from "./turn-notes";
 
@@ -88,7 +88,13 @@ const notScreened: GuardrailGate = async () => ({ kind: "not-run" });
 
 // The id of the last message currently in the thread, which is where a turn the graph never ran
 // belongs in the rebuilt transcript. Best-effort: without it the note still renders, just first.
-async function lastThreadMessageId(
+// Where a turn the thread never received belongs: right after the last message the transcript
+// SHOWS. It has to come from the renderer, because that is what resolves it — `applyTurnNotes`
+// matches the anchor against the rebuilt turns, and the raw tail of the thread is not the same
+// list. An AI message with no text is dropped by design, so anchoring to the raw tail after one
+// yields an id no turn carries, and the note falls through to the end of a transcript it belongs in
+// the middle of. One definition, taken from the side that does the matching.
+async function lastRenderedMessageId(
   graph: {
     getState: (cfg: { configurable: { thread_id: string } }) => Promise<{
       values?: { messages?: unknown };
@@ -98,10 +104,14 @@ async function lastThreadMessageId(
 ): Promise<string | null> {
   try {
     const st = await graph.getState({ configurable: { thread_id: threadId } });
-    const msgs = st?.values?.messages as Array<{ id?: unknown }> | undefined;
+    const msgs = st?.values?.messages;
     if (!Array.isArray(msgs) || msgs.length === 0) return null;
-    const id = msgs[msgs.length - 1]?.id;
-    return typeof id === "string" ? id : null;
+    const turns = rebuildPlaygroundTurns(msgs as BaseMessage[]);
+    // The last turn's id is enough, with no walk back to one that has an id: `messagesStateReducer`
+    // stamps a uuid on every message it takes in (measured), so a turn rebuilt from a checkpointed
+    // thread always carries one. The guards inside the rebuild are for the hand-built arrays that
+    // never see the reducer.
+    return turns[turns.length - 1]?.messageId ?? null;
   } catch {
     return null;
   }
@@ -527,7 +537,7 @@ export async function runPlaygroundTurn(
       agentId,
       threadId,
       messageId: null,
-      anchorMessageId: await lastThreadMessageId(graph, threadId),
+      anchorMessageId: await lastRenderedMessageId(graph, threadId),
       userMessageId: humanId ?? null,
       // The RENDERED text, markers and all, because the rebuild unwraps them exactly as it does for
       // a turn that reached the thread. Storing the clean text would need a SECOND renderer, which

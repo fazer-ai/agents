@@ -194,7 +194,7 @@ export function PlaygroundChat({
                       <Tooltip
                         content={t(
                           "playground.guardrailsHint",
-                          "Screens the message and the reply exactly as the inbox does, so you read what the customer would receive. Costs one extra model call per direction.",
+                          "Screens the message and the reply exactly as the inbox does, so you read what the customer would receive. Costs one extra model call per direction, plus one more when answer relevance runs alongside another reply check.",
                         )}
                       />
                     </span>

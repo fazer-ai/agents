@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -10,7 +10,10 @@ import {
   runPlaygroundFollowup,
   runPlaygroundTurn,
 } from "@/modules/playground/service";
-import { deletePlaygroundSession } from "@/modules/playground/sessions";
+import {
+  deletePlaygroundSession,
+  rebuildPlaygroundTurns,
+} from "@/modules/playground/sessions";
 import { guardrailModel } from "../utils/scripted-models";
 
 // Issue #136: the playground ran the agent's graph directly and never screened anything, so the
@@ -545,6 +548,67 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       deps: deps(m),
     });
     expect(r.suppressed).toBe(false);
+  });
+
+  // The anchor says where a thread-less turn goes, and `applyTurnNotes` resolves it against the
+  // REBUILT turns — so an id the rebuild drops is an anchor nobody can match, and the note falls to
+  // the end of a transcript it belongs in the middle of (the fallback is tabled in
+  // playground-sessions.test.ts, and it is the failure this stops). An AI message with no text is
+  // the case that produces one: the renderer drops it by design, and the raw thread ends on it.
+  test("the anchor of a blocked turn is a message the rebuild keeps", async () => {
+    const cp = new MemorySaver();
+    // Turn 1: the agent answers with nothing, so the thread ends on an empty AI message.
+    const silentModel = (() => ({
+      async invoke() {
+        return new AIMessage("");
+      },
+      bindTools() {
+        return this;
+      },
+    })) as never;
+    const first = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentInput,
+      message: "primeira",
+      guardrails: false,
+      base: appDb,
+      deps: { makeModel: silentModel, checkpointer: cp },
+    });
+    // Turn 2, same thread: the input trips, so the turn exists only as a note.
+    const m = models({ violated: true });
+    await runPlaygroundTurn({
+      tenantId,
+      agentId: agentInput,
+      message: "fale do concorrente",
+      threadId: first.threadId,
+      base: appDb,
+      deps: { makeModel: m.make, checkpointer: cp },
+    });
+
+    const tuple = await cp.getTuple({
+      configurable: { thread_id: first.threadId },
+    });
+    const messages = (
+      tuple?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+    )?.messages as BaseMessage[];
+    // The premise: the raw thread really does end on a message the rebuild throws away. Without it
+    // this test would pass on the broken code too.
+    // Only the ids the rebuild actually carries: a turn can have none, and `undefined` matching
+    // `undefined` would make a null anchor look resolvable.
+    const rendered = rebuildPlaygroundTurns(messages)
+      .map((t) => t.messageId)
+      .filter((id): id is string => typeof id === "string");
+    const rawLast = (messages[messages.length - 1] as { id?: string })?.id;
+    expect(rendered).not.toContain(rawLast);
+
+    const rows = await suDb.playgroundTurnNote.findMany({
+      where: { threadId: first.threadId },
+      select: { anchorMessageId: true },
+    });
+    expect(rows).toHaveLength(1);
+    const anchor = rows[0]?.anchorMessageId;
+    expect(typeof anchor).toBe("string");
+    expect(rendered).toContain(anchor as string);
   });
 
   // The note's life is the session's. Pruned on its own, a still-reloadable session would go back

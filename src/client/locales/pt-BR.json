@@ -1701,7 +1701,7 @@
     },
     "goToGeneral": "Ir para Geral",
     "guardrails": "Rodar guardrails",
-    "guardrailsHint": "Analisa a mensagem e a resposta exatamente como o inbox faz, então você lê o que o cliente receberia. Custa uma chamada de modelo a mais por direção.",
+    "guardrailsHint": "Analisa a mensagem e a resposta exatamente como o inbox faz, então você lê o que o cliente receberia. Custa uma chamada de modelo a mais por direção, e mais uma quando a relevância da resposta roda junto com outra verificação sobre a resposta.",
     "guardrailsUnavailable": "Os guardrails estão desligados ou sem credencial. Configure na aba Guardrails para analisar os turnos do playground.",
     "hint": "Testa suas edições ao vivo (não salvas).",
     "historyEmpty": "Nenhuma sessão salva ainda.",

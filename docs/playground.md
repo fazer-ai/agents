@@ -32,6 +32,8 @@ The simulated follow-up screens the **output** direction only, exactly as `runAg
 
 Session reload rebuilds the transcript from the checkpointer, which works only while the two are the same thing. Moderation is the first feature where they legitimately differ, and production already treats them as two stores: an output trip posts the template to Chatwoot and leaves the model's own words in the graph thread, and an input trip never lets the message reach the thread at all. Copying the screened text into the checkpointer would make the playground diverge from the production it reproduces, so the transcript gets its own row.
 
+A turn the guardrail emptied is reported as `suppressed` by the live turn AND flagged on the rebuilt one, so both render the same note instead of a bubble saying "(no reply)" — a bubble reads as the agent having nothing to say, which is the distinction the store exists to keep. The note's life is the session's (`deletePlaygroundSession` deletes both); there is deliberately no per-tenant cap, because pruning a note while its session is still reloadable would put the transcript back to the raw reply.
+
 Only turns the guardrail touched get one. A note with a `messageId` **overrides** the reply that message produced; a note without one is a whole turn the thread never received, placed by `anchorMessageId` (the message the thread ended on at the time), with a null anchor meaning the thread was empty. An anchor that no longer resolves still renders, at the end, because losing the turn is the failure the row exists to prevent. The fold is `applyTurnNotes`, a pure function with a decision table in `tests/modules/playground-sessions.test.ts`.
 
 ### Execution trace + KB sources (debug surface)

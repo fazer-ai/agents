@@ -19,8 +19,10 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// The playground is a test surface, not an archive; the same reasoning as the media cap.
-const NOTE_RETENTION_PER_TENANT = 500;
+// NOTE: There is deliberately no per-tenant cap here, unlike the media store. Bytes are what the
+// media cap exists to bound; a note is a short row, and pruning one while its session is still
+// reloadable would silently put the transcript back to the raw reply the guardrail removed. The
+// note's life is the session's: `deletePlaygroundSession` deletes both.
 
 export interface PlaygroundTurnNote {
   // The AIMessage this overrides, or null for a turn the thread has no record of.
@@ -57,18 +59,6 @@ export async function savePlaygroundTurnNote(
         },
         select: { id: true },
       });
-      const cutoff = await db.playgroundTurnNote.findMany({
-        orderBy: { id: "desc" },
-        skip: NOTE_RETENTION_PER_TENANT,
-        take: 1,
-        select: { id: true },
-      });
-      const floor = cutoff[0]?.id;
-      if (floor !== undefined) {
-        await db.playgroundTurnNote.deleteMany({
-          where: { id: { lte: floor } },
-        });
-      }
     });
   } catch (e) {
     logger.warn(

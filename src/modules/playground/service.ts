@@ -156,6 +156,10 @@ export interface PlaygroundTurnResult {
   trace: TraceEntry[];
   // Deduped KB sources the answer was grounded on (a flat summary of the trace's tool_result sources).
   sources: TraceSource[];
+  // The guardrail removed the reply (either direction). Distinct from an empty reply, which is the
+  // agent having nothing to say, and it is what lets the live turn and a reload render the same
+  // thing from the same fact.
+  suppressed: boolean;
   // Persisted-media ids (for in-session playback via the media endpoint).
   userMediaId?: string;
   ttsMediaId?: string;
@@ -537,6 +541,7 @@ export async function runPlaygroundTurn(
       threadId,
       trace: [...gTrace],
       sources: [],
+      suppressed: blockedReply === "",
       ...(blockedMediaId ? { userMediaId: blockedMediaId } : {}),
     };
   }
@@ -679,6 +684,7 @@ export async function runPlaygroundTurn(
     threadId,
     trace,
     sources: collectTraceSources(trace),
+    suppressed: raw.length > 0 && reply.length === 0,
     ...(userMediaId ? { userMediaId } : {}),
     ...(ttsMediaId ? { ttsMediaId } : {}),
   };

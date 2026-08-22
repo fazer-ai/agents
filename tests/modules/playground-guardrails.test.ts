@@ -10,6 +10,7 @@ import {
   runPlaygroundFollowup,
   runPlaygroundTurn,
 } from "@/modules/playground/service";
+import { deletePlaygroundSession } from "@/modules/playground/sessions";
 import { guardrailModel } from "../utils/scripted-models";
 
 // Issue #136: the playground ran the agent's graph directly and never screened anything, so the
@@ -47,6 +48,7 @@ let agentSilent = 0n;
 let agentInput = 0n;
 let agentBrokenGuard = 0n;
 let agentBoth = 0n;
+let agentInputSilent = 0n;
 
 const RAW_REPLY = "Nosso concorrente resolve isso melhor.";
 // Deliberately NOT the reader's own default template: an assertion against that string
@@ -217,6 +219,12 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       guardrails: guardrails({ input: dir({ enabled: true }), output: dir() }),
     });
     agentBrokenGuard = await mk("Broken", outputOnly());
+    agentInputSilent = await mk("InputSilent", {
+      guardrails: guardrails({
+        input: dir({ enabled: true, action: "silent" }),
+        output: dir(),
+      }),
+    });
     agentBoth = await mk("Both", {
       guardrails: guardrails({
         input: dir({ enabled: true }),
@@ -494,6 +502,69 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(r.trace.filter((e) => e.type === "guardrail")).toMatchObject([
       { outcome: "suppressed" },
     ]);
+  });
+
+  // The `silent` input action blocks the message and sends nothing at all, which is the case with no
+  // reply text for the operator to read: without the flag the turn is a bare message and no reason.
+  test("a silently blocked message reports suppression", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentInputSilent,
+      message: "fale do concorrente",
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply).toBe("");
+    expect(r.suppressed).toBe(true);
+    expect(m.agentInvokes()).toBe(0);
+  });
+
+  // Both paths render from the same fact, which is what stops the live turn and the reload from
+  // drifting apart one case at a time.
+  test("a suppressed normal turn reports suppression, not an empty reply", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentSilent,
+      message: "e o concorrente?",
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply).toBe("");
+    expect(r.suppressed).toBe(true);
+  });
+
+  test("a reply the guardrail left alone is not reported as suppressed", async () => {
+    const m = models({ violated: false });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentTemplate,
+      message: "oi",
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.suppressed).toBe(false);
+  });
+
+  // The note's life is the session's. Pruned on its own, a still-reloadable session would go back
+  // to showing the raw reply the guardrail removed.
+  test("deleting the session takes its transcript notes with it", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentTemplate,
+      message: "e o concorrente?",
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(
+      await suDb.playgroundTurnNote.count({ where: { threadId: r.threadId } }),
+    ).toBe(1);
+    await deletePlaygroundSession(tenantId, agentTemplate, r.threadId, appDb);
+    expect(
+      await suDb.playgroundTurnNote.count({ where: { threadId: r.threadId } }),
+    ).toBe(0);
   });
 
   // Family sweep: the inbox's proactive path is screened (issue #160), so the playground's simulated

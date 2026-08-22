@@ -1697,8 +1697,7 @@
       "badge": "Follow-up simulado",
       "button": "Simular follow-up",
       "hint": "Dispara o follow-up proativo agora, sem esperar a janela de inatividade.",
-      "silent": "Follow-up: o agente optou por não enviar nada.",
-      "suppressed": "Follow-up: o agente escreveu um e o guardrail removeu. Nada seria enviado."
+      "silent": "Follow-up: o agente optou por não enviar nada."
     },
     "goToGeneral": "Ir para Geral",
     "guardrails": "Rodar guardrails",
@@ -1733,6 +1732,7 @@
     "resize": "Arrastar para redimensionar",
     "send": "Enviar",
     "sessions": "Sessões",
+    "suppressedNote": "Nada seria enviado: o guardrail agiu neste turno.",
     "thinking": "Pensando…",
     "toolsDirtyNote": "Mudanças de prompt e modelo são testadas ao vivo. Mudanças de ferramentas precisam ser salvas antes.",
     "toolsim": {

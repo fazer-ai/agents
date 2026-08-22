@@ -257,6 +257,20 @@ export function applyTurnNotes(
     ];
     if (n.reply) msgs.push(new AIMessage({ content: n.reply }));
     const built = rebuildPlaygroundTurns(msgs);
+    // A `silent` action leaves no reply, and the renderer drops an empty AI message by design (a
+    // follow-up the agent declined adds nothing). Here it has to stay visible: the client discards
+    // a user turn's trace, so hanging the verdict there loses it, and the operator is left with a
+    // bare message and no sign that anything blocked it.
+    if (!n.reply) {
+      built.push({
+        role: "assistant",
+        text: "",
+        suppressed: true,
+        trace: [...n.guardrails],
+        sources: [],
+      });
+      return built;
+    }
     const last = built[built.length - 1];
     if (last) last.trace = [...last.trace, ...n.guardrails];
     return built;
@@ -279,7 +293,7 @@ export function applyTurnNotes(
       out.push({
         ...turn,
         text: note.reply,
-        ...(after.some((g) => g.outcome === "suppressed")
+        ...(note.guardrails.some((g) => g.outcome === "suppressed")
           ? { suppressed: true }
           : {}),
         trace: [...before, ...turn.trace, ...after],
@@ -415,7 +429,10 @@ export async function deletePlaygroundSession(
   threadId: string,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.playgroundSession.deleteMany({ where: { agentId, threadId } }),
-  );
+  await runScopedOn(base, sysCtx(tenantId), async (db) => {
+    // The transcript notes go with it. Left behind they would be orphans, and pruned separately
+    // they would put a still-reloadable session back to the raw reply (issue #136).
+    await db.playgroundTurnNote.deleteMany({ where: { agentId, threadId } });
+    await db.playgroundSession.deleteMany({ where: { agentId, threadId } });
+  });
 }

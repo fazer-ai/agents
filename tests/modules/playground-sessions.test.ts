@@ -245,6 +245,28 @@ describe("applyTurnNotes", () => {
     expect(out[0]?.suppressed).toBe(true);
   });
 
+  // A `silent` input action leaves no reply, and the renderer drops an empty AI message by design.
+  // Without a turn to carry it the verdict lands on the user turn, whose trace the client discards,
+  // so the operator gets a bare message and no sign that anything blocked it.
+  test("a blocked turn with no reply still leaves a visible, explained turn", () => {
+    const out = applyTurnNotes(
+      [],
+      [
+        note({
+          anchorMessageId: null,
+          userText: "fale do concorrente",
+          reply: "",
+          guardrails: [
+            { type: "guardrail", direction: "input", outcome: "suppressed" },
+          ],
+        }),
+      ],
+    );
+    expect(out).toHaveLength(2);
+    expect(out[1]).toMatchObject({ role: "assistant", suppressed: true });
+    expect(out[1]?.trace).toHaveLength(1);
+  });
+
   test("an unresolvable anchor still renders, at the end", () => {
     const out = applyTurnNotes(
       [turn("user", "oi"), turn("assistant", "r", "a1")],

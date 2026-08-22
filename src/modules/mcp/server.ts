@@ -275,6 +275,17 @@ export function isAudioMime(mime: string): boolean {
   return mime.startsWith("audio/") || mime === "video/webm";
 }
 
+// The per-turn options every playground branch passes on, mapped once. They were read inline in
+// each of the three (text / audio / file), which is how the guardrail toggle reached one of them
+// and not the others. Exported because the forwarding is the whole contract with the third
+// transport, and there is no way to prove it end to end without a real provider call.
+export function playgroundTurnOptions(args: {
+  reply_with_audio?: boolean;
+  guardrails?: boolean;
+}): { forceAudio: boolean | undefined; guardrails: boolean | undefined } {
+  return { forceAudio: args.reply_with_audio, guardrails: args.guardrails };
+}
+
 export function buildMcpServer(principal: VerifiedToken): McpServer {
   const server = new McpServer(
     {
@@ -404,7 +415,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "agent_playground",
       {
         description:
-          "Chat with one of the tenant's agents in an isolated PLAYGROUND thread (no Chatwoot, no real customer). Runs the SAME model + system prompt + knowledge/HTTP/MCP/integration tools as production, MINUS the native conversation tools (handoff/resolve/…). Send a text `message`, OR an `attachment` (voice note / image / document) exactly like the console playground does: audio is transcribed (STT) and image/document content is extracted (vision) with the agent's configured providers, then the agent answers what it would in production (the response adds `transcription` for audio or `kind`+`extracted` for files). Returns { reply, threadId, trace, sources, … }: pass threadId back to continue the session with memory; `trace` is the sanitized execution trace (tool calls/args, results, errors — never secrets); `sources` are the KB passages the answer was grounded on. Set `reply_with_audio` to force a spoken (TTS) reply for this turn. CAUTION: the agent's HTTP/integration tools still execute for real (a write tool will write), so treat this as a live test, not a pure simulation.",
+          "Chat with one of the tenant's agents in an isolated PLAYGROUND thread (no Chatwoot, no real customer). Runs the SAME model + system prompt + knowledge/HTTP/MCP/integration tools as production, MINUS the native conversation tools (handoff/resolve/…). Send a text `message`, OR an `attachment` (voice note / image / document) exactly like the console playground does: audio is transcribed (STT) and image/document content is extracted (vision) with the agent's configured providers, then the agent answers what it would in production (the response adds `transcription` for audio or `kind`+`extracted` for files). Returns { reply, threadId, trace, sources, … }: pass threadId back to continue the session with memory; `trace` is the sanitized execution trace (tool calls/args, results, errors — never secrets); `sources` are the KB passages the answer was grounded on. Set `reply_with_audio` to force a spoken (TTS) reply for this turn, and `guardrails: false` to skip the moderation pass (it runs by default, exactly as in the console). CAUTION: the agent's HTTP/integration tools still execute for real (a write tool will write), so treat this as a live test, not a pure simulation.",
         inputSchema: {
           agent_id: z.string(),
           message: z
@@ -443,6 +454,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .describe(
               "Force an audio (TTS) reply for this turn regardless of the agent's saved reply mode.",
             ),
+          guardrails: z
+            .boolean()
+            .optional()
+            .describe(
+              "Run the agent's guardrails over this turn (default true, matching the console). False skips the screening model call entirely, which is up to two paid calls on an output turn.",
+            ),
         },
       },
       async (
@@ -452,6 +469,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           thread_id?: string;
           attachment?: McpPlaygroundAttachment;
           reply_with_audio?: boolean;
+          guardrails?: boolean;
         },
         eff,
       ) => {
@@ -459,7 +477,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           const tenantId = eff.tenantId as bigint;
           const agentId = BigInt(args.agent_id);
           const threadId = args.thread_id;
-          const forceAudio = args.reply_with_audio;
+          const { forceAudio, guardrails } = playgroundTurnOptions(args);
           let res: unknown;
           if (args.attachment) {
             const file = await mcpAttachmentToFile(args.attachment);
@@ -470,6 +488,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
                   file,
                   threadId,
                   forceAudio,
+                  guardrails,
                 })
               : await runPlaygroundFileTurn({
                   tenantId,
@@ -477,6 +496,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
                   file,
                   threadId,
                   forceAudio,
+                  guardrails,
                 });
           } else if (args.message?.trim()) {
             res = await runPlaygroundTurn({
@@ -485,6 +505,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
               message: args.message,
               threadId,
               forceAudio,
+              guardrails,
             });
           } else {
             return {

@@ -338,15 +338,15 @@ export function usePlaygroundChat(
                 ...(rt.extracted ? { extracted: rt.extracted } : {}),
               };
             }
-            // A follow-up the guardrail removed reloads as the SAME note the live turn rendered.
-            // As an assistant bubble saying "(no reply)" it would read as the agent choosing
-            // silence, which is the distinction the note exists to make.
-            if (rt.followup && rt.suppressed) {
+            // One rule for both paths: a turn the guardrail emptied renders as a note carrying the
+            // verdict, never as a bubble saying "(no reply)". The bubble reads as the agent having
+            // nothing to say, which is the distinction this whole store exists to keep.
+            if (rt.suppressed) {
               return {
                 role: "note",
                 text: t(
-                  "playground.followup.suppressed",
-                  "Follow-up: the agent wrote one and the guardrail removed it. Nothing would be sent.",
+                  "playground.suppressedNote",
+                  "Nothing would be sent: the guardrail acted on this turn.",
                 ),
                 trace: rt.trace,
               };
@@ -450,13 +450,24 @@ export function usePlaygroundChat(
       threadId.current = data.threadId;
       setTurns((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          text: data.reply || t("playground.empty", "(no reply)"),
-          ...(data.ttsMediaId ? { audioUrl: mediaUrl(data.ttsMediaId) } : {}),
-          trace: data.trace,
-          sources: data.sources,
-        },
+        data.suppressed
+          ? {
+              role: "note",
+              text: t(
+                "playground.suppressedNote",
+                "Nothing would be sent: the guardrail acted on this turn.",
+              ),
+              trace: data.trace,
+            }
+          : {
+              role: "assistant",
+              text: data.reply || t("playground.empty", "(no reply)"),
+              ...(data.ttsMediaId
+                ? { audioUrl: mediaUrl(data.ttsMediaId) }
+                : {}),
+              trace: data.trace,
+              sources: data.sources,
+            },
       ]);
       // A turn on a brand-new thread created a session row — surface it in the sidebar.
       if (wasNew) void refreshSessions();
@@ -502,8 +513,8 @@ export function usePlaygroundChat(
               {
                 role: "note",
                 text: t(
-                  "playground.followup.suppressed",
-                  "Follow-up: the agent wrote one and the guardrail removed it. Nothing would be sent.",
+                  "playground.suppressedNote",
+                  "Nothing would be sent: the guardrail acted on this turn.",
                 ),
                 trace: data.trace,
               },

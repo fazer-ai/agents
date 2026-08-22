@@ -1478,6 +1478,45 @@ describe.skipIf(!dbUp)(
         expect(row.resolvedBy).toBe("console");
       });
 
+      // Review round 3 on #188/#199: the REST status route and MCP's `conversationStatus` both take
+      // `resolved` for a conversation that already is, where Chatwoot's own call is a no-op. The
+      // stamp used to be overwritten anyway, turning a genuine agent resolution into a `console`
+      // one and removing it from the funnel.
+      test("re-resolving from the console keeps the agent's origin", async () => {
+        const T = 1_786_513_000;
+        await mirror({
+          event: "conversation_resolved",
+          ...convPayload(72, {
+            status: "resolved",
+            lastActivityAt: T,
+            updatedAt: T + 1,
+          }),
+        });
+        await suDb.conversation.update({
+          where: { id: await rowIdOf(72) },
+          data: { resolvedBy: "agent" },
+        });
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(72),
+          "resolved",
+          {
+            makeClient: stubClient({
+              status: "resolved",
+              lastActivityAt: T,
+              updatedAt: T + 2,
+            }).makeClient,
+          },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 72 },
+          select: { status: true, resolvedBy: true },
+        });
+        expect(row.status).toBe("resolved");
+        expect(row.resolvedBy).toBe("agent");
+      });
+
       // Reopening from the console has to drop the stamp for the same reason the webhook mirror
       // does. This path is the UNVERSIONED fallback (the live read failed), which is exactly where a
       // clear that only lived in the versioned writer would be missed.

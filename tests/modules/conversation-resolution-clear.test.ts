@@ -155,6 +155,44 @@ describe.skipIf(!dbUp)(
       expect(await originOf(34)).toBe("agent");
     });
 
+    // Review round 3 on #199. Resolving an already-resolved conversation is a no-op in Chatwoot, so
+    // the cause of the current resolved state does not change because somebody asked a second time.
+    // The console accepts exactly that (REST and MCP both take `resolved` unconditionally), and the
+    // follow-up ladder and the redirect closing can both arrive after the agent already closed.
+    test("a second closing does not overwrite the first one's origin", async () => {
+      await closeThenStamp(38, 1_700_009_000);
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 38,
+        },
+        origin: "console",
+        base: appDb,
+      });
+      expect(await originOf(38)).toBe("agent");
+    });
+
+    // ...but only for the SAME episode. A reopen clears the stamp, and the close after it is a new
+    // cause that has to be recorded, or a conversation could never be re-attributed.
+    test("after a reopen, the next closing records normally", async () => {
+      await closeThenStamp(39, 1_700_010_000);
+      await mirror(
+        convEvent(39, "conversation_status_changed", "open", 1_700_010_010),
+      );
+      expect(await originOf(39)).toBeNull();
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 39,
+        },
+        origin: "console",
+        base: appDb,
+      });
+      expect(await originOf(39)).toBe("console");
+    });
+
     // The webhook is not the only writer of `status`. A live probe (every proactive send, and every
     // console write whose GET answers with a version) reconciles the row from Chatwoot's own answer,
     // and a reopen can arrive that way with no webhook involved at all.

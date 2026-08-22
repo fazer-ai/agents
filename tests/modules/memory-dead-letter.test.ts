@@ -628,14 +628,16 @@ test("nothing the provider authored reaches the line, however clean it looks", (
   expect(tokenised).not.toContain("invalid_request_error");
   expect(tokenised).toBe("HTTP 400");
 
-  // The dangerous combination for the status: no `status` field at all — a client that re-throws a
-  // plain Error, where the text is the only place it lives — and that same text echoing the request.
-  // The digits are worth digging out; nothing around them is.
+  // The status is read from the client's NUMBER field and nowhere else. Digging it out of the text
+  // was an earlier revision, and the digits were never the point: a 4xx-shaped number in a message
+  // that echoes the transcript is the customer's PIN or their invoice total far more often than it is
+  // a transport status, and naming a status the provider never returned sends the operator to the
+  // wrong thing to fix.
   const rethrown = providerFailure(
     new Error(`Request failed with status 429 while processing "${marker}"`),
   );
   expect(rethrown).not.toContain(marker);
-  expect(rethrown).toContain("429");
+  expect(rethrown).toBe("provider error");
 
   // `name` reads like the SDK's class and is a plain writable property, so a wrapper can assign a
   // transcript-derived token to it — and a BARE one is exactly what would have survived a shape test.
@@ -645,6 +647,25 @@ test("nothing the provider authored reaches the line, however clean it looks", (
   );
   expect(wrapped).not.toContain(marker);
   expect(wrapped).toBe("HTTP 500");
+
+  // `status` is admissible because the client PARSED it into a number, and a number cannot carry a
+  // transcript — so the type check is the whole of the guarantee, not a tidiness. It is not
+  // hypothetical either: Google's error body puts a string in `status` (`INVALID_ARGUMENT`), so a
+  // wrapper copying that field across lands a server-authored string in it.
+  const stringStatus = providerFailure(
+    Object.assign(new Error("boom"), { status: `REJECTED_${marker}` }),
+  );
+  expect(stringStatus).not.toContain(marker);
+  expect(stringStatus).toBe("provider error");
+  // Both spellings go through the one check, so neither is the one that gets it wrong.
+  expect(
+    providerFailure(
+      Object.assign(new Error("boom"), { statusCode: `REJECTED_${marker}` }),
+    ),
+  ).toBe("provider error");
+  expect(
+    providerFailure(Object.assign(new Error("boom"), { statusCode: 503 })),
+  ).toBe("HTTP 503");
 
   // With nothing to go on, a fixed literal rather than whatever the error happened to be called.
   const opaque = providerFailure(

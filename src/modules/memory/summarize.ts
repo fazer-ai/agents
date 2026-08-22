@@ -250,17 +250,23 @@ export function providerFailure(err: unknown, timedOut = false): string {
   if (timedOut) return "timeout";
   if (!(err instanceof Error)) return "provider error";
   const bag = err as unknown as Record<string, unknown>;
-  // Dug out of the message when the client did not set a field for it — some re-throw a plain Error
-  // whose text is all there is, and "429" is the difference between "the key is wrong" and "slow
-  // down". Only the three digits are taken, so the worst case is a wrong status, never a leak.
-  const inMessage = /\b([45]\d{2})\b/.exec(err.message)?.[1] ?? null;
-  const status =
-    typeof bag.status === "number"
-      ? String(bag.status)
-      : typeof bag.statusCode === "number"
-        ? String(bag.statusCode)
-        : inMessage;
-  return status ? `HTTP ${status}` : "provider error";
+  // A NUMBER field, and only a number field. The status is the one thing here the server does choose,
+  // and it is admissible for a reason that has nothing to do with trusting the server: the client
+  // parsed it out of the status line into a number, and a number cannot carry a transcript.
+  //
+  // Which is also why it is not dug out of the message when the field is absent. An earlier revision
+  // did that, on the grounds that the digits alone could not leak anything — and the digits are not
+  // the problem, being WRONG is: when there is an HTTP response the client sets the field, and when
+  // there is none (a connection that never opened) there is no status to find, so a 4xx-shaped number
+  // in the text is the customer's PIN or their invoice total far more often than it is a transport
+  // status. Naming a status the provider never returned sends the operator to the wrong thing to fix,
+  // and "provider error" at least sends them nowhere.
+  // One type check over both spellings, rather than one per field: they ask the same question, and a
+  // rule written twice is a rule the second copy gets wrong.
+  const status = [bag.status, bag.statusCode].find(
+    (v) => typeof v === "number",
+  );
+  return status === undefined ? "provider error" : `HTTP ${status}`;
 }
 
 export async function summarizeAttendance(

@@ -317,6 +317,10 @@ describe("summarizeAttendance", () => {
   });
 
   test("a provider failure is reported, and never throws into the job", async () => {
+    // The status comes from the client's NUMBER field, never from the text. A bare rethrow whose
+    // message happens to read "429" reports `provider error`: when there is an HTTP response the
+    // client sets the field, and when there is none a 4xx-shaped number in the text is the
+    // customer's, not the transport's.
     const res = await summarizeAttendance(
       new ScriptedModel(() => {
         throw new Error("429 rate limited");
@@ -324,7 +328,15 @@ describe("summarizeAttendance", () => {
       [new HumanMessage("oi")],
     );
     expect(res.summary).toBe("");
-    expect(res.error).toContain("429");
+    expect(res.error).toBe("provider error");
+
+    const withField = await summarizeAttendance(
+      new ScriptedModel(() => {
+        throw Object.assign(new Error("slow down"), { status: 429 });
+      }),
+      [new HumanMessage("oi")],
+    );
+    expect(withField.error).toBe("HTTP 429");
   });
 });
 

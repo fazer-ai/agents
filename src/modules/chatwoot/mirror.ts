@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import { isNewIncomingMessage } from "./normalize";
 import { decideConversationWrites, type StatePayload } from "./state-order";
@@ -129,6 +130,8 @@ export async function mirrorChatwootEvent(
           assigneeType: true,
           assigneeName: true,
           status: true,
+          resolvedBy: true,
+          resolvedByAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -144,7 +147,39 @@ export async function mirrorChatwootEvent(
           : null,
         now,
       );
+      // Whether this event kills a recorded resolution origin, asked ONCE for both exits below: the
+      // stale branch returns before the update, and rounds 5 and 6 of this change were the same rule
+      // stated twice and getting a different axis wrong each time. The rule itself, and why it takes
+      // these three facts and not `decision.stale`, is in `clearsResolutionOrigin`.
+      const dropsResolutionOrigin =
+        existing != null &&
+        clearsResolutionOrigin({
+          storedStatus: existing.status,
+          statedStatus: statePayload.status,
+          appliedStatus: decision.status,
+          // NOTE: Exactly what the flag means: a conversation event speaks about status, a message
+          // snapshot embeds one but is meant to move no state (issue #61). NOT `&& version != null`:
+          // `decideConversationWrites` orders a versionless conversation event by `last_activity_at`
+          // and lets it move status, so requiring a version silently exempted every Chatwoot older
+          // than 4.0.2 from the rule below.
+          sourceMayStateStatus: statePayload.fromConversationEvent,
+          reopens: statePayload.reopensConversation,
+          statedVersion: statePayload.version,
+          stampedAfterVersion: existing.resolvedByAt,
+        });
+
       if (existing && decision.stale) {
+        // NOTE: A stale event says nothing about the conversation, with ONE exception: a close of ours
+        // that this ordering refused. Written here because this branch returns before the update.
+        // `resolvedBy != null` is a write-avoidance guard, not part of the rule: this branch is
+        // taken by every out-of-order delivery, and clearing a column that is already null would
+        // add an UPDATE to each one.
+        if (dropsResolutionOrigin && existing.resolvedBy != null) {
+          await db.conversation.update({
+            where: { id: existing.id },
+            data: { resolvedBy: null, resolvedByAt: null },
+          });
+        }
         return {
           conversationRowId: existing.id,
           prevAssigneeId,
@@ -231,6 +266,11 @@ export async function mirrorChatwootEvent(
             : {}),
           ...(decision.unversioned && contactId != null ? { contactId } : {}),
           ...(appliedStatus != null ? { status: appliedStatus } : {}),
+          // NOTE: The same question the stale branch asked, and the same answer: see
+          // `dropsResolutionOrigin` above.
+          ...(dropsResolutionOrigin
+            ? { resolvedBy: null, resolvedByAt: null }
+            : {}),
           ...(assigneeKnown
             ? {
                 assigneeId: n.assigneeId ?? null,

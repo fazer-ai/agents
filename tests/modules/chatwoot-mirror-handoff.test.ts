@@ -1445,6 +1445,257 @@ describe.skipIf(!dbUp)(
         expect((await mirrored(43)).status).toBe("open");
       });
 
+      // Issue #188: this path resolves with the instance ADMIN token and deliberately does not
+      // assign the operator, so status + assignee cannot tell it apart from the agent closing the
+      // conversation itself. It is recorded instead.
+      test("an operator resolving from the console is recorded as the console's doing", async () => {
+        const T = 1_786_511_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(70, {
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        const stub = stubClient({
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 1,
+        });
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(70),
+          "resolved",
+          { makeClient: stub.makeClient },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 70 },
+          select: { status: true, resolvedBy: true },
+        });
+        expect(row.status).toBe("resolved");
+        expect(row.resolvedBy).toBe("console");
+      });
+
+      // Review round 3 on #188/#199: the REST status route and MCP's `conversationStatus` both take
+      // `resolved` for a conversation that already is, where Chatwoot's own call is a no-op. The
+      // stamp used to be overwritten anyway, turning a genuine agent resolution into a `console`
+      // one and removing it from the funnel.
+      test("re-resolving from the console keeps the agent's origin", async () => {
+        const T = 1_786_513_000;
+        await mirror({
+          event: "conversation_resolved",
+          ...convPayload(72, {
+            status: "resolved",
+            lastActivityAt: T,
+            updatedAt: T + 1,
+          }),
+        });
+        await suDb.conversation.update({
+          where: { id: await rowIdOf(72) },
+          data: { resolvedBy: "agent" },
+        });
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(72),
+          "resolved",
+          {
+            makeClient: stubClient({
+              status: "resolved",
+              lastActivityAt: T,
+              updatedAt: T + 2,
+            }).makeClient,
+          },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 72 },
+          select: { status: true, resolvedBy: true },
+        });
+        expect(row.status).toBe("resolved");
+        expect(row.resolvedBy).toBe("agent");
+      });
+
+      // The other half of round 4, and the one first-writer-wins does NOT cover: an external close
+      // (Chatwoot UI, automation rule, auto_resolve_after) leaves the origin NULL by design, so the
+      // NULL predicate alone would happily let the operator's no-op claim it. What refuses is the
+      // status the console loaded BEFORE its toggle.
+      test("re-resolving a conversation closed outside our code records nothing", async () => {
+        const T = 1_786_514_000;
+        await mirror({
+          event: "conversation_resolved",
+          ...convPayload(73, {
+            status: "resolved",
+            lastActivityAt: T,
+            updatedAt: T + 1,
+          }),
+        });
+        expect(
+          (
+            await suDb.conversation.findFirstOrThrow({
+              where: { tenantId, chatwootConversationId: 73 },
+              select: { resolvedBy: true },
+            })
+          ).resolvedBy,
+        ).toBeNull();
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(73),
+          "resolved",
+          {
+            makeClient: stubClient({
+              status: "resolved",
+              lastActivityAt: T,
+              updatedAt: T + 2,
+            }).makeClient,
+          },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 73 },
+          select: { status: true, resolvedBy: true },
+        });
+        expect(row.status).toBe("resolved");
+        expect(row.resolvedBy).toBeNull();
+      });
+
+      // Only a CLOSE is a closing. Moving a conversation to pending records nothing, or the column
+      // would stop meaning "who closed this".
+      test("sending a conversation to pending records no origin", async () => {
+        const T = 1_786_515_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(74, {
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(74),
+          "pending",
+          {
+            makeClient: stubClient({
+              status: "pending",
+              lastActivityAt: T,
+              updatedAt: T + 1,
+            }).makeClient,
+          },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 74 },
+          select: { status: true, resolvedBy: true },
+        });
+        expect(row.status).toBe("pending");
+        expect(row.resolvedBy).toBeNull();
+      });
+
+      // Reopening from the console has to drop the stamp for the same reason the webhook mirror
+      // does. This path is the UNVERSIONED fallback (the live read failed), which is exactly where a
+      // clear that only lived in the versioned writer would be missed.
+      test("reopening from the console clears the recorded origin", async () => {
+        const T = 1_786_512_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(71, {
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(71),
+          "resolved",
+          {
+            makeClient: stubClient({
+              status: "resolved",
+              lastActivityAt: T,
+              updatedAt: T + 1,
+            }).makeClient,
+          },
+          appDb,
+        );
+        expect(
+          (
+            await suDb.conversation.findFirstOrThrow({
+              where: { tenantId, chatwootConversationId: 71 },
+              select: { resolvedBy: true },
+            })
+          ).resolvedBy,
+        ).toBe("console");
+        // The live read throws, so mirrorConsoleWrite falls through to updateMirror with the
+        // operator's own intent.
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(71),
+          "open",
+          {
+            makeClient: async () =>
+              ({
+                toggleStatus: async () => ({}),
+                getConversation: async () => {
+                  throw new Error("live read down");
+                },
+              }) as never,
+          },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 71 },
+          select: { status: true, resolvedBy: true },
+        });
+        expect(row.status).toBe("open");
+        expect(row.resolvedBy).toBeNull();
+      });
+
+      // The same reopen, but with the live read WORKING. A successful versioned reconcile returns
+      // before the unversioned fallback runs, so a clear that lived only in the fallback never fired
+      // here — and `clearsResolutionOrigin` keeps the stamp on purpose, because the row still shows
+      // the pre-resolve status and the live read agrees, so neither says the conversation left
+      // "resolved". Nothing in the ordering can see this: the operator's click is the only evidence
+      // the resolution is over, which is why the clear belongs to the command.
+      test("reopening from the console clears the origin on the versioned path too", async () => {
+        const T = 1_786_516_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(76, {
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        // Our own close, stamped while the mirror still reads the pre-toggle "open" because its
+        // webhook has not arrived. The floor is the row's status version at that moment.
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 76 },
+          data: { resolvedBy: "agent", resolvedByAt: T + 0.1 },
+        });
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(76),
+          "open",
+          {
+            makeClient: stubClient({
+              status: "open",
+              lastActivityAt: T + 2,
+              updatedAt: T + 2,
+            }).makeClient,
+          },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 76 },
+          select: { status: true, resolvedBy: true, resolvedByAt: true },
+        });
+        expect(row.status).toBe("open");
+        expect(row.resolvedBy).toBeNull();
+        expect(row.resolvedByAt).toBeNull();
+      });
+
       // The console renders the click optimistically off this publish and only reconciles when the
       // inbound webhook arrives, which may be seconds later or (on a conversation Chatwoot has
       // nothing more to say about) never. So a publish of the INTENT after a write that did not land

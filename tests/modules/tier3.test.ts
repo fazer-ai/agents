@@ -700,6 +700,10 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 1,
           status: "resolved",
           assigneeType: "AgentBot",
+          // The fixture means "the bot handled it and closed it", which since issue #188 has to be
+          // RECORDED rather than inferred from status + assignee — that inference also matched a
+          // follow-up closing out a lead that never answered, and Chatwoot resolving on inactivity.
+          resolvedBy: "agent",
           threadId: `${tenant}:${instanceId}:1`,
         },
       });
@@ -745,6 +749,7 @@ describe.skipIf(!dbUp)(
       expect(kpis.totalConversations).toBe(1);
       expect(kpis.involved).toBe(1);
       expect(kpis.resolvedByBot).toBe(1);
+      expect(kpis.resolvedBeforeTracking).toBe(0);
       expect(kpis.involvementRate).toBe(1);
       expect(kpis.resolutionRate).toBe(1);
       expect(kpis.automationRate).toBe(1);

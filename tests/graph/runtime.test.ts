@@ -107,7 +107,12 @@ function makeStubClient(sent: Array<[number, string]>) {
 
 // Ordered recorder for sendMessage/toggleStatus. `mirrorOnToggle` simulates the Chatwoot webhook
 // mirroring the status change into our Conversation row BEFORE the turn ends (worst case, zero
-// lag) — the production race behind the lost-final-reply bug.
+// lag) — the production race behind the lost-final-reply bug. It advances `chatwootStatusAt` along
+// with the status, because a webhook that moved one without the other is not a webhook. The pair is
+// what makes this a faithful worst case, and it is what stops "refuse to stamp when the row moved
+// past what the caller observed" from ever looking like a safe guard (issue #188, review round 9):
+// under that guard this very case — our OWN close, mirrored fast — would be refused, and the one
+// closing the funnel counts would go unrecorded.
 function makeResolveClient(
   calls: Array<[string, number, string]>,
   opts: { mirrorOnToggle?: number } = {},
@@ -126,7 +131,7 @@ function makeResolveClient(
             chatwootInstanceId: instanceId,
             chatwootConversationId: opts.mirrorOnToggle,
           },
-          data: { status },
+          data: { status, chatwootStatusAt: Date.now() / 1000 },
         });
       }
       return {};
@@ -1039,6 +1044,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
   test("resolve tool defers the status toggle until after the reply is delivered", async () => {
     await seedConversation(910, null);
+    // A known status version on the row, so the assertion at the end can tell WHICH reading the
+    // recorded floor came from: `mirrorOnToggle` overwrites this with `Date.now()` at toggle time,
+    // and the floor has to be the one the ownership recheck saw BEFORE that.
+    const OBSERVED_AT = 1_700_200_000.5;
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 910 },
+      data: { chatwootStatusAt: OBSERVED_AT },
+    });
     const FINAL = "Fechado! Obrigado pelo contato.";
     const calls: Array<[string, number, string]> = [];
     const outcome = await runAgentTurn({
@@ -1076,6 +1089,64 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       if (!resolvedLogged) await new Promise((r) => setTimeout(r, 100));
     }
     expect(resolvedLogged).toBe(true);
+
+    // Issue #188: the agent calling resolve_conversation is the ONE closing the Resolution funnel
+    // counts, and it is only distinguishable from the five that are not because the origin is
+    // recorded here. The row is read after the flow event above, so the write has had its turn.
+    const resolvedRow = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 910 },
+      select: { resolvedBy: true, resolvedByAt: true },
+    });
+    expect(resolvedRow.resolvedBy).toBe("agent");
+    // And the floor is the recheck's version, not the row's at write time — which by now is the
+    // one `mirrorOnToggle` wrote. Getting this wrong dates the stamp to the wrong episode, and a
+    // delayed webhook for this very close would then be judged to predate it.
+    expect(resolvedRow.resolvedByAt).toBe(OBSERVED_AT);
+  });
+
+  // Review round 14. The deferred resolve fires AFTER delivery, and delivery on this path is not
+  // quick: the output guardrail is a model round-trip, TTS synthesises audio, and split delivery is
+  // typing-paced on purpose. The ownership recheck's snapshot can therefore be seconds old by the
+  // time the toggle runs, and an operator closing in that window makes it a silent no-op that the
+  // stale "pending" would credit to the agent. Same question the nudge path answers, other path.
+  test("an operator's close during delivery is not claimed by the deferred resolve", async () => {
+    await seedConversation(940, null);
+    const calls: Array<[string, number, string]> = [];
+    const inner = (await makeResolveClient(calls)()) as unknown as Record<
+      string,
+      unknown
+    >;
+    const client = {
+      ...inner,
+      // The operator already closed it while the reply was being delivered.
+      getConversation: async () => ({
+        id: 940,
+        status: "resolved",
+        meta: { assignee_type: null, assignee: null },
+        last_activity_at: 1_700_400_000,
+        updated_at: 1_700_400_001,
+      }),
+    } as unknown as ChatwootClient;
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 940 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new ResolveThenReplyModel("Fechado!") as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // The toggle still runs: Chatwoot answers it as a no-op and we cannot tell from the answer.
+    expect(calls.some(([kind]) => kind === "toggleStatus")).toBe(true);
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 940 },
+      select: { resolvedBy: true },
+    });
+    expect(row.resolvedBy).toBeNull();
   });
 
   test("handoff customerMessage is terminal when the mirror status event lags", async () => {

@@ -37,6 +37,7 @@ import {
   type ChatwootVocab,
   loadChatwootVocab,
 } from "@/modules/chatwoot/vocab";
+import type { ObservedConversation } from "@/modules/conversations/record-resolution";
 import { resolveVariantOverride } from "@/modules/experiments/service";
 import {
   emitFlowEvent,
@@ -741,6 +742,10 @@ export interface ToolsetCtx {
   client: ChatwootClient;
   conversationId: number;
   threadId: string;
+  // The conversation's status as this turn observed it, before any close of ours. Feeds the
+  // IMMEDIATE resolve_conversation path (nudge turns, which carry no turnState): a close that had
+  // already happened when the turn started is not the agent's. See record-resolution.ts rule 2.
+  observed?: ObservedConversation;
   // Chatwoot id of the message that triggered this turn, exposed to HTTP tools as {{message_id}}.
   // Direct path: the incoming message's id. Debounce flush: the burst's last incoming message id
   // (the watermark), since the coalesced turn answers up to that message. 0/absent ⇒ not exposed.
@@ -798,6 +803,9 @@ export interface ToolBuildDeps {
       base?: PrismaClient;
       contactDbId?: bigint | null;
       conversationDbId?: bigint | null;
+      // Mirrors ToolCtx.observed (this whole ctx is a structural copy of it, so a field added
+      // there has to be added here too or the call below stops type-checking).
+      observed?: ObservedConversation;
       contactVoiceReply?: boolean | null;
       timezone?: string;
       vocab?: ChatwootVocab;
@@ -1091,6 +1099,7 @@ export async function buildToolset(
         base: ctx.base,
         contactDbId: cfg.contactDbId,
         conversationDbId: cfg.conversationDbId,
+        observed: ctx.observed,
         contactVoiceReply: cfg.contactVoiceReply,
         timezone: cfg.timezone,
         vocab,

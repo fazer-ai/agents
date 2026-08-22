@@ -15,6 +15,11 @@ import {
   attributesForModel,
   type ChatwootVocab,
 } from "@/modules/chatwoot/vocab";
+import {
+  type ObservedConversation,
+  observeBeforeClose,
+  recordResolutionOrigin,
+} from "@/modules/conversations/record-resolution";
 import type { HandoffConfig } from "@/modules/handoff/settings";
 import {
   type HandoffTargets,
@@ -149,6 +154,11 @@ export interface ToolCtx {
   // step right after set_custom_attribute writes to Chatwoot (see mirrorAttributeWrite). Absent ⇒
   // the write-through is skipped and the mirror catches up on the next webhook event.
   conversationDbId?: bigint | null;
+  // The conversation as the turn observed it, for the immediate resolve_conversation path. Absent
+  // ⇒ the close is not recorded rather than claimed: see record-resolution.ts rule 2. This is the
+  // FALLBACK only: the tool re-reads the live state before closing, because on a nudge turn this
+  // snapshot was taken before a model call that can run for a minute.
+  observed?: ObservedConversation;
   // The contact's CURRENT stored voice preference (snapshot at turn prep), surfaced in the
   // set_voice_preference description so the model knows the existing value before changing it.
   // true = audio, false = text, null/undefined = not set yet.
@@ -729,7 +739,32 @@ function resolveConversationTool(ctx: ToolCtx) {
         ts.resolveRequested = true;
         return "Resolve scheduled: the conversation will be marked resolved after your final reply in this turn is delivered.";
       }
+      // The row id and tenant are absent on hand-built contexts (and the playground never reaches a
+      // real Chatwoot), so an unrecordable close is left unattributed rather than guessed at.
+      const recordable = ctx.tenantId != null && ctx.conversationDbId != null;
+      // BEFORE the toggle, and freshly. This branch runs inside a nudge's model call, which can take
+      // a minute, so `ctx.observed` was taken before generation: an operator, an automation rule or
+      // `auto_resolve_after` closing meanwhile makes our toggle a silent no-op in Chatwoot, and the
+      // stale "open" would credit the agent for their close. After the toggle it is too late — the
+      // conversation reads "resolved" either way and the two are indistinguishable.
+      const observed = recordable
+        ? await observeBeforeClose(
+            ctx.client,
+            ctx.conversationId,
+            ctx.observed ?? { status: "resolved", statusAt: null },
+          )
+        : { status: "resolved", statusAt: null };
       await ctx.client.toggleStatus(ctx.conversationId, "resolved");
+      // NOTE: Same origin as the deferred path in runtime.ts: the agent judged the request handled.
+      if (recordable) {
+        await recordResolutionOrigin({
+          tenantId: ctx.tenantId as bigint,
+          conversation: { id: ctx.conversationDbId as bigint },
+          origin: "agent",
+          observed,
+          base: ctx.base,
+        });
+      }
       return "Conversation resolved.";
     },
     {

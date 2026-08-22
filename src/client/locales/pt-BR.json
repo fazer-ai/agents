@@ -511,7 +511,8 @@
       "involvement": "Envolvimento",
       "involvementHint": "{{involved}} de {{total}} atendidas pela IA",
       "resolution": "Resolução",
-      "resolutionHint": "{{resolved}} resolvidas pela IA sem ajuda humana",
+      "resolutionHint": "{{resolved}} encerradas pelo próprio agente",
+      "resolutionUntracked": "Outras {{untracked}} foram resolvidas antes de esta instância passar a registrar quem encerra uma conversa, então não entram nesta conta.",
       "total": "Conversas",
       "totalHint": "no período"
     },

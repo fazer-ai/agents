@@ -423,6 +423,24 @@ model Conversation {
   // Display name of the current human assignee (meta.assignee.name), mirrored so the console shows a
   // real name instead of "Human #id". NULL when unassigned or assigned to a bot.
   assigneeName           String?   @map("assignee_name")
+  // Who closed this conversation, recorded at the moment WE close it: "agent" (the
+  // resolve_conversation tool), "followup_abandonment", "redirect_closing", "console", or
+  // "legacy_unknown" for a row the migration found already resolved. NULL = not resolved, or
+  // resolved by something outside our code (an operator in the Chatwoot UI, an automation rule,
+  // `auto_resolve_after`) — none of which reach us, which is why the dashboard reads a recorded
+  // origin instead of inferring one from status + assignee. Cleared whenever the mirror applies a
+  // status that is not "resolved". See src/modules/conversations/resolution-origin.ts.
+  resolvedBy             String?   @map("resolved_by")
+  // The conversation's status version as the CLOSING CALLER observed it — the floor that says which
+  // close the stamp is about. The caller's reading and not the row's at write time: a reopen
+  // mirrored between the toggle returning and the write would otherwise date the stamp to the wrong
+  // episode. Our toggle is stamped before its own webhook arrives, so a
+  // `resolved` event that LOSES the ordering is normally that close failing to land and the stamp
+  // must go; but a delayed `resolved` from an EARLIER episode loses in exactly the same way while
+  // saying nothing about the current one. A claim at or below this floor predates the stamp and is
+  // therefore a different close. NULL on a Chatwoot that sends no versions, where there is nothing
+  // to compare and the rule falls back to its unprotected form.
+  resolvedByAt           Float?    @map("resolved_by_at")
   threadId               String    @map("thread_id") // tenantId:instanceId:convId
   // Mirror of the conversation's Chatwoot custom attributes and of the LINKED KANBAN CARD's ones
   // (conversation.custom_attributes / conversation.kanban_task.custom_attributes on the webhook

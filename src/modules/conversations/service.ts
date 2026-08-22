@@ -22,6 +22,7 @@ import {
 } from "@/modules/chatwoot/instance";
 import { parseLiveConversation } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
 import type { FollowUpDelayUnit } from "@/modules/followups/settings";
 import {
@@ -506,6 +507,7 @@ async function loadConvRef(
   chatwootInstanceId: bigint;
   chatwootConversationId: number;
   status: string;
+  chatwootStatusAt: number | null;
   assigneeId: number | null;
   assigneeType: string | null;
   assigneeName: string | null;
@@ -533,6 +535,7 @@ async function loadConvRef(
         chatwootInstanceId: true,
         chatwootConversationId: true,
         status: true,
+        chatwootStatusAt: true,
         assigneeId: true,
         assigneeType: true,
         assigneeName: true,
@@ -603,7 +606,10 @@ async function updateMirror(
   },
 ): Promise<void> {
   await runScopedOn(base, ctx, (db) =>
-    db.conversation.updateMany({ where: { id }, data }),
+    db.conversation.updateMany({
+      where: { id },
+      data,
+    }),
   );
 }
 
@@ -648,6 +654,22 @@ async function mirrorConsoleWrite(
   },
 ): Promise<ConsoleWriteState | null> {
   const tenantId = requireTenant(ctx);
+  // NOTE: An operator commanding a non-resolved status ends the resolution, and that is decided HERE
+  // rather than inside either write below. Deliberately NOT `clearsResolutionOrigin`: that function
+  // answers "did the ordering leave this close standing?", and a click has no ordering to consult.
+  // It is a command, so it holds whatever the mirror currently reads — including the case the shared
+  // rule refuses, where the row still shows the pre-resolve status because our own resolve webhook
+  // has not landed, and both the stored and the live status therefore read non-resolved. Living in
+  // the unversioned fallback meant exactly that case escaped: a successful versioned reconcile
+  // returns before the fallback runs, and the stamp survived the reopen into the next close.
+  if (fallback.status != null && fallback.status !== "resolved") {
+    await runScopedOn(base, ctx, (db) =>
+      db.conversation.updateMany({
+        where: { id },
+        data: { resolvedBy: null, resolvedByAt: null },
+      }),
+    );
+  }
   try {
     const live = parseLiveConversation(
       await client.getConversation(conv.chatwootConversationId),
@@ -1305,6 +1327,27 @@ export async function setConversationStatus(
   await client.toggleStatus(conv.chatwootConversationId, status, {
     asAdmin: true,
   });
+  // NOTE: An operator closing a conversation is not the agent resolving it, and the two are
+  // indistinguishable from status + assignee alone (this path deliberately does NOT assign the
+  // operator: the audit shows the instance admin, not the persona). Recording it is what keeps it
+  // out of the Resolution funnel. Non-resolved statuses need nothing: the mirror clears the stamp.
+  //
+  // BEFORE the mirror write, not after: the recorder only stamps a row that is not already resolved
+  // (a resolve on a resolved conversation is a no-op in Chatwoot and does not change who closed it),
+  // and mirrorConsoleWrite is what makes this row resolved. Running it second would refuse every
+  // console stamp; running it first also makes the re-resolve case fall out for free, because then
+  // the row it reads is the pre-toggle one.
+  if (status === "resolved") {
+    await recordResolutionOrigin({
+      tenantId,
+      conversation: { id },
+      origin: "console",
+      // NOTE: conv is the row as loaded BEFORE the toggle, so an operator re-resolving an already
+      // resolved conversation records nothing: their call was a no-op in Chatwoot too.
+      observed: { status: conv.status, statusAt: conv.chatwootStatusAt },
+      base,
+    });
+  }
   const state = await mirrorConsoleWrite(ctx, base, id, conv, client, {
     status,
   });

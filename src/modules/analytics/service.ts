@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import type { UsageSource } from "@/graph/usage";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { classifyOutcome } from "@/modules/conversations/resolution-origin";
 
 // Instance metrics for the operational dashboard. LLM tokens/calls are aggregated FROM THE LOCAL
 // LlmUsage table (captured at the source in the model callback), never mirrored from Langfuse —
@@ -215,15 +216,24 @@ export async function getInstanceMetrics(
 }
 
 // Operational KPIs (the AI-support-agent standard: Intercom Fin / OpenAI). "Involved" = the bot
-// actually ran on the conversation (it produced LlmUsage). Resolution = of those, how many were
-// resolved without a human taking over (assigneeType != User). Automation = Involvement ×
-// Resolution = resolved-by-bot / total. All computed from local data (LlmUsage + the Conversation
-// mirror), RLS-scoped inside the tx.
+// actually ran on the conversation (it produced LlmUsage). Resolution = of those, how many the AGENT
+// itself closed. Automation = Involvement × Resolution = resolved-by-bot / total. All computed from
+// local data (LlmUsage + the Conversation mirror), RLS-scoped inside the tx.
+//
+// Resolution used to read `status === "resolved" && assigneeType !== "User"`, which counted six
+// closings that are not the agent's — including a follow-up ladder closing out a lead that never
+// answered, and Chatwoot's own `auto_resolve_after`. Both make the number RISE as engagement gets
+// worse. It now reads `Conversation.resolvedBy`, recorded where we close a conversation; the whole
+// argument is in src/modules/conversations/resolution-origin.ts.
 export interface DashboardKpis {
   totalConversations: number;
   involved: number;
   resolvedByBot: number;
   handoff: number;
+  // Involved conversations already resolved when this instance started recording the origin. They
+  // cannot be attributed either way, so they are reported instead of counted, and the dashboard says
+  // so — otherwise the funnel steps down on upgrade day and reads as the agent getting worse.
+  resolvedBeforeTracking: number;
   involvementRate: number;
   resolutionRate: number;
   automationRate: number;
@@ -255,14 +265,25 @@ export async function getKpis(
     const involved = involvedIds.length;
     let resolvedByBot = 0;
     let handoff = 0;
+    let resolvedBeforeTracking = 0;
     if (involved > 0) {
       const convs = await db.conversation.findMany({
         where: { id: { in: involvedIds } },
-        select: { status: true, assigneeType: true },
+        select: { status: true, assigneeType: true, resolvedBy: true },
       });
       for (const c of convs) {
-        if (c.assigneeType === "User") handoff += 1;
-        else if (c.status === "resolved") resolvedByBot += 1;
+        switch (classifyOutcome(c)) {
+          case "handoff":
+            handoff += 1;
+            break;
+          case "resolved_by_agent":
+            resolvedByBot += 1;
+            break;
+          case "resolved_before_tracking":
+            resolvedBeforeTracking += 1;
+            break;
+          // NOTE: resolved_by_other / unresolved: neither a resolution nor a handoff.
+        }
       }
     }
     return {
@@ -270,6 +291,7 @@ export async function getKpis(
       involved,
       resolvedByBot,
       handoff,
+      resolvedBeforeTracking,
       involvementRate:
         totalConversations > 0 ? involved / totalConversations : 0,
       resolutionRate: involved > 0 ? resolvedByBot / involved : 0,

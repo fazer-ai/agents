@@ -646,7 +646,7 @@ export function DashboardPage() {
                   }
                   secondary={t(
                     "dashboard.kpi.resolutionHint",
-                    "{{resolved}} of AI-handled conversations resolved without a human",
+                    "{{resolved}} closed by the agent itself",
                     { resolved: nf.format(kpis.resolvedByBot) },
                   )}
                 />
@@ -689,6 +689,19 @@ export function DashboardPage() {
                   total={kpis.totalConversations}
                   nf={nf}
                 />
+                {/* Conversations resolved before this instance started recording WHO closed them
+                    cannot be attributed either way. Saying so is the difference between a funnel
+                    that looks lower for a historical window and an operator concluding the agent
+                    got worse the day they upgraded. Disappears once the window moves past them. */}
+                {kpis.resolvedBeforeTracking > 0 && (
+                  <p className="text-text-tertiary text-xs">
+                    {t(
+                      "dashboard.kpi.resolutionUntracked",
+                      "{{untracked}} more were resolved before this instance began recording who closed a conversation, so they are not counted here.",
+                      { untracked: nf.format(kpis.resolvedBeforeTracking) },
+                    )}
+                  </p>
+                )}
               </Card>
             </section>
 

@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import type { LiveConversationState } from "./normalize";
 
 // Applies a LIVE conversation snapshot (a REST `GET /conversations/:id`) to the mirror row, under the
@@ -95,6 +96,7 @@ export async function reconcileMirrorFromLive(
             assigneeName: true,
             lastEventAt: true,
             chatwootStatusAt: true,
+            resolvedByAt: true,
             chatwootAssigneeAt: true,
           },
         });
@@ -158,6 +160,20 @@ export async function reconcileMirrorFromLive(
         const data = {
           ...(statusOrdered && live.status !== current.status
             ? { status: live.status }
+            : {}),
+          // NOTE: The same rule the webhook mirror applies, from the same function: a live read always
+          // speaks about status, and what it is allowed to WRITE is `statusOrdered`.
+          ...(clearsResolutionOrigin({
+            storedStatus: current.status,
+            statedStatus: live.status,
+            appliedStatus: statusOrdered ? live.status : null,
+            sourceMayStateStatus: true,
+            // NOTE: A live snapshot is never a message: it cannot be the customer coming back.
+            reopens: false,
+            statedVersion: live.updatedAt,
+            stampedAfterVersion: current.resolvedByAt,
+          })
+            ? { resolvedBy: null, resolvedByAt: null }
             : {}),
           ...(assigneeOrdered &&
           (live.assigneeType !== current.assigneeType ||

@@ -667,6 +667,23 @@ test("nothing the provider authored reaches the line, however clean it looks", (
     providerFailure(Object.assign(new Error("boom"), { statusCode: 503 })),
   ).toBe("HTTP 503");
 
+  // A number is admissible because it cannot carry a transcript — which covers a number that IS a
+  // status and nothing else. `HTTP NaN` was never in the vocabulary this promises, and 0 (never
+  // connected) and a figure lifted out of the body are not statuses either.
+  // 429.5 is the one that isolates the integer check: every other value here is already refused by
+  // the range, so without it the list passes and `HTTP 429.5` ships.
+  for (const notAStatus of [0, Number.NaN, 429.5, 3.7, 4500, -1, 99]) {
+    expect(
+      providerFailure(Object.assign(new Error("boom"), { status: notAStatus })),
+    ).toBe("provider error");
+  }
+  expect(
+    providerFailure(Object.assign(new Error("boom"), { status: 100 })),
+  ).toBe("HTTP 100");
+  expect(
+    providerFailure(Object.assign(new Error("boom"), { status: 599 })),
+  ).toBe("HTTP 599");
+
   // With nothing to go on, a fixed literal rather than whatever the error happened to be called.
   const opaque = providerFailure(
     Object.assign(new Error(marker), { name: marker }),

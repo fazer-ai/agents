@@ -246,6 +246,17 @@ export function renderTranscript(
 //
 // The single consumer is the compaction job (./compact.ts), which fails with this text and hands it
 // to the scheduler; since issue #196 that text also reaches the operator's trail.
+// A number is admissible where the vendor's strings are not, because the client PARSED it out of the
+// status line and a number cannot carry a transcript. That argument only covers a number that IS a
+// status, though: an adapter is free to expose `status: 0` for "never connected", a NaN from a failed
+// parse, or some figure lifted out of the body. Those are neither a status nor this module's to
+// publish, and `HTTP NaN` is not in the vocabulary this file promises.
+function httpStatus(v: unknown): number | null {
+  return typeof v === "number" && Number.isInteger(v) && v >= 100 && v <= 599
+    ? v
+    : null;
+}
+
 export function providerFailure(err: unknown, timedOut = false): string {
   if (timedOut) return "timeout";
   if (!(err instanceof Error)) return "provider error";
@@ -261,12 +272,10 @@ export function providerFailure(err: unknown, timedOut = false): string {
   // in the text is the customer's PIN or their invoice total far more often than it is a transport
   // status. Naming a status the provider never returned sends the operator to the wrong thing to fix,
   // and "provider error" at least sends them nowhere.
-  // One type check over both spellings, rather than one per field: they ask the same question, and a
+  // One predicate over both spellings, rather than one per field: they ask the same question, and a
   // rule written twice is a rule the second copy gets wrong.
-  const status = [bag.status, bag.statusCode].find(
-    (v) => typeof v === "number",
-  );
-  return status === undefined ? "provider error" : `HTTP ${status}`;
+  const status = httpStatus(bag.status) ?? httpStatus(bag.statusCode);
+  return status === null ? "provider error" : `HTTP ${status}`;
 }
 
 export async function summarizeAttendance(

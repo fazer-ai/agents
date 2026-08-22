@@ -123,11 +123,23 @@ of asking the operator's endpoint about an identity that is not theirs. Per fiel
 snapshot that happens to carry an unrelated cleared field must not ride that in to rewrite the rest
 of what it holds.
 
-**On upgrade**, every contact's identity is cleared and its watermarks seeded from the newest event
-that touched it. The old mirror wrote identity before the conversation's stale check, so what sits in
-those columns came from the last event to ARRIVE, not the newest to have happened, and nothing in the
-row says which. Values nobody can vouch for are not handed to an authorization decision: the gate
-reads the cleared row as `no_identity` and refuses until the contact's next event fills it back in.
+**On upgrade**, the watermarks are seeded from the newest event that touched each contact and the
+identity is KEPT. Seeding is what stops a Chatwoot retry already in flight, whose snapshot predates
+what is stored, from being accepted against a null position. What it does not settle is whether the
+stored value belongs to that position: the old mirror wrote identity before the conversation's stale
+check, so these columns hold what the last event to ARRIVE said, not the newest to have happened.
+That value is pinned under a newer position until the contact's next event corrects it.
+
+Clearing the identity instead would swap that residual doubt for a certain outage. These values are
+live — `{{nome_contato}}` and `{{contact_phone}}` in prompts and HTTP tools, `{contact_name}` in an
+HSM template, the name in the console's conversation list — and emptying them for every contact of
+every tenant to protect a gate that ships **disabled on every agent** costs everyone something real
+to prevent nothing: on upgrade day no contact is being authorized at all. Nor does the gate inherit
+the doubt when it is switched on later, because the reactive check runs AFTER the mirror wrote the
+very message that triggered it (`mirrorChatwootEvent`, then the gate), so it decides on identity
+that message just refreshed. The one caller that asks with no incoming message is the proactive
+nudge, and there the exposure is a contact whose stored identity was already stale before the
+upgrade — the state every deployment is in today.
 
 A contact that two Chatwoot accounts had collapsed into one row (the reason `chatwoot_instance_id`
 exists) is cleared harder: the losing account's conversations are unlinked, and the retained row

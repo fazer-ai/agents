@@ -21,28 +21,33 @@ ALTER TABLE "contacts"
 -- outside a transaction SET LOCAL is a no-op with only a warning.
 SET app.is_super_admin = 'on';
 
--- The identity is CLEARED as the watermark is seeded, and the two halves answer each other.
+-- The watermark is seeded and the identity is KEPT, which are two different risks and only one of
+-- them is worth paying for here.
 --
 -- Leaving the watermark null was not an option: the compare-and-set accepts anything against null,
 -- including a Chatwoot retry already in flight when this ran, whose snapshot predates what is
--- stored. But seeding it from the newest conversation event and KEEPING the identity is not safe
--- either, and for the opposite reason: the old mirror wrote identity before the conversation's
--- stale check, so what sits in these columns came from the last event to ARRIVE, not the newest one
--- to have happened. Stamping a possibly-superseded identity with the newest position would protect
--- it from correction and hand it to the gate as fact.
+-- stored. Seeding it from the newest conversation event closes that.
 --
--- Nothing in the row records which of the two it is, so the values are not vouched for and are
--- dropped. The gate reads that as `no_identity`, refuses, and says so — the same fail-closed side
--- the whole feature stands on — and the contact's next event fills it back in. The cost is real:
--- until that event, an agent with the gate ON refuses this contact, and the prompt loses the name.
--- It is paid once, on upgrade, and it buys the guarantee that no contact is ever authorized under
--- an identity nobody can vouch for.
+-- What seeding does NOT settle is whether the stored value belongs to that position. The old mirror
+-- wrote identity before the conversation's stale check, so these columns hold what the last event to
+-- ARRIVE said, not the newest to have happened, and nothing in the row says which. Seeding pins a
+-- possibly-superseded value under a newer position, where the next event corrects it.
+--
+-- Clearing the identity instead would trade that for a certainty, and the wrong way round. The
+-- values are LIVE: `{{nome_contato}}` and `{{contact_phone}}` in prompts and HTTP tools, the
+-- `{contact_name}` of an HSM template, the name in the console's conversation list. Emptying them
+-- for every contact of every tenant breaks all of that until each contact's next event, to protect
+-- an authorization gate that ships DISABLED on every agent — so on the day of the upgrade there is
+-- no contact being authorized under anything, vouched for or not.
+--
+-- And the gate does not inherit the doubt when it is switched on later. The reactive check runs
+-- AFTER the mirror wrote the very message that triggered it (webhook.ts: mirrorChatwootEvent, then
+-- the gate), so it reads identity that the message it is deciding about just refreshed. The one
+-- caller that asks without an incoming message is the proactive nudge, and there the exposure is a
+-- contact whose stored identity was already stale before this migration ran, which is the state
+-- every deployment is in today.
 UPDATE "contacts" ct
-SET "name" = NULL,
-    "email" = NULL,
-    "phone" = NULL,
-    "attributes" = '{}'::jsonb,
-    "name_at" = sub."last_event_at",
+SET "name_at" = sub."last_event_at",
     "email_at" = sub."last_event_at",
     "phone_at" = sub."last_event_at",
     "attributes_at" = sub."last_event_at"
@@ -54,10 +59,7 @@ FROM (
 ) sub
 WHERE ct."id" = sub."contact_id";
 
--- A contact with no positioned conversation keeps null watermarks, which is right (nothing has ever
--- positioned it), but its identity is just as unvouched-for, so it goes too.
-UPDATE "contacts"
-SET "name" = NULL, "email" = NULL, "phone" = NULL, "attributes" = '{}'::jsonb
-WHERE "name_at" IS NULL;
+-- A contact with no positioned conversation keeps null watermarks, which is right: nothing has ever
+-- positioned it, and the first dated event takes it over.
 
 RESET app.is_super_admin;

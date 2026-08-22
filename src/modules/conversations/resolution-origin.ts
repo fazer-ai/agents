@@ -77,10 +77,21 @@
  *      rule eats resolutions it has no business touching: a delayed `resolved` from an EARLIER
  *      episode loses the ordering in exactly the same shape, and clearing on it wipes a close that
  *      is still on its way. That close's own event then finds nothing to restore, so a real agent
- *      resolution is reported as somebody else's, permanently. The floor is the row's status
- *      version at stamp time, so a claim at or below it predates the stamp and is a different
- *      close. Null on either side means there is nothing to compare (a Chatwoot that sends no
- *      versions), and the rule falls back to its unprotected form rather than refusing to clear.
+ *      resolution is reported as somebody else's, permanently. The floor is the status version the
+ *      CLOSING CALLER observed, so a claim at or below it predates the stamp and is a different
+ *      close. Null on either side means there is nothing to compare, and the rule falls back to its
+ *      unprotected form rather than refusing to clear.
+ *
+ *      That fallback is a real limit on a Chatwoot older than 4.0.2, which sends no
+ *      `conversation.updated_at` at all: there both sides are always null, so a delayed close from
+ *      an earlier episode, or a retried delivery of the message that opened this one, drops a stamp
+ *      it should have left alone. Deliberate, and the direction to fail in. Requiring a version
+ *      instead would stop rules 2 and 3 from firing on exactly those instances, which is how a
+ *      stamp survives a close that never landed: an over-count, on a metric whose whole point is
+ *      that it stopped over-counting. Closing it properly needs a SECOND floor on the activity
+ *      clock (`last_activity_at`, integer seconds, not comparable to the microsecond float), which
+ *      is another column and a third fact through every writer, for a Chatwoot line our own fork
+ *      left behind at 4.0.2. Pinned as a named row in the decision table.
  *
  *   3. **A brand-new incoming message reopened the conversation, and it is newer than the stamp.**
  *      The one reopen a message payload carries faithfully, and the only rule here that does not go
@@ -184,7 +195,7 @@ export type ConversationOutcome =
 export function classifyOutcome(
   row: ConversationOutcomeRow,
 ): ConversationOutcome {
-  // Handoff wins over any origin: a conversation a human took over is theirs, and the agent cannot
+  // NOTE: Handoff wins over any origin: a conversation a human took over is theirs, and the agent cannot
   // run (let alone resolve) after the transfer. Keeping the order explicit means a row that somehow
   // carries both never lands in the success bucket.
   if (row.assigneeType === "User") return "handoff";

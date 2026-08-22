@@ -161,14 +161,14 @@ export async function reconcileMirrorFromLive(
           ...(statusOrdered && live.status !== current.status
             ? { status: live.status }
             : {}),
-          // The same rule the webhook mirror applies, from the same function: a live read always
+          // NOTE: The same rule the webhook mirror applies, from the same function: a live read always
           // speaks about status, and what it is allowed to WRITE is `statusOrdered`.
           ...(clearsResolutionOrigin({
             storedStatus: current.status,
             statedStatus: live.status,
             appliedStatus: statusOrdered ? live.status : null,
             sourceMayStateStatus: true,
-            // A live snapshot is never a message: it cannot be the customer coming back.
+            // NOTE: A live snapshot is never a message: it cannot be the customer coming back.
             reopens: false,
             statedVersion: live.updatedAt,
             stampedAfterVersion: current.resolvedByAt,

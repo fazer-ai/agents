@@ -282,7 +282,7 @@ export async function getKpis(
           case "resolved_before_tracking":
             resolvedBeforeTracking += 1;
             break;
-          // resolved_by_other / unresolved: neither a resolution nor a handoff.
+          // NOTE: resolved_by_other / unresolved: neither a resolution nor a handoff.
         }
       }
     }

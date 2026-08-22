@@ -2,6 +2,8 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { parseLiveConversation } from "@/modules/chatwoot/normalize";
 import type { ResolutionOrigin } from "@/modules/conversations/resolution-origin";
 
 // Records who closed a conversation, on the four paths where WE close one. The dashboard reads this
@@ -97,6 +99,38 @@ export interface ObservedConversation {
   statusAt: number | null;
 }
 
+/**
+ * The conversation as it stands right before we close it, read live.
+ *
+ * Both paths that close during a turn need this and for the same reason: the turn's own snapshot was
+ * taken before work that can run for a long time (a model call on the nudge path, moderation plus
+ * TTS plus typing-paced delivery on the reactive one). An operator, an automation rule or a timer
+ * closing meanwhile makes our toggle a silent no-op in Chatwoot, and the stale non-resolved value
+ * would credit the agent for their close. After the toggle it is too late: the conversation reads
+ * "resolved" either way and the two are indistinguishable.
+ *
+ * A failed read falls back to `snapshot`, which is what both paths used to do unconditionally:
+ * stale, but strictly better than refusing to record every close whenever a GET blips.
+ */
+export async function observeBeforeClose(
+  client: Pick<ChatwootClient, "getConversation">,
+  conversationId: number,
+  snapshot: ObservedConversation,
+): Promise<ObservedConversation> {
+  try {
+    const live = parseLiveConversation(
+      await client.getConversation(conversationId),
+    );
+    if (live) return { status: live.status, statusAt: live.updatedAt };
+  } catch (err) {
+    logger.warn(
+      { err, conversationId },
+      "observeBeforeClose: live read failed, using the caller's snapshot",
+    );
+  }
+  return snapshot;
+}
+
 export async function recordResolutionOrigin(params: {
   tenantId: bigint;
   conversation: ConversationRef;
@@ -109,7 +143,7 @@ export async function recordResolutionOrigin(params: {
   if (observed.status === "resolved") return;
   try {
     await runScopedOn(base, sysCtx(tenantId), (db) =>
-      // updateMany, not update: a conversation deleted (or never mirrored) between the toggle and
+      // NOTE: updateMany, not update: a conversation deleted (or never mirrored) between the toggle and
       // this write is a no-op, not a throw. Both predicates are evaluated by the database in the
       // same statement, so two closings landing at once cannot both pass them.
       db.conversation.updateMany({
@@ -117,7 +151,7 @@ export async function recordResolutionOrigin(params: {
           ...("id" in conversation ? { id: conversation.id } : conversation),
           resolvedBy: null,
         },
-        // The floor is the version the CALLER observed, never the row's own at write time. Between
+        // NOTE: The floor is the version the CALLER observed, never the row's own at write time. Between
         // the toggle returning and this statement the row can already carry a newer reopen, and
         // copying that would record a floor describing the wrong episode: our own delayed resolve
         // event would then be judged to predate the stamp and could no longer clear it.

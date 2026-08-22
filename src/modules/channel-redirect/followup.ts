@@ -455,7 +455,7 @@ async function deliverClosing(
     private: sendMode !== "freeform",
   });
   await client.toggleStatus(conversationId, "resolved");
-  // Tidying up the channel the episode moved AWAY from. Whatever the outcome was, it was not decided
+  // NOTE: Tidying up the channel the episode moved AWAY from. Whatever the outcome was, it was not decided
   // here, so this closing is not a resolution the agent can be credited with.
   await recordResolutionOrigin({
     tenantId: origin.tenantId,

@@ -11,13 +11,13 @@ import type {
   CustomAttributeDef,
 } from "@/modules/chatwoot/client";
 import { type KanbanContext, matchKanbanStep } from "@/modules/chatwoot/kanban";
-import { parseLiveConversation } from "@/modules/chatwoot/normalize";
 import {
   attributesForModel,
   type ChatwootVocab,
 } from "@/modules/chatwoot/vocab";
 import {
   type ObservedConversation,
+  observeBeforeClose,
   recordResolutionOrigin,
 } from "@/modules/conversations/record-resolution";
 import type { HandoffConfig } from "@/modules/handoff/settings";
@@ -748,10 +748,14 @@ function resolveConversationTool(ctx: ToolCtx) {
       // stale "open" would credit the agent for their close. After the toggle it is too late — the
       // conversation reads "resolved" either way and the two are indistinguishable.
       const observed = recordable
-        ? await observeBeforeClose(ctx)
+        ? await observeBeforeClose(
+            ctx.client,
+            ctx.conversationId,
+            ctx.observed ?? { status: "resolved", statusAt: null },
+          )
         : { status: "resolved", statusAt: null };
       await ctx.client.toggleStatus(ctx.conversationId, "resolved");
-      // Same origin as the deferred path in runtime.ts: the agent judged the request handled.
+      // NOTE: Same origin as the deferred path in runtime.ts: the agent judged the request handled.
       if (recordable) {
         await recordResolutionOrigin({
           tenantId: ctx.tenantId as bigint,
@@ -771,24 +775,6 @@ function resolveConversationTool(ctx: ToolCtx) {
       schema: z.object({}),
     },
   );
-}
-
-// The live conversation right before we close it. A failed read falls back to the turn's own
-// snapshot, which is what this path used to do unconditionally: stale, but strictly better than
-// refusing to record every close whenever a GET blips.
-async function observeBeforeClose(ctx: ToolCtx): Promise<ObservedConversation> {
-  try {
-    const live = parseLiveConversation(
-      await ctx.client.getConversation(ctx.conversationId),
-    );
-    if (live) return { status: live.status, statusAt: live.updatedAt };
-  } catch (err) {
-    logger.warn(
-      { err, conversationId: ctx.conversationId },
-      "resolve_conversation: live read before close failed, using the turn's snapshot",
-    );
-  }
-  return ctx.observed ?? { status: "resolved", statusAt: null };
 }
 
 function truncate(s: string, max: number): string {

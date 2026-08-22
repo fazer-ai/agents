@@ -157,7 +157,7 @@ export async function mirrorChatwootEvent(
           storedStatus: existing.status,
           statedStatus: statePayload.status,
           appliedStatus: decision.status,
-          // Exactly what the flag means: a conversation event speaks about status, a message
+          // NOTE: Exactly what the flag means: a conversation event speaks about status, a message
           // snapshot embeds one but is meant to move no state (issue #61). NOT `&& version != null`:
           // `decideConversationWrites` orders a versionless conversation event by `last_activity_at`
           // and lets it move status, so requiring a version silently exempted every Chatwoot older
@@ -169,7 +169,7 @@ export async function mirrorChatwootEvent(
         });
 
       if (existing && decision.stale) {
-        // A stale event says nothing about the conversation, with ONE exception: a close of ours
+        // NOTE: A stale event says nothing about the conversation, with ONE exception: a close of ours
         // that this ordering refused. Written here because this branch returns before the update.
         // `resolvedBy != null` is a write-avoidance guard, not part of the rule: this branch is
         // taken by every out-of-order delivery, and clearing a column that is already null would
@@ -266,7 +266,7 @@ export async function mirrorChatwootEvent(
             : {}),
           ...(decision.unversioned && contactId != null ? { contactId } : {}),
           ...(appliedStatus != null ? { status: appliedStatus } : {}),
-          // The same question the stale branch asked, and the same answer: see
+          // NOTE: The same question the stale branch asked, and the same answer: see
           // `dropsResolutionOrigin` above.
           ...(dropsResolutionOrigin
             ? { resolvedBy: null, resolvedByAt: null }

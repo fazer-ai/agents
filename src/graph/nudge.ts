@@ -300,7 +300,7 @@ export async function runAgentNudge(
     return {
       cfg,
       status: conv.status,
-      // Kept beside `status` and moved with it: the pair is one observation, and the resolution
+      // NOTE: Kept beside `status` and moved with it: the pair is one observation, and the resolution
       // recorder needs the version as much as the value (see ObservedConversation).
       statusAt: conv.chatwootStatusAt,
       assigneeType: conv.assigneeType,
@@ -468,7 +468,7 @@ export async function runAgentNudge(
       client,
       conversationId,
       threadId: params.threadId,
-      // The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
+      // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
       // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
       // one that had already happened — but only as a FALLBACK: this snapshot is taken before
       // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
@@ -907,7 +907,7 @@ export async function runAgentNudge(
     if (allowResolve && actions.resolve) {
       try {
         await client.toggleStatus(conversationId, "resolved");
-        // A follow-up ladder only advances while the customer stays silent (an inbound ends the
+        // NOTE: A follow-up ladder only advances while the customer stays silent (an inbound ends the
         // episode), so the last step firing means nobody ever answered. Recording that keeps the
         // Resolution funnel from reading an abandoned lead as a conversation the agent resolved.
         await recordResolutionOrigin({
@@ -917,7 +917,7 @@ export async function runAgentNudge(
             chatwootConversationId: conversationId,
           },
           origin: "followup_abandonment",
-          // `loaded` carries the probe's LIVE answer on this path: requireLiveBotOwnership makes
+          // NOTE: `loaded` carries the probe's LIVE answer on this path: requireLiveBotOwnership makes
           // probeLiveOwnership run a GET immediately before this, and it writes both halves of what
           // it saw back onto `loaded`.
           observed: { status: loaded.status, statusAt: loaded.statusAt },

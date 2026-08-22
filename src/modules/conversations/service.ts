@@ -654,7 +654,7 @@ async function mirrorConsoleWrite(
   },
 ): Promise<ConsoleWriteState | null> {
   const tenantId = requireTenant(ctx);
-  // An operator commanding a non-resolved status ends the resolution, and that is decided HERE
+  // NOTE: An operator commanding a non-resolved status ends the resolution, and that is decided HERE
   // rather than inside either write below. Deliberately NOT `clearsResolutionOrigin`: that function
   // answers "did the ordering leave this close standing?", and a click has no ordering to consult.
   // It is a command, so it holds whatever the mirror currently reads — including the case the shared
@@ -1327,7 +1327,7 @@ export async function setConversationStatus(
   await client.toggleStatus(conv.chatwootConversationId, status, {
     asAdmin: true,
   });
-  // An operator closing a conversation is not the agent resolving it, and the two are
+  // NOTE: An operator closing a conversation is not the agent resolving it, and the two are
   // indistinguishable from status + assignee alone (this path deliberately does NOT assign the
   // operator: the audit shows the instance admin, not the persona). Recording it is what keeps it
   // out of the Resolution funnel. Non-resolved statuses need nothing: the mirror clears the stamp.
@@ -1342,7 +1342,7 @@ export async function setConversationStatus(
       tenantId,
       conversation: { id },
       origin: "console",
-      // conv is the row as loaded BEFORE the toggle, so an operator re-resolving an already
+      // NOTE: conv is the row as loaded BEFORE the toggle, so an operator re-resolving an already
       // resolved conversation records nothing: their call was a no-op in Chatwoot too.
       observed: { status: conv.status, statusAt: conv.chatwootStatusAt },
       base,

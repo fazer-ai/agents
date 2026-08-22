@@ -798,6 +798,51 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(resolvedRow.resolvedByAt).toBe(OBSERVED_AT);
   });
 
+  // Review round 14. The deferred resolve fires AFTER delivery, and delivery on this path is not
+  // quick: the output guardrail is a model round-trip, TTS synthesises audio, and split delivery is
+  // typing-paced on purpose. The ownership recheck's snapshot can therefore be seconds old by the
+  // time the toggle runs, and an operator closing in that window makes it a silent no-op that the
+  // stale "pending" would credit to the agent. Same question the nudge path answers, other path.
+  test("an operator's close during delivery is not claimed by the deferred resolve", async () => {
+    await seedConversation(940, null);
+    const calls: Array<[string, number, string]> = [];
+    const inner = (await makeResolveClient(calls)()) as unknown as Record<
+      string,
+      unknown
+    >;
+    const client = {
+      ...inner,
+      // The operator already closed it while the reply was being delivered.
+      getConversation: async () => ({
+        id: 940,
+        status: "resolved",
+        meta: { assignee_type: null, assignee: null },
+        last_activity_at: 1_700_400_000,
+        updated_at: 1_700_400_001,
+      }),
+    } as unknown as ChatwootClient;
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 940 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new ResolveThenReplyModel("Fechado!") as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // The toggle still runs: Chatwoot answers it as a no-op and we cannot tell from the answer.
+    expect(calls.some(([kind]) => kind === "toggleStatus")).toBe(true);
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 940 },
+      select: { resolvedBy: true },
+    });
+    expect(row.resolvedBy).toBeNull();
+  });
+
   test("handoff customerMessage is terminal when the mirror status event lags", async () => {
     await seedConversation(996, null);
     const CLOSING = "Vou te encaminhar para o time.";

@@ -24,6 +24,7 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import {
   type ObservedConversation,
+  observeBeforeClose,
   recordResolutionOrigin,
 } from "@/modules/conversations/record-resolution";
 import { advanceHandledWatermark } from "@/modules/debounce/watermark";
@@ -178,8 +179,18 @@ async function applyDeferredResolve(
   if (!turnState.resolveRequested) return;
   turnState.resolveRequested = false;
   try {
+    // NOTE: Read live before the toggle, not from `origin.observed`. That snapshot is the ownership
+    // recheck's, taken BEFORE delivery, and delivery is not quick on this path: the output guardrail
+    // is a model round-trip, TTS synthesises audio, and split delivery is typing-paced on purpose.
+    // An operator or a timer closing in that window makes the toggle below a silent no-op, and the
+    // stale value would credit the agent for their close.
+    const observed = await observeBeforeClose(
+      client,
+      conversationId,
+      origin.observed,
+    );
     await client.toggleStatus(conversationId, "resolved");
-    // The one closing the Resolution funnel counts: the agent called resolve_conversation, so it
+    // NOTE: The one closing the Resolution funnel counts: the agent called resolve_conversation, so it
     // judged the customer's request handled. Every other way a conversation reaches "resolved" is
     // recorded under its own origin, or not at all when it happens outside our code.
     await recordResolutionOrigin({
@@ -189,7 +200,7 @@ async function applyDeferredResolve(
         chatwootConversationId: conversationId,
       },
       origin: "agent",
-      observed: origin.observed,
+      observed,
       base: origin.base,
     });
     emitFlowEvent(flow, {

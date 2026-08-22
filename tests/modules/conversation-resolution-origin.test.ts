@@ -398,6 +398,19 @@ describe("clearsResolutionOrigin", () => {
       },
       false,
     ],
+    [
+      "KNOWN LIMIT: with no versions anywhere the floor cannot protect anything",
+      {
+        storedStatus: "open",
+        statedStatus: "resolved",
+        appliedStatus: null,
+        sourceMayStateStatus: true,
+        reopens: false,
+        statedVersion: null,
+        stampedAfterVersion: null,
+      },
+      true,
+    ],
   ];
 
   for (const [name, source, expected] of cases) {

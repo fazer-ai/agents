@@ -917,6 +917,23 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   test("the agent's own resolve on a nudge turn is recorded as the agent's", async () => {
     await seedConv(9942, null);
     const s = stub();
+    // NOTE: The live read the tool makes before closing still finds the conversation ours, so the
+    // close IS the agent's. Its version is what the floor has to carry: the caller's pre-generation
+    // snapshot is older, and a floor taken from it would date the stamp to the wrong moment.
+    const LIVE_AT = 1_700_500_000.75;
+    const makeClient = async () => {
+      const base = (await s.makeClient()) as unknown as Record<string, unknown>;
+      return {
+        ...base,
+        getConversation: async () => ({
+          id: 9942,
+          status: "pending",
+          meta: { assignee_type: null, assignee: null },
+          last_activity_at: 1_700_500_000,
+          updated_at: LIVE_AT,
+        }),
+      } as never;
+    };
     await runAgentNudge({
       tenantId,
       threadId: `${tenantId}:${instanceId}:9942`,
@@ -925,7 +942,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       deps: {
         makeModel: () =>
           new ResolveThenReplyModel("Tudo certo por aqui!") as never,
-        makeClient: s.makeClient,
+        makeClient,
         checkpointer: new MemorySaver(),
         persistUsage: async () => {},
       },
@@ -933,9 +950,10 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.resolved).toEqual([9942]);
     const row = await suDb.conversation.findFirst({
       where: { tenantId, chatwootConversationId: 9942 },
-      select: { resolvedBy: true },
+      select: { resolvedBy: true, resolvedByAt: true },
     });
     expect(row?.resolvedBy).toBe("agent");
+    expect(row?.resolvedByAt).toBe(LIVE_AT);
   });
 
   // The episode has to leave a trace the operator can read. A handed-off follow-up that posted a

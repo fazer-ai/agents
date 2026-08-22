@@ -445,8 +445,15 @@ async function upsertContact(
   //
   // `identity_at` is a SOURCE position, never a receipt time: stamping an undated payload with our
   // own clock would make it beat every real Chatwoot timestamp and poison the ordering. An undated
-  // payload therefore only BOOTSTRAPS a contact nothing has positioned yet, and leaves the watermark
-  // null so the first dated event still takes over.
+  // payload therefore has NO position, and a write with no position is a write decided by arrival
+  // order — which is the one thing this block exists to prevent. So it writes nothing here at all.
+  // It used to be allowed through as a "bootstrap" for a row nothing had positioned yet, except
+  // that the watermark stayed null afterwards, so the next undated payload bootstrapped it again,
+  // and the one after that: two degraded deliveries naming different phones settled it by whoever
+  // arrived last. The bootstrap belongs to the `create` above, which runs exactly once per row.
+  // Identity only reaches us on conversation and message events, which carry `last_activity_at`
+  // (bots never receive `contact_updated`), so this is the degraded path — and the degraded path
+  // fails closed: a contact with nothing positioned reads as `no_identity` at the gate.
   //
   // A tie is decided by DISAGREEMENT, not by arrival order. `last_activity_at` has one-second
   // resolution, so two events inside one second cannot be ordered by it at all: two payloads that
@@ -454,16 +461,14 @@ async function upsertContact(
   // values are a conflict nothing can break, and there the field is cleared. That is the
   // fail-closed side this whole feature sits on — asking about less, or about nobody, instead of
   // asking about whichever of the two arrived first.
-  if (Object.keys(identity).length > 0) {
+  if (eventAt && Object.keys(identity).length > 0) {
     await db.contact.updateMany({
       where: {
         id: row.id,
         tenantId,
-        ...(eventAt
-          ? { OR: [{ identityAt: null }, { identityAt: { lt: eventAt } }] }
-          : { identityAt: null }),
+        OR: [{ identityAt: null }, { identityAt: { lt: eventAt } }],
       },
-      data: { ...identity, ...(eventAt ? { identityAt: eventAt } : {}) },
+      data: { ...identity, identityAt: eventAt },
     });
   }
 

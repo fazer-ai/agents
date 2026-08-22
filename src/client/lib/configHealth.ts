@@ -28,6 +28,10 @@ export type ConfigIssueKey =
   | "guardrails"
   | "guardrailsFailing"
   | "contactAuth"
+  // Not a missing credential: two switches that cancel each other out. The unlock flow needs the
+  // conversation to still be the bot's when the code arrives, and the handoff gives it away on the
+  // first refusal.
+  | "contactAuthUnlockHandoff"
   | "knowledge"
   | "embedding"
   | "redirect"
@@ -189,6 +193,11 @@ export interface ConfigHealthInput {
   // gate fails closed and the agent goes silent for every contact.
   contactAuthEnabled?: boolean;
   contactAuthCredentialRef?: string;
+  // The three fields of the unlock-vs-handoff contradiction: the text only ships on POST, and the
+  // handoff only happens when it is on.
+  contactAuthMethod?: string;
+  contactAuthIncludeMessageText?: boolean;
+  contactAuthHandoffEnabled?: boolean;
   // Guardrails run on a model of their own, and theirs is the one credential whose failure is not
   // just a feature going quiet: `loadAgentConfig` fails open, so the analysis is skipped and every
   // message is delivered as if it had been screened and approved.
@@ -496,6 +505,24 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       known,
     ),
   );
+  // The unlock flow and the handoff want opposite things from the same refusal. Forwarding the
+  // message text exists so the customer can send an access code and be let in on their NEXT message;
+  // the handoff opens the conversation and assigns it, and an open conversation is no longer the
+  // bot's, so that next message never reaches the gate. The first refusal is then the last one, and
+  // the copy asking for a code is asking for something that can no longer be read. Neither switch is
+  // wrong on its own, so this is said rather than silently resolved.
+  if (
+    Boolean(input.contactAuthEnabled) &&
+    (input.contactAuthMethod ?? "").toUpperCase() === "POST" &&
+    Boolean(input.contactAuthIncludeMessageText) &&
+    Boolean(input.contactAuthHandoffEnabled)
+  ) {
+    issues.push({
+      key: "contactAuthUnlockHandoff",
+      tab: "behavior",
+      sectionId: "contactAuth",
+    });
+  }
   const guardrailsCred = credIssue(
     Boolean(input.guardrailsEnabled),
     input.guardrailsCredentialRef ?? "",

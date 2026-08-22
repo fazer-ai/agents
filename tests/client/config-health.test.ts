@@ -1317,6 +1317,47 @@ describe("computeConfigIssues — text stored over its cap", () => {
 // for a field the console has no control for: an embedding issue also carries no tab, and its fix
 // (fill the vault entry, or set the tenant embedding) is exactly what the button is for.
 describe("issueHasAction", () => {
+  // The unlock flow needs the conversation to still be the bot's when the code arrives, and the
+  // handoff gives it away on the first refusal. Neither switch is wrong alone, so the pair is
+  // reported rather than resolved.
+  describe("the unlock flow against the handoff", () => {
+    const unlocking = {
+      ...base,
+      contactAuthEnabled: true,
+      contactAuthMethod: "POST",
+      contactAuthIncludeMessageText: true,
+      contactAuthHandoffEnabled: true,
+    };
+
+    test("flags the pair, deep-linking to behavior/contactAuth", () => {
+      expect(computeConfigIssues(unlocking)).toEqual([
+        {
+          key: "contactAuthUnlockHandoff",
+          tab: "behavior",
+          sectionId: "contactAuth",
+        },
+      ]);
+    });
+
+    test("no flag with the handoff off — that is the working unlock setup", () => {
+      expect(
+        computeConfigIssues({ ...unlocking, contactAuthHandoffEnabled: false }),
+      ).toEqual([]);
+    });
+
+    test("no flag under GET, which never carries the text", () => {
+      expect(
+        computeConfigIssues({ ...unlocking, contactAuthMethod: "GET" }),
+      ).toEqual([]);
+    });
+
+    test("no flag when the gate itself is off", () => {
+      expect(
+        computeConfigIssues({ ...unlocking, contactAuthEnabled: false }),
+      ).toEqual([]);
+    });
+  });
+
   test("a targetless textCap issue has no action, and everything else does", () => {
     expect(
       issueHasAction({ key: "textCap", field: "toolGuidance.private_note" }),

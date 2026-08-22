@@ -163,6 +163,15 @@ code: it validates the code against its own records, links the contact, answers
 `{ "authorized": true }`, and the turn runs. No special case in the runtime: it is just the next
 check.
 
+**It needs the handoff OFF** (`handoffEnabled: false`), and that is the one thing about it worth
+saying twice. The handoff opens the conversation and assigns it, and an open conversation is no
+longer the bot's: `shouldBotHandle` refuses it before the gate is reached, so the code the customer
+sends next never gets asked about. With the default (`handoffEnabled: true`) the first refusal is
+also the last one, and a `denyMessage` asking for a code is asking for something nothing will read.
+Neither switch is wrong on its own — one wants the customer to prove who they are, the other wants a
+human to take it from here — so the runtime does not resolve the contradiction: the agent editor
+raises a configuration warning (`contactAuthUnlockHandoff`) when both are on.
+
 **Proactive nudge** (`runAgentNudge` in `src/graph/nudge.ts`): the same check before any tool or
 model work: a follow-up is a turn the agent starts, and a contact the reactive gate would refuse
 must not be reached out to either. Denied/error/no-identity all end as the `silent` outcome (no

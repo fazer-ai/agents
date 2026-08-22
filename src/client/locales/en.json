@@ -678,6 +678,7 @@
     "cloneTitle": "Clone agent",
     "cloneUnsavedNote": "Cloning uses the last saved version; your unsaved changes won't be included.",
     "configIssue": {
+      "contactAuthUnlockHandoff": "The access-code unlock and the handoff cancel each other out: the first refusal opens the conversation and assigns it, and a conversation that is open is no longer the AI's, so the code the customer sends next never reaches the check. Turn the handoff off to let contacts unlock themselves, or stop sending the message text if a human should take every refused conversation.",
       "embedding": "A knowledge base needs indexing, but the tenant embedding is not configured.",
       "guardrails": "Guardrails are on but have no API key set, so messages go out unscreened.",
       "memoryModel": "A separate model is set for attendance summaries but its configuration cannot run, so attendances that end will not be summarized and the contact keeps no memory of them. Check its provider, model, key and endpoint.",

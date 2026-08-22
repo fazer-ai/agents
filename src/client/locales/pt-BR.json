@@ -680,6 +680,7 @@
     "cloneTitle": "Clonar agente",
     "cloneUnsavedNote": "A clonagem usa a última versão salva; suas alterações não salvas não serão incluídas.",
     "configIssue": {
+      "contactAuthUnlockHandoff": "O destravamento por código e a passagem para atendimento humano se anulam: a primeira recusa abre a conversa e a atribui, e uma conversa aberta não é mais da IA, então o código que o cliente mandar em seguida nunca chega à verificação. Desligue a passagem para humano para deixar o contato se destravar, ou pare de enviar o texto da mensagem se um humano deve assumir toda conversa recusada.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas o embedding do tenant não está configurado.",
       "guardrails": "Os guardrails estão ligados, mas sem chave de API definida, então as mensagens saem sem triagem.",
       "memoryModel": "Há um modelo separado configurado para os resumos de atendimento, mas a configuração dele não roda: os atendimentos encerrados não serão resumidos e o contato não guarda memória deles. Confira provedor, modelo, chave e endpoint.",

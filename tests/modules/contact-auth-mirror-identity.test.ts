@@ -36,6 +36,7 @@ const suDb = su as PrismaClient;
 let tenantId = 0n;
 let instA = 0n;
 let instB = 0n;
+let instC = 0n;
 
 const CONTACT_ID = 42;
 const INBOX = 71;
@@ -50,6 +51,8 @@ function payload(over: {
   phone?: string | null;
   phoneAbsent?: boolean;
   updatedAt: number;
+  // A degraded payload: no `last_activity_at`, so nothing positions it in time.
+  undated?: boolean;
 }) {
   return {
     event: "conversation_updated",
@@ -70,7 +73,7 @@ function payload(over: {
       },
     },
     channel: "Channel::Email",
-    last_activity_at: over.updatedAt,
+    ...(over.undated ? {} : { last_activity_at: over.updatedAt }),
     updated_at: over.updatedAt,
   };
 }
@@ -104,6 +107,7 @@ describe.if(dbUp)("the identity the gate is given", () => {
     ).id;
     instA = (await seedChatwootInstance(suDb, { tenantId, accountId: 1 })).id;
     instB = (await seedChatwootInstance(suDb, { tenantId, accountId: 2 })).id;
+    instC = (await seedChatwootInstance(suDb, { tenantId, accountId: 3 })).id;
   });
 
   afterAll(async () => {
@@ -281,6 +285,44 @@ describe.if(dbUp)("the identity the gate is given", () => {
     const row = await contactOf(instB);
     expect(row.phone).toBe("+5511900000012");
     expect(row.attributes).toEqual({ identifier: "reentrega" });
+  });
+
+  // An undated payload has no position at all, and a write with no position is a write decided by
+  // arrival order. The bootstrap is the row's creation, which happens once; after that a degraded
+  // delivery must not be able to rewrite what it cannot claim to be newer than.
+  test("an undated payload seeds a new row and then stops writing", async () => {
+    await mirror(instC, {
+      conversationId: 8010,
+      phone: "+5511900000020",
+      identifier: "primeiro",
+      updatedAt: 1787090000,
+      undated: true,
+    });
+    const seeded = await contactOf(instC);
+    expect(seeded.phone).toBe("+5511900000020");
+    expect(seeded.identityAt).toBeNull();
+
+    await mirror(instC, {
+      conversationId: 8010,
+      phone: "+5511900000021",
+      identifier: "segundo",
+      updatedAt: 1787093600,
+      undated: true,
+    });
+    const after = await contactOf(instC);
+    expect(after.phone).toBe("+5511900000020");
+    expect(after.attributes).toEqual({ identifier: "primeiro" });
+
+    // And a dated event still takes over from a row nothing had positioned.
+    await mirror(instC, {
+      conversationId: 8010,
+      phone: "+5511900000022",
+      identifier: "datado",
+      updatedAt: 1787097200,
+    });
+    const positioned = await contactOf(instC);
+    expect(positioned.phone).toBe("+5511900000022");
+    expect(positioned.identityAt).not.toBeNull();
   });
 
   // Deliveries do arrive out of order, and this write runs before the conversation's stale guard.

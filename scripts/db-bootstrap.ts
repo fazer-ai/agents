@@ -304,16 +304,59 @@ async function main() {
         );
       }
     } else if (schemaOwner !== role) {
+      // Granting on the schema does not reach the TABLES inside it, which still belong to the
+      // previous owner, and `setup()` opens with `SELECT v FROM langgraph.checkpoint_migrations`
+      // (@langchain/langgraph-checkpoint-postgres). So the attempt is both grants — and what
+      // decides whether it worked is a privilege check, not the absence of an error: this
+      // administrator may be refused both statements while the runtime role already holds what it
+      // needs, granted directly by someone else.
+      //
+      // NOTE: one has_table_privilege() call per privilege. A comma-separated list is OR, not AND
+      // ("the result will be true if any of the listed privileges is held"), so asking for
+      // 'SELECT, INSERT, UPDATE, DELETE' in one call passes on a read-only grant — and setup()
+      // writes to checkpoint_migrations one statement after reading it.
+      let grantError: unknown;
       try {
         await client.query(
           `GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`,
         );
+        await client.query(
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO ${ident}`,
+        );
       } catch (err) {
+        grantError = err;
+      }
+
+      const usable = (
+        await client.query<{ schema_ok: boolean; tables_ok: boolean }>(
+          `SELECT
+             has_schema_privilege($1, 'langgraph', 'USAGE')
+               AND has_schema_privilege($1, 'langgraph', 'CREATE') AS schema_ok,
+             (SELECT COALESCE(bool_and(
+                       has_table_privilege($1, c.oid, 'SELECT')
+                       AND has_table_privilege($1, c.oid, 'INSERT')
+                       AND has_table_privilege($1, c.oid, 'UPDATE')
+                       AND has_table_privilege($1, c.oid, 'DELETE')), true)
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = 'langgraph' AND c.relkind IN ('r', 'p')) AS tables_ok`,
+          [role],
+        )
+      ).rows[0];
+
+      const missing = [
+        usable?.schema_ok ? null : "the schema itself",
+        usable?.tables_ok ? null : "the tables already in it",
+      ].filter(Boolean);
+      if (missing.length > 0) {
         throw new Error(
           `the langgraph schema is owned by "${schemaOwner}", not by the runtime role "${role}", ` +
-            `and this administrative role cannot grant on it (${message(err)}). The checkpointer ` +
-            `would fail at boot instead. Run as its owner or as a superuser: ` +
-            `GRANT USAGE, CREATE ON SCHEMA langgraph TO "${role}";`,
+            `and "${role}" still cannot reach ${missing.join(" nor ")}` +
+            `${grantError ? ` (${message(grantError)})` : ""}. The checkpointer reads ` +
+            "langgraph.checkpoint_migrations on its first query, so the server would fail at boot " +
+            `instead. Run as "${schemaOwner}" or as a superuser: ` +
+            `GRANT USAGE, CREATE ON SCHEMA langgraph TO "${role}"; ` +
+            `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO "${role}";`,
         );
       }
     }

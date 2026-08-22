@@ -412,6 +412,13 @@ describe.skipIf(!dbUp)(
       await onProbe(superuserOnProbe, async (c) => {
         await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
         await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${FOREIGN_ROLE}`);
+        // The table matters as much as the schema: PostgresSaver.setup() opens with
+        // `SELECT v FROM langgraph.checkpoint_migrations`, and granting on a schema does not reach
+        // what is inside it.
+        await c.query(`CREATE TABLE langgraph.checkpoint_migrations (v int)`);
+        await c.query(
+          `ALTER TABLE langgraph.checkpoint_migrations OWNER TO ${FOREIGN_ROLE}`,
+        );
       });
 
       const { exitCode, stdout, stderr } = await runBootstrap(
@@ -421,7 +428,67 @@ describe.skipIf(!dbUp)(
       const output = `${stdout}${stderr}`;
       expect(exitCode).toBe(1);
       expect(output).toContain(FOREIGN_ROLE);
-      expect(output).toContain("GRANT USAGE, CREATE ON SCHEMA langgraph");
+      expect(output).toContain("checkpoint_migrations");
+      expect(output).toContain(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES",
+      );
+    });
+
+    test("a reachable schema whose TABLES are not is still refused", async () => {
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // The discriminating case, and the one the schema grant alone would hide: access to the
+      // schema says nothing about access to what is inside it. Here the runtime role is given
+      // USAGE/CREATE outright, so only the table it reads first is out of reach.
+      await onProbe(superuserOnProbe, (c) =>
+        c.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${APP_ROLE}`),
+      );
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        ROTATED_PW,
+        APP_ROLE,
+      );
+      const output = `${stdout}${stderr}`;
+      expect(exitCode).toBe(1);
+      expect(output).toContain("the tables already in it");
+      expect(output).not.toContain("the schema itself");
+
+      // And read access is not enough either: setup() writes to that same table
+      // (`INSERT INTO langgraph.checkpoint_migrations`) right after reading it, so a check that
+      // only asked for SELECT would wave through a boot that fails one statement later.
+      await onProbe(superuserOnProbe, (c) =>
+        c.query(
+          `GRANT SELECT ON langgraph.checkpoint_migrations TO ${APP_ROLE}`,
+        ),
+      );
+      const readOnly = await runBootstrap(ROTATED_PW, APP_ROLE);
+      expect(readOnly.exitCode).toBe(1);
+      expect(`${readOnly.stdout}${readOnly.stderr}`).toContain(
+        "the tables already in it",
+      );
+    });
+
+    test("a rotation the administrator CAN complete is completed, tables included", async () => {
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // Same shape as above, except the administrator is given the membership that lets it grant
+      // on the previous owner's objects. The point is that bootstrap then finishes the rotation
+      // rather than refusing: the refusal above is about what it cannot do, not about the case.
+      await onProbe(superuserOnProbe, (c) =>
+        c.query(`GRANT ${FOREIGN_ROLE} TO ${ADMIN_ROLE} WITH SET TRUE`),
+      );
+
+      const { exitCode } = await runBootstrap(ROTATED_PW, APP_ROLE);
+      expect(exitCode).toBe(0);
+
+      // To the effect, not to the exit code: the runtime role can actually read the table the
+      // checkpointer reads first.
+      const rows = await onProbe(
+        urlFor(APP_ROLE, ROTATED_PW, PROBE_DB),
+        async (c) =>
+          (await c.query("SELECT v FROM langgraph.checkpoint_migrations")).rows,
+      );
+      expect(rows).toEqual([]);
     });
   },
 );

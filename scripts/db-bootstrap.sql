@@ -97,3 +97,7 @@ END $$;
 -- tables is hardened in a later phase).
 CREATE SCHEMA IF NOT EXISTS langgraph AUTHORIZATION :"app_role";
 GRANT USAGE, CREATE ON SCHEMA langgraph TO :"app_role";
+-- No-op on a first provisioning, and the whole point on a rotated runtime role: granting on a
+-- schema does not reach the tables inside it, which still belong to the previous owner, and
+-- PostgresSaver.setup() opens with `SELECT v FROM langgraph.checkpoint_migrations`.
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO :"app_role";

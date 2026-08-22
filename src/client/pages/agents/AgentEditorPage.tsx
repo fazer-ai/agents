@@ -1884,6 +1884,10 @@ function AgentEditor() {
       !!tts.credentialRef &&
       (tts.provider !== "elevenlabs" || !!tts.voice.trim()),
     fileInput: vision.enabled && !!vision.credentialRef,
+    // Same two hard requirements the runtime has (modules/guardrails/gate): the feature switched on
+    // and its OWN credential resolved. A direction being off is not checked here — that is a per-
+    // direction answer, and the gate already returns "not-run" for it without costing anything.
+    guardrails: guardrails.enabled && !!guardrails.credentialRef,
   };
 
   // Live draft sent with each playground turn: the unsaved prompt/model/settings (never grants —

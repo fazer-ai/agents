@@ -1700,6 +1700,9 @@
       "silent": "Follow-up: o agente optou por não enviar nada."
     },
     "goToGeneral": "Ir para Geral",
+    "guardrails": "Rodar guardrails",
+    "guardrailsHint": "Analisa a mensagem e a resposta exatamente como o inbox faz, então você lê o que o cliente receberia. Custa uma chamada de modelo a mais por direção.",
+    "guardrailsUnavailable": "Os guardrails estão desligados ou sem credencial. Configure na aba Guardrails para analisar os turnos do playground.",
     "hint": "Testa suas edições ao vivo (não salvas).",
     "historyEmpty": "Nenhuma sessão salva ainda.",
     "image": {
@@ -1749,6 +1752,12 @@
       "title": "Simulação de ferramentas"
     },
     "trace": {
+      "guardrailClean": "aprovado",
+      "guardrailInput": "Guardrail na mensagem",
+      "guardrailOutput": "Guardrail na resposta",
+      "guardrailReplaced": "substituída pela resposta configurada",
+      "guardrailSuppressed": "bloqueada, nada seria enviado",
+      "guardrailUnavailable": "não pôde ser analisada, e a resposta saiu sem triagem",
       "mocked": "mock",
       "result": "resultado",
       "simulated": "simulado",

@@ -15,6 +15,7 @@ import { recordResolutionOrigin } from "@/modules/conversations/record-resolutio
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import {
   buildGuardrailGate,
+  chatwootNoteSink,
   type GuardrailDecision,
   guardrailLeftAMark,
   guardrailRan,
@@ -583,8 +584,7 @@ export async function runAgentNudge(
       cfg: cfg.guardrails,
       apiKey: cfg.guardrailsApiKey,
       credentialBaseUrl: cfg.guardrailsCredentialBaseUrl,
-      client,
-      conversationId,
+      announce: chatwootNoteSink(client, conversationId),
       flow,
       systemPrompt: cfg.systemPrompt,
       makeModel: params.deps?.makeModel,

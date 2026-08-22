@@ -1695,6 +1695,9 @@
       "silent": "Follow-up: the agent chose not to send anything."
     },
     "goToGeneral": "Go to General",
+    "guardrails": "Run guardrails",
+    "guardrailsHint": "Screens the message and the reply exactly as the inbox does, so you read what the customer would receive. Costs one extra model call per direction.",
+    "guardrailsUnavailable": "Guardrails are off or have no credential. Configure them in the Guardrails tab to screen playground turns.",
     "hint": "Uses the saved config.",
     "historyEmpty": "No saved sessions yet.",
     "image": {
@@ -1744,6 +1747,12 @@
       "title": "Tool simulation"
     },
     "trace": {
+      "guardrailClean": "approved",
+      "guardrailInput": "Guardrail on the message",
+      "guardrailOutput": "Guardrail on the reply",
+      "guardrailReplaced": "replaced by the configured reply",
+      "guardrailSuppressed": "blocked, nothing would be sent",
+      "guardrailUnavailable": "could not be checked, so the reply went out unscreened",
       "mocked": "mocked",
       "result": "result",
       "simulated": "simulated",

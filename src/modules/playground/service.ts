@@ -34,6 +34,7 @@ import {
   buildVisionTraceEntry,
   collectTraceSources,
   type TraceEntry,
+  type TraceGuardrail,
   type TraceLabelOpts,
   type TraceSource,
 } from "@/graph/trace";
@@ -51,6 +52,12 @@ import {
   readFollowUpConfig,
   stepDelayMinutes,
 } from "@/modules/followups/settings";
+import {
+  buildGuardrailGate,
+  type GuardrailGate,
+  guardrailTripped,
+  screenedText,
+} from "@/modules/guardrails/gate";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
@@ -67,6 +74,16 @@ import { isValidPlaygroundThread, newPlaygroundThreadId } from "./thread";
 // agent's decision to call them is testable; the operator can also mock ANY tool's result
 // (`toolMocks`). Turns persist in the checkpointer under a tenant+agent-fenced playground thread, so
 // the test session has memory. The agent's `enabled` toggle is ignored — you test before going live.
+
+// The screening pass is a model call the operator pays for, on the one surface built for rapid
+// iteration: an output turn can cost two on its own (`splitAnalyses` runs relevance alongside the
+// rest), so a turn goes from one call to as many as three. On by default, because the playground's
+// whole purpose is to show what the customer would get; off has to mean NO call, not a discarded
+// verdict, which is why this picks the gate rather than filtering its answer.
+const screensThisTurn = (p: { guardrails?: boolean }): boolean =>
+  p.guardrails !== false;
+
+const notScreened: GuardrailGate = async () => ({ kind: "not-run" });
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -101,6 +118,8 @@ export interface PlaygroundTurnParams {
   };
   // Whether this turn came from a voice note (drives the TTS "mirror" decision).
   userSentAudio?: boolean;
+  // Run the agent's guardrails over this turn (default true). See `screensThisTurn`.
+  guardrails?: boolean;
   // Manual override: force a TTS reply regardless of the agent's mode (the playground toggle).
   forceAudio?: boolean;
   base?: PrismaClient;
@@ -423,6 +442,48 @@ export async function runPlaygroundTurn(
         }),
     });
 
+  // The SAME gate the inbox path runs (issue #136). Without it the operator read the agent's raw
+  // reply while the customer would have received the template, or nothing at all — the one setting
+  // the playground exists to let them test. Announcements land in the trace instead of a private
+  // note, because there is no conversation here to put a note on.
+  const gTrace: TraceGuardrail[] = [];
+  const screen = screensThisTurn(params)
+    ? buildGuardrailGate({
+        cfg: loaded.guardrails,
+        apiKey: loaded.guardrailsApiKey,
+        credentialBaseUrl: loaded.guardrailsCredentialBaseUrl,
+        announce: (r) => {
+          gTrace.push({ type: "guardrail", ...r });
+        },
+        flow,
+        systemPrompt: loaded.systemPrompt,
+        customerMessage: text,
+        makeModel: params.deps?.makeModel,
+      })
+    : notScreened;
+
+  // INPUT direction, reproduced faithfully: a violation does not merely alter the reply, it skips
+  // the graph. Returning the template while still invoking the agent would read the same to the
+  // operator and be a different (and billed) thing, which is the half a reply-only check misses.
+  const inGuard = await screen("input", text);
+  if (guardrailTripped(inGuard)) {
+    await upsertPlaygroundSession(
+      base,
+      tenantId,
+      agentId,
+      threadId,
+      params.titleHint ?? text,
+    );
+    return {
+      reply: screenedText(inGuard, text) ?? "",
+      threadId,
+      trace: [...gTrace],
+      sources: [],
+    };
+  }
+  // Everything screened before the graph belongs ahead of the graph's own entries in the trace.
+  const beforeGraph = gTrace.length;
+
   // Give the human message an explicit id when we have media to link to it (so reopening the
   // session can re-attach the recorded audio / uploaded file to this exact turn).
   const humanId = params.userMedia ? crypto.randomUUID() : undefined;
@@ -457,8 +518,18 @@ export async function runPlaygroundTurn(
     if (e instanceof AppError) throw e;
     throw toPlaygroundInvokeError(e);
   }
-  const trace = buildPlaygroundTrace(result.messages, traceLabels);
-  const reply = lastAssistantText(result.messages).trim();
+  // OUTPUT direction: screen the reply BEFORE anything renders it, so the TTS below synthesizes the
+  // text that would actually be delivered rather than the one the guardrail took away.
+  const raw = lastAssistantText(result.messages).trim();
+  const outGuard = raw
+    ? await screen("output", raw)
+    : { kind: "not-run" as const };
+  const reply = screenedText(outGuard, raw) ?? "";
+  const trace: TraceEntry[] = [
+    ...gTrace.slice(0, beforeGraph),
+    ...buildPlaygroundTrace(result.messages, traceLabels),
+    ...gTrace.slice(beforeGraph),
+  ];
   await upsertPlaygroundSession(
     base,
     tenantId,
@@ -559,6 +630,8 @@ export interface PlaygroundFollowupParams {
   threadId?: string;
   // Optional operator-supplied situation note; overrides the default "inactive for ~N min" summary.
   context?: string;
+  // Run the agent's guardrails over this turn (default true). See `screensThisTurn`.
+  guardrails?: boolean;
   overrides?: AgentConfigOverrides;
   base?: PrismaClient;
   deps?: PlaygroundDeps;
@@ -605,33 +678,34 @@ export async function runPlaygroundFollowup(
     threadId,
     base,
   };
-  const { graph, callbacks, tools, traceLabels } = await buildPlaygroundGraph({
-    tenantId,
-    agentId,
-    threadId,
-    base,
-    deps: params.deps,
-    overrides: params.overrides,
-    turnId,
-    onModelRetry: ({ attempt }) =>
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "warn",
-        status: "ok",
-        detail: { retriedEmptyResponse: attempt },
-      }),
-    onHistoryTrim: ({ kept, dropped, tokens }) =>
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "info",
-        status: "ok",
-        detail: {
-          historyKept: kept,
-          historyDropped: dropped,
-          historyTokens: tokens,
-        },
-      }),
-  });
+  const { graph, callbacks, loaded, tools, traceLabels } =
+    await buildPlaygroundGraph({
+      tenantId,
+      agentId,
+      threadId,
+      base,
+      deps: params.deps,
+      overrides: params.overrides,
+      turnId,
+      onModelRetry: ({ attempt }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          detail: { retriedEmptyResponse: attempt },
+        }),
+      onHistoryTrim: ({ kept, dropped, tokens }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "info",
+          status: "ok",
+          detail: {
+            historyKept: kept,
+            historyDropped: dropped,
+            historyTokens: tokens,
+          },
+        }),
+    });
 
   // Draft settings (if present) drive the follow-up instructions/delay so the simulation matches
   // what the operator is editing live; otherwise the saved settings.
@@ -676,14 +750,40 @@ export async function runPlaygroundFollowup(
     if (e instanceof AppError) throw e;
     throw toPlaygroundInvokeError(e);
   }
-  const trace = buildPlaygroundTrace(result.messages, traceLabels);
   // Same silence contract as production (runAgentNudge): the skip sentinel / narrated-emptiness is
   // "stayed silent", and a stray sentinel is stripped so it never shows in the simulated reply.
   const replyRaw = lastAssistantText(result.messages);
-  const silent = isNudgeSilent(replyRaw);
-  const reply = silent
+  const silentByChoice = isNudgeSilent(replyRaw);
+  const drafted = silentByChoice
     ? ""
     : replyRaw.split(FOLLOWUP_SKIP_SENTINEL).join("").trim();
+  // OUTPUT direction only, exactly as the inbox's proactive path (issue #160): a follow-up answers
+  // no question, so there is no customer message for the relevance check to judge, and the gate
+  // drops that check structurally when none is passed. A `silent` verdict reads as silence here for
+  // the same reason it does in production — the customer gets nothing either way.
+  const gTrace: TraceGuardrail[] = [];
+  const screen = screensThisTurn(params)
+    ? buildGuardrailGate({
+        cfg: loaded.guardrails,
+        apiKey: loaded.guardrailsApiKey,
+        credentialBaseUrl: loaded.guardrailsCredentialBaseUrl,
+        announce: (r) => {
+          gTrace.push({ type: "guardrail", ...r });
+        },
+        flow,
+        systemPrompt: loaded.systemPrompt,
+        makeModel: params.deps?.makeModel,
+      })
+    : notScreened;
+  const outGuard = drafted
+    ? await screen("output", drafted)
+    : ({ kind: "not-run" } as const);
+  const reply = screenedText(outGuard, drafted) ?? "";
+  const silent = reply === "";
+  const trace: TraceEntry[] = [
+    ...buildPlaygroundTrace(result.messages, traceLabels),
+    ...gTrace,
+  ];
   // Bump the session (or create one titled by the first message if the follow-up is the first turn).
   await upsertPlaygroundSession(base, tenantId, agentId, threadId, "");
   return {
@@ -762,6 +862,8 @@ export interface PlaygroundAudioParams {
   threadId?: string;
   overrides?: AgentConfigOverrides;
   forceAudio?: boolean;
+  // See `screensThisTurn`. Forwarded to the turn this delegates to.
+  guardrails?: boolean;
   // A transcription already produced by the transcribe-only step (the UI's two-step flow). When
   // present, STT is skipped here — no redundant round trip, no doubled latency before the reply.
   transcription?: string;
@@ -815,6 +917,7 @@ export async function runPlaygroundAudioTurn(
     // Title the session by the clean transcription, not the <mensagem-de-audio> wrapper.
     titleHint: transcription,
     overrides: params.overrides,
+    guardrails: params.guardrails,
     // Persist the recording for replay, and let TTS "mirror" trigger (the user sent audio).
     userMedia: {
       kind: "user_audio",
@@ -891,6 +994,8 @@ export interface PlaygroundFileParams {
   threadId?: string;
   overrides?: AgentConfigOverrides;
   forceAudio?: boolean;
+  // See `screensThisTurn`. Forwarded to the turn this delegates to.
+  guardrails?: boolean;
   // An extraction already produced by the extract-only step (the UI's two-step flow). When both are
   // present, vision is skipped here — no redundant round trip, no doubled latency before the reply.
   kind?: PlaygroundExtractKind;
@@ -989,6 +1094,7 @@ export async function runPlaygroundFileTurn(
     threadId: params.threadId,
     titleHint: file.name || text || "arquivo",
     overrides: params.overrides,
+    guardrails: params.guardrails,
     // Persist the uploaded file for replay (best-effort).
     userMedia: {
       kind: "user_file",

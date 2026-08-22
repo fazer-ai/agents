@@ -164,6 +164,9 @@ export function usePlaygroundChat(
   const [loadingSession, setLoadingSession] = useState(false);
   // Manual "reply with audio" toggle: forces TTS on every turn regardless of the agent's mode.
   const [forceAudio, setForceAudio] = useState(false);
+  // Guardrails run by default, because the playground exists to show what the customer would get.
+  // Off is for iterating on the prompt, where the screening is a model call per turn and no signal.
+  const [guardrails, setGuardrails] = useState(true);
   // Tool simulation: per-tool canned results (tool name → result), merged into the draft at send
   // time. Conversation native tools are simulated server-side regardless; this overrides any tool.
   const [toolMocks, setToolMocks] = useState<Record<string, string>>(
@@ -424,6 +427,7 @@ export function usePlaygroundChat(
           threadId: threadId.current,
           draft: buildDraft(),
           forceAudio,
+          guardrails,
         });
       if (err || !data) {
         pushError(err);
@@ -452,6 +456,7 @@ export function usePlaygroundChat(
     buildDraft,
     busy,
     forceAudio,
+    guardrails,
     input,
     mediaUrl,
     notReady,
@@ -469,6 +474,7 @@ export function usePlaygroundChat(
         .playground.followup.post({
           threadId: threadId.current,
           draft: buildDraft(),
+          guardrails,
         });
       if (err || !data) {
         pushError(err);
@@ -503,7 +509,16 @@ export function usePlaygroundChat(
     } finally {
       setFollowingUp(false);
     }
-  }, [agentId, buildDraft, busy, hasConversation, notReady, pushError, t]);
+  }, [
+    agentId,
+    buildDraft,
+    busy,
+    guardrails,
+    hasConversation,
+    notReady,
+    pushError,
+    t,
+  ]);
 
   // Drops the pending flag on the trailing optimistic user bubble (kept, still playable) — used when
   // a step fails so the bubble stays but stops showing the "Transcribing…"/"Extracting…" state.
@@ -592,6 +607,7 @@ export function usePlaygroundChat(
             threadId: threadId.current,
             draft: draftStr,
             forceAudio: forceAudio ? "true" : undefined,
+            guardrails: guardrails ? undefined : "false",
             kind,
             // JSON-encoded: a `{`/`[`-leading extraction would otherwise be auto-parsed by the
             // multipart layer (see the controller's decodeMultipartText).
@@ -626,6 +642,7 @@ export function usePlaygroundChat(
       busy,
       clearPendingBubble,
       forceAudio,
+      guardrails,
       mediaUrl,
       notReady,
       pushError,
@@ -722,6 +739,7 @@ export function usePlaygroundChat(
             threadId: threadId.current,
             draft: draftStr,
             forceAudio: forceAudio ? "true" : undefined,
+            guardrails: guardrails ? undefined : "false",
             // JSON-encoded: a `{`/`[`-leading transcription would otherwise be auto-parsed by the
             // multipart layer (see the controller's parseTranscription).
             transcription: JSON.stringify(transcription),
@@ -754,6 +772,7 @@ export function usePlaygroundChat(
       buildDraft,
       clearPendingBubble,
       forceAudio,
+      guardrails,
       mediaUrl,
       pushError,
       refreshSessions,
@@ -857,6 +876,8 @@ export function usePlaygroundChat(
     currentThreadId: threadId.current,
     forceAudio,
     setForceAudio,
+    guardrails,
+    setGuardrails,
     toolMocks,
     setToolMocks,
     promptVars,

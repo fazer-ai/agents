@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { analyzeGuardrail, splitAnalyses } from "@/modules/guardrails/analyze";
-import { buildGuardrailGate } from "@/modules/guardrails/gate";
+import {
+  buildGuardrailGate,
+  chatwootNoteSink,
+} from "@/modules/guardrails/gate";
 import { buildGuardrailSystemPrompt } from "@/modules/guardrails/prompts";
 import {
   GUARDRAILS_DEFAULTS,
@@ -971,8 +974,7 @@ describe("buildGuardrailGate", () => {
         },
       }),
       apiKey: "k",
-      client,
-      conversationId: 1,
+      announce: chatwootNoteSink(client, 1),
       flow,
       makeModel: f.make,
     });
@@ -1009,8 +1011,7 @@ describe("buildGuardrailGate", () => {
         },
       }),
       apiKey: "k",
-      client,
-      conversationId: 1,
+      announce: chatwootNoteSink(client, 1),
       flow,
       makeModel: f.make,
     });
@@ -1026,8 +1027,7 @@ describe("buildGuardrailGate", () => {
       const gate = buildGuardrailGate({
         cfg: c.cfg,
         apiKey: c.apiKey,
-        client,
-        conversationId: 1,
+        announce: chatwootNoteSink(client, 1),
         flow,
         makeModel: f.make,
       });
@@ -1047,8 +1047,7 @@ describe("buildGuardrailGate", () => {
     const gate = buildGuardrailGate({
       cfg: enabledCfg(),
       apiKey: "k",
-      client,
-      conversationId: 1,
+      announce: chatwootNoteSink(client, 1),
       flow,
       makeModel: f.make,
     });
@@ -1074,12 +1073,14 @@ describe("buildGuardrailGate", () => {
         },
       }),
       apiKey: "k",
-      client: {
-        sendPrivateNote: async (_c: number, t: string) => {
-          notes.push(t);
-        },
-      } as never,
-      conversationId: 1,
+      announce: chatwootNoteSink(
+        {
+          sendPrivateNote: async (_c: number, t: string) => {
+            notes.push(t);
+          },
+        } as never,
+        1,
+      ),
       flow,
       makeModel: (() =>
         guardrailModel(async () => ({
@@ -1100,6 +1101,38 @@ describe("buildGuardrailGate", () => {
     expect(notes[0]).not.toContain("generated");
   });
 
+  // The gate announces EVERY outcome so the playground can annotate a clean screening (issue #136);
+  // the conversation must not receive a note for each one. The filter is what keeps the inbox's
+  // behaviour where it was after the announcement stopped being written inline.
+  test("only a trip reaches the conversation as a private note", async () => {
+    const notes: string[] = [];
+    const sink = chatwootNoteSink(
+      {
+        sendPrivateNote: async (_c: number, t: string) => {
+          notes.push(t);
+        },
+      } as never,
+      1,
+    );
+    await sink({ direction: "output", outcome: "clean" });
+    await sink({ direction: "input", outcome: "unavailable" });
+    expect(notes).toEqual([]);
+    await sink({
+      direction: "output",
+      outcome: "replaced",
+      action: "template",
+      categories: ["toxicity"],
+      rationale: "rude",
+    });
+    expect(notes).toHaveLength(1);
+    await sink({
+      direction: "output",
+      outcome: "suppressed",
+      action: "silent",
+    });
+    expect(notes).toHaveLength(2);
+  });
+
   test("a construction that failed is not retried on the next call", async () => {
     const f = countingFactory(() => {
       throw new Error("nope");
@@ -1107,8 +1140,7 @@ describe("buildGuardrailGate", () => {
     const gate = buildGuardrailGate({
       cfg: enabledCfg(),
       apiKey: "k",
-      client,
-      conversationId: 1,
+      announce: chatwootNoteSink(client, 1),
       flow,
       makeModel: f.make,
     });
@@ -1134,8 +1166,7 @@ describe("buildGuardrailGate", () => {
     const gate = buildGuardrailGate({
       cfg: enabledCfg(),
       apiKey: "k",
-      client,
-      conversationId: 1,
+      announce: chatwootNoteSink(client, 1),
       flow,
       makeModel: f.make,
     });

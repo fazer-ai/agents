@@ -1,0 +1,407 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage } from "@langchain/core/messages";
+import { FakeListChatModel } from "@langchain/core/utils/testing";
+import { MemorySaver } from "@langchain/langgraph";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
+import {
+  runPlaygroundFollowup,
+  runPlaygroundTurn,
+} from "@/modules/playground/service";
+import { guardrailModel } from "../utils/scripted-models";
+
+// Issue #136: the playground ran the agent's graph directly and never screened anything, so the
+// operator read a reply the customer would never have received. These tests are written against
+// what the operator READS — the returned reply and the trace — because that is the artefact the
+// issue is about; asserting that the gate was constructed would pass on a build that screens and
+// then throws the verdict away.
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
+
+let tenantId = 0n;
+let agentTemplate = 0n;
+let agentSilent = 0n;
+let agentInput = 0n;
+let agentBrokenGuard = 0n;
+let agentBoth = 0n;
+
+const RAW_REPLY = "Nosso concorrente resolve isso melhor.";
+// Deliberately NOT the reader's own default template: an assertion against that string
+// passes on a build that never read the agent's config at all.
+const TEMPLATE = "[bloqueado pela política]";
+const GUARD_MODEL = "guard-judge";
+
+// Which model is being built decides which double comes back: the agent's own model answers the
+// turn, the guardrails agent's model answers the verdict. Dispatching on the model NAME is what
+// keeps a test that screens distinguishable from one that merely ran the agent twice.
+function models(opts: {
+  violated: boolean;
+  breakJudge?: boolean;
+  // Emits a calculator call before replying, so the graph contributes trace entries the guardrail
+  // entries have to sit around. Without one in the middle, every ordering looks the same.
+  toolFirst?: boolean;
+}) {
+  let judgeCalls = 0;
+  let agentInvokes = 0;
+  const make = ((args: { model?: string }) => {
+    if (args?.model === GUARD_MODEL) {
+      if (opts.breakJudge) throw new Error("guardrail model unavailable");
+      return guardrailModel(async () => {
+        judgeCalls += 1;
+        return {
+          content: JSON.stringify({
+            violated: opts.violated,
+            categories: opts.violated ? ["competitor_mentions"] : [],
+            rationale: opts.violated ? "names a competitor" : "",
+            suggestedReply: null,
+          }),
+        };
+      });
+    }
+    if (opts.toolFirst) {
+      return {
+        async invoke() {
+          agentInvokes += 1;
+          return new AIMessage(RAW_REPLY);
+        },
+        bindTools() {
+          let n = 0;
+          return {
+            async invoke() {
+              agentInvokes += 1;
+              n += 1;
+              return n === 1
+                ? new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "calculator",
+                        args: { expression: "1+1" },
+                        id: "c1",
+                      },
+                    ],
+                  })
+                : new AIMessage(RAW_REPLY);
+            },
+          };
+        },
+      } as unknown as BaseChatModel;
+    }
+    // Counts INVOCATIONS, not constructions. The graph is built before the input direction is
+    // screened, so a counter on the factory reports one call for a turn that never ran the agent —
+    // which is precisely the claim "the graph was skipped" is supposed to prove.
+    const base = new FakeListChatModel({ responses: [RAW_REPLY] });
+    const proxy: unknown = new Proxy(base, {
+      get(t, prop, recv) {
+        if (prop === "invoke") {
+          return async (...a: unknown[]) => {
+            agentInvokes += 1;
+            const inner = t as unknown as {
+              invoke: (...a: unknown[]) => Promise<unknown>;
+            };
+            return inner.invoke(...a);
+          };
+        }
+        // Keep the count alive through the bind the graph does before invoking.
+        if (prop === "bindTools") return () => proxy;
+        return Reflect.get(t, prop, recv);
+      },
+    });
+    return proxy as BaseChatModel;
+  }) as never;
+  return {
+    make,
+    judgeCalls: () => judgeCalls,
+    agentInvokes: () => agentInvokes,
+  };
+}
+
+const deps = (m: ReturnType<typeof models>) => ({
+  makeModel: m.make,
+  checkpointer: new MemorySaver(),
+});
+
+describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
+  beforeAll(async () => {
+    const t = await suDb.tenant.create({
+      data: { name: "PGG", slug: `pgg-${process.pid}` },
+    });
+    tenantId = t.id;
+    const key = async (name: string) =>
+      `vault:${
+        (
+          await suDb.vaultEntry.create({
+            data: { tenantId, name, secret: encryptJson("sk-test") },
+            select: { id: true },
+          })
+        ).id
+      }`;
+    const llmRef = await key("llm-key");
+    const guardRef = await key("guard-key");
+    const mc = {
+      provider: "openai",
+      model: "gpt-4o-mini",
+      credentialRef: llmRef,
+    };
+    const guardrails = (over: Record<string, unknown>) => ({
+      enabled: true,
+      provider: "openai",
+      model: GUARD_MODEL,
+      credentialRef: guardRef,
+      competitors: ["Concorrente"],
+      ...over,
+    });
+    const onlyCompetitors = {
+      toxicity: false,
+      unsafeContent: false,
+      competitorMentions: true,
+      promptAdherence: false,
+      answerRelevance: false,
+    };
+    // BOTH directions are declared on every agent, because both default to enabled: leaving one
+    // implicit lets it screen first and answer for the direction under test, which is how the
+    // silent-action case first reported the template.
+    const dir = (over: object = {}) => ({
+      enabled: false,
+      action: "template",
+      templateMessage: TEMPLATE,
+      checks: onlyCompetitors,
+      ...over,
+    });
+    const mk = (name: string, settings: object) =>
+      suDb.agent
+        .create({
+          data: {
+            tenantId,
+            name,
+            systemPrompt: "x",
+            modelConfig: mc,
+            settings: settings as never,
+          },
+        })
+        .then((a) => a.id);
+
+    const outputOnly = (over: object = {}) => ({
+      guardrails: guardrails({
+        input: dir(),
+        output: dir({ enabled: true, ...over }),
+      }),
+    });
+
+    agentTemplate = await mk("Template", outputOnly());
+    agentSilent = await mk("Silent", outputOnly({ action: "silent" }));
+    agentInput = await mk("Input", {
+      guardrails: guardrails({ input: dir({ enabled: true }), output: dir() }),
+    });
+    agentBrokenGuard = await mk("Broken", outputOnly());
+    agentBoth = await mk("Both", {
+      guardrails: guardrails({
+        input: dir({ enabled: true }),
+        output: dir({ enabled: true }),
+      }),
+    });
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agentBoth,
+        source: "NATIVE",
+        enabledTools: ["calculator"],
+        knowledgeBaseIds: [],
+      },
+    });
+  });
+
+  afterAll(async () => {
+    if (tenantId) {
+      for (const table of [
+        "playground_media",
+        "llm_usage",
+        "agent_tool_selections",
+        "execution_logs",
+        "agents",
+        "vault_entries",
+      ]) {
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+        );
+      }
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${tenantId}`,
+      );
+    }
+    await suDb.$disconnect();
+    await appDb.$disconnect();
+  });
+
+  // The headline of the issue: the operator reads what the customer would read.
+  test("an output violation replaces the reply the operator reads", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentTemplate,
+      message: "e o concorrente?",
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply).toBe(TEMPLATE);
+    expect(r.reply).not.toBe(RAW_REPLY);
+    expect(m.judgeCalls()).toBe(1);
+  });
+
+  test("an output violation with the silent action leaves no reply at all", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentSilent,
+      message: "e o concorrente?",
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply).toBe("");
+  });
+
+  // Faithful reproduction of the direction that does not merely alter the reply: it skips the graph.
+  // Asserting the reply alone would pass on a build that ran the agent and then discarded its answer,
+  // which is the same text and a different (and billed) thing.
+  test("an input violation skips the graph: the agent model is never invoked", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentInput,
+      message: "fale do concorrente",
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply).toBe(TEMPLATE);
+    expect(m.agentInvokes()).toBe(0);
+  });
+
+  // Without this the operator cannot tell a moderated reply from an agent that answered badly, which
+  // is the objection that decided "apply the action AND annotate" over either one alone.
+  test("the verdict is annotated in the trace, with the direction and what it did", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentTemplate,
+      message: "e o concorrente?",
+      base: appDb,
+      deps: deps(m),
+    });
+    const g = r.trace.filter((e) => e.type === "guardrail");
+    expect(g.length).toBe(1);
+    expect(g[0]).toMatchObject({
+      type: "guardrail",
+      direction: "output",
+      outcome: "replaced",
+      action: "template",
+    });
+  });
+
+  // The case the issue names as the one the playground is the natural place to notice.
+  test("a guardrail that cannot be built is fail-open, and says so in the trace", async () => {
+    const m = models({ violated: false, breakJudge: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentBrokenGuard,
+      message: "oi",
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply).toBe(RAW_REPLY);
+    expect(r.trace.filter((e) => e.type === "guardrail")).toMatchObject([
+      { outcome: "unavailable" },
+    ]);
+  });
+
+  // A screening that ran and approved is still worth a line: "the guardrail is on and let this
+  // through" and "the guardrail never ran" are different readings of the same clean reply.
+  test("a clean screening is annotated too", async () => {
+    const m = models({ violated: false });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentTemplate,
+      message: "oi",
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply).toBe(RAW_REPLY);
+    expect(r.trace.filter((e) => e.type === "guardrail")).toMatchObject([
+      { outcome: "clean" },
+    ]);
+  });
+
+  // The toggle exists because the pass is a model call the operator pays for, on a surface built for
+  // rapid iteration. Off has to mean no call, not a discarded verdict.
+  test("screening off leaves the raw reply and costs no guardrail call", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentTemplate,
+      message: "e o concorrente?",
+      guardrails: false,
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply).toBe(RAW_REPLY);
+    expect(m.judgeCalls()).toBe(0);
+    expect(r.trace.filter((e) => e.type === "guardrail")).toEqual([]);
+  });
+
+  // The trace is a SEQUENCE, and that is the whole reason it exists: an entry for the screening that
+  // ran before the graph, rendered after the tool calls it preceded, tells the operator the wrong
+  // story about when it happened.
+  test("the trace keeps the screenings on the sides of the graph they ran on", async () => {
+    const m = models({ violated: false, toolFirst: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentBoth,
+      message: "quanto é 1+1?",
+      base: appDb,
+      deps: deps(m),
+    });
+    const shape = r.trace.map((e) =>
+      e.type === "guardrail" ? `guardrail:${e.direction}` : e.type,
+    );
+    expect(shape[0]).toBe("guardrail:input");
+    expect(shape.at(-1)).toBe("guardrail:output");
+    // Proof the graph actually put something between them, so the assertion above is not vacuous.
+    expect(shape.slice(1, -1)).toContain("tool_call");
+  });
+
+  // Family sweep: the inbox's proactive path is screened (issue #160), so the playground's simulated
+  // follow-up has to be, or the fix covers one of the two paths the playground reproduces.
+  test("the simulated follow-up is screened on the output direction", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundFollowup({
+      tenantId,
+      agentId: agentTemplate,
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply).toBe(TEMPLATE);
+    expect(m.judgeCalls()).toBe(1);
+  });
+});

@@ -8,13 +8,25 @@ Chat with a configured agent straight from the console — no Chatwoot, no webho
 
 - Loads the agent config with `loadAgentConfig(..., { ignoreDisabled: true })` — the `enabled` toggle only gates production auto-replies, so the playground tests config regardless. Dummy `instanceId=0n`/`conversationId=0` → no mirror row → empty contact/prompt vars.
 - Builds the toolset with only the **utility** native tools (`utilityNativeAllow` — calculator, get_current_time), excluding the native **conversation** tools (handoff/resolve/…) since there is no conversation to act on, while keeping knowledge, HTTP, MCP and integration tools live. A dummy client satisfies the type and is never called.
-- Invokes the graph on a **fenced** playground thread and returns `{ reply, threadId, trace, sources }`.
+- Screens the message and the reply through the agent's guardrails (below), then invokes the graph on a **fenced** playground thread and returns `{ reply, threadId, trace, sources }`.
 
 ### Multimodal capability gating (STT / vision / TTS)
 
 Voice notes (STT), file attachments (vision) and audio replies (TTS) each need their own credential. Unlike the agent's overall `enabled` toggle (ignored — you test before going live), the per-feature `stt.enabled` / `vision.enabled` toggles **are** respected: a disabled feature reads as "not configured" both in the UI (the composer control is disabled with a reason) and in the service (`transcribePlaygroundAudio` / `extractPlaygroundFile` throw `errors.sttNotConfigured` / `errors.visionNotConfigured`). The live draft carries `enabled`, so the operator still tests before saving by flipping the toggle on. Audio **reply** is a manual playground toggle (`forceAudio`), so it only needs TTS configured, not `tts.enabled`. The reply is synthesized through the **same** `synthesizeReply` the inbox path uses, speech rewrite included (`buildSpeechNormalizer`): the operator hears what the customer would hear, and the rewrite's model call is billed like any other, tagged `source=playground` so it stays out of the dashboard and never pages an alert channel.
 
 Extraction is **fail-soft**: a provider error (bad file, refusal, timeout) does NOT interrupt the turn — `extractPlaygroundFile` logs it at error-level (the ops alert channel) and returns the `unsupported` marker so the agent still answers. Vector/markup images (`image/svg+xml`) are classified unsupported up front (`visionKindForMime`), avoiding a guaranteed provider rejection. The inbound path (`extractInboundFile`) is symmetric (logs + returns `null`).
+
+### Guardrails (moderation, both directions)
+
+The playground runs the **same** `buildGuardrailGate` the inbox does (issue #136). Before this it ran the graph directly and screened nothing, so the operator read a reply the customer would never have received: an output violation replaces the reply with the template or suppresses it entirely, an input violation skips the graph outright, and a guardrail that is misconfigured (retired model id, unresolvable credential, an endpoint that is down) was invisible on the one surface where it is cheapest to notice.
+
+Three things make it fit a surface that is not a conversation:
+
+- **The gate no longer knows about Chatwoot.** It took a `client` + `conversationId` for one call, the private note a trip leaves. That is now a `GuardrailAnnounce` sink: the gate decides WHEN to announce (one call site, so an outcome added later cannot reach only the paths someone remembered), and the caller decides WHERE. The inbox passes `chatwootNoteSink`, shared by the reactive and proactive paths; the playground pushes a `TraceGuardrail` entry.
+- **The action is applied AND the verdict is annotated.** Applying alone is faithful but illegible: a template reply with no explanation is indistinguishable from an agent that answered badly. `clean` and `unavailable` are annotated too, because "the guardrail approved this" and "no guardrail ran" are different readings of the same clean reply.
+- **A per-turn toggle, on by default** (`guardrails`, honored by the text/audio/file turns and the simulated follow-up). The pass is a model call the operator pays for, and an output direction can cost two, so a turn goes from one call to as many as three. Off means the gate is never built, not that its verdict is discarded.
+
+The simulated follow-up screens the **output** direction only, exactly as `runAgentNudge` does: a follow-up answers no question, so there is no customer message for the relevance check to judge.
 
 ### Execution trace + KB sources (debug surface)
 

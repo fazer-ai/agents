@@ -19,6 +19,7 @@ import {
   RefreshCw,
   Send,
   Settings2,
+  ShieldAlert,
   Trash2,
   Wrench,
   X,
@@ -76,6 +77,7 @@ export type PlaygroundCapabilities = {
   audioInput: boolean; // STT → record/send voice notes
   audioReply: boolean; // TTS → "reply with audio"
   fileInput: boolean; // vision → attach image/document
+  guardrails: boolean; // moderation → screen the turn like the inbox does
 };
 
 // Wraps a control in a hover tooltip explaining WHY it is disabled. A disabled <button> emits no
@@ -181,6 +183,34 @@ export function PlaygroundChat({
               {t("playground.hint", "Tests your live (unsaved) edits.")}
             </p>
             <div className="flex flex-wrap items-center gap-3">
+              <SwitchField
+                checked={chat.guardrails && capabilities.guardrails}
+                onCheckedChange={chat.setGuardrails}
+                disabled={!capabilities.guardrails}
+                label={
+                  capabilities.guardrails ? (
+                    <span className="inline-flex items-center gap-1">
+                      {t("playground.guardrails", "Run guardrails")}
+                      <Tooltip
+                        content={t(
+                          "playground.guardrailsHint",
+                          "Screens the message and the reply exactly as the inbox does, so you read what the customer would receive. Costs one extra model call per direction.",
+                        )}
+                      />
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1">
+                      {t("playground.guardrails", "Run guardrails")}
+                      <Tooltip
+                        content={t(
+                          "playground.guardrailsUnavailable",
+                          "Guardrails are off or have no credential. Configure them in the Guardrails tab to screen playground turns.",
+                        )}
+                      />
+                    </span>
+                  )
+                }
+              />
               <SwitchField
                 checked={chat.forceAudio && capabilities.audioReply}
                 onCheckedChange={chat.setForceAudio}
@@ -1293,6 +1323,50 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
         <pre className="overflow-x-auto rounded bg-bg-tertiary px-2 py-1 text-text-muted">
           {JSON.stringify(entry.args, null, 2)}
         </pre>
+      </div>
+    );
+  }
+  if (entry.type === "guardrail") {
+    const tripped =
+      entry.outcome === "replaced" || entry.outcome === "suppressed";
+    return (
+      <div className="flex flex-col gap-0.5">
+        <span
+          className={cn("flex items-center gap-1 font-medium", {
+            "text-warning": tripped || entry.outcome === "unavailable",
+            "text-text-secondary": entry.outcome === "clean",
+          })}
+        >
+          <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
+          {entry.direction === "input"
+            ? t("playground.trace.guardrailInput", "Guardrail on the message")
+            : t("playground.trace.guardrailOutput", "Guardrail on the reply")}
+          <span className="font-normal text-text-muted">
+            {entry.outcome === "clean"
+              ? t("playground.trace.guardrailClean", "approved")
+              : entry.outcome === "unavailable"
+                ? t(
+                    "playground.trace.guardrailUnavailable",
+                    "could not be checked, so the reply went out unscreened",
+                  )
+                : entry.outcome === "suppressed"
+                  ? t(
+                      "playground.trace.guardrailSuppressed",
+                      "blocked, nothing would be sent",
+                    )
+                  : t(
+                      "playground.trace.guardrailReplaced",
+                      "replaced by the configured reply",
+                    )}
+          </span>
+        </span>
+        {tripped && (
+          <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-bg-tertiary px-2 py-1 text-text-muted">
+            {[entry.categories?.join(", "), entry.rationale]
+              .filter(Boolean)
+              .join(" — ")}
+          </pre>
+        )}
       </div>
     );
   }

@@ -117,6 +117,213 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// Makes the LangGraph checkpointer schema usable by the runtime role, which is three different
+// jobs depending on what is already there and only looks like one.
+async function provisionCheckpointerSchema(
+  client: Client,
+  role: string,
+  ident: string,
+) {
+  // LangGraph checkpointer schema, owned by the runtime role so PostgresSaver.setup() can create
+  // its tables (thread_id prefixing is the tenant fence here). Which statement is needed, and
+  // whether a refusal may be survived, depends on what is already there — the two cases fail
+  // differently and one catch over both would answer the wrong question:
+  //
+  //   ABSENT is a convenience. `setup()` runs its own `CREATE SCHEMA IF NOT EXISTS langgraph` at
+  //   boot and the runtime role holds CREATE ON DATABASE for exactly that reason
+  //   (docs/graph.md), so doing it here only settles the owner earlier — and when the server does
+  //   it instead the owner comes out the same, because the runtime role is the creator. Creating
+  //   it OWNED BY another role is what needs the membership taken above, so a refusal must not
+  //   abort a boot that completes itself a minute later.
+  //
+  //   PRESENT UNDER ANOTHER OWNER is not, and it is the case a rotated runtime role lands in.
+  //   `CREATE SCHEMA IF NOT EXISTS` is a no-op there, for us and for `setup()` alike, so nothing
+  //   downstream repairs it: without USAGE/CREATE the checkpointer fails at boot on schema
+  //   access, and reporting a successful bootstrap first is what makes that unreadable.
+  const schemaOwner = (
+    await client.query<{ owner: string }>(
+      "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'langgraph'",
+    )
+  ).rows[0]?.owner;
+
+  if (schemaOwner === undefined) {
+    try {
+      await client.query(
+        `CREATE SCHEMA IF NOT EXISTS langgraph AUTHORIZATION ${ident}`,
+      );
+    } catch (err) {
+      console.warn(
+        `db-bootstrap: could not create the langgraph schema (${message(err)}); ` +
+          `leaving it to the server, which creates it as "${role}" on its first boot`,
+      );
+    }
+  } else if (schemaOwner !== role) {
+    // Adopting a schema another role owns is the rotated-runtime-role case, and it has three
+    // depths, only the first of which is obvious:
+    //
+    //   the schema      -- USAGE/CREATE, or nothing in it can be reached at all;
+    //   the tables      -- granting on a schema does not reach what is inside it, and setup()
+    //                      opens with `SELECT v FROM langgraph.checkpoint_migrations` and writes
+    //                      to the same table one statement later;
+    //   their ownership -- setup() also runs the checkpointer's own migrations, one of which is
+    //                      `ALTER TABLE ... ALTER COLUMN blob DROP NOT NULL`
+    //                      (@langchain/langgraph-checkpoint-postgres 1.0.4), and Postgres allows
+    //                      that only to the table's owner.
+    //
+    // Only the TABLES are re-owned. The schema itself stays with whoever holds it: setup() needs
+    // USAGE and CREATE on it, which a grant covers, and nothing it runs alters the schema — so
+    // taking it over buys nothing, and having it inside the same block would make a refusal there
+    // abort the table transfers that do matter. Identifiers are quoted by Postgres in the DO
+    // block rather than spliced here.
+    let adoptError: unknown;
+    try {
+      await client.query(`
+        DO $$
+        DECLARE
+          v_role text := current_setting('fazerai.app_role');
+          r      record;
+        BEGIN
+          FOR r IN
+            SELECT c.relname FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'langgraph' AND c.relkind IN ('r', 'p')
+          LOOP
+            EXECUTE format('ALTER TABLE langgraph.%I OWNER TO %I', r.relname, v_role);
+          END LOOP;
+        END $$;
+      `);
+    } catch (err) {
+      adoptError = err;
+    }
+    try {
+      await client.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`);
+      await client.query(
+        `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO ${ident}`,
+      );
+    } catch (err) {
+      adoptError ??= err;
+    }
+
+    // What decides the outcome is a privilege check, not the absence of an error above: this
+    // administrator may be refused everything while the runtime role already holds what it needs
+    // from someone else, and it may equally hold only half of it.
+    //
+    // NOTE: one has_table_privilege() call per privilege. A comma-separated list is OR, not AND
+    // ("the result will be true if any of the listed privileges is held"), so asking for
+    // 'SELECT, INSERT, UPDATE, DELETE' in one call passes on a read-only grant.
+    const usable = (
+      await client.query<{
+        schema_ok: boolean;
+        tables_ok: boolean;
+        owns_tables: boolean;
+      }>(
+        `SELECT
+           has_schema_privilege($1, 'langgraph', 'USAGE')
+             AND has_schema_privilege($1, 'langgraph', 'CREATE') AS schema_ok,
+           (SELECT COALESCE(bool_and(
+                     has_table_privilege($1, c.oid, 'SELECT')
+                     AND has_table_privilege($1, c.oid, 'INSERT')
+                     AND has_table_privilege($1, c.oid, 'UPDATE')
+                     AND has_table_privilege($1, c.oid, 'DELETE')), true)
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'langgraph' AND c.relkind IN ('r', 'p')) AS tables_ok,
+           (SELECT COALESCE(bool_and(pg_get_userbyid(c.relowner) = $1), true)
+              FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'langgraph' AND c.relkind IN ('r', 'p')) AS owns_tables`,
+        [role],
+      )
+    ).rows[0];
+
+    const missing = [
+      usable?.schema_ok ? null : "the schema itself",
+      usable?.tables_ok ? null : "the tables already in it",
+    ].filter(Boolean);
+    if (missing.length > 0) {
+      throw new Error(
+        `the langgraph schema is owned by "${schemaOwner}", not by the runtime role "${role}", ` +
+          `and "${role}" still cannot reach ${missing.join(" nor ")}` +
+          `${adoptError ? ` (${message(adoptError)})` : ""}. The checkpointer reads ` +
+          "langgraph.checkpoint_migrations on its first query, so the server would fail at boot " +
+          `instead. Run as "${schemaOwner}" or as a superuser: ` +
+          `GRANT USAGE, CREATE ON SCHEMA langgraph TO "${role}"; ` +
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO "${role}";`,
+      );
+    }
+    if (!usable?.owns_tables) {
+      // A warning and not a refusal, because this install works: DML is all the checkpointer
+      // needs until a package upgrade brings a migration that alters those tables, and refusing
+      // now would crash-loop a server that boots fine today.
+      console.warn(
+        `db-bootstrap: runtime role "${role}" can use the langgraph tables but does not own ` +
+          `them (owner: "${schemaOwner}"); a future checkpointer migration that ALTERs them ` +
+          `would fail at boot. Run as "${schemaOwner}" or as a superuser: ` +
+          `ALTER TABLE langgraph.<table> OWNER TO "${role}";`,
+      );
+    }
+  }
+}
+
+// Brings the runtime role to what the rest of this script assumes: it exists, it is not
+// privileged, and it answers to the password in DATABASE_URL. Only the first two are worth failing
+// a boot over -- see the header.
+async function provisionRuntimeRole(
+  client: Client,
+  role: string,
+  ident: string,
+  runtimeRole: RuntimeRoleState,
+  plan: RoleProvisioningPlan,
+) {
+  if (plan === "demote") {
+    // Fatal: RLS is a silent no-op for a privileged role, so the server refuses to serve with it
+    // anyway. Only a real superuser can take the attributes back off, so when we are not one,
+    // name the statement a superuser has to run instead of dying on `permission denied`.
+    try {
+      await runRoleDdl(client, plan);
+    } catch (err) {
+      const attrs = [
+        runtimeRole.isSuperuser ? "SUPERUSER" : null,
+        runtimeRole.bypassesRls ? "BYPASSRLS" : null,
+      ]
+        .filter(Boolean)
+        .join(" + ");
+      throw new Error(
+        `runtime role "${role}" is ${attrs}, which makes RLS a no-op, and this administrative ` +
+          `role cannot take that away (${message(err)}). Run as a superuser: ` +
+          `ALTER ROLE "${role}" NOSUPERUSER NOBYPASSRLS;`,
+      );
+    }
+  } else if (plan === "syncPassword") {
+    // Best-effort: what this script owes is that the role EXISTS and is unprivileged, and both
+    // already hold here. Rewriting the password needs ADMIN over the role, which an
+    // administrative role that did not create it does not have — and the authority on whether
+    // the password is right is the runtime's own connection seconds later, whose authentication
+    // error says so far more clearly than a failed boot does.
+    try {
+      await runRoleDdl(client, plan);
+    } catch (err) {
+      console.warn(
+        `db-bootstrap: could not sync the password of runtime role "${role}" (${message(err)}); ` +
+          "leaving it as it is — the server reports an authentication failure if it is stale",
+      );
+    }
+    for (const [held, option] of ELEVATED_ATTRIBUTES) {
+      if (!runtimeRole[held]) continue;
+      try {
+        await client.query(`ALTER ROLE ${ident} ${option}`);
+      } catch (err) {
+        console.warn(
+          `db-bootstrap: could not apply ${option} to runtime role "${role}" ` +
+            `(${message(err)}); RLS is unaffected, but the role keeps a privilege it should not have`,
+        );
+      }
+    }
+  } else {
+    await runRoleDdl(client, plan);
+  }
+}
+
 async function main() {
   const migrationUrl = process.env.MIGRATION_DATABASE_URL;
   const appUrl = process.env.DATABASE_URL;
@@ -178,53 +385,7 @@ async function main() {
     };
     const plan = planRoleProvisioning(runtimeRole);
 
-    if (plan === "demote") {
-      // Fatal: RLS is a silent no-op for a privileged role, so the server refuses to serve with it
-      // anyway. Only a real superuser can take the attributes back off, so when we are not one,
-      // name the statement a superuser has to run instead of dying on `permission denied`.
-      try {
-        await runRoleDdl(client, plan);
-      } catch (err) {
-        const attrs = [
-          s.app_superuser ? "SUPERUSER" : null,
-          s.app_bypassrls ? "BYPASSRLS" : null,
-        ]
-          .filter(Boolean)
-          .join(" + ");
-        throw new Error(
-          `runtime role "${role}" is ${attrs}, which makes RLS a no-op, and this administrative ` +
-            `role cannot take that away (${message(err)}). Run as a superuser: ` +
-            `ALTER ROLE "${role}" NOSUPERUSER NOBYPASSRLS;`,
-        );
-      }
-    } else if (plan === "syncPassword") {
-      // Best-effort: what this script owes is that the role EXISTS and is unprivileged, and both
-      // already hold here. Rewriting the password needs ADMIN over the role, which an
-      // administrative role that did not create it does not have — and the authority on whether
-      // the password is right is the runtime's own connection seconds later, whose authentication
-      // error says so far more clearly than a failed boot does.
-      try {
-        await runRoleDdl(client, plan);
-      } catch (err) {
-        console.warn(
-          `db-bootstrap: could not sync the password of runtime role "${role}" (${message(err)}); ` +
-            "leaving it as it is — the server reports an authentication failure if it is stale",
-        );
-      }
-      for (const [held, option] of ELEVATED_ATTRIBUTES) {
-        if (!runtimeRole[held]) continue;
-        try {
-          await client.query(`ALTER ROLE ${ident} ${option}`);
-        } catch (err) {
-          console.warn(
-            `db-bootstrap: could not apply ${option} to runtime role "${role}" ` +
-              `(${message(err)}); RLS is unaffected, but the role keeps a privilege it should not have`,
-          );
-        }
-      }
-    } else {
-      await runRoleDdl(client, plan);
-    }
+    await provisionRuntimeRole(client, role, ident, runtimeRole, plan);
 
     // CONNECT to use the DB; CREATE so PostgresSaver.setup() can run its own
     // `CREATE SCHEMA IF NOT EXISTS langgraph` at boot (the privilege is checked even when the
@@ -270,96 +431,7 @@ async function main() {
       }
     }
 
-    // LangGraph checkpointer schema, owned by the runtime role so PostgresSaver.setup() can create
-    // its tables (thread_id prefixing is the tenant fence here). Which statement is needed, and
-    // whether a refusal may be survived, depends on what is already there — the two cases fail
-    // differently and one catch over both would answer the wrong question:
-    //
-    //   ABSENT is a convenience. `setup()` runs its own `CREATE SCHEMA IF NOT EXISTS langgraph` at
-    //   boot and the runtime role holds CREATE ON DATABASE for exactly that reason
-    //   (docs/graph.md), so doing it here only settles the owner earlier — and when the server does
-    //   it instead the owner comes out the same, because the runtime role is the creator. Creating
-    //   it OWNED BY another role is what needs the membership taken above, so a refusal must not
-    //   abort a boot that completes itself a minute later.
-    //
-    //   PRESENT UNDER ANOTHER OWNER is not, and it is the case a rotated runtime role lands in.
-    //   `CREATE SCHEMA IF NOT EXISTS` is a no-op there, for us and for `setup()` alike, so nothing
-    //   downstream repairs it: without USAGE/CREATE the checkpointer fails at boot on schema
-    //   access, and reporting a successful bootstrap first is what makes that unreadable.
-    const schemaOwner = (
-      await client.query<{ owner: string }>(
-        "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'langgraph'",
-      )
-    ).rows[0]?.owner;
-
-    if (schemaOwner === undefined) {
-      try {
-        await client.query(
-          `CREATE SCHEMA IF NOT EXISTS langgraph AUTHORIZATION ${ident}`,
-        );
-      } catch (err) {
-        console.warn(
-          `db-bootstrap: could not create the langgraph schema (${message(err)}); ` +
-            `leaving it to the server, which creates it as "${role}" on its first boot`,
-        );
-      }
-    } else if (schemaOwner !== role) {
-      // Granting on the schema does not reach the TABLES inside it, which still belong to the
-      // previous owner, and `setup()` opens with `SELECT v FROM langgraph.checkpoint_migrations`
-      // (@langchain/langgraph-checkpoint-postgres). So the attempt is both grants — and what
-      // decides whether it worked is a privilege check, not the absence of an error: this
-      // administrator may be refused both statements while the runtime role already holds what it
-      // needs, granted directly by someone else.
-      //
-      // NOTE: one has_table_privilege() call per privilege. A comma-separated list is OR, not AND
-      // ("the result will be true if any of the listed privileges is held"), so asking for
-      // 'SELECT, INSERT, UPDATE, DELETE' in one call passes on a read-only grant — and setup()
-      // writes to checkpoint_migrations one statement after reading it.
-      let grantError: unknown;
-      try {
-        await client.query(
-          `GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`,
-        );
-        await client.query(
-          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO ${ident}`,
-        );
-      } catch (err) {
-        grantError = err;
-      }
-
-      const usable = (
-        await client.query<{ schema_ok: boolean; tables_ok: boolean }>(
-          `SELECT
-             has_schema_privilege($1, 'langgraph', 'USAGE')
-               AND has_schema_privilege($1, 'langgraph', 'CREATE') AS schema_ok,
-             (SELECT COALESCE(bool_and(
-                       has_table_privilege($1, c.oid, 'SELECT')
-                       AND has_table_privilege($1, c.oid, 'INSERT')
-                       AND has_table_privilege($1, c.oid, 'UPDATE')
-                       AND has_table_privilege($1, c.oid, 'DELETE')), true)
-                FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-               WHERE n.nspname = 'langgraph' AND c.relkind IN ('r', 'p')) AS tables_ok`,
-          [role],
-        )
-      ).rows[0];
-
-      const missing = [
-        usable?.schema_ok ? null : "the schema itself",
-        usable?.tables_ok ? null : "the tables already in it",
-      ].filter(Boolean);
-      if (missing.length > 0) {
-        throw new Error(
-          `the langgraph schema is owned by "${schemaOwner}", not by the runtime role "${role}", ` +
-            `and "${role}" still cannot reach ${missing.join(" nor ")}` +
-            `${grantError ? ` (${message(grantError)})` : ""}. The checkpointer reads ` +
-            "langgraph.checkpoint_migrations on its first query, so the server would fail at boot " +
-            `instead. Run as "${schemaOwner}" or as a superuser: ` +
-            `GRANT USAGE, CREATE ON SCHEMA langgraph TO "${role}"; ` +
-            `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO "${role}";`,
-        );
-      }
-    }
+    await provisionCheckpointerSchema(client, role, ident);
 
     console.log(
       `db-bootstrap: provisioned runtime role "${role}" (idempotent; ${plan}, ` +

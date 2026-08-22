@@ -429,9 +429,7 @@ describe.skipIf(!dbUp)(
       expect(exitCode).toBe(1);
       expect(output).toContain(FOREIGN_ROLE);
       expect(output).toContain("checkpoint_migrations");
-      expect(output).toContain(
-        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES",
-      );
+      expect(output).toContain("GRANT USAGE, CREATE ON SCHEMA langgraph");
     });
 
     test("a reachable schema whose TABLES are not is still refused", async () => {
@@ -466,6 +464,18 @@ describe.skipIf(!dbUp)(
       expect(`${readOnly.stdout}${readOnly.stderr}`).toContain(
         "the tables already in it",
       );
+
+      // With the full DML set the install works TODAY, so it boots — with a warning, because
+      // setup() also runs the checkpointer's migrations and one of them ALTERs those tables, which
+      // only their owner may do. Refusing here would crash-loop a server that starts fine.
+      await onProbe(superuserOnProbe, (c) =>
+        c.query(
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO ${APP_ROLE}`,
+        ),
+      );
+      const dmlOnly = await runBootstrap(ROTATED_PW, APP_ROLE);
+      expect(dmlOnly.exitCode).toBe(0);
+      expect(`${dmlOnly.stdout}${dmlOnly.stderr}`).toContain("does not own");
     });
 
     test("a rotation the administrator CAN complete is completed, tables included", async () => {
@@ -481,14 +491,21 @@ describe.skipIf(!dbUp)(
       const { exitCode } = await runBootstrap(ROTATED_PW, APP_ROLE);
       expect(exitCode).toBe(0);
 
-      // To the effect, not to the exit code: the runtime role can actually read the table the
-      // checkpointer reads first.
-      const rows = await onProbe(
+      // To the effect, not to the exit code: the runtime role reads the table the checkpointer
+      // reads first, AND owns it — which is what lets setup() run the migration that ALTERs it.
+      const state = await onProbe(
         urlFor(APP_ROLE, ROTATED_PW, PROBE_DB),
-        async (c) =>
-          (await c.query("SELECT v FROM langgraph.checkpoint_migrations")).rows,
+        async (c) => ({
+          rows: (await c.query("SELECT v FROM langgraph.checkpoint_migrations"))
+            .rows,
+          owner: (
+            await c.query(
+              "SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE oid = 'langgraph.checkpoint_migrations'::regclass",
+            )
+          ).rows[0].owner,
+        }),
       );
-      expect(rows).toEqual([]);
+      expect(state).toEqual({ rows: [], owner: APP_ROLE });
     });
   },
 );

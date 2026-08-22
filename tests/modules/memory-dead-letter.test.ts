@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   AIMessage,
   type BaseMessage,
@@ -10,7 +10,10 @@ import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId, getCheckpointer } from "@/graph/checkpointer";
 import { conversationDividerMessage, conversationStamp } from "@/graph/markers";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
-import { registerMemoryHandlers } from "@/modules/memory/compact";
+import {
+  announceDeadCompaction,
+  registerMemoryHandlers,
+} from "@/modules/memory/compact";
 import { runCompactionTick } from "@/modules/memory/worker";
 import { getDeadLetterHandler, runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -106,6 +109,40 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
     });
     inboxDbId = inbox.id;
     registerMemoryHandlers();
+  });
+
+  afterAll(async () => {
+    if (tenantId) {
+      for (const table of [
+        "execution_logs",
+        "scheduler_jobs",
+        "agent_threads",
+        "conversations",
+        "inboxes",
+        "agents",
+        "chatwoot_instances",
+      ]) {
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+        );
+      }
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${tenantId}`,
+      );
+      // The REAL checkpointer, unlike the sibling suite's MemorySaver: these threads are rows in the
+      // langgraph schema, keyed by a thread id this tenant owns, and nothing else ever collects them.
+      for (const table of [
+        "checkpoint_writes",
+        "checkpoint_blobs",
+        "checkpoints",
+      ]) {
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM langgraph.${table} WHERE thread_id LIKE '${tenantId}:%'`,
+        );
+      }
+    }
+    await suDb.$disconnect();
+    await appDb.$disconnect();
   });
 
   // The closed attendance the job is armed for, mirrored on its inbox: together they are what the
@@ -361,6 +398,92 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]?.level).toBe("error");
     expect(lines[0]?.conversationId).toBe(convDbId);
+  });
+
+  // The re-arm race, which the sibling announcement (issue #71) hit first: this row's dedupeKey is the
+  // THREAD, reused by every attendance the contact ever has, so `armCompaction` upserts the very row
+  // that just died back to PENDING — and the turns this job failed to cut are still raw on the
+  // thread, so the new arm can still summarise them. Announcing over it would page an operator about
+  // work that is queued.
+  test("a job re-armed before the line is written is a live compaction, not a lost one", async () => {
+    const ci = 6005;
+    await seedConversation(868);
+    const threadId = await seedThread(ci, 868, 869);
+    const row = await armedJob(`mdl-rearm-${process.pid}`, ci, 868, {
+      attempts: 4,
+    });
+    // Dead by the CAS, exactly as the scheduler leaves it, and then re-armed — the state the hook
+    // finds when a boundary lands while it is running.
+    await suDb.schedulerJob.update({
+      where: { id: row.id },
+      data: { status: "DEAD", attempts: 5 },
+    });
+    await announceDeadCompaction(
+      {
+        id: row.id,
+        tenantId,
+        kind: "MEMORY_COMPACT",
+        payload: jobPayload(ci, 868),
+        attempts: 5,
+        claimSeq: 0,
+      },
+      "memory compaction model not runnable: credential_required",
+      appDb,
+    );
+    await waitForLines(threadId, 1);
+    expect(await memoryLines(threadId)).toHaveLength(1);
+
+    await suDb.schedulerJob.update({
+      where: { id: row.id },
+      data: { status: "PENDING", attempts: 0 },
+    });
+    await announceDeadCompaction(
+      {
+        id: row.id,
+        tenantId,
+        kind: "MEMORY_COMPACT",
+        payload: jobPayload(ci, 868),
+        attempts: 5,
+        claimSeq: 0,
+      },
+      "memory compaction model not runnable: credential_required",
+      appDb,
+    );
+    await new Promise((r) => setTimeout(r, 200));
+    // Still the one line from the dead row, not a second from the live one.
+    expect(await memoryLines(threadId)).toHaveLength(1);
+  });
+
+  // The other answer with the same shape: the mirror row is gone (the conversation was deleted in
+  // Chatwoot), which is NOT a live compaction — the attendance really was lost, so it is announced,
+  // unfindable ids and all, rather than swallowed by the guard that suppresses a re-arm.
+  test("a lost attendance whose mirror row is gone is still announced", async () => {
+    const ci = 6006;
+    const threadId = await seedThread(ci, 870, 871);
+    const row = await armedJob(`mdl-nomirror-${process.pid}`, ci, 870, {
+      attempts: 5,
+    });
+    await suDb.schedulerJob.update({
+      where: { id: row.id },
+      data: { status: "DEAD" },
+    });
+    await announceDeadCompaction(
+      {
+        id: row.id,
+        tenantId,
+        kind: "MEMORY_COMPACT",
+        payload: jobPayload(ci, 870),
+        attempts: 5,
+        claimSeq: 0,
+      },
+      "memory compaction model: credential_not_found",
+      appDb,
+    );
+    await waitForLines(threadId, 1);
+    const lines = await memoryLines(threadId);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.conversationId).toBeNull();
+    expect(lines[0]?.level).toBe("error");
   });
 
   test("compaction registers its dead-letter hook", () => {

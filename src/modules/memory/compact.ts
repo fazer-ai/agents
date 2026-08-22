@@ -815,11 +815,28 @@ export async function announceDeadCompaction(
   if (!payload) return;
   const { instanceId, contactInboxId, conversationId, agentId, reason } =
     payload;
-  // Without these the line exists and cannot be FOUND: the Logs page filters by conversation and
-  // inbox database ids, and the operator opening the trail from a conversation is exactly who this
-  // line is for. One indexed read on the mirror row, on a path that runs once per lost attendance.
-  const conv = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
-    db.conversation.findUnique({
+  const read = await runScopedOn(base, sysCtx(job.tenantId), async (db) => {
+    // RE-READ rather than trust the dead-letter that got us here. `armCompaction` upserts this very
+    // row — the dedupeKey is the THREAD, reused by every attendance this contact ever has — back to
+    // PENDING with a fresh retry budget, and the raw turns this job failed to cut are still on the
+    // thread, so a re-armed row is an attendance that may yet be summarised. The window is narrow
+    // (an attendance boundary landing inside this hook's own execution) where the debounce flush's
+    // is not, but the check is one indexed read and it is what makes the line's claim exact instead
+    // of nearly always true. Suppressing loses nothing: a configuration still broken fails the new
+    // arm too, and announces then.
+    const row = await db.schedulerJob.findUnique({
+      where: { id: job.id },
+      select: { status: true },
+    });
+    // A row that is GONE suppresses too, and for the same reason under a different name: nothing
+    // completes this kind by deleting it (JOB_DELETE_ON_DONE is false for MEMORY_COMPACT), so the
+    // only thing that retires the row outright is a /reset, and an operator who just cleared the
+    // thread does not need to be told its memory was not written.
+    if (row?.status !== "DEAD") return "live" as const;
+    // Without these the line exists and cannot be FOUND: the Logs page filters by conversation and
+    // inbox database ids, and the operator opening the trail from a conversation is exactly who this
+    // line is for. One indexed read on the mirror row, on a path that runs once per lost attendance.
+    return db.conversation.findUnique({
       where: {
         tenantId_chatwootInstanceId_chatwootConversationId: {
           tenantId: job.tenantId,
@@ -828,8 +845,12 @@ export async function announceDeadCompaction(
         },
       },
       select: { id: true, inboxId: true },
-    }),
-  );
+    });
+  });
+  // Kept apart from "the mirror row is gone", which is a different answer with the same shape: that
+  // one still announces, with null ids, because the attendance really was lost.
+  if (read === "live") return;
+  const conv = read;
   emitFlowEvent(
     {
       tenantId: job.tenantId,

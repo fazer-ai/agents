@@ -175,7 +175,19 @@ async function provisionCheckpointerSchema(
     // taking it over buys nothing, and having it inside the same block would make a refusal there
     // abort the table transfers that do matter. Identifiers are quoted by Postgres in the DO
     // block rather than spliced here.
+    // The grants go FIRST, and the order is load-bearing rather than stylistic: Postgres requires a
+    // table's prospective owner to hold CREATE on its schema, so on a fresh rotation -- where the
+    // new role has nothing on the old owner's schema yet -- the transfer below would fail, roll
+    // back its whole loop, and leave every table where it was.
     let adoptError: unknown;
+    try {
+      await client.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`);
+      await client.query(
+        `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO ${ident}`,
+      );
+    } catch (err) {
+      adoptError = err;
+    }
     try {
       await client.query(`
         DO $$
@@ -192,14 +204,6 @@ async function provisionCheckpointerSchema(
           END LOOP;
         END $$;
       `);
-    } catch (err) {
-      adoptError = err;
-    }
-    try {
-      await client.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`);
-      await client.query(
-        `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO ${ident}`,
-      );
     } catch (err) {
       adoptError ??= err;
     }

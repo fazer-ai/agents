@@ -507,5 +507,41 @@ describe.skipIf(!dbUp)(
       );
       expect(state).toEqual({ rows: [], owner: APP_ROLE });
     });
+
+    test("a FRESH rotation transfers ownership too, with nothing granted first", async () => {
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // The test above reached ownership, but only because an earlier phase had already granted
+      // USAGE/CREATE on the schema. Postgres requires a table's prospective owner to hold CREATE on
+      // its schema, so a rotation that starts with nothing -- the real one -- is a different case:
+      // with the transfer attempted before the grants, the whole loop rolls back and every table
+      // stays with the previous owner, reported as a warning.
+      await onProbe(superuserOnProbe, async (c) => {
+        await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
+        await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${FOREIGN_ROLE}`);
+        await c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)");
+        await c.query(
+          `ALTER TABLE langgraph.checkpoint_migrations OWNER TO ${FOREIGN_ROLE}`,
+        );
+      });
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        ROTATED_PW,
+        APP_ROLE,
+      );
+      expect(exitCode).toBe(0);
+      expect(`${stdout}${stderr}`).not.toContain("does not own");
+
+      const owner = await onProbe(
+        superuserOnProbe,
+        async (c) =>
+          (
+            await c.query(
+              "SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE oid = 'langgraph.checkpoint_migrations'::regclass",
+            )
+          ).rows[0],
+      );
+      expect(owner).toEqual({ owner: APP_ROLE });
+    });
   },
 );

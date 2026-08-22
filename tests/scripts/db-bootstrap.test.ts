@@ -25,6 +25,8 @@ const ADMIN_ROLE = `fazerai_bs_admin_${process.pid}`;
 const APP_ROLE = `fazerai_bs_app_${process.pid}`;
 const FOREIGN_ROLE = `fazerai_bs_foreign_${process.pid}`;
 const UNREACHABLE_ROLE = `fazerai_bs_unreachable_${process.pid}`;
+const ROT_A_ROLE = `fazerai_bs_rot_a_${process.pid}`;
+const ROT_B_ROLE = `fazerai_bs_rot_b_${process.pid}`;
 const PROBE_DB = `fazerai_bs_probe_${process.pid}`;
 const ADMIN_PW = "bs-admin-pw";
 const APP_PW = "bs-app-pw";
@@ -213,6 +215,8 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${ROT_B_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       // The shape of an RDS master user / a Coolify-provisioned owner: it can create roles and owns
       // the database, and `rolsuper` is false.
@@ -236,6 +240,8 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${ROT_B_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       await db.query("SELECT pg_advisory_unlock(729104553)");
       await db.end();
@@ -628,6 +634,54 @@ describe.skipIf(!dbUp)(
         },
       );
       expect(owner).toEqual({ owner: APP_ROLE });
+    });
+
+    test("a rotation driven entirely by the script itself lands the whole way", async () => {
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // Every rotation case above builds its fixture by hand, which is precise but not faithful:
+      // it grants the administrator its membership over the previous owner outright, where a real
+      // install gets that membership from bootstrap's own `GRANT <role> TO CURRENT_USER WITH SET
+      // TRUE` on the boot that created the role. Whether that grant is enough is the whole
+      // question -- the membership CREATEROLE confers implicitly carries INHERIT false, so an
+      // administrator that only had THAT one could not exercise the old owner's rights at all.
+      // This walks the real path end to end and asserts the answer instead of assuming it.
+      await onProbe(superuserOnProbe, (c) =>
+        c.query("DROP SCHEMA IF EXISTS langgraph CASCADE"),
+      );
+      const first = await runBootstrap(APP_PW, ROT_A_ROLE);
+      expect(first.exitCode).toBe(0);
+
+      // What PostgresSaver.setup() does on that boot, as the runtime role.
+      await onProbe(urlFor(ROT_A_ROLE, APP_PW, PROBE_DB), (c) =>
+        c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)"),
+      );
+
+      const rotated = await runBootstrap(APP_PW, ROT_B_ROLE);
+      expect(`${rotated.stdout}${rotated.stderr}`).not.toContain(
+        "does not own",
+      );
+      expect(rotated.exitCode).toBe(0);
+
+      // The new role has to be able to do both things setup() does: write the migrations table,
+      // and ALTER it -- which only its owner may.
+      const worked = await onProbe(
+        urlFor(ROT_B_ROLE, APP_PW, PROBE_DB),
+        async (c) => {
+          await c.query(
+            "INSERT INTO langgraph.checkpoint_migrations (v) VALUES (1)",
+          );
+          await c.query(
+            "ALTER TABLE langgraph.checkpoint_migrations ALTER COLUMN v DROP NOT NULL",
+          );
+          return (
+            await c.query(
+              "SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE oid = 'langgraph.checkpoint_migrations'::regclass",
+            )
+          ).rows[0];
+        },
+      );
+      expect(worked).toEqual({ owner: ROT_B_ROLE });
     });
   },
 );

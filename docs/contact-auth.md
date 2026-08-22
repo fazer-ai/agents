@@ -33,7 +33,7 @@ read, so a malformed bag can never break the webhook.
 | `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). |
 | `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error.           |
 | `noticeCooldownSeconds` | `60`    | Clamped 0-3600. Cooldown on the NOTICES for a refused message (the customer copy and the operator note, per conversation), never on the verdict: the endpoint is asked on every message regardless. 0 = notify on every refused message. |
-| `includeMessageText`    | `false` | POST only (read as false under GET): forward the triggering message's text as `message.text`, so the endpoint can accept an unlock code the customer sends. |
+| `includeMessageText`    | `false` | POST only: forward the triggering message's text as `message.text`, so the endpoint can accept an unlock code the customer sends. The opt-in is stored as set; a GET request simply does not carry the text, and switching the method back to POST brings it back. |
 | `denyMessage`           | `null`  | Fixed copy the CUSTOMER receives on a denial (≤ `TEMPLATE_MESSAGE_MAX`). `null` = say nothing. |
 | `handoffEnabled`        | `true`  | Open a refused conversation for humans (the `handoff_to_human` mechanics: bot-token `toggle_status open`). |
 | `handoffTeamId`         | `null`  | Chatwoot team assigned after the open (bot-token `assignments`). `null` = inbox routing. Flat beside `handoffEnabled` for the mergeBehaviorSettings one-level-merge reason the tts block documents. |
@@ -88,6 +88,13 @@ A contact whose mirror holds **no phone, no email and no identifier** is `no_ide
 nothing to ask the endpoint about, and fail-closed means nobody unidentified is served.
 `chatwootContactId` alone does not count as identity.
 
+The mirrored contact is scoped by **Chatwoot instance**, which this feature is what made necessary:
+a Chatwoot contact id is unique inside one account, not across a tenant, so two accounts under the
+same tenant used to collapse contact 42 into one row and the mirror's last-writer-wins left one
+person's name over another's phone. That was wrong for the prompt already; here it is the identity
+sent to the endpoint. The stored `identifier` follows Chatwoot exactly, cleared included: keeping a
+stale one after an unlink means asking about a customer this contact is no longer linked to.
+
 ## Where the gate runs
 
 **Webhook** (`maybeConsumeCommandOrGate` in `src/modules/chatwoot/webhook.ts`): the last of the
@@ -111,7 +118,10 @@ message is folded into the memory thread like any other unanswered one.
 
 The verdict is per message; the **notices** are not. The customer copy and the private note sit
 behind `noticeCooldownSeconds` (per conversation, in process memory), so a refused burst is voiced
-once per window instead of once per message. The handoff is NOT behind the cooldown: it is
+once per window instead of once per message. Each notice holds its OWN window: an endpoint error
+writes a note and speaks to nobody, and one shared window let it spend the customer's, silencing the
+denial that came right after it — the copy that usually carries the unlock instructions, with the
+handoff after it ending the bot's attribution and leaving no later message to carry them. The handoff is NOT behind the cooldown: it is
 idempotent, and a first attempt that failed must be retried. With handoff on the cooldown rarely
 matters (the open ends the bot's attribution and the gate stops running); with handoff off it is
 what keeps five messages from drawing five identical replies. Losing the cooldown on a restart
@@ -128,7 +138,10 @@ check.
 model work: a follow-up is a turn the agent starts, and a contact the reactive gate would refuse
 must not be reached out to either. Denied/error/no-identity all end as the `silent` outcome (no
 note downgrade: the nudge's text was written FOR the customer), with the same flow line. A nudge
-has no triggering message, so it never carries `message`.
+has no triggering message, so it never carries `message` — and for the same reason it never shares
+a single-flight with an incoming one. A refused nudge still applies the follow-up's deterministic
+post-actions (the step fired and the sequence advances either way, so the operator's labels would
+otherwise be lost), minus the resolve: nothing reached the customer.
 
 **Playground**: the gate does not run; there is no Chatwoot contact to ask about, and the
 playground exists to test the agent's own behavior.
@@ -138,11 +151,14 @@ playground exists to test the agent's own behavior.
 Not a cache. Two things live here, both in memory (single-replica invariant), both harmless to
 lose on a restart:
 
-- **Single-flight** per `${tenantId}:${agentId}:${contactDbId}`: concurrent deliveries for one
-  contact coalesce into one request; the leader acts on the verdict, followers are consumed
-  silently. Dedupe of work in flight; nothing outlives the promise.
-- **Notice cooldown** per `${tenantId}:${agentId}:${conversationRowId}`: when a refusal was last
-  voiced. Swept actively (a rescheduled, unref'd timer wakes at the earliest lapse) and capped in
+- **Single-flight** per `${tenantId}:${agentId}:${contactDbId}:${request}`: concurrent deliveries of
+  the SAME asking coalesce into one request; the leader acts on the verdict, followers are consumed
+  silently. `request` is the message id under an unlock flow and the source otherwise, so a nudge
+  (which carries no text) and an incoming message (which may carry the code) are never answered by
+  each other's verdict — the follower is told `shared`, and `shared` is what withholds its own copy,
+  handoff and note. Dedupe of work in flight; nothing outlives the promise.
+- **Notice cooldown** per `${tenantId}:${agentId}:${conversationRowId}:${notice}`, where `notice` is
+  the customer copy or the operator note: when a refusal was last voiced. Swept actively (a rescheduled, unref'd timer wakes at the earliest lapse) and capped in
   size. Stores ids and timestamps only.
 
 ## Observability

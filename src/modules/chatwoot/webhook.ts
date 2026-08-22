@@ -48,8 +48,12 @@ import {
   type ContactAuthOutcome,
   contactAuthFlowEvent,
 } from "@/modules/contact-auth/service";
-import { readContactAuthConfig } from "@/modules/contact-auth/settings";
 import {
+  readContactAuthConfig,
+  sendsMessageText,
+} from "@/modules/contact-auth/settings";
+import {
+  type ContactAuthNotice,
   claimContactAuthNotice,
   contactAuthNoticeKey,
 } from "@/modules/contact-auth/state";
@@ -1435,6 +1439,11 @@ async function maybeConsumeCommandOrGate(params: {
         inboxId: ctx.inboxChatwootId,
         channelType: ctx.channelType,
         messageText: n.message?.content ?? null,
+        // The message id under an unlock flow, where the verdict is a function of the text; the
+        // source otherwise. Never the text itself: it must not reach a cache key.
+        requestKey: sendsMessageText(authCfg)
+          ? `msg:${n.message?.id ?? "none"}`
+          : "inbox",
         cfg: authCfg,
         base,
         fetchImpl: deps?.contactAuthFetch,
@@ -1460,11 +1469,20 @@ async function maybeConsumeCommandOrGate(params: {
         // nothing off: it is transient by contract (the next message retries), and escalating
         // every blip of the endpoint would page humans for conversations the next message answers.
         if (!verdict.shared) {
-          const voice = claimContactAuthNotice(
-            contactAuthNoticeKey(tenantId, agentId, ctx.conv.id),
-            authCfg.noticeCooldownSeconds * 1000,
-          );
-          if (voice && verdict.outcome === "denied" && authCfg.denyMessage) {
+          const cooldownMs = authCfg.noticeCooldownSeconds * 1000;
+          const claim = (notice: ContactAuthNotice) =>
+            claimContactAuthNotice(
+              contactAuthNoticeKey(tenantId, agentId, ctx.conv.id, notice),
+              cooldownMs,
+            );
+          // The copy's window is claimed only when a copy is actually going out. Sharing one claim
+          // with the note let an ERROR, which speaks to nobody, spend the customer's window and
+          // silence the denial that followed it.
+          if (
+            verdict.outcome === "denied" &&
+            authCfg.denyMessage &&
+            claim("copy")
+          ) {
             await postPublicMessage(authCfg.denyMessage);
           }
           let handedOff = false;
@@ -1474,7 +1492,7 @@ async function maybeConsumeCommandOrGate(params: {
             // message, notice or no notice.
             handedOff = await openForHumans(authCfg.handoffTeamId);
           }
-          if (voice) {
+          if (claim("note")) {
             await postPrivateNote(contactAuthNoteText(verdict, handedOff));
           }
         }

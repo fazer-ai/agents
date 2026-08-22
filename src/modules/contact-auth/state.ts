@@ -27,22 +27,44 @@ let sweepAt = 0;
 
 // Scoped to the CONVERSATION (not the contact): the copy and the note land on a conversation, and a
 // contact writing on two channels is two conversations, each entitled to its own notice.
+//
+// And scoped to the NOTICE, because the two are not interchangeable. They used to share one claim,
+// so an endpoint ERROR — which writes a note and never speaks to the customer — consumed the window
+// for a denial arriving right after it, and the deny copy was skipped. That copy is usually the
+// unlock instructions, and the handoff that follows ends the bot's attribution, so there is no
+// later message to carry it: the customer is refused and never told why or how to fix it.
+export type ContactAuthNotice = "copy" | "note";
+
 export function contactAuthNoticeKey(
   tenantId: bigint,
   agentId: bigint,
   conversationRowId: bigint,
+  notice: ContactAuthNotice,
 ): string {
-  return `${tenantId}:${agentId}:${conversationRowId}`;
+  return `${tenantId}:${agentId}:${conversationRowId}:${notice}`;
 }
 
 // Single-flight is scoped to the CONTACT: the same person writing twice concurrently is one
 // question to the endpoint, whichever conversations the messages landed on.
+//
+// It is scoped to the REQUEST as well, and that half is not an optimization. What collapses here is
+// the same delivery arriving twice (a retry, a duplicated webhook), which shares its message id.
+// Two DIFFERENT askings are not the same question:
+//
+//   - a proactive nudge carries no message text, so an unlock endpoint answering "denied until they
+//     send the code" would hand its refusal to the very message that carries the code;
+//   - and the joiner is told `shared`, which is what suppresses its own deny copy, handoff and
+//     note — so a nudge's refusal would silently swallow the customer's.
+//
+// `request` is the message id under an unlock flow (the text is part of the question), and the
+// source otherwise. Same message id ⇒ same question ⇒ one call, which is the case worth collapsing.
 export function contactAuthFlightKey(
   tenantId: bigint,
   agentId: bigint,
   contactDbId: bigint,
+  request: string,
 ): string {
-  return `${tenantId}:${agentId}:${contactDbId}`;
+  return `${tenantId}:${agentId}:${contactDbId}:${request}`;
 }
 
 // True = this refusal should be voiced, and the cooldown window opens now. False = an equal notice

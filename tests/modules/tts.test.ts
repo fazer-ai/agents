@@ -202,7 +202,12 @@ describe.skipIf(!dbUp)("tts", () => {
     });
     igInboxId = igInbox.id;
     const contact = await suDb.contact.create({
-      data: { tenantId, name: "Cliente", chatwootContactId: 1 },
+      data: {
+        chatwootInstanceId: instanceId,
+        tenantId,
+        name: "Cliente",
+        chatwootContactId: 1,
+      },
     });
     contactId = contact.id;
   });

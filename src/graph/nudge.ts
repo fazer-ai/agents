@@ -466,6 +466,69 @@ export async function runAgentNudge(
         { ourAgentBotId: cfg.agentBotId },
       );
 
+  const handoffState = {
+    customerMessage: null as string | null,
+    completed: false,
+  };
+
+  // `canMessage` is the caller's own proof of ownership, not a shared variable: the branches below
+  // run AFTER the model and pass the ownership re-probed then, while the contact-auth refusal runs
+  // BEFORE any model work and passes the one just probed. Reading a single later variable is what
+  // made the refusal path skip this function altogether.
+  const applyPostActions = async ({
+    canMessage,
+    // The resolve falls with the TRANSFER, on every branch: a conversation the human queue now owns
+    // is not ours to close, and that holds whether the closing line reached the customer, was
+    // suppressed by the guardrail or was left as a note outside the 24h window. Callers override
+    // only to take it away for a reason of their own, never to give it back.
+    allowResolve = !handoffState.completed,
+  }: {
+    canMessage: boolean;
+    allowResolve?: boolean;
+  }): Promise<void> => {
+    const actions = params.postActions;
+    if (!actions || !canMessage) return;
+    const labels = actions.assignLabels?.filter((l) => l.trim());
+    if (labels && labels.length > 0) {
+      try {
+        const current = await client.getConversationLabels(conversationId);
+        const merged = [...new Set([...current, ...labels])];
+        await client.setConversationLabels(conversationId, merged);
+      } catch (err) {
+        logger.warn(
+          { err, conversationId: String(conversationId) },
+          "agentNudge: assignLabels failed",
+        );
+      }
+    }
+    if (allowResolve && actions.resolve) {
+      try {
+        await client.toggleStatus(conversationId, "resolved");
+        // NOTE: A follow-up ladder only advances while the customer stays silent (an inbound ends the
+        // episode), so the last step firing means nobody ever answered. Recording that keeps the
+        // Resolution funnel from reading an abandoned lead as a conversation the agent resolved.
+        await recordResolutionOrigin({
+          tenantId,
+          conversation: {
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+          origin: "followup_abandonment",
+          // NOTE: `loaded` carries the probe's LIVE answer on the path that reaches this: every
+          // caller with allowResolve on runs after probeLiveOwnership, which writes both halves of
+          // what it saw back onto `loaded`. The contact-auth refusal, which is the one caller that
+          // runs before the model, passes allowResolve: false and never gets here.
+          observed: { status: loaded.status, statusAt: loaded.statusAt },
+          base,
+        });
+      } catch (err) {
+        logger.warn(
+          { err, conversationId: String(conversationId) },
+          "agentNudge: resolve failed",
+        );
+      }
+    }
+  };
   // The contact authorization gate applies to proactive sends too (docs/contact-auth.md): a
   // follow-up is a turn the agent starts, and a contact the reactive gate would refuse must not be
   // reached out to either. Denied and cannot-tell alike end in silence: fail-closed has no
@@ -482,6 +545,9 @@ export async function runAgentNudge(
       channelType: loaded.channelType,
       // A nudge is a turn the agent starts: there is no customer message to forward.
       messageText: null,
+      // A nudge is its own asking: it carries no message text, so it must never join (or be
+      // joined by) the flight of an incoming message that does.
+      requestKey: "nudge",
       cfg: cfg.contactAuthConfig,
       base,
       fetchImpl: params.deps?.contactAuthFetch,
@@ -493,14 +559,19 @@ export async function runAgentNudge(
         String(conversationId),
         auth.outcome,
       );
+      // The step FIRED, and the deterministic post-actions are the system's, not the agent's:
+      // the follow-up handler stamps and advances the sequence either way, so skipping them here
+      // loses the operator's labels for good. Ownership was just probed and nothing has run since.
+      // No resolve, though: the same rule as the noted-window branch, where nothing reached the
+      // customer either — closing the conversation on the back of a message nobody received.
+      await applyPostActions({
+        canMessage: canMessagePre,
+        allowResolve: false,
+      });
       return "silent";
     }
   }
 
-  const handoffState = {
-    customerMessage: null as string | null,
-    completed: false,
-  };
   const tools = await buildToolset(
     cfg,
     {
@@ -929,57 +1000,6 @@ export async function runAgentNudge(
   // allowResolve=false skips ONLY the resolve action (labels still apply): the noted-window branch
   // never reached the customer AND ends the sequence, so auto-resolving there would close the
   // conversation on the back of a message nobody received.
-  const applyPostActions = async ({
-    // The resolve falls with the TRANSFER, on every branch: a conversation the human queue now owns
-    // is not ours to close, and that holds whether the closing line reached the customer, was
-    // suppressed by the guardrail or was left as a note outside the 24h window. Callers override
-    // only to take it away for a reason of their own, never to give it back.
-    allowResolve = !handoffState.completed,
-  }: {
-    allowResolve?: boolean;
-  } = {}): Promise<void> => {
-    const actions = params.postActions;
-    if (!actions || !canMessagePost) return;
-    const labels = actions.assignLabels?.filter((l) => l.trim());
-    if (labels && labels.length > 0) {
-      try {
-        const current = await client.getConversationLabels(conversationId);
-        const merged = [...new Set([...current, ...labels])];
-        await client.setConversationLabels(conversationId, merged);
-      } catch (err) {
-        logger.warn(
-          { err, conversationId: String(conversationId) },
-          "agentNudge: assignLabels failed",
-        );
-      }
-    }
-    if (allowResolve && actions.resolve) {
-      try {
-        await client.toggleStatus(conversationId, "resolved");
-        // NOTE: A follow-up ladder only advances while the customer stays silent (an inbound ends the
-        // episode), so the last step firing means nobody ever answered. Recording that keeps the
-        // Resolution funnel from reading an abandoned lead as a conversation the agent resolved.
-        await recordResolutionOrigin({
-          tenantId,
-          conversation: {
-            chatwootInstanceId: instanceId,
-            chatwootConversationId: conversationId,
-          },
-          origin: "followup_abandonment",
-          // NOTE: `loaded` carries the probe's LIVE answer on this path: requireLiveBotOwnership makes
-          // probeLiveOwnership run a GET immediately before this, and it writes both halves of what
-          // it saw back onto `loaded`.
-          observed: { status: loaded.status, statusAt: loaded.statusAt },
-          base,
-        });
-      } catch (err) {
-        logger.warn(
-          { err, conversationId: String(conversationId) },
-          "agentNudge: resolve failed",
-        );
-      }
-    }
-  };
 
   // The transfer is done and this is the sentence it promised the customer. Its own path, because
   // every question the branches below answer is about the MODEL's proactive text and none of them
@@ -989,7 +1009,7 @@ export async function runAgentNudge(
   const promised = await deliverPromisedLine();
   if (promised) {
     if (promised !== "silent") markFollowUp(promised);
-    await applyPostActions();
+    await applyPostActions({ canMessage: canMessagePost });
     return promised;
   }
 
@@ -998,7 +1018,7 @@ export async function runAgentNudge(
   if (silent || !reply) {
     // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
     // ours to close, even when the closing line never made it out.
-    await applyPostActions();
+    await applyPostActions({ canMessage: canMessagePost });
     return "silent";
   }
 
@@ -1071,7 +1091,7 @@ export async function runAgentNudge(
     }
 
     if (screened === null) {
-      await applyPostActions();
+      await applyPostActions({ canMessage: canMessagePost });
       return "silent";
     }
     // The window is asked again for the same reason the ownership is, and about the same stretch of
@@ -1087,7 +1107,7 @@ export async function runAgentNudge(
         params.nudge.source,
       );
       markFollowUp("messaged");
-      await applyPostActions();
+      await applyPostActions({ canMessage: canMessagePost });
       return "messaged";
     }
     // A human arrived while the judge was reading, or the window closed while it did. Everything
@@ -1110,7 +1130,7 @@ export async function runAgentNudge(
           payload.name,
         );
         markFollowUp("templated");
-        await applyPostActions();
+        await applyPostActions({ canMessage: canMessagePost });
         return "templated";
       }
     }
@@ -1127,7 +1147,7 @@ export async function runAgentNudge(
       params.nudge.source,
     );
     markFollowUp("noted-window");
-    await applyPostActions({ allowResolve: false });
+    await applyPostActions({ canMessage: canMessagePost, allowResolve: false });
     return "noted-window";
   }
   await client.sendPrivateNote(conversationId, reply);
@@ -1137,6 +1157,6 @@ export async function runAgentNudge(
     params.nudge.source,
   );
   markFollowUp("noted");
-  await applyPostActions();
+  await applyPostActions({ canMessage: canMessagePost });
   return "noted";
 }

@@ -49,6 +49,10 @@ export interface AuthorizeContactParams {
   // The triggering message's text; null on a proactive nudge. Forwarded only under POST with
   // includeMessageText (check.ts caps and places it), and never retained or logged here.
   messageText: string | null;
+  // What this asking IS, for the single-flight scope: the triggering message's id when the text is
+  // part of the question, the caller's own name otherwise ("nudge"). Two different askings must not
+  // share a verdict — see contactAuthFlightKey.
+  requestKey: string;
   cfg: ContactAuthConfig;
   base?: PrismaClient;
   fetchImpl?: typeof fetch;
@@ -68,7 +72,12 @@ export async function authorizeContact(
     return { outcome: "no_identity", shared: false, reason: "no_contact" };
   }
   const contactDbId = params.contactDbId;
-  const key = contactAuthFlightKey(tenantId, agentId, contactDbId);
+  const key = contactAuthFlightKey(
+    tenantId,
+    agentId,
+    contactDbId,
+    params.requestKey,
+  );
   const { verdict, shared } = await singleFlight(
     key,
     async (): Promise<ContactAuthVerdict> => {

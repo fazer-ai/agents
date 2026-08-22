@@ -57,6 +57,13 @@ export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
   handoffTeamId: null,
 };
 
+// Whether the triggering message's text actually travels: the operator's opt-in AND a POST, since
+// GET would put customer text on a query string and into the endpoint's access logs. Stored and
+// effective are deliberately separate — a method switch must not erase a setting it never named.
+export function sendsMessageText(cfg: ContactAuthConfig): boolean {
+  return cfg.method === "POST" && cfg.includeMessageText;
+}
+
 export const CONTACT_AUTH_TIMEOUT_MIN_MS = 1000;
 export const CONTACT_AUTH_TIMEOUT_MAX_MS = 10_000;
 export const CONTACT_AUTH_NOTICE_COOLDOWN_MAX_SECONDS = 3600;
@@ -125,9 +132,12 @@ export function readContactAuthConfig(settings: unknown): ContactAuthConfig {
       0,
       CONTACT_AUTH_NOTICE_COOLDOWN_MAX_SECONDS,
     ),
-    // NOTE: Read as false whenever the method is GET, not refused: the stored flag survives a
-    // method round-trip, but a GET request never carries customer text.
-    includeMessageText: method === "POST" && b.includeMessageText === true,
+    // NOTE: The RAW opt-in, not the effective one. Forcing it to false here made the claim above it
+    // untrue: `mergeBehaviorSettings` persists what this reader returns, so a patch that changed
+    // only the method to GET wrote the flag off for good and switching back to POST could not bring
+    // it back — the operator's setting was erased by an edit that never mentioned it. Whether the
+    // text actually travels is `sendsMessageText`, decided when the request is built.
+    includeMessageText: b.includeMessageText === true,
     denyMessage: deny || null,
     handoffEnabled:
       typeof b.handoffEnabled === "boolean"

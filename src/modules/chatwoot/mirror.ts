@@ -108,7 +108,13 @@ export async function mirrorChatwootEvent(
       : null;
 
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const contactId = await upsertContact(db, tenantId, n, newLastEventAt);
+    const contactId = await upsertContact(
+      db,
+      tenantId,
+      instanceId,
+      n,
+      newLastEventAt,
+    );
     const inboxRowId = await upsertInbox(db, tenantId, instanceId, n);
 
     const threadId = `${tenantId}:${instanceId}:${convId}`;
@@ -339,20 +345,31 @@ export async function mirrorChatwootEvent(
 async function upsertContact(
   db: ScopedDb,
   tenantId: bigint,
+  instanceId: bigint,
   n: NormalizedChatwootEvent,
   eventAt: Date | null,
 ): Promise<bigint | null> {
   const c = n.contact;
   if (!c || c.id == null) return null;
+  // Absent (`undefined`) leaves the stored bag alone; present leaves it exactly as Chatwoot says,
+  // cleared included.
+  const identifierStated = c.identifier !== undefined;
   const attributes = (
     c.identifier ? { identifier: c.identifier } : {}
   ) as Prisma.InputJsonValue;
+  // Keyed by INSTANCE too: a Chatwoot contact id is unique inside one account, and two accounts
+  // under the same tenant were collapsing contact 42 into one row.
   const row = await db.contact.upsert({
     where: {
-      tenantId_chatwootContactId: { tenantId, chatwootContactId: c.id },
+      tenantId_chatwootInstanceId_chatwootContactId: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: c.id,
+      },
     },
     create: {
       tenantId,
+      chatwootInstanceId: instanceId,
       chatwootContactId: c.id,
       name: c.name,
       email: c.email,
@@ -367,7 +384,11 @@ async function upsertContact(
       // links the customer, then writes it back through the Chatwoot API), so the create-time
       // snapshot cannot be the last word. The bag holds nothing else today; the day it does, this
       // wholesale write must become a merge.
-      ...(c.identifier ? { attributes } : {}),
+      //
+      // A CLEARED identifier has to be written too, not skipped: the gate treats the stored value as
+      // the customer this contact is, so keeping it after an unlink means going on asking about
+      // somebody else's account. Only an ABSENT field keeps what is stored.
+      ...(identifierStated ? { attributes } : {}),
     },
     select: { id: true },
   });

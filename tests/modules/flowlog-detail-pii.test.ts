@@ -286,6 +286,7 @@ describe.skipIf(!dbUp)(
       caInboxDbId = caInbox.id;
       const contact = await suDb.contact.create({
         data: {
+          chatwootInstanceId: instanceId,
           tenantId,
           name: NAME,
           phone: PHONE,

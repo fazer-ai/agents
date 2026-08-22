@@ -46,15 +46,30 @@ describe("claimContactAuthNotice", () => {
   });
 
   test("distinct conversations have independent windows", () => {
-    const a = contactAuthNoticeKey(1n, 2n, 30n);
-    const b = contactAuthNoticeKey(1n, 2n, 31n);
+    const a = contactAuthNoticeKey(1n, 2n, 30n, "note");
+    const b = contactAuthNoticeKey(1n, 2n, 31n, "note");
     expect(claimContactAuthNotice(a, 60_000, T0)).toBe(true);
     expect(claimContactAuthNotice(b, 60_000, T0)).toBe(true);
     expect(claimContactAuthNotice(a, 60_000, T0 + 1)).toBe(false);
   });
 
+  // An endpoint ERROR writes a note and speaks to nobody. Sharing one window with the customer copy
+  // let it spend the copy's, so the denial right after it was refused in silence — and the copy is
+  // usually the unlock instructions, with the handoff after it ending the bot's attribution.
+  test("the customer copy and the operator note hold separate windows", () => {
+    const copy = contactAuthNoticeKey(1n, 2n, 30n, "copy");
+    const note = contactAuthNoticeKey(1n, 2n, 30n, "note");
+    expect(claimContactAuthNotice(note, 60_000, T0)).toBe(true);
+    expect(claimContactAuthNotice(copy, 60_000, T0 + 1)).toBe(true);
+    expect(claimContactAuthNotice(note, 60_000, T0 + 2)).toBe(false);
+  });
+
   test("what is retained is ids and timestamps, nothing anyone said", () => {
-    claimContactAuthNotice(contactAuthNoticeKey(1n, 2n, 3n), 60_000, T0);
+    claimContactAuthNotice(
+      contactAuthNoticeKey(1n, 2n, 3n, "note"),
+      60_000,
+      T0,
+    );
     for (const entry of contactAuthNoticeEntries()) {
       expect(Object.keys(entry).sort()).toEqual(["key", "until"]);
       expect(typeof entry.key).toBe("string");
@@ -115,8 +130,40 @@ describe("singleFlight", () => {
       return ALLOWED;
     };
     await Promise.all([
-      singleFlight(contactAuthFlightKey(1n, 2n, 3n), run),
-      singleFlight(contactAuthFlightKey(1n, 2n, 4n), run),
+      singleFlight(contactAuthFlightKey(1n, 2n, 3n, "inbox"), run),
+      singleFlight(contactAuthFlightKey(1n, 2n, 4n, "inbox"), run),
+    ]);
+    expect(runs).toBe(2);
+  });
+
+  // The joiner is told `shared`, and `shared` is what suppresses its own deny copy, handoff and
+  // note. A nudge and an incoming message are not the same question, so one must never answer for
+  // the other: under an unlock flow the nudge carries no code and its refusal would land on the
+  // very message that does.
+  test("a nudge and an incoming message do not share a flight", async () => {
+    let runs = 0;
+    const run = async () => {
+      runs += 1;
+      return ALLOWED;
+    };
+    await Promise.all([
+      singleFlight(contactAuthFlightKey(1n, 2n, 3n, "nudge"), run),
+      singleFlight(contactAuthFlightKey(1n, 2n, 3n, "msg:900"), run),
+    ]);
+    expect(runs).toBe(2);
+  });
+
+  test("two messages of the same contact are two questions, the same message one", async () => {
+    let runs = 0;
+    const run = async () => {
+      runs += 1;
+      return ALLOWED;
+    };
+    await Promise.all([
+      singleFlight(contactAuthFlightKey(1n, 2n, 3n, "msg:900"), run),
+      singleFlight(contactAuthFlightKey(1n, 2n, 3n, "msg:901"), run),
+      // Same delivery arriving twice: this is the case single-flight exists to collapse.
+      singleFlight(contactAuthFlightKey(1n, 2n, 3n, "msg:900"), run),
     ]);
     expect(runs).toBe(2);
   });

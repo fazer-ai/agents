@@ -425,7 +425,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
   test("memory is per-contact-inbox: a new conversation reuses the thread with a divider", async () => {
     const contact = await suDb.contact.create({
-      data: { tenantId, chatwootContactId: 555, name: "Cliente Fiel" },
+      data: {
+        chatwootInstanceId: instanceId,
+        tenantId,
+        chatwootContactId: 555,
+        name: "Cliente Fiel",
+      },
       select: { id: true },
     });
     // Both conversations share ONE contact-inbox (same contact, same channel) → one memory thread.
@@ -819,7 +824,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // the moment the turn finishes, and the raw history it had replaced comes back.
   test("a turn claims the memory thread for as long as its invoke holds it", async () => {
     const contact = await suDb.contact.create({
-      data: { tenantId, chatwootContactId: 557, name: "Cliente" },
+      data: {
+        chatwootInstanceId: instanceId,
+        tenantId,
+        chatwootContactId: 557,
+        name: "Cliente",
+      },
       select: { id: true },
     });
     const contactInboxId = 7003;
@@ -905,7 +915,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // way: the deferred turn belongs to the new attendance, not to the one that closed.
   test("a boundary is not claimed while another invoke is reading the thread", async () => {
     const contact = await suDb.contact.create({
-      data: { tenantId, chatwootContactId: 558, name: "Cliente" },
+      data: {
+        chatwootInstanceId: instanceId,
+        tenantId,
+        chatwootContactId: 558,
+        name: "Cliente",
+      },
       select: { id: true },
     });
     const contactInboxId = 7004;
@@ -1834,6 +1849,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     await withTtsPreference(async () => {
       const contact = await suDb.contact.create({
         data: {
+          chatwootInstanceId: instanceId,
           tenantId,
           chatwootContactId: 5561,
           name: "Quer Áudio",
@@ -1890,6 +1906,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     await withTtsPreference(async () => {
       const contact = await suDb.contact.create({
         data: {
+          chatwootInstanceId: instanceId,
           tenantId,
           chatwootContactId: 5562,
           name: "Leitura Falha",
@@ -3551,7 +3568,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         },
       });
       const contact = await suDb.contact.create({
-        data: { tenantId: gTenantId, chatwootContactId: 8555, name: "Volta" },
+        data: {
+          chatwootInstanceId: instanceId,
+          tenantId: gTenantId,
+          chatwootContactId: 8555,
+          name: "Volta",
+        },
         select: { id: true },
       });
       const contactInboxId = 8001;

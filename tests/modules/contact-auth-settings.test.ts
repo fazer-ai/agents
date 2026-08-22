@@ -16,6 +16,7 @@ import {
   CONTACT_AUTH_DEFAULTS,
   readContactAuthConfig,
   readContactAuthUrl,
+  sendsMessageText,
 } from "@/modules/contact-auth/settings";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsGet, agentSettingsSet } from "@/modules/mcp/write";
@@ -66,18 +67,12 @@ describe("readContactAuthConfig", () => {
     ).toBe(5000);
   });
 
-  test("includeMessageText needs POST and a real boolean; GET reads it as off", () => {
+  test("includeMessageText needs a real boolean, and is the STORED opt-in", () => {
     expect(
       readContactAuthConfig({
         contactAuth: { method: "POST", includeMessageText: true },
       }).includeMessageText,
     ).toBe(true);
-    // Stored true under GET survives in the bag but the reader never surfaces it.
-    expect(
-      readContactAuthConfig({
-        contactAuth: { method: "GET", includeMessageText: true },
-      }).includeMessageText,
-    ).toBe(false);
     expect(
       readContactAuthConfig({
         contactAuth: { method: "POST", includeMessageText: "true" },
@@ -86,6 +81,28 @@ describe("readContactAuthConfig", () => {
     expect(
       readContactAuthConfig({ contactAuth: { method: "POST" } })
         .includeMessageText,
+    ).toBe(false);
+  });
+
+  // The reader used to force it off under GET, and `mergeBehaviorSettings` persists what the reader
+  // returns: a patch that changed only the method wrote the opt-in off for good, and switching back
+  // to POST could not restore a setting that edit never mentioned. Stored and effective are now
+  // separate, and only the effective one looks at the method.
+  test("a method switch does not erase the opt-in; only the request suppresses it", () => {
+    const underGet = readContactAuthConfig({
+      contactAuth: { method: "GET", includeMessageText: true },
+    });
+    expect(underGet.includeMessageText).toBe(true);
+    expect(sendsMessageText(underGet)).toBe(false);
+
+    const underPost = readContactAuthConfig({
+      contactAuth: { method: "POST", includeMessageText: true },
+    });
+    expect(sendsMessageText(underPost)).toBe(true);
+    expect(
+      sendsMessageText(
+        readContactAuthConfig({ contactAuth: { method: "POST" } }),
+      ),
     ).toBe(false);
   });
 

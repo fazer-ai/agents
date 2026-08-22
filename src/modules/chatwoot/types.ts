@@ -89,7 +89,11 @@ export interface NormalizedChatwootContact {
   name: string | null;
   email: string | null;
   phone: string | null;
-  identifier: string | null;
+  // The operator's own customer id, stamped on the Chatwoot contact. `undefined` = the payload did
+  // not carry the field ⇒ keep what is stored; `null` = Chatwoot CLEARED it ⇒ clear ours. The two
+  // used to collapse into one `null`, and the stored value survived an unlink: the authorization
+  // gate went on asking about a customer this contact is no longer linked to.
+  identifier?: string | null;
   // NOTE: meta.sender.custom_attributes — Contact#push_event_data ships the whole jsonb on every
   // event, which is what lets the agent READ it with no extra API call. `undefined` = the payload
   // did not carry it ⇒ the mirror keeps whatever it had (never wiped by a degraded payload).

@@ -152,6 +152,7 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     inboxDbId = inbox.id;
     const contact = await suDb.contact.create({
       data: {
+        chatwootInstanceId: instanceId,
         tenantId,
         chatwootContactId: 601,
         name: "Cliente",

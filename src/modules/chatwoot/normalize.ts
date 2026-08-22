@@ -124,7 +124,11 @@ export function normalizeChatwootEvent(
       name: str(sender.name),
       email: str(sender.email),
       phone: str(sender.phone_number),
-      identifier: str(sender.identifier),
+      // Presence of the KEY is the signal: absent leaves the stored value alone, present-and-empty
+      // clears it. `str()` alone turned both into null and the clear was lost.
+      ...("identifier" in sender
+        ? { identifier: str(sender.identifier) || null }
+        : {}),
       ...(contactAttrs ? { customAttributes: contactAttrs } : {}),
     };
   }

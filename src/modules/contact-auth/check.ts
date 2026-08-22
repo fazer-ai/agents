@@ -2,7 +2,7 @@ import config from "@/config";
 import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
 import type { InjectableCredential } from "@/modules/vault/injectable";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
-import type { ContactAuthConfig } from "./settings";
+import { type ContactAuthConfig, sendsMessageText } from "./settings";
 
 // One authorization request and the reading of its answer. The contract is deliberately small
 // (docs/contact-auth.md): GET carries the short scalar identifiers (`phone`, `contact_id`,
@@ -143,7 +143,7 @@ export function buildAuthorizationRequest(
   if (cfg.method === "POST") {
     headers["content-type"] = "application/json";
     const text =
-      cfg.includeMessageText && identity.messageText?.trim()
+      sendsMessageText(cfg) && identity.messageText?.trim()
         ? identity.messageText.trim().slice(0, MESSAGE_TEXT_MAX)
         : null;
     // NOTE: The nesting IS the contract: `contact` is what Chatwoot mirrored (trusted context),
@@ -166,7 +166,7 @@ export function buildAuthorizationRequest(
   } else {
     // NOTE: GET carries only the short scalar identifiers, appended to whatever query the operator
     // wrote into the URL. No name and no message text: a query string lands in access logs on the
-    // endpoint's side. includeMessageText does not apply here (the reader already forces it off).
+    // endpoint's side. The opt-in stays stored, but `sendsMessageText` is false under GET.
     if (identity.phone) url.searchParams.set("phone", identity.phone);
     if (identity.chatwootContactId !== null) {
       url.searchParams.set("contact_id", String(identity.chatwootContactId));

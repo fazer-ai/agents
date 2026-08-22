@@ -351,12 +351,28 @@ async function upsertContact(
 ): Promise<bigint | null> {
   const c = n.contact;
   if (!c || c.id == null) return null;
-  // Absent (`undefined`) leaves the stored bag alone; present leaves it exactly as Chatwoot says,
-  // cleared included.
-  const identifierStated = c.identifier !== undefined;
-  const attributes = (
-    c.identifier ? { identifier: c.identifier } : {}
-  ) as Prisma.InputJsonValue;
+  // Every identity field follows one rule, because they feed one decision. ABSENT (`undefined`)
+  // keeps what is stored: a degraded payload must not wipe identity. STATED is written exactly as
+  // Chatwoot says, cleared included — the gate asks the endpoint about whoever these values name,
+  // so a phone kept after it was removed asks about whoever used to have it.
+  const identity: Prisma.ContactUpdateManyMutationInput = {
+    ...(c.name !== undefined ? { name: c.name } : {}),
+    ...(c.email !== undefined ? { email: c.email } : {}),
+    ...(c.phone !== undefined ? { phone: c.phone } : {}),
+    ...(c.identifier !== undefined
+      ? {
+          attributes: (c.identifier
+            ? { identifier: c.identifier }
+            : {}) as Prisma.InputJsonValue,
+        }
+      : {}),
+  };
+  const clears =
+    c.name === null ||
+    c.email === null ||
+    c.phone === null ||
+    c.identifier === null;
+
   // Keyed by INSTANCE too: a Chatwoot contact id is unique inside one account, and two accounts
   // under the same tenant were collapsing contact 42 into one row.
   const row = await db.contact.upsert({
@@ -371,57 +387,51 @@ async function upsertContact(
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootContactId: c.id,
-      name: c.name,
-      email: c.email,
-      phone: c.phone,
-      attributes,
+      name: c.name ?? null,
+      email: c.email ?? null,
+      phone: c.phone ?? null,
+      attributes: (c.identifier
+        ? { identifier: c.identifier }
+        : {}) as Prisma.InputJsonValue,
     },
-    update: {
-      ...(c.name != null ? { name: c.name } : {}),
-      ...(c.email != null ? { email: c.email } : {}),
-      ...(c.phone != null ? { phone: c.phone } : {}),
-      // The identifier is written below, under its own compare-and-set: unconditionally here, an
-      // older delivery could restore what a newer one changed or cleared.
-    },
+    // Identity is written below, under a compare-and-set. Unconditionally here, a delivery arriving
+    // late would restore what a newer one changed or cleared.
+    update: {},
     select: { id: true },
   });
-  // NOTE: Chatwoot ships the contact's whole custom_attributes hash on every event, so it is
-  // assigned wholesale — but only when this payload carried it (absent ⇒ keep the stored snapshot),
-  // and only when it is NEWER than what produced the stored one. This upsert runs before the
-  // conversation's stale check (the conversation row needs the contact id), and one contact is
-  // shared by all its conversations, so the conversation guard cannot cover it: the watermark is
-  // per-contact. Single statement ⇒ the compare-and-set is atomic under concurrent deliveries.
+
+  // The upsert runs BEFORE the conversation's stale check (the conversation row needs the contact
+  // id), and one contact is shared by all its conversations, so the conversation guard cannot cover
+  // it: the watermark has to be per-contact. Single statement ⇒ the compare-and-set is atomic under
+  // concurrent deliveries.
   //
-  // `custom_attributes_at` is a SOURCE position, never a receipt time: stamping an undated payload
-  // with our own clock would make it beat every real Chatwoot timestamp and poison the ordering. An
-  // undated payload therefore only BOOTSTRAPS a contact nothing has positioned yet, and leaves the
-  // watermark null so the first dated event still takes over.
-  // NOTE: The operator identifier is usually stamped AFTER the contact exists (their system links
-  // the customer, then writes it back through the Chatwoot API), so the create-time snapshot cannot
-  // be the last word. The bag holds nothing else today; the day it does, this wholesale write must
-  // become a merge.
+  // `identity_at` is a SOURCE position, never a receipt time: stamping an undated payload with our
+  // own clock would make it beat every real Chatwoot timestamp and poison the ordering. An undated
+  // payload therefore only BOOTSTRAPS a contact nothing has positioned yet, and leaves the watermark
+  // null so the first dated event still takes over.
   //
-  // Three states, not two. ABSENT (`undefined`) keeps what is stored: a degraded payload must not
-  // wipe identity. CLEARED must be written, not skipped — the gate asks the endpoint about whoever
-  // the stored value names, so keeping it after an unlink means asking about somebody else's
-  // account. And either way it is positioned by the SOURCE timestamp, like the bag below it: this
-  // runs before the conversation's stale check (the conversation row needs the contact id) and one
-  // contact is shared by all its conversations, so only a per-contact watermark can order it.
-  if (identifierStated) {
-    const bag = JSON.stringify(attributes);
-    await (eventAt
-      ? db.$executeRaw`
-          UPDATE contacts
-          SET attributes = ${bag}::jsonb, attributes_at = ${eventAt}
-          WHERE id = ${row.id} AND tenant_id = ${tenantId}
-            AND (attributes_at IS NULL OR attributes_at <= ${eventAt})
-        `
-      : db.$executeRaw`
-          UPDATE contacts
-          SET attributes = ${bag}::jsonb
-          WHERE id = ${row.id} AND tenant_id = ${tenantId}
-            AND attributes_at IS NULL
-        `);
+  // The tie is decided toward CLEARING, not toward the last arrival. `last_activity_at` has
+  // one-second resolution, so two events inside one second cannot be ordered by it at all, and the
+  // two directions are not symmetric here: a clear that loses leaves the gate asking about an
+  // identity the customer no longer has, while a clear that wins leaves it asking about less, or
+  // about nobody, which is the fail-closed side this whole feature sits on.
+  if (Object.keys(identity).length > 0) {
+    await db.contact.updateMany({
+      where: {
+        id: row.id,
+        tenantId,
+        ...(eventAt
+          ? {
+              OR: [
+                { identityAt: null },
+                { identityAt: { lt: eventAt } },
+                ...(clears ? [{ identityAt: eventAt }] : []),
+              ],
+            }
+          : { identityAt: null }),
+      },
+      data: { ...identity, ...(eventAt ? { identityAt: eventAt } : {}) },
+    });
   }
 
   if (c.customAttributes) {

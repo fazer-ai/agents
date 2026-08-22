@@ -88,6 +88,14 @@ A contact whose mirror holds **no phone, no email and no identifier** is `no_ide
 nothing to ask the endpoint about, and fail-closed means nobody unidentified is served.
 `chatwootContactId` alone does not count as identity.
 
+Every identity field follows one rule in the mirror: a payload that does not CARRY the field leaves
+what is stored (a degraded payload must not wipe identity), and one that carries it is written as
+Chatwoot says, cleared included — a phone kept after it was removed asks the endpoint about whoever
+used to have it. They share one source watermark (`contacts.identity_at`), and a tie is decided
+toward the CLEAR: `last_activity_at` has one-second resolution, so two events inside one second
+cannot be ordered by it, and the two directions are not symmetric here — a clear that loses leaves
+the gate asking about an identity the customer no longer has.
+
 The mirrored contact is scoped by **Chatwoot instance**, which this feature is what made necessary:
 a Chatwoot contact id is unique inside one account, not across a tenant, so two accounts under the
 same tenant used to collapse contact 42 into one row and the mirror's last-writer-wins left one
@@ -116,9 +124,16 @@ message is folded into the memory thread like any other unanswered one.
   `handoffEnabled`: a contact the gate can never authorize would otherwise stay pending and
   unanswered forever.
 
+A `handoffTeamId` is ignored when the agent serves more than one Chatwoot account: a team id belongs
+to one account, so the same number means a different team there, or none. The editor stops offering
+a target, and the runtime checks too, because the value can still arrive through REST, MCP or an
+import. Refused conversations then fall back to Chatwoot's own inbox routing.
+
 The verdict is per message; the **notices** are not. The customer copy and the private note sit
 behind `noticeCooldownSeconds` (per conversation, in process memory), so a refused burst is voiced
-once per window instead of once per message. Each notice holds its OWN window: an endpoint error
+once per window instead of once per message. A window is claimed BEFORE the delivery (two settled
+deliveries racing must not both speak) and given back when the delivery fails, so a message Chatwoot
+refused does not silence the next refusal for the rest of the window. Each notice holds its OWN window: an endpoint error
 writes a note and speaks to nobody, and one shared window let it spend the customer's, silencing the
 denial that came right after it — the copy that usually carries the unlock instructions, with the
 handoff after it ending the bot's attribution and leaving no later message to carry them. The handoff is NOT behind the cooldown: it is

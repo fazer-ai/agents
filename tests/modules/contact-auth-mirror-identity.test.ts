@@ -47,7 +47,8 @@ function payload(over: {
   conversationId: number;
   identifier?: string | null;
   identifierAbsent?: boolean;
-  phone: string;
+  phone?: string | null;
+  phoneAbsent?: boolean;
   updatedAt: number;
 }) {
   return {
@@ -62,7 +63,7 @@ function payload(over: {
       sender: {
         id: CONTACT_ID,
         name: "Cliente",
-        phone_number: over.phone,
+        ...(over.phoneAbsent ? {} : { phone_number: over.phone ?? null }),
         ...(over.identifierAbsent
           ? {}
           : { identifier: over.identifier ?? null }),
@@ -158,6 +159,59 @@ describe.if(dbUp)("the identity the gate is given", () => {
     expect((await contactOf(instA)).attributes).toEqual({
       identifier: "religado",
     });
+  });
+
+  // The gate reads phone and e-mail as identity too, so they follow the same rule the identifier
+  // does: this was fixed for the identifier alone first, and a removed phone went on being the
+  // identity the endpoint was asked about.
+  test("a removed phone is removed, and an absent one is kept", async () => {
+    await mirror(instB, {
+      conversationId: 8002,
+      phone: "+5511900000002",
+      identifier: "cliente-da-conta-b",
+      updatedAt: 1787060000,
+    });
+    await mirror(instB, {
+      conversationId: 8002,
+      phone: null,
+      identifier: "cliente-da-conta-b",
+      updatedAt: 1787063600,
+    });
+    expect((await contactOf(instB)).phone).toBeNull();
+    await mirror(instB, {
+      conversationId: 8002,
+      phoneAbsent: true,
+      identifier: "cliente-da-conta-b",
+      updatedAt: 1787067200,
+    });
+    expect((await contactOf(instB)).phone).toBeNull();
+  });
+
+  // `last_activity_at` has one-second resolution, so two events inside one second cannot be ordered
+  // by it at all. The two directions are not symmetric: a clear that loses leaves the gate asking
+  // about an identity the customer no longer has.
+  test("inside the same second, the clear wins", async () => {
+    await mirror(instB, {
+      conversationId: 8002,
+      phone: "+5511900000002",
+      identifier: "ainda-vinculado",
+      updatedAt: 1787070800,
+    });
+    await mirror(instB, {
+      conversationId: 8002,
+      phone: "+5511900000002",
+      identifier: null,
+      updatedAt: 1787070800,
+    });
+    expect((await contactOf(instB)).attributes).toEqual({});
+    // And the losing direction stays lost: a same-second payload cannot put it back.
+    await mirror(instB, {
+      conversationId: 8002,
+      phone: "+5511900000002",
+      identifier: "ainda-vinculado",
+      updatedAt: 1787070800,
+    });
+    expect((await contactOf(instB)).attributes).toEqual({});
   });
 
   // Deliveries do arrive out of order, and this write runs before the conversation's stale guard.

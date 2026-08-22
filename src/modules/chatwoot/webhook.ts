@@ -56,6 +56,7 @@ import {
   type ContactAuthNotice,
   claimContactAuthNotice,
   contactAuthNoticeKey,
+  releaseContactAuthNotice,
 } from "@/modules/contact-auth/state";
 import {
   clearConversationError,
@@ -1414,6 +1415,29 @@ async function maybeConsumeCommandOrGate(params: {
       // Opens the conversation for the human queue (the handoff_to_human mechanics: status `open`
       // ends the bot's attribution, the optional team assignment routes it). Best-effort the same
       // way the tool is: the open is what matters, an assignment failure never undoes it.
+      // A Chatwoot team id belongs to ONE account. The editor stops offering a target once the
+      // agent serves several, but a value can still arrive through REST, MCP or an import, and the
+      // runtime would then apply that number through whichever account owns this conversation: a
+      // different team there, or none. Asked only when a target is configured, and only on a
+      // refusal, which is rare and already spending two API calls.
+      const teamTargetUsable = async (teamId: number): Promise<boolean> => {
+        const instances = await runScopedOn(base, sysCtx(tenantId), (db) =>
+          db.inbox.findMany({
+            where: { agentId },
+            select: { chatwootInstanceId: true },
+            distinct: ["chatwootInstanceId"],
+          }),
+        );
+        if (instances.length <= 1) return true;
+        logger.warn(
+          "chatwoot: contact-auth team target ignored (conv=%s team=%s) — the agent serves %s Chatwoot accounts and a team id belongs to one",
+          String(conversationId),
+          String(teamId),
+          String(instances.length),
+        );
+        return false;
+      };
+
       const openForHumans = async (teamId: number | null): Promise<boolean> => {
         try {
           // The same fence the customer copy carries, for the same reason: the authorization
@@ -1430,7 +1454,7 @@ async function maybeConsumeCommandOrGate(params: {
           }
           const client = await personaClient();
           await client.toggleStatus(conversationId, "open");
-          if (teamId !== null) {
+          if (teamId !== null && (await teamTargetUsable(teamId))) {
             try {
               await client.assignTeam(conversationId, teamId);
             } catch (err) {
@@ -1490,11 +1514,10 @@ async function maybeConsumeCommandOrGate(params: {
         // every blip of the endpoint would page humans for conversations the next message answers.
         if (!verdict.shared) {
           const cooldownMs = authCfg.noticeCooldownSeconds * 1000;
+          const noticeKey = (notice: ContactAuthNotice) =>
+            contactAuthNoticeKey(tenantId, agentId, ctx.conv.id, notice);
           const claim = (notice: ContactAuthNotice) =>
-            claimContactAuthNotice(
-              contactAuthNoticeKey(tenantId, agentId, ctx.conv.id, notice),
-              cooldownMs,
-            );
+            claimContactAuthNotice(noticeKey(notice), cooldownMs);
           // The copy's window is claimed only when a copy is actually going out. Sharing one claim
           // with the note let an ERROR, which speaks to nobody, spend the customer's window and
           // silence the denial that followed it.
@@ -1503,7 +1526,12 @@ async function maybeConsumeCommandOrGate(params: {
             authCfg.denyMessage &&
             claim("copy")
           ) {
-            await postPublicMessage(authCfg.denyMessage);
+            // The window is claimed before the send, because two settled deliveries racing must not
+            // both speak — so a send that does not land has to give it back. Kept, it would silence
+            // the next refusal for the whole window over a message the customer never received.
+            if (!(await postPublicMessage(authCfg.denyMessage))) {
+              releaseContactAuthNotice(noticeKey("copy"));
+            }
           }
           let handedOff = false;
           if (verdict.outcome !== "error" && authCfg.handoffEnabled) {
@@ -1513,7 +1541,11 @@ async function maybeConsumeCommandOrGate(params: {
             handedOff = await openForHumans(authCfg.handoffTeamId);
           }
           if (claim("note")) {
-            await postPrivateNote(contactAuthNoteText(verdict, handedOff));
+            if (
+              !(await postPrivateNote(contactAuthNoteText(verdict, handedOff)))
+            ) {
+              releaseContactAuthNotice(noticeKey("note"));
+            }
           }
         }
         logger.info(

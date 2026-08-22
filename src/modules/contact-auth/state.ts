@@ -71,6 +71,14 @@ export function contactAuthFlightKey(
 // went out within the window. Check and claim are one synchronous step, so two settled deliveries
 // racing for the same conversation cannot both be told to speak. A non-positive cooldown claims
 // nothing and always voices (the operator asked to be told every time).
+// Give a claimed window back. The claim has to come BEFORE the delivery (two settled deliveries
+// racing must not both be told to speak), so the failure case needs an undo: Chatwoot refusing the
+// message would otherwise silence the next refusal for the whole window, and the copy it silences
+// is usually the unlock instructions — which the handoff after it leaves no later message to carry.
+export function releaseContactAuthNotice(key: string): void {
+  notices.delete(key);
+}
+
 export function claimContactAuthNotice(
   key: string,
   cooldownMs: number,

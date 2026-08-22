@@ -49,8 +49,11 @@ async function descriptions(): Promise<Map<string, string>> {
   return new Map([...(await listed())].map(([n, t]) => [n, t.description]));
 }
 
-// NOTE: headroom over the current 1,765 for an ordinary edit, the same slack the 3,800 carried over
-// 3,534. What was 6,107 before #161 and 3,534 after it came down again when #174 moved every field
+// NOTE: headroom over the current 1,931 for an ordinary edit, the same slack the 3,800 carried over
+// 3,534. Issue #142 spent 166 of that slack and the ceiling is deliberately NOT moving for it: what
+// went into the prose is only the half a caller cannot read off the schema (a summariser override
+// that is stored without complaint and then never runs), and 69 characters of remaining headroom is
+// the ratchet doing its job, not a number to relieve. The next append here is a decision. What was 6,107 before #161 and 3,534 after it came down again when #174 moved every field
 // name, choice and range into the schema; what is left is the rules a caller cannot read off either
 // the schema or docs/ — the ones that REFUSE a call, and the ones the write accepts and the runtime
 // then never acts on.
@@ -61,7 +64,16 @@ const SETTINGS_DESC_CEILING = 2_000;
 // client pays for both before it knows whether the tool will be used. Headroom over the current
 // 9,711 is deliberately tighter than a whole block (~600 characters), so the next block declaring
 // its fields here is a decision rather than a reflex.
-const SETTINGS_SCHEMA_CEILING = 10_200;
+//
+// RAISED from 10,200 for issue #142, and the raise is the decision the ceiling exists to force. The
+// `memory.compaction` block gained the summariser's own model override — the same quartet tts
+// carries for its rewrite — and it costs 524 characters, near enough a whole block. Most of that is
+// the provider ENUM, which is the one part worth publishing: it is the list a client renders. The
+// only discretionary 72 in it is the `null inherits the agent's` note on that enum, and trimming it
+// to fit under 10,200 was the available move and the wrong one — null is the whole semantics of the
+// override, and cutting the sentence that explains it is cutting what is easiest rather than what is
+// cheapest. Headroom over 10,235 stays tighter than a block, as before.
+const SETTINGS_SCHEMA_CEILING = 10_600;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {

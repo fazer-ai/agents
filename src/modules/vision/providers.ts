@@ -216,7 +216,11 @@ const PROVIDERS: Record<string, VisionProvider> = {
   },
 };
 
-export const VISION_PROVIDER_NAMES = Object.keys(PROVIDERS);
+// FROZEN because it is exported and shared: `sort`, `push` and friends mutate in place, so one
+// caller tidying this list reorders it for every other holder in the process. A test did exactly
+// that (`VISION_PROVIDER_NAMES.sort()`), and the damage landed in an unrelated file that
+// compares the published MCP enum against this array. Frozen, that write throws where it is made.
+export const VISION_PROVIDER_NAMES = Object.freeze(Object.keys(PROVIDERS));
 
 export function getVisionProvider(name: string): VisionProvider | null {
   return PROVIDERS[name] ?? null;

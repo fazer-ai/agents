@@ -26,7 +26,10 @@ describe("visionKindForMime", () => {
 
 describe("vision providers", () => {
   test("registry exposes openai/openai-compatible/gemini/anthropic/openrouter with document support flags", () => {
-    expect(VISION_PROVIDER_NAMES.sort()).toEqual([
+    // NOTE: sorted through a COPY. `sort` mutates, and this array is the exported registry — sorting
+    // it here reordered it for every other test in the same process, which is how a schema test
+    // comparing the published enum against this constant went red in CI and green locally.
+    expect([...VISION_PROVIDER_NAMES].sort()).toEqual([
       "anthropic",
       "gemini",
       "openai",

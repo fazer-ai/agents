@@ -25,7 +25,12 @@ export const STT_DEFAULTS: SttConfig = {
   baseURL: null,
 };
 
-const LANG_RE = /^[a-z]{2,3}(?:-[a-z]{2,4})?$/i;
+// Exported for the MCP argument schema (see modules/agents/settings-schema): the reader TESTS a
+// language and falls back to "pt" without saying so, so the boundary declares the same pattern.
+// NOTE: the case classes are spelled out rather than carried by an `i` flag. JSON Schema has no
+// regex flags, so the flag is DROPPED when this is published in `tools/list` — a client validating
+// against the published pattern would have rejected "pt-BR" while the server accepted it.
+export const LANG_RE = /^[A-Za-z]{2,3}(?:-[A-Za-z]{2,4})?$/;
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;

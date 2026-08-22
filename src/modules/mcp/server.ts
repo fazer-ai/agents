@@ -7,6 +7,10 @@ import config from "@/config";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import type { TenantContext } from "@/lib/tenancy";
+import {
+  BEHAVIOR_PATCH_SHAPE,
+  type BehaviorPatchArgs,
+} from "@/modules/agents/settings-schema";
 import { exportAgent } from "@/modules/agents/transfer";
 import { listConversations } from "@/modules/conversations/service";
 import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
@@ -1088,49 +1092,15 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "agent_settings_set",
       {
         description:
-          "Patch an agent's BEHAVIOR config. Each block is a PARTIAL patch MERGED into the existing settings (untouched keys preserved) and re-validated/clamped by the runtime readers. Previews a normalized diff and applies NOTHING unless dry_run is false. credentialRef accepts a vault entry NAME or a stable vault:<id> ref (use vault:<id> when several entries share a name). What each block DOES, and what it costs, is in docs/ (tts, stt, split, service-window, channel-redirect, graph, logs, chatwoot) \u2014 here is the shape to send and the rules that refuse a call. debounce: {enabled,windowSeconds,maxMessagesPerBurst,maxWindowSeconds}. stt: {enabled,provider,model,language,credentialRef,baseURL}. tts: {mode(never|mirror|preference),provider,model,voice,credentialRef,normalize(bool),normalizeProvider,normalizeModel,normalizeCredentialRef,normalizeBaseURL,stability(0-1),similarityBoost(0-1),style(0-1),speed(0.25-4),speakerBoost(bool)} \u2014 the five knobs are FLAT on the block and clamped on write; null/omitted leaves each to the voice's own saved setting. vision: {enabled,provider(openai|gemini|anthropic),model,credentialRef,baseURL,extractionPrompt}. split: {enabled,maxChars,typingWpm,minDelayMs,maxDelayMs,maxChunks}. serviceWindow: {enabled,windowHours,templateName,templateLanguage,templateCategory,templateParams,templateContent}. grounding: {maxDistance}. followUp: {enabled,pauseWhileAppointment,steps:[{delayValue,delayUnit(minutes|hours|days),instructions,assignLabels?,resolve?(last step only)}]}. handoff: {mode(route|pinned|agent_choice),targetAgentId?,targetTeamId?,targetInstanceId?,instructions?}. limits: {maxToolCalls(1-50, default 10), maxHistoryTokens(2000-1000000, null/0/absent = OFF)}. attributeContext: {conversation:[keys],contact:[keys],task:[keys]} \u2014 Chatwoot attribute KEYS per scope, max 20 each; empty arrays disable the block. sendImage: {allowedHosts:[hostnames, one per entry, \"*.\" prefix covers a domain and its subdomains]} \u2014 the fence for send_image; empty refuses every call. availability: {enabled(bool, default false), awayMessage} \u2014 the copy the CUSTOMER receives outside the schedule, at most once per local day per conversation; {proximo_atendimento} / {next_open} interpolate the next opening in the placeholder's own language, and copy carrying one is WITHHELD when the schedule never reopens. channelRedirect: {enabled,entryInboxId,widgetInboxId,redirectMessage(with {link}),resendDelayValue,resendDelayUnit(minutes|hours|days),maxResends,openWidget,cloneWaMessage,chatFollowupEnabled,chatFollowupDelayValue,chatFollowupDelayUnit,chatFollowupInstructions,waFollowupEnabled,waFollowupDelayValue,waFollowupDelayUnit,waFollowupMessage(with {link}),closingEnabled,closingDelayValue,closingDelayUnit,closingMessage} \u2014 widgetInboxId is provisioned via the console, not set by hand. observability: {logToolValues(bool, default false)}. memory: {compaction:{enabled(bool, default TRUE)}}. REFUSED, as opposed to clamped: operator free text over its cap is refused, not trimmed, on the preview as well as the apply \u2014 handoff.instructions 1500, followUp step instructions 2000, vision.extractionPrompt 4000. SAVED BUT DEAD, as opposed to refused: a tts block that ends up carrying normalizeModel or normalizeCredentialRef with no normalizeProvider (even the agent's own value) is stored without complaint and the rewrite NEVER RUNS \u2014 a model id and a key belong to the vendor they were picked from, so name it. (Appointment reminders live on the Calendar integration's config \u2014 see integration_update.)",
+          "Patch an agent's BEHAVIOR config. Each block is a PARTIAL patch MERGED into the existing settings (untouched keys preserved) and re-validated by the runtime readers, which CLAMP rather than refuse: a number outside its band is stored at the nearest end, and a value they cannot use at all is stored as the block's default. Previews a normalized diff and applies NOTHING unless dry_run is false \u2014 read the diff, it is where a clamp becomes visible. credentialRef accepts a vault entry NAME or a stable vault:<id> ref (use vault:<id> when several entries share a name). The fields, choices and ranges of every block are in this tool's SCHEMA; what each block does, and what it costs, is in docs/ (tts, stt, split, service-window, channel-redirect, graph, logs, chatwoot). Here are only the rules a caller cannot get from either. REFUSED, as opposed to clamped: operator free text over its cap is refused, not trimmed, on the preview as well as the apply \u2014 handoff.instructions 1500, followUp step instructions 2000, availability.awayMessage 2000, vision.extractionPrompt 4000. Only text this write INTRODUCES or CHANGES, so re-sending a stored over-cap value untouched is not a refusal. SAVED BUT DEAD, as opposed to refused: a tts block that ends up carrying normalizeModel or normalizeCredentialRef with no normalizeProvider (even the agent's own value) is stored without complaint and the rewrite NEVER RUNS \u2014 a model id and a key belong to the vendor they were picked from, so name it. Same shape: an availability.awayMessage carrying {proximo_atendimento}/{next_open} is WITHHELD ENTIRELY when the schedule never reopens, because there is no honest value to interpolate. (Appointment reminders live on the Calendar integration's config \u2014 see integration_update.)",
         inputSchema: {
           agent_id: z.string(),
-          debounce: z.record(z.string(), z.unknown()).optional(),
-          stt: z.record(z.string(), z.unknown()).optional(),
-          tts: z.record(z.string(), z.unknown()).optional(),
-          vision: z.record(z.string(), z.unknown()).optional(),
-          split: z.record(z.string(), z.unknown()).optional(),
-          serviceWindow: z.record(z.string(), z.unknown()).optional(),
-          grounding: z.record(z.string(), z.unknown()).optional(),
-          followUp: z.record(z.string(), z.unknown()).optional(),
-          handoff: z.record(z.string(), z.unknown()).optional(),
-          limits: z.record(z.string(), z.unknown()).optional(),
-          availability: z.record(z.string(), z.unknown()).optional(),
-          channelRedirect: z.record(z.string(), z.unknown()).optional(),
-          attributeContext: z.record(z.string(), z.unknown()).optional(),
-          sendImage: z.record(z.string(), z.unknown()).optional(),
-          observability: z.record(z.string(), z.unknown()).optional(),
-          memory: z.record(z.string(), z.unknown()).optional(),
+          ...BEHAVIOR_PATCH_SHAPE,
           dry_run: z.boolean().optional(),
         },
       },
       async (
-        args: {
-          agent_id: string;
-          debounce?: Record<string, unknown>;
-          stt?: Record<string, unknown>;
-          tts?: Record<string, unknown>;
-          vision?: Record<string, unknown>;
-          split?: Record<string, unknown>;
-          serviceWindow?: Record<string, unknown>;
-          grounding?: Record<string, unknown>;
-          followUp?: Record<string, unknown>;
-          handoff?: Record<string, unknown>;
-          limits?: Record<string, unknown>;
-          availability?: Record<string, unknown>;
-          channelRedirect?: Record<string, unknown>;
-          attributeContext?: Record<string, unknown>;
-          sendImage?: Record<string, unknown>;
-          observability?: Record<string, unknown>;
-          memory?: Record<string, unknown>;
-          dry_run?: boolean;
-        },
+        args: BehaviorPatchArgs & { agent_id: string; dry_run?: boolean },
         eff,
       ) => writeContent(await agentSettingsSet(eff, args)),
     );

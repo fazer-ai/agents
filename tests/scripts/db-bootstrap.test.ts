@@ -29,9 +29,12 @@ const ROT_A_ROLE = `fazerai_bs_rot_a_${process.pid}`;
 const ROT_B_ROLE = `fazerai_bs_rot_b_${process.pid}`;
 const SOLO_ROLE = `fazerai_bs_solo_${process.pid}`;
 const SPLIT_OWNER = `fazerai_bs_split_${process.pid}`;
+const NOINH_ADMIN = `fazerai_bs_noinh_admin_${process.pid}`;
+const NOINH_APP = `fazerai_bs_noinh_app_${process.pid}`;
 const PRIV_ROLE = `fazerai_bs_priv_${process.pid}`;
 const PROBE_DB = `fazerai_bs_probe_${process.pid}`;
 const SOLO_DB = `fazerai_bs_solo_db_${process.pid}`;
+const NOINH_DB = `fazerai_bs_noinh_db_${process.pid}`;
 const ADMIN_PW = "bs-admin-pw";
 const APP_PW = "bs-app-pw";
 const ROTATED_PW = "bs-app-pw-rotated";
@@ -277,6 +280,7 @@ describe.skipIf(!dbUp)(
       // updated`.
       await db.query("SELECT pg_advisory_lock(729104553)");
       await db.query(`DROP DATABASE IF EXISTS ${SOLO_DB}`);
+      await db.query(`DROP DATABASE IF EXISTS ${NOINH_DB}`);
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
@@ -285,6 +289,8 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP ROLE IF EXISTS ${ROT_B_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${SOLO_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${SPLIT_OWNER}`);
+      await db.query(`DROP ROLE IF EXISTS ${NOINH_ADMIN}`);
+      await db.query(`DROP ROLE IF EXISTS ${NOINH_APP}`);
       await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       // NOTE: the shape of an RDS master user / a Coolify-provisioned owner: it can create roles and owns
@@ -306,6 +312,7 @@ describe.skipIf(!dbUp)(
     afterAll(async () => {
       const db = su as Client;
       await db.query(`DROP DATABASE IF EXISTS ${SOLO_DB}`);
+      await db.query(`DROP DATABASE IF EXISTS ${NOINH_DB}`);
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
@@ -314,6 +321,8 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP ROLE IF EXISTS ${ROT_B_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${SOLO_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${SPLIT_OWNER}`);
+      await db.query(`DROP ROLE IF EXISTS ${NOINH_ADMIN}`);
+      await db.query(`DROP ROLE IF EXISTS ${NOINH_APP}`);
       await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       await db.query("SELECT pg_advisory_unlock(729104553)");
@@ -1012,6 +1021,82 @@ describe.skipIf(!dbUp)(
         rolcreatedb: false,
         rolcreaterole: false,
       });
+    });
+
+    test("the account bootstrap adopts FROM may be serving too", async () => {
+      const db = su as Client;
+      const admin = new URL(suUrl as string);
+      // NOTE: the mirror of the rotation case, and the one the owner filter cannot rule out on its
+      // own: `current_user` is guaranteed not to be a RUNTIME role only if the install has one.
+      // A brownfield install pointing both URLs at the privileged account is exactly the shape
+      // #195 asks operators to correct, and during that correction the old container is still
+      // serving as the migration account whose tables are about to be adopted.
+      //
+      // NOTE: what saves it is the membership bootstrap grants itself one step earlier — the
+      // administrator inherits the incoming role, so it keeps reaching the tables it just handed
+      // over. That inheritance must not be left to the cluster's configuration: an explicit GRANT
+      // defaults `INHERIT` to the grantee's own `rolinherit`, so a NOINHERIT administrator gets
+      // `inherit_option = false` and loses access the moment the transfer commits (measured). The
+      // administrator here is NOINHERIT for that reason.
+      await db.query(
+        `CREATE ROLE ${NOINH_ADMIN} LOGIN PASSWORD '${ADMIN_PW}' CREATEROLE NOSUPERUSER NOBYPASSRLS NOINHERIT`,
+      );
+      await db.query(`CREATE DATABASE ${NOINH_DB} OWNER ${NOINH_ADMIN}`);
+      await onProbe(urlFor(admin.username, admin.password, NOINH_DB), (c) =>
+        c.query("CREATE EXTENSION IF NOT EXISTS vector"),
+      );
+
+      const adminUrl = urlFor(NOINH_ADMIN, ADMIN_PW, NOINH_DB);
+      const boot = (appRole: string) =>
+        runBootstrap(APP_PW, appRole, {
+          MIGRATION_DATABASE_URL: adminUrl,
+          DATABASE_URL: urlFor(appRole, APP_PW, NOINH_DB),
+        });
+
+      // The install as it stands: one privileged account doing both jobs.
+      expect((await boot(NOINH_ADMIN)).exitCode).toBe(0);
+      await onProbe(adminUrl, (c) =>
+        c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)"),
+      );
+
+      // The old container, still answering on the privileged account across the correction.
+      const serving = new Client({ connectionString: adminUrl });
+      await serving.connect();
+      try {
+        expect((await boot(NOINH_APP)).exitCode).toBe(0);
+
+        // The incoming role got what the transfer is for: it owns the table, so setup()'s own
+        // migration can ALTER it.
+        const worked = await onProbe(
+          urlFor(NOINH_APP, APP_PW, NOINH_DB),
+          async (c) => {
+            await c.query(
+              "INSERT INTO langgraph.checkpoint_migrations (v) VALUES (1)",
+            );
+            await c.query(
+              "ALTER TABLE langgraph.checkpoint_migrations ALTER COLUMN v DROP NOT NULL",
+            );
+            return (
+              await c.query("SELECT v FROM langgraph.checkpoint_migrations")
+            ).rows;
+          },
+        );
+        expect(worked).toEqual([{ v: 1 }]);
+
+        // And the container that has not been drained yet still serves.
+        await serving.query(
+          "INSERT INTO langgraph.checkpoint_migrations (v) VALUES (2)",
+        );
+        expect(
+          (
+            await serving.query(
+              "SELECT v FROM langgraph.checkpoint_migrations ORDER BY v",
+            )
+          ).rows,
+        ).toEqual([{ v: 1 }, { v: 2 }]);
+      } finally {
+        await serving.end();
+      }
     });
   },
 );

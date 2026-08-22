@@ -471,14 +471,24 @@ async function main() {
     // itself 16+ syntax, so older servers neither need it nor parse it. Best-effort: if it does not
     // go through, the CREATE SCHEMA below is the statement that reports the real problem.
     //
-    // NOTE: what repairs it is the explicit GRANT, not the `WITH SET TRUE` on it — measured, a bare
-    // `GRANT a TO b` already lands with set_option true. Only the membership CREATEROLE confers
-    // implicitly carries set_option false, which is why an administrator that created the role
-    // still cannot SET ROLE to it. The clause is spelled out because a default that is silently
-    // relied upon is a default that changes.
+    // NOTE: what repairs `SET ROLE` is the explicit GRANT, not the `WITH SET TRUE` on it —
+    // measured, a bare `GRANT a TO b` already lands with set_option true. Only the membership
+    // CREATEROLE confers implicitly carries set_option false, which is why an administrator that
+    // created the role still cannot SET ROLE to it. The clause is spelled out because a default
+    // that is silently relied upon is a default that changes.
+    //
+    // NOTE: `INHERIT TRUE` is not decoration, and it is the half that is NOT redundant. An explicit
+    // GRANT defaults INHERIT to the grantee's own `rolinherit`, so on a NOINHERIT administrator the
+    // membership lands inheriting nothing. That matters because this administrator may itself be
+    // the outgoing DATABASE_URL role — a brownfield install pointing both URLs at the privileged
+    // account is the shape #195 asks operators to correct — and the schema step below adopts its
+    // tables. Inheriting the incoming role is what keeps the container still serving on it alive
+    // through that transfer; without this clause it loses the checkpointer mid-deploy (measured).
     if (s.server_version_num >= 160000) {
       try {
-        await client.query(`GRANT ${ident} TO CURRENT_USER WITH SET TRUE`);
+        await client.query(
+          `GRANT ${ident} TO CURRENT_USER WITH SET TRUE, INHERIT TRUE`,
+        );
       } catch (err) {
         console.warn(
           `db-bootstrap: could not grant "${role}" to the administrative role (${message(err)})`,

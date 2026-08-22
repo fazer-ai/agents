@@ -26,6 +26,19 @@ WHERE c."id" = sub."contact_id";
 
 DELETE FROM "contacts" WHERE "chatwoot_instance_id" IS NULL;
 
+-- The collapsed case, unlinked rather than left mislabelled. A contact whose conversations span two
+-- instances keeps the instance chosen above, and the conversations of the OTHER instance were still
+-- pointing at it: they would go on reading a phone, an e-mail and an identifier belonging to the
+-- other account's customer. A queued proactive nudge does not wait for a webhook to fix that, so it
+-- would authorize and then message the wrong person. NULL is a state the column already has (the
+-- FK is ON DELETE SET NULL) and the one the gate reads as `no_identity`, which is fail-closed; the
+-- next event from that account re-mirrors the conversation onto its own contact row.
+UPDATE "conversations" c
+SET "contact_id" = NULL
+FROM "contacts" ct
+WHERE c."contact_id" = ct."id"
+  AND c."chatwoot_instance_id" IS DISTINCT FROM ct."chatwoot_instance_id";
+
 ALTER TABLE "contacts" ALTER COLUMN "chatwoot_instance_id" SET NOT NULL;
 
 DROP INDEX IF EXISTS "contacts_tenant_id_chatwoot_contact_id_key";

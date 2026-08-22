@@ -704,9 +704,16 @@ const CONTACT_AUTH_ERROR_LABELS: Record<string, string> = {
 // Operator-facing note for a conversation the contact-authorization gate refused (pt-BR, the same
 // register as the one-shot test-mode / out-of-hours notices). Reasons are short codes by the time
 // they get here (the slug guard upstream drops prose), so the note can carry one without carrying
-// anything the customer wrote.
+// anything the customer wrote. This is also the ONE place the endpoint's own reason surfaces: the
+// note sits in the operator's Chatwoot, on the conversation it is about, unlike the execution log
+// that alert channels read.
 export function contactAuthNoteText(
-  verdict: { outcome: ContactAuthOutcome; status?: number; reason?: string },
+  verdict: {
+    outcome: ContactAuthOutcome;
+    status?: number;
+    reason?: string;
+    endpointReason?: string;
+  },
   handedOff: boolean,
 ): string {
   const handoffLine = handedOff
@@ -719,7 +726,8 @@ export function contactAuthNoteText(
     );
   }
   if (verdict.outcome === "denied") {
-    const reason = verdict.reason ? ` Motivo: ${verdict.reason}.` : "";
+    const motivo = verdict.endpointReason ?? verdict.reason;
+    const reason = motivo ? ` Motivo: ${motivo}.` : "";
     return `🔒 Contato não autorizado pela verificação externa.${reason} O agente não respondeu automaticamente.${handoffLine}`;
   }
   const cause =
@@ -1408,6 +1416,18 @@ async function maybeConsumeCommandOrGate(params: {
       // way the tool is: the open is what matters, an assignment failure never undoes it.
       const openForHumans = async (teamId: number | null): Promise<boolean> => {
         try {
+          // The same fence the customer copy carries, for the same reason: the authorization
+          // request is a network round-trip to somebody else's endpoint, and a human can take the
+          // conversation while it is in flight. Without this, the copy was correctly withheld and
+          // the conversation was reopened and re-routed to a team anyway — a human's conversation
+          // pulled back out of their hands by a gate that had already decided to stay quiet.
+          if (!(await stillOurs())) {
+            logger.info(
+              "chatwoot: contact-auth handoff skipped (conv=%s) — the conversation is no longer the bot's",
+              String(conversationId),
+            );
+            return false;
+          }
           const client = await personaClient();
           await client.toggleStatus(conversationId, "open");
           if (teamId !== null) {

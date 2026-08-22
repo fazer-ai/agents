@@ -154,12 +154,15 @@ export async function authorizeContact(
   return { ...verdict, shared };
 }
 
-// The execution-log line for a verdict. `detail` is PII-free by construction: an outcome enum, a
-// boolean, an HTTP status and a reason that passed the slug guard (prose from the endpoint never
-// gets this far, but the guard runs again here because this is the write). The customer's text
-// never appears: it travels to the endpoint and nowhere else. A denial is ordinary operation
-// (info); a check that could not run, or a contact that could not be asked about, is something the
-// operator should hear (warn, so alert channels fire on inbox traffic).
+// The execution-log line for a verdict. `detail` carries an outcome enum, a boolean, an HTTP status
+// and OUR OWN reason code — a fixed list, every value of which is in this repository. The
+// endpoint's own reason is deliberately absent: the slug guard is a check on SHAPE, and
+// `5511999999999` is slug-shaped, so passing it through would put a phone number in a detail that
+// alert channels are promised to be PII-free. It goes to the operator note instead, which lives in
+// their Chatwoot beside the conversation it describes. The customer's text never appears anywhere:
+// it travels to the endpoint and nowhere else. A denial is ordinary operation (info); a check that
+// could not run, or a contact that could not be asked about, is something the operator should hear
+// (warn, so alert channels fire on inbox traffic).
 export function contactAuthFlowEvent(result: ContactAuthResult): FlowEvent {
   const reason = reasonSlug(result.reason);
   const failed = result.outcome === "error";

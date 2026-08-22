@@ -466,15 +466,17 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       select: { lastHandledMessageId: true },
     });
     expect(conv.lastHandledMessageId).toBe(7000 + seq);
-    // Flow line: denied is ordinary operation (info), with the slug and no PII.
+    // Flow line: denied is ordinary operation (info), and what the ENDPOINT called it is not in it.
+    // The slug guard checks the shape of that value, and a phone number is slug-shaped, so it goes
+    // to the operator note (in their own Chatwoot) and never to a detail alert channels read.
     const rows = await flowRows(convId);
     expect(rows[0]?.level).toBe("info");
     expect(rows[0]?.detail).toMatchObject({
       outcome: "denied",
       shared: false,
       status: 200,
-      reason: "not_customer",
     });
+    expect(JSON.stringify(rows[0]?.detail)).not.toContain("not_customer");
     // The notice cooldown remembers ids and timestamps, never the phone.
     expect(JSON.stringify(contactAuthNoticeEntries())).not.toContain(
       PHONE.slice(1),

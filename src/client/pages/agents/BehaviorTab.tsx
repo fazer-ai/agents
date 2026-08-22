@@ -666,6 +666,16 @@ function ContactAuthTeamSelect({
   }, [agentId]);
   const teams = data?.teams ?? [];
   const listed = teams.some((tm) => String(tm.id) === value);
+  // A Chatwoot team id means something inside ONE account. When the agent serves several, the
+  // listing deliberately comes back empty, and keeping the stored id as a "(not listed)" option
+  // re-saved a target that the runtime then applies through EVERY account's client: in the other
+  // accounts that number is a different team or none, so refused contacts are routed nowhere.
+  // Cleared here rather than at save time, so the operator sees the field empty and the warning
+  // saying why, and still has to press save.
+  const multiAccount = data !== null && data.accountCount > 1;
+  useEffect(() => {
+    if (multiAccount && value) onChange("");
+  }, [multiAccount, value, onChange]);
   return (
     <FormField
       label={t("editor.contactAuthTeam", "Assign to team")}
@@ -684,7 +694,7 @@ function ContactAuthTeamSelect({
           <option value="">
             {t("editor.contactAuthNoTeam", "No team (inbox routing)")}
           </option>
-          {!listed && value && (
+          {!listed && value && !multiAccount && (
             <option value={value}>
               {t("editor.contactAuthTeamStored", "Team #{{id}} (not listed)", {
                 id: value,
@@ -706,7 +716,7 @@ function ContactAuthTeamSelect({
                 )
               : t(
                   "editor.contactAuthTeamMultiAccount",
-                  "This agent serves more than one Chatwoot account, so teams can't be listed.",
+                  "This agent serves more than one Chatwoot account. A team id belongs to one account, so no team can be targeted here — Chatwoot's inbox routing decides who takes a refused conversation.",
                 )}
           </span>
         )}

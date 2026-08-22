@@ -26,10 +26,14 @@ export interface AuthorizationVerdict {
   outcome: AuthorizationOutcome;
   // HTTP status of the answer, when one arrived.
   status?: number;
-  // A short code naming the reason: the endpoint's own `reason` when it is slug-shaped, else one of
-  // the runtime's failure codes below. Never prose, because this value reaches the execution log
-  // and the operator note, and the endpoint's free text could quote the customer.
+  // OUR failure code, from the fixed list below. Safe to log because we wrote every possible value.
   reason?: string;
+  // What the ENDPOINT called it. Kept apart from `reason` and kept OUT of telemetry: the slug guard
+  // checks the SHAPE of this value, and `5511999999999` and `customer_4821` are both slug-shaped.
+  // A phone number is not less of a phone number for looking like a code, and the execution log is
+  // read by alert channels that promise PII-free detail. It still reaches the operator note, which
+  // sits in their own Chatwoot next to the conversation it is about.
+  endpointReason?: string;
 }
 
 // A verdict as the gate consumes it: the outcome widened with the runtime's own fourth answer.
@@ -37,6 +41,7 @@ export interface ContactAuthVerdict {
   outcome: ContactAuthOutcome;
   status?: number;
   reason?: string;
+  endpointReason?: string;
 }
 
 // The identity the request carries. ALWAYS from trusted context (the mirrored Chatwoot contact),
@@ -113,16 +118,20 @@ export function classifyAuthorizationResponse(
     if (!json || typeof json.authorized !== "boolean") {
       return { outcome: "error", status, reason: "invalid_response" };
     }
-    const reason = reasonSlug(json.reason);
+    const endpointReason = reasonSlug(json.reason);
     return {
       outcome: json.authorized ? "allowed" : "denied",
       status,
-      ...(reason ? { reason } : {}),
+      ...(endpointReason ? { endpointReason } : {}),
     };
   }
   if (status === 401 || status === 403 || status === 404) {
-    const reason = reasonSlug(json?.reason);
-    return { outcome: "denied", status, ...(reason ? { reason } : {}) };
+    const endpointReason = reasonSlug(json?.reason);
+    return {
+      outcome: "denied",
+      status,
+      ...(endpointReason ? { endpointReason } : {}),
+    };
   }
   return { outcome: "error", status, reason: "unexpected_status" };
 }

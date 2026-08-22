@@ -163,8 +163,14 @@ lose on a restart:
 
 ## Observability
 
+What the ENDPOINT calls a refusal reaches the operator note and nothing else. The slug guard on that
+value checks its SHAPE, and `5511999999999` and `customer_4821` are both slug-shaped, so publishing it
+would put a phone number in a `detail` that alert channels are promised to be PII-free. The note sits
+in the operator's own Chatwoot, on the conversation it describes.
+
 One `contact_auth` flow line per evaluation (`src/modules/flowlog/stages.ts`), `detail` =
-`{ outcome: "allowed"|"denied"|"error"|"no_identity", shared, status?, reason? }`: enums, a
+`{ outcome: "allowed"|"denied"|"error"|"no_identity", shared, status?, reason? }` (`reason` is OUR
+own failure code, from a fixed list in this repository): enums, a
 boolean (`shared` = this call was coalesced into another's request), a status and a slug; no PII
 (covered by `tests/modules/flowlog-detail-pii.test.ts`), and never the message text. Denied is
 `info` (ordinary operation); error and no-identity are `warn`, so alert channels page on inbox

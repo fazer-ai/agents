@@ -380,15 +380,8 @@ async function upsertContact(
       ...(c.name != null ? { name: c.name } : {}),
       ...(c.email != null ? { email: c.email } : {}),
       ...(c.phone != null ? { phone: c.phone } : {}),
-      // NOTE: The operator identifier is usually stamped AFTER the contact exists (their system
-      // links the customer, then writes it back through the Chatwoot API), so the create-time
-      // snapshot cannot be the last word. The bag holds nothing else today; the day it does, this
-      // wholesale write must become a merge.
-      //
-      // A CLEARED identifier has to be written too, not skipped: the gate treats the stored value as
-      // the customer this contact is, so keeping it after an unlink means going on asking about
-      // somebody else's account. Only an ABSENT field keeps what is stored.
-      ...(identifierStated ? { attributes } : {}),
+      // The identifier is written below, under its own compare-and-set: unconditionally here, an
+      // older delivery could restore what a newer one changed or cleared.
     },
     select: { id: true },
   });
@@ -403,6 +396,34 @@ async function upsertContact(
   // with our own clock would make it beat every real Chatwoot timestamp and poison the ordering. An
   // undated payload therefore only BOOTSTRAPS a contact nothing has positioned yet, and leaves the
   // watermark null so the first dated event still takes over.
+  // NOTE: The operator identifier is usually stamped AFTER the contact exists (their system links
+  // the customer, then writes it back through the Chatwoot API), so the create-time snapshot cannot
+  // be the last word. The bag holds nothing else today; the day it does, this wholesale write must
+  // become a merge.
+  //
+  // Three states, not two. ABSENT (`undefined`) keeps what is stored: a degraded payload must not
+  // wipe identity. CLEARED must be written, not skipped — the gate asks the endpoint about whoever
+  // the stored value names, so keeping it after an unlink means asking about somebody else's
+  // account. And either way it is positioned by the SOURCE timestamp, like the bag below it: this
+  // runs before the conversation's stale check (the conversation row needs the contact id) and one
+  // contact is shared by all its conversations, so only a per-contact watermark can order it.
+  if (identifierStated) {
+    const bag = JSON.stringify(attributes);
+    await (eventAt
+      ? db.$executeRaw`
+          UPDATE contacts
+          SET attributes = ${bag}::jsonb, attributes_at = ${eventAt}
+          WHERE id = ${row.id} AND tenant_id = ${tenantId}
+            AND (attributes_at IS NULL OR attributes_at <= ${eventAt})
+        `
+      : db.$executeRaw`
+          UPDATE contacts
+          SET attributes = ${bag}::jsonb
+          WHERE id = ${row.id} AND tenant_id = ${tenantId}
+            AND attributes_at IS NULL
+        `);
+  }
+
   if (c.customAttributes) {
     const bag = JSON.stringify(c.customAttributes);
     await (eventAt

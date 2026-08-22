@@ -54,7 +54,11 @@ describe("classifyAuthorizationResponse", () => {
         200,
         '{"authorized":false,"reason":"not_customer"}',
       ),
-    ).toEqual({ outcome: "denied", status: 200, reason: "not_customer" });
+    ).toEqual({
+      outcome: "denied",
+      status: 200,
+      endpointReason: "not_customer",
+    });
   });
 
   test("a prose reason is dropped, the verdict stands", () => {
@@ -97,7 +101,22 @@ describe("classifyAuthorizationResponse", () => {
     }
     expect(
       classifyAuthorizationResponse(404, '{"reason":"unknown_contact"}'),
-    ).toEqual({ outcome: "denied", status: 404, reason: "unknown_contact" });
+    ).toEqual({
+      outcome: "denied",
+      status: 404,
+      endpointReason: "unknown_contact",
+    });
+  });
+
+  // The endpoint's own reason is kept apart from ours and never reaches telemetry: the slug guard
+  // is a check on SHAPE, and a phone number is slug-shaped.
+  test("what the endpoint calls it never lands in `reason`", () => {
+    const v = classifyAuthorizationResponse(
+      200,
+      '{"authorized":false,"reason":"5511999999999"}',
+    );
+    expect(v.reason).toBeUndefined();
+    expect(v.endpointReason).toBe("5511999999999");
   });
 
   test("every other status is an error (fail-closed)", () => {

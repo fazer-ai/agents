@@ -105,7 +105,12 @@ function makeStubClient(sent: Array<[number, string]>) {
 
 // Ordered recorder for sendMessage/toggleStatus. `mirrorOnToggle` simulates the Chatwoot webhook
 // mirroring the status change into our Conversation row BEFORE the turn ends (worst case, zero
-// lag) — the production race behind the lost-final-reply bug.
+// lag) — the production race behind the lost-final-reply bug. It advances `chatwootStatusAt` along
+// with the status, because a webhook that moved one without the other is not a webhook. The pair is
+// what makes this a faithful worst case, and it is what stops "refuse to stamp when the row moved
+// past what the caller observed" from ever looking like a safe guard (issue #188, review round 9):
+// under that guard this very case — our OWN close, mirrored fast — would be refused, and the one
+// closing the funnel counts would go unrecorded.
 function makeResolveClient(
   calls: Array<[string, number, string]>,
   opts: { mirrorOnToggle?: number } = {},
@@ -124,7 +129,7 @@ function makeResolveClient(
             chatwootInstanceId: instanceId,
             chatwootConversationId: opts.mirrorOnToggle,
           },
-          data: { status },
+          data: { status, chatwootStatusAt: Date.now() / 1000 },
         });
       }
       return {};

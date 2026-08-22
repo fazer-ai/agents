@@ -606,18 +606,7 @@ async function updateMirror(
   await runScopedOn(base, ctx, (db) =>
     db.conversation.updateMany({
       where: { id },
-      data: {
-        ...data,
-        // Deliberately NOT `clearsResolutionOrigin`. That function answers "did the ordering leave
-        // this close standing?", and this write has no ordering: it is the unversioned fallback for
-        // an operator's own click, so it is a command, not a payload to be ranked. An explicit
-        // reopen ends the resolution whatever the mirror currently reads — including the case the
-        // shared rule would refuse, where a stale row still says non-resolved and Chatwoot is the
-        // one holding the close.
-        ...(data.status != null && data.status !== "resolved"
-          ? { resolvedBy: null, resolvedByAt: null }
-          : {}),
-      },
+      data,
     }),
   );
 }
@@ -663,6 +652,22 @@ async function mirrorConsoleWrite(
   },
 ): Promise<ConsoleWriteState | null> {
   const tenantId = requireTenant(ctx);
+  // An operator commanding a non-resolved status ends the resolution, and that is decided HERE
+  // rather than inside either write below. Deliberately NOT `clearsResolutionOrigin`: that function
+  // answers "did the ordering leave this close standing?", and a click has no ordering to consult.
+  // It is a command, so it holds whatever the mirror currently reads — including the case the shared
+  // rule refuses, where the row still shows the pre-resolve status because our own resolve webhook
+  // has not landed, and both the stored and the live status therefore read non-resolved. Living in
+  // the unversioned fallback meant exactly that case escaped: a successful versioned reconcile
+  // returns before the fallback runs, and the stamp survived the reopen into the next close.
+  if (fallback.status != null && fallback.status !== "resolved") {
+    await runScopedOn(base, ctx, (db) =>
+      db.conversation.updateMany({
+        where: { id },
+        data: { resolvedBy: null, resolvedByAt: null },
+      }),
+    );
+  }
   try {
     const live = parseLiveConversation(
       await client.getConversation(conv.chatwootConversationId),

@@ -55,6 +55,18 @@ import type { ResolutionOrigin } from "@/modules/conversations/resolution-origin
 // The reverse error would be worse. Every rule above fails toward NOT counting a resolution, which
 // is the safe direction for a metric whose whole point is that it stopped over-counting.
 //
+// The one place it fails the OTHER way is the window between `toggleStatus` returning and the UPDATE
+// below: if both our resolve event and a newer inbound that reopens are mirrored inside it, the row
+// is non-resolved with no origin, this write stamps it anyway, and the resolve event that would have
+// been the clear is already spent. A later external close then reads as the agent's. It is not
+// closable from here and it is not worth what closing it would cost: the window is one connection
+// acquire and a commit, and it needs two Chatwoot webhooks dispatched and processed inside it.
+//
+// Refusing to stamp when the row has moved past what the caller observed is the obvious guard and it
+// is wrong, measurably: it also refuses our OWN close whenever the mirror is fast, which is the
+// worst case `mirrorOnToggle` in tests/graph/runtime.test.ts exists to hold us to. That stub
+// advances `chatwoot_status_at` with the status precisely so the guard cannot come back quietly.
+//
 // Best-effort, never throws. The status change is already live in Chatwoot and the callers are all
 // on paths where a message has gone out, so raising here would fail a job whose retry would
 // double-post. A missing stamp costs one uncounted resolution; a thrown error costs a duplicate

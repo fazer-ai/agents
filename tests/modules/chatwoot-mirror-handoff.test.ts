@@ -1652,6 +1652,50 @@ describe.skipIf(!dbUp)(
         expect(row.resolvedBy).toBeNull();
       });
 
+      // The same reopen, but with the live read WORKING. A successful versioned reconcile returns
+      // before the unversioned fallback runs, so a clear that lived only in the fallback never fired
+      // here — and `clearsResolutionOrigin` keeps the stamp on purpose, because the row still shows
+      // the pre-resolve status and the live read agrees, so neither says the conversation left
+      // "resolved". Nothing in the ordering can see this: the operator's click is the only evidence
+      // the resolution is over, which is why the clear belongs to the command.
+      test("reopening from the console clears the origin on the versioned path too", async () => {
+        const T = 1_786_516_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(76, {
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        // Our own close, stamped while the mirror still reads the pre-toggle "open" because its
+        // webhook has not arrived. The floor is the row's status version at that moment.
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 76 },
+          data: { resolvedBy: "agent", resolvedByAt: T + 0.1 },
+        });
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(76),
+          "open",
+          {
+            makeClient: stubClient({
+              status: "open",
+              lastActivityAt: T + 2,
+              updatedAt: T + 2,
+            }).makeClient,
+          },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 76 },
+          select: { status: true, resolvedBy: true, resolvedByAt: true },
+        });
+        expect(row.status).toBe("open");
+        expect(row.resolvedBy).toBeNull();
+        expect(row.resolvedByAt).toBeNull();
+      });
+
       // The console renders the click optimistically off this publish and only reconciles when the
       // inbound webhook arrives, which may be seconds later or (on a conversation Chatwoot has
       // nothing more to say about) never. So a publish of the INTENT after a write that did not land

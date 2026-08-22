@@ -4,6 +4,7 @@ import {
   attendanceHasStarted,
   claimAttendanceBoundary,
   crossesAttendanceBoundary,
+  movesAttendanceFrontier,
   needsAttendanceStartProbe,
 } from "@/graph/attendance-boundary";
 import { conversationStamp } from "@/graph/markers";
@@ -172,5 +173,45 @@ describe("attendanceHasStarted", () => {
     const thread = [stamped(1), stamped(2), stamped(1)];
     expect(attendanceHasStarted(thread, 1)).toBe(true);
     expect(attendanceHasStarted(thread, 2)).toBe(false);
+  });
+});
+
+// The guard in front of the table above (issue #194): only the newest message the THREAD has seen
+// may make a statement about which attendance it is on. Every false row is a message that, allowed
+// through, would summarise a conversation still being served.
+describe("movesAttendanceFrontier", () => {
+  const cases: [string, (number | null | undefined)[], number, boolean][] = [
+    ["a thread that has never been written", [null, null], 500, true],
+    ["the ordinary case: the newest id there is", [500, null], 501, true],
+    ["a delayed id, its own direction ahead", [500, null], 499, false],
+    // THE ROUND-6 CASE. The attendant opened the new conversation, so the customer's own mark is
+    // still back in the old one and their delayed note read as current.
+    ["a delayed id, the OTHER direction ahead", [500, 502], 501, false],
+    ["a new id above both directions", [500, 502], 503, true],
+    // A direction that has never written owes nothing: an attendant's first reply must not read as
+    // late just because the customer's side is empty, and vice versa.
+    ["one direction still empty", [null, 502], 503, true],
+    [
+      "one direction still empty, and late in the other",
+      [null, 502],
+      501,
+      false,
+    ],
+    // Re-delivery of the frontier itself. Deduplication refuses it long before this, and the answer
+    // here is still "not older than what we have" rather than a second refusal on another axis.
+    ["the frontier id itself", [500, 502], 502, true],
+  ];
+  for (const [name, marks, id, want] of cases) {
+    test(`${name} -> ${want}`, () => {
+      expect(movesAttendanceFrontier(marks, id)).toBe(want);
+    });
+  }
+
+  // Order-independence, asserted apart from the table: the caller passes the two marks as a pair and
+  // nothing about which slot holds which direction may change the answer.
+  test("the pair is symmetric", () => {
+    expect(movesAttendanceFrontier([500, 502], 501)).toBe(
+      movesAttendanceFrontier([502, 500], 501),
+    );
   });
 });

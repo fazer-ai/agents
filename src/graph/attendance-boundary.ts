@@ -73,6 +73,36 @@ export function attendanceHasStarted(
   return lastStampedConversationId(messages) === conversationId;
 }
 
+// WHETHER THIS MESSAGE MAY MOVE THE BOUNDARY AT ALL, asked before the claim below.
+//
+// Every case in this module reads `previousConversationId` as "the attendance the thread is on", and
+// that reading holds only for a message that is the newest one the thread has seen. Since ingestion
+// began accepting out-of-order ids (./ingest-dedup.ts, issue #194) it can be handed a message whose
+// attendance is already OVER — a media webhook from conversation A, delayed behind a provider
+// round-trip while B opened. Run through the claim that message writes a divider for A, walks the
+// marker BACKWARDS to A, and arms compaction for B: the conversation still being served, whose raw
+// turns are then replaced by a summary of an attendance that has not finished.
+//
+// THE FRONTIER IS THE THREAD'S, NOT THE ARRIVING WRITER'S. The first version compared against the
+// mark of the message's own role, which leaves the same hazard open through the other one — and
+// through the ordinary shape of it: the bot qualifies, a person takes over, and the takeover message
+// is what opens the next conversation. The customer's own mark is then still back in the old
+// attendance, so their delayed note reads as current and closes the live conversation exactly as
+// before. Chatwoot message ids are unique and increasing per ACCOUNT, so marks from both directions
+// are comparable and the newest of them is the thread's frontier.
+//
+// Nulls are absent marks, not zeroes: a direction that has never written has no frontier to lose to.
+export function movesAttendanceFrontier(
+  marks: readonly (number | null | undefined)[],
+  messageId: number,
+): boolean {
+  const frontier = marks.reduce<number | null>(
+    (hi, m) => (m == null ? hi : hi === null ? m : Math.max(hi, m)),
+    null,
+  );
+  return frontier === null || messageId >= frontier;
+}
+
 export function crossesAttendanceBoundary(
   previousConversationId: number | null,
   conversationId: number,

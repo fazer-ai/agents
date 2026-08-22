@@ -7,6 +7,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   attendanceHasStarted,
   claimAttendanceBoundary,
+  movesAttendanceFrontier,
   needsAttendanceStartProbe,
 } from "./attendance-boundary";
 import { getCheckpointer } from "./checkpointer";
@@ -197,21 +198,29 @@ export async function ingestMessageIntoThread(
       //
       // Nothing is written on this path, watermark included: the message has to stay OWED. Recording
       // it as handled and not having it is the exact shape of the loss this whole change is about.
+      //
+      // PROCESS-LOCAL, like the two consumers of that claim that came before this one. It holds under
+      // the invariant ./inflight.ts states and docs/deploy.md §4 asks for (one replica, or one leader
+      // sharing the process with the scheduler worker) and not on a scaled web tier, where turns run
+      // wherever the webhook landed. What is new here is that this consumer's cross-process failure
+      // is the irreversible one, so it is written down: issue #203, for the module rather than for
+      // this call site.
       if (params.deferIfTurnInFlight && isTurnInFlight(graphThreadId)) {
         return { outcome: "deferred" as const, closedConversationId: null };
       }
 
-      // A LATE ARRIVAL DOES NOT MOVE THE FRONTIER. Accepting an out-of-order id (./ingest-dedup.ts)
-      // means a message can land whose attendance is already over — a delayed media webhook from
-      // conversation A arriving after B has opened. Run through the normal boundary it would write a
-      // divider for A, walk `lastConversationId` BACKWARDS to A, and arm compaction for B, which is
-      // the conversation still being served: B gets summarised mid-attendance and its raw turns are
-      // replaced by a summary of a conversation that has not finished.
+      // A LATE ARRIVAL DOES NOT MOVE THE FRONTIER, and the frontier is the THREAD'S — the newest id
+      // either writer has folded in, not the newest of the arriving one's own direction. The rule
+      // and both hazards it closes live in ./attendance-boundary.ts; what matters here is that the
+      // marks go in as a pair, because reading only this direction's is what let a delayed customer
+      // message close the live conversation an attendant had just opened.
       //
-      // The boundary is a statement about the newest message on the thread, so only a message that
-      // is actually the newest gets to make it. A late one is appended with its own conversation
-      // stamp — which is all the compaction cut needs to file it correctly — and nothing else.
-      const isLateArrival = prevMark !== null && messageId < prevMark;
+      // A late message is appended with its own conversation stamp — which is all the compaction cut
+      // needs to file it correctly — and nothing else.
+      const movesFrontier = movesAttendanceFrontier(
+        [row?.lastSyncedMessageId, row?.lastAgentMessageId],
+        messageId,
+      );
 
       // Which attendance this message belongs to, and what that costs the thread. One decision,
       // shared with the reactive turn and the proactive nudge (./attendance-boundary.ts). Human-agent
@@ -221,7 +230,7 @@ export async function ingestMessageIntoThread(
       const prevConv = row?.lastConversationId ?? null;
       const anotherInvokeIsReading = isTurnInFlight(graphThreadId);
       const alreadyStarted =
-        !isLateArrival &&
+        movesFrontier &&
         needsAttendanceStartProbe(
           prevConv,
           conversationId,
@@ -238,7 +247,7 @@ export async function ingestMessageIntoThread(
               conversationId,
             )
           : false;
-      const claim = isLateArrival
+      const claim = !movesFrontier
         ? // Appended, and nothing else: no divider, no marker move, no compaction armed.
           {
             writeDivider: false,

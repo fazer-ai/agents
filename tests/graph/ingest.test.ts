@@ -16,7 +16,11 @@ import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { buildAgentGraph } from "@/graph/graph";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
-import { ingestedMessages, ingestMessageIntoThread } from "@/graph/ingest";
+import {
+  type IngestRole,
+  ingestedMessages,
+  ingestMessageIntoThread,
+} from "@/graph/ingest";
 import {
   CONVERSATION_DIVIDER,
   HUMAN_AGENT_NOTE,
@@ -442,6 +446,84 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     // The high-water mark does not walk backwards either.
     expect(at.lastSyncedMessageId).toBe(902);
     // Exactly one divider, for B. A late arrival never writes one.
+    expect(
+      contents.filter((c) => c.includes(CONVERSATION_DIVIDER)).length,
+    ).toBe(1);
+  });
+
+  // Round-6 review finding (P2), and the same hazard as the test above reached through the OTHER
+  // writer. The frontier was read from the arriving message's own role, so a delayed customer
+  // message still counted as current whenever the new attendance had been opened by a human agent —
+  // which is the ordinary shape of it: the bot qualifies, a person takes over, and the takeover
+  // message is the one that opens the next conversation. The customer's own mark is still back in
+  // the old attendance, so the delayed note read as the newest thing on the thread, closed the LIVE
+  // conversation and walked the marker backwards.
+  test("a delayed message is late even when the newer one came from the other writer", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12408;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const closed: number[] = [];
+    const ingest = (
+      conversationId: number,
+      messageId: number,
+      text: string,
+      role: IngestRole,
+    ) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId,
+        text,
+        role,
+        onAttendanceClosed: (prev) => {
+          closed.push(prev);
+        },
+      });
+
+    expect(await ingest(820, 940, "posso remarcar?", "customer")).toBe(
+      "ingested",
+    );
+    // B opens, and it is the ATTENDANT who opens it. Nothing on the customer's side moves.
+    expect(await ingest(821, 942, "oi, assumindo daqui", "human_agent")).toBe(
+      "ingested",
+    );
+    expect(closed).toEqual([820]);
+
+    // The voice note from A, still transcribing when the attendant took over.
+    expect(await ingest(820, 941, "<audio> do primeiro", "customer")).toBe(
+      "ingested",
+    );
+
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const contents = (
+      ((cp?.channel_values as { messages?: BaseMessage[] })?.messages ??
+        []) as BaseMessage[]
+    ).map((m) => String(m.content));
+    expect(contents.some((c) => c.includes("<audio> do primeiro"))).toBe(true);
+    // B is still open: it must not have been armed for compaction, and the marker must not have
+    // walked back to A.
+    expect(closed).toEqual([820]);
+    const at = await suDb.agentThread.findUniqueOrThrow({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { lastConversationId: true, lastSyncedMessageId: true },
+    });
+    expect(at.lastConversationId).toBe(821);
+    expect(at.lastSyncedMessageId).toBe(941);
     expect(
       contents.filter((c) => c.includes(CONVERSATION_DIVIDER)).length,
     ).toBe(1);

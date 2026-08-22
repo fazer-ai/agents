@@ -20,6 +20,15 @@ import { runClaimed } from "@/modules/scheduler/worker";
 // real and is the right one — a message arriving after the drain belongs to the next turn, not this
 // one, and it will find the thread marked and defer.
 //
+// WHAT IT TAKES, AND WHAT IT DELIBERATELY LEAVES. It claims rows that are PENDING; a row already
+// CLAIMED is one the tick is executing right now, and it is left alone because the two paths already
+// serialize on `ingest:<thread>`. Only two orders exist and neither loses the message: the executor
+// takes the lock first and its append lands BEFORE this turn marks itself and loads the channel, so
+// the turn reads it; or the turn takes it first, and the executor finds the thread marked and defers
+// with nothing written, so the message is folded in for the next turn. Waiting on a claim would buy
+// promptness in a window the width of one lock acquisition, at the price of polling inside a
+// customer's turn.
+//
 // Best-effort by construction. A drain that throws must not fail the customer's turn: the cost of
 // giving up here is a reply written without one earlier message, which is what happens today anyway
 // whenever the message has not arrived yet.

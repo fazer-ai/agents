@@ -828,10 +828,13 @@ export async function announceDeadCompaction(
       where: { id: job.id },
       select: { status: true },
     });
-    // A row that is GONE suppresses too, and for the same reason under a different name: nothing
-    // completes this kind by deleting it (JOB_DELETE_ON_DONE is false for MEMORY_COMPACT), so the
-    // only thing that retires the row outright is a /reset, and an operator who just cleared the
-    // thread does not need to be told its memory was not written.
+    // Any status but DEAD suppresses, and the two that get here are not the same statement. PENDING
+    // is the re-arm above. DONE is what /reset writes (`cancelPendingJob` updates rather than
+    // deletes), so an operator who just cleared this thread is not told its memory went unwritten —
+    // though only if the reset lands inside this hook's own execution, since a DEAD row is not
+    // PENDING and reset leaves it alone. A missing row cannot be reached by this kind at all
+    // (JOB_DELETE_ON_DONE is false for MEMORY_COMPACT, so nothing ever deletes it) and is treated as
+    // live for the same reason the others are: no row is not evidence that work was lost.
     if (row?.status !== "DEAD") return "live" as const;
     // Without these the line exists and cannot be FOUND: the Logs page filters by conversation and
     // inbox database ids, and the operator opening the trail from a conversation is exactly who this

@@ -218,6 +218,47 @@ export function renderTranscript(
   return clipTranscript(joined, maxHistoryTokens);
 }
 
+// WHAT A PROVIDER REFUSAL IS ALLOWED TO SAY, once it leaves this module.
+//
+// Not `err.message`. The request this error answers carried the whole attendance transcript, and a
+// provider that echoes its input — a content-filter refusal is the ordinary case — would put the
+// customer's own words into `execution_logs.errorMessage`, which `docs/logs.md` promises never
+// carries them, and from there into an alert body. `sanitizeErrorMessage` does not help: it redacts
+// substrings shaped like SECRETS and truncates, so a name or a phone number survives it intact.
+//
+// The single consumer is the compaction job (./compact.ts), which fails with this text and hands it
+// to the scheduler; since issue #196 that text also reaches the operator's trail. So the fields kept
+// are the ones an operator acts on and no provider fills with content: the error's class, the HTTP
+// status, and the vendor's own error code — each accepted only as a short bare token, because a
+// provider is free to put a sentence in any field and one of them would eventually.
+function token(v: unknown): string | null {
+  return typeof v === "string" && /^[\w.:-]{1,64}$/.test(v) ? v : null;
+}
+
+export function providerFailure(err: unknown): string {
+  if (!(err instanceof Error)) return "provider error";
+  const bag = err as unknown as Record<string, unknown>;
+  const nested = (bag.error ?? {}) as Record<string, unknown>;
+  // The message is not quoted, but a bare HTTP status inside it is the one signal worth digging for:
+  // not every client sets a `status` field — LangChain re-throws some failures as a plain Error whose
+  // text is all there is — and "429" is the difference between "the key is wrong" and "slow down".
+  // Only the three digits are taken, so the worst case is a wrong status, never a leak.
+  const inMessage = /\b([45]\d{2})\b/.exec(err.message)?.[1] ?? null;
+  const status =
+    typeof bag.status === "number"
+      ? String(bag.status)
+      : typeof bag.statusCode === "number"
+        ? String(bag.statusCode)
+        : inMessage;
+  const parts = [
+    token(err.name) ?? "Error",
+    status ? `HTTP ${status}` : null,
+    token(bag.code) ?? token(nested.code) ?? null,
+    token(bag.type) ?? token(nested.type) ?? null,
+  ].filter((x): x is string => x !== null);
+  return parts.join(" ");
+}
+
 export async function summarizeAttendance(
   model: BaseChatModel,
   messages: BaseMessage[],
@@ -256,9 +297,6 @@ export async function summarizeAttendance(
     return { summary: text.slice(0, ATTENDANCE_SUMMARY_MAX) };
   } catch (err) {
     logger.warn({ err }, "memory: attendance summary failed, thread untouched");
-    return {
-      summary: "",
-      error: err instanceof Error ? err.message : String(err),
-    };
+    return { summary: "", error: providerFailure(err) };
   }
 }

@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import {
   AIMessage,
   type BaseMessage,
   HumanMessage,
 } from "@langchain/core/messages";
+import type { ChatResult } from "@langchain/core/outputs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
@@ -13,7 +15,9 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import {
   announceDeadCompaction,
   registerMemoryHandlers,
+  runCompaction,
 } from "@/modules/memory/compact";
+import { providerFailure } from "@/modules/memory/summarize";
 import { runCompactionTick } from "@/modules/memory/worker";
 import { getDeadLetterHandler, runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -53,6 +57,23 @@ const suDb = su as PrismaClient;
 // Only ever present in the seeded transcript, so a test can prove it did not reach a line that
 // promises to carry no message text.
 const SEEDED_TEXT = "carambola-com-manjericao-8812";
+
+// A summariser whose provider refuses. `_generate` is what LangChain calls, so throwing there is the
+// same shape a real SDK failure takes.
+function throwingModel(err: Error): BaseChatModel {
+  class Refusing extends BaseChatModel {
+    constructor() {
+      super({});
+    }
+    _llmType() {
+      return "fake-refusing";
+    }
+    async _generate(): Promise<ChatResult> {
+      throw err;
+    }
+  }
+  return new Refusing();
+}
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -486,10 +507,131 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
     expect(lines[0]?.level).toBe("error");
   });
 
+  // THE PII PROMISE, on the road the turn-shaped harness cannot reach.
+  //
+  // `docs/logs.md` says execution_logs NEVER carries message text, and that the promise is checked
+  // rather than asserted — but that check (tests/modules/flowlog-detail-pii.test.ts) runs a TURN, and
+  // a memory line is written by a scheduler job. The exposure this road adds is specific: the
+  // summariser's request carries the whole attendance transcript, so a provider that echoes its input
+  // is echoing the customer, and `sanitizeErrorMessage` would not catch it — it redacts substrings
+  // shaped like secrets, and a name is not one.
+  test("a provider that echoes the transcript back does not put it in the trail", async () => {
+    const ci = 6007;
+    await seedConversation(872);
+    const threadId = await seedThread(ci, 872, 873);
+    const row = await armedJob(`mdl-pii-${process.pid}`, ci, 872, {
+      attempts: 4,
+    });
+    // What a content-filter refusal looks like: the vendor quotes the offending input back. The
+    // marker stands in for the customer's own words, which is what the transcript is made of.
+    const refusal = Object.assign(
+      new Error(
+        `Invalid prompt: your request was rejected — flagged content: "${SEEDED_TEXT}"`,
+      ),
+      { name: "BadRequestError", status: 400, code: "content_filter" },
+    );
+    // This one case needs the summariser to actually REACH the provider, so the override every other
+    // test here leans on (a second vendor with no credential, which fails at the resolver) is off for
+    // the duration. Re-read at execution, so flipping it is enough.
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { settings: { memory: { compaction: { enabled: true } } } },
+    });
+    // The whole chain, with only the provider itself replaced — there is no other way to make a real
+    // one refuse. What runs for real is summarizeAttendance's catch, the failure string compaction
+    // builds from it, and the hook that writes the line.
+    const res = await runCompaction(
+      tenantId,
+      {
+        instanceId,
+        contactInboxId: ci,
+        conversationId: 872,
+        agentId,
+        reason: "new_attendance",
+      },
+      appDb,
+      { makeModel: () => throwingModel(refusal) },
+    );
+    expect(res.outcome).toBe("fail");
+    const failure = (res as { error?: string }).error ?? "";
+    // Already clean when it LEAVES the summariser, which is the point: the scheduler row and the
+    // logger get the same bounded text, not just the trail.
+    expect(failure).not.toContain(SEEDED_TEXT);
+    await suDb.schedulerJob.update({
+      where: { id: row.id },
+      data: { status: "DEAD", attempts: 5 },
+    });
+    await announceDeadCompaction(
+      {
+        id: row.id,
+        tenantId,
+        kind: "MEMORY_COMPACT",
+        payload: jobPayload(ci, 872),
+        attempts: 5,
+        claimSeq: 0,
+      },
+      failure,
+      appDb,
+    );
+    await waitForLines(threadId, 1);
+    const line = (await memoryLines(threadId))[0];
+    expect(line).toBeDefined();
+    // `detail` and `errorMessage` together: the operator exports the row, not the column.
+    const serialized = `${JSON.stringify(line?.detail ?? null)} ${line?.errorMessage ?? ""}`;
+    expect(serialized).not.toContain(SEEDED_TEXT);
+    // And the line is still worth reading — the status and the vendor's code are what an operator
+    // acts on, and neither is a place a provider puts content.
+    expect(line?.errorMessage ?? "").toContain("400");
+    expect(line?.errorMessage ?? "").toContain("content_filter");
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          memory: {
+            compaction: {
+              enabled: true,
+              provider: "anthropic",
+              model: "claude-haiku-4-5-20251001",
+            },
+          },
+        },
+      },
+    });
+  });
+
   test("compaction registers its dead-letter hook", () => {
     registerMemoryHandlers();
     expect(getDeadLetterHandler("MEMORY_COMPACT")).toBeDefined();
   });
+});
+
+// The enum-shaped fields are only enums BY CONVENTION. The product accepts an arbitrary
+// OpenAI-compatible endpoint, so the vendor on the other side can be a self-hosted proxy that puts
+// free text wherever it likes — and `code` carrying a sentence is the same leak as `message`
+// carrying one. So each field is taken only as a bare token, and that is measured rather than
+// assumed: without the guard this passes and the marker reaches the line.
+test("a provider that writes prose into an enum field is not quoted either", () => {
+  const marker = "carambola-com-manjericao-8812";
+  const out = providerFailure(
+    Object.assign(new Error(`rejected: ${marker}`), {
+      name: "BadRequestError",
+      status: 400,
+      code: `content rejected because of ${marker}`,
+      type: "invalid_request_error",
+    }),
+  );
+  expect(out).not.toContain(marker);
+  expect(out).toContain("400");
+  expect(out).toContain("invalid_request_error");
+
+  // The other half of the same rule, and the dangerous combination: no `status` field at all — a
+  // client that re-throws a plain Error, where the text is the only place the status lives — and
+  // that same text echoing the request. The digits are worth digging out; nothing around them is.
+  const rethrown = providerFailure(
+    new Error(`Request failed with status 429 while processing "${marker}"`),
+  );
+  expect(rethrown).not.toContain(marker);
+  expect(rethrown).toContain("429");
 });
 
 // ── The family, swept ──────────────────────────────────────────────────────────────────────────

@@ -150,6 +150,16 @@ async function runRoleDdl(client: Client, plan: RoleProvisioningPlan) {
 // CREATEDB (it can only set an attribute it holds itself, measured), and a combined statement would
 // lose both to the one it is refused. And a warning rather than a refusal, because RLS holds either
 // way and this script must not turn a hardening it cannot finish into a crash-loop.
+// Attributes worth removing but not worth failing over: neither defeats RLS, so the boot guard
+// never looks at them and nothing downstream notices — which also means this script is the only
+// thing that takes them away.
+//
+// NOTE: a table rather than a statement, and deliberately NOT part of ROLE_DDL above, because
+// these are issued ONE ALTER PER ROW, each in its own round trip with its own catch, outside any
+// DO block or transaction. An administrator may only set an attribute it holds itself, so the
+// documented CREATEROLE-but-not-CREATEDB admin is refused NOCREATEDB and allowed NOCREATEROLE:
+// a combined statement, or a shared block, would lose the half it can do to the half it cannot.
+// The partial outcome is asserted in the tests, and combining them turns that assertion red.
 const ELEVATED_ATTRIBUTES = [
   ["hasCreateDb", "NOCREATEDB"],
   ["hasCreateRole", "NOCREATEROLE"],

@@ -300,6 +300,57 @@ describe.skipIf(!dbUp)(
       expect(job?.status).toBe("DONE");
     });
 
+    // Compaction was the only queued writer of this memory when the step above was written.
+    // Continuous ingestion is one too (issue #194): at any moment this thread can owe an append
+    // carrying text from before the reset, and both shapes have to stop — the row still waiting, and
+    // the row already CLAIMED by a run blocked on the reset's own lock. The second is the dangerous
+    // one, because it lands the instant the lock is released and rebuilds the thread from memory the
+    // operator was told had been cleared.
+    test("queued ingestion for this thread is revoked, claimed rows included", async () => {
+      const threadId = contactInboxThreadId(tenantId, instanceId, 301);
+      for (const [messageId, status] of [
+        [900, "PENDING"],
+        [901, "CLAIMED"],
+      ] as const) {
+        await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "INGEST_MESSAGE",
+            dedupeKey: `ingest:${threadId}:${messageId}`,
+            runAt: new Date(),
+            status,
+            payload: {},
+          },
+        });
+      }
+      // Another thread's queued ingestion must survive: /reset clears the channel it was typed in.
+      const otherThread = contactInboxThreadId(tenantId, instanceId, 999);
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: `ingest:${otherThread}:902`,
+          runAt: new Date(),
+          status: "PENDING",
+          payload: {},
+        },
+      });
+
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const statuses = await suDb.schedulerJob.findMany({
+        where: { tenantId, kind: "INGEST_MESSAGE" },
+        select: { dedupeKey: true, status: true },
+        orderBy: { dedupeKey: "asc" },
+      });
+      const byKey = new Map(statuses.map((r) => [r.dedupeKey, r.status]));
+      expect(byKey.get(`ingest:${threadId}:900`)).toBe("DONE");
+      expect(byKey.get(`ingest:${threadId}:901`)).toBe("DONE");
+      expect(byKey.get(`ingest:${otherThread}:902`)).toBe("PENDING");
+    });
+
     // The checkpoint is the one piece of the memory that a compaction can RECREATE. Deleted outside
     // the lock the rewrite holds, the order that loses is: reset deletes the thread, the claimed job
     // finishes its rewrite and writes the checkpoint back — with the memory head in it — and reset

@@ -2,6 +2,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { armCompaction } from "@/modules/memory/compact";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -33,6 +34,10 @@ import { type IngestRole, ingestMessageIntoThread } from "./ingest";
 // and the job stores words, exactly as ../modules/chatwoot/render.ts produced them.
 
 const DEFER_ON_TURN_MS = 60_000;
+
+function sysCtx(tenantId: bigint): TenantContext {
+  return { tenantId, userId: null, role: "TENANT_ADMIN" };
+}
 
 // One row per MESSAGE, and this is the field the dedupe key cannot leave out. `enqueueJob` keeps one
 // live row per (tenant, kind, dedupeKey) and a re-enqueue REPLACES the payload, so a key scoped to
@@ -147,6 +152,26 @@ export async function ingestHandler(
   // take the lock, mark itself and release it between our check and the append.
   const outcome = await ingestMessageIntoThread({
     deferIfTurnInFlight: true,
+    // THE GENERATION FENCE THIS JOB LACKED (round-9 review). Compaction has two defenses against a
+    // memory reset overtaking it — the reset cancels its pending row, and a claimed one finds the
+    // AgentThread row gone and drops the summary. Ingestion inherited neither, and it is the worse
+    // of the two to get wrong: a claimed ingestion waiting on the reset's own lock appends pre-reset
+    // text the moment that lock is released, recreating both the thread row and the checkpoint, with
+    // the operator having been told the reset succeeded.
+    //
+    // The token is the row itself, read under the lock: a revoked job is no longer CLAIMED by this
+    // run. `claimSeq` is in the comparison because a re-enqueue (a duplicate delivery) re-arms the
+    // row and bumps it — the later enqueue wins, and standing down here is what lets it, since that
+    // re-armed row carries the same message and will run again.
+    stillWanted: async () => {
+      const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.schedulerJob.findUnique({
+          where: { id: job.id },
+          select: { status: true, claimSeq: true },
+        }),
+      );
+      return row?.status === "CLAIMED" && row.claimSeq === job.claimSeq;
+    },
     tenantId,
     instanceId: p.instanceId,
     conversationId: p.conversationId,

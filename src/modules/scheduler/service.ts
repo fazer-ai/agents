@@ -158,6 +158,37 @@ export async function cancelPendingJobsByPrefix(
   });
 }
 
+// REVOKED, not merely cancelled: PENDING **and** CLAIMED rows under a dedupeKey prefix are retired.
+//
+// The difference from the two above is deliberate and is the whole reason this exists separately.
+// They leave a CLAIMED job to its own gate, because there the work is still wanted and the in-flight
+// run is the one doing it. Here the work has been REVOKED — a memory reset means the operator asked
+// for everything queued against this thread to stop existing, including the message a job claimed a
+// second ago and is holding while it waits on the reset's own lock.
+//
+// Retiring the row is only half of that: it does not stop a handler already running in memory. The
+// other half is the handler re-asking, under the lock, whether its own row is still CLAIMED by it
+// (../../graph/ingest-job.ts) — the same claimSeq CAS that already guards completion, moved in front
+// of the write it cannot take back.
+export async function revokeJobsByKeyPrefix(
+  tenantId: bigint,
+  kind: SchedulerJobKind,
+  prefix: string,
+  base: PrismaClient = basePrisma,
+): Promise<number> {
+  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const res = await db.schedulerJob.updateMany({
+      where: {
+        kind,
+        status: { in: ["PENDING", "CLAIMED"] },
+        dedupeKey: { startsWith: prefix },
+      },
+      data: { status: "DONE" },
+    });
+    return res.count;
+  });
+}
+
 // Claims up to `limit` due jobs across ALL tenants matching `kindFilter` (FOR UPDATE SKIP LOCKED so
 // replicas/ticks do not double-claim). FIFO by run_at. attempts is NOT incremented here (a claim is
 // not a failure). The kind literals are fixed in code (never user input), so embedding them in the

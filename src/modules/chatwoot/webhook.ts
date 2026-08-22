@@ -56,7 +56,10 @@ import { advanceHandledWatermark } from "@/modules/debounce/watermark";
 import { armCompaction } from "@/modules/memory/compact";
 import { clearContactMemory } from "@/modules/memory/reset";
 import { readMemoryConfig } from "@/modules/memory/settings";
-import { cancelPendingJob } from "@/modules/scheduler/service";
+import {
+  cancelPendingJob,
+  revokeJobsByKeyPrefix,
+} from "@/modules/scheduler/service";
 import {
   resolveSttConfig,
   transcribeInboundAudio,
@@ -1017,17 +1020,35 @@ async function maybeConsumeCommandOrGate(params: {
             db,
             `ingest:${contactInboxThreadId(tenantId, instanceId, contactInboxId)}`,
             async () => {
+              const graphThreadId = contactInboxThreadId(
+                tenantId,
+                instanceId,
+                contactInboxId,
+              );
+              // QUEUED INGESTION IS REVOKED FIRST, AND FROM IN HERE (issue #194). Continuous
+              // ingestion is a scheduler job now, so at any moment this thread can owe an append
+              // carrying text from before the reset — pending, or CLAIMED and blocked on the very
+              // lock this step is holding. Left alone, it lands the instant this releases and
+              // rebuilds the AgentThread row and the checkpoint from the memory the operator was
+              // just told had been cleared.
+              //
+              // Inside the critical section, not as a step after it, because the window between
+              // releasing the lock and cancelling is exactly where a claimed job takes the lock.
+              // Retiring the rows is half; a run already in memory re-reads its own row under this
+              // lock and stands down (../../graph/ingest-job.ts, stillWanted).
+              await revokeJobsByKeyPrefix(
+                tenantId,
+                "INGEST_MESSAGE",
+                `ingest:${graphThreadId}:`,
+                base,
+              );
               await clearContactMemory({
                 db,
                 checkpointer: await getCheckpointer(),
                 tenantId,
                 instanceId,
                 contactInboxId,
-                threadId: contactInboxThreadId(
-                  tenantId,
-                  instanceId,
-                  contactInboxId,
-                ),
+                threadId: graphThreadId,
               });
             },
           ),

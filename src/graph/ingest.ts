@@ -151,6 +151,17 @@ export interface IngestMessageParams {
   // that sets it is the scheduler job, because it is the only one with somewhere to come back from:
   // deferring on a path that cannot retry would just drop the message by a different route.
   deferIfTurnInFlight?: boolean;
+  // Asked once more INSIDE the lock, immediately before anything is written: is this append still
+  // wanted? A caller that had to wait for the lock may have been overtaken while waiting, and the
+  // case that matters is /reset — it clears the thread under this same lock, so a queued ingestion
+  // holding pre-reset text lands the moment the reset releases and rebuilds both the row and the
+  // checkpoint from memory the operator was told had been cleared. False means stand down having
+  // written nothing.
+  //
+  // A callback rather than a flag because the answer lives in the scheduler, and this module knows
+  // nothing about jobs (same separation as ./ingest-drain.ts). Absent ⇒ always wanted, which is
+  // right for the callers that never queued.
+  stillWanted?: () => Promise<boolean>;
 }
 
 export async function ingestMessageIntoThread(
@@ -224,6 +235,14 @@ export async function ingestMessageIntoThread(
       // this call site.
       if (params.deferIfTurnInFlight && isTurnInFlight(graphThreadId)) {
         return { outcome: "deferred" as const, closedConversationId: null };
+      }
+
+      // REVOKED WHILE WE WAITED. Checked here and not before the lock, for the same reason the
+      // deferral above is: /reset does its clearing while holding this lock, so a check made outside
+      // it answers about a thread that may be cleared a microsecond later. "Skipped" and not
+      // "deferred" — the work is not owed later, it is not wanted at all.
+      if (params.stillWanted && !(await params.stillWanted())) {
+        return { outcome: "skipped" as const, closedConversationId: null };
       }
 
       // A LATE ARRIVAL DOES NOT MOVE THE FRONTIER, and the frontier is the THREAD'S — the newest id

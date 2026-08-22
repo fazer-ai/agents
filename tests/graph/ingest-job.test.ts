@@ -8,7 +8,11 @@ import { contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { drainPendingIngest } from "@/graph/ingest-drain";
 import { armIngest, ingestHandler } from "@/graph/ingest-job";
-import { type ClaimedJob, claimDueJobs } from "@/modules/scheduler/service";
+import {
+  type ClaimedJob,
+  claimDueJobs,
+  revokeJobsByKeyPrefix,
+} from "@/modules/scheduler/service";
 import { runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -79,6 +83,46 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     await appDb.$disconnect();
   });
 
+  // A REAL row, claimed the way the tick claims it, rather than a hand-built `ClaimedJob`. The
+  // handler now re-reads its own row under the lock to see whether it was revoked while it waited
+  // (a /reset does exactly that), so a synthetic job with no row behind it is a job that has already
+  // been cancelled — and every test built that way would pass for the wrong reason.
+  async function armAndClaim(
+    contactInboxId: number,
+    conversationId: number,
+    messageId: number,
+    text: string,
+  ): Promise<ClaimedJob> {
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId,
+      contactInboxId,
+      graphThreadId,
+      messageId,
+      text,
+      role: "customer",
+      agentId: 1n,
+      compactionEnabled: false,
+      base: appDb,
+    });
+    const claimed = (
+      await claimDueJobs(50, appDb, new Date(), tenantId)
+    ).filter(
+      (j) =>
+        j.kind === "INGEST_MESSAGE" &&
+        (j.payload as { messageId?: number }).messageId === messageId,
+    );
+    const job = claimed[0];
+    if (!job) throw new Error("the armed ingestion job was not claimed");
+    return job;
+  }
+
   test("the message is not appended while a turn owns the thread, and is not lost", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12501;
@@ -87,24 +131,12 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
       instanceId,
       contactInboxId,
     );
-    const job: ClaimedJob = {
-      id: 1n,
-      tenantId,
-      kind: "INGEST_MESSAGE",
-      attempts: 0,
-      claimSeq: 1,
-      payload: {
-        instanceId: String(instanceId),
-        conversationId: 980,
-        contactInboxId,
-        graphThreadId,
-        messageId: 300,
-        text: encryptJson("e o orçamento, saiu?"),
-        role: "customer",
-        agentId: "1",
-        compactionEnabled: false,
-      },
-    };
+    const job = await armAndClaim(
+      contactInboxId,
+      980,
+      300,
+      "e o orçamento, saiu?",
+    );
     const contents = async () => {
       const cp = await saver.get({
         configurable: { thread_id: graphThreadId },
@@ -142,6 +174,116 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(await contents()).toEqual([
       expect.stringContaining("e o orçamento, saiu?"),
     ]);
+  });
+
+  // Round-9 review finding (P1). /reset clears this thread's summaries, its AgentThread row and its
+  // checkpoint, all under the `ingest:<thread>` lock — and it cancels the pending COMPACTION job,
+  // because that is the only queued writer of this memory it knew about. Continuous ingestion is one
+  // now, and the worst shape of it is a job already CLAIMED and blocked on that very lock: it lands
+  // the instant the reset releases and rebuilds the thread from text the operator was told had been
+  // cleared, with the reset reported as successful.
+  //
+  // Staged the way it actually happens: the job is claimed FIRST (it is in memory, past every check
+  // a cancellation could reach), and the revocation runs while it waits.
+  test("a job revoked by a reset while it waited writes nothing", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12508;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const job = await armAndClaim(
+      contactInboxId,
+      987,
+      800,
+      "isso é de antes do reset",
+    );
+
+    // What /reset does to queued ingestion, from inside its own critical section.
+    await revokeJobsByKeyPrefix(
+      tenantId,
+      "INGEST_MESSAGE",
+      `ingest:${graphThreadId}:`,
+      appDb,
+    );
+
+    // The handler runs anyway — it was already claimed — and must come back having written nothing.
+    expect((await ingestHandler(job, appDb, saver)).outcome).toBe("done");
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    expect(
+      ((cp?.channel_values as { messages?: BaseMessage[] })?.messages ?? [])
+        .length,
+    ).toBe(0);
+    // And the thread was not rebuilt: no row, which is what the reset had just made true.
+    expect(
+      await suDb.agentThread.count({
+        where: { tenantId, chatwootInstanceId: instanceId, contactInboxId },
+      }),
+    ).toBe(0);
+  });
+
+  // The other half of that fence, which a mutation run caught as untested: `claimSeq`, not just the
+  // status. A duplicate delivery re-arms the row back to PENDING without touching claimSeq, so the
+  // status alone covers that — but the tick can then CLAIM it again, which bumps the sequence and
+  // starts a second run while the first is still waiting on the thread lock. Two runs of one key at
+  // once is what the scheduler avoids everywhere else; here the first one stands down and the row
+  // belongs to the claim that holds it.
+  test("a job whose row was claimed again stands down for the newer run", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12509;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const first = await armAndClaim(
+      contactInboxId,
+      988,
+      810,
+      "quem escreve é a reivindicação mais nova",
+    );
+    // A duplicate delivery re-arms the row, and the tick claims it again.
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 988,
+      contactInboxId,
+      graphThreadId,
+      messageId: 810,
+      text: "quem escreve é a reivindicação mais nova",
+      role: "customer",
+      agentId: 1n,
+      compactionEnabled: false,
+      base: appDb,
+    });
+    const second = (await claimDueJobs(50, appDb, new Date(), tenantId)).find(
+      (j) => j.id === first.id,
+    );
+    expect(second?.claimSeq).toBe(first.claimSeq + 1);
+
+    // The FIRST run, finally through the lock, finds the row is no longer its own.
+    expect((await ingestHandler(first, appDb, saver)).outcome).toBe("done");
+    expect(
+      (
+        (
+          (await saver.get({ configurable: { thread_id: graphThreadId } }))
+            ?.channel_values as { messages?: BaseMessage[] }
+        )?.messages ?? []
+      ).length,
+    ).toBe(0);
+
+    // The newer one writes, so the message is not lost by standing down.
+    if (!second) throw new Error("the re-armed row was not claimed again");
+    expect((await ingestHandler(second, appDb, saver)).outcome).toBe("done");
+    expect(
+      (
+        (
+          (await saver.get({ configurable: { thread_id: graphThreadId } }))
+            ?.channel_values as { messages?: BaseMessage[] }
+        )?.messages ?? []
+      ).length,
+    ).toBe(1);
   });
 
   // The dedupe key, which a mutation run caught as an untested rule. `enqueueJob` keeps ONE live row
@@ -235,8 +377,15 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(at?.recentSyncedMessageIds).toEqual([500]);
     // Completed ingestion rows are DELETED, not left DONE: the key names one message, so nothing
     // ever reuses the row and nothing sweeps this table.
+    // Named by its own key: other cases in this file leave rows of this kind behind on purpose (a
+    // claim that was never completed, a revoked one), and a tenant-wide count would read those as
+    // this row surviving.
     const left = await suDb.schedulerJob.count({
-      where: { tenantId, kind: "INGEST_MESSAGE" },
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        dedupeKey: `ingest:${graphThreadId}:500`,
+      },
     });
     expect(left).toBe(0);
   });
@@ -399,24 +548,7 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
       instanceId,
       contactInboxId,
     );
-    const job: ClaimedJob = {
-      id: 2n,
-      tenantId,
-      kind: "INGEST_MESSAGE",
-      attempts: 0,
-      claimSeq: 1,
-      payload: {
-        instanceId: String(instanceId),
-        conversationId: 981,
-        contactInboxId,
-        graphThreadId,
-        messageId: 301,
-        text: encryptJson("ainda estou aqui"),
-        role: "customer",
-        agentId: "1",
-        compactionEnabled: false,
-      },
-    };
+    const job = await armAndClaim(contactInboxId, 981, 301, "ainda estou aqui");
 
     markTurnInFlight(graphThreadId);
     markTurnInFlight(graphThreadId);

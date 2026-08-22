@@ -12,6 +12,8 @@ import { runScopedOn } from "@/lib/tenancy";
 import {
   type ClaimedJob,
   claimDueTrafficJobs,
+  failJob,
+  rescheduleJob,
   revokeJobsByKeyPrefixOn,
 } from "@/modules/scheduler/service";
 import { runClaimed } from "@/modules/scheduler/worker";
@@ -698,6 +700,88 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(afterSecond.attempts).toBe(1);
     // And `incomplete` is the half that keeps this safe rather than merely slower: the thread still
     // owes a message, so compaction will not summarise the attendance without it.
+  });
+
+  // Round-16 review finding (P2), and the other half of the one above. The barrier has to tell a row
+  // that is BACKING OFF from one that merely STOOD DOWN, and the first version asked `attempts`,
+  // which answers a different question: `rescheduleJob` preserves the attempt count, so a job that
+  // failed once and later deferred for a turn read as backing off and the barrier skipped it — a
+  // turn then answering without the message the barrier exists to fold in.
+  //
+  // `last_error` is the state itself, and a reschedule clears it because the row has left it.
+  test("a job that failed once and then deferred is still drained", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12514;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const job = await armAndClaim(
+      contactInboxId,
+      993,
+      860,
+      "falhou uma vez, depois esperou um turno",
+    );
+    // One real failure: attempts goes to 1, a backoff is set, and the error is recorded.
+    await failJob(tenantId, job.id, job.claimSeq, job.attempts, "blip", appDb);
+    const failed = await suDb.schedulerJob.findFirstOrThrow({
+      where: { id: job.id },
+      select: { attempts: true, lastError: true },
+    });
+    expect(failed.attempts).toBe(1);
+    expect(failed.lastError).not.toBeNull();
+
+    // The tick picks it up after the backoff, finds a turn in flight, and stands down. The attempt
+    // count survives that — which is exactly why it cannot be the thing the barrier reads.
+    const retried = (
+      await claimDueTrafficJobs(
+        50,
+        appDb,
+        new Date(Date.now() + 600_000),
+        tenantId,
+      )
+    ).find((j) => j.id === job.id);
+    if (!retried) throw new Error("the backed-off row was not re-claimed");
+    markTurnInFlight(graphThreadId);
+    try {
+      expect((await ingestHandler(retried, appDb, saver)).outcome).toBe(
+        "reschedule",
+      );
+      await rescheduleJob(
+        tenantId,
+        retried.id,
+        retried.claimSeq,
+        new Date(Date.now() + 60_000),
+        undefined,
+        appDb,
+      );
+    } finally {
+      clearTurnInFlight(graphThreadId);
+    }
+    const deferred = await suDb.schedulerJob.findFirstOrThrow({
+      where: { id: job.id },
+      select: { attempts: true, lastError: true, runAt: true },
+    });
+    expect(deferred.attempts).toBe(1);
+    expect(deferred.lastError).toBeNull();
+    expect(deferred.runAt.getTime()).toBeGreaterThan(Date.now());
+
+    // The next turn's barrier must see it, future run_at and all: this is a deferral, not a backoff.
+    expect(await drainPendingIngest(tenantId, graphThreadId, appDb)).toBe(
+      "drained",
+    );
+    const at = await suDb.agentThread.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { recentSyncedMessageIds: true },
+    });
+    expect(at?.recentSyncedMessageIds).toEqual([860]);
   });
 
   // Two turns really do overlap on one thread (../../src/graph/inflight.ts counts rather than sets),

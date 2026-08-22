@@ -265,15 +265,20 @@ async function claimWhere(
   // never failed. Both halves matter and they answer different questions.
   //
   // Future-dated rows are what the barrier is for: a job DEFERRED for a previous turn sits a minute
-  // out, and those are precisely the messages a starting turn is missing. `rescheduleJob` leaves
-  // attempts untouched, so a deferral is exactly the `attempts = 0` case.
+  // out, and those are precisely the messages a starting turn is missing.
   //
   // A row that FAILED is future-dated too, and for the opposite reason — `failJob` increments
   // attempts and pushes run_at out by a backoff. Ignoring run_at for those makes the backoff
   // unreachable: every turn on the thread opens a fresh drain, and a handful in quick succession
   // (a burst with debounce off, a turn and a nudge) spends all five attempts within seconds and
   // dead-letters the message, on a database failure that was transient. The drain's `excludeIds`
-  // already answers this WITHIN one drain; this is the same question ACROSS them.
+  // answers that WITHIN one drain; this is the same question ACROSS them.
+  //
+  // TOLD APART BY `last_error`, NOT BY `attempts`. The first version of this asked whether the job
+  // had ever failed, which is a different question wearing the same clothes: `rescheduleJob`
+  // preserves the attempt count, so a job that failed once and LATER stood down for a turn read as
+  // backing off, and the barrier skipped the very message it exists to fold in. The error is the
+  // state, and it is cleared the moment the row leaves it.
   //
   // Nothing is lost by waiting: a row left here is still PENDING, so `countOwedByKeyPrefix` reports
   // the thread as owing something and the one reader that cannot be corrected afterwards still
@@ -281,7 +286,7 @@ async function claimWhere(
   const dueClause =
     keyPrefix === undefined
       ? Prisma.sql`AND run_at <= ${now}`
-      : Prisma.sql`AND dedupe_key LIKE ${`${keyPrefix}%`} AND (attempts = 0 OR run_at <= ${now})`;
+      : Prisma.sql`AND dedupe_key LIKE ${`${keyPrefix}%`} AND (last_error IS NULL OR run_at <= ${now})`;
   const tenantClause =
     tenantId != null ? Prisma.sql`AND tenant_id = ${tenantId}` : Prisma.empty;
   const excludeClause =
@@ -473,7 +478,15 @@ export async function completeJob(
   return { applied: count > 0 };
 }
 
-// Not a failure (e.g. out-of-hours): back to PENDING at a new time, attempts UNCHANGED. An optional
+// Not a failure (e.g. out-of-hours): back to PENDING at a new time, attempts UNCHANGED — and
+// `lastError` CLEARED, because the row is no longer in the state that error describes. That is also
+// what makes the two future-dated states tellable apart: a row waiting on a backoff still carries
+// the error that caused it, a row that merely stood down carries none, and `attempts` cannot say
+// which (it survives a reschedule by design, so a job that failed once and later defers looks
+// exactly like one that is backing off). The ingestion barrier reads that difference — see
+// claimWhere's prefix branch. `enqueueJob` already clears it on a re-arm, for the same reason.
+//
+// An optional
 // `payload` REPLACES the row's payload (used to advance a multi-step follow-up's stepIndex on the
 // same row — the dedupeKey is stable, so this never races the upsert vs the completeJob CAS). Omit
 // it to keep the current payload.
@@ -492,6 +505,7 @@ export async function rescheduleJob(
       data: {
         status: "PENDING",
         runAt,
+        lastError: null,
         ...(payload !== undefined
           ? { payload: payload as Prisma.InputJsonValue }
           : {}),

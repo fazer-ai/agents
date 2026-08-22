@@ -43,6 +43,13 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // Budget: fires for every agent on every closed attendance, against the model semaphore a
   // customer's turn queues on, so its batch is sized to a fraction of that budget.
   MEMORY_COMPACT: "compaction",
+  // Cadence, and it is the DEBOUNCE argument rather than a new one. Ingestion used to happen inline
+  // on the webhook, so moving it here spends whatever the tick takes to notice — and what is waiting
+  // is not a customer reading a reply, it is the NEXT turn's context: a message still queued when a
+  // turn starts is a turn that runs without it. That is felt at the debounce timescale, not the
+  // shared one, and it needs no cap of its own (it runs no model), so it rides the fast tick rather
+  // than justifying a fourth lane.
+  INGEST_MESSAGE: "debounce",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider that the rest of the product
@@ -74,6 +81,8 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   FLOWLOG_SWEEP: false,
   DEBOUNCE: false,
   MEMORY_COMPACT: false,
+  // No model, no embedding: it appends to a checkpointer channel and writes one row.
+  INGEST_MESSAGE: false,
 };
 
 // How many provider-spending jobs the shared lane may run at once, out of the model budget. NEVER

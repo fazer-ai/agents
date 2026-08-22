@@ -13,7 +13,8 @@ import {
   getCheckpointer,
   resolveGraphThreadId,
 } from "@/graph/checkpointer";
-import { type IngestRole, ingestMessageIntoThread } from "@/graph/ingest";
+import type { IngestRole } from "@/graph/ingest";
+import { armIngest } from "@/graph/ingest-job";
 import { runAgentTurn } from "@/graph/runtime";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { withEntityLock } from "@/lib/locks";
@@ -513,18 +514,6 @@ async function ingestUnhandledMessage(args: {
   // conversation, or the agent reaching out first). Without this arm, that boundary would be invisible
   // to compaction until the attendance AFTER it, which is exactly the deployment that never resolves
   // conversations — the population the whole feature exists for.
-  const armOnBoundary = (previousConversationId: number): Promise<void> =>
-    armCompaction({
-      tenantId,
-      instanceId,
-      contactInboxId,
-      conversationId: previousConversationId,
-      agentId: args.agentId,
-      reason: "new_attendance",
-      enabled: args.compactionEnabled,
-      base,
-    }).then(() => undefined);
-
   // WHAT gets folded in, and AS WHOM. Two disjoint cases:
   //
   //  - a customer incoming message the bot will NOT answer: silenced out of hours (act && consumed)
@@ -568,8 +557,12 @@ async function ingestUnhandledMessage(args: {
           inReplyTo: n.message.inReplyTo,
         });
   if (!text.trim()) return;
+  // QUEUED, not appended. The append itself has to be able to say "not now" — a turn owning the
+  // channel erases anything written beside it — and an ack we must return in under five seconds is
+  // no place to wait for one (issue #194, ../../graph/ingest-job.ts). What the webhook still owns is
+  // the RENDERING above: it reads the eager media pass, which the job cannot re-derive later.
   try {
-    await ingestMessageIntoThread({
+    await armIngest({
       tenantId,
       instanceId,
       conversationId,
@@ -578,12 +571,16 @@ async function ingestUnhandledMessage(args: {
       messageId,
       text,
       role,
+      agentId: args.agentId,
+      compactionEnabled: args.compactionEnabled,
       base,
-      onAttendanceClosed: armOnBoundary,
     });
   } catch (err) {
+    // Only the ENQUEUE can fail here, and failing it must not fail the delivery: the alternative is
+    // a webhook retry that re-runs the eager media pass (a second provider round-trip) to recover
+    // one memory append.
     logger.warn(
-      "ingest (%s) failed (conv=%s): %s",
+      "ingest arm (%s) failed (conv=%s): %s",
       role,
       String(conversationId),
       errMsg(err),

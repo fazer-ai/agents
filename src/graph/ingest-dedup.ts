@@ -1,0 +1,68 @@
+// Whether a message reaching continuous ingestion has already been folded into the thread.
+//
+// Pure and separate from the transaction around it, for the same reason as ./attendance-boundary.ts:
+// it is a decision, and the wrong cell here is not a slow prompt. "Duplicate" on a message that is
+// actually new is a customer's words missing from the memory the agent reads for the next twenty
+// attendances, and nothing re-delivers them.
+//
+// WHY NOT A HIGH-WATER MARK, which is what this replaces (issue #194). A monotonic mark answers
+// "have we seen this?" only while the ids reaching it arrive in order, and within one direction they
+// do not: a message with media waits on the eager pass (a provider round-trip for STT/vision) before
+// reaching ingestion and a text one waits on nothing, so the later message can be folded in first.
+// The mark had then advanced past the earlier id, which read as already handled. It was not late, it
+// was ABSENT.
+//
+// Membership answers exactly, for what it holds. What it cannot answer is anything older than the
+// oldest id it still remembers, and that is the second verdict below.
+
+// How many ids each direction remembers. The window has to exceed the reorder distance, which is
+// bounded by the mechanism that causes it: the eager media pass is one provider round-trip, so the
+// messages that can overtake a waiting one are the ones a contact sends inside that call. This is
+// an order of magnitude above that, and its cost is 64 integers on a row already being read and
+// written under the same lock.
+//
+// NOT chosen by measurement, and saying so is the point: if a reorder ever exceeds it, the symptom
+// is the #194 symptom again on a much narrower path, and the fix is this number.
+export const INGEST_ID_WINDOW = 64;
+
+export type IngestVerdict =
+  // Never folded in. Append it.
+  | "new"
+  // Folded in already, and we still remember doing it. A genuine re-delivery.
+  | "duplicate"
+  // Older than the oldest id we still remember, on a window that has since forgotten things. Refused
+  // rather than appended, because at this distance "not in the set" stops being evidence of anything.
+  | "ancient";
+
+export function ingestVerdict(
+  recent: readonly number[],
+  messageId: number,
+): IngestVerdict {
+  if (recent.includes(messageId)) return "duplicate";
+  // Only a SATURATED window has forgotten anything, and only then does a low id become ambiguous.
+  // Below saturation the set is the complete record of what this direction ingested, so anything
+  // absent from it is genuinely new — including an id below the highest one, which is the whole
+  // point. Using the minimum as a floor unconditionally would refuse exactly the message #194 is
+  // about: the first two ingests on a fresh thread can already arrive inverted.
+  if (recent.length >= INGEST_ID_WINDOW && messageId < Math.min(...recent)) {
+    return "ancient";
+  }
+  return "new";
+}
+
+// The window after folding `messageId` in. Most recent LAST, capped by dropping from the front, so
+// the oldest id it remembers is the one `ingestVerdict` reads as the floor.
+//
+// Ordered by ARRIVAL rather than by id, deliberately. What the cap is protecting is the memory of
+// recent work, and the message that just arrived is the most recent work by definition even when
+// its id is lower than its neighbour's — which, on this path, is the ordinary case rather than the
+// exception.
+export function rememberIngested(
+  recent: readonly number[],
+  messageId: number,
+): number[] {
+  const next = [...recent, messageId];
+  return next.length > INGEST_ID_WINDOW
+    ? next.slice(next.length - INGEST_ID_WINDOW)
+    : next;
+}

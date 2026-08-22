@@ -65,6 +65,7 @@ enum SchedulerJobKind {
   APPOINTMENT_REMINDER
   REDIRECT_FOLLOWUP
   MEMORY_COMPACT
+  INGEST_MESSAGE
 }
 
 enum SchedulerJobStatus {
@@ -523,13 +524,18 @@ model Conversation {
 //     thread, so a NEW conversation reusing the thread gets the "fresh attendance" divider. Tracking
 //     this per-thread (not per-contact) is what stops a multi-channel contact from getting spurious
 //     dividers mid-conversation when they speak on another channel.
-//   - lastSyncedMessageId / lastAgentMessageId: the ingestion watermarks — highest message id already
-//     folded into the thread by the continuous-sync path, so turns and the sync never double-append a
-//     message. ONE PER DIRECTION, and that is not redundancy: a monotonic watermark only holds while
-//     the ids reaching it arrive in order, and the two writers do not share a latency. A customer's
-//     message waits on the eager media pass (a provider round-trip for STT/vision); an agent's reply
-//     waits on nothing. An attendant answering a voice note therefore lands FIRST, and a single
-//     column would advance past the customer's id and drop their message from the memory for good.
+//   - lastSyncedMessageId / lastAgentMessageId: the HIGHEST message id folded into the thread by the
+//     continuous-sync path, per direction. One per direction is not redundancy: the two writers do
+//     not share a latency, so an attendant answering a voice note lands before the note itself and a
+//     single column would advance past the customer's id.
+//   - recentSyncedMessageIds / recentAgentMessageIds: the ids actually folded in, most recent last,
+//     capped. These are what DECIDE a re-delivery; the scalars above only say how far we got.
+//     A high-water mark cannot do both jobs, and issue #194 is the bill for asking it to: within one
+//     direction the ids also arrive out of order (media waits on the eager pass, text does not), and
+//     a mark that had advanced past a lower id read that message as already handled. It was not
+//     late, it was ABSENT — nothing re-delivers it and nothing restores it. Membership answers
+//     exactly for what it holds; below the OLDEST id it holds, the answer is "older than anything we
+//     remember", which is the ancient re-delivery the mark was guarding against in the first place.
 model AgentThread {
   id                  BigInt   @id @default(autoincrement())
   tenantId            BigInt   @map("tenant_id")
@@ -539,6 +545,8 @@ model AgentThread {
   lastConversationId  Int?     @map("last_conversation_id")
   lastSyncedMessageId Int?     @map("last_synced_message_id")
   lastAgentMessageId  Int?     @map("last_agent_message_id")
+  recentSyncedMessageIds Int[] @map("recent_synced_message_ids")
+  recentAgentMessageIds  Int[] @map("recent_agent_message_ids")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 

@@ -11,6 +11,7 @@ import {
 } from "./attendance-boundary";
 import { getCheckpointer } from "./checkpointer";
 import { isTurnInFlight } from "./inflight";
+import { ingestVerdict, rememberIngested } from "./ingest-dedup";
 import {
   conversationDividerMessage,
   conversationStamp,
@@ -32,21 +33,21 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 // `role` is required, not defaulted. It reaches every call site of this module, and a default would
 // let the next writer inherit "customer" silently, which is exactly the attribution bug back again.
 //
-// WHAT THIS MODULE DOES NOT PROMISE, so the next reader does not rediscover it as a surprise. All
-// three predate the second writer and hold identically for a customer's message on main today; they
-// are properties of appending to a checkpointer channel on webhook arrival, not of `role`:
+// WHERE THE CALLER HAS TO HELP, and where it no longer does (issue #194). Two of the three hazards
+// this header used to list are closed, and the third is not:
 //
-//   - A message appended while a graph turn is IN FLIGHT is erased when that turn saves the channel
-//     it loaded (see ./inflight.ts). The watermark has already advanced, so nothing restores it. The
-//     in-flight claim is consulted here only to hold back the DIVIDER (./attendance-boundary.ts).
-//   - Arrival order is not Chatwoot order. Two messages of the same direction can invert (the eager
-//     media pass makes one wait on a provider round-trip and the other not), and the monotonic
-//     watermark then skips the later-arriving lower id entirely.
-//   - Across directions the watermarks keep both messages, but the channel is append-only, so an
-//     inverted pair stays inverted: a reply can sit above the question it answers.
-//
-// Closing any of them means deferring or reordering, which is a change to continuous ingestion as a
-// whole and would reintroduce the first item at a far higher rate. Tracked separately.
+//   - A message appended while a graph turn is IN FLIGHT is still erased when that turn saves the
+//     channel it loaded (see ./inflight.ts), and this module does NOT check for that — it consults
+//     the claim only to hold back the DIVIDER (./attendance-boundary.ts). What changed is that the
+//     caller can now say "not yet": continuous ingestion arrives as a scheduler job
+//     (./ingest-job.ts), which defers rather than appending. Calling this directly while a turn runs
+//     is still a lost message, so do not.
+//   - Arrival order is still not Chatwoot order, but it no longer COSTS a message. Dedup is
+//     membership in the ids each direction remembers rather than a comparison against the highest
+//     one (./ingest-dedup.ts), so a later-arriving lower id is folded in instead of read as handled.
+//   - The channel remains append-only, so an inverted pair stays inverted: a reply can sit above the
+//     question it answers, and the summarizer reads it that way. Strictly smaller than a missing
+//     half, and tracked as issue #200 rather than here.
 
 // At-most-once: the delivery ledger dedups re-deliveries, message_created gating ignores edits, and a
 // monotonic per-thread watermark PER DIRECTION (AgentThread.lastSyncedMessageId /
@@ -145,21 +146,22 @@ export async function ingestMessageIntoThread(
         select: {
           lastSyncedMessageId: true,
           lastAgentMessageId: true,
+          recentSyncedMessageIds: true,
+          recentAgentMessageIds: true,
           lastConversationId: true,
         },
       });
-      // Monotonic watermark: never re-append a message already folded into the thread. ONE PER
-      // DIRECTION, because monotonic only guards while the ids reaching it arrive in order, and the
-      // two writers do not share a latency: a customer's message waits on the eager media pass (a
-      // provider round-trip for STT/vision) and an agent's reply waits on nothing. An attendant
-      // answering a voice note lands FIRST, so a shared column would advance past the customer's id
-      // and drop THEIR message from the memory for good — trading a duplicated attendant line, which
-      // is what this guard is actually for, against a lost customer message.
-      const watermark =
+      // Never re-append a message already folded into the thread. The decision is membership in the
+      // ids this direction remembers, NOT a comparison against the highest one: within a direction
+      // the ids arrive out of order too, and a mark read the later-arriving lower id as handled
+      // (./ingest-dedup.ts, issue #194). ONE SET PER DIRECTION for the older half of the same
+      // reason: the two writers do not share a latency at all, so an attendant answering a voice
+      // note lands before the note itself.
+      const recent =
         params.role === "human_agent"
-          ? row?.lastAgentMessageId
-          : row?.lastSyncedMessageId;
-      if (watermark != null && messageId <= watermark) {
+          ? (row?.recentAgentMessageIds ?? [])
+          : (row?.recentSyncedMessageIds ?? []);
+      if (ingestVerdict(recent, messageId) !== "new") {
         return { outcome: "skipped" as const, closedConversationId: null };
       }
 
@@ -209,12 +211,20 @@ export async function ingestMessageIntoThread(
         THREAD_STATE_NODE,
       );
 
-      // Advance THIS direction's watermark, and only it. Both messages also advance the divider
-      // marker (turns do the same).
+      // Remember THIS direction's message, and only it. The scalar stays the HIGHEST id folded in,
+      // which is now a `max` rather than an assignment: a message ingested out of order must not
+      // walk the mark backwards, or the next reader would read the thread as less complete than it
+      // is. Both messages also advance the divider marker (turns do the same).
+      const prevMark =
+        params.role === "human_agent"
+          ? row?.lastAgentMessageId
+          : row?.lastSyncedMessageId;
+      const mark = prevMark == null ? messageId : Math.max(prevMark, messageId);
+      const remembered = rememberIngested(recent, messageId);
       const advance =
         params.role === "human_agent"
-          ? { lastAgentMessageId: messageId }
-          : { lastSyncedMessageId: messageId };
+          ? { lastAgentMessageId: mark, recentAgentMessageIds: remembered }
+          : { lastSyncedMessageId: mark, recentSyncedMessageIds: remembered };
       await db.agentThread.upsert({
         where: key,
         create: {

@@ -77,6 +77,9 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   REDIRECT_FOLLOWUP: "shared",
   DEBOUNCE: "debounce",
   MEMORY_COMPACT: "compaction",
+  // Cadence, on the debounce tick rather than a lane of its own: what waits behind a queued
+  // ingestion is the next turn's CONTEXT, not a customer reading a reply (issue #194).
+  INGEST_MESSAGE: "debounce",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -95,6 +98,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   FLOWLOG_SWEEP: false,
   DEBOUNCE: false,
   MEMORY_COMPACT: false,
+  INGEST_MESSAGE: false,
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];

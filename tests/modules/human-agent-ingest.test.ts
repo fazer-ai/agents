@@ -8,6 +8,8 @@ import { isHumanAgentTurn } from "@/graph/markers";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { renderTranscript } from "@/modules/memory/summarize";
+import { claimDueDebounceJobs } from "@/modules/scheduler/service";
+import { runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // The shape this suite exists for is the most common one in a real deployment: the agent qualifies a
@@ -154,6 +156,21 @@ describe.skipIf(!dbUp)(
       };
     }
 
+    // INGEST_MESSAGE rides the debounce lane, so this is the claim the fast worker makes. Looped
+    // because one delivery can queue more than a claim's worth over a burst.
+    async function drainIngest(): Promise<void> {
+      for (let pass = 0; pass < 10; pass++) {
+        const claimed = await claimDueDebounceJobs(
+          50,
+          appDb,
+          new Date(),
+          tenantId,
+        );
+        if (claimed.length === 0) return;
+        for (const job of claimed) await runClaimed(job, appDb);
+      }
+    }
+
     async function deliver(
       convId: number,
       message: Record<string, unknown>,
@@ -186,6 +203,10 @@ describe.skipIf(!dbUp)(
         normalized: n,
         base: appDb,
       });
+      // The receiver QUEUES the append now instead of making it (issue #194), so the assertions
+      // below run after the same job the fast tick would drain. Draining it here is what keeps this
+      // an end-to-end test of the real path rather than of the enqueue.
+      await drainIngest();
     }
 
     const fromCustomer = (content: string) => ({

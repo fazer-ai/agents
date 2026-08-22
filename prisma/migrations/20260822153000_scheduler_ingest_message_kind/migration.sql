@@ -1,0 +1,1 @@
+ALTER TYPE "SchedulerJobKind" ADD VALUE 'INGEST_MESSAGE';

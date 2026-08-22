@@ -264,9 +264,13 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     // 2. While the bot is silent, ingest a customer message.
     expect(await ingest({ messageId: 11, text: "obrigado!" })).toBe("ingested");
 
-    // 3. Idempotency: the same id (re-delivery) and an older id are both skipped by the watermark.
+    // 3. Idempotency is membership, not a comparison. The same id is a re-delivery and is skipped;
+    //    a LOWER id that was never folded in is ingested, and that reversal is the point of #194 —
+    //    under the old high-water mark it read as handled and the customer's words were lost for
+    //    good. What still refuses a low id is a window that has forgotten that far back, which
+    //    ./ingest-dedup.ts decides and tests as a table.
     expect(await ingest({ messageId: 11, text: "DUP" })).toBe("skipped");
-    expect(await ingest({ messageId: 5, text: "OLD" })).toBe("skipped");
+    expect(await ingest({ messageId: 5, text: "OLD" })).toBe("ingested");
 
     // 4. The next real turn loads the thread (incl. the ingested messages) and runs without error.
     const result = await graph.invoke(
@@ -279,7 +283,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     // The de-duplicated text never made it in.
     expect(contents.some((c) => c === "DUP")).toBe(false);
 
-    // 5. The watermark advanced to the highest ingested id.
+    // 5. The scalar stays the HIGHEST id folded in, so ingesting 5 after 11 does not walk it back.
     const at = await suDb.agentThread.findUniqueOrThrow({
       where: {
         tenantId_chatwootInstanceId_contactInboxId: {
@@ -423,6 +427,56 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     });
     expect(at.lastSyncedMessageId).toBe(100);
     expect(at.lastAgentMessageId).toBe(101);
+  });
+
+  // Issue #194, hazard 2, and the reason the watermark stops being a high-water mark. The two
+  // customer messages do NOT share a latency: one with media waits on the eager pass (a provider
+  // round-trip for STT/vision) before reaching ingestion, the other waits on nothing. So the LATER
+  // message can be folded in first, and a monotonic watermark then reads the earlier one as already
+  // handled. It is not late, it is ABSENT: nothing re-delivers it and nothing restores it.
+  //
+  // Asserted on the CHANNEL rather than on the return value alone, because "ingested" is a proxy —
+  // what the issue says goes missing is the customer's words in the thread the agent reads.
+  test("a customer message that arrives after a higher id is still folded in", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12401;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingest = (messageId: number, text: string) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: 970,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId,
+        text,
+        role: "customer",
+      });
+
+    // The text message (id 200) overtakes the voice note (id 100) that is still transcribing.
+    expect(await ingest(200, "consegue me ligar?")).toBe("ingested");
+    expect(await ingest(100, "<audio> quanto custa o plano?")).toBe("ingested");
+
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const contents = (
+      ((cp?.channel_values as { messages?: BaseMessage[] })?.messages ??
+        []) as BaseMessage[]
+    ).map((m) => String(m.content));
+    expect(contents.some((c) => c.includes("quanto custa o plano?"))).toBe(
+      true,
+    );
+    expect(contents.some((c) => c.includes("consegue me ligar?"))).toBe(true);
+
+    // Dedup still holds for a genuine re-delivery of either id, which is the property the
+    // high-water mark was there for and the one that must survive replacing it.
+    expect(await ingest(200, "DUP-ALTO")).toBe("skipped");
+    expect(await ingest(100, "DUP-BAIXO")).toBe("skipped");
   });
 
   // The decision issue #187 asked to make EXPLICITLY rather than as a side effect: a human agent's

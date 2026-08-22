@@ -90,17 +90,25 @@ export function planRoleProvisioning(
 // NOTE: it must be asked before `GRANT <role> TO CURRENT_USER ... INHERIT TRUE` further down.
 // Handing the administrative role a path into the runtime role is harmless when the runtime role
 // has no privileges, and is the whole problem when it reaches SUPERUSER through someone else.
+//
+// NOTE: it takes TWO names, and they are not the same name whenever the membership is transitive.
+// `runtime -> team -> privileged` reaches `privileged`, which is what to report; but
+// `REVOKE privileged FROM runtime` targets a grant that does not exist, and Postgres accepts it
+// as a no-op (measured) — so the operator runs it, sees success, restarts, and fails identically.
+// What has to be revoked is the DIRECT edge, `team`. Reporting only one of the two gives either a
+// diagnosis nobody can act on or an instruction that does not say what it is for.
 export function assertRuntimeRoleIsUnprivileged(
   role: string,
-  privilegedVia: string | null,
+  reaches: string | null,
+  revokable: string | null,
 ) {
-  if (privilegedVia === null) return;
+  if (reaches === null) return;
   throw new Error(
-    `runtime role "${role}" reaches a privileged role through a membership (${privilegedVia}), ` +
+    `runtime role "${role}" reaches a privileged role through a membership (${reaches}), ` +
       "which makes RLS a no-op for it just as SUPERUSER would — the server refuses to serve with " +
       "it, so provisioning it would only move the failure to the next boot. No attribute takes " +
-      `this away: revoke the membership, as a role holding ADMIN on it: REVOKE ${privilegedVia} ` +
-      `FROM "${role}";`,
+      "this away, and the membership to revoke is the one it holds DIRECTLY" +
+      `${revokable === null ? "" : `: as a role holding ADMIN on it, REVOKE ${revokable} FROM "${role}";`}`,
   );
 }
 
@@ -182,11 +190,14 @@ async function provisionCheckpointerSchema(
   role: string,
   ident: string,
 ) {
-  const schemaOwner = (
-    await client.query<{ owner: string }>(
-      "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'langgraph'",
-    )
-  ).rows[0]?.owner;
+  const readOwner = async () =>
+    (
+      await client.query<{ owner: string }>(
+        "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'langgraph'",
+      )
+    ).rows[0]?.owner;
+
+  let schemaOwner = await readOwner();
 
   if (schemaOwner === undefined) {
     try {
@@ -199,7 +210,23 @@ async function provisionCheckpointerSchema(
           `leaving it to the server, which creates it as "${role}" on its first boot`,
       );
     }
-  } else {
+    // NOTE: read it back rather than assume the CREATE settled it. `IF NOT EXISTS` reports success
+    // for a schema someone else just created, so "absent, therefore mine" is a conclusion this
+    // branch is not entitled to — and the reconciliation below is exactly what handles a schema
+    // owned by someone else. Reading it back removes the special case instead of adding one: still
+    // absent means the CREATE failed and the server will do it (the warning above says so), and
+    // present means reconcile it like any other existing schema, whoever ended up owning it.
+    //
+    // NOTE: no measured failure sits behind this, and the honest reason is worth writing down. Two
+    // containers booting at once with different runtime roles is the case that would reach it, and
+    // in 14 attempts it never got that far: they collide earlier on `GRANT ... ON DATABASE`, the
+    // same `pg_database` tuple, and the loser dies on `tuple concurrently updated` — loudly, which
+    // is recoverable, rather than reporting success it did not achieve. This stands as the simpler
+    // shape, not as a fix for something observed.
+    schemaOwner = await readOwner();
+  }
+
+  if (schemaOwner !== undefined) {
     // NOTE: an existing schema has to be reached at two depths, only the first of which is obvious:
     //
     //   the schema — USAGE/CREATE, or nothing in it can be reached at all;
@@ -476,17 +503,31 @@ async function main() {
 
     // Re-read rather than reuse the row above: the demotion may have just changed the answer, and
     // on a role that WAS a superuser the answer above is meaningless (see the function's header).
+    const privileged = (
+      await client.query<{
+        reaches: string | null;
+        revokable: string | null;
+      }>(
+        `SELECT
+           (SELECT string_agg(DISTINCT quote_ident(m.rolname), ', ')
+              FROM pg_roles r
+              JOIN pg_roles m ON (m.rolsuper OR m.rolbypassrls) AND m.oid <> r.oid
+             WHERE r.rolname = $1 AND pg_has_role(r.oid, m.oid, 'USAGE')) AS reaches,
+           (SELECT string_agg(DISTINCT quote_ident(d.rolname), ', ')
+              FROM pg_auth_members am
+              JOIN pg_roles r ON r.oid = am.member
+              JOIN pg_roles d ON d.oid = am.roleid
+             WHERE r.rolname = $1 AND am.inherit_option
+               AND EXISTS (SELECT 1 FROM pg_roles p
+                            WHERE (p.rolsuper OR p.rolbypassrls)
+                              AND pg_has_role(d.oid, p.oid, 'USAGE'))) AS revokable`,
+        [role],
+      )
+    ).rows[0];
     assertRuntimeRoleIsUnprivileged(
       role,
-      (
-        await client.query<{ privileged_via: string | null }>(
-          `SELECT string_agg(DISTINCT quote_ident(m.rolname), ', ') AS privileged_via
-             FROM pg_roles r
-             JOIN pg_roles m ON (m.rolsuper OR m.rolbypassrls) AND m.oid <> r.oid
-            WHERE r.rolname = $1 AND pg_has_role(r.oid, m.oid, 'USAGE')`,
-          [role],
-        )
-      ).rows[0]?.privileged_via ?? null,
+      privileged?.reaches ?? null,
+      privileged?.revokable ?? null,
     );
 
     // CONNECT to use the DB; CREATE so PostgresSaver.setup() can run its own

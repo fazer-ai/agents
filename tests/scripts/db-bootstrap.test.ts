@@ -37,6 +37,8 @@ const NOINH_ADMIN = `fazerai_bs_noinh_admin_${process.pid}`;
 const NOINH_APP = `fazerai_bs_noinh_app_${process.pid}`;
 const PRIV_PARENT = `fazerai_bs_priv_parent_${process.pid}`;
 const SU_PARENT = `fazerai_bs_su_parent_${process.pid}`;
+const TEAM_ROLE = `fazerai_bs_team_${process.pid}`;
+const SIDE_ROLE = `fazerai_bs_side_${process.pid}`;
 const HEIR_ROLE = `fazerai_bs_heir_${process.pid}`;
 const SETONLY_ROLE = `fazerai_bs_setonly_${process.pid}`;
 const PRIV_ROLE = `fazerai_bs_priv_${process.pid}`;
@@ -242,27 +244,53 @@ describe("planRoleProvisioning", () => {
   // check that accepts a quote is not defense at all, so it gets a table of its own.
   // NOTE: the question the plan table cannot ask, because it is about the role AFTER provisioning.
   // It is a post-condition on a string the catalog produces, so it tests as one.
+  // NOTE: the question the plan table cannot ask, because it is about the role AFTER provisioning.
+  // It is a post-condition on two strings the catalog produces, so it tests as one.
   describe("assertRuntimeRoleIsUnprivileged", () => {
     test("a role reaching nothing privileged passes", () => {
       expect(() =>
-        assertRuntimeRoleIsUnprivileged("app_role", null),
+        assertRuntimeRoleIsUnprivileged("app_role", null, null),
       ).not.toThrow();
     });
 
-    test("a role reaching one names it, and the revoke", () => {
-      expect(() =>
-        assertRuntimeRoleIsUnprivileged("app_role", "rds_superuser"),
-      ).toThrow(/rds_superuser/);
-      expect(() =>
-        assertRuntimeRoleIsUnprivileged("app_role", "rds_superuser"),
-      ).toThrow(/REVOKE rds_superuser FROM "app_role"/);
+    test("a direct membership is reported and revoked by the same name", () => {
+      const boom = () =>
+        assertRuntimeRoleIsUnprivileged(
+          "app_role",
+          "rds_superuser",
+          "rds_superuser",
+        );
+      expect(boom).toThrow(/reaches a privileged role/);
+      expect(boom).toThrow(/REVOKE rds_superuser FROM "app_role"/);
+    });
+
+    // NOTE: the case the two arguments exist for. `runtime -> team -> privileged` reaches
+    // `privileged`, and revoking THAT from the runtime role is a statement Postgres accepts as a
+    // no-op while changing nothing (measured) — the operator would run it, see success, restart,
+    // and fail identically. The instruction has to name `team`.
+    test("a transitive one is reported by its endpoint and revoked by its edge", () => {
+      const boom = () =>
+        assertRuntimeRoleIsUnprivileged("app_role", "privileged", "team");
+      expect(boom).toThrow(/\(privileged\)/);
+      expect(boom).toThrow(/REVOKE team FROM "app_role"/);
+      expect(boom).not.toThrow(/REVOKE privileged/);
+    });
+
+    // NOTE: reaching something with no revokable edge is possible — the membership can be one this
+    // administrator cannot see a direct grant for — and the refusal still has to happen. It says
+    // what is wrong and stops offering a statement rather than offering a wrong one.
+    test("no revokable edge still refuses, without inventing a statement", () => {
+      const boom = () =>
+        assertRuntimeRoleIsUnprivileged("app_role", "privileged", null);
+      expect(boom).toThrow(/reaches a privileged role/);
+      expect(boom).not.toThrow(/REVOKE/);
     });
 
     // NOTE: the empty string is not "reaches nothing" — `string_agg` returns NULL for no rows, so
     // an empty string could only come from a role actually named "". Treating it as safe would be
     // a falsy check standing in for the absence check the catalog actually makes.
     test("only NULL means it reaches nothing", () => {
-      expect(() => assertRuntimeRoleIsUnprivileged("app_role", "")).toThrow(
+      expect(() => assertRuntimeRoleIsUnprivileged("app_role", "", "")).toThrow(
         "reaches a privileged role",
       );
     });
@@ -331,6 +359,8 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP ROLE IF EXISTS ${SETONLY_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${PRIV_PARENT}`);
       await db.query(`DROP ROLE IF EXISTS ${SU_PARENT}`);
+      await db.query(`DROP ROLE IF EXISTS ${TEAM_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${SIDE_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       // NOTE: the shape of an RDS master user / a Coolify-provisioned owner: it can create roles and owns
@@ -367,6 +397,8 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP ROLE IF EXISTS ${SETONLY_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${PRIV_PARENT}`);
       await db.query(`DROP ROLE IF EXISTS ${SU_PARENT}`);
+      await db.query(`DROP ROLE IF EXISTS ${TEAM_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${SIDE_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       await db.query("SELECT pg_advisory_unlock(729104553)");
@@ -1194,12 +1226,38 @@ describe.skipIf(!dbUp)(
         SU_PARENT,
       );
 
+      // NOTE: a transitive membership is the case the message has to get right. `heir -> team ->
+      // privileged` reaches the privileged role, but `REVOKE <privileged> FROM heir` names a grant
+      // that does not exist — and Postgres ACCEPTS it as a no-op (measured), so the operator runs
+      // it, sees success, restarts, and fails identically. The statement has to name the edge.
+      await db.query(`REVOKE ${SU_PARENT} FROM ${HEIR_ROLE}`);
+      await db.query(`CREATE ROLE ${TEAM_ROLE} NOLOGIN`);
+      await db.query(`GRANT ${SU_PARENT} TO ${TEAM_ROLE}`);
+      await db.query(`GRANT ${TEAM_ROLE} TO ${HEIR_ROLE}`);
+      // NOTE: and a second path to the same privilege that the role does NOT inherit. It is not
+      // why the boot fails, so revoking it would cost the operator a membership for nothing — the
+      // suggestion has to leave it out even though it reaches the same place.
+      await db.query(`CREATE ROLE ${SIDE_ROLE} NOLOGIN`);
+      await db.query(`GRANT ${SU_PARENT} TO ${SIDE_ROLE}`);
+      await db.query(
+        `GRANT ${SIDE_ROLE} TO ${HEIR_ROLE} WITH INHERIT FALSE, SET FALSE`,
+      );
+
+      const transitive = await runBootstrap(APP_PW, HEIR_ROLE);
+      const via = `${transitive.stdout}${transitive.stderr}`;
+      expect(transitive.exitCode).toBe(1);
+      expect(via).toContain(`(${SU_PARENT})`);
+      expect(via).toContain(`REVOKE ${TEAM_ROLE} FROM "${HEIR_ROLE}"`);
+      expect(via).not.toContain(`REVOKE ${SU_PARENT}`);
+      expect(via).not.toContain(SIDE_ROLE);
+
       // NOTE: and a membership that does NOT inherit is accepted, which fixes the choice rather
       // than leaving it to look like an oversight. The question asked is `pg_has_role(..., 'USAGE')`
       // — the boot guard's own — so bootstrap refuses exactly what the server refuses and no more.
       // A stricter 'MEMBER' would reject an install the server starts on. The remaining reach, an
       // explicit `SET ROLE` into a privileged role, is open in the guard too and belongs there.
-      await db.query(`REVOKE ${SU_PARENT} FROM ${HEIR_ROLE}`);
+      await db.query(`REVOKE ${TEAM_ROLE} FROM ${HEIR_ROLE}`);
+      await db.query(`REVOKE ${SIDE_ROLE} FROM ${HEIR_ROLE}`);
       await db.query(
         `GRANT ${SU_PARENT} TO ${HEIR_ROLE} WITH INHERIT FALSE, SET FALSE`,
       );

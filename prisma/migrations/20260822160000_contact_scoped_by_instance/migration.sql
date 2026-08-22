@@ -45,12 +45,22 @@ DELETE FROM "contacts" WHERE "chatwoot_instance_id" IS NULL;
 --
 -- A queued proactive nudge does not wait for a webhook to correct either, so it would authorize and
 -- then message the wrong person. The other side is unlinked (NULL is a state the column already
--- has, the FK being ON DELETE SET NULL) and the retained side has its identity cleared, which the
--- gate reads as `no_identity`: fail-closed, and repopulated by the next event from that account.
+-- has, the FK being ON DELETE SET NULL) and the retained side is cleared, which the gate reads as
+-- `no_identity`: fail-closed, and repopulated by the next event from that account.
+--
+-- EVERY per-contact field the collision could have written, not just the identity ones. The custom
+-- attributes are injected into the system prompt, so the losing account's bag would be read to the
+-- retained account's customer as facts about them, and its watermark goes with it or the next real
+-- event may be judged stale against a position it never held. The audio preference goes too: it is
+-- written by the agent and never mirrored back from Chatwoot, so nothing would ever correct it, and
+-- null is a state it already has (unknown ⇒ mirror what the customer sends).
+--
 -- The retained side FIRST, while the cross-instance links are still there to identify it by: the
 -- unlink below is what erases the evidence of the collision.
 UPDATE "contacts" ct
-SET "name" = NULL, "email" = NULL, "phone" = NULL, "attributes" = '{}'::jsonb
+SET "name" = NULL, "email" = NULL, "phone" = NULL, "attributes" = '{}'::jsonb,
+    "custom_attributes" = '{}'::jsonb, "custom_attributes_at" = NULL,
+    "voice_reply" = NULL
 WHERE EXISTS (
   SELECT 1 FROM "conversations" c
   WHERE c."contact_id" = ct."id"

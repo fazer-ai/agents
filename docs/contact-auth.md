@@ -115,6 +115,14 @@ those columns came from the last event to ARRIVE, not the newest to have happene
 row says which. Values nobody can vouch for are not handed to an authorization decision: the gate
 reads the cleared row as `no_identity` and refuses until the contact's next event fills it back in.
 
+A contact that two Chatwoot accounts had collapsed into one row (the reason `chatwoot_instance_id`
+exists) is cleared harder: the losing account's conversations are unlinked, and the retained row
+loses its custom attributes and their watermark, and its audio preference, alongside the identity.
+Those are per-contact state the collision could have written from either account, and the custom
+attributes are read into the system prompt as facts about whoever is on the other end. The audio
+preference is written by the agent and never mirrored back from Chatwoot, so nothing else would ever
+correct it; null is a state it already has.
+
 The mirrored contact is scoped by **Chatwoot instance**, which this feature is what made necessary:
 a Chatwoot contact id is unique inside one account, not across a tenant, so two accounts under the
 same tenant used to collapse contact 42 into one row and the mirror's last-writer-wins left one

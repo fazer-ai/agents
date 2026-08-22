@@ -512,10 +512,10 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // the copy asking for a code is asking for something that can no longer be read. Neither switch is
   // wrong on its own, so this is said rather than silently resolved.
   if (
-    Boolean(input.contactAuthEnabled) &&
+    input.contactAuthEnabled &&
     (input.contactAuthMethod ?? "").toUpperCase() === "POST" &&
-    Boolean(input.contactAuthIncludeMessageText) &&
-    Boolean(input.contactAuthHandoffEnabled)
+    input.contactAuthIncludeMessageText &&
+    input.contactAuthHandoffEnabled
   ) {
     issues.push({
       key: "contactAuthUnlockHandoff",

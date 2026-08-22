@@ -60,13 +60,20 @@ function makeStub(opts: { page: unknown; sent: Array<[number, string]> }) {
   return async () => client;
 }
 
-function page(msgs: Array<{ id: number; content: string; type?: number }>) {
+function page(
+  msgs: Array<{
+    id: number;
+    content: string;
+    type?: number;
+    private?: boolean;
+  }>,
+) {
   return {
     payload: msgs.map((m) => ({
       id: m.id,
       content: m.content,
       message_type: m.type ?? 0,
-      private: false,
+      private: m.private ?? false,
     })),
   };
 }
@@ -243,6 +250,37 @@ describe.skipIf(!dbUp)("reengage", () => {
     );
     expect(res.outcome).toBe("empty");
     expect(sent).toEqual([]);
+  });
+
+  // A private note is the operator's team talking to itself, and Chatwoot stores it after the message
+  // it is about. Counted as a reply it empties the tail, and the conversations most likely to be
+  // re-engaged are exactly the ones carrying one: a failed turn, an out-of-hours notice, a refusal.
+  test("a private note is not a reply, so the tail behind it is still answered", async () => {
+    const id = await seedConversation(906);
+    const sent: Array<[number, string]> = [];
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([
+            { id: 1, content: "oi, alguém aí?", type: 0 },
+            {
+              id: 2,
+              content: "contato não autorizado",
+              type: 1,
+              private: true,
+            },
+          ]),
+          sent,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("posted");
+    expect(sent).toEqual([[906, REPLY]]);
   });
 
   // Re-engage runs the model and SENDS its answer, so it is a turn, and the contact-authorization

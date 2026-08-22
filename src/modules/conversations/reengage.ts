@@ -38,6 +38,12 @@ function requireTenant(ctx: TenantContext): bigint {
 
 // The unanswered tail: incoming customer messages after the last outgoing/template message (what the
 // customer said that we have not replied to). No outgoing yet ⇒ the whole page (first turn failed).
+//
+// A PRIVATE outgoing message is a note to the operator's own team, not a reply, and Chatwoot stores
+// it after the message it is about — so counting one as the last reply makes the tail empty and the
+// re-engage a no-op. The conversations most likely to be re-engaged are exactly the ones carrying
+// such a note: a failed turn, an out-of-hours notice, a contact-authorization refusal. Same reason
+// `pendingIncoming` skips private messages on the incoming side.
 function incomingAfterLastOutgoing(
   messages: ChatwootMessageRow[],
 ): ChatwootMessageRow[] {
@@ -45,6 +51,7 @@ function incomingAfterLastOutgoing(
   for (const m of messages) {
     if (
       (m.messageType === "outgoing" || m.messageType === "template") &&
+      !m.private &&
       m.id > lastOut
     ) {
       lastOut = m.id;

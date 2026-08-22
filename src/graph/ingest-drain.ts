@@ -76,11 +76,12 @@ export async function drainPendingIngest(
       tenantId,
       "INGEST_MESSAGE",
     );
-    // Every row this drain has touched, kept out of the next pass. Ignoring run_at is what lets the
-    // barrier see a job deferred for an earlier turn, and the same waiver defeats failure backoff:
-    // a row that just failed is due again immediately, so without this a transient checkpointer
-    // error would be retried five times inside one turn and dead-letter the message in
-    // milliseconds — spending the whole budget that exists for coming back LATER.
+    // Every row this drain has touched, kept out of the next pass. It used to carry the failure case
+    // too, and no longer does: the claim itself now honours backoff for a row that has failed
+    // (../modules/scheduler/service.ts). What is left is the DEFERRAL loop, which the claim cannot
+    // see — a job that stands down for a turn keeps `attempts` at zero, so it stays claimable, and
+    // without this the same row would be claimed and deferred once per pass, five times over, inside
+    // a customer's turn.
     const seen: bigint[] = [];
     for (let pass = 0; pass < 5; pass++) {
       const claimed = await claimPendingByKeyPrefix(

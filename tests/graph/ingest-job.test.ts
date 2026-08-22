@@ -598,6 +598,52 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(row.status).toBe("PENDING");
   });
 
+  // What the drain's exclusion list still guards, after the claim itself learned to honour backoff:
+  // the DEFERRAL loop. A job that stands down for a turn keeps `attempts` at zero, so it stays
+  // claimable — and the drain makes five passes. Without the list it would claim and defer the same
+  // row once per pass, five times over, inside a customer's turn.
+  test("one drain claims a deferring row once, not once per pass", async () => {
+    const contactInboxId = 12513;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 992,
+      contactInboxId,
+      graphThreadId,
+      messageId: 850,
+      text: "chega no meio de um turno",
+      role: "customer",
+      agentId: 1n,
+      compactionEnabled: false,
+      base: appDb,
+    });
+
+    // A turn owns the thread for the whole drain, so every pass would defer.
+    markTurnInFlight(graphThreadId);
+    try {
+      expect(await drainPendingIngest(tenantId, graphThreadId, appDb)).toBe(
+        "incomplete",
+      );
+    } finally {
+      clearTurnInFlight(graphThreadId);
+    }
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: `ingest:${graphThreadId}:850` },
+      select: { claimSeq: true, attempts: true, status: true },
+    });
+    // A claim bumps claimSeq; one drain must account for exactly one.
+    expect(row.claimSeq).toBe(1);
+    // And a deferral is not a failure, so nothing was spent.
+    expect(row.attempts).toBe(0);
+    expect(row.status).toBe("PENDING");
+  });
+
   // Round-14 review finding (P1), and the same question the test above answers inside ONE drain,
   // asked across several. Each turn on a thread opens its own drain with an empty exclusion list, so
   // the run_at waiver that lets the barrier see a DEFERRED job also made a failed row due again

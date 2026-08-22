@@ -7,6 +7,7 @@ import {
   type InjectableCredential,
   resolveInjectableCredentialEntry,
 } from "@/modules/vault/injectable";
+import { isNonInjectableSecret } from "@/modules/vault/secret-types";
 import {
   type CheckDeps,
   type ContactAuthVerdict,
@@ -131,6 +132,19 @@ export async function authorizeContact(
         // they are not registered because of a key the operator has not filled in.
         if (!credential) {
           return { outcome: "error", reason: "credential_unavailable" };
+        }
+        // A kind whose rule says it never travels in an outbound request (mcp_env is read by the
+        // stdio loader, langfuse by observability). The request builder falls back to a generic
+        // Bearer when the vault has no injection rule, which is right for a kind it does not know
+        // and exactly wrong here: it would hand an unrelated secret to somebody else's endpoint.
+        // The editor cannot offer these, but REST, MCP and import can carry one.
+        if (isNonInjectableSecret(credential.kind)) {
+          logger.warn(
+            "contact-auth: credential kind %s is never injected into an outbound request (agent=%s)",
+            String(credential.kind),
+            String(agentId),
+          );
+          return { outcome: "error", reason: "credential_not_injectable" };
         }
       }
       return checkContactAuthorization(

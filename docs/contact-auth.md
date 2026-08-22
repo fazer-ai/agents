@@ -30,7 +30,7 @@ read, so a malformed bag can never break the webhook.
 | `enabled`               | `false` | The gate as a whole. Strict boolean: anything else reads as off.    |
 | `url`                   | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
 | `method`                | `GET`   | `GET` or `POST` (the two request shapes below).                     |
-| `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). |
+| `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). A kind the vault marks as never-injected (`mcp_env`, `langfuse`) is refused as an error rather than falling back to a Bearer, which would hand an unrelated secret to the endpoint. |
 | `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error.           |
 | `noticeCooldownSeconds` | `60`    | Clamped 0-3600. Cooldown on the NOTICES for a refused message (the customer copy and the operator note, per conversation), never on the verdict: the endpoint is asked on every message regardless. 0 = notify on every refused message. |
 | `includeMessageText`    | `false` | POST only: forward the triggering message's text as `message.text`, so the endpoint can accept an unlock code the customer sends. The opt-in is stored as set; a GET request simply does not carry the text, and switching the method back to POST brings it back. |
@@ -94,7 +94,9 @@ Chatwoot says, cleared included — a phone kept after it was removed asks the e
 used to have it. They share one source watermark (`contacts.identity_at`), and a tie is decided
 toward the CLEAR: `last_activity_at` has one-second resolution, so two events inside one second
 cannot be ordered by it, and the two directions are not symmetric here — a clear that loses leaves
-the gate asking about an identity the customer no longer has.
+the gate asking about an identity the customer no longer has. The tie is decided per FIELD, not per
+payload: an older snapshot that happens to carry an unrelated cleared field must not ride that in to
+rewrite the rest of what it holds.
 
 The mirrored contact is scoped by **Chatwoot instance**, which this feature is what made necessary:
 a Chatwoot contact id is unique inside one account, not across a tenant, so two accounts under the
@@ -157,7 +159,9 @@ note downgrade: the nudge's text was written FOR the customer), with the same fl
 has no triggering message, so it never carries `message` — and for the same reason it never shares
 a single-flight with an incoming one. A refused nudge still applies the follow-up's deterministic
 post-actions (the step fired and the sequence advances either way, so the operator's labels would
-otherwise be lost), minus the resolve: nothing reached the customer.
+otherwise be lost), minus the resolve: nothing reached the customer. Ownership is re-probed first —
+the check is a round-trip with a ten-second ceiling, and stamping labels on a conversation a human
+took during it would be writing on theirs.
 
 **Playground**: the gate does not run; there is no Chatwoot contact to ask about, and the
 playground exists to test the agent's own behavior.

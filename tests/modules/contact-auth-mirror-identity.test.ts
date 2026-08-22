@@ -214,6 +214,37 @@ describe.if(dbUp)("the identity the gate is given", () => {
     expect((await contactOf(instB)).attributes).toEqual({});
   });
 
+  // The tie is decided per FIELD. A row-wide flag let an older snapshot carrying an unrelated
+  // `email: null` rewrite everything it carried at an equal timestamp, restoring a phone a newer one
+  // had just cleared.
+  test("inside the same second, a clear elsewhere does not restore a cleared field", async () => {
+    await mirror(instB, {
+      conversationId: 8002,
+      phone: "+5511900000002",
+      identifier: "vinculado",
+      updatedAt: 1787074400,
+    });
+    // Newer: clears the phone.
+    await mirror(instB, {
+      conversationId: 8002,
+      phone: null,
+      identifier: "vinculado",
+      updatedAt: 1787078000,
+    });
+    expect((await contactOf(instB)).phone).toBeNull();
+    // Older-but-same-second snapshot that still has the phone AND clears something else. The clear
+    // it carries is the identifier's; the phone must not ride along on it.
+    await mirror(instB, {
+      conversationId: 8002,
+      phone: "+5511900000002",
+      identifier: null,
+      updatedAt: 1787078000,
+    });
+    const row = await contactOf(instB);
+    expect(row.phone).toBeNull();
+    expect(row.attributes).toEqual({});
+  });
+
   // Deliveries do arrive out of order, and this write runs before the conversation's stale guard.
   test("a late delivery does not restore an identifier a newer one cleared", async () => {
     await mirror(instA, {

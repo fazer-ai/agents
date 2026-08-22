@@ -697,6 +697,8 @@ const CONTACT_AUTH_ERROR_LABELS: Record<string, string> = {
   invalid_url: "URL inválida",
   not_configured: "URL não configurada",
   credential_unavailable: "credencial indisponível",
+  credential_not_injectable:
+    "a credencial escolhida nunca é enviada numa requisição",
   invalid_response: "resposta inválida",
   body_too_large: "resposta grande demais",
   unexpected_status: "status inesperado",

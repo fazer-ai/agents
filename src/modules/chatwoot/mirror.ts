@@ -367,11 +367,19 @@ async function upsertContact(
         }
       : {}),
   };
-  const clears =
-    c.name === null ||
-    c.email === null ||
-    c.phone === null ||
-    c.identifier === null;
+  // Only the fields actually being cleared. A single row-wide flag was wrong in a way worth naming:
+  // an OLDER snapshot carrying an unrelated `email: null` would set it, and at an equal timestamp
+  // that snapshot then rewrote EVERY field it carried — restoring, for instance, the phone a newer
+  // one had just cleared. The tie is decided per field, because it is per field that the two
+  // directions stop being symmetric.
+  const cleared: Prisma.ContactUpdateManyMutationInput = {
+    ...(c.name === null ? { name: null } : {}),
+    ...(c.email === null ? { email: null } : {}),
+    ...(c.phone === null ? { phone: null } : {}),
+    ...(c.identifier === null
+      ? { attributes: {} as Prisma.InputJsonValue }
+      : {}),
+  };
 
   // Keyed by INSTANCE too: a Chatwoot contact id is unique inside one account, and two accounts
   // under the same tenant were collapsing contact 42 into one row.
@@ -421,16 +429,21 @@ async function upsertContact(
         id: row.id,
         tenantId,
         ...(eventAt
-          ? {
-              OR: [
-                { identityAt: null },
-                { identityAt: { lt: eventAt } },
-                ...(clears ? [{ identityAt: eventAt }] : []),
-              ],
-            }
+          ? { OR: [{ identityAt: null }, { identityAt: { lt: eventAt } }] }
           : { identityAt: null }),
       },
       data: { ...identity, ...(eventAt ? { identityAt: eventAt } : {}) },
+    });
+  }
+
+  // The tie, and ONLY the clears in it. The watermark does not move: an equal timestamp positions
+  // nothing new, it just fails to order the two payloads, and this is the direction that is safe to
+  // take on a coin toss — the gate ends up asking about less, or about nobody, instead of about an
+  // identity the customer no longer has.
+  if (eventAt && Object.keys(cleared).length > 0) {
+    await db.contact.updateMany({
+      where: { id: row.id, tenantId, identityAt: eventAt },
+      data: cleared,
     });
   }
 

@@ -266,6 +266,17 @@ export type ResolvedInjection =
   | { target: "header"; name: string; value: string }
   | { target: "query"; name: string; value: string };
 
+// A kind that must NEVER travel in an outbound HTTP request (`injection: "none"`: mcp_env is read by
+// the stdio loader, langfuse by observability). `resolveSecretInjection` returns null for these AND
+// for a kind it does not know, and callers that fall back to a generic Bearer on null were sending
+// exactly these secrets to somebody else's endpoint. The two nulls mean opposite things: unknown is
+// "no rule, use the default", non-injectable is "there is a rule and it says no".
+export function isNonInjectableSecret(
+  kind: string | null | undefined,
+): boolean {
+  return getSecretType(kind)?.injection === "none";
+}
+
 export function resolveSecretInjection(
   kind: string | null | undefined,
   secret: string,

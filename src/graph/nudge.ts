@@ -471,6 +471,42 @@ export async function runAgentNudge(
     completed: false,
   };
 
+  // Asked once before the send and once after moderation, which is why it is a closure and not two
+  // reads: the answer has to be produced the same way both times, or the second one would be a
+  // different question wearing the first one's name. Each mode keeps its own semantics — the
+  // live-gated path re-probes Chatwoot itself (the pre-invoke GET only covers the window BEFORE the
+  // model ran), the event-nudge path reads the mirror.
+  const botStillOwnsIt = async (): Promise<
+    "ours" | "not-ours" | "unavailable"
+  > => {
+    if (params.requireLiveBotOwnership) {
+      const post = await probeLiveOwnership();
+      if (post === "unavailable") return "unavailable";
+      return post === "not-owned" ? "not-ours" : "ours";
+    }
+    const ours = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const conv = await db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        },
+        select: { assigneeType: true, status: true, assigneeId: true },
+      });
+      return shouldBotHandle(
+        {
+          assigneeType: conv?.assigneeType ?? null,
+          assigneeId: conv?.assigneeId ?? null,
+          status: conv?.status ?? null,
+        },
+        { ourAgentBotId: cfg.agentBotId },
+      );
+    });
+    return ours ? "ours" : "not-ours";
+  };
+
   // `canMessage` is the caller's own proof of ownership, not a shared variable: the branches below
   // run AFTER the model and pass the ownership re-probed then, while the contact-auth refusal runs
   // BEFORE any model work and passes the one just probed. Reading a single later variable is what
@@ -559,13 +595,19 @@ export async function runAgentNudge(
         String(conversationId),
         auth.outcome,
       );
-      // The step FIRED, and the deterministic post-actions are the system's, not the agent's:
-      // the follow-up handler stamps and advances the sequence either way, so skipping them here
-      // loses the operator's labels for good. Ownership was just probed and nothing has run since.
-      // No resolve, though: the same rule as the noted-window branch, where nothing reached the
-      // customer either — closing the conversation on the back of a message nobody received.
+      // The step FIRED, and the deterministic post-actions are the system's, not the agent's: the
+      // follow-up handler stamps and advances the sequence either way, so skipping them here loses
+      // the operator's labels for good. No resolve, though: the same rule as the noted-window
+      // branch, where nothing reached the customer either.
+      //
+      // Ownership is asked AGAIN, not carried from before the gate: the authorization request is a
+      // round-trip to somebody else's endpoint with up to a ten-second ceiling, which is exactly the
+      // kind of slow work the normal path re-probes after. Stamping labels on a conversation a
+      // human took during those seconds is writing on their conversation. A probe that cannot
+      // answer means we do not know, and we do not touch it.
+      const stillOurs = await botStillOwnsIt().catch(() => "unavailable");
       await applyPostActions({
-        canMessage: canMessagePre,
+        canMessage: stillOurs === "ours",
         allowResolve: false,
       });
       return "silent";
@@ -942,42 +984,6 @@ export async function runAgentNudge(
   // these checks exist for, and it does not reach the one conversation we just handed to one. Every
   // OTHER kind of proactive text is still decided by them.
   const handedOff = handoffAnsweredTheTurn(handoffState);
-
-  // Asked once before the send and once after moderation, which is why it is a closure and not two
-  // reads: the answer has to be produced the same way both times, or the second one would be a
-  // different question wearing the first one's name. Each mode keeps its own semantics — the
-  // live-gated path re-probes Chatwoot itself (the pre-invoke GET only covers the window BEFORE the
-  // model ran), the event-nudge path reads the mirror.
-  const botStillOwnsIt = async (): Promise<
-    "ours" | "not-ours" | "unavailable"
-  > => {
-    if (params.requireLiveBotOwnership) {
-      const post = await probeLiveOwnership();
-      if (post === "unavailable") return "unavailable";
-      return post === "not-owned" ? "not-ours" : "ours";
-    }
-    const ours = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      const conv = await db.conversation.findUnique({
-        where: {
-          tenantId_chatwootInstanceId_chatwootConversationId: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            chatwootConversationId: conversationId,
-          },
-        },
-        select: { assigneeType: true, status: true, assigneeId: true },
-      });
-      return shouldBotHandle(
-        {
-          assigneeType: conv?.assigneeType ?? null,
-          assigneeId: conv?.assigneeId ?? null,
-          status: conv?.status ?? null,
-        },
-        { ourAgentBotId: cfg.agentBotId },
-      );
-    });
-    return ours ? "ours" : "not-ours";
-  };
 
   let canMessagePost: boolean;
   if (handedOff) {

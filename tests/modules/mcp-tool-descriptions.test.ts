@@ -73,7 +73,18 @@ const SETTINGS_DESC_CEILING = 2_000;
 // to fit under 10,200 was the available move and the wrong one — null is the whole semantics of the
 // override, and cutting the sentence that explains it is cutting what is easiest rather than what is
 // cheapest. Headroom over 10,235 stays tighter than a block, as before.
-const SETTINGS_SCHEMA_CEILING = 10_600;
+//
+// RAISED from 10,600 for issue #182, and again the raise is the decision the ceiling forces. The
+// `contactAuth` block declares nine fields and costs 1,068 characters, above a whole block, and
+// trimming it to fit was tried first: it bought 92. What is left is not padding. Three of the nine
+// carry a note a caller cannot get by trying, and each names a way the block fails SILENTLY.
+// `noticeCooldownSeconds` reads as a verdict cache to anyone who has met one, and a caller who
+// believes it is caching sets it high and thinks revocation is instant when it is not.
+// `includeMessageText` is read as false under GET, so the unlock flow is configured, stored,
+// and never runs. `denyMessage: null` means say nothing, which is a refusal the customer sees no
+// sign of. The rest is the shape: nine fields, an enum and the nullable wrappers, and that part
+// does not compress. Headroom over 11,303 stays tighter than a block, as before.
+const SETTINGS_SCHEMA_CEILING = 11_650;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {

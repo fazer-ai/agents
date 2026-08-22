@@ -284,17 +284,25 @@ const contactAuth = z.looseObject({
   method: oneOf(CONTACT_AUTH_METHODS).optional(),
   credentialRef: credentialRef(),
   timeoutMs: z.number().optional().describe("1000-10000, clamped"),
-  cacheTtlSeconds: z
+  noticeCooldownSeconds: z
     .number()
     .optional()
-    .describe("how long a verdict is reused; 0 = ask every message"),
+    .describe(
+      "cooldown on the refusal NOTICES, never on the verdict; 0 = notify on every refusal",
+    ),
+  includeMessageText: z
+    .boolean()
+    .optional()
+    .describe(
+      "POST only: forward the message text so the endpoint can accept an unlock code; false under GET",
+    ),
   denyMessage: z
     .string()
     .nullable()
     .optional()
     .describe("what a REFUSED contact receives; null = say nothing"),
   handoffEnabled: z.boolean().optional(),
-  handoffTeamId: chatwootId().describe("Chatwoot team id for the refused open"),
+  handoffTeamId: chatwootId().describe("Chatwoot team id"),
 });
 
 const channelRedirect = z.looseObject({

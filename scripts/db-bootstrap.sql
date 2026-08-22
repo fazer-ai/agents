@@ -40,8 +40,12 @@ DECLARE
   v_role       text := current_setting('fazerai.app_role');
   v_pw         text := current_setting('fazerai.app_password');
   v_privileged boolean;
+  v_createdb   boolean;
+  v_createrole boolean;
 BEGIN
-  SELECT (rolsuper OR rolbypassrls) INTO v_privileged FROM pg_roles WHERE rolname = v_role;
+  SELECT (rolsuper OR rolbypassrls), rolcreatedb, rolcreaterole
+    INTO v_privileged, v_createdb, v_createrole
+    FROM pg_roles WHERE rolname = v_role;
   IF v_privileged IS NULL THEN
     EXECUTE format(
       'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE',
@@ -52,6 +56,12 @@ BEGIN
       v_role, v_pw);
   ELSE
     EXECUTE format('ALTER ROLE %I LOGIN PASSWORD %L', v_role, v_pw);
+    -- CREATEDB and CREATEROLE do not defeat RLS, so they are not part of the demotion above and
+    -- nothing downstream checks them -- this script is what takes them away. One statement each,
+    -- and only when actually set: an administrator may only set an attribute it holds itself, so a
+    -- combined statement would lose the half it can do to the half it cannot.
+    IF v_createdb   THEN EXECUTE format('ALTER ROLE %I NOCREATEDB', v_role);   END IF;
+    IF v_createrole THEN EXECUTE format('ALTER ROLE %I NOCREATEROLE', v_role); END IF;
   END IF;
   -- CONNECT to use the DB; CREATE so the LangGraph PostgresSaver.setup() can run its
   -- `CREATE SCHEMA IF NOT EXISTS langgraph` at boot (the privilege is checked even when the

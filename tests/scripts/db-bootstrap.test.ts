@@ -81,27 +81,93 @@ describe("planRoleProvisioning", () => {
   ][] = [
     [
       "a role that does not exist is created, with the full attribute list",
-      { exists: false, isSuperuser: false, bypassesRls: false },
+      {
+        exists: false,
+        isSuperuser: false,
+        bypassesRls: false,
+        hasCreateDb: false,
+        hasCreateRole: false,
+      },
       "create",
     ],
     [
       "an existing, unprivileged role has only its password re-asserted",
-      { exists: true, isSuperuser: false, bypassesRls: false },
+      {
+        exists: true,
+        isSuperuser: false,
+        bypassesRls: false,
+        hasCreateDb: false,
+        hasCreateRole: false,
+      },
       "syncPassword",
     ],
     [
       "an existing SUPERUSER role is demoted, because RLS is a no-op for it",
-      { exists: true, isSuperuser: true, bypassesRls: false },
+      {
+        exists: true,
+        isSuperuser: true,
+        bypassesRls: false,
+        hasCreateDb: false,
+        hasCreateRole: false,
+      },
       "demote",
     ],
     [
       "an existing BYPASSRLS role is demoted for the same reason",
-      { exists: true, isSuperuser: false, bypassesRls: true },
+      {
+        exists: true,
+        isSuperuser: false,
+        bypassesRls: true,
+        hasCreateDb: false,
+        hasCreateRole: false,
+      },
       "demote",
     ],
     [
       "both attributes at once is still one demotion",
-      { exists: true, isSuperuser: true, bypassesRls: true },
+      {
+        exists: true,
+        isSuperuser: true,
+        bypassesRls: true,
+        hasCreateDb: false,
+        hasCreateRole: false,
+      },
+      "demote",
+    ],
+    // CREATEDB and CREATEROLE do not change the PLAN, and that is the point rather than an
+    // omission: neither defeats RLS, so neither is worth failing a boot over. They are stripped
+    // alongside the password sync, one statement each, so that a partial strip still happens.
+    [
+      "CREATEDB alone does not turn a password sync into a demotion",
+      {
+        exists: true,
+        isSuperuser: false,
+        bypassesRls: false,
+        hasCreateDb: true,
+        hasCreateRole: false,
+      },
+      "syncPassword",
+    ],
+    [
+      "neither does CREATEROLE",
+      {
+        exists: true,
+        isSuperuser: false,
+        bypassesRls: false,
+        hasCreateDb: false,
+        hasCreateRole: true,
+      },
+      "syncPassword",
+    ],
+    [
+      "but a SUPERUSER that also has them is still a demotion",
+      {
+        exists: true,
+        isSuperuser: true,
+        bypassesRls: false,
+        hasCreateDb: true,
+        hasCreateRole: true,
+      },
       "demote",
     ],
   ];
@@ -119,6 +185,8 @@ describe("planRoleProvisioning", () => {
         exists: false,
         isSuperuser: false,
         bypassesRls: false,
+        hasCreateDb: false,
+        hasCreateRole: false,
       }),
     ).toBe("create");
   });
@@ -229,6 +297,36 @@ describe.skipIf(!dbUp)(
           (await c.query("SELECT current_user")).rows[0].current_user,
       );
       expect(who).toBe(APP_ROLE);
+    });
+
+    test("elevated attributes that do not defeat RLS are still taken away", async () => {
+      const db = su as Client;
+      // Before this script branched by catalog state, every boot re-asserted one option list, so a
+      // role that picked up CREATEDB or CREATEROLE lost them again on the next boot. Nothing
+      // downstream notices these two -- the boot guard only reads rolsuper/rolbypassrls -- so this
+      // script is the only thing that takes them away.
+      await db.query(`ALTER ROLE ${APP_ROLE} CREATEDB CREATEROLE`);
+
+      const { exitCode, stdout, stderr } = await runBootstrap(ROTATED_PW);
+      expect(exitCode).toBe(0);
+
+      // Partial, and deliberately so: an administrator may only set an attribute it holds itself,
+      // and this one has CREATEROLE and not CREATEDB. One statement each is what makes the half it
+      // CAN do still happen; a combined statement would lose both to the one it is refused.
+      const after = await onProbe(
+        urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB),
+        async (c) =>
+          (
+            await c.query(
+              "SELECT rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = $1",
+              [APP_ROLE],
+            )
+          ).rows[0],
+      );
+      expect(after).toEqual({ rolcreatedb: true, rolcreaterole: false });
+      expect(`${stdout}${stderr}`).toContain("NOCREATEDB");
+
+      await db.query(`ALTER ROLE ${APP_ROLE} NOCREATEDB`);
     });
 
     test("a runtime role that IS privileged is refused, in terms the operator can act on", async () => {

@@ -48,6 +48,8 @@ interface RuntimeRoleState {
   exists: boolean;
   isSuperuser: boolean;
   bypassesRls: boolean;
+  hasCreateDb: boolean;
+  hasCreateRole: boolean;
 }
 
 export type RoleProvisioningPlan = "create" | "demote" | "syncPassword";
@@ -96,6 +98,21 @@ async function runRoleDdl(client: Client, plan: RoleProvisioningPlan) {
   `);
 }
 
+// Elevated attributes the runtime role must not keep, but whose removal is NOT the demote branch's
+// business: neither defeats RLS, so the boot guard does not look at them and nothing downstream
+// notices. Before this file branched, every boot re-asserted them as part of one option list, and
+// that is the behaviour being kept — a role that acquired CREATEDB or CREATEROLE along the way is
+// still stripped of them on the next boot.
+//
+// One statement each, because a `CREATEROLE` administrator may take CREATEROLE away and not
+// CREATEDB (it can only set an attribute it holds itself, measured), and a combined statement would
+// lose both to the one it is refused. And a warning rather than a refusal, because RLS holds either
+// way and this script must not turn a hardening it cannot finish into a crash-loop.
+const ELEVATED_ATTRIBUTES = [
+  ["hasCreateDb", "NOCREATEDB"],
+  ["hasCreateRole", "NOCREATEROLE"],
+] as const satisfies readonly (readonly [keyof RuntimeRoleState, string])[];
+
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -135,6 +152,8 @@ async function main() {
       app_exists: boolean;
       app_superuser: boolean;
       app_bypassrls: boolean;
+      app_createdb: boolean;
+      app_createrole: boolean;
       admin_superuser: boolean;
       server_version_num: number;
     }>(
@@ -142,17 +161,22 @@ async function main() {
          EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) AS app_exists,
          COALESCE((SELECT rolsuper      FROM pg_roles WHERE rolname = $1), false) AS app_superuser,
          COALESCE((SELECT rolbypassrls  FROM pg_roles WHERE rolname = $1), false) AS app_bypassrls,
+         COALESCE((SELECT rolcreatedb   FROM pg_roles WHERE rolname = $1), false) AS app_createdb,
+         COALESCE((SELECT rolcreaterole FROM pg_roles WHERE rolname = $1), false) AS app_createrole,
          COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false) AS admin_superuser,
          current_setting('server_version_num')::int AS server_version_num`,
       [role],
     );
     const s = state.rows[0];
     if (!s) throw new Error("could not read the role catalog");
-    const plan = planRoleProvisioning({
+    const runtimeRole: RuntimeRoleState = {
       exists: s.app_exists,
       isSuperuser: s.app_superuser,
       bypassesRls: s.app_bypassrls,
-    });
+      hasCreateDb: s.app_createdb,
+      hasCreateRole: s.app_createrole,
+    };
+    const plan = planRoleProvisioning(runtimeRole);
 
     if (plan === "demote") {
       // Fatal: RLS is a silent no-op for a privileged role, so the server refuses to serve with it
@@ -186,6 +210,17 @@ async function main() {
           `db-bootstrap: could not sync the password of runtime role "${role}" (${message(err)}); ` +
             "leaving it as it is — the server reports an authentication failure if it is stale",
         );
+      }
+      for (const [held, option] of ELEVATED_ATTRIBUTES) {
+        if (!runtimeRole[held]) continue;
+        try {
+          await client.query(`ALTER ROLE ${ident} ${option}`);
+        } catch (err) {
+          console.warn(
+            `db-bootstrap: could not apply ${option} to runtime role "${role}" ` +
+              `(${message(err)}); RLS is unaffected, but the role keeps a privilege it should not have`,
+          );
+        }
       }
     } else {
       await runRoleDdl(client, plan);

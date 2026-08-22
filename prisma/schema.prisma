@@ -545,8 +545,8 @@ model AgentThread {
   lastConversationId  Int?     @map("last_conversation_id")
   lastSyncedMessageId Int?     @map("last_synced_message_id")
   lastAgentMessageId  Int?     @map("last_agent_message_id")
-  recentSyncedMessageIds Int[] @map("recent_synced_message_ids")
-  recentAgentMessageIds  Int[] @map("recent_agent_message_ids")
+  recentSyncedMessageIds Int[] @default([]) @map("recent_synced_message_ids")
+  recentAgentMessageIds  Int[] @default([]) @map("recent_agent_message_ids")
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 

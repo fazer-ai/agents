@@ -4,7 +4,6 @@ import logger from "@/api/lib/logger";
 import { armCompaction } from "@/modules/memory/compact";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
-import { isTurnInFlight } from "./inflight";
 import { type IngestRole, ingestMessageIntoThread } from "./ingest";
 
 // Continuous ingestion as a scheduler job, instead of an append made inline while the webhook is
@@ -129,25 +128,12 @@ export async function ingestHandler(
   if (!p) return { outcome: "done" };
   const tenantId = job.tenantId;
 
-  // THE DEFERRAL THIS JOB EXISTS FOR. A turn owns the channel right now, and anything appended
-  // beside it is undone when it saves. The append is not attempted and the thread's record is not
-  // touched, so the message stays owed rather than becoming a message the thread believes it has.
-  //
-  // `reschedule` rather than `fail`: waiting for a turn is not an error and must not consume an
-  // attempt, or a contact in a long conversation would dead-letter their own message.
-  if (isTurnInFlight(p.graphThreadId)) {
-    logger.info(
-      "ingest: a turn is in flight (thread=%s), deferring message %s",
-      p.graphThreadId,
-      String(p.messageId),
-    );
-    return {
-      outcome: "reschedule",
-      runAt: new Date(Date.now() + DEFER_ON_TURN_MS),
-    };
-  }
-
-  await ingestMessageIntoThread({
+  // THE DEFERRAL THIS JOB EXISTS FOR, asked for with a flag rather than checked here. The decision
+  // has to be taken under the `ingest:<thread>` lock to be exclusive with a turn marking itself, and
+  // that lock lives inside ./ingest.ts — a check made out here would only be staggered: the turn can
+  // take the lock, mark itself and release it between our check and the append.
+  const outcome = await ingestMessageIntoThread({
+    deferIfTurnInFlight: true,
     tenantId,
     instanceId: p.instanceId,
     conversationId: p.conversationId,
@@ -170,6 +156,20 @@ export async function ingestHandler(
         base,
       }).then(() => undefined),
   });
+
+  // `reschedule` rather than `fail`: waiting on a turn is not an error and must not consume an
+  // attempt, or a contact in a long conversation would dead-letter their own message.
+  if (outcome === "deferred") {
+    logger.info(
+      "ingest: a turn is in flight (thread=%s), deferring message %s",
+      p.graphThreadId,
+      String(p.messageId),
+    );
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + DEFER_ON_TURN_MS),
+    };
+  }
   return { outcome: "done" };
 }
 

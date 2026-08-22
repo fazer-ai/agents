@@ -70,22 +70,37 @@ export type IngestRole = "customer" | "human_agent";
 // customer's. Both shapes already exist (the reactive turn writes it standalone, ingestion folds it
 // in), and the split is forced rather than chosen: a message carries ONE marker, so an attendant's
 // reply that also opened the attendance cannot be both.
+// IDS ARE DERIVED FROM THE CHATWOOT MESSAGE, not generated, and that is what makes a retry safe.
+// The append and the row that records it are not one atomic write: `graph.updateState` goes to the
+// checkpointer's own store, the watermark goes to our transaction, and a failure between them rolls
+// back only the second. Since ingestion became a retried job, that partial success comes back — and
+// with a fresh uuid each time, the retry would append the SAME message again, once per transient
+// failure. The reducer replaces a same-id message in place, so a derived id turns the retry into a
+// no-op rewrite instead. `messageId` is unique per Chatwoot account, and a divider written with its
+// message needs its own, hence the suffix.
 export function ingestedMessages(
   role: IngestRole,
   text: string,
   conversationId: number,
   writeDivider: boolean,
+  messageId?: number,
 ): BaseMessage[] {
+  const id = messageId === undefined ? undefined : `ingest:${messageId}`;
+  const dividerId = id === undefined ? undefined : `${id}:divider`;
   if (role === "human_agent") {
-    const reply = humanAgentMessage(conversationId, text);
+    const reply = humanAgentMessage(conversationId, text, id);
     return writeDivider
-      ? [conversationDividerMessage(conversationId), reply]
+      ? [
+          conversationDividerMessage(conversationId, undefined, dividerId),
+          reply,
+        ]
       : [reply];
   }
   return [
     writeDivider
-      ? conversationDividerMessage(conversationId, text)
+      ? conversationDividerMessage(conversationId, text, id)
       : new HumanMessage({
+          ...(id ? { id } : {}),
           content: text,
           additional_kwargs: conversationStamp(conversationId),
         }),
@@ -114,11 +129,15 @@ export interface IngestMessageParams {
   // memory compaction) opens its own transaction, and this one runs under an advisory lock — so it
   // is invoked only after the lock is released.
   onAttendanceClosed?: (previousConversationId: number) => Promise<void> | void;
+  // Return "deferred" instead of appending when a turn owns the thread. Opt-in, and the only caller
+  // that sets it is the scheduler job, because it is the only one with somewhere to come back from:
+  // deferring on a path that cannot retry would just drop the message by a different route.
+  deferIfTurnInFlight?: boolean;
 }
 
 export async function ingestMessageIntoThread(
   params: IngestMessageParams,
-): Promise<"ingested" | "skipped"> {
+): Promise<"ingested" | "skipped" | "deferred"> {
   const base = params.base ?? basePrisma;
   const {
     tenantId,
@@ -165,6 +184,19 @@ export async function ingestMessageIntoThread(
         return { outcome: "skipped" as const, closedConversationId: null };
       }
 
+      // STAND DOWN, and do it from IN HERE. A turn owning the channel undoes anything appended
+      // beside it, and the caller cannot ask this question for us: a check made before the lock is
+      // only staggered, not exclusive — the turn can take the lock, mark itself and release between
+      // that check and this one, and the append then lands inside the invoke after all. Turns mark
+      // themselves under this same lock (./inflight.ts, ../graph/runtime.ts), so asking here is what
+      // makes the two mutually exclusive.
+      //
+      // Nothing is written on this path, watermark included: the message has to stay OWED. Recording
+      // it as handled and not having it is the exact shape of the loss this whole change is about.
+      if (params.deferIfTurnInFlight && isTurnInFlight(graphThreadId)) {
+        return { outcome: "deferred" as const, closedConversationId: null };
+      }
+
       // Which attendance this message belongs to, and what that costs the thread. One decision,
       // shared with the reactive turn and the proactive nudge (./attendance-boundary.ts). Human-agent
       // messages count as a start: an agent who opens the conversation sends its first message, and
@@ -206,6 +238,7 @@ export async function ingestMessageIntoThread(
             params.text,
             conversationId,
             claim.writeDivider,
+            messageId,
           ),
         },
         THREAD_STATE_NODE,

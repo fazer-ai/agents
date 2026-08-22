@@ -136,6 +136,20 @@ describe("ingestedMessages", () => {
 
   // The stamp is what the compaction cut reads (src/modules/memory/cut.ts). A message written
   // without one is invisible to the boundary, and the attendance it belongs to never closes.
+  // The append and the row that records it are not one atomic write, and since ingestion became a
+  // retried job a failure between them comes back. Ids derived from the Chatwoot message are what
+  // makes that retry a no-op rewrite: the reducer replaces a same-id message in place.
+  test("the same message ingested twice is one message, not two", () => {
+    const first = ingestedMessages("customer", "oi", 10, false, 77);
+    const again = ingestedMessages("customer", "oi", 10, false, 77);
+    expect(first[0]?.id).toBe("ingest:77");
+    expect(again[0]?.id).toBe(first[0]?.id);
+    // A divider written with its message needs an id of its own, or it would replace the message.
+    const withDivider = ingestedMessages("human_agent", "oi", 10, true, 77);
+    const ids = withDivider.map((m) => m.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   test("every message written here carries the conversation stamp", () => {
     for (const role of ["customer", "human_agent"] as const) {
       for (const writeDivider of [false, true]) {

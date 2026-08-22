@@ -54,6 +54,30 @@ describe("ingestVerdict", () => {
   });
 });
 
+// What the migration writes, and the reason it writes it that way. An upgraded row starts with the
+// old high-water mark repeated to the cap, so the mark keeps acting as a floor: the ids below it were
+// ingested by the build before this one and are simply not remembered. Seeded as a single element the
+// window would read as partial, and every one of them would have come back as `new` on a re-delivery.
+describe("a window seeded by the migration", () => {
+  const migrated = (mark: number) =>
+    Array.from({ length: INGEST_ID_WINDOW }, () => mark);
+
+  test("keeps the old mark acting as a floor", () => {
+    expect(ingestVerdict(migrated(500), 400)).toBe("ancient");
+    expect(ingestVerdict(migrated(500), 500)).toBe("duplicate");
+    expect(ingestVerdict(migrated(500), 600)).toBe("new");
+  });
+
+  test("hands over to real history as messages arrive", () => {
+    let recent = migrated(500);
+    for (const id of [600, 601, 602]) recent = rememberIngested(recent, id);
+    // The filler is still the floor until a cap's worth of real ids has pushed it out, and an
+    // out-of-order id ABOVE the old mark is ingestable throughout — which is the #194 case.
+    expect(ingestVerdict(recent, 400)).toBe("ancient");
+    expect(ingestVerdict(recent, 599)).toBe("new");
+  });
+});
+
 describe("rememberIngested", () => {
   test("keeps arrival order, most recent last", () => {
     expect(rememberIngested([200], 100)).toEqual([200, 100]);

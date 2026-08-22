@@ -23,6 +23,12 @@
 //
 // NOT chosen by measurement, and saying so is the point: if a reorder ever exceeds it, the symptom
 // is the #194 symptom again on a much narrower path, and the fix is this number.
+// RAISING THIS UN-SATURATES already-migrated rows. The migration that introduced the window filled
+// each existing row to exactly 64 so the old watermark would keep acting as a floor, and a window
+// wider than that reads those rows as partial again — which is the upgrade hazard that fill exists
+// to close, returning for threads that have not yet ingested a cap's worth of messages. Lowering it
+// is free. The migration cannot import this constant (it is frozen at the value that was true when
+// it ran), so this note is the link between them.
 export const INGEST_ID_WINDOW = 64;
 
 export type IngestVerdict =

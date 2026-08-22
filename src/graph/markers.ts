@@ -90,8 +90,10 @@ export const MEMORY_HEAD_CLOSE = "</atendimentos-anteriores>";
 export function conversationDividerMessage(
   conversationId: number,
   trailingText?: string,
+  id?: string,
 ): HumanMessage {
   return new HumanMessage({
+    ...(id ? { id } : {}),
     content: trailingText
       ? `${CONVERSATION_DIVIDER}\n\n${trailingText}`
       : CONVERSATION_DIVIDER,
@@ -153,8 +155,10 @@ export const HUMAN_AGENT_NOTE =
 export function humanAgentMessage(
   conversationId: number,
   text: string,
+  id?: string,
 ): HumanMessage {
   return new HumanMessage({
+    ...(id ? { id } : {}),
     content: `${HUMAN_AGENT_NOTE}\n\n${text}`,
     additional_kwargs: {
       [MARKER_KWARG]: "human_agent" satisfies SystemMarker,

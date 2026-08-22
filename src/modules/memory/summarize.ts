@@ -220,33 +220,39 @@ export function renderTranscript(
 
 // WHAT A PROVIDER REFUSAL IS ALLOWED TO SAY, once it leaves this module.
 //
-// Not `err.message`. The request this error answers carried the whole attendance transcript, and a
-// provider that echoes its input — a content-filter refusal is the ordinary case — would put the
-// customer's own words into `execution_logs.errorMessage`, which `docs/logs.md` promises never
-// carries them, and from there into an alert body. `sanitizeErrorMessage` does not help: it redacts
-// substrings shaped like SECRETS and truncates, so a name or a phone number survives it intact.
+// The rule is one question, asked of every field: WHO CHOSE THIS VALUE. Not what it looks like. The
+// request this error answers carried the whole attendance transcript, so anything the server author
+// controls may be the customer's own words coming back — a content-filter refusal quoting its input
+// is the ordinary case — and `execution_logs.errorMessage` is a column `docs/logs.md` promises never
+// carries them, read by the Logs page, exported by `GET /v1/logs`, and copied into alert bodies.
+// `sanitizeErrorMessage` does not help: it redacts substrings shaped like SECRETS, and a name is not
+// one.
 //
-// AND NOT `code` OR `type` EITHER, which is the part worth writing down because they look safe and
-// are the first thing someone will try to add back. They are vendor error identifiers by CONVENTION
-// only — the value is chosen by the server, and this product accepts an arbitrary OpenAI-compatible
-// endpoint, so the server can be anyone's proxy. A shape test does not fix that: rejecting prose
-// still admits a single bare token, and a phone number, a CPF and a first name are all single bare
-// tokens. Against an absolute promise, a probabilistic guard is the wrong kind of thing.
+// By that question `message` fails, and so do `code` and `type` — vendor error identifiers by
+// convention only, filled in by whatever endpoint the operator pointed this at, and this product
+// accepts an arbitrary OpenAI-compatible one. So does `name`, which reads like the SDK's class and
+// is a plain writable property any wrapper can assign. A shape test rescues none of them: rejecting
+// prose still admits a bare token, and a phone number, a CPF and a first name are all bare tokens.
 //
-// So what is left is what the SERVER cannot author: the error's class, which the client SDK
-// constructs, and the HTTP status, which is taken as three digits and nothing around them. Together
-// they carry the distinction the operator acts on — 401 the credential, 429 the rate, 404 the model
-// id, 4xx/5xx at all versus a timeout. The vendor's own words are still in the process log, which
-// makes no PII promise; the trail is the surface that does.
+// What is left is a CLOSED vocabulary this module owns, and nothing else:
+//
+//   "timeout"        — decided by our own AbortSignal, not by anything in the response
+//   "HTTP <nnn>"     — three digits, with nothing around them kept
+//   "provider error" — everything else, including a connection that never opened
+//
+// Coarse on purpose, and still the distinction an operator acts on: 401 the credential, 429 the
+// rate, 404 the model id, 400 the request, timeout the endpoint. The vendor's own words remain in
+// the process log, which makes no PII promise; the trail is the surface that does.
 //
 // The single consumer is the compaction job (./compact.ts), which fails with this text and hands it
 // to the scheduler; since issue #196 that text also reaches the operator's trail.
-export function providerFailure(err: unknown): string {
+export function providerFailure(err: unknown, timedOut = false): string {
+  if (timedOut) return "timeout";
   if (!(err instanceof Error)) return "provider error";
   const bag = err as unknown as Record<string, unknown>;
-  // Not every client sets a status field — some re-throw a plain Error whose text is all there is —
-  // and "429" is the difference between "the key is wrong" and "slow down". Only the three digits
-  // are taken, so the worst case is a wrong status, never a leak.
+  // Dug out of the message when the client did not set a field for it — some re-throw a plain Error
+  // whose text is all there is, and "429" is the difference between "the key is wrong" and "slow
+  // down". Only the three digits are taken, so the worst case is a wrong status, never a leak.
   const inMessage = /\b([45]\d{2})\b/.exec(err.message)?.[1] ?? null;
   const status =
     typeof bag.status === "number"
@@ -254,10 +260,7 @@ export function providerFailure(err: unknown): string {
       : typeof bag.statusCode === "number"
         ? String(bag.statusCode)
         : inMessage;
-  // The class name is the SDK's, not the response's, and still bounded: `name` is a plain writable
-  // property, so a wrapper that copied a server string into it would otherwise walk straight through.
-  const name = /^[\w.:-]{1,64}$/.test(err.name) ? err.name : "Error";
-  return status ? `${name} HTTP ${status}` : name;
+  return status ? `HTTP ${status}` : "provider error";
 }
 
 export async function summarizeAttendance(
@@ -275,6 +278,10 @@ export async function summarizeAttendance(
   // remember. That is a legitimate empty summary, not a failure, so it must not carry `error`.
   if (!transcript.trim()) return { summary: "" };
 
+  // Ours, held in a variable, because `signal.aborted` is the only reading of "it timed out" that
+  // does not come from the response. Every other tell — the error's name, its message — is written
+  // by someone else.
+  const signal = AbortSignal.timeout(SUMMARIZE_TIMEOUT_MS);
   try {
     const res = await runModelCall(() =>
       model.invoke(
@@ -288,7 +295,7 @@ export async function summarizeAttendance(
           ),
         ],
         {
-          signal: AbortSignal.timeout(SUMMARIZE_TIMEOUT_MS),
+          signal,
           ...(callbacks ? { callbacks } : {}),
         },
       ),
@@ -298,6 +305,6 @@ export async function summarizeAttendance(
     return { summary: text.slice(0, ATTENDANCE_SUMMARY_MAX) };
   } catch (err) {
     logger.warn({ err }, "memory: attendance summary failed, thread untouched");
-    return { summary: "", error: providerFailure(err) };
+    return { summary: "", error: providerFailure(err, signal.aborted) };
   }
 }

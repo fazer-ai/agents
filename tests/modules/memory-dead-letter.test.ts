@@ -626,7 +626,7 @@ test("nothing the provider authored reaches the line, however clean it looks", (
   );
   expect(tokenised).not.toContain(marker);
   expect(tokenised).not.toContain("invalid_request_error");
-  expect(tokenised).toBe("BadRequestError HTTP 400");
+  expect(tokenised).toBe("HTTP 400");
 
   // The dangerous combination for the status: no `status` field at all — a client that re-throws a
   // plain Error, where the text is the only place it lives — and that same text echoing the request.
@@ -637,16 +637,47 @@ test("nothing the provider authored reaches the line, however clean it looks", (
   expect(rethrown).not.toContain(marker);
   expect(rethrown).toContain("429");
 
-  // `name` is the SDK's class, not the response's — but it is a writable property, so a wrapper that
-  // copied a server string into it must not walk through either.
+  // `name` reads like the SDK's class and is a plain writable property, so a wrapper can assign a
+  // transcript-derived token to it — and a BARE one is exactly what would have survived a shape test.
+  // The field is not read at all now, which is the same answer `code` and `type` got.
   const wrapped = providerFailure(
-    Object.assign(new Error("boom"), {
-      name: `Error: ${marker} refused`,
-      status: 500,
-    }),
+    Object.assign(new Error("boom"), { name: marker, status: 500 }),
   );
   expect(wrapped).not.toContain(marker);
-  expect(wrapped).toBe("Error HTTP 500");
+  expect(wrapped).toBe("HTTP 500");
+
+  // With nothing to go on, a fixed literal rather than whatever the error happened to be called.
+  const opaque = providerFailure(
+    Object.assign(new Error(marker), { name: marker }),
+  );
+  expect(opaque).toBe("provider error");
+});
+
+// The one reading of "it timed out" that the other side does not write. `AbortSignal.timeout` rejects
+// with a DOMException whose name is "TimeoutError" — a tell living in the same writable field the
+// rule above stopped trusting — so the signal itself is what decides, and the summariser holds it.
+test("a summariser that ran out of time says so, from our own signal", () => {
+  const marker = "carambola-com-manjericao-8812";
+  const controller = new AbortController();
+  controller.abort();
+  expect(
+    providerFailure(
+      new Error(`aborted while sending ${marker}`),
+      controller.signal.aborted,
+    ),
+  ).toBe("timeout");
+});
+
+// The WIRING of the line above, which no cheap test can drive: making the real timeout fire costs
+// sixty seconds, and shortening it means a parameter that exists for the test. So the rule is
+// asserted over the source instead, and it is worth asserting — without the argument the summariser
+// still fails safely, it just reports "provider error" for a timeout, and nothing else would notice.
+test("the summariser decides a timeout from its own signal, not from the error", async () => {
+  const src = await Bun.file("src/modules/memory/summarize.ts").text();
+  expect(src).toContain(
+    "const signal = AbortSignal.timeout(SUMMARIZE_TIMEOUT_MS)",
+  );
+  expect(src).toContain("providerFailure(err, signal.aborted)");
 });
 
 // ── The family, swept ──────────────────────────────────────────────────────────────────────────

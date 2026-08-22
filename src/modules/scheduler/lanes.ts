@@ -43,13 +43,14 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // Budget: fires for every agent on every closed attendance, against the model semaphore a
   // customer's turn queues on, so its batch is sized to a fraction of that budget.
   MEMORY_COMPACT: "compaction",
-  // Cadence, and it is the DEBOUNCE argument rather than a new one. Ingestion used to happen inline
-  // on the webhook, so moving it here spends whatever the tick takes to notice — and what is waiting
-  // is not a customer reading a reply, it is the NEXT turn's context: a message still queued when a
-  // turn starts is a turn that runs without it. That is felt at the debounce timescale, not the
-  // shared one, and it needs no cap of its own (it runs no model), so it rides the fast tick rather
-  // than justifying a fourth lane.
-  INGEST_MESSAGE: "debounce",
+  // Shared, and the first draft of this had it on the debounce tick for a cadence reason that no
+  // longer holds. What waits behind a queued ingestion is the next turn's CONTEXT, and a turn now
+  // drains what it needs before invoking (../../graph/ingest-job.ts, drainPendingIngest) instead of
+  // hoping the tick got there first. With the barrier the cadence stops mattering, and the fast tick
+  // turns into a liability: the debounce worker can be switched off (DEBOUNCE_WORKER_ENABLED), and
+  // a kind parked in that lane would then never drain at all, silently, on an install that simply
+  // does not use debounce.
+  INGEST_MESSAGE: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider that the rest of the product
@@ -93,6 +94,29 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
 export function sharedProviderConcurrency(budget: number): number {
   return Math.max(1, Math.min(Math.floor(budget / 4), Math.max(1, budget - 1)));
 }
+
+// Whether a finished job's row is DELETED rather than marked DONE. Almost nothing wants this: a
+// DONE row is the record that the work happened, and every other kind keys its dedupeKey to a unit
+// of work that recurs (a conversation's follow-up, a thread's compaction), so the row count is
+// bounded by units and re-arming reuses it.
+//
+// INGEST_MESSAGE is the exception because its key names ONE MESSAGE — it has to, or the second
+// message of a burst would overwrite the first — so its rows are bounded by traffic and nothing
+// reuses them. Nothing sweeps `scheduler_jobs` either, so left DONE they accumulate forever, along
+// with the unique and status indexes over them.
+export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
+  FOLLOWUP: false,
+  FOLLOWUP_SWEEP: false,
+  WEBHOOK_RETRY: false,
+  RAG_INGEST: false,
+  HEARTBEAT: false,
+  FLOWLOG_SWEEP: false,
+  APPOINTMENT_REMINDER: false,
+  REDIRECT_FOLLOWUP: false,
+  DEBOUNCE: false,
+  MEMORY_COMPACT: false,
+  INGEST_MESSAGE: true,
+};
 
 export function kindsInLane(lane: SchedulerLane): SchedulerJobKind[] {
   return (Object.keys(JOB_LANE) as SchedulerJobKind[]).filter(

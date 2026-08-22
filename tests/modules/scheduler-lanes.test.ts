@@ -77,9 +77,10 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   REDIRECT_FOLLOWUP: "shared",
   DEBOUNCE: "debounce",
   MEMORY_COMPACT: "compaction",
-  // Cadence, on the debounce tick rather than a lane of its own: what waits behind a queued
-  // ingestion is the next turn's CONTEXT, not a customer reading a reply (issue #194).
-  INGEST_MESSAGE: "debounce",
+  // Shared: the turn drains its own thread before invoking (issue #194), so the tick cadence stops
+  // deciding correctness — and the debounce lane can be switched off entirely, which would have
+  // stranded every queued message on an install that does not use debounce.
+  INGEST_MESSAGE: "shared",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only

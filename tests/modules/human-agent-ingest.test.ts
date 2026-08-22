@@ -8,7 +8,7 @@ import { isHumanAgentTurn } from "@/graph/markers";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { renderTranscript } from "@/modules/memory/summarize";
-import { claimDueDebounceJobs } from "@/modules/scheduler/service";
+import { claimDueJobs } from "@/modules/scheduler/service";
 import { runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -156,16 +156,11 @@ describe.skipIf(!dbUp)(
       };
     }
 
-    // INGEST_MESSAGE rides the debounce lane, so this is the claim the fast worker makes. Looped
+    // INGEST_MESSAGE rides the SHARED lane, so this is the claim the main tick makes. Looped
     // because one delivery can queue more than a claim's worth over a burst.
     async function drainIngest(): Promise<void> {
       for (let pass = 0; pass < 10; pass++) {
-        const claimed = await claimDueDebounceJobs(
-          50,
-          appDb,
-          new Date(),
-          tenantId,
-        );
+        const claimed = await claimDueJobs(50, appDb, new Date(), tenantId);
         if (claimed.length === 0) return;
         for (const job of claimed) await runClaimed(job, appDb);
       }

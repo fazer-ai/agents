@@ -1,9 +1,18 @@
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import { armCompaction } from "@/modules/memory/compact";
-import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import {
+  type ClaimedJob,
+  claimPendingByKeyPrefix,
+  enqueueJob,
+} from "@/modules/scheduler/service";
+import {
+  type JobResult,
+  registerJobHandler,
+  runClaimed,
+} from "@/modules/scheduler/worker";
 import { type IngestRole, ingestMessageIntoThread } from "./ingest";
 
 // Continuous ingestion as a scheduler job, instead of an append made inline while the webhook is
@@ -16,6 +25,14 @@ import { type IngestRole, ingestMessageIntoThread } from "./ingest";
 // it was handled) or to block the webhook until the turn finished, which is an ack we do not have
 // the time budget for. With a row to come back to, the third answer exists: put it down and try
 // again in a minute.
+//
+// THE TEXT IS ENCRYPTED AT REST. The receiver deliberately keeps message bodies out of our database
+// — the delivery ledger stores status and never the payload, "which is PII" (docs/chatwoot.md) — and
+// a durable job row is exactly the thing that would have quietly walked one back in, transcriptions
+// and quoted context included. `encryptJson` is the same treatment every other secret at rest gets.
+// It does not restore the stronger property the receiver has (the body never lands here at all);
+// that would mean carrying only a reference and re-reading Chatwoot at run time, which is a provider
+// round-trip on every ingestion and a credential this job does not otherwise need.
 //
 // WHAT THE PAYLOAD CARRIES, and why it is the rendered text rather than the raw message. Rendering
 // folds in the eager media pass — transcription, image description, extracted text, quoted context —
@@ -62,7 +79,7 @@ export async function armIngest(params: ArmIngestParams): Promise<void> {
       contactInboxId: params.contactInboxId,
       graphThreadId: params.graphThreadId,
       messageId: params.messageId,
-      text: params.text,
+      text: encryptJson(params.text),
       role: params.role,
       agentId: String(params.agentId),
       compactionEnabled: params.compactionEnabled,
@@ -86,7 +103,11 @@ function parsePayload(payload: Record<string, unknown>): IngestPayload | null {
   const instanceId = s("instanceId");
   const agentId = s("agentId");
   const graphThreadId = s("graphThreadId");
-  const text = s("text");
+  // Decryption is NOT part of the shape check below: a body we cannot read is a real failure (a
+  // rotated key), and it throws so the job retries and then dead-letters visibly, rather than being
+  // silently dropped as an unreadable payload.
+  const encrypted = s("text");
+  const text = encrypted === null ? null : decryptJson<string>(encrypted);
   const role = s("role");
   const conversationId = n("conversationId");
   const contactInboxId = n("contactInboxId");
@@ -171,6 +192,47 @@ export async function ingestHandler(
     };
   }
   return { outcome: "done" };
+}
+
+// THE BARRIER. Queuing the append bought a place to defer to and cost synchronous ordering: a turn
+// can now start while messages meant for its context are still rows. Nothing in the old design had
+// to think about this, because the append had already happened by the time the webhook returned.
+//
+// So a turn drains its own thread before invoking, rather than trusting a tick to have got there
+// first. That is also what freed the job from the fast lane (../modules/scheduler/lanes.ts): with
+// the reader fetching what it needs, the drain cadence stops deciding correctness.
+//
+// CALLED BEFORE THE TURN TAKES `ingest:<thread>` AND MARKS ITSELF, never inside: the ingestion this
+// drains takes that same lock, and draining from within it would deadlock. The gap that leaves is
+// real and is the right one — a message arriving after the drain belongs to the next turn, not this
+// one, and it will find the thread marked and defer.
+//
+// Best-effort by construction. A drain that throws must not fail the customer's turn: the cost of
+// giving up here is a reply written without one earlier message, which is what happens today anyway
+// whenever the message has not arrived yet.
+export async function drainPendingIngest(
+  tenantId: bigint,
+  graphThreadId: string,
+  base: PrismaClient,
+): Promise<void> {
+  try {
+    for (let pass = 0; pass < 5; pass++) {
+      const claimed = await claimPendingByKeyPrefix(
+        "INGEST_MESSAGE",
+        `ingest:${graphThreadId}:`,
+        50,
+        base,
+        tenantId,
+      );
+      if (claimed.length === 0) return;
+      for (const job of claimed) await runClaimed(job, base);
+    }
+  } catch (err) {
+    logger.warn(
+      { err, threadId: graphThreadId },
+      "ingest: draining the thread before the turn failed, continuing",
+    );
+  }
 }
 
 let registered = false;

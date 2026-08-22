@@ -129,14 +129,18 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
     const { id, stale, current } = await staleAndCurrent("tok-complete");
     // `applied` is the only thing the superseded run can learn. Refusing in silence would leave the
     // ordering exactly as invisible as it was before the token, which is what #164 is about.
-    expect(await completeJob(tenantId, id, stale.claimSeq, appDb)).toEqual({
+    expect(
+      await completeJob(tenantId, id, stale.claimSeq, "FOLLOWUP", appDb),
+    ).toEqual({
       applied: false,
     });
     // Still CLAIMED: the arm belongs to the run that is working on it right now, and the work it
     // stands for has not been done. Under the old guard this row read DONE and nothing ever ran it.
     expect((await rowOf(id)).status).toBe("CLAIMED");
 
-    expect(await completeJob(tenantId, id, current.claimSeq, appDb)).toEqual({
+    expect(
+      await completeJob(tenantId, id, current.claimSeq, "FOLLOWUP", appDb),
+    ).toEqual({
       applied: true,
     });
     expect((await rowOf(id)).status).toBe("DONE");
@@ -216,7 +220,9 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
     // The reap re-pends without bumping, and it does not have to: the hung run's CAS also asks for
     // CLAIMED, which a re-pended row is not. What must not happen is the run coming back and marking
     // the re-pended row DONE.
-    expect(await completeJob(tenantId, id, mine.claimSeq, appDb)).toEqual({
+    expect(
+      await completeJob(tenantId, id, mine.claimSeq, "FOLLOWUP", appDb),
+    ).toEqual({
       applied: false,
     });
     expect((await rowOf(id)).status).toBe("PENDING");

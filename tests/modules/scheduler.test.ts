@@ -230,7 +230,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
     const mine = claimed.find((j) => j.id === id);
     expect(mine).toBeDefined();
     expect((await statusOf(id)).status).toBe("CLAIMED");
-    await completeJob(tenantId, id, await seqOf(id), appDb);
+    await completeJob(tenantId, id, await seqOf(id), "FOLLOWUP", appDb);
     expect((await statusOf(id)).status).toBe("DONE");
   });
 

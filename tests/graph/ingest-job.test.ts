@@ -3,14 +3,15 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph-checkpoint";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { encryptJson } from "@/api/lib/crypto";
+import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
-import { armIngest, ingestHandler } from "@/graph/ingest-job";
 import {
-  type ClaimedJob,
-  claimDueDebounceJobs,
-} from "@/modules/scheduler/service";
+  armIngest,
+  drainPendingIngest,
+  ingestHandler,
+} from "@/graph/ingest-job";
+import { type ClaimedJob, claimDueJobs } from "@/modules/scheduler/service";
 import { runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -101,7 +102,7 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
         contactInboxId,
         graphThreadId,
         messageId: 300,
-        text: "e o orçamento, saiu?",
+        text: encryptJson("e o orçamento, saiu?"),
         role: "customer",
         agentId: "1",
         compactionEnabled: false,
@@ -176,12 +177,71 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     await arm(400, "primeira da rajada");
     await arm(401, "segunda da rajada");
 
-    const claimed = await claimDueDebounceJobs(50, appDb, new Date(), tenantId);
+    const claimed = await claimDueJobs(50, appDb, new Date(), tenantId);
     const texts = claimed
       .filter((j) => j.kind === "INGEST_MESSAGE")
-      .map((j) => String(j.payload.text));
+      .map((j) => decryptJson<string>(String(j.payload.text)));
     expect(texts.sort()).toEqual(["primeira da rajada", "segunda da rajada"]);
     for (const job of claimed) await runClaimed(job, appDb);
+  });
+
+  // THE BARRIER (round 2 review). Queuing the append cost synchronous ordering: a turn can start
+  // while a message meant for its context is still a row, and answer without it. The turn drains its
+  // own thread first, and the subtle half is that the drain ignores `run_at` — a job DEFERRED for a
+  // previous turn sits a minute in the future, and those are exactly the messages a starting turn is
+  // missing. A drain that only took due rows would skip them and look correct doing it.
+  test("a turn drains its thread first, deferred rows included", async () => {
+    const contactInboxId = 12504;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 983,
+      contactInboxId,
+      graphThreadId,
+      messageId: 500,
+      text: "esqueci de dizer: é urgente",
+      role: "customer",
+      agentId: 1n,
+      compactionEnabled: false,
+      base: appDb,
+    });
+    // Push it into the future, which is what a deferral leaves behind.
+    await suDb.$executeRawUnsafe(
+      `UPDATE scheduler_jobs SET run_at = now() + interval '1 hour'
+        WHERE tenant_id = ${tenantId} AND kind = 'INGEST_MESSAGE'
+          AND dedupe_key = 'ingest:${graphThreadId}:500'`,
+    );
+    // A due-only claim does not see it, which is the trap this guards.
+    expect(
+      (await claimDueJobs(50, appDb, new Date(), tenantId)).filter(
+        (j) => j.kind === "INGEST_MESSAGE",
+      ),
+    ).toEqual([]);
+
+    await drainPendingIngest(tenantId, graphThreadId, appDb);
+
+    const at = await suDb.agentThread.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { recentSyncedMessageIds: true },
+    });
+    expect(at?.recentSyncedMessageIds).toEqual([500]);
+    // Completed ingestion rows are DELETED, not left DONE: the key names one message, so nothing
+    // ever reuses the row and nothing sweeps this table.
+    const left = await suDb.schedulerJob.count({
+      where: { tenantId, kind: "INGEST_MESSAGE" },
+    });
+    expect(left).toBe(0);
   });
 
   // Two turns really do overlap on one thread (../../src/graph/inflight.ts counts rather than sets),
@@ -207,7 +267,7 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
         contactInboxId,
         graphThreadId,
         messageId: 301,
-        text: "ainda estou aqui",
+        text: encryptJson("ainda estou aqui"),
         role: "customer",
         agentId: "1",
         compactionEnabled: false,

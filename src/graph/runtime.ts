@@ -54,6 +54,7 @@ import {
   isTurnInFlight,
   markTurnInFlight,
 } from "./inflight";
+import { drainPendingIngest } from "./ingest-job";
 import { conversationDividerMessage, conversationStamp } from "./markers";
 import type { ResolvedModelConfig } from "./models";
 import {
@@ -587,6 +588,11 @@ export async function runLoadedTurn(
     //    carrying a system marker the customer never wrote.
     if (loaded.contactInboxId != null) {
       const contactInboxId = loaded.contactInboxId;
+      // BARRIER (issue #194). Continuous ingestion is a queued job now, so a message the agent stayed
+      // silent on may still be a row rather than a turn in this thread. Folded in here, BEFORE the
+      // lock and the in-flight claim below: the drain takes that same lock, and it is also the last
+      // moment at which the append is not the thing this turn erases.
+      await drainPendingIngest(tenantId, graphThreadId, base);
       const checkpointerForDivider =
         params.deps?.checkpointer ?? (await getCheckpointer());
       const dividerGraph = buildThreadStateGraph(checkpointerForDivider);

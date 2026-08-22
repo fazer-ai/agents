@@ -1,7 +1,11 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { kindsInLane, type SchedulerLane } from "@/modules/scheduler/lanes";
+import {
+  JOB_DELETE_ON_DONE,
+  kindsInLane,
+  type SchedulerLane,
+} from "@/modules/scheduler/lanes";
 
 // Durable job store for the scheduler (follow-ups, sweeps, retries).
 //
@@ -171,8 +175,16 @@ async function claimWhere(
   // attendance boundary re-arms the same key), two concurrent runs mean two model calls paid for,
   // and only one of them can land. See src/modules/memory/worker.ts.
   excludeIds?: bigint[],
+  // Restrict to one dedupeKey prefix, and take rows whose run_at is still in the FUTURE. Both are
+  // for the barrier below, and the second is the half that matters: a job deferred for a turn sits
+  // with run_at a minute out, and those are precisely the messages a starting turn is missing.
+  keyPrefix?: string,
 ): Promise<ClaimedJob[]> {
   const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
+  const dueClause =
+    keyPrefix === undefined
+      ? Prisma.sql`AND run_at <= ${now}`
+      : Prisma.sql`AND dedupe_key LIKE ${`${keyPrefix}%`}`;
   const tenantClause =
     tenantId != null ? Prisma.sql`AND tenant_id = ${tenantId}` : Prisma.empty;
   const excludeClause =
@@ -194,7 +206,7 @@ async function claimWhere(
       SET status = 'CLAIMED', claim_seq = claim_seq + 1, claimed_at = ${now}, updated_at = now()
       WHERE id IN (
         SELECT id FROM scheduler_jobs
-        WHERE status = 'PENDING' AND run_at <= ${now} AND ${kindFilter}
+        WHERE status = 'PENDING' ${dueClause} AND ${kindFilter}
           ${tenantClause} ${excludeClause}
         ORDER BY run_at
         FOR UPDATE SKIP LOCKED
@@ -228,6 +240,29 @@ export function claimDueJobs(
   tenantId?: bigint,
 ): Promise<ClaimedJob[]> {
   return claimWhere(limit, base, now, laneFilter("shared"), tenantId);
+}
+
+// Claims every PENDING job of one kind whose dedupeKey starts with `prefix`, DUE OR NOT. The one
+// caller is the turn barrier (../../graph/ingest-job.ts): a turn is about to read this thread and
+// must not read it without the messages already queued for it, and a job deferred a minute ago for
+// a previous turn is exactly such a message. Tenant-scoped by the caller, ordered by run_at so the
+// oldest queued message is folded in first.
+export function claimPendingByKeyPrefix(
+  kind: SchedulerJobKind,
+  prefix: string,
+  limit: number,
+  base: PrismaClient = basePrisma,
+  tenantId?: bigint,
+): Promise<ClaimedJob[]> {
+  return claimWhere(
+    limit,
+    base,
+    new Date(),
+    Prisma.sql`kind = ${kind}::"SchedulerJobKind"`,
+    tenantId,
+    undefined,
+    prefix,
+  );
 }
 
 // The fast debounce tick claims ONLY debounce jobs.
@@ -274,13 +309,22 @@ export async function completeJob(
   tenantId: bigint,
   id: bigint,
   claimSeq: number,
+  kind: SchedulerJobKind,
   base: PrismaClient = basePrisma,
 ): Promise<{ applied: boolean }> {
+  // Same CAS either way, so a superseded claim still writes nothing. Deleting is NOT a handler's job
+  // to do for itself: a handler that removed its own row would leave this call matching nothing, and
+  // the caller reads that as "claim superseded, outcome discarded" — a warning on every successful
+  // run, saying something that did not happen.
   const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    db.schedulerJob.updateMany({
-      where: { id, status: "CLAIMED", claimSeq },
-      data: { status: "DONE" },
-    }),
+    JOB_DELETE_ON_DONE[kind]
+      ? db.schedulerJob.deleteMany({
+          where: { id, status: "CLAIMED", claimSeq },
+        })
+      : db.schedulerJob.updateMany({
+          where: { id, status: "CLAIMED", claimSeq },
+          data: { status: "DONE" },
+        }),
   );
   return { applied: count > 0 };
 }

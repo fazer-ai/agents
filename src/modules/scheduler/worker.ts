@@ -130,6 +130,7 @@ export async function runClaimed(
       job.tenantId,
       job.id,
       job.claimSeq,
+      job.kind,
       base,
     );
     if (!applied) supersededWarning(job, "done");

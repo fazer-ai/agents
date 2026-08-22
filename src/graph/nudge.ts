@@ -40,6 +40,7 @@ import {
   isTurnInFlight,
   markTurnInFlight,
 } from "./inflight";
+import { drainPendingIngest } from "./ingest-job";
 import { conversationDividerMessage, nudgeMessage } from "./markers";
 import {
   type AgentConfig,
@@ -653,6 +654,10 @@ export async function runAgentNudge(
   let claimedGraphThread = false;
   let result: Awaited<ReturnType<typeof graph.invoke>>;
   try {
+    // BARRIER (issue #194), for the same reason the reactive turn has one: a proactive turn reads
+    // this thread too, and a message still queued is a nudge written without it. Before the lock,
+    // which the drain also takes. A conversation-keyed thread simply matches no queued ingestion.
+    await drainPendingIngest(tenantId, graphThreadId, base);
     // Taken INSIDE the try, and released only if it was actually taken: the transaction can reject
     // after its callback ran (a failed commit, a lost connection), and a claim made on the way to a
     // rejection that skips the `finally` never comes back — every later compaction on this thread

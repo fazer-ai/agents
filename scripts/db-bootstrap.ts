@@ -237,10 +237,26 @@ async function main() {
 
     // LangGraph checkpointer schema, owned by the runtime role so PostgresSaver.setup() can create
     // its tables (thread_id prefixing is the tenant fence here).
-    await client.query(
-      `CREATE SCHEMA IF NOT EXISTS langgraph AUTHORIZATION ${ident}`,
-    );
-    await client.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`);
+    //
+    // Best-effort, and this is the one place where that needs saying out loud, because the schema
+    // looks required and is not: `setup()` runs its own `CREATE SCHEMA IF NOT EXISTS langgraph` at
+    // boot, and the runtime role holds CREATE ON DATABASE for exactly that reason (docs/graph.md).
+    // Creating it here only settles the owner earlier — and when it is created there instead, the
+    // owner comes out the same, because the runtime role is the creator. Creating it OWNED BY
+    // another role is the statement that needs the membership above, so an install whose
+    // administrative role cannot take that membership would abort here on something the boot does
+    // for itself a minute later.
+    try {
+      await client.query(
+        `CREATE SCHEMA IF NOT EXISTS langgraph AUTHORIZATION ${ident}`,
+      );
+      await client.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`);
+    } catch (err) {
+      console.warn(
+        `db-bootstrap: could not provision the langgraph schema (${message(err)}); ` +
+          `leaving it to the server, which creates it as "${role}" on its first boot`,
+      );
+    }
 
     console.log(
       `db-bootstrap: provisioned runtime role "${role}" (idempotent; ${plan}, ` +

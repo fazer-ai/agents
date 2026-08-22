@@ -23,6 +23,7 @@ if (suUrl) {
 
 const ADMIN_ROLE = `fazerai_bs_admin_${process.pid}`;
 const APP_ROLE = `fazerai_bs_app_${process.pid}`;
+const FOREIGN_ROLE = `fazerai_bs_foreign_${process.pid}`;
 const PROBE_DB = `fazerai_bs_probe_${process.pid}`;
 const ADMIN_PW = "bs-admin-pw";
 const APP_PW = "bs-app-pw";
@@ -37,13 +38,13 @@ function urlFor(user: string, password: string, database: string): string {
   return u.toString();
 }
 
-async function runBootstrap(appPassword = APP_PW) {
+async function runBootstrap(appPassword = APP_PW, appRole = APP_ROLE) {
   const proc = Bun.spawn(["bun", "scripts/db-bootstrap.ts"], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,
       MIGRATION_DATABASE_URL: urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB),
-      DATABASE_URL: urlFor(APP_ROLE, appPassword, PROBE_DB),
+      DATABASE_URL: urlFor(appRole, appPassword, PROBE_DB),
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -136,6 +137,7 @@ describe.skipIf(!dbUp)(
       await db.query("SELECT pg_advisory_lock(729104553)");
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       // The shape of an RDS master user / a Coolify-provisioned owner: it can create roles and owns
       // the database, and `rolsuper` is false.
@@ -147,9 +149,9 @@ describe.skipIf(!dbUp)(
       // privilege question with a separate answer (on RDS the master user may install it; a
       // non-superuser on a plain server may not), and it is not what this file measures. Leaving it
       // out would fail the script one statement earlier, on something this change does not touch.
-      await onProbe(
-        urlFor("postgres", new URL(suUrl as string).password, PROBE_DB),
-        (c) => c.query("CREATE EXTENSION IF NOT EXISTS vector"),
+      const admin = new URL(suUrl as string);
+      await onProbe(urlFor(admin.username, admin.password, PROBE_DB), (c) =>
+        c.query("CREATE EXTENSION IF NOT EXISTS vector"),
       );
     });
 
@@ -157,6 +159,7 @@ describe.skipIf(!dbUp)(
       const db = su as Client;
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       await db.query("SELECT pg_advisory_unlock(729104553)");
       await db.end();
@@ -235,6 +238,61 @@ describe.skipIf(!dbUp)(
       expect(output).toMatch(/BYPASSRLS|SUPERUSER/);
       expect(output).toContain("NOSUPERUSER NOBYPASSRLS");
       await db.query(`ALTER ROLE ${APP_ROLE} NOBYPASSRLS`);
+    });
+
+    test("a runtime role this administrator did not create still boots", async () => {
+      const db = su as Client;
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // Created by the SUPERUSER, so the administrative role holds no ADMIN over it. Three
+      // statements are then refused at once: the password sync, the membership grant, and the
+      // schema's AUTHORIZATION. None of them is the guarantee this script owes, so a brownfield
+      // install has to boot through all three instead of crash-looping on them.
+      await db.query(
+        `CREATE ROLE ${FOREIGN_ROLE} LOGIN PASSWORD '${APP_PW}' NOSUPERUSER NOBYPASSRLS`,
+      );
+      await db.query(
+        `GRANT CONNECT ON DATABASE ${PROBE_DB} TO ${FOREIGN_ROLE}`,
+      );
+      // The schema survives from the tests above, and `IF NOT EXISTS` short-circuits before the
+      // privilege check — which would hide the very statement this test is about.
+      await onProbe(superuserOnProbe, (c) =>
+        c.query("DROP SCHEMA IF EXISTS langgraph CASCADE"),
+      );
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        APP_PW,
+        FOREIGN_ROLE,
+      );
+      expect(`${stdout}${stderr}`).toContain(
+        "could not provision the langgraph schema",
+      );
+      expect(exitCode).toBe(0);
+
+      // It skipped the schema rather than pretending: what makes that safe is that the runtime
+      // role can create it itself, which is exactly what PostgresSaver.setup() does at boot.
+      const before = await onProbe(
+        superuserOnProbe,
+        async (c) =>
+          (
+            await c.query(
+              "SELECT to_regnamespace('langgraph') IS NOT NULL AS present",
+            )
+          ).rows[0],
+      );
+      expect(before).toEqual({ present: false });
+      const owner = await onProbe(
+        urlFor(FOREIGN_ROLE, APP_PW, PROBE_DB),
+        async (c) => {
+          await c.query("CREATE SCHEMA IF NOT EXISTS langgraph");
+          return (
+            await c.query(
+              "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'langgraph'",
+            )
+          ).rows[0];
+        },
+      );
+      expect(owner).toEqual({ owner: FOREIGN_ROLE });
     });
   },
 );

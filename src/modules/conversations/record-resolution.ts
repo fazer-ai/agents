@@ -30,14 +30,18 @@ import type { ResolutionOrigin } from "@/modules/conversations/resolution-origin
 //      of the row here, because by then the row may already carry OUR OWN close: the mirror can
 //      reflect a toggle before the turn ends (zero lag is the worst case this codebase already
 //      defends against, see `mirrorOnToggle` in tests/graph/runtime.test.ts), and a re-read cannot
-//      tell that apart from somebody else's. Each caller passes the freshest thing it has, which on
-//      the follow-up path is a live GET.
+//      tell that apart from somebody else's. Each caller passes the freshest thing it has, and the
+//      two paths that close during a model call read it live right before the toggle: the follow-up
+//      ladder through its ownership probe, and `resolve_conversation`'s immediate branch on its own,
+//      because a nudge's snapshot was taken a whole generation earlier.
 //   3. Only when the episode has no origin yet. The same no-op reasoning within our own paths: a
 //      follow-up ladder resolving after the agent already called `resolve_conversation`, the redirect
 //      closing a sibling the agent already closed, an operator re-resolving through REST or MCP.
 //
-// What makes NULL mean "this episode has no recorded cause yet" is the clear: every writer of
-// `status` drops the stamp when the conversation LEAVES "resolved", so a reopen-then-close records
+// What makes NULL mean "this episode has no recorded cause yet" is the clear, and that is a rule of
+// its own: `clearsResolutionOrigin` in resolution-origin.ts, asked by every writer of `status`. It
+// drops the stamp on three things — the conversation leaving "resolved", a close of ours losing the
+// ordering, and a brand-new incoming message reopening the episode — so a reopen-then-close records
 // the new cause normally.
 //
 // Both predicates are evaluated by the database in the same statement, not read-then-written, so two

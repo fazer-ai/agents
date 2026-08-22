@@ -278,13 +278,22 @@ export async function summarizeAttendance(
   // remember. That is a legitimate empty summary, not a failure, so it must not carry `error`.
   if (!transcript.trim()) return { summary: "" };
 
-  // Ours, held in a variable, because `signal.aborted` is the only reading of "it timed out" that
-  // does not come from the response. Every other tell — the error's name, its message — is written
-  // by someone else.
-  const signal = AbortSignal.timeout(SUMMARIZE_TIMEOUT_MS);
+  // Ours, and held so that `signal.aborted` can be read afterwards: it is the only reading of "it
+  // timed out" that does not come from the response. Every other tell — the error's name, its
+  // message — is written by someone else.
+  //
+  // Made INSIDE the callback, which is not a detail. `runModelCall` waits on the process-wide model
+  // semaphore BEFORE it calls this, and calls it a SECOND time when the provider returns an empty
+  // completion. A signal created outside would spend its budget queueing behind other turns and hand
+  // the retry whatever was left — so on a fleet busy enough for the wait to approach the ceiling,
+  // every compaction would abort before its call began and dead-letter for a reason that has nothing
+  // to do with the provider. The variable therefore holds the LAST attempt's signal, which is the
+  // one the error came from.
+  let attemptSignal: AbortSignal | undefined;
   try {
-    const res = await runModelCall(() =>
-      model.invoke(
+    const res = await runModelCall(() => {
+      attemptSignal = AbortSignal.timeout(SUMMARIZE_TIMEOUT_MS);
+      return model.invoke(
         [
           new SystemMessage(SYSTEM_PROMPT),
           // NOTE: The transcript is never interpolated into the system prompt. Everything in a
@@ -295,16 +304,19 @@ export async function summarizeAttendance(
           ),
         ],
         {
-          signal,
+          signal: attemptSignal,
           ...(callbacks ? { callbacks } : {}),
         },
-      ),
-    );
+      );
+    });
     const text = contentToText(res.content).trim();
     if (!text) return { summary: "", error: "empty completion" };
     return { summary: text.slice(0, ATTENDANCE_SUMMARY_MAX) };
   } catch (err) {
     logger.warn({ err }, "memory: attendance summary failed, thread untouched");
-    return { summary: "", error: providerFailure(err, signal.aborted) };
+    return {
+      summary: "",
+      error: providerFailure(err, attemptSignal?.aborted === true),
+    };
   }
 }

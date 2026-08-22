@@ -273,6 +273,49 @@ describe("summarizeAttendance", () => {
     expect(res.error).toBeTruthy();
   });
 
+  // The 60s ceiling belongs to the CALL, not to the wait in front of it. `runModelCall` takes a
+  // permit from the process-wide model semaphore before it invokes this, and invokes it a SECOND
+  // time when the provider returns an empty completion — so a signal made once, outside, would spend
+  // its budget queueing behind other turns and then hand the retry the remainder. On a fleet busy
+  // enough for the wait to approach the ceiling, every compaction would abort before its call began
+  // and dead-letter for a reason that has nothing to do with the provider.
+  //
+  // Two distinct, unaborted signals is the observable form of that: one made outside would be the
+  // same object twice.
+  test("each attempt gets its own timeout, started when the call is", async () => {
+    const seen: Array<AbortSignal | undefined> = [];
+    class TwoAttempts extends BaseChatModel {
+      calls = 0;
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "fake-two-attempts";
+      }
+      async _generate(
+        _messages: BaseMessage[],
+        options?: { signal?: AbortSignal },
+      ): Promise<ChatResult> {
+        seen.push(options?.signal);
+        this.calls += 1;
+        // The one fault runModelCall retries rather than failing on.
+        if (this.calls === 1) throw new TypeError("no generations returned");
+        return {
+          generations: [{ text: "resumo", message: new AIMessage("resumo") }],
+        };
+      }
+    }
+    const res = await summarizeAttendance(new TwoAttempts(), [
+      new HumanMessage("oi"),
+    ]);
+    expect(res.error).toBeUndefined();
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBeDefined();
+    expect(seen[0]).not.toBe(seen[1]);
+    expect(seen[0]?.aborted).toBe(false);
+    expect(seen[1]?.aborted).toBe(false);
+  });
+
   test("a provider failure is reported, and never throws into the job", async () => {
     const res = await summarizeAttendance(
       new ScriptedModel(() => {

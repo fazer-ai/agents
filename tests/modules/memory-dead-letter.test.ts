@@ -669,15 +669,16 @@ test("a summariser that ran out of time says so, from our own signal", () => {
 });
 
 // The WIRING of the line above, which no cheap test can drive: making the real timeout fire costs
-// sixty seconds, and shortening it means a parameter that exists for the test. So the rule is
-// asserted over the source instead, and it is worth asserting — without the argument the summariser
-// still fails safely, it just reports "provider error" for a timeout, and nothing else would notice.
+// sixty seconds, and shortening it means a parameter that exists only for the test. So this half is
+// asserted over the source — and it is worth asserting, because without the argument the summariser
+// still fails safely and merely reports "provider error" for a timeout, which nothing would notice.
+// Where the signal is CREATED is not asserted here; that has an observable form, in
+// tests/modules/memory-summarize.test.ts.
 test("the summariser decides a timeout from its own signal, not from the error", async () => {
   const src = await Bun.file("src/modules/memory/summarize.ts").text();
   expect(src).toContain(
-    "const signal = AbortSignal.timeout(SUMMARIZE_TIMEOUT_MS)",
+    "providerFailure(err, attemptSignal?.aborted === true)",
   );
-  expect(src).toContain("providerFailure(err, signal.aborted)");
 });
 
 // ── The family, swept ──────────────────────────────────────────────────────────────────────────

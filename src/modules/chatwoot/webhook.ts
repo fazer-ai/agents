@@ -491,10 +491,11 @@ export async function runEagerMedia(
 
 // Continuous ingestion: fold into the agent's per-contact-inbox memory thread the messages a
 // turn did NOT handle, so the bot has full context when it resumes — a customer message it stayed
-// silent on (out of hours, or a human took over), and a HUMAN agent's reply sent while it was silent.
+// silent on (out of hours, a refused contact, or a human took over), and a HUMAN agent's reply sent
+// while it was silent.
 // Our own bot's outgoing reply is already in the thread (from the turn) and is skipped; so are
 // notes/activities/templates. The CALLER gates this on an ENABLED + PRODUCTION agent (test/disabled
-// never ingest — no cost), so a `consumed` incoming here is always an out-of-hours silence. Eager
+// never ingest — no cost), so a `consumed` incoming here is a message some gate silenced. Eager
 // media (run before the gate for production) means the rendered customer text carries its
 // transcription/extraction. Best-effort: a failure never strands the delivery.
 async function ingestUnhandledMessage(args: {
@@ -534,9 +535,13 @@ async function ingestUnhandledMessage(args: {
   // conversations — the population the whole feature exists for.
   // WHAT gets folded in, and AS WHOM. Two disjoint cases:
   //
-  //  - a customer incoming message the bot will NOT answer: silenced out of hours (act && consumed)
-  //    or not bot-handled (!act — a human owns it, or it is not pending). An answered/debounced
-  //    message is covered by its own turn and is NOT re-ingested here.
+  //  - a customer incoming message the bot will NOT answer: silenced by a gate (act && consumed —
+  //    out of hours, or a contact the authorization gate refused) or not bot-handled (!act — a
+  //    human owns it, or it is not pending). An answered/debounced message is covered by its own
+  //    turn and is NOT re-ingested here. A refusal ingests for the same reason out-of-hours does,
+  //    and it is what makes the unlock flow read as one conversation: when the code finally lands
+  //    and the turn runs, the agent sees what the customer said while it was refused, instead of
+  //    answering a code out of nowhere.
   //  - a HUMAN agent's reply to the customer, whatever the gate decided. No turn ever covers one:
   //    the bot did not write it. On the most ordinary shape of a real deployment — the agent
   //    qualifies a lead, a human takes over, the human closes the sale — this is the entire business

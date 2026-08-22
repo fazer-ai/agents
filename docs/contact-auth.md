@@ -15,6 +15,17 @@ request per incoming message** on gated inboxes (plus one per proactive follow-u
 provisioned for that rate. Concurrent deliveries for one contact are single-flighted into one
 request; sequential messages are not.
 
+**A verdict describes the instant the endpoint evaluated it, and nothing after.** The guarantee is
+per message, not a global order: two checks that overlap in time (a nudge against an incoming
+message, or two messages under `includeMessageText`) are independent requests, and they can settle
+out of order, so a positive answer that was already in flight can land after a refusal. Ordering
+them would not close that window, only move it — the operator can revoke a millisecond after the
+endpoint replies, and no amount of local bookkeeping sees that. What ordering them WOULD cost is
+real: a per-contact order puts a slow check in front of the next message, including the unlock one.
+So the runtime does not serialise, and the fences sit where an out-of-order verdict can still do
+damage — the customer copy and the handoff both re-check that the conversation is still the bot's
+(`stillOurs`), and the notices are claimed per conversation.
+
 Lives in `src/modules/contact-auth/` (`settings.ts` the config reader, `check.ts` the request +
 decision table, `state.ts` the single-flight + notice cooldown, `service.ts` the orchestration both
 callers share).

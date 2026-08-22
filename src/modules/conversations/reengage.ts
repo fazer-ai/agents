@@ -190,6 +190,24 @@ export async function reengageConversation(
       contactAuthFlowEvent(auth),
     );
     if (auth.outcome !== "allowed") return { outcome: "not-authorized" };
+    // Allowed, after a round-trip that may have taken ten seconds. The assignee gate above ran
+    // before it, so a human arriving during the wait would have the turn's tools run on their
+    // conversation — the post gate only withholds the reply. Re-read the mirror and report the same
+    // "gate-closed" the early check reports, because from the operator's side that is what happened.
+    const stillOurs = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const conv = await db.conversation.findUnique({
+        where: { id: resolved.convDbId },
+        select: { status: true, assigneeType: true },
+      });
+      return shouldBotHandle(
+        {
+          assigneeType: conv?.assigneeType ?? null,
+          status: conv?.status ?? null,
+        },
+        { ourAgentBotId: resolved.loaded.agentBotId },
+      );
+    });
+    if (!stillOurs) return { outcome: "gate-closed" };
   }
 
   const outcome = await coalesceAndRunTurn(

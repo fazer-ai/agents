@@ -612,6 +612,18 @@ export async function runAgentNudge(
       });
       return "silent";
     }
+    // Allowed, and the ownership probe above happened BEFORE a round-trip that may have taken ten
+    // seconds. The same reason the refusal re-asks: a human who took the conversation during the
+    // wait would otherwise have the follow-up's tools run on it, and the post-model re-probe only
+    // decides whether the TEXT goes out. A probe that cannot answer means we do not know, and a
+    // follow-up we are unsure about is one we do not send.
+    if ((await botStillOwnsIt().catch(() => "unavailable")) !== "ours") {
+      logger.info(
+        "agentNudge: a human took the conversation during the authorization call (conv=%s)",
+        String(conversationId),
+      );
+      return "silent";
+    }
   }
 
   const tools = await buildToolset(

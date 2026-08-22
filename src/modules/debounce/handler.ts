@@ -403,6 +403,46 @@ export async function flushDebounceJob(
       }
       return { outcome: "done" };
     }
+    // Allowed, and the attribution gate above ran BEFORE a round-trip that may have taken ten
+    // seconds. A human who took the conversation during it would otherwise get the burst answered
+    // over their shoulder: the post gate withholds the reply, but the tools have run by then. Same
+    // question as the gate above, asked again against the mirror; the burst still counts as handled,
+    // exactly as it does when the gate was already closed on the way in.
+    const stillOurs = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const conv = await db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        },
+        select: { status: true, assigneeType: true },
+      });
+      return shouldBotHandle(
+        {
+          assigneeType: conv?.assigneeType ?? null,
+          status: conv?.status ?? null,
+        },
+        { ourAgentBotId: agentBotId },
+      );
+    });
+    if (!stillOurs) {
+      logger.info(
+        "debounce flush: a human took the conversation during the authorization call (conv=%s)",
+        String(conversationId),
+      );
+      const last = readLastMessageId(job.payload);
+      if (last !== null) {
+        await advanceHandledWatermark({
+          tenantId,
+          conversationDbId: ctx.convDbId,
+          toMessageId: last,
+          base,
+        });
+      }
+      return { outcome: "done" };
+    }
   }
 
   // Coalesce the burst past the watermark and answer once. A thrown error (LLM/Chatwoot) bubbles to

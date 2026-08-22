@@ -382,6 +382,48 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(sent).toEqual([[904, REPLY]]);
     });
 
+    // The assignee gate runs before the authorization round-trip, which has a ten-second ceiling. A
+    // human arriving inside it used to get the turn run on their conversation: the post gate holds
+    // the reply back, and by then the tools have written.
+    test("a human taking over during the authorization call closes the gate", async () => {
+      const id = await seedConversation(907, {
+        contactId: await seedContact(44),
+      });
+      const sent: Array<[number, string]> = [];
+      let modelBuilds = 0;
+      const takeOverThenAllow = (async () => {
+        await suDb.conversation.update({
+          where: { id },
+          data: { assigneeType: "User", status: "open" },
+        });
+        return new Response(JSON.stringify({ authorized: true }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch;
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => {
+            modelBuilds += 1;
+            return fakeModel();
+          },
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: takeOverThenAllow,
+        },
+        appDb,
+      );
+      // "gate-closed", not "not-authorized": the endpoint DID clear the contact, and what stopped
+      // the turn is the same thing the early check reports.
+      expect(res.outcome).toBe("gate-closed");
+      expect(modelBuilds).toBe(0);
+      expect(sent).toEqual([]);
+    });
+
     // Nothing to ask the endpoint about is not a pass: the mirror holds no phone, no e-mail and no
     // identifier, so the request is never made and the answer is a refusal.
     test("a contact with no identity is refused without asking", async () => {

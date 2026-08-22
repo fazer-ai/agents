@@ -541,6 +541,50 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(rows[0]?.detail).toMatchObject({ outcome: "allowed" });
   });
 
+  // The window this gate OPENS. The attribution gate runs before the authorization call, and that
+  // call is a round-trip to somebody else's endpoint with a ten-second ceiling; a human taking the
+  // conversation inside it used to find the agent's turn running on it, because runAgentTurn only
+  // re-checks ownership after the model has answered — which withholds the reply and nothing else,
+  // long after the tools have written their labels, cards and attributes.
+  test("a human taking over during the authorization call stops the turn before the model", async () => {
+    const convId = 9313;
+    await seedConversation(convId, inboxFullDbId);
+    const cw = stubChatwoot();
+    let modelBuilds = 0;
+    // The takeover lands WHILE the endpoint is being asked, so the verdict is answering about a
+    // conversation that changed hands after the gate above it said yes.
+    const auth = authDouble(async () => {
+      await suDb.conversation.updateMany({
+        where: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: convId,
+        },
+        data: { assigneeType: "User", assigneeId: 44, status: "open" },
+      });
+      return authorized();
+    });
+    await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_FULL,
+      senderId: 812,
+      phone: PHONE,
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+      makeModel: () => {
+        modelBuilds += 1;
+        return new FakeListChatModel({ responses: ["não devia sair"] });
+      },
+    });
+    // The endpoint WAS asked (the gate before it was still open when the delivery arrived), and the
+    // turn is what does not happen. Nothing is said to the customer and nothing is toggled: the
+    // conversation is the human's now, and this path has no business touching it.
+    expect(auth.calls).toHaveLength(1);
+    expect(modelBuilds).toBe(0);
+    expect(cw.publicOn(convId)).toEqual([]);
+    expect(cw.statusToggles).toEqual([]);
+  });
+
   test("endpoint failure: silence to the customer, no handoff, note + warn line", async () => {
     const convId = 9303;
     await seedConversation(convId, inboxFullDbId);

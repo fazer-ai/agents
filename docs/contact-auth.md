@@ -15,6 +15,18 @@ request per incoming message** on gated inboxes (plus one per proactive follow-u
 provisioned for that rate. Concurrent deliveries for one contact are single-flighted into one
 request; sequential messages are not.
 
+**An allowed verdict is re-fenced against the conversation's owner.** Every caller checks
+attribution before asking (a conversation a human owns costs no authorization call), and the ask is
+a round-trip to somebody else's endpoint with a ceiling of `timeoutMs`. A human taking the
+conversation inside that window would otherwise find the turn running on it: the runtime re-checks
+ownership only after the model has answered, which withholds the reply and nothing else, long after
+the tools have written their labels, cards, attributes and outbound calls. So each of the four
+callers asks again, its own way, the moment the verdict comes back allowed — the webhook and the
+debounce flush against the mirror, the re-engage against the mirror (reporting `gate-closed`, the
+same as the early check), the nudge through its own live probe. The turn's build-and-invoke is slow
+too and this does not pretend to fence that: it is the runtime's window, the same one every agent
+has. What the fence does is refuse to WIDEN it by the length of an operator's network call.
+
 **A verdict describes the instant the endpoint evaluated it, and nothing after.** The guarantee is
 per message, not a global order: two checks that overlap in time (a nudge against an incoming
 message, or two messages under `includeMessageText`) are independent requests, and they can settle

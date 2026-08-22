@@ -246,6 +246,45 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     expect(s.messages).toEqual([]);
   });
 
+  // The ownership probe runs before the authorization round-trip, which has a ten-second ceiling. A
+  // human arriving inside it used to have the follow-up's tools run on their conversation: the
+  // post-model re-probe only decides whether the TEXT goes out.
+  test("a human taking over during the authorization call stops the follow-up", async () => {
+    await seedConv(9404);
+    const s = stub();
+    let modelBuilds = 0;
+    const auth = authFetch(
+      () => new Response('{"authorized":true}', { status: 200 }),
+    );
+    const takeOverThenAllow = (async (input: RequestInfo | URL) => {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: 9404 },
+        data: { assigneeType: "User", assigneeId: 51, status: "open" },
+      });
+      return auth.fetchImpl(input);
+    }) as unknown as typeof fetch;
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9404`,
+      nudge: { source: "followup", kind: "inactivity" },
+      base: appDb,
+      deps: {
+        makeModel: () => {
+          modelBuilds += 1;
+          return new FakeListChatModel({ responses: ["não devia sair"] });
+        },
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+        contactAuthFetch: takeOverThenAllow,
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(auth.calls).toHaveLength(1);
+    expect(modelBuilds).toBe(0);
+    expect(s.messages).toEqual([]);
+  });
+
   test("an authorized contact is followed up normally (the control)", async () => {
     await seedConv(9403);
     const s = stub();

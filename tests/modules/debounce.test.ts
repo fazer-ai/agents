@@ -757,6 +757,49 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(auth.n).toBe(1);
       expect(sent).toEqual([[841, REPLY]]);
     });
+
+    // The window the gate opens: the assignee gate runs before a round-trip that can take ten
+    // seconds, so a human arriving inside it used to get the burst answered over their shoulder.
+    // The post gate withholds the reply, but by then the turn's tools have run.
+    test("a human taking over during the authorization call ends the flush before the model", async () => {
+      await seedConversation(843);
+      await seedContactOn(843, 64);
+      const sent: Array<[number, string]> = [];
+      const calls = { getMessages: 0 };
+      let modelBuilds = 0;
+      const takeOverThenAllow = (async () => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 843 },
+          data: { assigneeType: "User", status: "open" },
+        });
+        return new Response(JSON.stringify({ authorized: true }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch;
+      const out = await flushDebounceJob({
+        job: jobFor(843, { lastMessageId: 9 }),
+        base: appDb,
+        deps: {
+          makeModel: () => {
+            modelBuilds += 1;
+            return fakeModel();
+          },
+          makeClient: makeStub({
+            pages: [page([{ id: 1, content: "oi" }])],
+            sent,
+            calls,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: takeOverThenAllow,
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(modelBuilds).toBe(0);
+      expect(sent).toEqual([]);
+      // Handled all the same: the human owns the burst now, so the next flush after they hand the
+      // conversation back must not re-answer it. Same rule as a gate that was already closed.
+      expect(await watermarkOf(843)).toBe(9);
+    });
   });
 
   // ── Issue #8: the watermark must advance on every deliberate skip, not only on a post ──

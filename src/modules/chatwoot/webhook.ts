@@ -1583,6 +1583,22 @@ async function maybeConsumeCommandOrGate(params: {
         );
         return true;
       }
+      // Allowed, and up to ten seconds may have gone by inside somebody else's endpoint. The
+      // attribution gate that let this delivery through ran BEFORE that wait, and `runAgentTurn`
+      // re-checks ownership only AFTER the model has answered — which withholds the reply and
+      // nothing else, so a human who took the conversation during the round-trip would find the
+      // agent's tools writing on it: a label, a Kanban card, a custom attribute, an outbound HTTP
+      // call. The turn's own build-and-invoke is slow too and this does not pretend to fence that
+      // (it is the runtime's window, and every agent has it); what it does is not WIDEN it by the
+      // length of an operator's network call. Asked against the mirror, the same source the first
+      // gate read.
+      if (!(await stillOurs())) {
+        logger.info(
+          "chatwoot: contact-auth allowed but the conversation is no longer the bot's (conv=%s)",
+          String(conversationId),
+        );
+        return true;
+      }
     }
   }
   return false;

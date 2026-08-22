@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
-import { parseAppRole, planRoleProvisioning } from "../../scripts/db-bootstrap";
+import {
+  assertRuntimeRoleIsUnprivileged,
+  parseAppRole,
+  planRoleProvisioning,
+} from "../../scripts/db-bootstrap";
 
 // The bug this file exists for only exists on a database whose ADMINISTRATIVE role is not a real
 // superuser, which is every managed Postgres (RDS, Coolify, EasyPanel) and no local docker one. So
@@ -31,6 +35,10 @@ const SOLO_ROLE = `fazerai_bs_solo_${process.pid}`;
 const SPLIT_OWNER = `fazerai_bs_split_${process.pid}`;
 const NOINH_ADMIN = `fazerai_bs_noinh_admin_${process.pid}`;
 const NOINH_APP = `fazerai_bs_noinh_app_${process.pid}`;
+const PRIV_PARENT = `fazerai_bs_priv_parent_${process.pid}`;
+const SU_PARENT = `fazerai_bs_su_parent_${process.pid}`;
+const HEIR_ROLE = `fazerai_bs_heir_${process.pid}`;
+const SETONLY_ROLE = `fazerai_bs_setonly_${process.pid}`;
 const PRIV_ROLE = `fazerai_bs_priv_${process.pid}`;
 const PROBE_DB = `fazerai_bs_probe_${process.pid}`;
 const SOLO_DB = `fazerai_bs_solo_db_${process.pid}`;
@@ -232,6 +240,34 @@ describe("planRoleProvisioning", () => {
   // the only thing between a role name and the quotes. It is defense in depth rather than a
   // boundary against external input — DATABASE_URL is operator-supplied — but an unquoted-identifier
   // check that accepts a quote is not defense at all, so it gets a table of its own.
+  // NOTE: the question the plan table cannot ask, because it is about the role AFTER provisioning.
+  // It is a post-condition on a string the catalog produces, so it tests as one.
+  describe("assertRuntimeRoleIsUnprivileged", () => {
+    test("a role reaching nothing privileged passes", () => {
+      expect(() =>
+        assertRuntimeRoleIsUnprivileged("app_role", null),
+      ).not.toThrow();
+    });
+
+    test("a role reaching one names it, and the revoke", () => {
+      expect(() =>
+        assertRuntimeRoleIsUnprivileged("app_role", "rds_superuser"),
+      ).toThrow(/rds_superuser/);
+      expect(() =>
+        assertRuntimeRoleIsUnprivileged("app_role", "rds_superuser"),
+      ).toThrow(/REVOKE rds_superuser FROM "app_role"/);
+    });
+
+    // NOTE: the empty string is not "reaches nothing" — `string_agg` returns NULL for no rows, so
+    // an empty string could only come from a role actually named "". Treating it as safe would be
+    // a falsy check standing in for the absence check the catalog actually makes.
+    test("only NULL means it reaches nothing", () => {
+      expect(() => assertRuntimeRoleIsUnprivileged("app_role", "")).toThrow(
+        "reaches a privileged role",
+      );
+    });
+  });
+
   describe("parseAppRole", () => {
     const cases: [string, string, "ok" | "rejects"][] = [
       ["a plain name", "postgres://app_role:pw@h:5432/db", "ok"],
@@ -291,6 +327,10 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP ROLE IF EXISTS ${SPLIT_OWNER}`);
       await db.query(`DROP ROLE IF EXISTS ${NOINH_ADMIN}`);
       await db.query(`DROP ROLE IF EXISTS ${NOINH_APP}`);
+      await db.query(`DROP ROLE IF EXISTS ${HEIR_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${SETONLY_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${PRIV_PARENT}`);
+      await db.query(`DROP ROLE IF EXISTS ${SU_PARENT}`);
       await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       // NOTE: the shape of an RDS master user / a Coolify-provisioned owner: it can create roles and owns
@@ -323,6 +363,10 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP ROLE IF EXISTS ${SPLIT_OWNER}`);
       await db.query(`DROP ROLE IF EXISTS ${NOINH_ADMIN}`);
       await db.query(`DROP ROLE IF EXISTS ${NOINH_APP}`);
+      await db.query(`DROP ROLE IF EXISTS ${HEIR_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${SETONLY_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${PRIV_PARENT}`);
+      await db.query(`DROP ROLE IF EXISTS ${SU_PARENT}`);
       await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       await db.query("SELECT pg_advisory_unlock(729104553)");
@@ -1097,6 +1141,151 @@ describe.skipIf(!dbUp)(
       } finally {
         await serving.end();
       }
+    });
+
+    test("a role that only INHERITS privilege is refused, like one that holds it", async () => {
+      const db = su as Client;
+      // NOTE: the attributes say safe and the role is not: it reaches BYPASSRLS through a
+      // membership, which is precisely what the server's own `assertRuntimeRoleIsNotSuperuser`
+      // refuses to start with. Bootstrap reading only the direct columns would provision it, report
+      // success, and leave the server to crash-loop on a guard it had the catalog open to check —
+      // and would first hand the administrative role an inherited path to that same privilege,
+      // since the membership grant comes later.
+      await db.query(`CREATE ROLE ${PRIV_PARENT} NOLOGIN BYPASSRLS`);
+      await db.query(
+        `CREATE ROLE ${HEIR_ROLE} LOGIN PASSWORD '${APP_PW}' NOSUPERUSER NOBYPASSRLS`,
+      );
+      await db.query(`GRANT ${PRIV_PARENT} TO ${HEIR_ROLE}`);
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        APP_PW,
+        HEIR_ROLE,
+      );
+      const output = `${stdout}${stderr}`;
+      expect(exitCode).toBe(1);
+      expect(output).toContain(
+        "reaches a privileged role through a membership",
+      );
+      // The operator needs the name of the role to revoke, not just the fact.
+      expect(output).toContain(PRIV_PARENT);
+      expect(output).toContain("REVOKE");
+
+      // NOTE: and it refuses BEFORE granting, which is the half that matters for the live account:
+      // the membership bootstrap gives itself carries INHERIT TRUE, so granting first would hand
+      // the administrative role the very privilege this refusal is about.
+      expect(
+        (
+          await db.query(
+            `SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid
+              WHERE r.rolname = $1`,
+            [HEIR_ROLE],
+          )
+        ).rowCount,
+      ).toBe(0);
+
+      // NOTE: SUPERUSER on its own reaches the same refusal. BYPASSRLS alone was the fixture, and
+      // a check narrowed to it would pass a role that inherits the whole server.
+      await db.query(`REVOKE ${PRIV_PARENT} FROM ${HEIR_ROLE}`);
+      await db.query(`CREATE ROLE ${SU_PARENT} NOLOGIN SUPERUSER NOBYPASSRLS`);
+      await db.query(`GRANT ${SU_PARENT} TO ${HEIR_ROLE}`);
+      const viaSuperuser = await runBootstrap(APP_PW, HEIR_ROLE);
+      expect(viaSuperuser.exitCode).toBe(1);
+      expect(`${viaSuperuser.stdout}${viaSuperuser.stderr}`).toContain(
+        SU_PARENT,
+      );
+
+      // NOTE: and a membership that does NOT inherit is accepted, which fixes the choice rather
+      // than leaving it to look like an oversight. The question asked is `pg_has_role(..., 'USAGE')`
+      // — the boot guard's own — so bootstrap refuses exactly what the server refuses and no more.
+      // A stricter 'MEMBER' would reject an install the server starts on. The remaining reach, an
+      // explicit `SET ROLE` into a privileged role, is open in the guard too and belongs there.
+      await db.query(`REVOKE ${SU_PARENT} FROM ${HEIR_ROLE}`);
+      await db.query(
+        `GRANT ${SU_PARENT} TO ${HEIR_ROLE} WITH INHERIT FALSE, SET FALSE`,
+      );
+      // The earlier cases left `langgraph` under an owner this role cannot reach, which would fail
+      // the boot for an unrelated reason and hide the one being measured.
+      await onProbe(
+        urlFor(
+          new URL(suUrl as string).username,
+          new URL(suUrl as string).password,
+          PROBE_DB,
+        ),
+        (c) => c.query("DROP SCHEMA IF EXISTS langgraph CASCADE"),
+      );
+      const notInherited = await runBootstrap(APP_PW, HEIR_ROLE);
+      expect(`${notInherited.stdout}${notInherited.stderr}`).not.toContain(
+        "reaches a privileged role",
+      );
+      expect(notInherited.exitCode).toBe(0);
+    });
+
+    test("a membership that cannot inherit does not get the tables moved under it", async () => {
+      const db = su as Client;
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // NOTE: `ALTER TABLE ... OWNER TO` needs MEMBERSHIP in the new owner; keeping access to the
+      // table afterwards needs to INHERIT it. A membership granted `SET TRUE, INHERIT FALSE` has
+      // the first and not the second, and bootstrap's own grant cannot repair it without ADMIN on
+      // the role — the GRANT fails, is warned about, and the transfer would still go through,
+      // leaving the administrator with `permission denied` on the table it just handed over
+      // (measured). So the transfer asks for inheritance, not for membership.
+      await db.query(
+        `CREATE ROLE ${SETONLY_ROLE} LOGIN PASSWORD '${APP_PW}' NOSUPERUSER NOBYPASSRLS`,
+      );
+      await db.query(
+        `GRANT CONNECT ON DATABASE ${PROBE_DB} TO ${SETONLY_ROLE}`,
+      );
+      // Granted by the superuser, so the administrator holds no ADMIN and cannot re-grant it.
+      await db.query(
+        `GRANT ${SETONLY_ROLE} TO ${ADMIN_ROLE} WITH SET TRUE, INHERIT FALSE`,
+      );
+      await onProbe(superuserOnProbe, async (c) => {
+        await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
+        await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${ADMIN_ROLE}`);
+      });
+      await onProbe(urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB), (c) =>
+        c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)"),
+      );
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        APP_PW,
+        SETONLY_ROLE,
+      );
+      expect(exitCode).toBe(0);
+      expect(`${stdout}${stderr}`).toContain("does not own");
+
+      // The tables stayed put, so the account that may still be serving on them can still read.
+      const state = await onProbe(
+        urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB),
+        async (c) => {
+          await c.query(
+            "INSERT INTO langgraph.checkpoint_migrations (v) VALUES (1)",
+          );
+          return (
+            await c.query(
+              "SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE oid = 'langgraph.checkpoint_migrations'::regclass",
+            )
+          ).rows[0];
+        },
+      );
+      expect(state).toEqual({ owner: ADMIN_ROLE });
+
+      // And the incoming role is carried by the grants regardless, which is the fallback.
+      const worked = await onProbe(
+        urlFor(SETONLY_ROLE, APP_PW, PROBE_DB),
+        async (c) => {
+          await c.query(
+            "INSERT INTO langgraph.checkpoint_migrations (v) VALUES (2)",
+          );
+          return (
+            await c.query(
+              "SELECT v FROM langgraph.checkpoint_migrations ORDER BY v",
+            )
+          ).rows;
+        },
+      );
+      expect(worked).toEqual([{ v: 1 }, { v: 2 }]);
     });
   },
 );

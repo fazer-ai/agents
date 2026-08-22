@@ -75,6 +75,35 @@ export function planRoleProvisioning(
   return "syncPassword";
 }
 
+// What the plan above cannot decide, because it is a question about the role AFTER provisioning
+// rather than before: a role may hold no privileged attribute of its own and still reach SUPERUSER
+// or BYPASSRLS through a membership. RLS is a no-op for it just the same, and the server's own
+// `assertRuntimeRoleIsNotSuperuser` refuses to start with it — so provisioning it and reporting
+// success only moves the failure to the next boot, on a guard bootstrap had the catalog open to
+// check.
+//
+// NOTE: this is a post-condition rather than a fourth plan, and asking it AFTER the DDL is not a
+// detail. `pg_has_role` is true of every role for a superuser, so on a role that is privileged
+// outright the question answers itself and would swallow the demotion — the one repair there is.
+// Asked afterwards, it is asked of what the role actually ended up being.
+//
+// NOTE: it must be asked before `GRANT <role> TO CURRENT_USER ... INHERIT TRUE` further down.
+// Handing the administrative role a path into the runtime role is harmless when the runtime role
+// has no privileges, and is the whole problem when it reaches SUPERUSER through someone else.
+export function assertRuntimeRoleIsUnprivileged(
+  role: string,
+  privilegedVia: string | null,
+) {
+  if (privilegedVia === null) return;
+  throw new Error(
+    `runtime role "${role}" reaches a privileged role through a membership (${privilegedVia}), ` +
+      "which makes RLS a no-op for it just as SUPERUSER would — the server refuses to serve with " +
+      "it, so provisioning it would only move the failure to the next boot. No attribute takes " +
+      `this away: revoke the membership, as a role holding ADMIN on it: REVOKE ${privilegedVia} ` +
+      `FROM "${role}";`,
+  );
+}
+
 // The DDL that carries the password. It reads role and password from session GUCs rather than from
 // a string we build, so the password is never spliced into SQL we assemble or log. The templates
 // are our own constants with no quotes to escape; only %I/%L are filled, by Postgres itself.
@@ -210,6 +239,14 @@ async function provisionCheckpointerSchema(
     // TO` takes an ACCESS EXCLUSIVE lock even when the owner does not change (measured), so on an
     // install where the administrator and the runtime role are the same account, an unfiltered loop
     // would freeze the checkpointer once per deploy for no change at all.
+    //
+    // NOTE: and `pg_has_role(..., 'USAGE')` is the third, because the administrator surviving its
+    // own transfer is a condition rather than a given. `ALTER TABLE ... OWNER TO` needs only
+    // MEMBERSHIP in the new owner, while KEEPING access to the table afterwards needs to INHERIT
+    // it — and the two come apart on a membership granted `SET TRUE, INHERIT FALSE`, which the
+    // grant above cannot repair without ADMIN on the role (measured: the transfer succeeds and the
+    // administrator is left with `permission denied` on the table it just handed over). 'USAGE' is
+    // the mode that means inherited, and it is the same one the boot guard asks with.
     let adoptError: unknown;
     try {
       await client.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`);
@@ -232,6 +269,7 @@ async function provisionCheckpointerSchema(
              WHERE n.nspname = 'langgraph' AND c.relkind IN ('r', 'p')
                AND pg_get_userbyid(c.relowner) = current_user
                AND pg_get_userbyid(c.relowner) <> v_role
+               AND pg_has_role(current_user, v_role, 'USAGE')
           LOOP
             EXECUTE format('ALTER TABLE langgraph.%I OWNER TO %I', r.relname, v_role);
           END LOOP;
@@ -435,6 +473,21 @@ async function main() {
     const plan = planRoleProvisioning(runtimeRole);
 
     await provisionRuntimeRole(client, role, ident, runtimeRole, plan);
+
+    // Re-read rather than reuse the row above: the demotion may have just changed the answer, and
+    // on a role that WAS a superuser the answer above is meaningless (see the function's header).
+    assertRuntimeRoleIsUnprivileged(
+      role,
+      (
+        await client.query<{ privileged_via: string | null }>(
+          `SELECT string_agg(DISTINCT quote_ident(m.rolname), ', ') AS privileged_via
+             FROM pg_roles r
+             JOIN pg_roles m ON (m.rolsuper OR m.rolbypassrls) AND m.oid <> r.oid
+            WHERE r.rolname = $1 AND pg_has_role(r.oid, m.oid, 'USAGE')`,
+          [role],
+        )
+      ).rows[0]?.privileged_via ?? null,
+    );
 
     // CONNECT to use the DB; CREATE so PostgresSaver.setup() can run its own
     // `CREATE SCHEMA IF NOT EXISTS langgraph` at boot (the privilege is checked even when the

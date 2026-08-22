@@ -92,6 +92,14 @@ export function attendanceHasStarted(
 // are comparable and the newest of them is the thread's frontier.
 //
 // Nulls are absent marks, not zeroes: a direction that has never written has no frontier to lose to.
+//
+// KNOWN LIMIT. The marks are inbound Chatwoot message ids, so the writers that leave one are the two
+// ingestion roles and the reactive turn (../graph/runtime.ts records the id it answered). A PROACTIVE
+// NUDGE has no inbound message at all, so an attendance it opens by itself contributes nothing here,
+// and a delayed message from the previous conversation is then genuinely the newest inbound id on the
+// thread and claims a boundary back to it. It needs an attendance opened by a nudge and nothing else,
+// which is why it is written down rather than given a fourth input: the cost is one nudge summarised
+// early, against a mechanism every other path would carry.
 export function movesAttendanceFrontier(
   marks: readonly (number | null | undefined)[],
   messageId: number,

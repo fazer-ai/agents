@@ -79,18 +79,33 @@ export type IngestRole = "customer" | "human_agent";
 // failure. The reducer replaces a same-id message in place, so a derived id turns the retry into a
 // no-op rewrite instead. `messageId` is unique per Chatwoot account, and a divider written with its
 // message needs its own, hence the suffix.
+// `conversationId` is NULL for a message that must not claim an attendance, which is the SECOND half
+// of the late-arrival rule and the half a marker check cannot reach. ../modules/memory/cut.ts decides
+// which attendance is open by reading the LAST stamp in the channel and walking back over its run, so
+// a late message stamped with the conversation it belongs to redefines the open attendance from the
+// end: everything above it, the live conversation included, becomes the closed prefix and is replaced
+// by a summary mid-attendance. Holding back the divider and the marker is not enough, because the
+// stamp is a third, independent way of saying which attendance the thread is on.
+//
+// Unstamped, the message is still in the thread and still attributed to whoever sent it; it simply
+// travels with the attendance in progress instead of claiming one, exactly as an assistant reply
+// does. The cost is that it is summarised with the open attendance rather than the one it belongs
+// to, which is a wrong FILE for one message against destroying a live conversation.
 export function ingestedMessages(
   role: IngestRole,
   text: string,
-  conversationId: number,
+  conversationId: number | null,
   writeDivider: boolean,
   messageId?: number,
 ): BaseMessage[] {
   const id = messageId === undefined ? undefined : `ingest:${messageId}`;
   const dividerId = id === undefined ? undefined : `${id}:divider`;
+  // A divider names the attendance it opens, so it cannot be written by a message that is not
+  // claiming one. The types say so rather than a comment saying so.
+  const divides = writeDivider && conversationId !== null;
   if (role === "human_agent") {
     const reply = humanAgentMessage(conversationId, text, id);
-    return writeDivider
+    return divides
       ? [
           conversationDividerMessage(conversationId, undefined, dividerId),
           reply,
@@ -98,12 +113,14 @@ export function ingestedMessages(
       : [reply];
   }
   return [
-    writeDivider
+    divides
       ? conversationDividerMessage(conversationId, text, id)
       : new HumanMessage({
           ...(id ? { id } : {}),
           content: text,
-          additional_kwargs: conversationStamp(conversationId),
+          ...(conversationId === null
+            ? {}
+            : { additional_kwargs: conversationStamp(conversationId) }),
         }),
   ];
 }
@@ -297,7 +314,9 @@ export async function ingestMessageIntoThread(
             messages: ingestedMessages(
               params.role,
               params.text,
-              conversationId,
+              // The whole late-arrival rule, spent here: a message that does not move the frontier
+              // claims NOTHING — not the divider, not the marker, not the attendance stamp.
+              movesFrontier ? conversationId : null,
               claim.writeDivider,
               messageId,
             ),

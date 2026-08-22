@@ -451,6 +451,63 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     ).toBe(1);
   });
 
+  // Round-8 review finding (P1), and the half of the late-arrival rule a marker check cannot reach.
+  // ../../src/modules/memory/cut.ts decides which attendance is OPEN by reading the last stamp in the
+  // channel and walking back over its run — so a late message stamped with the conversation it
+  // belongs to redefines the open attendance from the END of the thread. Everything above it, the
+  // live conversation included, becomes the closed prefix, and compaction replaces a conversation
+  // still being served with a summary of it.
+  //
+  // Asserted through the real consumer rather than by reading kwargs: the stamp only matters because
+  // of what the cut does with it.
+  test("a late arrival does not put the live conversation in the closed prefix", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12409;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingest = (conversationId: number, messageId: number, text: string) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId,
+        text,
+        role: "customer",
+      });
+
+    expect(await ingest(840, 960, "primeiro atendimento")).toBe("ingested");
+    expect(await ingest(841, 962, "segundo atendimento, em andamento")).toBe(
+      "ingested",
+    );
+    // The delayed voice note from the attendance that already ended.
+    expect(await ingest(840, 961, "<audio> do primeiro")).toBe("ingested");
+
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    const cut = selectClosedPrefix(messages, {
+      currentAttendanceClosed: false,
+    });
+    const open = cut.open.map((m) => String(m.content));
+    const closed = cut.closed.map((m) => String(m.content));
+    // 841 is still being served, so it is OPEN — not swept into a summary of a finished attendance.
+    expect(open.some((c) => c.includes("segundo atendimento"))).toBe(true);
+    expect(closed.some((c) => c.includes("segundo atendimento"))).toBe(false);
+    // The late message is in the thread, which is the point of #194, and it travels with the open
+    // attendance because it never claimed one.
+    expect(open.some((c) => c.includes("<audio> do primeiro"))).toBe(true);
+    expect(
+      stampedConversationId(messages[messages.length - 1] as BaseMessage),
+    ).toBe(null);
+  });
+
   // Round-6 review finding (P2), and the same hazard as the test above reached through the OTHER
   // writer. The frontier was read from the arriving message's own role, so a delayed customer
   // message still counted as current whenever the new attendance had been opened by a human agent —

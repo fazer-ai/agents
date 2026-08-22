@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import {
   claimPendingByKeyPrefix,
   countOwedByKeyPrefix,
+  reapStaleJobs,
 } from "@/modules/scheduler/service";
 import { runClaimed } from "@/modules/scheduler/worker";
 
@@ -51,6 +52,10 @@ import { runClaimed } from "@/modules/scheduler/worker";
 // just as much as one this loop left behind.
 export type IngestDrainOutcome = "drained" | "incomplete";
 
+// How long a claim may sit before it is presumed crashed. The same value the compaction lane uses for
+// its own reap; shorter would re-pend a row an ingestion is still legitimately working on.
+const STALE_CLAIM_MS = 5 * 60_000;
+
 export async function drainPendingIngest(
   tenantId: bigint,
   graphThreadId: string,
@@ -58,6 +63,19 @@ export async function drainPendingIngest(
 ): Promise<IngestDrainOutcome> {
   const prefix = `ingest:${graphThreadId}:`;
   try {
+    // REAP OUR OWN KIND FIRST, for the reason ../modules/scheduler/service.ts already states about a
+    // lane with its own worker: the worker flags are independent, so with the shared scheduler off
+    // nothing else re-pends a row that a dead process left CLAIMED. Ingestion has no tick of its own
+    // at all — these readers ARE its independent path — and a CLAIMED row counts as owed below, so
+    // without this one crash would make every later compaction on that thread reschedule forever.
+    // Reaping the same kind from two places is harmless: the second pass finds it already re-pended.
+    await reapStaleJobs(
+      STALE_CLAIM_MS,
+      base,
+      new Date(),
+      tenantId,
+      "INGEST_MESSAGE",
+    );
     // Every row this drain has touched, kept out of the next pass. Ignoring run_at is what lets the
     // barrier see a job deferred for an earlier turn, and the same waiver defeats failure backoff:
     // a row that just failed is due again immediately, so without this a transient checkpointer

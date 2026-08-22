@@ -241,6 +241,111 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(left).toBe(0);
   });
 
+  // Round-8 review finding (P2). A CLAIMED row counts as OWED, which is what lets compaction refuse
+  // to summarise an attendance whose messages are still coming — and it is also how one crash turns
+  // into a permanent stall. Ingestion has no tick of its own: these readers are its only path, and
+  // the drain claims PENDING rows only, so a row left CLAIMED by a process that died mid-job is
+  // invisible to the drain and owed forever. Every later compaction on that thread would reschedule
+  // and never run again.
+  test("a claim left behind by a dead process is reaped, not owed forever", async () => {
+    const contactInboxId = 12506;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 985,
+      contactInboxId,
+      graphThreadId,
+      messageId: 700,
+      text: "ficou claimed quando o processo caiu",
+      role: "customer",
+      agentId: 1n,
+      compactionEnabled: false,
+      base: appDb,
+    });
+    // What a crash leaves: CLAIMED, and claimed long enough ago to be presumed dead.
+    await suDb.$executeRawUnsafe(
+      `UPDATE scheduler_jobs SET status = 'CLAIMED', claimed_at = now() - interval '30 minutes'
+        WHERE tenant_id = ${tenantId} AND dedupe_key = 'ingest:${graphThreadId}:700'`,
+    );
+
+    expect(await drainPendingIngest(tenantId, graphThreadId, appDb)).toBe(
+      "drained",
+    );
+    // Reaped, then run, then deleted — and the message it was carrying is folded in rather than
+    // stranded, which is what separates a reap from simply not counting stale claims.
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: `ingest:${graphThreadId}:700`,
+        },
+      }),
+    ).toBe(0);
+    const at = await suDb.agentThread.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { recentSyncedMessageIds: true },
+    });
+    expect(at?.recentSyncedMessageIds).toEqual([700]);
+  });
+
+  // The other side of that reap, and the reason it has an age at all: a claim taken a moment ago is
+  // a job another process is running RIGHT NOW. Reaping it would put the same message through
+  // ingestion twice at once, and the drain must instead report the thread as still owing something —
+  // which is exactly what makes compaction wait rather than summarise without it.
+  test("a claim taken a moment ago is left alone, and still counts as owed", async () => {
+    const contactInboxId = 12507;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 986,
+      contactInboxId,
+      graphThreadId,
+      messageId: 701,
+      text: "outro processo está com essa agora",
+      role: "customer",
+      agentId: 1n,
+      compactionEnabled: false,
+      base: appDb,
+    });
+    // A minute ago, not `now()`: the cutoff is computed from the HOST clock and written against the
+    // database's, and those differ by seconds on a Docker Postgres. At `now()` the assertion would
+    // turn on that skew and pass for whichever reason the machine happened to supply. A minute is
+    // unambiguously inside the five-minute window and unambiguously in the past.
+    await suDb.$executeRawUnsafe(
+      `UPDATE scheduler_jobs SET status = 'CLAIMED', claimed_at = now() - interval '1 minute'
+        WHERE tenant_id = ${tenantId} AND dedupe_key = 'ingest:${graphThreadId}:701'`,
+    );
+
+    expect(await drainPendingIngest(tenantId, graphThreadId, appDb)).toBe(
+      "incomplete",
+    );
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: `ingest:${graphThreadId}:701` },
+      select: { status: true, attempts: true },
+    });
+    expect(row.status).toBe("CLAIMED");
+    // Untouched: a reap bumps attempts, and spending one on a job that is running would bring it
+    // closer to being dead-lettered for someone else's success.
+    expect(row.attempts).toBe(0);
+  });
+
   // The drain ignores run_at so it can see a job deferred for an EARLIER turn, and that same waiver
   // defeats failure backoff: a row that just failed is immediately due again. Without excluding what
   // it has already touched, one drain re-claims the same failing row on every pass and spends the

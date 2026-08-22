@@ -14,6 +14,7 @@ import {
   isTurnInFlight,
   markTurnInFlight,
 } from "@/graph/inflight";
+import { ingestMessageIntoThread } from "@/graph/ingest";
 import { armIngest } from "@/graph/ingest-job";
 import { isConversationDivider } from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
@@ -497,6 +498,101 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(cut.closed).toHaveLength(2);
     expect(cut.open).toHaveLength(3);
+  });
+
+  // Round-8 review finding (P1). Ingestion decides whether an out-of-order message may still speak
+  // for the thread's attendance by comparing it against the newest inbound id the thread has seen,
+  // and this writer recorded no id at all — so the frontier was blind to the most ordinary way a new
+  // attendance opens, which is the customer writing and the bot ANSWERING. A delayed message from the
+  // previous conversation then compared newer than a mark left behind in that same conversation,
+  // claimed a boundary, walked the marker back, and armed compaction for the LIVE one.
+  //
+  // Two writers in one test on purpose: the property only exists where they meet, and each of them
+  // alone is green with the bug in.
+  test("a turn's inbound id counts in the frontier a late ingestion is measured against", async () => {
+    const contactInboxId = 7011;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    for (const convId of [9310, 9311]) {
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: convId,
+          contactInboxId,
+          status: "pending",
+          threadId: `${tenantId}:${instanceId}:${convId}`,
+          lastEventAt: new Date(),
+        },
+      });
+    }
+    const saver = new MemorySaver();
+    const turn = (conversationId: number, messageId: number) =>
+      runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({
+          conversationId,
+          contactInboxId,
+          message: {
+            id: messageId,
+            content: "oi",
+            messageType: "incoming",
+            private: false,
+          },
+        }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStubClient([]),
+          checkpointer: saver,
+        },
+      });
+
+    // The first attendance, answered by the bot. Then the SECOND one opens the same way — the shape
+    // that leaves no ingestion mark behind at all.
+    expect(await turn(9310, 5001)).toBe("posted");
+    expect(await turn(9311, 5003)).toBe("posted");
+
+    // The voice note from the first conversation, still transcribing while the second one opened.
+    const closed: number[] = [];
+    expect(
+      await ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: 9310,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId: 5002,
+        text: "<audio> do primeiro",
+        role: "customer",
+        onAttendanceClosed: (prev) => {
+          closed.push(prev);
+        },
+      }),
+    ).toBe("ingested");
+
+    // Nothing armed for the live conversation, and the thread still says it is on it.
+    expect(closed).toEqual([]);
+    const at = await suDb.agentThread.findUniqueOrThrow({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { lastConversationId: true, lastSyncedMessageId: true },
+    });
+    expect(at.lastConversationId).toBe(9311);
+    // The frontier the ingestion was measured against: written by the TURN, not by an ingestion.
+    expect(at.lastSyncedMessageId).toBe(5003);
   });
 
   // THE BARRIER (issue #194), at the reader a customer is waiting on. Continuous ingestion is a

@@ -8,6 +8,7 @@ import {
   contactAuthNoticeEntries,
   contactAuthNoticeKey,
   nextSweepDelayMs,
+  releaseContactAuthNotice,
   singleFlight,
   sweepContactAuthNotices,
 } from "@/modules/contact-auth/state";
@@ -26,30 +27,30 @@ beforeEach(() => {
 
 describe("claimContactAuthNotice", () => {
   test("first claim voices; a second within the window is suppressed; the lapse reopens it", () => {
-    expect(claimContactAuthNotice("k", 60_000, T0)).toBe(true);
+    expect(claimContactAuthNotice("k", 60_000, T0)).toBeTruthy();
     expect(claimContactAuthNotice("k", 60_000, T0 + 59_999)).toBe(false);
     // NOTE: Inclusive boundary, same as the sweep: at exactly the lapse the window is over.
-    expect(claimContactAuthNotice("k", 60_000, T0 + 60_000)).toBe(true);
+    expect(claimContactAuthNotice("k", 60_000, T0 + 60_000)).toBeTruthy();
   });
 
   test("a suppressed claim does NOT extend the window", () => {
-    expect(claimContactAuthNotice("k", 60_000, T0)).toBe(true);
+    expect(claimContactAuthNotice("k", 60_000, T0)).toBeTruthy();
     expect(claimContactAuthNotice("k", 60_000, T0 + 30_000)).toBe(false);
     // Had the suppressed claim renewed the window, this one would still be inside it.
-    expect(claimContactAuthNotice("k", 60_000, T0 + 60_000)).toBe(true);
+    expect(claimContactAuthNotice("k", 60_000, T0 + 60_000)).toBeTruthy();
   });
 
   test("cooldown 0 always voices and retains nothing", () => {
-    expect(claimContactAuthNotice("k", 0, T0)).toBe(true);
-    expect(claimContactAuthNotice("k", 0, T0)).toBe(true);
+    expect(claimContactAuthNotice("k", 0, T0)).toBeTruthy();
+    expect(claimContactAuthNotice("k", 0, T0)).toBeTruthy();
     expect(contactAuthNoticeCount()).toBe(0);
   });
 
   test("distinct conversations have independent windows", () => {
     const a = contactAuthNoticeKey(1n, 2n, 30n, "note");
     const b = contactAuthNoticeKey(1n, 2n, 31n, "note");
-    expect(claimContactAuthNotice(a, 60_000, T0)).toBe(true);
-    expect(claimContactAuthNotice(b, 60_000, T0)).toBe(true);
+    expect(claimContactAuthNotice(a, 60_000, T0)).toBeTruthy();
+    expect(claimContactAuthNotice(b, 60_000, T0)).toBeTruthy();
     expect(claimContactAuthNotice(a, 60_000, T0 + 1)).toBe(false);
   });
 
@@ -59,9 +60,31 @@ describe("claimContactAuthNotice", () => {
   test("the customer copy and the operator note hold separate windows", () => {
     const copy = contactAuthNoticeKey(1n, 2n, 30n, "copy");
     const note = contactAuthNoticeKey(1n, 2n, 30n, "note");
-    expect(claimContactAuthNotice(note, 60_000, T0)).toBe(true);
-    expect(claimContactAuthNotice(copy, 60_000, T0 + 1)).toBe(true);
+    expect(claimContactAuthNotice(note, 60_000, T0)).toBeTruthy();
+    expect(claimContactAuthNotice(copy, 60_000, T0 + 1)).toBeTruthy();
     expect(claimContactAuthNotice(note, 60_000, T0 + 2)).toBe(false);
+  });
+
+  // Release gives back the window this send claimed, and only that one. With a cooldown shorter
+  // than a slow Chatwoot send, a lapsed claim can already have been replaced by somebody else's.
+  test("a failed send releases its own window, never a newer one", () => {
+    const a = claimContactAuthNotice("k", 10_000, T0);
+    if (!a) throw new Error("first claim should have been granted");
+    const b = claimContactAuthNotice("k", 10_000, T0 + 10_000);
+    if (!b) throw new Error("second claim should have been granted");
+    // A's send fails last: the window standing now is B's, and it stays.
+    releaseContactAuthNotice(a);
+    expect(claimContactAuthNotice("k", 10_000, T0 + 12_000)).toBe(false);
+    // B's own release does open it again.
+    releaseContactAuthNotice(b);
+    expect(claimContactAuthNotice("k", 10_000, T0 + 12_000)).toBeTruthy();
+  });
+
+  test("releasing a cooldown-0 claim retains nothing", () => {
+    const c = claimContactAuthNotice("k", 0, T0);
+    if (!c) throw new Error("a zero cooldown always voices");
+    releaseContactAuthNotice(c);
+    expect(contactAuthNoticeCount()).toBe(0);
   });
 
   test("what is retained is ids and timestamps, nothing anyone said", () => {

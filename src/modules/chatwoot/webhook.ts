@@ -1506,31 +1506,38 @@ async function maybeConsumeCommandOrGate(params: {
         contactAuthFlowEvent(verdict),
       );
       if (verdict.outcome !== "allowed") {
-        // NOTE: The leader of a coalesced burst acts; a sharer stays silent (its delivery is
-        // consumed all the same). Actions in this order: customer copy first (after the open the
-        // conversation is no longer the bot's and the fence would rightly withhold it), then the
-        // handoff, then the note, so the note can say what actually happened. An ERROR hands
-        // nothing off: it is transient by contract (the next message retries), and escalating
-        // every blip of the endpoint would page humans for conversations the next message answers.
-        if (!verdict.shared) {
+        // Coalescing the QUESTION is not coalescing the ANSWER's consequences. The single-flight
+        // asks the endpoint once about a contact, which is right; the copy, the handoff and the
+        // note belong to a CONVERSATION, and one contact can have two open ones. Gating these on
+        // `!verdict.shared` meant the follower's conversation got no copy, no note and above all no
+        // handoff — opening the leader's does not open the follower's, so a refused contact sat
+        // there unanswered. What stops two deliveries of the SAME conversation from both speaking
+        // is the notice claim below, which is per conversation and synchronous.
+        //
+        // Actions in this order: customer copy first (after the open the conversation is no longer
+        // the bot's and the fence would rightly withhold it), then the handoff, then the note, so
+        // the note can say what actually happened. An ERROR hands nothing off: it is transient by
+        // contract (the next message retries), and escalating every blip of the endpoint would page
+        // humans for conversations the next message answers.
+        {
           const cooldownMs = authCfg.noticeCooldownSeconds * 1000;
-          const noticeKey = (notice: ContactAuthNotice) =>
-            contactAuthNoticeKey(tenantId, agentId, ctx.conv.id, notice);
           const claim = (notice: ContactAuthNotice) =>
-            claimContactAuthNotice(noticeKey(notice), cooldownMs);
+            claimContactAuthNotice(
+              contactAuthNoticeKey(tenantId, agentId, ctx.conv.id, notice),
+              cooldownMs,
+            );
           // The copy's window is claimed only when a copy is actually going out. Sharing one claim
           // with the note let an ERROR, which speaks to nobody, spend the customer's window and
           // silence the denial that followed it.
-          if (
-            verdict.outcome === "denied" &&
-            authCfg.denyMessage &&
-            claim("copy")
-          ) {
+          const denyMessage =
+            verdict.outcome === "denied" ? authCfg.denyMessage : null;
+          const copyClaim = denyMessage ? claim("copy") : false;
+          if (denyMessage && copyClaim) {
             // The window is claimed before the send, because two settled deliveries racing must not
             // both speak — so a send that does not land has to give it back. Kept, it would silence
             // the next refusal for the whole window over a message the customer never received.
-            if (!(await postPublicMessage(authCfg.denyMessage))) {
-              releaseContactAuthNotice(noticeKey("copy"));
+            if (!(await postPublicMessage(denyMessage))) {
+              releaseContactAuthNotice(copyClaim);
             }
           }
           let handedOff = false;
@@ -1540,11 +1547,12 @@ async function maybeConsumeCommandOrGate(params: {
             // message, notice or no notice.
             handedOff = await openForHumans(authCfg.handoffTeamId);
           }
-          if (claim("note")) {
+          const noteClaim = claim("note");
+          if (noteClaim) {
             if (
               !(await postPrivateNote(contactAuthNoteText(verdict, handedOff)))
             ) {
-              releaseContactAuthNotice(noticeKey("note"));
+              releaseContactAuthNotice(noteClaim);
             }
           }
         }

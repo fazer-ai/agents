@@ -67,32 +67,44 @@ export function contactAuthFlightKey(
   return `${tenantId}:${agentId}:${contactDbId}:${request}`;
 }
 
-// True = this refusal should be voiced, and the cooldown window opens now. False = an equal notice
-// went out within the window. Check and claim are one synchronous step, so two settled deliveries
-// racing for the same conversation cannot both be told to speak. A non-positive cooldown claims
-// nothing and always voices (the operator asked to be told every time).
-// Give a claimed window back. The claim has to come BEFORE the delivery (two settled deliveries
-// racing must not both be told to speak), so the failure case needs an undo: Chatwoot refusing the
-// message would otherwise silence the next refusal for the whole window, and the copy it silences
-// is usually the unlock instructions — which the handoff after it leaves no later message to carry.
-export function releaseContactAuthNotice(key: string): void {
-  notices.delete(key);
+// A claimed window. `until` identifies THIS claim, so releasing one cannot take another's: with a
+// cooldown shorter than a slow Chatwoot send, claim A can lapse and claim B replace it before A
+// learns it failed, and an unconditional delete would then hand B's window away too.
+// `null` = nothing was claimed and the caller should speak anyway (a non-positive cooldown: the
+// operator asked to be told every time).
+export interface NoticeClaim {
+  key: string;
+  until: number | null;
 }
 
+// Non-null = this refusal should be voiced and the cooldown window opens now. `false` = an equal
+// notice went out within the window. Check and claim are one synchronous step, so two settled
+// deliveries racing for the same conversation cannot both be told to speak.
 export function claimContactAuthNotice(
   key: string,
   cooldownMs: number,
   nowMs: number = Date.now(),
-): boolean {
-  if (cooldownMs <= 0) return true;
+): NoticeClaim | false {
+  if (cooldownMs <= 0) return { key, until: null };
   const until = notices.get(key);
   if (until !== undefined && until > nowMs) return false;
+  const mine = nowMs + cooldownMs;
   notices.delete(key);
-  notices.set(key, nowMs + cooldownMs);
+  notices.set(key, mine);
   sweepContactAuthNotices(nowMs);
   enforceSizeCap();
   scheduleSweep(nowMs);
-  return true;
+  return { key, until: mine };
+}
+
+// Give a claimed window back. The claim has to come BEFORE the delivery (two settled deliveries
+// racing must not both be told to speak), so the failure case needs an undo: Chatwoot refusing the
+// message would otherwise silence the next refusal for the whole window, and the copy it silences
+// is usually the unlock instructions — which the handoff after it leaves no later message to carry.
+// Only the claim that is still standing is released; a newer one belongs to somebody else.
+export function releaseContactAuthNotice(claim: NoticeClaim): void {
+  if (claim.until === null) return;
+  if (notices.get(claim.key) === claim.until) notices.delete(claim.key);
 }
 
 // Deletes every cooldown past its lapse. Called on each claim AND by the scheduled sweeper.

@@ -133,7 +133,8 @@ The verdict is per message; the **notices** are not. The customer copy and the p
 behind `noticeCooldownSeconds` (per conversation, in process memory), so a refused burst is voiced
 once per window instead of once per message. A window is claimed BEFORE the delivery (two settled
 deliveries racing must not both speak) and given back when the delivery fails, so a message Chatwoot
-refused does not silence the next refusal for the rest of the window. Each notice holds its OWN window: an endpoint error
+refused does not silence the next refusal for the rest of the window. A release only ever gives back
+its own claim: with a cooldown shorter than a slow send, a lapsed one may already have been replaced. Each notice holds its OWN window: an endpoint error
 writes a note and speaks to nobody, and one shared window let it spend the customer's, silencing the
 denial that came right after it — the copy that usually carries the unlock instructions, with the
 handoff after it ending the bot's attribution and leaving no later message to carry them. The handoff is NOT behind the cooldown: it is
@@ -172,6 +173,11 @@ lose on a restart:
   (which carries no text) and an incoming message (which may carry the code) are never answered by
   each other's verdict — the follower is told `shared`, and `shared` is what withholds its own copy,
   handoff and note. Dedupe of work in flight; nothing outlives the promise.
+
+  Coalescing the QUESTION is not coalescing its consequences: the copy, the handoff and the note
+  belong to a CONVERSATION, and one contact can have two open ones, so every affected conversation
+  runs them. What stops two deliveries of the same conversation from both speaking is the notice
+  claim, which is per conversation and synchronous.
 - **Notice cooldown** per `${tenantId}:${agentId}:${conversationRowId}:${notice}`, where `notice` is
   the customer copy or the operator note: when a refusal was last voiced. Swept actively (a rescheduled, unref'd timer wakes at the earliest lapse) and capped in
   size. Stores ids and timestamps only.

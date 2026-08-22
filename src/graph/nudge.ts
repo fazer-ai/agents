@@ -266,6 +266,7 @@ export async function runAgentNudge(
       select: {
         inboxId: true,
         status: true,
+        chatwootStatusAt: true,
         assigneeType: true,
         assigneeId: true,
         assigneeName: true,
@@ -299,6 +300,9 @@ export async function runAgentNudge(
     return {
       cfg,
       status: conv.status,
+      // Kept beside `status` and moved with it: the pair is one observation, and the resolution
+      // recorder needs the version as much as the value (see ObservedConversation).
+      statusAt: conv.chatwootStatusAt,
       assigneeType: conv.assigneeType,
       assigneeId: conv.assigneeId,
       assigneeName: conv.assigneeName,
@@ -398,6 +402,7 @@ export async function runAgentNudge(
       });
       // NOTE: Keep the in-memory snapshot in step so a second probe only re-writes on a NEW divergence.
       loaded.status = live.status;
+      loaded.statusAt = live.updatedAt;
       loaded.assigneeType = live.assigneeType;
       loaded.assigneeId = live.assigneeId;
       loaded.assigneeName = live.assigneeName;
@@ -465,8 +470,10 @@ export async function runAgentNudge(
       threadId: params.threadId,
       // The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
       // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
-      // one that had already happened.
-      observedStatus: loaded.status,
+      // one that had already happened — but only as a FALLBACK: this snapshot is taken before
+      // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
+      // tool re-reads the live state itself and falls back here only when that read fails.
+      observed: { status: loaded.status, statusAt: loaded.statusAt },
       handoffState,
     },
     { buildNativeTools, mcp: params.deps?.mcp, flow },
@@ -910,10 +917,10 @@ export async function runAgentNudge(
             chatwootConversationId: conversationId,
           },
           origin: "followup_abandonment",
-          // `loaded.status` is the probe's LIVE answer on this path: requireLiveBotOwnership makes
-          // probeLiveOwnership run a GET immediately before this, and it writes what it saw back
-          // onto `loaded`.
-          observedStatus: loaded.status,
+          // `loaded` carries the probe's LIVE answer on this path: requireLiveBotOwnership makes
+          // probeLiveOwnership run a GET immediately before this, and it writes both halves of what
+          // it saw back onto `loaded`.
+          observed: { status: loaded.status, statusAt: loaded.statusAt },
           base,
         });
       } catch (err) {

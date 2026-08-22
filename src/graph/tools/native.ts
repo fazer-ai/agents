@@ -11,11 +11,15 @@ import type {
   CustomAttributeDef,
 } from "@/modules/chatwoot/client";
 import { type KanbanContext, matchKanbanStep } from "@/modules/chatwoot/kanban";
+import { parseLiveConversation } from "@/modules/chatwoot/normalize";
 import {
   attributesForModel,
   type ChatwootVocab,
 } from "@/modules/chatwoot/vocab";
-import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
+import {
+  type ObservedConversation,
+  recordResolutionOrigin,
+} from "@/modules/conversations/record-resolution";
 import type { HandoffConfig } from "@/modules/handoff/settings";
 import {
   type HandoffTargets,
@@ -150,9 +154,11 @@ export interface ToolCtx {
   // step right after set_custom_attribute writes to Chatwoot (see mirrorAttributeWrite). Absent ⇒
   // the write-through is skipped and the mirror catches up on the next webhook event.
   conversationDbId?: bigint | null;
-  // The conversation's status as the turn observed it, for the immediate resolve_conversation path.
-  // Absent ⇒ the close is not recorded rather than claimed: see record-resolution.ts rule 2.
-  observedStatus?: string | null;
+  // The conversation as the turn observed it, for the immediate resolve_conversation path. Absent
+  // ⇒ the close is not recorded rather than claimed: see record-resolution.ts rule 2. This is the
+  // FALLBACK only: the tool re-reads the live state before closing, because on a nudge turn this
+  // snapshot was taken before a model call that can run for a minute.
+  observed?: ObservedConversation;
   // The contact's CURRENT stored voice preference (snapshot at turn prep), surfaced in the
   // set_voice_preference description so the model knows the existing value before changing it.
   // true = audio, false = text, null/undefined = not set yet.
@@ -733,16 +739,25 @@ function resolveConversationTool(ctx: ToolCtx) {
         ts.resolveRequested = true;
         return "Resolve scheduled: the conversation will be marked resolved after your final reply in this turn is delivered.";
       }
-      await ctx.client.toggleStatus(ctx.conversationId, "resolved");
-      // Same origin as the deferred path in runtime.ts: the agent judged the request handled. The
-      // row id and tenant are absent on hand-built contexts (and the playground never reaches a
+      // The row id and tenant are absent on hand-built contexts (and the playground never reaches a
       // real Chatwoot), so an unrecordable close is left unattributed rather than guessed at.
-      if (ctx.tenantId != null && ctx.conversationDbId != null) {
+      const recordable = ctx.tenantId != null && ctx.conversationDbId != null;
+      // BEFORE the toggle, and freshly. This branch runs inside a nudge's model call, which can take
+      // a minute, so `ctx.observed` was taken before generation: an operator, an automation rule or
+      // `auto_resolve_after` closing meanwhile makes our toggle a silent no-op in Chatwoot, and the
+      // stale "open" would credit the agent for their close. After the toggle it is too late — the
+      // conversation reads "resolved" either way and the two are indistinguishable.
+      const observed = recordable
+        ? await observeBeforeClose(ctx)
+        : { status: "resolved", statusAt: null };
+      await ctx.client.toggleStatus(ctx.conversationId, "resolved");
+      // Same origin as the deferred path in runtime.ts: the agent judged the request handled.
+      if (recordable) {
         await recordResolutionOrigin({
-          tenantId: ctx.tenantId,
-          conversation: { id: ctx.conversationDbId },
+          tenantId: ctx.tenantId as bigint,
+          conversation: { id: ctx.conversationDbId as bigint },
           origin: "agent",
-          observedStatus: ctx.observedStatus ?? "resolved",
+          observed,
           base: ctx.base,
         });
       }
@@ -756,6 +771,24 @@ function resolveConversationTool(ctx: ToolCtx) {
       schema: z.object({}),
     },
   );
+}
+
+// The live conversation right before we close it. A failed read falls back to the turn's own
+// snapshot, which is what this path used to do unconditionally: stale, but strictly better than
+// refusing to record every close whenever a GET blips.
+async function observeBeforeClose(ctx: ToolCtx): Promise<ObservedConversation> {
+  try {
+    const live = parseLiveConversation(
+      await ctx.client.getConversation(ctx.conversationId),
+    );
+    if (live) return { status: live.status, statusAt: live.updatedAt };
+  } catch (err) {
+    logger.warn(
+      { err, conversationId: ctx.conversationId },
+      "resolve_conversation: live read before close failed, using the turn's snapshot",
+    );
+  }
+  return ctx.observed ?? { status: "resolved", statusAt: null };
 }
 
 function truncate(s: string, max: number): string {

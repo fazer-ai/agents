@@ -79,7 +79,7 @@ async function seedClosedConversation(p: {
       tenantId,
       conversation: { id: conv.id },
       origin: p.origin,
-      observedStatus: "open",
+      observed: { status: "open", statusAt: null },
       base: appDb,
     });
   }

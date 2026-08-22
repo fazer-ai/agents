@@ -127,7 +127,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: convId,
         },
         origin: "agent",
-        observedStatus: "open",
+        observed: { status: "open", statusAt: null },
         base: appDb,
       });
       await mirror(
@@ -158,7 +158,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 38,
         },
         origin: "agent",
-        observedStatus: "open",
+        observed: { status: "open", statusAt: null },
         base: appDb,
       });
       expect(await originOf(38)).toBe("agent");
@@ -188,7 +188,8 @@ describe.skipIf(!dbUp)(
       );
       expect(await originOf(50)).toBeNull();
       // Second episode: the agent closes again, and we stamp while our own webhook is still in
-      // flight, so the row still reads open.
+      // flight, so the row still reads open. The observation is the row as the caller read it, both
+      // halves — which is what production passes and what makes the floor the reopen's version.
       await recordResolutionOrigin({
         tenantId,
         conversation: {
@@ -196,7 +197,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 50,
         },
         origin: "agent",
-        observedStatus: "open",
+        observed: { status: "open", statusAt: at + 2 },
         base: appDb,
       });
       expect(await originOf(50)).toBe("agent");
@@ -210,6 +211,39 @@ describe.skipIf(!dbUp)(
         convEvent(50, "conversation_status_changed", "resolved", at + 3),
       );
       expect(await originOf(50)).toBe("agent");
+    });
+
+    // Review round 10. A newer inbound reopens the conversation and is mirrored between our toggle
+    // returning and the stamp landing, so by write time the row's own status version describes THAT
+    // reopen. Copying it as the floor would date the stamp to the wrong episode: our own delayed
+    // resolve event would then be judged to predate the stamp and could never clear it, and the
+    // next close by anyone else would read as the agent's. The floor is the caller's observation.
+    test("a reopen mirrored before the stamp does not become its floor", async () => {
+      const at = 1_700_060_000;
+      await mirror(convEvent(61, "conversation_created", "open", at));
+      // The agent closes: the toggle lands in Chatwoot at at+1, and the caller observed the row as
+      // it was BEFORE that, which is the open row at version `at`.
+      // Its reopen event, from a customer message, is mirrored first.
+      await mirror(
+        convEvent(61, "conversation_status_changed", "open", at + 2),
+      );
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 61,
+        },
+        origin: "agent",
+        observed: { status: "open", statusAt: at },
+        base: appDb,
+      });
+      expect(await originOf(61)).toBe("agent");
+      // Our own resolve event, delayed behind the reopen. It loses the ordering, and it is NEWER
+      // than the floor, so it is our close failing to land and the stamp goes with it.
+      await mirror(
+        convEvent(61, "conversation_status_changed", "resolved", at + 1),
+      );
+      expect(await originOf(61)).toBeNull();
     });
 
     test("a customer message reopening the conversation clears it too", async () => {
@@ -265,7 +299,7 @@ describe.skipIf(!dbUp)(
       // probe's answer, runtime.ts the ownership recheck's, the console the row it loaded.
       const observed = await suDb.conversation.findFirstOrThrow({
         where: { tenantId, chatwootConversationId: 42 },
-        select: { status: true },
+        select: { status: true, chatwootStatusAt: true },
       });
       await recordResolutionOrigin({
         tenantId,
@@ -274,7 +308,10 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 42,
         },
         origin: "agent",
-        observedStatus: observed.status,
+        observed: {
+          status: observed.status,
+          statusAt: observed.chatwootStatusAt,
+        },
         base: appDb,
       });
       expect(await originOf(42)).toBeNull();
@@ -295,7 +332,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 44,
         },
         origin: "agent",
-        observedStatus: "pending",
+        observed: { status: "pending", statusAt: null },
         base: appDb,
       });
       // The customer replied. Their reopen (V0+3) is delivered before our resolve (V0+2).
@@ -330,7 +367,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 46,
         },
         origin: "agent",
-        observedStatus: "pending",
+        observed: { status: "pending", statusAt: null },
         base: appDb,
       });
       // The customer's reply reopens: a message payload, which moves the status mark and nothing
@@ -377,7 +414,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 47,
         },
         origin: "agent",
-        observedStatus: "pending",
+        observed: { status: "pending", statusAt: null },
         base: appDb,
       });
       await mirror({
@@ -438,7 +475,7 @@ describe.skipIf(!dbUp)(
         },
         origin: "agent",
         // What the ownership recheck saw before the toggle.
-        observedStatus: "pending",
+        observed: { status: "pending", statusAt: null },
         base: appDb,
       });
       expect(await originOf(43)).toBe("agent");
@@ -457,7 +494,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 38,
         },
         origin: "console",
-        observedStatus: "open",
+        observed: { status: "open", statusAt: null },
         base: appDb,
       });
       expect(await originOf(38)).toBe("agent");
@@ -478,7 +515,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 39,
         },
         origin: "console",
-        observedStatus: "open",
+        observed: { status: "open", statusAt: null },
         base: appDb,
       });
       expect(await originOf(39)).toBe("console");
@@ -518,7 +555,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 40,
         },
         origin: "agent",
-        observedStatus: "open",
+        observed: { status: "open", statusAt: null },
         base: appDb,
       });
       // The label write from earlier in the same turn, serialized at V0+1, delivered late. Newer than
@@ -574,7 +611,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 41,
         },
         origin: "agent",
-        observedStatus: "open",
+        observed: { status: "open", statusAt: null },
         base: appDb,
       });
       const out = await reconcile(41, "pending", V0 + 1);
@@ -603,7 +640,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 60,
         },
         origin: "agent",
-        observedStatus: "open",
+        observed: { status: "open", statusAt: V0 + 2 },
         base: appDb,
       });
       expect(await originOf(60)).toBe("agent");

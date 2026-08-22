@@ -5,7 +5,10 @@ import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadAgentBot, loadChatwootClient } from "@/modules/chatwoot/instance";
-import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
+import {
+  type ObservedConversation,
+  recordResolutionOrigin,
+} from "@/modules/conversations/record-resolution";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
@@ -165,8 +168,10 @@ export async function armRedirectChatFollowUp(
 
 interface WhatsAppSibling {
   chatwootConversationId: number;
-  // Mirrored status, read before the closing toggle: see record-resolution.ts rule 2.
+  // Mirrored status AND its version, read before the closing toggle: see record-resolution.ts
+  // rule 2 and the floor in ObservedConversation.
   status: string;
+  chatwootStatusAt: number | null;
   chatwootContactId: number;
   lastInboundAt: Date | null;
   channelType: string | null;
@@ -207,6 +212,7 @@ async function resolveWhatsAppSibling(
       select: {
         chatwootConversationId: true,
         status: true,
+        chatwootStatusAt: true,
         lastInboundAt: true,
         contact: { select: { chatwootContactId: true } },
         inbox: { select: { channelType: true, provider: true } },
@@ -217,6 +223,7 @@ async function resolveWhatsAppSibling(
     return {
       chatwootConversationId: sibling.chatwootConversationId,
       status: sibling.status,
+      chatwootStatusAt: sibling.chatwootStatusAt,
       chatwootContactId: sibling.contact.chatwootContactId,
       lastInboundAt: sibling.lastInboundAt,
       channelType: sibling.inbox?.channelType ?? null,
@@ -440,8 +447,8 @@ async function deliverClosing(
     tenantId: bigint;
     instanceId: bigint;
     base: PrismaClient;
-    // The conversation's status as the caller loaded it, before this function's own toggle.
-    observedStatus: string | null;
+    // The conversation as the caller loaded it, before this function's own toggle.
+    observed: ObservedConversation;
   },
 ): Promise<void> {
   await client.sendMessage(conversationId, closingMessage, {
@@ -457,7 +464,7 @@ async function deliverClosing(
       chatwootConversationId: conversationId,
     },
     origin: "redirect_closing",
-    observedStatus: origin.observedStatus,
+    observed: origin.observed,
     base: origin.base,
   });
 }
@@ -521,6 +528,7 @@ export async function deliverRedirectClosing(
       },
       select: {
         status: true,
+        chatwootStatusAt: true,
         lastInboundAt: true,
         inbox: { select: { agentId: true, channelType: true, provider: true } },
       },
@@ -561,7 +569,10 @@ export async function deliverRedirectClosing(
         tenantId: p.tenantId,
         instanceId: p.instanceId,
         base,
-        observedStatus: cx.widget.status,
+        observed: {
+          status: cx.widget.status,
+          statusAt: cx.widget.chatwootStatusAt,
+        },
       },
     );
   }
@@ -589,7 +600,10 @@ export async function deliverRedirectClosing(
         tenantId: p.tenantId,
         instanceId: p.instanceId,
         base,
-        observedStatus: sibling.status,
+        observed: {
+          status: sibling.status,
+          statusAt: sibling.chatwootStatusAt,
+        },
       },
     );
   }

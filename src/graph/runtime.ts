@@ -22,7 +22,10 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
-import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
+import {
+  type ObservedConversation,
+  recordResolutionOrigin,
+} from "@/modules/conversations/record-resolution";
 import { advanceHandledWatermark } from "@/modules/debounce/watermark";
 import {
   emitFlowEvent,
@@ -166,9 +169,10 @@ async function applyDeferredResolve(
     tenantId: bigint;
     instanceId: bigint;
     base: PrismaClient;
-    // What the ownership recheck saw. Read from the row BEFORE the toggle, because after it the
-    // mirror may already carry our own close and a re-read could not tell it from somebody else's.
-    observedStatus: string | null;
+    // What the ownership recheck saw, status and version together. Read from the row BEFORE the
+    // toggle, because after it the mirror may already carry our own close and a re-read could not
+    // tell it from somebody else's.
+    observed: ObservedConversation;
   },
 ): Promise<void> {
   if (!turnState.resolveRequested) return;
@@ -185,7 +189,7 @@ async function applyDeferredResolve(
         chatwootConversationId: conversationId,
       },
       origin: "agent",
-      observedStatus: origin.observedStatus,
+      observed: origin.observed,
       base: origin.base,
     });
     emitFlowEvent(flow, {
@@ -796,7 +800,7 @@ export async function runLoadedTurn(
             chatwootConversationId: conversationId,
           },
         },
-        select: { assigneeType: true, status: true },
+        select: { assigneeType: true, status: true, chatwootStatusAt: true },
       });
       const ours = shouldBotHandle(
         {
@@ -813,7 +817,14 @@ export async function runLoadedTurn(
         });
         voiceReply = c?.voiceReply ?? null;
       }
-      return { ours, voiceReply, status: conv?.status ?? null };
+      return {
+        ours,
+        voiceReply,
+        observed: {
+          status: conv?.status ?? null,
+          statusAt: conv?.chatwootStatusAt ?? null,
+        },
+      };
     });
     // Both gates below drop what is no longer wanted: a human took the conversation, or a newer
     // customer message made this answer obsolete. Neither can reach the closing line, which left
@@ -886,7 +897,7 @@ export async function runLoadedTurn(
         tenantId,
         instanceId,
         base,
-        observedStatus: recheck.status,
+        observed: recheck.observed,
       });
       return sent || handedOff ? "posted" : "empty";
     }
@@ -900,7 +911,7 @@ export async function runLoadedTurn(
       tenantId,
       instanceId,
       base,
-      observedStatus: recheck.status,
+      observed: recheck.observed,
     });
     return "posted";
   } finally {

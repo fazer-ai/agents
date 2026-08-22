@@ -738,6 +738,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
   test("resolve tool defers the status toggle until after the reply is delivered", async () => {
     await seedConversation(910, null);
+    // A known status version on the row, so the assertion at the end can tell WHICH reading the
+    // recorded floor came from: `mirrorOnToggle` overwrites this with `Date.now()` at toggle time,
+    // and the floor has to be the one the ownership recheck saw BEFORE that.
+    const OBSERVED_AT = 1_700_200_000.5;
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 910 },
+      data: { chatwootStatusAt: OBSERVED_AT },
+    });
     const FINAL = "Fechado! Obrigado pelo contato.";
     const calls: Array<[string, number, string]> = [];
     const outcome = await runAgentTurn({
@@ -781,9 +789,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // recorded here. The row is read after the flow event above, so the write has had its turn.
     const resolvedRow = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: 910 },
-      select: { resolvedBy: true },
+      select: { resolvedBy: true, resolvedByAt: true },
     });
     expect(resolvedRow.resolvedBy).toBe("agent");
+    // And the floor is the recheck's version, not the row's at write time — which by now is the
+    // one `mirrorOnToggle` wrote. Getting this wrong dates the stamp to the wrong episode, and a
+    // delayed webhook for this very close would then be judged to predate it.
+    expect(resolvedRow.resolvedByAt).toBe(OBSERVED_AT);
   });
 
   test("handoff customerMessage is terminal when the mirror status event lags", async () => {

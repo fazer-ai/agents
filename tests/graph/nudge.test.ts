@@ -2459,6 +2459,57 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // Review round 10. On a nudge turn resolve_conversation closes IMMEDIATELY, in the middle of the
+  // model call, and the turn's snapshot of the conversation was taken before generation started. A
+  // minute is a long time: an operator, an automation rule or `auto_resolve_after` can close the
+  // conversation meanwhile, Chatwoot answers our toggle with a successful no-op, and the stale
+  // "pending" would credit the agent for their close. So the tool re-reads the live state itself.
+  test("an operator's close during generation is not claimed by the agent's own resolve", async () => {
+    await seedConv(9943, null);
+    const s = stub();
+    let reads = 0;
+    const makeClient = async () => {
+      const base = (await s.makeClient()) as unknown as Record<string, unknown>;
+      return {
+        ...base,
+        // The operator's close already landed in Chatwoot by the time the tool looks. This is the
+        // read the tool makes right before its own toggle; the turn's pre-generation snapshot still
+        // says "pending", which is exactly the stale value that used to be recorded.
+        getConversation: async () => {
+          reads += 1;
+          return {
+            id: 9943,
+            status: "resolved",
+            meta: { assignee_type: null, assignee: null },
+            last_activity_at: 1_700_100_000,
+            updated_at: 1_700_100_001,
+          };
+        },
+      } as never;
+    };
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9943`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new ResolveThenReplyModel("Tudo certo por aqui!") as never,
+        makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    // The toggle still happens (Chatwoot answers it as a no-op), and the tool did look first.
+    expect(s.resolved).toEqual([9943]);
+    expect(reads).toBeGreaterThan(0);
+    const row = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: 9943 },
+      select: { resolvedBy: true },
+    });
+    expect(row?.resolvedBy).toBeNull();
+  });
+
   test("outside the 24h window, a handoff still leaves the operator the note and the label", async () => {
     await seedConv(9903, null, new Date(Date.now() - 48 * 3_600_000));
     const s = stub();

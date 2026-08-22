@@ -121,4 +121,74 @@ describe.skipIf(!dbUp)("the redirect closing records its own origin", () => {
     });
     expect(row.resolvedBy).toBe("redirect_closing");
   });
+
+  // The OTHER conversation the closing stage touches: the WhatsApp sibling on the entry inbox. It
+  // takes the same path and needs the same two halves recorded, and the floor is the one the
+  // sibling lookup read — the version this close was decided against, not the row's at write time.
+  test("the WhatsApp sibling it closes records the same origin, with its floor", async () => {
+    const SIBLING_CONV = 8802;
+    const SIBLING_AT = 1_700_300_000.25;
+    // Its own widget row: the one above is already resolved by the previous test, and the closing
+    // stage answers "already-closed" before it reaches the sibling.
+    const WIDGET_CONV_2 = 502;
+    const contact = await suDb.contact.create({
+      data: { tenantId, chatwootContactId: 77 },
+    });
+    const widgetInbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 41 },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: widgetInbox.id,
+        contactId: contact.id,
+        chatwootConversationId: WIDGET_CONV_2,
+        status: "open",
+        threadId: `${tenantId}:${instanceId}:${WIDGET_CONV_2}`,
+        lastInboundAt: new Date(),
+      },
+    });
+    const waInbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 42,
+        name: "WhatsApp",
+        channelType: "Channel::Whatsapp",
+      },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: waInbox.id,
+        contactId: contact.id,
+        chatwootConversationId: SIBLING_CONV,
+        status: "open",
+        chatwootStatusAt: SIBLING_AT,
+        threadId: `${tenantId}:${instanceId}:${SIBLING_CONV}`,
+        lastInboundAt: new Date(),
+      },
+    });
+    const s = stubClient();
+    const outcome = await deliverRedirectClosing({
+      tenantId,
+      instanceId,
+      widgetConversationId: WIDGET_CONV_2,
+      entryInboxId: 42,
+      closingMessage: "Até logo!",
+      closeChat: false,
+      base: appDb,
+      deps: { makeClient: s.makeClient },
+    });
+    expect(outcome).toBe("delivered");
+    expect(s.statuses).toEqual([[SIBLING_CONV, "resolved"]]);
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: SIBLING_CONV },
+      select: { resolvedBy: true, resolvedByAt: true },
+    });
+    expect(row.resolvedBy).toBe("redirect_closing");
+    expect(row.resolvedByAt).toBe(SIBLING_AT);
+  });
 });

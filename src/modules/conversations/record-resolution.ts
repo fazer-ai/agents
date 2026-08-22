@@ -23,7 +23,7 @@ import type { ResolutionOrigin } from "@/modules/conversations/resolution-origin
 //      survive a toggle that threw, and the next person to resolve that conversation — possibly an
 //      operator, months later — would be credited to the agent.
 //   2. Only when the caller OBSERVED a non-resolved conversation before deciding to close it
-//      (`observedStatus`). Resolving a resolved conversation is a no-op in Chatwoot, so a close that
+//      (`observed`). Resolving a resolved conversation is a no-op in Chatwoot, so a close that
 //      had already happened is not ours: an operator, an automation rule or `auto_resolve_after`
 //      landing before our toggle deliberately leaves the origin NULL, and stamping over it would
 //      credit the agent for someone else's close. It is the caller's observation and not a re-read
@@ -81,47 +81,44 @@ export type ConversationRef =
   | { id: bigint }
   | { chatwootInstanceId: bigint; chatwootConversationId: number };
 
+/**
+ * The conversation as the caller saw it when it decided to close, both halves of one observation.
+ * Required, not optional: `status` is the whole of rule 2, `statusAt` is the whole of the floor, and
+ * a default on either would let a new call site silently claim closes it did not cause.
+ */
+export interface ObservedConversation {
+  /** The status the caller read: the mirror's value, or the live one where the path reads it. */
+  status: string | null;
+  /** That reading's version (`conversation.updated_at.to_f`), null when the source carries none. */
+  statusAt: number | null;
+}
+
 export async function recordResolutionOrigin(params: {
   tenantId: bigint;
   conversation: ConversationRef;
   origin: ResolutionOrigin;
-  /**
-   * The conversation's status as the caller saw it when it decided to close — the mirror's value,
-   * or the live one where the path already reads it. Required, not optional: it is the whole of
-   * rule 2, and a default would let a new call site silently claim closes it did not cause.
-   */
-  observedStatus: string | null;
+  observed: ObservedConversation;
   base?: PrismaClient;
 }): Promise<void> {
-  const { tenantId, conversation, origin, observedStatus } = params;
+  const { tenantId, conversation, origin, observed } = params;
   const base = params.base ?? basePrisma;
-  if (observedStatus === "resolved") return;
+  if (observed.status === "resolved") return;
   try {
     await runScopedOn(base, sysCtx(tenantId), (db) =>
-      // Raw, and not `updateMany`, for one reason: `resolved_by_at` has to be the row's OWN
-      // `chatwoot_status_at`, and Prisma cannot write one column from another. Reading it first and
-      // writing it back would reopen the gap both predicates close by being evaluated in the same
-      // statement — two closings landing at once could then both pass.
-      //
-      // The floor is what tells our close apart from an older one. See the column's comment in
-      // schema.prisma and `clearsResolutionOrigin`. A row deleted (or never mirrored) between the
-      // toggle and this write matches nothing, which is a no-op rather than a throw.
-      "id" in conversation
-        ? db.$executeRaw`
-            UPDATE "conversations"
-               SET "resolved_by" = ${origin},
-                   "resolved_by_at" = "chatwoot_status_at"
-             WHERE "id" = ${conversation.id}
-               AND "tenant_id" = ${tenantId}
-               AND "resolved_by" IS NULL`
-        : db.$executeRaw`
-            UPDATE "conversations"
-               SET "resolved_by" = ${origin},
-                   "resolved_by_at" = "chatwoot_status_at"
-             WHERE "chatwoot_instance_id" = ${conversation.chatwootInstanceId}
-               AND "chatwoot_conversation_id" = ${conversation.chatwootConversationId}
-               AND "tenant_id" = ${tenantId}
-               AND "resolved_by" IS NULL`,
+      // updateMany, not update: a conversation deleted (or never mirrored) between the toggle and
+      // this write is a no-op, not a throw. Both predicates are evaluated by the database in the
+      // same statement, so two closings landing at once cannot both pass them.
+      db.conversation.updateMany({
+        where: {
+          ...("id" in conversation ? { id: conversation.id } : conversation),
+          resolvedBy: null,
+        },
+        // The floor is the version the CALLER observed, never the row's own at write time. Between
+        // the toggle returning and this statement the row can already carry a newer reopen, and
+        // copying that would record a floor describing the wrong episode: our own delayed resolve
+        // event would then be judged to predate the stamp and could no longer clear it.
+        data: { resolvedBy: origin, resolvedByAt: observed.statusAt },
+      }),
     );
   } catch (err) {
     logger.warn(

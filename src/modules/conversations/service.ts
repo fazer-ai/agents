@@ -507,6 +507,7 @@ async function loadConvRef(
   chatwootInstanceId: bigint;
   chatwootConversationId: number;
   status: string;
+  chatwootStatusAt: number | null;
   assigneeId: number | null;
   assigneeType: string | null;
   assigneeName: string | null;
@@ -534,6 +535,7 @@ async function loadConvRef(
         chatwootInstanceId: true,
         chatwootConversationId: true,
         status: true,
+        chatwootStatusAt: true,
         assigneeId: true,
         assigneeType: true,
         assigneeName: true,
@@ -1342,7 +1344,7 @@ export async function setConversationStatus(
       origin: "console",
       // conv is the row as loaded BEFORE the toggle, so an operator re-resolving an already
       // resolved conversation records nothing: their call was a no-op in Chatwoot too.
-      observedStatus: conv.status,
+      observed: { status: conv.status, statusAt: conv.chatwootStatusAt },
       base,
     });
   }

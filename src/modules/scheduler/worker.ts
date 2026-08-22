@@ -207,6 +207,11 @@ export async function runSchedulerTick(
   // a quarter of a batch every tick is generous for work whose latency nothing waits on: every
   // reader of a memory thread drains it before reading, so the tick is only the backstop for threads
   // nobody touches.
+  // The `max(1, …)` survives mutation, and knowingly: `claimWhere` clamps its own limit to at least
+  // one, so a batch smaller than four would claim a traffic row either way and no test can separate
+  // the two. It stays because that clamp is a hard CAP for the claim, not a floor for this caller —
+  // making the floor depend on it would put this rule in another module, in a line written for the
+  // opposite purpose.
   const trafficShare = Math.max(1, Math.floor(opts.batchSize / 4));
   const jobs = [
     ...(await claimDueJobs(opts.batchSize, base, new Date(), opts.tenantId)),

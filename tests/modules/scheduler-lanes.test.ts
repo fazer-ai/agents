@@ -19,6 +19,7 @@ import {
   type SchedulerJobKind,
 } from "@/modules/scheduler/service";
 import {
+  getJobHandler,
   registerJobHandler,
   runSchedulerTick,
 } from "@/modules/scheduler/worker";
@@ -432,6 +433,61 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
         `DELETE FROM tenants WHERE id = ${other.id}`,
       );
     }
+  });
+
+  // The shared tick claims in TWO parts so a traffic-proportional kind cannot fill the batch, and
+  // this is the half a mutation caught untested: the split is asserted at the claim functions, and
+  // deleting the second claim from the tick itself killed nothing. It is the third time in this
+  // change that a function was covered and its call site was not.
+  test("the shared tick drains both halves of its lane", async () => {
+    const fixed = await enqueueJob({
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-tick-fixed",
+      runAt: past(),
+      base: appDb,
+    });
+    const traffic = await enqueueJob({
+      tenantId,
+      kind: "INGEST_MESSAGE",
+      dedupeKey: "dk-tick-traffic",
+      runAt: past(),
+      base: appDb,
+    });
+    const ran: SchedulerJobKind[] = [];
+    const previous = {
+      WEBHOOK_RETRY: getJobHandler("WEBHOOK_RETRY"),
+      INGEST_MESSAGE: getJobHandler("INGEST_MESSAGE"),
+    };
+    for (const kind of ["WEBHOOK_RETRY", "INGEST_MESSAGE"] as const) {
+      registerJobHandler(kind, async () => {
+        ran.push(kind);
+        return { outcome: "done" };
+      });
+    }
+    try {
+      await runSchedulerTick(appDb, {
+        staleMs: 300_000,
+        batchSize: 20,
+        tenantId,
+      });
+    } finally {
+      for (const [kind, handler] of Object.entries(previous)) {
+        if (handler) registerJobHandler(kind, handler);
+      }
+    }
+
+    expect(ran.sort()).toEqual(["INGEST_MESSAGE", "WEBHOOK_RETRY"]);
+    // Both rows are finished: the traffic half is DELETED on completion, the fixed one retired.
+    expect(await suDb.schedulerJob.count({ where: { id: traffic } })).toBe(0);
+    expect(
+      (
+        await suDb.schedulerJob.findUniqueOrThrow({
+          where: { id: fixed },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("DONE");
   });
 
   test("a write that cannot reach the database is logged, and the batch still drains", async () => {

@@ -194,6 +194,12 @@ async function provisionCheckpointerSchema(
     // requires a table's prospective owner to hold CREATE on its schema, so on a fresh rotation,
     // where the new role has nothing on the old owner's schema yet, the transfer below would fail,
     // roll back its whole loop, and leave every table where it was.
+    //
+    // NOTE: the loop skips tables the role already owns, and that filter is not an optimisation.
+    // `ALTER TABLE ... OWNER TO` takes an ACCESS EXCLUSIVE lock even when the owner does not change
+    // (measured), and this runs on EVERY boot, including the overlap of a rolling deploy where the
+    // previous container is still serving — so an unfiltered loop would freeze the checkpointer's
+    // reads and writes once per deploy for no change at all.
     let adoptError: unknown;
     try {
       await client.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`);
@@ -214,6 +220,7 @@ async function provisionCheckpointerSchema(
             SELECT c.relname FROM pg_class c
               JOIN pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = 'langgraph' AND c.relkind IN ('r', 'p')
+               AND pg_get_userbyid(c.relowner) <> v_role
           LOOP
             EXECUTE format('ALTER TABLE langgraph.%I OWNER TO %I', r.relname, v_role);
           END LOOP;

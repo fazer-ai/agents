@@ -41,13 +41,18 @@ function urlFor(user: string, password: string, database: string): string {
   return u.toString();
 }
 
-async function runBootstrap(appPassword = APP_PW, appRole = APP_ROLE) {
+async function runBootstrap(
+  appPassword = APP_PW,
+  appRole = APP_ROLE,
+  extraEnv: Record<string, string> = {},
+) {
   const proc = Bun.spawn(["bun", "scripts/db-bootstrap.ts"], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,
       MIGRATION_DATABASE_URL: urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB),
       DATABASE_URL: urlFor(appRole, appPassword, PROBE_DB),
+      ...extraEnv,
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -682,6 +687,54 @@ describe.skipIf(!dbUp)(
         },
       );
       expect(worked).toEqual({ owner: ROT_B_ROLE });
+    });
+
+    test("a healthy re-boot does not lock the checkpointer's tables", async () => {
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // NOTE: `ALTER TABLE ... OWNER TO` takes an ACCESS EXCLUSIVE lock even when the owner does
+      // not change, and this script runs on EVERY boot — including the overlap of a rolling deploy,
+      // where the previous container is still answering customers. So the reconciliation loop has
+      // to skip what the role already owns, and the way to prove it is to hold a reader's lock and
+      // watch bootstrap walk past it rather than to inspect the SQL.
+      await onProbe(superuserOnProbe, async (c) => {
+        await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
+        await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${APP_ROLE}`);
+        await c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)");
+        await c.query(
+          `ALTER TABLE langgraph.checkpoint_migrations OWNER TO ${APP_ROLE}`,
+        );
+      });
+
+      const reader = new Client({
+        connectionString: urlFor(APP_ROLE, ROTATED_PW, PROBE_DB),
+      });
+      await reader.connect();
+      try {
+        // ACCESS SHARE, held open: exactly what a live checkpointer is doing mid-deploy.
+        await reader.query("BEGIN");
+        await reader.query("SELECT v FROM langgraph.checkpoint_migrations");
+
+        // NOTE: PGOPTIONS reaches the subprocess's own session, so an ALTER that queues behind the
+        // reader fails in seconds instead of hanging the suite.
+        const started = Date.now();
+        const { exitCode } = await runBootstrap(ROTATED_PW, APP_ROLE, {
+          PGOPTIONS: "-c lock_timeout=2000",
+        });
+        const elapsed = Date.now() - started;
+
+        // NOTE: the wait is the assertion, not the exit code — a lock timeout inside the transfer
+        // is caught and, on an install that already owns everything, correctly swallowed, so an
+        // unfiltered loop still exits 0. What it cannot hide is having waited. Measured on this
+        // machine: 56ms filtered, 2047ms unfiltered, the latter being the lock_timeout deadline
+        // rather than a race, so the threshold sits an order of magnitude above the healthy time
+        // and half the timeout below the broken one.
+        expect(exitCode).toBe(0);
+        expect(elapsed).toBeLessThan(1000);
+      } finally {
+        await reader.query("ROLLBACK").catch(() => {});
+        await reader.end();
+      }
     });
   },
 );

@@ -26,7 +26,13 @@ Three things make it fit a surface that is not a conversation:
 - **The action is applied AND the verdict is annotated.** Applying alone is faithful but illegible: a template reply with no explanation is indistinguishable from an agent that answered badly. `clean` and `unavailable` are annotated too, because "the guardrail approved this" and "no guardrail ran" are different readings of the same clean reply.
 - **A per-turn toggle, on by default** (`guardrails`, honored by the text/audio/file turns and the simulated follow-up). The pass is a model call the operator pays for, and an output direction can cost two, so a turn goes from one call to as many as three. Off means the gate is never built, not that its verdict is discarded.
 
-The simulated follow-up screens the **output** direction only, exactly as `runAgentNudge` does: a follow-up answers no question, so there is no customer message for the relevance check to judge.
+The simulated follow-up screens the **output** direction only, exactly as `runAgentNudge` does: a follow-up answers no question, so there is no customer message for the relevance check to judge. A follow-up the guardrail removes is reported as `suppressed`, never as `silent`: both mean nothing would be sent, and only one of them has a verdict behind it.
+
+### The transcript is not the agent's memory (`playground_turn_notes`)
+
+Session reload rebuilds the transcript from the checkpointer, which works only while the two are the same thing. Moderation is the first feature where they legitimately differ, and production already treats them as two stores: an output trip posts the template to Chatwoot and leaves the model's own words in the graph thread, and an input trip never lets the message reach the thread at all. Copying the screened text into the checkpointer would make the playground diverge from the production it reproduces, so the transcript gets its own row.
+
+Only turns the guardrail touched get one. A note with a `messageId` **overrides** the reply that message produced; a note without one is a whole turn the thread never received, placed by `anchorMessageId` (the message the thread ended on at the time), with a null anchor meaning the thread was empty. An anchor that no longer resolves still renders, at the end, because losing the turn is the failure the row exists to prevent. The fold is `applyTurnNotes`, a pure function with a decision table in `tests/modules/playground-sessions.test.ts`.
 
 ### Execution trace + KB sources (debug surface)
 

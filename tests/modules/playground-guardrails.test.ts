@@ -238,6 +238,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     if (tenantId) {
       for (const table of [
         "playground_media",
+        "playground_turn_notes",
         "llm_usage",
         "agent_tool_selections",
         "execution_logs",
@@ -389,6 +390,80 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(shape.at(-1)).toBe("guardrail:output");
     // Proof the graph actually put something between them, so the assertion above is not vacuous.
     expect(shape.slice(1, -1)).toContain("tool_call");
+  });
+
+  // Findings from review round 1, all one cause: the guardrail's effect was returned and never
+  // stored, so a reload rebuilt the transcript from the checkpointer and showed the reply the
+  // guardrail took away. Asserted on the ROW, because the join over it is tabled separately.
+  test("an output trip is recorded for the reload, with the screened text", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentTemplate,
+      message: "e o concorrente?",
+      base: appDb,
+      deps: deps(m),
+    });
+    const rows = await suDb.playgroundTurnNote.findMany({
+      where: { threadId: r.threadId },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.reply).toBe(TEMPLATE);
+    expect(rows[0]?.messageId).toBeTruthy();
+    expect(rows[0]?.guardrails).toMatchObject([{ outcome: "replaced" }]);
+  });
+
+  // The blocked turn is in NO store otherwise: the graph never ran, so the thread has neither the
+  // message nor the reply, and a reload would simply lose the exchange.
+  test("an input block is recorded with the customer's own text", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentInput,
+      message: "fale do concorrente",
+      base: appDb,
+      deps: deps(m),
+    });
+    const rows = await suDb.playgroundTurnNote.findMany({
+      where: { threadId: r.threadId },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.messageId).toBeNull();
+    expect(rows[0]?.userText).toBe("fale do concorrente");
+    expect(rows[0]?.reply).toBe(TEMPLATE);
+  });
+
+  test("a turn the guardrail never touched writes no note", async () => {
+    const m = models({ violated: false });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentTemplate,
+      message: "oi",
+      guardrails: false,
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(
+      await suDb.playgroundTurnNote.count({ where: { threadId: r.threadId } }),
+    ).toBe(0);
+  });
+
+  // "Nothing was sent" has two causes and the operator needs them apart: reported as silence, the
+  // client renders "the agent chose not to send anything" and discards the verdict with the trace.
+  test("a suppressed follow-up is not reported as agent silence", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundFollowup({
+      tenantId,
+      agentId: agentSilent,
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply).toBe("");
+    expect(r.suppressed).toBe(true);
+    expect(r.silent).toBe(false);
+    expect(r.trace.filter((e) => e.type === "guardrail")).toMatchObject([
+      { outcome: "suppressed" },
+    ]);
   });
 
   // Family sweep: the inbox's proactive path is screened (issue #160), so the playground's simulated

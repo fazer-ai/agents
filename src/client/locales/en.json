@@ -1692,7 +1692,8 @@
       "badge": "Simulated follow-up",
       "button": "Simulate follow-up",
       "hint": "Trigger the proactive follow-up now, without waiting for the inactivity window.",
-      "silent": "Follow-up: the agent chose not to send anything."
+      "silent": "Follow-up: the agent chose not to send anything.",
+      "suppressed": "Follow-up: the agent wrote one and the guardrail removed it. Nothing would be sent."
     },
     "goToGeneral": "Go to General",
     "guardrails": "Run guardrails",

@@ -673,10 +673,23 @@ function TurnBubble({
 }) {
   const { t } = useTranslation();
   if (turn.role === "note") {
+    // A note the guardrail produced carries the verdict that explains it. Rendered inline rather
+    // than behind the "Execution details" disclosure, which belongs to a reply that exists.
+    const verdicts = (turn.trace ?? []).filter((e) => e.type === "guardrail");
     return (
-      <p className="self-center px-2 text-center text-text-muted text-xs italic">
-        {turn.text}
-      </p>
+      <div className="flex w-full flex-col items-center gap-1">
+        <p className="self-center px-2 text-center text-text-muted text-xs italic">
+          {turn.text}
+        </p>
+        {verdicts.length > 0 && (
+          <div className="flex w-full max-w-[85%] flex-col gap-1 text-xs">
+            {verdicts.map((entry, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: ordered, immutable trace
+              <TraceRow key={i} entry={entry} />
+            ))}
+          </div>
+        )}
+      </div>
     );
   }
   // A user-uploaded file renders OUTSIDE the chat bubble: an inline image thumbnail or a file chip,

@@ -66,6 +66,7 @@ import { readVisionConfig } from "@/modules/vision/settings";
 import { type PlaygroundMediaKind, savePlaygroundMedia } from "./media";
 import { upsertPlaygroundSession } from "./sessions";
 import { isValidPlaygroundThread, newPlaygroundThreadId } from "./thread";
+import { savePlaygroundTurnNote } from "./turn-notes";
 
 // Agent playground: chat with a configured agent straight from the console, with NO Chatwoot round
 // trip (no webhook, no real conversation, no debounce, no post). It runs the SAME model + system
@@ -84,6 +85,27 @@ const screensThisTurn = (p: { guardrails?: boolean }): boolean =>
   p.guardrails !== false;
 
 const notScreened: GuardrailGate = async () => ({ kind: "not-run" });
+
+// The id of the last message currently in the thread, which is where a turn the graph never ran
+// belongs in the rebuilt transcript. Best-effort: without it the note still renders, just first.
+async function lastThreadMessageId(
+  graph: {
+    getState: (cfg: { configurable: { thread_id: string } }) => Promise<{
+      values?: { messages?: unknown };
+    }>;
+  },
+  threadId: string,
+): Promise<string | null> {
+  try {
+    const st = await graph.getState({ configurable: { thread_id: threadId } });
+    const msgs = st?.values?.messages as Array<{ id?: unknown }> | undefined;
+    if (!Array.isArray(msgs) || msgs.length === 0) return null;
+    const id = msgs[msgs.length - 1]?.id;
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
+}
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -467,6 +489,7 @@ export async function runPlaygroundTurn(
   // operator and be a different (and billed) thing, which is the half a reply-only check misses.
   const inGuard = await screen("input", text);
   if (guardrailTripped(inGuard)) {
+    const blockedReply = screenedText(inGuard, text) ?? "";
     await upsertPlaygroundSession(
       base,
       tenantId,
@@ -474,8 +497,20 @@ export async function runPlaygroundTurn(
       threadId,
       params.titleHint ?? text,
     );
+    // The graph never ran, so the thread holds neither the message nor the reply and a reload would
+    // simply lose the turn. The note carries both, anchored to whatever the thread ended on.
+    await savePlaygroundTurnNote(base, {
+      tenantId,
+      agentId,
+      threadId,
+      messageId: null,
+      anchorMessageId: await lastThreadMessageId(graph, threadId),
+      userText: text,
+      reply: blockedReply,
+      guardrails: [...gTrace],
+    });
     return {
-      reply: screenedText(inGuard, text) ?? "",
+      reply: blockedReply,
       threadId,
       trace: [...gTrace],
       sources: [],
@@ -537,6 +572,22 @@ export async function runPlaygroundTurn(
     threadId,
     params.titleHint ?? text,
   );
+
+  // The checkpointer holds the model's OWN reply, as production's thread does, so a reload would
+  // show the text the guardrail took away and no sign that it acted. Only turns it touched get a
+  // note; `gTrace` empty means it never ran.
+  if (gTrace.length > 0) {
+    await savePlaygroundTurnNote(base, {
+      tenantId,
+      agentId,
+      threadId,
+      messageId: lastAiMessageId(result.messages) ?? null,
+      anchorMessageId: null,
+      userText: null,
+      reply,
+      guardrails: [...gTrace],
+    });
+  }
 
   // Persist the user's inbound media (best-effort) for replay on reopen.
   let userMediaId: string | undefined;
@@ -645,6 +696,9 @@ export interface PlaygroundFollowupResult {
   // The agent chose not to follow up (empty reply) — a legitimate, common outcome, surfaced so the
   // UI can say "stayed silent" instead of rendering an empty bubble.
   silent: boolean;
+  // The agent DID write a follow-up and the guardrail removed it. Mutually exclusive with `silent`:
+  // both mean nothing is sent, and only this one has a verdict behind it.
+  suppressed: boolean;
 }
 
 // Simulate a proactive follow-up in the playground: inject the SAME inactivity nudge the scheduler
@@ -779,11 +833,30 @@ export async function runPlaygroundFollowup(
     ? await screen("output", drafted)
     : ({ kind: "not-run" } as const);
   const reply = screenedText(outGuard, drafted) ?? "";
-  const silent = reply === "";
+  // "Nothing is sent" has two causes here and the operator needs them apart: the agent deciding a
+  // follow-up is not warranted, and the guardrail removing one it did write. Reported as the
+  // former, the second renders as "the agent chose not to send anything" and the verdict that
+  // explains the silence is thrown away with the trace.
+  // Defined on `drafted`, not on the sentinel: a model that answers with nothing at all is the
+  // agent staying silent too, and only a follow-up that HAD text and lost it is a suppression.
+  const suppressed = drafted.length > 0 && reply.length === 0;
+  const silent = reply.length === 0 && !suppressed;
   const trace: TraceEntry[] = [
     ...buildPlaygroundTrace(result.messages, traceLabels),
     ...gTrace,
   ];
+  if (gTrace.length > 0) {
+    await savePlaygroundTurnNote(base, {
+      tenantId,
+      agentId,
+      threadId,
+      messageId: lastAiMessageId(result.messages) ?? null,
+      anchorMessageId: null,
+      userText: null,
+      reply,
+      guardrails: [...gTrace],
+    });
+  }
   // Bump the session (or create one titled by the first message if the follow-up is the first turn).
   await upsertPlaygroundSession(base, tenantId, agentId, threadId, "");
   return {
@@ -791,7 +864,8 @@ export async function runPlaygroundFollowup(
     threadId,
     trace,
     sources: collectTraceSources(trace),
-    silent: silent || reply.length === 0,
+    silent,
+    suppressed,
   };
 }
 

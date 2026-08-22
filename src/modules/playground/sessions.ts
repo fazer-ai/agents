@@ -11,10 +11,12 @@ import {
   type TraceEntry,
   type TraceSource,
 } from "@/graph/trace";
+
 import { NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { listThreadMedia } from "./media";
 import { isValidPlaygroundThread } from "./thread";
+import { type LoadedTurnNote, listThreadTurnNotes } from "./turn-notes";
 
 // Server-side playground session history. The PlaygroundSession table holds ONLY metadata
 // (threadId + title + timestamps, tenant-scoped + RLS); the conversation itself lives in the
@@ -215,6 +217,58 @@ export function rebuildPlaygroundTurns(messages: BaseMessage[]): RebuiltTurn[] {
   return turns;
 }
 
+// Folds the transcript notes over the checkpointer-derived turns (issue #136). Two shapes, and the
+// second is why this is not a plain map: a note WITH a message id overrides the reply that message
+// produced, while a note without one is a whole turn the thread never received (the input block),
+// which has to be placed rather than matched. `anchorMessageId` is the message the thread ended on
+// when it happened, so the turn goes right after the one carrying it; a null anchor means the
+// thread was empty and it goes first. A note whose anchor no longer resolves still renders, at the
+// end, because losing the turn entirely is the failure this exists to prevent.
+export function applyTurnNotes(
+  turns: RebuiltTurn[],
+  notes: LoadedTurnNote[],
+): RebuiltTurn[] {
+  if (notes.length === 0) return turns;
+  const overrides = new Map<string, LoadedTurnNote>();
+  const inserts: LoadedTurnNote[] = [];
+  for (const n of notes) {
+    if (n.messageId) overrides.set(n.messageId, n);
+    else inserts.push(n);
+  }
+  const out: RebuiltTurn[] = [];
+  const placed = new Set<LoadedTurnNote>();
+  const blockedPair = (n: LoadedTurnNote): RebuiltTurn[] => [
+    { role: "user", text: n.userText ?? "", trace: [], sources: [] },
+    { role: "assistant", text: n.reply, trace: [...n.guardrails], sources: [] },
+  ];
+  for (const n of inserts) {
+    if (n.anchorMessageId === null) {
+      out.push(...blockedPair(n));
+      placed.add(n);
+    }
+  }
+  for (const turn of turns) {
+    const note = turn.messageId ? overrides.get(turn.messageId) : undefined;
+    out.push(
+      note && turn.role === "assistant"
+        ? {
+            ...turn,
+            text: note.reply,
+            trace: [...turn.trace, ...note.guardrails],
+          }
+        : turn,
+    );
+    for (const n of inserts) {
+      if (!placed.has(n) && n.anchorMessageId === turn.messageId) {
+        out.push(...blockedPair(n));
+        placed.add(n);
+      }
+    }
+  }
+  for (const n of inserts) if (!placed.has(n)) out.push(...blockedPair(n));
+  return out;
+}
+
 // Upsert the session metadata after a turn. Best-effort: a history-write hiccup must never break the
 // reply. The title is set once (on create, from the first turn) and only bumped afterwards.
 export async function upsertPlaygroundSession(
@@ -299,7 +353,10 @@ export async function getPlaygroundSessionTurns(
   const messages = Array.isArray(channel?.messages)
     ? (channel.messages as BaseMessage[])
     : [];
-  const turns = rebuildPlaygroundTurns(messages);
+  const turns = applyTurnNotes(
+    rebuildPlaygroundTurns(messages),
+    await listThreadTurnNotes(base, tenantId, threadId),
+  );
 
   // Join persisted media onto the turns by message id (best-effort replay — if the checkpointer
   // didn't round-trip the message id, the media simply isn't re-attached, never an error).

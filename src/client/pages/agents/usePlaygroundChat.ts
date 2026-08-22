@@ -32,7 +32,7 @@ export type PlaygroundTurn =
       pending?: boolean;
     }
   | { role: "error"; text: string }
-  | { role: "note"; text: string }
+  | { role: "note"; text: string; trace?: PlaygroundData["trace"] }
   | {
       role: "assistant";
       text: string;
@@ -341,7 +341,8 @@ export function usePlaygroundChat(
             const ttsM = rt.media?.find((m) => m.kind === "tts_audio");
             return {
               role: "assistant",
-              text: rt.text,
+              // A turn the guardrail suppressed reloads with no text, the same as it rendered live.
+              text: rt.text || t("playground.empty", "(no reply)"),
               ...(rt.followup ? { followup: true } : {}),
               ...(ttsM ? { audioUrl: mediaUrl(ttsM.id) } : {}),
               trace: rt.trace,
@@ -353,7 +354,7 @@ export function usePlaygroundChat(
         setLoadingSession(false);
       }
     },
-    [agentId, mediaUrl],
+    [agentId, mediaUrl, t],
   );
 
   const newSession = useCallback(() => {
@@ -482,27 +483,39 @@ export function usePlaygroundChat(
       }
       threadId.current = data.threadId;
       setTurns((prev) =>
-        data.silent
+        data.suppressed
           ? [
               ...prev,
               {
                 role: "note",
                 text: t(
-                  "playground.followup.silent",
-                  "Follow-up: the agent chose not to send anything.",
+                  "playground.followup.suppressed",
+                  "Follow-up: the agent wrote one and the guardrail removed it. Nothing would be sent.",
                 ),
+                trace: data.trace,
               },
             ]
-          : [
-              ...prev,
-              {
-                role: "assistant",
-                text: data.reply || t("playground.empty", "(no reply)"),
-                followup: true,
-                trace: data.trace,
-                sources: data.sources,
-              },
-            ],
+          : data.silent
+            ? [
+                ...prev,
+                {
+                  role: "note",
+                  text: t(
+                    "playground.followup.silent",
+                    "Follow-up: the agent chose not to send anything.",
+                  ),
+                },
+              ]
+            : [
+                ...prev,
+                {
+                  role: "assistant",
+                  text: data.reply || t("playground.empty", "(no reply)"),
+                  followup: true,
+                  trace: data.trace,
+                  sources: data.sources,
+                },
+              ],
       );
     } catch {
       pushError();

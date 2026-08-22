@@ -125,6 +125,7 @@ model Tenant {
   knowledgeDocuments            KnowledgeDocument[]
   playgroundSessions            PlaygroundSession[]
   playgroundMedia               PlaygroundMedia[]
+  playgroundTurnNotes           PlaygroundTurnNote[]
   approvalQueueItems            ApprovalQueueItem[]
   vaultEntries                  VaultEntry[]
   toolDefinitions               ToolDefinition[]
@@ -764,6 +765,39 @@ model PlaygroundSession {
   @@unique([tenantId, threadId])
   @@index([tenantId, agentId, updatedAt])
   @@map("playground_sessions")
+}
+
+// What the OPERATOR saw for one playground turn, when that differs from what the agent remembers.
+// The transcript and the agent's memory are two different things, and moderation is the first
+// feature where they legitimately diverge: production keeps the raw reply in the graph thread and
+// posts the screened one to Chatwoot, and a turn the input guardrail blocked never enters the
+// thread at all (issue #136). The playground rebuilds its transcript from the checkpointer, so
+// without this row a reload shows the reply the guardrail took away, with no sign it ever acted.
+//
+// Only turns the guardrail touched get a row; everything else still comes from the checkpointer.
+model PlaygroundTurnNote {
+  id       BigInt @id @default(autoincrement())
+  tenantId BigInt @map("tenant_id")
+  agentId  BigInt @map("agent_id")
+  threadId String @map("thread_id")
+  // The AIMessage this OVERRIDES. Null for a turn the thread has no record of, which is the input
+  // block: `anchorMessageId` then says which turn it follows.
+  messageId String? @map("message_id")
+  // Last message id in the thread when a blocked turn happened, so the rebuild can place it. Null
+  // means the thread was empty, i.e. it goes first.
+  anchorMessageId String? @map("anchor_message_id")
+  // The customer's own text, carried only for a blocked turn (the thread never received it).
+  userText String? @map("user_text")
+  // What the operator saw in place of the model's reply. Empty for a suppressed one.
+  reply String
+  // The TraceGuardrail entries for this turn, as the live turn returned them.
+  guardrails Json
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, threadId])
+  @@map("playground_turn_notes")
 }
 
 // Binary media (recorded voice notes, generated TTS replies, uploaded files) for playground replay.

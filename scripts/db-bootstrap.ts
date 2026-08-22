@@ -136,10 +136,17 @@ async function provisionCheckpointerSchema(
   //   it OWNED BY another role is what needs the membership taken above, so a refusal must not
   //   abort a boot that completes itself a minute later.
   //
-  //   PRESENT UNDER ANOTHER OWNER is not, and it is the case a rotated runtime role lands in.
-  //   `CREATE SCHEMA IF NOT EXISTS` is a no-op there, for us and for `setup()` alike, so nothing
-  //   downstream repairs it: without USAGE/CREATE the checkpointer fails at boot on schema
-  //   access, and reporting a successful bootstrap first is what makes that unreadable.
+  //   PRESENT is not, and it is the case a rotated runtime role lands in. `CREATE SCHEMA IF NOT
+  //   EXISTS` is a no-op there, for us and for `setup()` alike, so nothing downstream repairs it:
+  //   the checkpointer fails at boot on schema or table access, and reporting a successful
+  //   bootstrap first is what makes that unreadable.
+  //
+  // A present schema is reconciled whoever owns it, and the schema's own owner is deliberately not
+  // a shortcut out of that. Ownership of the schema and of the tables move independently here (only
+  // the tables are transferred), so a rotation A -> B leaves the schema with A and its tables with
+  // B — and a rollback to A would then find `owner === role`, skip everything, and boot into a
+  // checkpointer that cannot read the tables A no longer owns. The reconciliation is idempotent, so
+  // running it on a healthy install costs two no-op grants and a loop over nothing.
   const schemaOwner = (
     await client.query<{ owner: string }>(
       "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'langgraph'",
@@ -157,9 +164,9 @@ async function provisionCheckpointerSchema(
           `leaving it to the server, which creates it as "${role}" on its first boot`,
       );
     }
-  } else if (schemaOwner !== role) {
-    // Adopting a schema another role owns is the rotated-runtime-role case, and it has three
-    // depths, only the first of which is obvious:
+  } else {
+    // Reconciling an existing schema is the rotated-runtime-role case, and it has three depths,
+    // only the first of which is obvious:
     //
     //   the schema      -- USAGE/CREATE, or nothing in it can be reached at all;
     //   the tables      -- granting on a schema does not reach what is inside it, and setup()
@@ -175,6 +182,11 @@ async function provisionCheckpointerSchema(
     // taking it over buys nothing, and having it inside the same block would make a refusal there
     // abort the table transfers that do matter. Identifiers are quoted by Postgres in the DO
     // block rather than spliced here.
+    //
+    // That independence is also why the schema's owner already matching is NOT a shortcut out of
+    // here: a rotation A -> B leaves the schema with A and its tables with B, so a rollback to A
+    // finds its own name on the schema and no access to the tables. This runs whoever owns it, and
+    // is idempotent — on a healthy install it is two no-op grants and a loop over nothing.
     // The grants go FIRST, and the order is load-bearing rather than stylistic: Postgres requires a
     // table's prospective owner to hold CREATE on its schema, so on a fresh rotation -- where the
     // new role has nothing on the old owner's schema yet -- the transfer below would fail, roll
@@ -219,7 +231,7 @@ async function provisionCheckpointerSchema(
       await client.query<{
         schema_ok: boolean;
         tables_ok: boolean;
-        owns_tables: boolean;
+        foreign_owners: string | null;
       }>(
         `SELECT
            has_schema_privilege($1, 'langgraph', 'USAGE')
@@ -232,10 +244,11 @@ async function provisionCheckpointerSchema(
               FROM pg_class c
               JOIN pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = 'langgraph' AND c.relkind IN ('r', 'p')) AS tables_ok,
-           (SELECT COALESCE(bool_and(pg_get_userbyid(c.relowner) = $1), true)
+           (SELECT string_agg(DISTINCT quote_ident(pg_get_userbyid(c.relowner)), ', ')
               FROM pg_class c
               JOIN pg_namespace n ON n.oid = c.relnamespace
-             WHERE n.nspname = 'langgraph' AND c.relkind IN ('r', 'p')) AS owns_tables`,
+             WHERE n.nspname = 'langgraph' AND c.relkind IN ('r', 'p')
+               AND pg_get_userbyid(c.relowner) <> $1) AS foreign_owners`,
         [role],
       )
     ).rows[0];
@@ -246,24 +259,28 @@ async function provisionCheckpointerSchema(
     ].filter(Boolean);
     if (missing.length > 0) {
       throw new Error(
-        `the langgraph schema is owned by "${schemaOwner}", not by the runtime role "${role}", ` +
-          `and "${role}" still cannot reach ${missing.join(" nor ")}` +
-          `${adoptError ? ` (${message(adoptError)})` : ""}. The checkpointer reads ` +
+        `the runtime role "${role}" cannot reach ${missing.join(" nor ")} of the langgraph ` +
+          `schema (owned by "${schemaOwner}")` +
+          `${adoptError ? `: ${message(adoptError)}` : ""}. The checkpointer reads ` +
           "langgraph.checkpoint_migrations on its first query, so the server would fail at boot " +
           `instead. Run as "${schemaOwner}" or as a superuser: ` +
           `GRANT USAGE, CREATE ON SCHEMA langgraph TO "${role}"; ` +
           `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO "${role}";`,
       );
     }
-    if (!usable?.owns_tables) {
+    // NULL when every table is the runtime role's (and when there are no tables at all): the
+    // aggregate only sees rows whose owner differs. Deliberately a string rather than an array --
+    // the pg driver hands a scalar-subquery array back as its Postgres literal, not as a JS array.
+    const foreignOwners = usable?.foreign_owners;
+    if (foreignOwners) {
       // A warning and not a refusal, because this install works: DML is all the checkpointer
       // needs until a package upgrade brings a migration that alters those tables, and refusing
       // now would crash-loop a server that boots fine today.
       console.warn(
         `db-bootstrap: runtime role "${role}" can use the langgraph tables but does not own ` +
-          `them (owner: "${schemaOwner}"); a future checkpointer migration that ALTERs them ` +
-          `would fail at boot. Run as "${schemaOwner}" or as a superuser: ` +
-          `ALTER TABLE langgraph.<table> OWNER TO "${role}";`,
+          `them (owned by ${foreignOwners}); a future ` +
+          "checkpointer migration that ALTERs them would fail at boot. Run as their owner or as " +
+          `a superuser: ALTER TABLE langgraph.<table> OWNER TO "${role}";`,
       );
     }
   }

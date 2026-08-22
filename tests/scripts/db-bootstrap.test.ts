@@ -24,6 +24,7 @@ if (suUrl) {
 const ADMIN_ROLE = `fazerai_bs_admin_${process.pid}`;
 const APP_ROLE = `fazerai_bs_app_${process.pid}`;
 const FOREIGN_ROLE = `fazerai_bs_foreign_${process.pid}`;
+const UNREACHABLE_ROLE = `fazerai_bs_unreachable_${process.pid}`;
 const PROBE_DB = `fazerai_bs_probe_${process.pid}`;
 const ADMIN_PW = "bs-admin-pw";
 const APP_PW = "bs-app-pw";
@@ -211,6 +212,7 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       // The shape of an RDS master user / a Coolify-provisioned owner: it can create roles and owns
       // the database, and `rolsuper` is false.
@@ -233,6 +235,7 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       await db.query("SELECT pg_advisory_unlock(729104553)");
       await db.end();
@@ -540,6 +543,89 @@ describe.skipIf(!dbUp)(
               "SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE oid = 'langgraph.checkpoint_migrations'::regclass",
             )
           ).rows[0],
+      );
+      expect(owner).toEqual({ owner: APP_ROLE });
+    });
+
+    test("when only the grants are available, the grants are what carries it", async () => {
+      const db = su as Client;
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // The fallback the design promises, and the only case where the table GRANT is what does the
+      // work: transferring ownership needs membership in the NEW owner as well as the old one, so
+      // a runtime role this administrator cannot act as leaves the grant as the whole answer.
+      await db.query(
+        `CREATE ROLE ${UNREACHABLE_ROLE} LOGIN PASSWORD '${APP_PW}' NOSUPERUSER NOBYPASSRLS`,
+      );
+      await db.query(
+        `GRANT CONNECT ON DATABASE ${PROBE_DB} TO ${UNREACHABLE_ROLE}`,
+      );
+      await onProbe(superuserOnProbe, async (c) => {
+        await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
+        await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${FOREIGN_ROLE}`);
+        await c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)");
+        await c.query(
+          `ALTER TABLE langgraph.checkpoint_migrations OWNER TO ${FOREIGN_ROLE}`,
+        );
+      });
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        APP_PW,
+        UNREACHABLE_ROLE,
+      );
+      expect(exitCode).toBe(0);
+      expect(`${stdout}${stderr}`).toContain("does not own");
+
+      // Not owned, but usable: the checkpointer's first read and its write both go through.
+      const worked = await onProbe(
+        urlFor(UNREACHABLE_ROLE, APP_PW, PROBE_DB),
+        async (c) => {
+          await c.query(
+            "INSERT INTO langgraph.checkpoint_migrations (v) VALUES (1)",
+          );
+          return (
+            await c.query("SELECT v FROM langgraph.checkpoint_migrations")
+          ).rows;
+        },
+      );
+      expect(worked).toEqual([{ v: 1 }]);
+    });
+
+    test("rolling a rotation back is reconciled, not skipped", async () => {
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // Ownership of the schema and of its tables move independently here -- only the tables are
+      // transferred -- so a rotation A -> B leaves the schema with A and the tables with B. Rolling
+      // DATABASE_URL back to A then lands on a schema A still owns and tables A no longer can
+      // touch, which is exactly the state a "the owner already matches, nothing to do" shortcut
+      // waves through and the checkpointer then fails on.
+      await onProbe(superuserOnProbe, async (c) => {
+        await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
+        await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${APP_ROLE}`);
+        await c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)");
+        await c.query(
+          `ALTER TABLE langgraph.checkpoint_migrations OWNER TO ${FOREIGN_ROLE}`,
+        );
+        await c.query(
+          `REVOKE ALL ON langgraph.checkpoint_migrations FROM ${APP_ROLE}`,
+        );
+      });
+
+      const { exitCode } = await runBootstrap(ROTATED_PW, APP_ROLE);
+      expect(exitCode).toBe(0);
+
+      const owner = await onProbe(
+        urlFor(APP_ROLE, ROTATED_PW, PROBE_DB),
+        async (c) => {
+          await c.query(
+            "INSERT INTO langgraph.checkpoint_migrations (v) VALUES (2)",
+          );
+          return (
+            await c.query(
+              "SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE oid = 'langgraph.checkpoint_migrations'::regclass",
+            )
+          ).rows[0];
+        },
       );
       expect(owner).toEqual({ owner: APP_ROLE });
     });

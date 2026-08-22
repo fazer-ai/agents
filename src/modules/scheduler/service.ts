@@ -269,6 +269,32 @@ export function claimPendingByKeyPrefix(
   );
 }
 
+// Whether anything of one kind is still OWED under a dedupeKey prefix — PENDING (queued, or deferred
+// into the future) or CLAIMED (executing right now, somewhere). The one caller is the ingestion
+// barrier, and only its compaction reader consults the answer: for a turn an owed message is one late
+// reply, for compaction it is a message summarised out of existence.
+//
+// DEAD is deliberately NOT owed. A dead-lettered message will never arrive, so counting it would
+// stall every future compaction of that thread forever, trading a lost message for a memory that
+// stops being written at all.
+export function countOwedByKeyPrefix(
+  kind: SchedulerJobKind,
+  prefix: string,
+  base: PrismaClient = basePrisma,
+  tenantId?: bigint,
+): Promise<number> {
+  return asSuperAdminOn(base, (db) =>
+    db.schedulerJob.count({
+      where: {
+        ...(tenantId != null ? { tenantId } : {}),
+        kind,
+        status: { in: ["PENDING", "CLAIMED"] },
+        dedupeKey: { startsWith: prefix },
+      },
+    }),
+  );
+}
+
 // The fast debounce tick claims ONLY debounce jobs.
 export function claimDueDebounceJobs(
   limit: number,

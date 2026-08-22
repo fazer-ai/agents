@@ -592,6 +592,11 @@ export async function runLoadedTurn(
       // silent on may still be a row rather than a turn in this thread. Folded in here, BEFORE the
       // lock and the in-flight claim below: the drain takes that same lock, and it is also the last
       // moment at which the append is not the thing this turn erases.
+      //
+      // Its outcome is DISCARDED, and only here and at the nudge. A turn that finds ingestion still
+      // owed has nowhere to wait — a customer is holding the line, and the message it is missing
+      // reaches the thread for the next turn. Compaction consults the same answer and refuses to
+      // read on it, because there the same message is summarised out of existence.
       await drainPendingIngest(tenantId, graphThreadId, base);
       const checkpointerForDivider =
         params.deps?.checkpointer ?? (await getCheckpointer());

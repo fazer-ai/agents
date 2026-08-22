@@ -657,6 +657,9 @@ export async function runAgentNudge(
     // BARRIER (issue #194), for the same reason the reactive turn has one: a proactive turn reads
     // this thread too, and a message still queued is a nudge written without it. Before the lock,
     // which the drain also takes. A conversation-keyed thread simply matches no queued ingestion.
+    // Outcome discarded, as at the reactive turn and for the same reason: a nudge that finds
+    // ingestion still owed writes one message without one line of context, and the next reader gets
+    // it. See ./ingest-drain.ts for the reader that cannot make that trade.
     await drainPendingIngest(tenantId, graphThreadId, base);
     // Taken INSIDE the try, and released only if it was actually taken: the transaction can reject
     // after its callback ran (a failed commit, a lost connection), and a claim made on the way to a

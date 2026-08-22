@@ -254,6 +254,32 @@ export async function runCompaction(
   }
   const cfg = loaded.cfg;
 
+  // BARRIER (issue #194), and it runs BEFORE the generation fence below for a reason spelled out
+  // there. Compaction is the other reader of this thread, and it is the one that cannot be corrected
+  // afterwards: it replaces the raw turns of a closed attendance with a summary of them, so a message
+  // still sitting in the ingestion queue is a message summarised out of existence — the later turn's
+  // own barrier then appends it AFTER a summary written without it.
+  //
+  // This is also what makes the whole design independent of which workers a deployment runs. The
+  // shared tick and the compaction tick are separately switchable, and a queue whose only drain is a
+  // worker that may be off is a queue that silently stops.
+  //
+  // AND THE ANSWER IS CONSULTED, unlike at the two readers that cannot wait. A drain that ends with
+  // the thread still owing something — a job that deferred for a turn, one that failed, one another
+  // process has claimed — leaves this compaction about to read an incomplete attendance, and the
+  // turn's release would clear the in-flight check below without putting the message back. Nothing
+  // is paid for and nothing is written: the compaction job comes back, exactly as it does for a turn.
+  if ((await drainPendingIngest(tenantId, graphThreadId, base)) !== "drained") {
+    logger.info(
+      "memory: ingestion still owed on thread=%s, deferring compaction",
+      graphThreadId,
+    );
+    return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + DEFER_ON_TURN_MS),
+    };
+  }
+
   // GENERATION FENCE, first half. The AgentThread row id is the token that says which generation of
   // this thread the job belongs to (see the second half, at the write below), so a job that starts
   // without one has no token and every later check would wave it through.
@@ -262,22 +288,34 @@ export async function runCompaction(
   // under this same lock. The channel can still come back populated afterwards — an invoke that
   // started earlier saves the state it had loaded, stamps included, and a nudge can write a
   // checkpoint without ever creating a row — and that residue is exactly what would be summarized
-  // here and rendered back into the memory the operator explicitly cleared. Every path that stamps a
-  // message upserts the row, so a thread with something to compact and no row is that residue and
-  // nothing else. Refused before the state read, so it costs neither a generation nor a query.
-  const threadRowId = loaded.threadRowId;
-  if (threadRowId === null) return { outcome: "done" };
-
-  // BARRIER (issue #194). Compaction is the other reader of this thread, and it is the one that
-  // cannot be corrected afterwards: it replaces the raw turns of a closed attendance with a summary
-  // of them, so a message still sitting in the ingestion queue is a message that is summarised out
-  // of existence — the later turn's own barrier then appends it AFTER a summary written without it.
-  // Drained here, before the lock this and the ingestion both take, and before anything is read.
+  // here and rendered back into the memory the operator explicitly cleared.
   //
-  // This is also what makes the whole design independent of which workers a deployment runs. The
-  // shared tick and the compaction tick are separately switchable, and a queue whose only drain is a
-  // worker that may be off is a queue that silently stops.
-  await drainPendingIngest(tenantId, graphThreadId, base);
+  // THE PREMISE OF THAT MOVED WITH #194, which is why the drain above is not below this. The fence
+  // rests on "every path that stamps a message upserts the row", so a thread with something to
+  // compact and no row is residue and nothing else. Ingestion now stamps from a QUEUED row, so a
+  // brand-new contact inbox whose first attendance was handled entirely by a person can reach a
+  // resolve with messages owed and no thread row yet — read as residue, that attendance is retired
+  // without ever being summarised, and no later event re-arms it. The drain is what tells the two
+  // apart: it creates the row for a thread that has real messages owed, and what is STILL null after
+  // it is residue. Re-read only on that path, so the ordinary compaction pays nothing for it.
+  const threadRowId =
+    loaded.threadRowId ??
+    (
+      await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.agentThread.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_contactInboxId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              contactInboxId,
+            },
+          },
+          select: { id: true },
+        }),
+      )
+    )?.id ??
+    null;
+  if (threadRowId === null) return { outcome: "done" };
 
   // A turn holding this thread will undo the rewrite below, so there is nothing to gain by reading
   // its channel now. Checked here as well as under the lock because this side is what avoids PAYING

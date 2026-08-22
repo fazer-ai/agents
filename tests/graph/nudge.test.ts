@@ -13,6 +13,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { isTurnInFlight } from "@/graph/inflight";
+import { armIngest, ingestHandler } from "@/graph/ingest-job";
 import {
   conversationStamp,
   isConversationDivider,
@@ -30,6 +31,7 @@ import {
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { selectClosedPrefix } from "@/modules/memory/cut";
+import { getJobHandler, registerJobHandler } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
@@ -366,6 +368,94 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(claimedDuringInvoke).toEqual([true]);
     // Released on every exit, or compaction for this contact defers itself forever.
     expect(isTurnInFlight(graphThreadId)).toBe(false);
+  });
+
+  // THE BARRIER (issue #194), at the third reader of the memory thread. A nudge is a model call on
+  // this thread like any other, so a message the agent stayed silent on that is still a queued row
+  // is a message the nudge writes without — and the nudge is the writer most likely to ask about
+  // exactly that message, since it fires on inactivity after the customer's last words.
+  //
+  // The drain's own tests call it directly; this is what pins the wiring at this call site, which
+  // every one of them passes with deleted.
+  test("a nudge folds in a message still queued for the thread", async () => {
+    const contactInboxId = 8809;
+    await seedConv(917, null, new Date(), contactInboxId);
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true },
+    });
+    const OWED = "esqueci-de-perguntar-o-valor-5512";
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 917,
+      contactInboxId,
+      graphThreadId,
+      messageId: 8401,
+      text: OWED,
+      role: "customer",
+      agentId: agent.id,
+      compactionEnabled: false,
+      base: appDb,
+    });
+    // Pushed into the future, which is what a deferral leaves behind: only a drain that ignores
+    // run_at can take it, so nothing else in this process would.
+    await suDb.$executeRawUnsafe(
+      `UPDATE scheduler_jobs SET run_at = now() + interval '1 hour'
+        WHERE tenant_id = ${tenantId} AND dedupe_key = 'ingest:${graphThreadId}:8401'`,
+    );
+
+    // One checkpointer for both, as production has: the drain runs its job through the scheduler's
+    // registry, so this is where a test says which store it writes to.
+    const saver = new MemorySaver();
+    const previous = getJobHandler("INGEST_MESSAGE");
+    registerJobHandler("INGEST_MESSAGE", (job, jobBase) =>
+      ingestHandler(job, jobBase, saver),
+    );
+    const seen: string[] = [];
+    class ContextObservingModel extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "fake-context-observing";
+      }
+      async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+        seen.push(messages.map((m) => String(m.content)).join("\n"));
+        return {
+          generations: [
+            { text: "Tudo certo?", message: new AIMessage("Tudo certo?") },
+          ],
+        };
+      }
+    }
+    const s = stub();
+    let outcome: string;
+    try {
+      outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:917`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () => new ContextObservingModel(),
+          makeClient: s.makeClient,
+          checkpointer: saver,
+          persistUsage: async () => {},
+        },
+      });
+    } finally {
+      if (previous) registerJobHandler("INGEST_MESSAGE", previous);
+    }
+
+    expect(outcome).toBe("messaged");
+    // The customer's owed words were in the context the nudge was written from.
+    expect(seen[0] ?? "").toContain(OWED);
   });
 
   // The claim is taken inside a transaction, and a transaction can reject AFTER its callback ran (a

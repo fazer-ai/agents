@@ -23,6 +23,7 @@ import {
   isTurnInFlight,
   markTurnInFlight,
 } from "@/graph/inflight";
+import { armIngest, ingestHandler } from "@/graph/ingest-job";
 import {
   CONVERSATION_DIVIDER,
   conversationDividerMessage,
@@ -34,6 +35,11 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { runScopedOn } from "@/lib/tenancy";
 import { type CompactPayload, runCompaction } from "@/modules/memory/compact";
 import { MEMORY_HEAD_MAX_ATTENDANCES } from "@/modules/memory/cut";
+import {
+  getJobHandler,
+  type JobResult,
+  registerJobHandler,
+} from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { UsageReportingModel } from "../utils/scripted-models";
 
@@ -262,6 +268,154 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     conversationId,
     agentId,
     reason,
+  });
+
+  // THE BARRIER, at the reader that cannot be corrected afterwards (issue #194, round-7 review).
+  // Compaction replaces the raw turns of a closed attendance with a summary of them, so a message
+  // still owed by the ingestion queue is a message summarised out of existence: the later turn's own
+  // barrier appends it AFTER a summary written without it, and nothing ever rewrites that summary.
+  //
+  // The case the drain alone does not cover: an ingestion that DEFERS because a turn holds the
+  // thread. The drain comes back with nothing appended, the turn then finishes, and compaction's own
+  // in-flight check below is clear — so without consulting the drain's answer, compaction would read
+  // an attendance it knows is incomplete.
+  test("compaction stands down while ingestion is still owed", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 5601;
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await seedThread(saver, threadId, twoAttendances());
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 708,
+      contactInboxId,
+      graphThreadId: threadId,
+      messageId: 7801,
+      text: "ah, e leva o cartão da consulta",
+      role: "customer",
+      agentId,
+      compactionEnabled: true,
+      base: appDb,
+    });
+
+    // Owed WITHOUT a turn in flight, which is what isolates the drain's answer from the in-flight
+    // check further down — with a turn marked, compaction would stand down for that reason and the
+    // test would pass with the drain's outcome ignored. A row already CLAIMED is the honest shape of
+    // it: some other process is executing this ingestion right now, the drain's PENDING claim cannot
+    // see it, and it is owed all the same.
+    await suDb.$executeRawUnsafe(
+      `UPDATE scheduler_jobs SET status = 'CLAIMED', claimed_at = now()
+        WHERE tenant_id = ${tenantId} AND dedupe_key = 'ingest:${threadId}:7801'`,
+    );
+    expect(isTurnInFlight(threadId)).toBe(false);
+    const model = new SummarizerModel("nao deveria ser chamado");
+    const res: JobResult = await runCompaction(
+      tenantId,
+      payload(contactInboxId, 708, "new_attendance"),
+      appDb,
+      { checkpointer: saver, makeModel: () => model },
+    );
+
+    expect(res.outcome).toBe("reschedule");
+    // Nothing paid for and nothing written: the raw attendance is still raw, so the message that was
+    // owed can still enter the summary when this job comes back.
+    expect(model.calls).toBe(0);
+    expect(
+      (await readThread(saver, threadId)).some((c) => c.includes(SEEDED_TEXT)),
+    ).toBe(true);
+    expect(
+      await suDb.attendanceSummary.count({
+        where: { tenantId, contactInboxId },
+      }),
+    ).toBe(0);
+    // Still owed, so the next compaction has something to drain rather than a row silently retired.
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: `ingest:${threadId}:7801`,
+        },
+      }),
+    ).toBe(1);
+  });
+
+  // The generation fence reads "no AgentThread row" as /reset residue and retires the job, and that
+  // reading rested on an invariant #194 moved: every path that stamps a message used to upsert the
+  // row in the same transaction. Ingestion stamps from a QUEUED row now, so a brand-new contact inbox
+  // whose first attendance a person handled end to end reaches its resolve with messages owed and no
+  // row yet. Read as residue, that attendance is retired without ever being summarised, and no later
+  // event re-arms it — the memory of it is simply never written.
+  //
+  // The contrast with the residue test further down is the whole point: same missing row, and the
+  // only difference is that something is owed.
+  test("an attendance whose messages are still owed is summarised, not retired", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 5602;
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    // Nothing yet: no channel, no AgentThread row. Everything this thread has is a queued row.
+    const OWED = "leva-o-cartao-da-consulta-3390";
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 710,
+      contactInboxId,
+      graphThreadId: threadId,
+      messageId: 7802,
+      text: OWED,
+      role: "customer",
+      agentId,
+      compactionEnabled: true,
+      base: appDb,
+    });
+
+    // The drain runs its jobs through the scheduler's registry, so this is where a test says which
+    // checkpointer they write to. In production every reader of a thread shares one; letting the
+    // drain write to the process checkpointer here would assert against a store nothing else in this
+    // test reads, and the summariser would see an empty thread no matter what the fence decided.
+    const previous = getJobHandler("INGEST_MESSAGE");
+    registerJobHandler("INGEST_MESSAGE", (job, jobBase) =>
+      ingestHandler(job, jobBase, saver),
+    );
+    const model = new SummarizerModel("A cliente pediu o cartão da consulta.");
+    let res: JobResult;
+    try {
+      res = await runCompaction(
+        tenantId,
+        payload(contactInboxId, 710, "resolved"),
+        appDb,
+        { checkpointer: saver, makeModel: () => model },
+      );
+    } finally {
+      if (previous) registerJobHandler("INGEST_MESSAGE", previous);
+    }
+
+    expect(res).toEqual({ outcome: "done" });
+    // The owed message became real before the fence decided, so there IS an attendance here and it is
+    // summarised with the customer's own words in it. Retired as residue, there would be no summary
+    // at all and nothing would ever come back for these messages.
+    expect(model.calls).toBe(1);
+    expect(model.seen[0]).toContain(OWED);
+    expect(
+      await suDb.attendanceSummary.count({
+        where: { tenantId, contactInboxId },
+      }),
+    ).toBe(1);
+    // And the row is gone, so the drain is not asked for it again.
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: `ingest:${threadId}:7802`,
+        },
+      }),
+    ).toBe(0);
+    // Swept, because a later case in this file counts summaries across the whole TENANT rather than
+    // this contact inbox. A summary written here would show up there as a second attendance.
+    await suDb.attendanceSummary.deleteMany({
+      where: { tenantId, contactInboxId },
+    });
   });
 
   test("a closed attendance becomes one summary and the open one travels untouched", async () => {

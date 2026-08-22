@@ -261,10 +261,27 @@ async function claimWhere(
   keyPrefix?: string,
 ): Promise<ClaimedJob[]> {
   const lim = Math.min(Math.max(Math.floor(limit), 1), 100);
+  // The prefix branch takes a row whose run_at is still in the FUTURE, and only for a row that has
+  // never failed. Both halves matter and they answer different questions.
+  //
+  // Future-dated rows are what the barrier is for: a job DEFERRED for a previous turn sits a minute
+  // out, and those are precisely the messages a starting turn is missing. `rescheduleJob` leaves
+  // attempts untouched, so a deferral is exactly the `attempts = 0` case.
+  //
+  // A row that FAILED is future-dated too, and for the opposite reason — `failJob` increments
+  // attempts and pushes run_at out by a backoff. Ignoring run_at for those makes the backoff
+  // unreachable: every turn on the thread opens a fresh drain, and a handful in quick succession
+  // (a burst with debounce off, a turn and a nudge) spends all five attempts within seconds and
+  // dead-letters the message, on a database failure that was transient. The drain's `excludeIds`
+  // already answers this WITHIN one drain; this is the same question ACROSS them.
+  //
+  // Nothing is lost by waiting: a row left here is still PENDING, so `countOwedByKeyPrefix` reports
+  // the thread as owing something and the one reader that cannot be corrected afterwards still
+  // refuses to summarise without it.
   const dueClause =
     keyPrefix === undefined
       ? Prisma.sql`AND run_at <= ${now}`
-      : Prisma.sql`AND dedupe_key LIKE ${`${keyPrefix}%`}`;
+      : Prisma.sql`AND dedupe_key LIKE ${`${keyPrefix}%`} AND (attempts = 0 OR run_at <= ${now})`;
   const tenantClause =
     tenantId != null ? Prisma.sql`AND tenant_id = ${tenantId}` : Prisma.empty;
   const excludeClause =

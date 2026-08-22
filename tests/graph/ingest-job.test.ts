@@ -598,6 +598,62 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(row.status).toBe("PENDING");
   });
 
+  // Round-14 review finding (P1), and the same question the test above answers inside ONE drain,
+  // asked across several. Each turn on a thread opens its own drain with an empty exclusion list, so
+  // the run_at waiver that lets the barrier see a DEFERRED job also made a failed row due again
+  // immediately for the next turn: a burst with debounce off, or a turn and a nudge, spends all five
+  // attempts within seconds and dead-letters a customer's message over a database blip.
+  //
+  // The two are told apart by `attempts`, because that is what actually separates them:
+  // `rescheduleJob` leaves it untouched, `failJob` increments it.
+  test("a failed row keeps its backoff across drains, and is still owed", async () => {
+    const contactInboxId = 12512;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 991,
+      contactInboxId,
+      graphThreadId,
+      messageId: 840,
+      text: "isso aqui vai falhar",
+      role: "customer",
+      agentId: 1n,
+      compactionEnabled: false,
+      base: appDb,
+    });
+    // Make the handler throw deterministically, then let one drain spend the first attempt.
+    await suDb.$executeRawUnsafe(
+      `UPDATE scheduler_jobs SET payload = jsonb_set(payload, '{instanceId}', '"nao-e-numero"')
+        WHERE tenant_id = ${tenantId} AND dedupe_key = 'ingest:${graphThreadId}:840'`,
+    );
+    await drainPendingIngest(tenantId, graphThreadId, appDb);
+    const afterFirst = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: `ingest:${graphThreadId}:840` },
+      select: { attempts: true, runAt: true, status: true },
+    });
+    expect(afterFirst.attempts).toBe(1);
+    expect(afterFirst.status).toBe("PENDING");
+    expect(afterFirst.runAt.getTime()).toBeGreaterThan(Date.now());
+
+    // A SECOND turn, a fresh drain. It must not touch the row: the backoff is the only thing
+    // standing between a transient failure and a dead-lettered message.
+    expect(await drainPendingIngest(tenantId, graphThreadId, appDb)).toBe(
+      "incomplete",
+    );
+    const afterSecond = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: `ingest:${graphThreadId}:840` },
+      select: { attempts: true },
+    });
+    expect(afterSecond.attempts).toBe(1);
+    // And `incomplete` is the half that keeps this safe rather than merely slower: the thread still
+    // owes a message, so compaction will not summarise the attendance without it.
+  });
+
   // Two turns really do overlap on one thread (../../src/graph/inflight.ts counts rather than sets),
   // and a deferral that read the count as a boolean flag would resume on the FIRST release while the
   // second invoke is still reading — appending into exactly the window it stood down for.

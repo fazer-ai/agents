@@ -6,7 +6,7 @@ import {
   claimDueCompactionJobs,
   reapStaleJobs,
 } from "@/modules/scheduler/service";
-import { runClaimed } from "@/modules/scheduler/worker";
+import { announceReaped, runClaimed } from "@/modules/scheduler/worker";
 
 // Dedicated drain for MEMORY_COMPACT jobs only, in the shape the debounce lane already established
 // (src/modules/debounce/worker.ts) and for the mirror-image reason.
@@ -102,6 +102,10 @@ export async function runCompactionTick(
     undefined,
     "MEMORY_COMPACT",
   );
+  // A summary is a model call with a 60s ceiling, so a claim that HANGS is this lane's ordinary
+  // failure rather than an exotic one — which makes it the road to DEAD this kind takes most often,
+  // and the one that never passes through failJob.
+  await announceReaped(reaped, base);
   if (batchSize <= 0) return { claimed: 0, reaped: reaped.length };
   const jobs = await claim(batchSize, base, new Date(), undefined, [
     ...inFlight,

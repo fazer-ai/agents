@@ -20,8 +20,12 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitFlowEvent } from "@/modules/flowlog/service";
-import { enqueueJob } from "@/modules/scheduler/service";
-import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
+import {
+  type JobResult,
+  registerDeadLetterHandler,
+  registerJobHandler,
+} from "@/modules/scheduler/worker";
 import {
   MEMORY_HEAD_MAX_ATTENDANCES,
   renderMemoryHead,
@@ -770,9 +774,90 @@ const compactHandler = async (
   return runCompaction(job.tenantId, payload, base);
 };
 
+// THE STATEMENT: this attendance will never be summarised.
+//
+// Every failure inside runCompaction returns before the success line, so until this existed the
+// operator's trail showed every other stage of the turn and no memory line at all — for a model that
+// does not exist on the account, a key not entitled to it, an endpoint that is down, a rate limit.
+// The gap predates the summariser's own model override and the override is what makes it cost: a
+// configuration can now fail ONLY compaction, so replies keep going out normally and the thing that
+// silently stops is what the agent remembers (issue #196).
+//
+// ONLY AT THE DEAD-LETTER, not on the failures before it. A failure is not a statement that the work
+// is lost — the next attempt may succeed, and the four before the cap are usually the same sentence
+// four times inside half a minute (the whole budget burns in ~30s of jittered backoff). DEAD is the
+// one moment the scheduler can say nobody is coming back for it, which is also the moment worth an
+// alert channel's attention. What this trades away is a failure whose CAUSE changed between attempts:
+// the line carries the last error, so four refusals from the provider followed by a lost race at the
+// rewrite report the race. The row's own `attempts` is on the line so that reading is available.
+//
+// `error`, not `warn`: the convention elsewhere is that a stage whose failure the caller RECOVERS
+// from is an advisory. Nothing recovers this one. The next attendance re-arms with a fresh budget, so
+// a corrected configuration heals on its own — but the attendance this job was carrying is gone.
+//
+// The trail alone, and no private note in Chatwoot the way a dead debounce flush posts one (issue
+// #71). A turn that never happened is visible to the customer, who is waiting; a memory that was
+// never written is not, and a note about it would land in the conversation of a human agent who can
+// do nothing with it.
+export async function announceDeadCompaction(
+  job: ClaimedJob,
+  error: string,
+  base: PrismaClient,
+): Promise<void> {
+  const payload = parsePayload(job.payload);
+  if (!payload) return;
+  const { instanceId, contactInboxId, conversationId, agentId, reason } =
+    payload;
+  // Without these the line exists and cannot be FOUND: the Logs page filters by conversation and
+  // inbox database ids, and the operator opening the trail from a conversation is exactly who this
+  // line is for. One indexed read on the mirror row, on a path that runs once per lost attendance.
+  const conv = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
+    db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId: job.tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+        },
+      },
+      select: { id: true, inboxId: true },
+    }),
+  );
+  emitFlowEvent(
+    {
+      tenantId: job.tenantId,
+      turnId: crypto.randomUUID(),
+      source: "inbox",
+      agentId,
+      threadId: contactInboxThreadId(job.tenantId, instanceId, contactInboxId),
+      conversationId: conv?.id ?? null,
+      inboxId: conv?.inboxId ?? null,
+      base,
+    },
+    {
+      stage: "memory",
+      level: "error",
+      status: "error",
+      detail: {
+        // The attendance the job was ARMED for. The success line names the segment it actually cut,
+        // which on an owed rewrite is an older one — but nothing was cut here, so there is no segment
+        // to name and the arming is the only true anchor.
+        attendanceConversationId: conversationId,
+        reason,
+        // Which road ended it: the cap, or the reaper (a claim that hung and was never failed).
+        attempts: job.attempts,
+      },
+      // Sanitized and bounded by emitFlowEvent. This is the half an operator acts on —
+      // `credential_not_found` and "the provider returned 401" are different problems.
+      errorMessage: error,
+    },
+  );
+}
+
 let registered = false;
 export function registerMemoryHandlers(): void {
   if (registered) return;
   registerJobHandler("MEMORY_COMPACT", compactHandler);
+  registerDeadLetterHandler("MEMORY_COMPACT", announceDeadCompaction);
   registered = true;
 }

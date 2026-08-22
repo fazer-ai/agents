@@ -72,7 +72,19 @@
  *      close. Null on either side means there is nothing to compare (a Chatwoot that sends no
  *      versions), and the rule falls back to its unprotected form rather than refusing to clear.
  *
- * Both need `statusAfter !== "resolved"`, and neither is `statusAfter !== "resolved"` on its own:
+ *   3. **A brand-new incoming message reopened the conversation, and it is newer than the stamp.**
+ *      The one reopen a message payload carries faithfully, and the only rule here that does not go
+ *      through our own view of "resolved" — which is the point. If the webhook for our close is lost
+ *      for good (Chatwoot retries three times and gives up), the row never records the resolved
+ *      state at all: rule 1 has nothing to leave, rule 2 has no losing claim to read, and the stamp
+ *      would ride into the customer's NEXT episode and hand the agent whatever closes that one.
+ *      A customer coming back ends the episode whatever our mirror believes.
+ *
+ *      The floor is what keeps this off a RETRIED delivery of the message that opened the current
+ *      episode: `reopensConversation` is true on every delivery of the same `message_created`, and
+ *      without the comparison the second one would erase a close made after the first.
+ *
+ * The first two need `statusAfter !== "resolved"`, and neither is `statusAfter !== "resolved"` on its own:
  * during that same window an unrelated event (a label, an attribute) leaves the row non-resolved
  * while saying nothing about the close, and clearing there loses a genuine resolution for good.
  *
@@ -89,6 +101,8 @@ export function clearsResolutionOrigin(source: {
   appliedStatus: string | null;
   /** Whether this source is allowed to move status at all: a conversation event, or a live read. */
   sourceMayStateStatus: boolean;
+  /** `StatePayload.reopensConversation`: a brand-new incoming customer message. */
+  reopens: boolean;
   /** The incoming source's own version, null when it carries none. */
   statedVersion: number | null;
   /** `Conversation.resolvedByAt`: the row's status version when the stamp was written. */
@@ -99,19 +113,21 @@ export function clearsResolutionOrigin(source: {
     statedStatus,
     appliedStatus,
     sourceMayStateStatus,
+    reopens,
     statedVersion,
     stampedAfterVersion,
   } = source;
-  const statusAfter = appliedStatus ?? storedStatus;
-  if (statusAfter === "resolved") return false;
-  const leftResolved = storedStatus === "resolved";
   const predatesTheStamp =
     stampedAfterVersion != null &&
     statedVersion != null &&
     statedVersion <= stampedAfterVersion;
+  const statusAfter = appliedStatus ?? storedStatus;
+  if (statusAfter === "resolved") return false;
+  const leftResolved = storedStatus === "resolved";
   const closeLostTheOrdering =
     sourceMayStateStatus && statedStatus === "resolved" && !predatesTheStamp;
-  return leftResolved || closeLostTheOrdering;
+  const customerCameBack = reopens && !predatesTheStamp;
+  return leftResolved || closeLostTheOrdering || customerCameBack;
 }
 
 /** Recorded when WE close a conversation. Null = we did not, or the row is not resolved. */

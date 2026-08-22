@@ -73,6 +73,19 @@ function legacyConvEvent(
   return rest;
 }
 
+// A brand-new incoming customer message: the one reopen a message payload carries faithfully, and
+// the fact rule 3 in `clearsResolutionOrigin` reads.
+function incomingMessage(convId: number, messageId: number, at: number) {
+  return {
+    event: "message_created",
+    id: messageId,
+    content: "oi de novo",
+    message_type: "incoming",
+    private: false,
+    conversation: convEvent(convId, "message_created", "open", at),
+  };
+}
+
 async function mirror(payload: unknown) {
   const n = normalizeChatwootEvent(payload);
   if (!n) throw new Error("payload did not normalize");
@@ -244,6 +257,55 @@ describe.skipIf(!dbUp)(
         convEvent(61, "conversation_status_changed", "resolved", at + 1),
       );
       expect(await originOf(61)).toBeNull();
+    });
+
+    // Review round 11, and the only path that does not go through our own view of "resolved".
+    // Chatwoot retries a webhook three times and then gives up, so our close CAN be lost for good:
+    // the row never records the resolved state, and there is no later resolved claim to lose the
+    // ordering either. Without rule 3 the stamp rides into the customer's next episode and hands
+    // the agent whatever closes that one.
+    test("a customer coming back clears a stamp whose close we never saw land", async () => {
+      const at = 1_700_070_000;
+      await mirror(convEvent(62, "conversation_created", "open", at));
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 62,
+        },
+        origin: "agent",
+        observed: { status: "open", statusAt: at },
+        base: appDb,
+      });
+      expect(await originOf(62)).toBe("agent");
+      // The resolve event never arrives. Days later the customer writes again.
+      await mirror(incomingMessage(62, 6200, at + 500));
+      expect(await originOf(62)).toBeNull();
+    });
+
+    // And the guard that keeps rule 3 off a retry: Chatwoot redelivers the SAME message_created, so
+    // `reopensConversation` is true again. The second delivery must not erase a close made after
+    // the first one, which is what the version floor is for.
+    test("a retried delivery of the reopening message does not erase the close after it", async () => {
+      const at = 1_700_071_000;
+      await mirror(convEvent(63, "conversation_created", "open", at));
+      // The customer's message opens this episode.
+      await mirror(incomingMessage(63, 6300, at + 1));
+      // The agent handles it and closes; the caller observed the row as the message left it.
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 63,
+        },
+        origin: "agent",
+        observed: { status: "open", statusAt: at + 1 },
+        base: appDb,
+      });
+      expect(await originOf(63)).toBe("agent");
+      // Chatwoot redelivers the same message.
+      await mirror(incomingMessage(63, 6300, at + 1));
+      expect(await originOf(63)).toBe("agent");
     });
 
     test("a customer message reopening the conversation clears it too", async () => {

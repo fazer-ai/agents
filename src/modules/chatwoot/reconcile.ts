@@ -168,6 +168,8 @@ export async function reconcileMirrorFromLive(
             statedStatus: live.status,
             appliedStatus: statusOrdered ? live.status : null,
             sourceMayStateStatus: true,
+            // A live snapshot is never a message: it cannot be the customer coming back.
+            reopens: false,
             statedVersion: live.updatedAt,
             stampedAfterVersion: current.resolvedByAt,
           })

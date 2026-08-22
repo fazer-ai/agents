@@ -163,6 +163,7 @@ export async function mirrorChatwootEvent(
           // and lets it move status, so requiring a version silently exempted every Chatwoot older
           // than 4.0.2 from the rule below.
           sourceMayStateStatus: statePayload.fromConversationEvent,
+          reopens: statePayload.reopensConversation,
           statedVersion: statePayload.version,
           stampedAfterVersion: existing.resolvedByAt,
         });

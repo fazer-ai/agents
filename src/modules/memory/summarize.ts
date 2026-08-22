@@ -226,23 +226,27 @@ export function renderTranscript(
 // carries them, and from there into an alert body. `sanitizeErrorMessage` does not help: it redacts
 // substrings shaped like SECRETS and truncates, so a name or a phone number survives it intact.
 //
+// AND NOT `code` OR `type` EITHER, which is the part worth writing down because they look safe and
+// are the first thing someone will try to add back. They are vendor error identifiers by CONVENTION
+// only — the value is chosen by the server, and this product accepts an arbitrary OpenAI-compatible
+// endpoint, so the server can be anyone's proxy. A shape test does not fix that: rejecting prose
+// still admits a single bare token, and a phone number, a CPF and a first name are all single bare
+// tokens. Against an absolute promise, a probabilistic guard is the wrong kind of thing.
+//
+// So what is left is what the SERVER cannot author: the error's class, which the client SDK
+// constructs, and the HTTP status, which is taken as three digits and nothing around them. Together
+// they carry the distinction the operator acts on — 401 the credential, 429 the rate, 404 the model
+// id, 4xx/5xx at all versus a timeout. The vendor's own words are still in the process log, which
+// makes no PII promise; the trail is the surface that does.
+//
 // The single consumer is the compaction job (./compact.ts), which fails with this text and hands it
-// to the scheduler; since issue #196 that text also reaches the operator's trail. So the fields kept
-// are the ones an operator acts on and no provider fills with content: the error's class, the HTTP
-// status, and the vendor's own error code — each accepted only as a short bare token, because a
-// provider is free to put a sentence in any field and one of them would eventually.
-function token(v: unknown): string | null {
-  return typeof v === "string" && /^[\w.:-]{1,64}$/.test(v) ? v : null;
-}
-
+// to the scheduler; since issue #196 that text also reaches the operator's trail.
 export function providerFailure(err: unknown): string {
   if (!(err instanceof Error)) return "provider error";
   const bag = err as unknown as Record<string, unknown>;
-  const nested = (bag.error ?? {}) as Record<string, unknown>;
-  // The message is not quoted, but a bare HTTP status inside it is the one signal worth digging for:
-  // not every client sets a `status` field — LangChain re-throws some failures as a plain Error whose
-  // text is all there is — and "429" is the difference between "the key is wrong" and "slow down".
-  // Only the three digits are taken, so the worst case is a wrong status, never a leak.
+  // Not every client sets a status field — some re-throw a plain Error whose text is all there is —
+  // and "429" is the difference between "the key is wrong" and "slow down". Only the three digits
+  // are taken, so the worst case is a wrong status, never a leak.
   const inMessage = /\b([45]\d{2})\b/.exec(err.message)?.[1] ?? null;
   const status =
     typeof bag.status === "number"
@@ -250,13 +254,10 @@ export function providerFailure(err: unknown): string {
       : typeof bag.statusCode === "number"
         ? String(bag.statusCode)
         : inMessage;
-  const parts = [
-    token(err.name) ?? "Error",
-    status ? `HTTP ${status}` : null,
-    token(bag.code) ?? token(nested.code) ?? null,
-    token(bag.type) ?? token(nested.type) ?? null,
-  ].filter((x): x is string => x !== null);
-  return parts.join(" ");
+  // The class name is the SDK's, not the response's, and still bounded: `name` is a plain writable
+  // property, so a wrapper that copied a server string into it would otherwise walk straight through.
+  const name = /^[\w.:-]{1,64}$/.test(err.name) ? err.name : "Error";
+  return status ? `${name} HTTP ${status}` : name;
 }
 
 export async function summarizeAttendance(

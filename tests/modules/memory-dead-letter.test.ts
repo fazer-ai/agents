@@ -579,10 +579,13 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
     // `detail` and `errorMessage` together: the operator exports the row, not the column.
     const serialized = `${JSON.stringify(line?.detail ?? null)} ${line?.errorMessage ?? ""}`;
     expect(serialized).not.toContain(SEEDED_TEXT);
-    // And the line is still worth reading — the status and the vendor's code are what an operator
-    // acts on, and neither is a place a provider puts content.
+    // And the line is still worth reading: the status is the half an operator acts on, and it is
+    // three digits the server cannot author around.
     expect(line?.errorMessage ?? "").toContain("400");
-    expect(line?.errorMessage ?? "").toContain("content_filter");
+    // The vendor's own `code` is NOT on it, clean-looking though this one is. It is a server-authored
+    // string, and against an absolute promise the question is who chose the value, not what it looks
+    // like this time.
+    expect(line?.errorMessage ?? "").not.toContain("content_filter");
     await suDb.agent.update({
       where: { id: agentId },
       data: {
@@ -605,33 +608,45 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
   });
 });
 
-// The enum-shaped fields are only enums BY CONVENTION. The product accepts an arbitrary
-// OpenAI-compatible endpoint, so the vendor on the other side can be a self-hosted proxy that puts
-// free text wherever it likes — and `code` carrying a sentence is the same leak as `message`
-// carrying one. So each field is taken only as a bare token, and that is measured rather than
-// assumed: without the guard this passes and the marker reaches the line.
-test("a provider that writes prose into an enum field is not quoted either", () => {
+// NOTHING THE SERVER AUTHORED reaches the line — which is a stronger rule than "no prose", and the
+// weaker one is what an earlier revision shipped. `code` and `type` are vendor error identifiers by
+// convention only; the value is chosen by the server, this product accepts an arbitrary
+// OpenAI-compatible endpoint, and a bare token is exactly the shape of a phone number, a CPF or a
+// first name. So the fields are gone, not filtered.
+test("nothing the provider authored reaches the line, however clean it looks", () => {
   const marker = "carambola-com-manjericao-8812";
-  const out = providerFailure(
-    Object.assign(new Error(`rejected: ${marker}`), {
+  // A single bare token in `code`: no whitespace, no prose, and it would have passed a shape test.
+  const tokenised = providerFailure(
+    Object.assign(new Error("rejected"), {
       name: "BadRequestError",
       status: 400,
-      code: `content rejected because of ${marker}`,
+      code: marker,
       type: "invalid_request_error",
     }),
   );
-  expect(out).not.toContain(marker);
-  expect(out).toContain("400");
-  expect(out).toContain("invalid_request_error");
+  expect(tokenised).not.toContain(marker);
+  expect(tokenised).not.toContain("invalid_request_error");
+  expect(tokenised).toBe("BadRequestError HTTP 400");
 
-  // The other half of the same rule, and the dangerous combination: no `status` field at all — a
-  // client that re-throws a plain Error, where the text is the only place the status lives — and
-  // that same text echoing the request. The digits are worth digging out; nothing around them is.
+  // The dangerous combination for the status: no `status` field at all — a client that re-throws a
+  // plain Error, where the text is the only place it lives — and that same text echoing the request.
+  // The digits are worth digging out; nothing around them is.
   const rethrown = providerFailure(
     new Error(`Request failed with status 429 while processing "${marker}"`),
   );
   expect(rethrown).not.toContain(marker);
   expect(rethrown).toContain("429");
+
+  // `name` is the SDK's class, not the response's — but it is a writable property, so a wrapper that
+  // copied a server string into it must not walk through either.
+  const wrapped = providerFailure(
+    Object.assign(new Error("boom"), {
+      name: `Error: ${marker} refused`,
+      status: 500,
+    }),
+  );
+  expect(wrapped).not.toContain(marker);
+  expect(wrapped).toBe("Error HTTP 500");
 });
 
 // ── The family, swept ──────────────────────────────────────────────────────────────────────────

@@ -819,11 +819,16 @@ export async function announceDeadCompaction(
     // RE-READ rather than trust the dead-letter that got us here. `armCompaction` upserts this very
     // row — the dedupeKey is the THREAD, reused by every attendance this contact ever has — back to
     // PENDING with a fresh retry budget, and the raw turns this job failed to cut are still on the
-    // thread, so a re-armed row is an attendance that may yet be summarised. The window is narrow
-    // (an attendance boundary landing inside this hook's own execution) where the debounce flush's
-    // is not, but the check is one indexed read and it is what makes the line's claim exact instead
-    // of nearly always true. Suppressing loses nothing: a configuration still broken fails the new
-    // arm too, and announces then.
+    // thread, so a re-armed row is an attendance that may yet be summarised. Suppressing loses
+    // nothing: a configuration still broken fails the new arm too, and announces then.
+    //
+    // It NARROWS the window and cannot close it, which is worth stating rather than leaving for
+    // someone to discover. The trail write is fire-and-forget by design (../flowlog/service.ts), so
+    // no job ever waits on it, and a re-arm landing between this read and that insert still gets
+    // announced over. Closing it would mean writing the row inside this transaction — giving up the
+    // redaction and alert dispatch that live in the emit, to defend against an attendance boundary
+    // arriving inside one scheduled callback. The residue is a line the next attendance's success
+    // line follows, which is legible; the alternative was announcing over EVERY re-arm.
     const row = await db.schedulerJob.findUnique({
       where: { id: job.id },
       select: { status: true },

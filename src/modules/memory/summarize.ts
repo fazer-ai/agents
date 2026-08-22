@@ -218,34 +218,6 @@ export function renderTranscript(
   return clipTranscript(joined, maxHistoryTokens);
 }
 
-// WHAT A PROVIDER REFUSAL IS ALLOWED TO SAY, once it leaves this module.
-//
-// The rule is one question, asked of every field: WHO CHOSE THIS VALUE. Not what it looks like. The
-// request this error answers carried the whole attendance transcript, so anything the server author
-// controls may be the customer's own words coming back — a content-filter refusal quoting its input
-// is the ordinary case — and `execution_logs.errorMessage` is a column `docs/logs.md` promises never
-// carries them, read by the Logs page, exported by `GET /v1/logs`, and copied into alert bodies.
-// `sanitizeErrorMessage` does not help: it redacts substrings shaped like SECRETS, and a name is not
-// one.
-//
-// By that question `message` fails, and so do `code` and `type` — vendor error identifiers by
-// convention only, filled in by whatever endpoint the operator pointed this at, and this product
-// accepts an arbitrary OpenAI-compatible one. So does `name`, which reads like the SDK's class and
-// is a plain writable property any wrapper can assign. A shape test rescues none of them: rejecting
-// prose still admits a bare token, and a phone number, a CPF and a first name are all bare tokens.
-//
-// What is left is a CLOSED vocabulary this module owns, and nothing else:
-//
-//   "timeout"        — decided by our own AbortSignal, not by anything in the response
-//   "HTTP <nnn>"     — three digits, with nothing around them kept
-//   "provider error" — everything else, including a connection that never opened
-//
-// Coarse on purpose, and still the distinction an operator acts on: 401 the credential, 429 the
-// rate, 404 the model id, 400 the request, timeout the endpoint. The vendor's own words remain in
-// the process log, which makes no PII promise; the trail is the surface that does.
-//
-// The single consumer is the compaction job (./compact.ts), which fails with this text and hands it
-// to the scheduler; since issue #196 that text also reaches the operator's trail.
 // A number is admissible where the vendor's strings are not, because the client PARSED it out of the
 // status line and a number cannot carry a transcript. That argument only covers a number that IS a
 // status, though: an adapter is free to expose `status: 0` for "never connected", a NaN from a failed
@@ -257,6 +229,36 @@ function httpStatus(v: unknown): number | null {
     : null;
 }
 
+// WHAT A PROVIDER REFUSAL IS ALLOWED TO SAY, once it leaves this module.
+//
+// One question decides every field, and it is WHO CHOSE THE VALUE — never what the value looks like.
+// The request this error answers carried the whole attendance transcript, so anything the server
+// authored may be the customer's words coming back (a content-filter refusal quoting its input is the
+// ordinary case), and `execution_logs.errorMessage` is a column `docs/logs.md` promises never carries
+// them, read by the Logs page, exported by `GET /v1/logs`, and copied into alert bodies.
+// `sanitizeErrorMessage` does not help: it redacts substrings shaped like SECRETS, and a name is not
+// one.
+//
+// So `message`, `code`, `type` and even `name` are all out — the first obviously, the middle two
+// because they are vendor identifiers by convention only and this product accepts an arbitrary
+// OpenAI-compatible endpoint, the last because it reads like the SDK's class and is a plain writable
+// property. A shape test rescues none of them: rejecting prose still admits a bare token, and a
+// phone number, a CPF and a first name are all bare tokens. The status is the one thing the server
+// chooses that survives, and not by trust — the client parsed it into a NUMBER, and a number cannot
+// carry a transcript (see httpStatus above for what that argument does not cover).
+//
+// What is left is a CLOSED vocabulary this module owns:
+//
+//   "timeout"        — decided by our own AbortSignal, not by anything in the response
+//   "HTTP <nnn>"     — a status the CLIENT parsed into a number, never read out of any text
+//   "provider error" — everything else, including a connection that never opened
+//
+// Coarse on purpose, and still the distinction an operator acts on: 401 the credential, 429 the
+// rate, 404 the model id, timeout the endpoint. The vendor's own words stay in the process log,
+// which makes no PII promise; the trail is the surface that does.
+//
+// The single consumer is the compaction job (./compact.ts), which fails with this text and hands it
+// to the scheduler; since issue #196 that text also reaches the operator's trail.
 export function providerFailure(err: unknown, timedOut = false): string {
   if (timedOut) return "timeout";
   if (!(err instanceof Error)) return "provider error";

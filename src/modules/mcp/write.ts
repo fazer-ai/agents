@@ -25,7 +25,10 @@ import {
   mergeBehaviorSettings,
   readBehaviorSettings,
 } from "@/modules/agents/behavior-settings";
-import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
+import {
+  credRefSlot,
+  SETTINGS_CREDENTIAL_PATHS,
+} from "@/modules/agents/credential-paths";
 import {
   assertPromptSize,
   assertSettingsTextSizes,
@@ -440,13 +443,14 @@ export async function agentSettingsGet(
     const settings = readBehaviorSettings(agent.settings);
     // The MCP contract speaks NAMES: project the stored `vault:<id>` refs back to entry names, over
     // the same (block, field) list the write path resolves them from.
-    for (const { block: key, field } of SETTINGS_CREDENTIAL_PATHS) {
-      const block = settings[key] as unknown as
-        | Record<string, unknown>
-        | undefined;
-      const ref = block?.[field];
-      if (block && typeof ref === "string" && ref) {
-        block[field] = await vaultNameByRef(ctx, ref, base);
+    for (const { path } of SETTINGS_CREDENTIAL_PATHS) {
+      const slot = credRefSlot(
+        settings as unknown as Record<string, unknown>,
+        path,
+      );
+      const ref = slot?.holder[slot.key];
+      if (slot && typeof ref === "string" && ref) {
+        slot.holder[slot.key] = await vaultNameByRef(ctx, ref, base);
       }
     }
     return ok({ agentId: agent.id, settings });
@@ -515,14 +519,15 @@ export async function agentSettingsSet(
     // A `vault:<id>` ref is validated directly; a plain name goes through resolveVaultRefByName
     // so ambiguity (multiple kinds sharing the same name) surfaces as an explicit error rather
     // than a silent wrong-entry selection.
-    // NOTE: (block, field) pairs, not one field per block: `tts` carries a second credential for
-    // the speech normalizer's own model, and a loop that only knows `credentialRef` would let that
-    // one through as a raw name, which then fails to resolve at turn time instead of here.
-    for (const { block: key, field } of SETTINGS_CREDENTIAL_PATHS) {
+    // NOTE: PATHS, not one field per block: `tts` carries a second credential for the speech
+    // normalizer's own model, and `memory` carries one two levels down, on `compaction`. A loop that
+    // only knows `credentialRef`, or that only looks one level deep, lets those through as raw names
+    // — which then fail to resolve at turn time instead of here.
+    for (const { path } of SETTINGS_CREDENTIAL_PATHS) {
       // Re-read inside the loop: two fields of the same block are rewritten in sequence.
-      const block = patch[key];
-      const value = block?.[field];
-      if (block && typeof value === "string" && value) {
+      const slot = credRefSlot(patch as Record<string, unknown>, path);
+      const value = slot?.holder[slot.key];
+      if (slot && typeof value === "string" && value) {
         if (isVaultIdRef(value)) {
           // Caller passed a stable ref directly — just validate it resolves in this tenant.
           const name = await vaultNameByRef(ctx, value, base);
@@ -544,7 +549,7 @@ export async function agentSettingsSet(
               `credential "${value}" is ambiguous (types: ${typeList}); pass the vault:<id> ref or rename one of the entries`,
             );
           }
-          patch[key] = { ...block, [field]: resolution.ref };
+          slot.holder[slot.key] = resolution.ref;
         }
       }
     }

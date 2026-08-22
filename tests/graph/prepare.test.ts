@@ -68,6 +68,9 @@ function makeConfig(
     maxToolCalls: 10,
     maxHistoryTokens: null,
     memoryCompaction: true,
+    memoryCompactionOverride: {},
+    memoryCompactionApiKey: "",
+    memoryCompactionCredentialBaseUrl: null,
     logToolValues: false,
     ...over,
   } as AgentConfig;

@@ -54,6 +54,14 @@ import { formatWindowsSummary } from "@/modules/business-hours/announce";
 import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
+import {
+  overrideBaseUrlInvalid,
+  overrideBaseUrlUnsupported,
+  overrideNeedsOwnCredential,
+  overridePicked,
+  overridePickerSource,
+  overrideProviderChanged,
+} from "./modelOverrideForm";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 import {
@@ -148,6 +156,16 @@ interface LimitsState {
 // NOTE: The allowed-host list is edited as raw textarea text (one per line) and only turns into an
 // array on save — the runtime reader normalizes and drops what does not resolve to a hostname, so
 // the operator's half-typed line survives editing instead of vanishing under them.
+// The summarizer's block. The four model fields are an OVERRIDE of the agent's model: all blank is
+// "run on the agent's model", which is what every agent that never touched this means.
+export interface MemoryState {
+  compactionEnabled: boolean;
+  provider: string;
+  model: string;
+  credentialRef: string;
+  baseURL: string;
+}
+
 export interface SendImageState {
   allowedHosts: string;
 }
@@ -215,10 +233,11 @@ interface BehaviorTabProps {
   setVision: React.Dispatch<React.SetStateAction<VisionState>>;
   visionCredBaseUrl: string | null;
   limits: LimitsState;
-  memory: { compactionEnabled: boolean };
-  setMemory: React.Dispatch<
-    React.SetStateAction<{ compactionEnabled: boolean }>
-  >;
+  memory: MemoryState;
+  setMemory: React.Dispatch<React.SetStateAction<MemoryState>>;
+  // The base URL stored on the summarizer's OWN credential, when it has one. Outranks the typed
+  // field, exactly as it does for the speech rewrite.
+  memoryCredBaseUrl: string | null;
   observability: { logToolValues: boolean };
   setObservability: React.Dispatch<
     React.SetStateAction<{ logToolValues: boolean }>
@@ -792,6 +811,7 @@ export function BehaviorTab({
   limits,
   memory,
   setMemory,
+  memoryCredBaseUrl,
   observability,
   setObservability,
   setLimits,
@@ -847,6 +867,42 @@ export function BehaviorTab({
   // still runs against an endpoint, and hiding that field made it un-inspectable.
   const normalizeEffectiveProvider =
     tts.normalizeProvider || agentModelProvider;
+
+  // The summarizer's model, resolved the SAME way, through the shared projection rather than a
+  // second copy of the rule.
+  const memoryOverride = {
+    provider: memory.provider,
+    model: memory.model,
+    credentialRef: memory.credentialRef,
+    baseURL: memory.baseURL,
+  };
+  const memorySource = overridePickerSource(
+    memoryOverride,
+    agentModel,
+    memoryCredBaseUrl,
+  );
+  const memoryEffectiveProvider = memory.provider || agentModelProvider;
+  const memoryNeedsOwnCredential = overrideNeedsOwnCredential(
+    memoryOverride,
+    agentModel,
+    memoryCredBaseUrl,
+  );
+  // The endpoint half of the same resolution, and the reason it is here rather than only on the
+  // field: the summariser is the second override in this tab, and the first one already blocks the
+  // save on both of these. A section that renders the picker without them saves a configuration the
+  // runtime refuses, and the operator's only signal is attendances quietly staying raw.
+  const memoryBaseUrlInvalid = overrideBaseUrlInvalid(
+    memoryOverride,
+    agentModel,
+    memoryCredBaseUrl,
+    memory.compactionEnabled,
+  );
+  const memoryBaseUrlUnsupported = overrideBaseUrlUnsupported(
+    memoryOverride,
+    agentModel,
+    memoryCredBaseUrl,
+    memory.compactionEnabled,
+  );
   const normalizeBaseUrlInvalid = ttsNormalizerBaseUrlInvalid(
     tts,
     agentModel,
@@ -1943,12 +1999,168 @@ export function BehaviorTab({
           >
             <SwitchField
               checked={memory.compactionEnabled}
-              onCheckedChange={(v) => setMemory({ compactionEnabled: v })}
+              onCheckedChange={(v) =>
+                setMemory((prev) => ({ ...prev, compactionEnabled: v }))
+              }
               label={t(
                 "editor.memoryCompaction",
                 "Summarize attendances that have ended",
               )}
             />
+            {memory.compactionEnabled && (
+              <div className="flex flex-col gap-3">
+                <div>
+                  <p className="font-medium text-sm">
+                    {t("editor.memoryModel", "Summary model")}
+                  </p>
+                  <p className="text-text-muted text-xs">
+                    {t(
+                      "editor.memoryModelHint",
+                      "Leave it on the agent's model to change nothing. This is the one place where a cheaper model is usually the wrong trade: the summary is not read once, it becomes what the agent knows about this contact from then on, it is never rewritten, and a weaker model tends to drop the customer's name while writing more. Measured on one vendor's cheapest model: the name was lost on one attendance in five. Change it only with a model you have compared yourself.",
+                    )}
+                  </p>
+                </div>
+                <FormField label={t("editor.provider", "Provider")}>
+                  <Select
+                    value={memory.provider}
+                    onChange={(e) =>
+                      setMemory((prev) => ({
+                        ...prev,
+                        ...overrideProviderChanged(
+                          {
+                            provider: prev.provider,
+                            model: prev.model,
+                            credentialRef: prev.credentialRef,
+                            baseURL: prev.baseURL,
+                          },
+                          e.target.value,
+                        ),
+                      }))
+                    }
+                  >
+                    <option value="">
+                      {t("editor.memorySameAsAgent", "Same as the agent")}
+                    </option>
+                    {MODEL_PROVIDERS.map((p) => (
+                      <option key={p} value={p}>
+                        {providerLabel(p, t)}
+                      </option>
+                    ))}
+                  </Select>
+                </FormField>
+                <FormField
+                  label={t("editor.credential", "API key")}
+                  description={t(
+                    "editor.memoryCredentialHint",
+                    "Required when the provider differs from the agent's: the agent's key is never sent to another vendor, so without a key of its own the summary is not written and the attendance stays in the thread raw.",
+                  )}
+                  group
+                >
+                  <CredentialPicker
+                    value={memory.credentialRef}
+                    onChange={(v) =>
+                      setMemory((prev) => ({
+                        ...prev,
+                        ...overridePicked(
+                          {
+                            provider: prev.provider,
+                            model: prev.model,
+                            credentialRef: prev.credentialRef,
+                            baseURL: prev.baseURL,
+                          },
+                          "credentialRef",
+                          v,
+                          agentModelProvider,
+                        ),
+                      }))
+                    }
+                    required={memoryNeedsOwnCredential}
+                    compatibleTypes={credentialCompat.model(
+                      memoryEffectiveProvider,
+                    )}
+                    defaultCreateType={
+                      credentialCompat.model(memoryEffectiveProvider)[0]
+                    }
+                    ariaLabel={t("editor.credential", "API key")}
+                  />
+                </FormField>
+                <FormField label={t("editor.model", "Model")} group>
+                  <ModelPicker
+                    value={memory.model}
+                    onChange={(v) =>
+                      setMemory((prev) => ({
+                        ...prev,
+                        ...overridePicked(
+                          {
+                            provider: prev.provider,
+                            model: prev.model,
+                            credentialRef: prev.credentialRef,
+                            baseURL: prev.baseURL,
+                          },
+                          "model",
+                          v,
+                          agentModelProvider,
+                        ),
+                      }))
+                    }
+                    provider={memoryEffectiveProvider}
+                    credentialRef={memorySource.credentialRef || undefined}
+                    baseURL={memorySource.baseURL || undefined}
+                    // NOTE: blank inherits the AGENT's model while the provider is unchanged, and
+                    // only falls back to the provider default once it differs. The placeholder has
+                    // to say the same thing, or the operator reads one model here and another runs.
+                    placeholder={
+                      memoryEffectiveProvider === agentModelProvider
+                        ? t("editor.memorySameAsAgent", "Same as the agent")
+                        : undefined
+                    }
+                  />
+                </FormField>
+                {(memoryEffectiveProvider === "openai-compatible" ||
+                  !!memoryCredBaseUrl ||
+                  !!memory.baseURL.trim()) && (
+                  <FormField
+                    label={t("editor.baseURL", "Base URL")}
+                    description={
+                      memoryCredBaseUrl
+                        ? t(
+                            "editor.baseURLFromCredential",
+                            "Defined by the selected credential.",
+                          )
+                        : t(
+                            "editor.memoryBaseURLHint",
+                            "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+                          )
+                    }
+                    error={
+                      memoryBaseUrlUnsupported
+                        ? t(
+                            "editor.baseURLNotSentByProvider",
+                            "This provider does not send a base URL: the request would go to its own endpoint instead. Pick a credential without one, or use an OpenAI-compatible provider.",
+                          )
+                        : memoryBaseUrlInvalid && memory.baseURL.trim()
+                          ? t(
+                              "common.invalidUrl",
+                              "Must be a valid http(s) URL.",
+                            )
+                          : null
+                    }
+                  >
+                    <Input
+                      value={memoryCredBaseUrl ?? memory.baseURL}
+                      onChange={(e) =>
+                        setMemory((prev) => ({
+                          ...prev,
+                          baseURL: e.target.value,
+                        }))
+                      }
+                      disabled={!!memoryCredBaseUrl}
+                      placeholder="https://api.groq.com/openai/v1"
+                    />
+                  </FormField>
+                )}
+              </div>
+            )}
           </Section>
 
           <Section
@@ -2192,7 +2404,9 @@ export function BehaviorTab({
           sttBaseUrlInvalid ||
           visionBaseUrlInvalid ||
           normalizeBaseUrlInvalid ||
-          normalizeBaseUrlUnsupported
+          normalizeBaseUrlUnsupported ||
+          memoryBaseUrlInvalid ||
+          memoryBaseUrlUnsupported
         }
         onOpenPlayground={onOpenPlayground}
       />

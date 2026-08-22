@@ -1,8 +1,8 @@
 import { TTS_PROVIDERS } from "@/client/lib/providerDefaults";
-import { isValidHttpUrl } from "@/client/lib/validation";
-import {
-  type NormalizeModelResolution,
-  resolveNormalizeModel,
+import type { ModelOverride } from "@/graph/model-override";
+import type {
+  NormalizeModelResolution,
+  NormalizeOverrides,
 } from "@/modules/tts/normalize-model";
 import {
   clampVoiceSetting,
@@ -11,6 +11,16 @@ import {
   TTS_MODES,
   type TtsMode,
 } from "@/modules/tts/settings-shared";
+import {
+  type AgentModelSource,
+  overrideBaseUrlInvalid,
+  overrideBaseUrlUnsupported,
+  overrideNeedsOwnCredential,
+  overridePicked,
+  overridePickerSource,
+  overrideProviderChanged,
+  overrideResolution,
+} from "./modelOverrideForm";
 
 // The agent editor's TTS block, as a pair of pure functions: stored settings → form state → stored
 // settings. It lives outside the page because the Behavior save REPLACES the whole `tts` block with
@@ -125,131 +135,106 @@ export function ttsSettingsFrom(tts: TtsFormState): Record<string, unknown> {
 // id (another vendor refuses it), the API key (same), and the base URL, which is the dangerous one
 // because its field only renders for openai-compatible. Left behind, it keeps steering the new
 // provider's client at an endpoint the operator can no longer see, and the rewrite fails or hangs.
+// The rule these project is not specific to speech — "which model does a secondary call run on, on
+// whose key" — so it lives in ./modelOverrideForm and the summariser shares it. What is specific to
+// speech is the SPELLING: the four overrides are stored on the `tts` block under `normalize*` names,
+// and translating them is all that is left here.
+function toOverride(tts: NormalizeOverrides): ModelOverride {
+  return {
+    provider: tts.normalizeProvider ?? "",
+    model: tts.normalizeModel ?? "",
+    credentialRef: tts.normalizeCredentialRef ?? "",
+    baseURL: tts.normalizeBaseURL ?? "",
+  };
+}
+
 export function ttsNormalizerProviderChanged(
   tts: TtsFormState,
   provider: string,
 ): TtsFormState {
+  const o = overrideProviderChanged(toOverride(tts), provider);
   return {
     ...tts,
-    normalizeProvider: provider,
-    normalizeModel: "",
-    normalizeCredentialRef: "",
-    normalizeBaseURL: "",
+    normalizeProvider: o.provider ?? "",
+    normalizeModel: o.model ?? "",
+    normalizeCredentialRef: o.credentialRef ?? "",
+    normalizeBaseURL: o.baseURL ?? "",
   };
 }
 
-// Picking a model or a key FOR the rewrite pins the vendor it was picked FROM. Left inherited, the
-// pair comes apart the next time the agent's provider changes — on the General tab, which does not
-// even save together with this one — and the key follows it to a vendor that never issued it while
-// the model id is asked of one that has never heard of it. The resolver refuses that configuration
-// (`override_without_provider`); this is what keeps the editor from ever producing it, at no cost to
-// the operator, who picked from a list the provider itself answered.
-//
-// Clearing the field does NOT unpin the provider: the operator may be mid-edit, and an explicit
-// provider is never the wrong answer — it is only ever more specific than the blank one.
 export function ttsNormalizerOverridePicked(
   tts: TtsFormState,
   field: "normalizeModel" | "normalizeCredentialRef",
   value: string,
   agentProvider: string,
 ): TtsFormState {
+  const o = overridePicked(
+    toOverride(tts),
+    field === "normalizeModel" ? "model" : "credentialRef",
+    value,
+    agentProvider,
+  );
   return {
     ...tts,
     [field]: value,
-    normalizeProvider:
-      value && tts.normalizeProvider === ""
-        ? agentProvider
-        : tts.normalizeProvider,
+    normalizeProvider: o.provider ?? "",
   };
 }
 
-// The editor's view of the SAME resolution the runtime will perform, so what the operator sees
-// before saving and what actually runs cannot drift apart. Everything below projects
-// `resolveNormalizeModel`; none of it re-derives the rule.
-//
-// The editor is stricter about one thing only: an endpoint has to be a valid http(s) URL here, so a
-// half-typed one is refused before the save rather than at the first audio reply.
-export interface AgentModelSource {
-  provider: string;
-  credentialRef: string;
-  // The EFFECTIVE endpoint (the selected credential's, when it carries one, else the typed field).
-  baseURL: string;
-}
+export type { AgentModelSource } from "./modelOverrideForm";
 
 export function ttsNormalizerResolution(
   tts: TtsFormState,
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
 ): NormalizeModelResolution {
-  return resolveNormalizeModel(
-    tts,
-    { provider: agent.provider, model: "", baseURL: agent.baseURL },
-    { ownCredentialBaseURL: ownCredBaseUrl, isUsableBaseURL: isValidHttpUrl },
-  );
+  return overrideResolution(toOverride(tts), agent, ownCredBaseUrl);
 }
 
-// Whether the rewrite's API key field is REQUIRED. It is exactly "the resolution refuses to run for
-// want of a credential": naming the agent's own provider inherits the key and demands nothing, an
-// openai-compatible endpoint authenticates by its URL, and any other switch needs a key of its own.
 export function ttsNormalizerNeedsOwnCredential(
   tts: TtsFormState,
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
 ): boolean {
-  const r = ttsNormalizerResolution(tts, agent, ownCredBaseUrl);
-  return !r.runnable && r.reason === "credential_required";
+  return overrideNeedsOwnCredential(toOverride(tts), agent, ownCredBaseUrl);
 }
 
-// What the model picker must authenticate with to list models: the credential the rewrite will
-// ACTUALLY run on. On the one change this feature exists for ("same account, cheaper model") that is
-// the agent's own, inherited on purpose, and a picker handed only the rewrite's empty fields showed
-// "select a credential" with no models at all.
 export function ttsNormalizerPickerSource(
   tts: TtsFormState,
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
 ): { credentialRef: string; baseURL: string } {
-  const r = ttsNormalizerResolution(tts, agent, ownCredBaseUrl);
-  if (!r.runnable) return { credentialRef: "", baseURL: "" };
-  return {
-    credentialRef:
-      r.credential === "own"
-        ? tts.normalizeCredentialRef
-        : r.credential === "agent"
-          ? agent.credentialRef
-          : "",
-    baseURL: r.baseURL ?? "",
-  };
+  return overridePickerSource(toOverride(tts), agent, ownCredBaseUrl);
 }
 
-// Whether the endpoint in play is one this provider will never send. The operator can reach it in
-// two clicks — pick a credential that carries a base URL while the rewrite sits on a keyed vendor —
-// and the field that would explain it does not even render for that provider. So the field renders
-// whenever there IS an endpoint in play, and says which of the two things is wrong.
+// The two guards below answer the shared rule's `sectionOn` question: with audio replies off, or the
+// rewrite switched off, the whole block is hidden, so blocking Save would freeze the Behavior tab
+// with nothing on screen to explain it — including the save that turns audio off in the first place.
+// That precondition used to live here as an early return, which is why the summariser's override
+// arrived without it; it is a required argument of the shared helper now, so the next feature to add
+// one has to answer it.
 export function ttsNormalizerBaseUrlUnsupported(
   tts: TtsFormState,
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
 ): boolean {
-  if (tts.mode === "never" || !tts.normalize) return false;
-  const r = ttsNormalizerResolution(tts, agent, ownCredBaseUrl);
-  return !r.runnable && r.reason === "endpoint_unsupported";
+  return overrideBaseUrlUnsupported(
+    toOverride(tts),
+    agent,
+    ownCredBaseUrl,
+    tts.mode !== "never" && tts.normalize,
+  );
 }
 
-// No endpoint the rewrite can be sent to: an openai-compatible one with no address at all, or an
-// address it brought itself that is not a dialable URL. Either way createChatModel refuses the
-// configuration, or the request never leaves, and the rewrite is skipped as `model_not_runnable` on
-// every audio reply, silently. The agent's own model field is guarded the same way (GeneralTab's
-// `modelBaseUrlInvalid`).
 export function ttsNormalizerBaseUrlInvalid(
   tts: TtsFormState,
   agent: AgentModelSource,
   ownCredBaseUrl: string | null,
 ): boolean {
-  // A rewrite that cannot run is not a misconfiguration to block the save on: with audio replies off
-  // the whole block is hidden, so blocking Save here would freeze the Behavior tab with nothing on
-  // screen to explain it, including the save that turns audio off in the first place.
-  if (tts.mode === "never" || !tts.normalize) return false;
-  const r = ttsNormalizerResolution(tts, agent, ownCredBaseUrl);
-  return !r.runnable && r.reason === "endpoint_unusable";
+  return overrideBaseUrlInvalid(
+    toOverride(tts),
+    agent,
+    ownCredBaseUrl,
+    tts.mode !== "never" && tts.normalize,
+  );
 }

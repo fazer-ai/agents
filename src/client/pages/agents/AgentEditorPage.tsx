@@ -76,7 +76,11 @@ import {
 } from "@/modules/guardrails/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
-import { BehaviorTab, type SendImageState } from "./BehaviorTab";
+import {
+  BehaviorTab,
+  type MemoryState,
+  type SendImageState,
+} from "./BehaviorTab";
 import {
   type ChannelRedirectFormState,
   ChannelRedirectTab,
@@ -87,6 +91,7 @@ import { GeneralTab } from "./GeneralTab";
 import { GuardrailsTab } from "./GuardrailsTab";
 import { readGuardrailsFormState } from "./guardrailsFormState";
 import { KnowledgeTab } from "./KnowledgeTab";
+import { memoryToForm, memoryToStored } from "./memoryFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
 import { ToolsTab } from "./ToolsTab";
@@ -402,7 +407,7 @@ function readBehaviorState(a: Agent) {
     // NOTE: Same reason as observability above — through the runtime's own reader, because this one
     // defaults to ON and a hand-rolled `=== true` would show the switch off on every agent whose bag
     // predates the feature, then persist that lie on the next save.
-    memory: { compactionEnabled: readMemoryConfig(s).compaction.enabled },
+    memory: memoryToForm(s),
   };
 }
 
@@ -657,9 +662,11 @@ function AgentEditor() {
   // Whether this agent's tool lines log the values the model sent instead of their shape. Mirrors
   // agent.settings.observability (modules/flowlog/settings).
   const [observability, setObservability] = useState({ logToolValues: false });
-  // Whether an attendance that ended is folded into a summary. Mirrors agent.settings.memory
-  // (modules/memory/settings), which defaults to ON.
-  const [memory, setMemory] = useState({ compactionEnabled: true });
+  // Whether an attendance that ended is folded into a summary, and which model writes it. Seeded
+  // from the reader over an empty bag rather than a literal: the pre-load state is the same shape
+  // the round-trip pair produces, so a field added to `compaction` cannot default differently here
+  // than it does everywhere else.
+  const [memory, setMemory] = useState<MemoryState>(() => memoryToForm({}));
   // NOTE: Hosts the send_image tool may fetch from. Mirrors agent.settings.sendImage
   // (modules/images/settings), edited as one host per line.
   const [sendImage, setSendImage] = useState<SendImageState>({
@@ -730,6 +737,7 @@ function AgentEditor() {
   const modelCredBaseUrl = vaultBaseUrl(model.credentialRef);
   const sttCredBaseUrl = vaultBaseUrl(stt.credentialRef);
   const visionCredBaseUrl = vaultBaseUrl(vision.credentialRef);
+  const memoryCredBaseUrl = vaultBaseUrl(memory.credentialRef);
   const ttsNormalizeCredBaseUrl = vaultBaseUrl(tts.normalizeCredentialRef);
 
   // Tool selection
@@ -1153,7 +1161,10 @@ function AgentEditor() {
         maxHistoryTokens: Number(limits.maxHistoryTokens) || null,
       },
       observability: { logToolValues: observability.logToolValues },
-      memory: { compaction: { enabled: memory.compactionEnabled } },
+      // NOTE: through the pair, not spelled out here. The Behavior save REPLACES the block, so a
+      // field the form dropped would be deleted on the next save — which is exactly how
+      // `tts.baseURL` was lost once, and the round-trip test over ./memoryFormState is the guard.
+      memory: memoryToStored(memory),
       attributeContext: {
         conversation: attributeContext.conversation,
         contact: attributeContext.contact,
@@ -1369,6 +1380,8 @@ function AgentEditor() {
   // t('editor.configIssue.tts', 'Audio replies are on but have no API key set.')
   // t('editor.configIssue.ttsNormalize', 'The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.')
   // t('editor.configIssuePending.ttsNormalize', 'The speech-rewrite credential is referenced but not filled in yet.')
+  // t('editor.configIssue.memoryModel', 'A separate model is set for attendance summaries but its configuration cannot run, so attendances that end will not be summarized and the contact keeps no memory of them. Check its provider, model, key and endpoint.')
+  // t('editor.configIssuePending.memoryModel', 'The summary-model credential is referenced but not filled in yet, so attendances that end are not summarized.')
   // t('editor.configIssue.vision', 'Image/document reading is on but has no API key set.')
   // t('editor.configIssue.guardrails', 'Guardrails are on but have no API key set, so messages go out unscreened.')
   // t('editor.configIssuePending.guardrails', 'The guardrails credential is referenced but not filled in yet, so messages go out unscreened.')
@@ -1386,6 +1399,7 @@ function AgentEditor() {
   // t('editor.configIssueUnresolved.stt', 'The transcription credential no longer exists, so voice messages are not transcribed.')
   // t('editor.configIssueUnresolved.tts', 'The audio-reply credential no longer exists, so replies are sent as text.')
   // t('editor.configIssueUnresolved.ttsNormalize', 'The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.')
+  // t('editor.configIssueUnresolved.memoryModel', 'The summary-model credential no longer exists, so attendances that end are not summarized.')
   // t('editor.configIssueUnresolved.vision', 'The image-reading credential no longer exists, so images and documents are not read.')
   // t('editor.configIssueUnresolved.embedding', 'A knowledge base needs indexing, but the embedding credential no longer exists.')
   // Knowledge bases this agent uses (its RAG grant) that still have documents awaiting indexing —
@@ -1407,6 +1421,13 @@ function AgentEditor() {
     : model;
   const savedModelBaseUrl =
     vaultBaseUrl(savedModel.credentialRef) ?? savedModel.baseURL;
+  // The summariser override is judged on the STORED bag (see `settings` on the input), so the
+  // credential whose endpoint outranks it has to be the stored one too. Reading the form's instead
+  // would judge a saved configuration against a credential the row does not name.
+  const savedMemoryCredBaseUrl = vaultBaseUrl(
+    readMemoryConfig(syncedAgentRef.current?.settings).compaction
+      .credentialRef ?? "",
+  );
   const configIssues = computeConfigIssues({
     settings: syncedAgentRef.current?.settings,
     // Saved, like the settings above. Absent only before the first load lands, and nothing that
@@ -1421,6 +1442,7 @@ function AgentEditor() {
     savedModelProvider: savedModel.provider,
     savedModelBaseURL: savedModelBaseUrl,
     savedModelCredentialRef: savedModel.credentialRef,
+    savedMemoryCredentialBaseURL: savedMemoryCredBaseUrl,
     ttsNormalize: tts.normalize,
     ttsNormalizeProvider: tts.normalizeProvider,
     ttsNormalizeModel: tts.normalizeModel,
@@ -2830,6 +2852,7 @@ function AgentEditor() {
                 vision={vision}
                 setVision={setVision}
                 visionCredBaseUrl={visionCredBaseUrl}
+                memoryCredBaseUrl={memoryCredBaseUrl}
                 limits={limits}
                 setLimits={setLimits}
                 memory={memory}

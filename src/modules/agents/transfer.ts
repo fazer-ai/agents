@@ -27,6 +27,8 @@ import {
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
   type CredentialFieldTab,
+  credRefSlot,
+  remapCredRefAt,
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
 import { clampOversizedTextInPlace } from "@/modules/agents/text-caps";
@@ -265,12 +267,10 @@ export function collectCredRefs(
   ) {
     refs.push(modelConfig.credentialRef);
   }
-  for (const { block, field } of SETTINGS_CREDENTIAL_PATHS) {
-    const sub = settings[block];
-    if (sub && typeof sub === "object") {
-      const ref = (sub as Record<string, unknown>)[field];
-      if (typeof ref === "string" && ref) refs.push(ref);
-    }
+  for (const { path } of SETTINGS_CREDENTIAL_PATHS) {
+    const slot = credRefSlot(settings, path);
+    const ref = slot?.holder[slot.key];
+    if (typeof ref === "string" && ref) refs.push(ref);
   }
   return refs;
 }
@@ -294,11 +294,9 @@ export function credentialFieldTargets(
     }
   };
   add(modelConfig.credentialRef, "general", "general-model");
-  for (const { block, field, tab, sectionId } of SETTINGS_CREDENTIAL_PATHS) {
-    const sub = settings[block];
-    if (sub && typeof sub === "object") {
-      add((sub as Record<string, unknown>)[field], tab, sectionId);
-    }
+  for (const { path, tab, sectionId } of SETTINGS_CREDENTIAL_PATHS) {
+    const slot = credRefSlot(settings, path);
+    if (slot) add(slot.holder[slot.key], tab, sectionId);
   }
   return out;
 }
@@ -316,21 +314,11 @@ export function remapCredRefs(
     if (mapped === null) delete mc.credentialRef;
     else mc.credentialRef = mapped;
   }
-  const st = { ...settings };
-  // NOTE: re-read st[key] each time, since two paths share the `tts` block and the second must see
-  // the first one's rewrite.
-  for (const { block, field } of SETTINGS_CREDENTIAL_PATHS) {
-    const sub = st[block];
-    if (sub && typeof sub === "object") {
-      const subCopy = { ...(sub as Record<string, unknown>) };
-      const ref = subCopy[field];
-      if (typeof ref === "string" && ref) {
-        const mapped = map(ref);
-        if (mapped === null) delete subCopy[field];
-        else subCopy[field] = mapped;
-        st[block] = subCopy;
-      }
-    }
+  // NOTE: each pass returns a NEW root and the next one reads it, since two paths share the `tts`
+  // block and the second must see the first one's rewrite.
+  let st: Record<string, unknown> = { ...settings };
+  for (const { path } of SETTINGS_CREDENTIAL_PATHS) {
+    st = remapCredRefAt(st, path, map);
   }
   return { modelConfig: mc, settings: st };
 }

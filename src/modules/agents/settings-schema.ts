@@ -341,6 +341,16 @@ const memory = z.looseObject({
         .boolean()
         .optional()
         .describe("summarize a closed attendance; default TRUE"),
+      // The summariser's OWN model, and dead in exactly the way tts's rewrite is: resolveModelOverride
+      // decides at READ time, so a half-named override is stored without complaint and the attendance
+      // is simply never summarised. All four absent (the default) runs it on the agent's model.
+      provider: oneOf(MODEL_PROVIDERS)
+        .nullable()
+        .optional()
+        .describe("the summary's model PROVIDER; null inherits the agent's"),
+      model: z.string().nullable().optional(),
+      credentialRef: credentialRef(),
+      baseURL: baseURL(),
     })
     .optional(),
 });

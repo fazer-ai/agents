@@ -3,12 +3,14 @@ import {
   VAULT_REF_PREFIX,
 } from "@/client/lib/credentialRef";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import { resolveModelOverride } from "@/graph/model-override";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { readAvailabilityConfig } from "@/modules/availability/away";
 import {
   type Schedule,
   scheduleCanClose,
 } from "@/modules/business-hours/hours";
+import { readMemoryConfig } from "@/modules/memory/settings";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 
 // Live configuration-health checks for the agent editor (item 1): detect features that are turned on
@@ -21,6 +23,7 @@ export type ConfigIssueKey =
   | "stt"
   | "tts"
   | "ttsNormalize"
+  | "memoryModel"
   | "vision"
   | "guardrails"
   | "guardrailsFailing"
@@ -158,6 +161,12 @@ export interface ConfigHealthInput {
   // The saved model's credential, needed for one question only: whether an endpoint the rewrite
   // INHERITS could still arrive from that credential once the vault answers.
   savedModelCredentialRef?: string;
+  // The base URL carried by the SAVED summariser credential, which outranks the endpoint typed into
+  // the bag exactly as it does at runtime (`loadAgentConfig` reads it from the vault). Without it
+  // this check calls a summariser that runs perfectly well `endpoint_unusable` the moment the vault
+  // answers, and misses the opposite case — a credential endpoint on a vendor that never sends one.
+  // Null until the vault list lands, which is what the deferral below is for.
+  savedMemoryCredentialBaseURL?: string | null;
   sttEnabled: boolean;
   sttCredentialRef: string;
   // TTS has no boolean toggle — any mode other than "never" means audio replies are on.
@@ -391,6 +400,75 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
         normalizeResolution !== null &&
           Boolean(input.ttsNormalizeCredentialRef),
         input.ttsNormalizeCredentialRef ?? "",
+        pending,
+        known,
+      ),
+    );
+  }
+  // The attendance summariser's own model, when one is configured. Same resolver, same reasons, one
+  // difference worth stating: this failure is not silent the way the rewrite's is — the job fails and
+  // retries to DEAD with the reason on its line — but nothing in the console says so, and what is
+  // lost is the contact's memory rather than one reply's delivery. An attendance that ends while this
+  // is broken stays raw forever; nothing goes back for it.
+  //
+  // Read from the SAVED bag for the same reason the rewrite reads the saved model: the Behavior tab
+  // carries none of General's pending edits, so a verdict against an unsaved provider is a verdict
+  // against a configuration that will not exist when this block lands.
+  const compaction = readMemoryConfig(input.settings).compaction;
+  const compactionOverridden =
+    compaction.provider !== null ||
+    compaction.model !== null ||
+    compaction.credentialRef !== null ||
+    compaction.baseURL !== null;
+  // Nothing configured is not a configuration that can fail: it IS the agent's model, and an agent
+  // model that cannot run is the "model" issue above. Raising a second line for it would tell the
+  // operator to fix the summariser when the thing to fix is the agent.
+  const compactionResolution =
+    compaction.enabled && compactionOverridden
+      ? resolveModelOverride(
+          {
+            provider: compaction.provider,
+            model: compaction.model,
+            credentialRef: compaction.credentialRef,
+            baseURL: compaction.baseURL,
+          },
+          {
+            provider: input.savedModelProvider,
+            model: "",
+            baseURL: input.savedModelBaseURL ?? null,
+          },
+          {
+            ownCredentialBaseURL: input.savedMemoryCredentialBaseURL ?? null,
+            isUsableBaseURL: isValidHttpUrl,
+          },
+        )
+      : null;
+  const compactionIssue: ConfigIssue = {
+    key: "memoryModel",
+    tab: "behavior",
+    sectionId: "memory",
+  };
+  // The same wait as the rewrite's, for the same reason: an endpoint can still arrive on a
+  // credential the vault has not answered for yet, and announcing a runnable summariser as broken is
+  // the false alarm the null-until-loaded rule exists to prevent.
+  const compactionEndpointOwed =
+    !endpointsKnown &&
+    Boolean(compaction.credentialRef || input.savedModelCredentialRef);
+  const compactionRefusalHolds =
+    compactionResolution !== null &&
+    !compactionResolution.runnable &&
+    !(
+      compactionEndpointOwed &&
+      compactionResolution.reason === "endpoint_unusable"
+    );
+  if (compactionRefusalHolds) {
+    issues.push(compactionIssue);
+  } else {
+    push(
+      compactionIssue,
+      credIssue(
+        compactionResolution !== null && Boolean(compaction.credentialRef),
+        compaction.credentialRef ?? "",
         pending,
         known,
       ),

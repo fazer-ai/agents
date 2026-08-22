@@ -678,6 +678,7 @@
     "configIssue": {
       "embedding": "A knowledge base needs indexing, but the tenant embedding is not configured.",
       "guardrails": "Guardrails are on but have no API key set, so messages go out unscreened.",
+      "memoryModel": "A separate model is set for attendance summaries but its configuration cannot run, so attendances that end will not be summarized and the contact keeps no memory of them. Check its provider, model, key and endpoint.",
       "model": "The model has no API key set, so the agent cannot reply.",
       "redirect": "Redirect is on but a WhatsApp or website-chat inbox is not set, so it will not run.",
       "stt": "Voice transcription is on but has no API key set.",
@@ -693,6 +694,7 @@
     "configIssuePending": {
       "embedding": "A knowledge base needs indexing, but the embedding credential is not filled in yet.",
       "guardrails": "The guardrails credential is referenced but not filled in yet, so messages go out unscreened.",
+      "memoryModel": "The summary-model credential is referenced but not filled in yet, so attendances that end are not summarized.",
       "model": "The model credential is referenced but not filled in yet.",
       "stt": "The transcription credential is referenced but not filled in yet.",
       "tts": "The audio-reply credential is referenced but not filled in yet.",
@@ -705,6 +707,7 @@
     "configIssueUnresolved": {
       "embedding": "A knowledge base needs indexing, but the embedding credential no longer exists.",
       "guardrails": "The guardrails credential no longer exists, so messages go out unscreened.",
+      "memoryModel": "The summary-model credential no longer exists, so attendances that end are not summarized.",
       "model": "The model credential no longer exists, so the agent cannot reply. Pick another one.",
       "stt": "The transcription credential no longer exists, so voice messages are not transcribed.",
       "tts": "The audio-reply credential no longer exists, so replies are sent as text.",
@@ -891,8 +894,13 @@
     "limitsMaxToolCallsHint": "After this many tool uses the agent is forced to reply with what it has (no error). 1-50.",
     "limitsNoCeiling": "No ceiling",
     "memory": "Memory",
+    "memoryBaseURLHint": "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
     "memoryCompaction": "Summarize attendances that have ended",
+    "memoryCredentialHint": "Required when the provider differs from the agent's: the agent's key is never sent to another vendor, so without a key of its own the summary is not written and the attendance stays in the thread raw.",
     "memoryHint": "The agent remembers every conversation it has had with this contact on this channel. When an attendance ends, its messages are replaced by a summary of it, so the memory becomes \"N summarized attendances + the current one\". What survives a summary is the useful part: who the contact is, what was agreed, what was left open. Exact wording does not, so turn this off if the agent must be able to quote an old conversation word for word. The summary is written by the agent's own model, after the reply is sent, so no customer waits for it. It runs once for every attendance that ends, including the ones your team handled without the agent.",
+    "memoryModel": "Summary model",
+    "memoryModelHint": "Leave it on the agent's model to change nothing. This is the one place where a cheaper model is usually the wrong trade: the summary is not read once, it becomes what the agent knows about this contact from then on, it is never rewritten, and a weaker model tends to drop the customer's name while writing more. Measured on one vendor's cheapest model: the name was lost on one attendance in five. Change it only with a model you have compared yourself.",
+    "memorySameAsAgent": "Same as the agent",
     "mode": "Mode",
     "modeHint": "A test agent stays silent in a conversation until the customer sends /teste; production answers normally.",
     "model": "Model",

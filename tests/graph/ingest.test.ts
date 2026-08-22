@@ -380,7 +380,74 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
   // on nothing, so an attendant answering a voice note is folded in FIRST. On one shared column that
   // higher id advances the watermark and the customer's message is skipped for good: the fix for a
   // memory missing the team's half would have started losing the customer's.
-  // The retry that repairs a half-done attempt must not rewrite the message. The append and the row
+  // Accepting an out-of-order id means a message can land whose attendance is already OVER: a
+  // delayed media webhook from conversation A, arriving after B has opened. Run through the normal
+  // boundary it would write a divider for A, walk the thread marker backwards to A, and arm
+  // compaction for B — the conversation still being served. B would be summarised mid-attendance and
+  // its raw turns replaced by a summary of a conversation that has not finished.
+  test("a delayed message from an older conversation does not move the attendance", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12406;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const closed: number[] = [];
+    const ingest = (conversationId: number, messageId: number, text: string) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId,
+        text,
+        role: "customer",
+        onAttendanceClosed: (prev) => {
+          closed.push(prev);
+        },
+      });
+
+    expect(await ingest(800, 900, "primeiro atendimento")).toBe("ingested");
+    // B opens: this one legitimately closes A.
+    expect(await ingest(801, 902, "segundo atendimento")).toBe("ingested");
+    expect(closed).toEqual([800]);
+
+    // The voice note from A, still transcribing when B started.
+    expect(await ingest(800, 901, "<audio> do primeiro")).toBe("ingested");
+
+    // It is in the thread — nothing is lost, which is the whole point of #194 —
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const contents = (
+      ((cp?.channel_values as { messages?: BaseMessage[] })?.messages ??
+        []) as BaseMessage[]
+    ).map((m) => String(m.content));
+    expect(contents.some((c) => c.includes("<audio> do primeiro"))).toBe(true);
+    // — and it changed nothing else. No second boundary armed for B, and the thread still says B.
+    expect(closed).toEqual([800]);
+    const at = await suDb.agentThread.findUniqueOrThrow({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { lastConversationId: true, lastSyncedMessageId: true },
+    });
+    expect(at.lastConversationId).toBe(801);
+    // The high-water mark does not walk backwards either.
+    expect(at.lastSyncedMessageId).toBe(902);
+    // Exactly one divider, for B. A late arrival never writes one.
+    expect(
+      contents.filter((c) => c.includes(CONVERSATION_DIVIDER)).length,
+    ).toBe(1);
+  });
+
+  // The repair of a half-done attempt must not rewrite the message. The append and the row
   // recording it are not atomic, so attempt 2 can find attempt 1's message already in the channel —
   // and by then the boundary claim sees this conversation's stamp and says the divider is not owed,
   // so a plain replacement would erase the attendance boundary the first attempt wrote. Simulated
@@ -410,7 +477,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
         text,
         role: "customer",
       });
-    const ingest = (retrying: boolean) =>
+    const ingest = () =>
       ingestMessageIntoThread({
         tenantId,
         instanceId,
@@ -422,7 +489,6 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
         messageId: 700,
         text: "bom dia, voltei",
         role: "customer",
-        retrying,
       });
     const contents = async () => {
       const cp = await saver.get({
@@ -437,7 +503,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     // An earlier attendance on this same thread, so message 700 opens a NEW one and is owed the
     // divider. Without a previous conversation there is no boundary to erase.
     expect(await ingestOn(989, 699, "obrigado")).toBe("ingested");
-    expect(await ingest(false)).toBe("ingested");
+    expect(await ingest()).toBe("ingested");
     const first = (await contents()).slice(1);
     expect(first.length).toBe(1);
     expect(first[0]).toContain(CONVERSATION_DIVIDER);
@@ -447,7 +513,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       `DELETE FROM agent_threads WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${contactInboxId}`,
     );
 
-    expect(await ingest(true)).toBe("ingested");
+    expect(await ingest()).toBe("ingested");
     const after = (await contents()).slice(1);
     expect(after.length).toBe(1);
     // The divider survives, which is the whole point: without the guard the reducer replaces the

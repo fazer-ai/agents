@@ -6,11 +6,8 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
-import {
-  armIngest,
-  drainPendingIngest,
-  ingestHandler,
-} from "@/graph/ingest-job";
+import { drainPendingIngest } from "@/graph/ingest-drain";
+import { armIngest, ingestHandler } from "@/graph/ingest-job";
 import { type ClaimedJob, claimDueJobs } from "@/modules/scheduler/service";
 import { runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";

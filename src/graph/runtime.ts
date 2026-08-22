@@ -54,7 +54,7 @@ import {
   isTurnInFlight,
   markTurnInFlight,
 } from "./inflight";
-import { drainPendingIngest } from "./ingest-job";
+import { drainPendingIngest } from "./ingest-drain";
 import { conversationDividerMessage, conversationStamp } from "./markers";
 import type { ResolvedModelConfig } from "./models";
 import {

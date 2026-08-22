@@ -9,6 +9,7 @@ import {
   getCheckpointer,
 } from "@/graph/checkpointer";
 import { isTurnInFlight } from "@/graph/inflight";
+import { drainPendingIngest } from "@/graph/ingest-drain";
 import { memoryHeadMessage, stampedConversationId } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import type { ModelConfig } from "@/graph/model-config";
@@ -266,6 +267,17 @@ export async function runCompaction(
   // nothing else. Refused before the state read, so it costs neither a generation nor a query.
   const threadRowId = loaded.threadRowId;
   if (threadRowId === null) return { outcome: "done" };
+
+  // BARRIER (issue #194). Compaction is the other reader of this thread, and it is the one that
+  // cannot be corrected afterwards: it replaces the raw turns of a closed attendance with a summary
+  // of them, so a message still sitting in the ingestion queue is a message that is summarised out
+  // of existence — the later turn's own barrier then appends it AFTER a summary written without it.
+  // Drained here, before the lock this and the ingestion both take, and before anything is read.
+  //
+  // This is also what makes the whole design independent of which workers a deployment runs. The
+  // shared tick and the compaction tick are separately switchable, and a queue whose only drain is a
+  // worker that may be off is a queue that silently stops.
+  await drainPendingIngest(tenantId, graphThreadId, base);
 
   // A turn holding this thread will undo the rewrite below, so there is nothing to gain by reading
   // its channel now. Checked here as well as under the lock because this side is what avoids PAYING

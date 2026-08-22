@@ -40,7 +40,7 @@ import {
   isTurnInFlight,
   markTurnInFlight,
 } from "./inflight";
-import { drainPendingIngest } from "./ingest-job";
+import { drainPendingIngest } from "./ingest-drain";
 import { conversationDividerMessage, nudgeMessage } from "./markers";
 import {
   type AgentConfig,

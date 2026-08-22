@@ -133,9 +133,6 @@ export interface IngestMessageParams {
   // that sets it is the scheduler job, because it is the only one with somewhere to come back from:
   // deferring on a path that cannot retry would just drop the message by a different route.
   deferIfTurnInFlight?: boolean;
-  // This is not the first attempt, so the append may already be in the channel from a previous one.
-  // See the check below; skipped when false because it costs a channel read.
-  retrying?: boolean;
 }
 
 export async function ingestMessageIntoThread(
@@ -183,6 +180,10 @@ export async function ingestMessageIntoThread(
         params.role === "human_agent"
           ? (row?.recentAgentMessageIds ?? [])
           : (row?.recentSyncedMessageIds ?? []);
+      const prevMark =
+        (params.role === "human_agent"
+          ? row?.lastAgentMessageId
+          : row?.lastSyncedMessageId) ?? null;
       if (ingestVerdict(recent, messageId) !== "new") {
         return { outcome: "skipped" as const, closedConversationId: null };
       }
@@ -200,6 +201,18 @@ export async function ingestMessageIntoThread(
         return { outcome: "deferred" as const, closedConversationId: null };
       }
 
+      // A LATE ARRIVAL DOES NOT MOVE THE FRONTIER. Accepting an out-of-order id (./ingest-dedup.ts)
+      // means a message can land whose attendance is already over — a delayed media webhook from
+      // conversation A arriving after B has opened. Run through the normal boundary it would write a
+      // divider for A, walk `lastConversationId` BACKWARDS to A, and arm compaction for B, which is
+      // the conversation still being served: B gets summarised mid-attendance and its raw turns are
+      // replaced by a summary of a conversation that has not finished.
+      //
+      // The boundary is a statement about the newest message on the thread, so only a message that
+      // is actually the newest gets to make it. A late one is appended with its own conversation
+      // stamp — which is all the compaction cut needs to file it correctly — and nothing else.
+      const isLateArrival = prevMark !== null && messageId < prevMark;
+
       // Which attendance this message belongs to, and what that costs the thread. One decision,
       // shared with the reactive turn and the proactive nudge (./attendance-boundary.ts). Human-agent
       // messages count as a start: an agent who opens the conversation sends its first message, and
@@ -207,28 +220,37 @@ export async function ingestMessageIntoThread(
       // removed with it when the customer finally replied.
       const prevConv = row?.lastConversationId ?? null;
       const anotherInvokeIsReading = isTurnInFlight(graphThreadId);
-      const alreadyStarted = needsAttendanceStartProbe(
-        prevConv,
-        conversationId,
-        anotherInvokeIsReading,
-      )
-        ? attendanceHasStarted(
-            (
+      const alreadyStarted =
+        !isLateArrival &&
+        needsAttendanceStartProbe(
+          prevConv,
+          conversationId,
+          anotherInvokeIsReading,
+        )
+          ? attendanceHasStarted(
               (
-                await graph.getState({
-                  configurable: { thread_id: graphThreadId },
-                })
-              ).values as { messages?: BaseMessage[] } | undefined
-            )?.messages ?? [],
+                (
+                  await graph.getState({
+                    configurable: { thread_id: graphThreadId },
+                  })
+                ).values as { messages?: BaseMessage[] } | undefined
+              )?.messages ?? [],
+              conversationId,
+            )
+          : false;
+      const claim = isLateArrival
+        ? // Appended, and nothing else: no divider, no marker move, no compaction armed.
+          {
+            writeDivider: false,
+            advanceMarker: false,
+            closedConversationId: null,
+          }
+        : claimAttendanceBoundary({
+            previousConversationId: prevConv,
             conversationId,
-          )
-        : false;
-      const claim = claimAttendanceBoundary({
-        previousConversationId: prevConv,
-        conversationId,
-        anotherInvokeIsReading,
-        attendanceAlreadyStarted: alreadyStarted,
-      });
+            anotherInvokeIsReading,
+            attendanceAlreadyStarted: alreadyStarted,
+          });
 
       // A RETRY REPAIRING ITS OWN HALF-DONE ATTEMPT MUST NOT REWRITE THE MESSAGE. The append and the
       // row that records it are not atomic, so attempt 2 can find attempt 1's message already in the
@@ -239,17 +261,22 @@ export async function ingestMessageIntoThread(
       //
       // So the append is skipped outright when its id is already there. Only the row write is owed,
       // which is exactly what failed the first time.
-      const alreadyAppended =
-        params.retrying === true &&
+      // ASKED OF THE CHANNEL, EVERY TIME. The first version gated this on the scheduler's attempt
+      // count, which is a different question wearing the same clothes: "has this job run before"
+      // does not answer "is this message already in the thread". A duplicate delivery re-arming the
+      // row while it is CLAIMED flips it back to PENDING, `failJob`'s CAS then refuses, and attempts
+      // stays at zero — so a run that IS repairing a half-done append announced itself as the first
+      // one, and went on to replace the divider-bearing message with a plain one. One channel read
+      // is the price of asking the question that is actually being asked.
+      const alreadyAppended = (
         (
           (
-            (
-              await graph.getState({
-                configurable: { thread_id: graphThreadId },
-              })
-            ).values as { messages?: BaseMessage[] } | undefined
-          )?.messages ?? []
-        ).some((m) => m.id === `ingest:${messageId}`);
+            await graph.getState({
+              configurable: { thread_id: graphThreadId },
+            })
+          ).values as { messages?: BaseMessage[] } | undefined
+        )?.messages ?? []
+      ).some((m) => m.id === `ingest:${messageId}`);
 
       // Every message carries the conversation it belongs to, which is what the compaction cut reads.
       // Markers go through their factories because nothing else can make a message COUNT as one —
@@ -273,11 +300,8 @@ export async function ingestMessageIntoThread(
       // which is now a `max` rather than an assignment: a message ingested out of order must not
       // walk the mark backwards, or the next reader would read the thread as less complete than it
       // is. Both messages also advance the divider marker (turns do the same).
-      const prevMark =
-        params.role === "human_agent"
-          ? row?.lastAgentMessageId
-          : row?.lastSyncedMessageId;
-      const mark = prevMark == null ? messageId : Math.max(prevMark, messageId);
+      const mark =
+        prevMark === null ? messageId : Math.max(prevMark, messageId);
       const remembered = rememberIngested(recent, messageId);
       const advance =
         params.role === "human_agent"

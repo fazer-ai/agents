@@ -26,13 +26,29 @@ WHERE c."id" = sub."contact_id";
 
 DELETE FROM "contacts" WHERE "chatwoot_instance_id" IS NULL;
 
--- The collapsed case, unlinked rather than left mislabelled. A contact whose conversations span two
--- instances keeps the instance chosen above, and the conversations of the OTHER instance were still
--- pointing at it: they would go on reading a phone, an e-mail and an identifier belonging to the
--- other account's customer. A queued proactive nudge does not wait for a webhook to fix that, so it
--- would authorize and then message the wrong person. NULL is a state the column already has (the
--- FK is ON DELETE SET NULL) and the one the gate reads as `no_identity`, which is fail-closed; the
--- next event from that account re-mirrors the conversation onto its own contact row.
+-- The collapsed case. A contact whose conversations span two instances keeps the instance chosen
+-- above, and BOTH sides of that collision are unsafe, not just one:
+--
+--   * the conversations of the OTHER instance were still pointing at this row, so they would go on
+--     reading a phone, an e-mail and an identifier belonging to the other account's customer;
+--   * and the row's OWN fields do not necessarily come from the instance it kept. The old mirror
+--     wrote identity before the conversation's stale check, so a delayed event from either account
+--     could have been the last writer regardless of which has the newest conversation.
+--
+-- A queued proactive nudge does not wait for a webhook to correct either, so it would authorize and
+-- then message the wrong person. The other side is unlinked (NULL is a state the column already
+-- has, the FK being ON DELETE SET NULL) and the retained side has its identity cleared, which the
+-- gate reads as `no_identity`: fail-closed, and repopulated by the next event from that account.
+-- The retained side FIRST, while the cross-instance links are still there to identify it by: the
+-- unlink below is what erases the evidence of the collision.
+UPDATE "contacts" ct
+SET "name" = NULL, "email" = NULL, "phone" = NULL, "attributes" = '{}'::jsonb
+WHERE EXISTS (
+  SELECT 1 FROM "conversations" c
+  WHERE c."contact_id" = ct."id"
+    AND c."chatwoot_instance_id" IS DISTINCT FROM ct."chatwoot_instance_id"
+);
+
 UPDATE "conversations" c
 SET "contact_id" = NULL
 FROM "contacts" ct

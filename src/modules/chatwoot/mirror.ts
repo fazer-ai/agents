@@ -145,26 +145,38 @@ export async function mirrorChatwootEvent(
           : null,
         now,
       );
+      // A close of ours that the ORDERING REFUSED. The stamp is written while our mirror still says
+      // open, so between it and the arrival of our own resolve event a customer reply can reopen the
+      // conversation; our resolve then loses and is never applied, leaving a stamp about a close that
+      // no longer exists — and the next close, an operator's or a timer's, would be read as the
+      // agent's.
+      //
+      // The axis matters, and getting it wrong is what round 5 did. `decision.stale` is
+      // `olderThanStatus && olderThanAssignee`, but the reopen exception advances only the STATUS
+      // mark, so the delayed resolve routinely loses the status axis while still winning the
+      // assignee one — not stale, and skipped. What the rule is actually about is one thing: this
+      // payload said "resolved" and the decision did not apply it.
+      //
+      // Restricted to a VERSIONED CONVERSATION event, which is the whole of why this cannot be read
+      // from `appliedStatus == null` in the write below: there it also matches a frozen message
+      // snapshot, which claims no version and is meant to move no state (issue #61). And gated on
+      // the row not being held resolved, so a duplicate old close landing on a resolved conversation
+      // says nothing about the stamp.
+      const rejectedOurClose =
+        existing != null &&
+        statePayload.fromConversationEvent &&
+        statePayload.version != null &&
+        statePayload.status === "resolved" &&
+        decision.status !== "resolved" &&
+        existing.status !== "resolved";
+
       if (existing && decision.stale) {
-        // A stale event says nothing about the conversation, with ONE exception: a payload claiming
-        // "resolved" that lost the version comparison is a close the row has already moved past. If
-        // a stamp is sitting on a conversation the mirror does not hold as resolved, the close it
-        // was written for is exactly the one that just lost — a customer reply reopened the
-        // conversation and its newer event was delivered first. Leaving the stamp there would let
-        // the NEXT close, possibly an operator's or a timer's, be read as the agent's.
-        //
-        // Scoped so this remains a do-nothing branch in every other case: nothing is written unless
-        // a stamp exists, the payload is a resolve, and no resolve is currently held.
-        //
-        // Read HERE and not from the write below, where `appliedStatus == null` would look like the
-        // same signal: there it also matches a frozen MESSAGE snapshot, which claims no version and
-        // is meant to move no state (issue #61). Only a versioned conversation event that LOST is a
-        // rejected close.
-        if (
-          existing.resolvedBy != null &&
-          n.status === "resolved" &&
-          existing.status !== "resolved"
-        ) {
+        // A stale event says nothing about the conversation, with ONE exception: see
+        // `rejectedOurClose` above. Written here because this branch returns before the update.
+        // `resolvedBy != null` is a write-avoidance guard, not part of the rule: this branch is
+        // taken by every out-of-order delivery, and clearing a column that is already null would
+        // add an UPDATE to each one.
+        if (rejectedOurClose && existing.resolvedBy != null) {
           await db.conversation.update({
             where: { id: existing.id },
             data: { resolvedBy: null },
@@ -275,6 +287,8 @@ export async function mirrorChatwootEvent(
           existing.status === "resolved"
             ? { resolvedBy: null }
             : {}),
+          // The other half, for the events that are not whole-event stale: see `rejectedOurClose`.
+          ...(rejectedOurClose ? { resolvedBy: null } : {}),
           ...(assigneeKnown
             ? {
                 assigneeId: n.assigneeId ?? null,

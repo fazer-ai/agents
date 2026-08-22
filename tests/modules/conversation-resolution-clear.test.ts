@@ -229,6 +229,94 @@ describe.skipIf(!dbUp)(
       expect(row.resolvedBy).toBeNull();
     });
 
+    // Review round 6 on #199, and the axis the round-5 fix got wrong. A brand-new incoming customer
+    // message is the one reopen a message payload carries faithfully, and it advances only the
+    // STATUS mark. Our delayed resolve then loses the status axis while still winning the assignee
+    // one, so the event is NOT whole-event stale and the stale branch never sees it.
+    test("a close outranked on the status axis alone is still dropped", async () => {
+      const V0 = 1_700_015_000;
+      await mirror(convEvent(46, "conversation_created", "open", V0));
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 46,
+        },
+        origin: "agent",
+        observedStatus: "pending",
+        base: appDb,
+      });
+      // The customer's reply reopens: a message payload, which moves the status mark and nothing
+      // else, so the assignee mark stays where the create left it.
+      await mirror({
+        event: "message_created",
+        id: 4600,
+        content: "oi de novo",
+        message_type: "incoming",
+        private: false,
+        conversation: {
+          id: 46,
+          inbox_id: INBOX,
+          status: "open",
+          contact_inbox: { id: 70_000 + 46 },
+          meta: {
+            assignee_type: null,
+            assignee: null,
+            sender: { id: 1, name: "C" },
+          },
+          channel: "Channel::Email",
+          last_activity_at: V0 + 3,
+          updated_at: V0 + 3,
+        },
+      });
+      // Our resolve, serialized before that reply, delivered after it.
+      await mirror(
+        convEvent(46, "conversation_status_changed", "resolved", V0 + 2),
+      );
+      expect(await originOf(46)).toBeNull();
+    });
+
+    // A frozen MESSAGE snapshot can carry a conversation that reads "resolved" — Chatwoot serializes
+    // the payload at enqueue and a retry re-sends that copy. It claims no version and is meant to
+    // move no state (issue #61), so it is not evidence that any close was rejected. This is the case
+    // that makes `fromConversationEvent` part of the rule rather than decoration.
+    test("a frozen message snapshot claiming resolved does not drop the stamp", async () => {
+      const V0 = 1_700_016_000;
+      await mirror(convEvent(47, "conversation_created", "open", V0));
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 47,
+        },
+        origin: "agent",
+        observedStatus: "pending",
+        base: appDb,
+      });
+      await mirror({
+        event: "message_updated",
+        id: 4700,
+        content: "resposta do agente",
+        message_type: "outgoing",
+        private: false,
+        conversation: {
+          id: 47,
+          inbox_id: INBOX,
+          status: "resolved",
+          contact_inbox: { id: 70_000 + 47 },
+          meta: {
+            assignee_type: null,
+            assignee: null,
+            sender: { id: 1, name: "C" },
+          },
+          channel: "Channel::Email",
+          last_activity_at: V0 + 1,
+          updated_at: V0 + 1,
+        },
+      });
+      expect(await originOf(47)).toBe("agent");
+    });
+
     // The rejection rule must not fire on a duplicate delivery of an OLD close landing on a
     // conversation that is already resolved: that payload says nothing about the current stamp.
     test("an outranked resolve on an already-resolved conversation leaves it alone", async () => {

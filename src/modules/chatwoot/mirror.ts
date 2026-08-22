@@ -129,6 +129,7 @@ export async function mirrorChatwootEvent(
           assigneeType: true,
           assigneeName: true,
           status: true,
+          resolvedBy: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -145,6 +146,30 @@ export async function mirrorChatwootEvent(
         now,
       );
       if (existing && decision.stale) {
+        // A stale event says nothing about the conversation, with ONE exception: a payload claiming
+        // "resolved" that lost the version comparison is a close the row has already moved past. If
+        // a stamp is sitting on a conversation the mirror does not hold as resolved, the close it
+        // was written for is exactly the one that just lost — a customer reply reopened the
+        // conversation and its newer event was delivered first. Leaving the stamp there would let
+        // the NEXT close, possibly an operator's or a timer's, be read as the agent's.
+        //
+        // Scoped so this remains a do-nothing branch in every other case: nothing is written unless
+        // a stamp exists, the payload is a resolve, and no resolve is currently held.
+        //
+        // Read HERE and not from the write below, where `appliedStatus == null` would look like the
+        // same signal: there it also matches a frozen MESSAGE snapshot, which claims no version and
+        // is meant to move no state (issue #61). Only a versioned conversation event that LOST is a
+        // rejected close.
+        if (
+          existing.resolvedBy != null &&
+          n.status === "resolved" &&
+          existing.status !== "resolved"
+        ) {
+          await db.conversation.update({
+            where: { id: existing.id },
+            data: { resolvedBy: null },
+          });
+        }
         return {
           conversationRowId: existing.id,
           prevAssigneeId,

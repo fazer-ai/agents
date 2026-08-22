@@ -193,6 +193,57 @@ describe.skipIf(!dbUp)(
       expect(await originOf(42)).toBeNull();
     });
 
+    // Review round 5 on #199. The stamp is written while our mirror still says open. A customer
+    // reply reopens the conversation, that newer event is delivered FIRST, and our own resolve then
+    // loses the version comparison and is never applied. The row stays open carrying a stamp about a
+    // close that no longer exists, and the next close — an operator's, a timer's — would be read as
+    // the agent's. The rejection is the signal: a payload saying "resolved" that the mirror refused.
+    test("a stamp whose close was outranked does not survive to the next one", async () => {
+      const V0 = 1_700_013_000;
+      await mirror(convEvent(44, "conversation_created", "open", V0));
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 44,
+        },
+        origin: "agent",
+        observedStatus: "pending",
+        base: appDb,
+      });
+      // The customer replied. Their reopen (V0+3) is delivered before our resolve (V0+2).
+      await mirror(convEvent(44, "conversation_updated", "open", V0 + 3));
+      await mirror(
+        convEvent(44, "conversation_status_changed", "resolved", V0 + 2),
+      );
+      expect(await originOf(44)).toBeNull();
+      // The later close, by whoever: with the stamp gone it is correctly unattributed.
+      await mirror(
+        convEvent(44, "conversation_status_changed", "resolved", V0 + 9),
+      );
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 44 },
+        select: { status: true, resolvedBy: true },
+      });
+      expect(row.status).toBe("resolved");
+      expect(row.resolvedBy).toBeNull();
+    });
+
+    // The rejection rule must not fire on a duplicate delivery of an OLD close landing on a
+    // conversation that is already resolved: that payload says nothing about the current stamp.
+    test("an outranked resolve on an already-resolved conversation leaves it alone", async () => {
+      await closeThenStamp(45, 1_700_014_000);
+      await mirror(
+        convEvent(
+          45,
+          "conversation_status_changed",
+          "resolved",
+          1_700_014_000.5,
+        ),
+      );
+      expect(await originOf(45)).toBe("agent");
+    });
+
     // The other half of rule 2, and the one a re-read of the row could not get right: the mirror can
     // carry OUR OWN close before the turn ends (zero lag, which `mirrorOnToggle` in
     // tests/graph/runtime.test.ts treats as the worst case). What the caller saw is still "open", so

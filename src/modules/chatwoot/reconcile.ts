@@ -168,6 +168,14 @@ export async function reconcileMirrorFromLive(
           current.status === "resolved"
             ? { resolvedBy: null }
             : {}),
+          // Same second rule as the webhook mirror: a snapshot that says "resolved" and LOST the
+          // version comparison is a close the row already moved past, so a stamp not attached to
+          // any accepted close is a stamp about a close that is gone.
+          ...(!statusOrdered &&
+          live.status === "resolved" &&
+          current.status !== "resolved"
+            ? { resolvedBy: null }
+            : {}),
           ...(assigneeOrdered &&
           (live.assigneeType !== current.assigneeType ||
             live.assigneeId !== current.assigneeId ||

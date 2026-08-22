@@ -2,7 +2,6 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { armCompaction } from "@/modules/memory/compact";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -35,10 +34,6 @@ import { type IngestRole, ingestMessageIntoThread } from "./ingest";
 
 const DEFER_ON_TURN_MS = 60_000;
 
-function sysCtx(tenantId: bigint): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
 // One row per MESSAGE, and this is the field the dedupe key cannot leave out. `enqueueJob` keeps one
 // live row per (tenant, kind, dedupeKey) and a re-enqueue REPLACES the payload, so a key scoped to
 // the thread would let the second message of a burst overwrite the first — the same message loss
@@ -70,13 +65,16 @@ export async function armIngest(params: ArmIngestParams): Promise<void> {
     // Now: the fast tick drains this lane, and what waits behind a queued ingestion is the next
     // turn's context rather than a customer reading a reply.
     runAt: new Date(),
+    // The ciphertext travels in its OWN column, never in `payload`: that is a Prisma `Json` column,
+    // and an `encryptJson` blob does not go in one (CLAUDE.md, Encryption). A Json payload is the
+    // thing that gets logged or serialized whole, and it would carry a contact's own words with it.
+    payloadSecret: encryptJson(params.text),
     payload: {
       instanceId: String(params.instanceId),
       conversationId: params.conversationId,
       contactInboxId: params.contactInboxId,
       graphThreadId: params.graphThreadId,
       messageId: params.messageId,
-      text: encryptJson(params.text),
       role: params.role,
       agentId: String(params.agentId),
       compactionEnabled: params.compactionEnabled,
@@ -92,7 +90,10 @@ export async function armIngest(params: ArmIngestParams): Promise<void> {
 // delays the dead-letter without changing the outcome.
 type IngestPayload = Omit<ArmIngestParams, "tenantId" | "base">;
 
-function parsePayload(payload: Record<string, unknown>): IngestPayload | null {
+function parsePayload(
+  payload: Record<string, unknown>,
+  payloadSecret: string | null | undefined,
+): IngestPayload | null {
   const s = (k: string) =>
     typeof payload[k] === "string" ? (payload[k] as string) : null;
   const n = (k: string) =>
@@ -100,11 +101,16 @@ function parsePayload(payload: Record<string, unknown>): IngestPayload | null {
   const instanceId = s("instanceId");
   const agentId = s("agentId");
   const graphThreadId = s("graphThreadId");
-  // Decryption is NOT part of the shape check below: a body we cannot read is a real failure (a
-  // rotated key), and it throws so the job retries and then dead-letters visibly, rather than being
-  // silently dropped as an unreadable payload.
-  const encrypted = s("text");
-  const text = encrypted === null ? null : decryptJson<string>(encrypted);
+  // THROWS on a missing secret, and that is the guard for the column being optional on ClaimedJob:
+  // a query that forgot to select it produces a loud failure here rather than an empty message
+  // folded into a contact's permanent memory. Decryption is deliberately outside the shape check
+  // below for the same reason — a body we cannot read is a real failure (a rotated key), so it
+  // throws and the job retries and then dead-letters visibly, instead of being dropped as an
+  // unreadable payload.
+  if (payloadSecret == null) {
+    throw new Error("ingest: the job carries no message body");
+  }
+  const text = decryptJson<string>(payloadSecret);
   const role = s("role");
   const conversationId = n("conversationId");
   const contactInboxId = n("contactInboxId");
@@ -113,7 +119,6 @@ function parsePayload(payload: Record<string, unknown>): IngestPayload | null {
     instanceId === null ||
     agentId === null ||
     graphThreadId === null ||
-    text === null ||
     (role !== "customer" && role !== "human_agent") ||
     conversationId === null ||
     contactInboxId === null ||
@@ -142,7 +147,7 @@ export async function ingestHandler(
   // PostgresSaver.
   checkpointer?: BaseCheckpointSaver,
 ): Promise<JobResult> {
-  const p = parsePayload(job.payload);
+  const p = parsePayload(job.payload, job.payloadSecret);
   if (!p) return { outcome: "done" };
   const tenantId = job.tenantId;
 
@@ -163,13 +168,14 @@ export async function ingestHandler(
     // run. `claimSeq` is in the comparison because a re-enqueue (a duplicate delivery) re-arms the
     // row and bumps it — the later enqueue wins, and standing down here is what lets it, since that
     // re-armed row carries the same message and will run again.
-    stillWanted: async () => {
-      const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
-        db.schedulerJob.findUnique({
-          where: { id: job.id },
-          select: { status: true, claimSeq: true },
-        }),
-      );
+    //
+    // Read on the connection the ingestion transaction already holds. Opening a second one here
+    // would let a busy shared lane deadlock on its own pool (see ./ingest.ts, stillWanted).
+    stillWanted: async (db) => {
+      const row = await db.schedulerJob.findUnique({
+        where: { id: job.id },
+        select: { status: true, claimSeq: true },
+      });
       return row?.status === "CLAIMED" && row.claimSeq === job.claimSeq;
     },
     tenantId,

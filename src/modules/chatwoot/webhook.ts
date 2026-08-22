@@ -58,7 +58,7 @@ import { clearContactMemory } from "@/modules/memory/reset";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import {
   cancelPendingJob,
-  revokeJobsByKeyPrefix,
+  revokeJobsByKeyPrefixOn,
 } from "@/modules/scheduler/service";
 import {
   resolveSttConfig,
@@ -1036,11 +1036,14 @@ async function maybeConsumeCommandOrGate(params: {
               // releasing the lock and cancelling is exactly where a claimed job takes the lock.
               // Retiring the rows is half; a run already in memory re-reads its own row under this
               // lock and stands down (../../graph/ingest-job.ts, stillWanted).
-              await revokeJobsByKeyPrefix(
-                tenantId,
+              // On `db`, the connection this step already holds. A helper that opened its own
+              // transaction would wait for a connection this one cannot release until it returns,
+              // and `DB_POOL_MAX=1` is a supported setting — the reset would time out and report a
+              // partial failure of the very step that had nothing wrong with it.
+              await revokeJobsByKeyPrefixOn(
+                db,
                 "INGEST_MESSAGE",
                 `ingest:${graphThreadId}:`,
-                base,
               );
               await clearContactMemory({
                 db,

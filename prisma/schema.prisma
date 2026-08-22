@@ -1085,6 +1085,12 @@ model SchedulerJob {
   kind      SchedulerJobKind
   dedupeKey String             @map("dedupe_key")
   payload   Json               @default("{}")
+  /// The encrypted half of a payload, for the kinds that carry one (today: INGEST_MESSAGE, whose
+  /// rendered message body is a contact's own words). A plain String because `encryptJson` returns a
+  /// base64 blob and secrets do not go in a `Json` column, where accidental logging or serialization
+  /// of the whole payload would carry them along — the same rule VaultEntry.secret and
+  /// ChatwootInstance.adminToken follow. Null for every kind that carries nothing sensitive.
+  payloadSecret String?        @map("payload_secret")
   status    SchedulerJobStatus @default(PENDING)
   runAt     DateTime           @map("run_at")
   attempts  Int                @default(0)

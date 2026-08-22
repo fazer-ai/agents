@@ -308,9 +308,13 @@ describe.skipIf(!dbUp)(
     // operator was told had been cleared.
     test("queued ingestion for this thread is revoked, claimed rows included", async () => {
       const threadId = contactInboxThreadId(tenantId, instanceId, 301);
+      // DEAD included: a job that exhausted its retries before the reset will never run, but its row
+      // still holds the encrypted message body and nothing sweeps this table. Left behind, the
+      // operator is told the memory was cleared over a stored copy of the conversation.
       for (const [messageId, status] of [
         [900, "PENDING"],
         [901, "CLAIMED"],
+        [903, "DEAD"],
       ] as const) {
         await suDb.schedulerJob.create({
           data: {
@@ -352,6 +356,7 @@ describe.skipIf(!dbUp)(
       // message body this reset was asked to erase.
       expect(byKey.has(`ingest:${threadId}:900`)).toBe(false);
       expect(byKey.has(`ingest:${threadId}:901`)).toBe(false);
+      expect(byKey.has(`ingest:${threadId}:903`)).toBe(false);
       expect(byKey.get(`ingest:${otherThread}:902`)).toBe("PENDING");
     });
 

@@ -3,7 +3,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
   attendanceHasStarted,
   claimAttendanceBoundary,
@@ -161,7 +161,13 @@ export interface IngestMessageParams {
   // A callback rather than a flag because the answer lives in the scheduler, and this module knows
   // nothing about jobs (same separation as ./ingest-drain.ts). Absent ⇒ always wanted, which is
   // right for the callers that never queued.
-  stillWanted?: () => Promise<boolean>;
+  //
+  // IT IS HANDED THE CONNECTION THIS TRANSACTION IS ALREADY HOLDING, and that is not a convenience.
+  // The shared lane runs up to twenty jobs at once against a pool that can be smaller than that, so
+  // a callback that opened a transaction of its own would have every handler waiting for a
+  // connection only another handler could release — all of them timing out, retrying, and
+  // dead-lettering a customer's message on a pool that was merely busy.
+  stillWanted?: (db: ScopedDb) => Promise<boolean>;
 }
 
 export async function ingestMessageIntoThread(
@@ -241,7 +247,7 @@ export async function ingestMessageIntoThread(
       // deferral above is: /reset does its clearing while holding this lock, so a check made outside
       // it answers about a thread that may be cleared a microsecond later. "Skipped" and not
       // "deferred" — the work is not owed later, it is not wanted at all.
-      if (params.stillWanted && !(await params.stillWanted())) {
+      if (params.stillWanted && !(await params.stillWanted(db))) {
         return { outcome: "skipped" as const, closedConversationId: null };
       }
 

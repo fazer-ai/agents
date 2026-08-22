@@ -8,10 +8,11 @@ import { contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { drainPendingIngest } from "@/graph/ingest-drain";
 import { armIngest, ingestHandler } from "@/graph/ingest-job";
+import { runScopedOn } from "@/lib/tenancy";
 import {
   type ClaimedJob,
   claimDueJobs,
-  revokeJobsByKeyPrefix,
+  revokeJobsByKeyPrefixOn,
 } from "@/modules/scheduler/service";
 import { runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -176,6 +177,58 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     ]);
   });
 
+  // Round-11 review finding (P2). `encryptJson` returns a base64 blob and this repository's rule is
+  // that such a blob lives in a plain String column, never in a Prisma `Json` one: a Json payload is
+  // what gets logged or serialized whole, and it would carry a contact's own words with it. The
+  // ciphertext therefore has its own column, and what stays in the JSON must be metadata only.
+  test("the message body is stored outside the JSON payload", async () => {
+    const contactInboxId = 12510;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const SECRET = "o cartão termina em 4471";
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 989,
+      contactInboxId,
+      graphThreadId,
+      messageId: 820,
+      text: SECRET,
+      role: "customer",
+      agentId: 1n,
+      compactionEnabled: false,
+      base: appDb,
+    });
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: `ingest:${graphThreadId}:820` },
+      select: { payload: true, payloadSecret: true },
+    });
+    // Neither the words nor their ciphertext are anywhere in the JSON.
+    const asJson = JSON.stringify(row.payload);
+    expect(asJson).not.toContain(SECRET);
+    expect(asJson).not.toContain(String(row.payloadSecret));
+    expect(asJson).not.toContain("text");
+    // And the column that does hold it is still readable, so the split did not lose the body.
+    expect(decryptJson<string>(String(row.payloadSecret))).toBe(SECRET);
+  });
+
+  // The guard that pays for `ClaimedJob.payloadSecret` being optional. A query that forgot to select
+  // the column hands the handler a job with no body, and the quiet reading of that is an empty
+  // message: ingestion skips empty text, so the job would report success and the contact's words
+  // would be gone with nothing anywhere saying so. It throws instead, which the scheduler turns into
+  // a retry and then a visible dead-letter.
+  test("a job with no body throws instead of ingesting an empty message", async () => {
+    const saver = new MemorySaver();
+    const job = await armAndClaim(12511, 990, 830, "some words");
+    expect(
+      ingestHandler({ ...job, payloadSecret: null }, appDb, saver),
+    ).rejects.toThrow(/no message body/);
+  });
+
   // Round-9 review finding (P1). /reset clears this thread's summaries, its AgentThread row and its
   // checkpoint, all under the `ingest:<thread>` lock — and it cancels the pending COMPACTION job,
   // because that is the only queued writer of this memory it knew about. Continuous ingestion is one
@@ -201,11 +254,15 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     );
 
     // What /reset does to queued ingestion, from inside its own critical section.
-    await revokeJobsByKeyPrefix(
-      tenantId,
-      "INGEST_MESSAGE",
-      `ingest:${graphThreadId}:`,
+    await runScopedOn(
       appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) =>
+        revokeJobsByKeyPrefixOn(
+          db,
+          "INGEST_MESSAGE",
+          `ingest:${graphThreadId}:`,
+        ),
     );
 
     // The handler runs anyway — it was already claimed — and must come back having written nothing.
@@ -317,9 +374,11 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     await arm(401, "segunda da rajada");
 
     const claimed = await claimDueJobs(50, appDb, new Date(), tenantId);
+    // Read from the dedicated column, not from the JSON: the ciphertext of a contact's own words
+    // does not live in `payload` (CLAUDE.md, Encryption).
     const texts = claimed
       .filter((j) => j.kind === "INGEST_MESSAGE")
-      .map((j) => decryptJson<string>(String(j.payload.text)));
+      .map((j) => decryptJson<string>(String(j.payloadSecret)));
     expect(texts.sort()).toEqual(["primeira da rajada", "segunda da rajada"]);
     for (const job of claimed) await runClaimed(job, appDb);
   });

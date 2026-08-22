@@ -1,6 +1,11 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
-import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  asSuperAdminOn,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import {
   JOB_DELETE_ON_DONE,
   kindsInLane,
@@ -60,6 +65,16 @@ export interface ClaimedJob {
   tenantId: bigint;
   kind: SchedulerJobKind;
   payload: Record<string, unknown>;
+  // The encrypted half, for the kinds that carry one. Kept OUT of `payload` because that is a Prisma
+  // `Json` column, and this repository's rule is that an `encryptJson` blob lives in a plain String:
+  // a Json payload is what gets logged or serialized whole, and it would take the ciphertext of a
+  // contact's own message with it (CLAUDE.md, Encryption).
+  //
+  // OPTIONAL, so the compiler does not chase it through a dozen fixtures for kinds that carry
+  // nothing. What guards a query that forgets to select it is the one handler that needs it: a
+  // missing secret there is a hard failure, not an empty message quietly folded into a memory
+  // (../../graph/ingest-job.ts).
+  payloadSecret?: string | null;
   attempts: number;
   // The token this claim holds. Hand it back to completeJob/rescheduleJob/failJob: those three CAS
   // on it, so a run that was superseded while it worked writes nothing (issue #164).
@@ -68,6 +83,8 @@ export interface ClaimedJob {
 
 export interface EnqueueParams {
   tenantId: bigint;
+  // Written to the dedicated String column, never into `payload`. See ClaimedJob.payloadSecret.
+  payloadSecret?: string | null;
   kind: SchedulerJobKind;
   dedupeKey: string;
   runAt: Date;
@@ -99,6 +116,7 @@ export async function enqueueJob(params: EnqueueParams): Promise<bigint> {
         dedupeKey: params.dedupeKey,
         runAt: params.runAt,
         payload: (params.payload ?? {}) as Prisma.InputJsonValue,
+        payloadSecret: params.payloadSecret ?? null,
         status: "PENDING",
       },
       update: {
@@ -110,6 +128,11 @@ export async function enqueueJob(params: EnqueueParams): Promise<bigint> {
         // a prior run had advanced to a later step. A payload-less re-enqueue preserves the existing.
         ...(params.payload !== undefined
           ? { payload: params.payload as Prisma.InputJsonValue }
+          : {}),
+        // Re-armed together with the payload it belongs to: the two halves describe one message, and
+        // a re-enqueue that refreshed only the JSON would leave a body from the previous arming.
+        ...(params.payload !== undefined
+          ? { payloadSecret: params.payloadSecret ?? null }
           : {}),
         ...(params.resetAttempts ? { attempts: 0 } : {}),
       },
@@ -170,16 +193,26 @@ export async function cancelPendingJobsByPrefix(
 // other half is the handler re-asking, under the lock, whether its own row is still CLAIMED by it
 // (../../graph/ingest-job.ts) — the same claimSeq CAS that already guards completion, moved in front
 // of the write it cannot take back.
-export async function revokeJobsByKeyPrefix(
-  tenantId: bigint,
+// Takes the caller's ALREADY-SCOPED connection rather than a client to open a transaction on. The one
+// caller is /reset, which runs this from inside the advisory lock it holds on that very connection —
+// starting a second transaction there is a deadlock the moment the pool is down to its last one, and
+// `DB_POOL_MAX=1` is a supported setting. Nothing here needs a transaction of its own anyway: the
+// caller's is the one whose atomicity matters.
+export async function revokeJobsByKeyPrefixOn(
+  db: ScopedDb,
   kind: SchedulerJobKind,
   prefix: string,
-  base: PrismaClient = basePrisma,
 ): Promise<number> {
-  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+  {
     const where = {
       kind,
-      status: { in: ["PENDING" as const, "CLAIMED" as const] },
+      // DEAD included, and only for a kind whose rows are deleted. A job that exhausted its retries
+      // before the reset is not going to run, but its row still holds the encrypted message body,
+      // and nothing sweeps this table — so a reset that left it would confirm "memory cleared" over
+      // a stored copy of the conversation.
+      status: {
+        in: ["PENDING" as const, "CLAIMED" as const, "DEAD" as const],
+      },
       dedupeKey: { startsWith: prefix },
     };
     // DELETED where the kind says a finished row leaves nothing behind. Marking it DONE is how the
@@ -188,11 +221,18 @@ export async function revokeJobsByKeyPrefix(
     // spent, because by then the row is no longer CLAIMED by anyone and the CAS matches nothing. It
     // would sit there forever holding the encrypted message body the reset was asked to erase, on a
     // table nothing sweeps. Reading the same map is what keeps the two answers from drifting.
-    const res = JOB_DELETE_ON_DONE[kind]
-      ? await db.schedulerJob.deleteMany({ where })
-      : await db.schedulerJob.updateMany({ where, data: { status: "DONE" } });
-    return res.count;
-  });
+    if (JOB_DELETE_ON_DONE[kind]) {
+      return (await db.schedulerJob.deleteMany({ where })).count;
+    }
+    // Retired, not deleted, for a reusable key — and a DEAD row is left alone there: marking it DONE
+    // would erase the dead-letter the operator may still need to see.
+    return (
+      await db.schedulerJob.updateMany({
+        where: { ...where, status: { in: ["PENDING", "CLAIMED"] } },
+        data: { status: "DONE" },
+      })
+    ).count;
+  }
 }
 
 // Claims up to `limit` due jobs across ALL tenants matching `kindFilter` (FOR UPDATE SKIP LOCKED so
@@ -235,6 +275,7 @@ async function claimWhere(
         tenantId: bigint;
         kind: SchedulerJobKind;
         payload: unknown;
+        payloadSecret: string | null;
         attempts: number;
         claimSeq: number;
       }>
@@ -249,12 +290,14 @@ async function claimWhere(
         FOR UPDATE SKIP LOCKED
         LIMIT ${lim}
       )
-      RETURNING id, tenant_id AS "tenantId", kind, payload, attempts, claim_seq AS "claimSeq"`);
+      RETURNING id, tenant_id AS "tenantId", kind, payload,
+                payload_secret AS "payloadSecret", attempts, claim_seq AS "claimSeq"`);
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenantId,
       kind: r.kind,
       payload: (r.payload ?? {}) as Record<string, unknown>,
+      payloadSecret: r.payloadSecret,
       attempts: r.attempts,
       claimSeq: r.claimSeq,
     }));
@@ -496,6 +539,7 @@ export async function reapStaleJobs(
         tenant_id: bigint;
         kind: string;
         payload: unknown;
+        payload_secret: string | null;
         attempts: number;
         claim_seq: number;
         status: "PENDING" | "DEAD";
@@ -507,12 +551,13 @@ export async function reapStaleJobs(
           claimed_at = NULL,
           updated_at = now()
       WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
-      RETURNING id, tenant_id, kind, payload, attempts, claim_seq, status`);
+      RETURNING id, tenant_id, kind, payload, payload_secret, attempts, claim_seq, status`);
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenant_id,
       kind: r.kind as ClaimedJob["kind"],
       payload: (r.payload ?? {}) as ClaimedJob["payload"],
+      payloadSecret: r.payload_secret,
       attempts: r.attempts,
       claimSeq: r.claim_seq,
       status: r.status,

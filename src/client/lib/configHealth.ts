@@ -35,6 +35,7 @@ export type ConfigIssueKey =
   // Nor a missing credential: an enabled gate that neither answers the customer nor opens the
   // conversation, so a refusal reaches nobody.
   | "contactAuthSilentRefusal"
+  | "contactAuthNoUrl"
   | "knowledge"
   | "embedding"
   | "redirect"
@@ -196,6 +197,9 @@ export interface ConfigHealthInput {
   // gate fails closed and the agent goes silent for every contact.
   contactAuthEnabled?: boolean;
   contactAuthCredentialRef?: string;
+  // The endpoint itself. `readContactAuthConfig` normalizes a missing or malformed URL to null and
+  // leaves `enabled` alone, so the pair is storable — and the gate then refuses every message.
+  contactAuthUrl?: string;
   // The two sides of the unlock-vs-handoff contradiction, plus the copy: an enabled gate that
   // neither speaks nor hands over leaves a refused customer with nothing at all.
   contactAuthIncludeMessageText?: boolean;
@@ -521,6 +525,18 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   ) {
     issues.push({
       key: "contactAuthUnlockHandoff",
+      tab: "behavior",
+      sectionId: "contactAuth",
+    });
+  }
+  // An enabled gate with no endpoint to ask. The URL reader normalizes anything it cannot parse to
+  // null and keeps `enabled` as it found it, so REST, MCP and an import can store the pair; the
+  // runtime then fails closed on EVERY message with `not_configured`. That is the loudest failure
+  // this feature has (the agent answers nobody) and the quietest to diagnose, because nothing about
+  // a blank field says the gate in front of it is armed.
+  if (input.contactAuthEnabled && !(input.contactAuthUrl ?? "").trim()) {
+    issues.push({
+      key: "contactAuthNoUrl",
       tab: "behavior",
       sectionId: "contactAuth",
     });

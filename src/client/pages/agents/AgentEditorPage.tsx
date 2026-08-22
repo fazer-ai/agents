@@ -1511,6 +1511,7 @@ function AgentEditor() {
     visionEnabled: vision.enabled,
     visionCredentialRef: vision.credentialRef,
     contactAuthEnabled: contactAuth.enabled,
+    contactAuthUrl: contactAuth.url,
     contactAuthCredentialRef: contactAuth.credentialRef,
     contactAuthIncludeMessageText: contactAuth.includeMessageText,
     contactAuthHandoffEnabled: contactAuth.handoffEnabled,

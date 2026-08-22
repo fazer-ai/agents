@@ -423,6 +423,52 @@ describe("checkContactAuthorization", () => {
     expect(cancelled).toBe(true);
   });
 
+  // A denying status whose body never arrives. The timer stays armed while the body is read, so the
+  // abort lands on the READ — the same way a real fetch errors its body stream when its signal
+  // fires. Before this, that was indistinguishable from the request timing out: a permanent 403
+  // came back as `error/timeout`, so the customer got no deny message, nobody got the handoff, and
+  // the next message asked all over again.
+  const stallingBody = (signal: AbortSignal | null | undefined) =>
+    new ReadableStream<Uint8Array>({
+      // Never enqueues and never closes; errors out when the deadline fires, which is what a real
+      // fetch body does under an aborted signal.
+      start(controller) {
+        signal?.addEventListener(
+          "abort",
+          () => controller.error(new DOMException("aborted", "AbortError")),
+          { once: true },
+        );
+      },
+    });
+
+  test("a 403 whose body stalls is still a denial, not a timeout", async () => {
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Response(stallingBody(init?.signal), {
+        status: 403,
+      })) as unknown as typeof fetch;
+    expect(
+      await checkContactAuthorization(cfg({ timeoutMs: 25 }), IDENTITY, null, {
+        fetchImpl,
+        assertSafe: okUrl,
+      }),
+    ).toEqual({ outcome: "denied", status: 403 });
+  });
+
+  // The other half of the same rule: only a 2xx has to CARRY its verdict, so a 2xx that stalls has
+  // said nothing and stays the error it is.
+  test("a 200 whose body stalls is still a timeout", async () => {
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Response(stallingBody(init?.signal), {
+        status: 200,
+      })) as unknown as typeof fetch;
+    expect(
+      await checkContactAuthorization(cfg({ timeoutMs: 25 }), IDENTITY, null, {
+        fetchImpl,
+        assertSafe: okUrl,
+      }),
+    ).toEqual({ outcome: "error", reason: "timeout" });
+  });
+
   test("no url configured is an error, not a pass", async () => {
     const fetchImpl = (async (_input: RequestInfo | URL) =>
       new Response("{}")) as unknown as typeof fetch;

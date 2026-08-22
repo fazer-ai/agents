@@ -106,6 +106,12 @@ function parseJsonObject(body: string): Record<string, unknown> | null {
 }
 
 // The decision table. `body` is null when the answer was too large to read.
+// The statuses that deny on their own. An endpoint may answer REST-style with no body at all, so
+// what they say is settled before the body is read — and stays settled when it cannot be.
+function deniesOnStatus(status: number): boolean {
+  return status === 401 || status === 403 || status === 404;
+}
+
 export function classifyAuthorizationResponse(
   status: number,
   body: string | null,
@@ -116,7 +122,7 @@ export function classifyAuthorizationResponse(
   // something else. Checked after the body used to mean a 403 behind a proxy with a large error
   // page landed as an ERROR — read as transient, so the customer got no deny message, nobody got
   // the handoff, and every following message asked again about a refusal that was permanent.
-  if (status === 401 || status === 403 || status === 404) {
+  if (deniesOnStatus(status)) {
     const endpointReason = reasonSlug(json?.reason);
     return {
       outcome: "denied",
@@ -285,7 +291,20 @@ export async function checkContactAuthorization(
     });
     // NOTE: The timer stays armed while the body is read: a server that answers the status line and
     // then stalls would otherwise hold the gate past its timeout.
-    const body = await readBodyCapped(res, MAX_RESPONSE_BYTES);
+    let body: string | null;
+    try {
+      body = await readBodyCapped(res, MAX_RESPONSE_BYTES);
+    } catch (err) {
+      // A body that stalls or breaks AFTER the status line. On a denying status that changes
+      // nothing: those three say everything they need to in the status line, and letting a stalled
+      // body turn a permanent refusal into a transient error is the same defect the classifier
+      // fixed one layer up (the customer gets no deny message, nobody gets the handoff, and every
+      // following message asks again). Any other status has no verdict without its body, so it
+      // stays the error the outer catch names — timeout or network, whichever it was.
+      if (!deniesOnStatus(res.status)) throw err;
+      await res.body?.cancel().catch(() => undefined);
+      body = null;
+    }
     return classifyAuthorizationResponse(res.status, body);
   } catch (err) {
     const aborted =

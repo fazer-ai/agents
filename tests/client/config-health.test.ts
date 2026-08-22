@@ -1324,6 +1324,7 @@ describe("issueHasAction", () => {
     const unlocking = {
       ...base,
       contactAuthEnabled: true,
+      contactAuthUrl: "https://ops.example.com/authorize",
       contactAuthIncludeMessageText: true,
       contactAuthHandoffEnabled: true,
     };
@@ -1359,7 +1360,11 @@ describe("issueHasAction", () => {
   // The other end: refuse, say nothing, hand nobody the conversation. The customer's message goes
   // unanswered with no sign anything happened, and only a private note records it.
   describe("a refusal that reaches nobody", () => {
-    const gated = { ...base, contactAuthEnabled: true };
+    const gated = {
+      ...base,
+      contactAuthEnabled: true,
+      contactAuthUrl: "https://ops.example.com/authorize",
+    };
 
     test("flags a gate with no deny message and no handoff", () => {
       expect(
@@ -1397,6 +1402,41 @@ describe("issueHasAction", () => {
           contactAuthDenyMessage: "   ",
         }).map((i) => i.key),
       ).toEqual(["contactAuthSilentRefusal"]);
+    });
+  });
+
+  // An enabled gate with no usable endpoint. `readContactAuthConfig` normalizes a missing or
+  // malformed URL to null and keeps `enabled` as it found it, so REST and MCP can store the pair —
+  // and the runtime then fails closed on EVERY message with `not_configured`. Silent by
+  // construction: the agent stops answering and nothing on the page says why.
+  describe("an enabled gate with no endpoint", () => {
+    test("flags a gate with no URL, deep-linking to behavior/contactAuth", () => {
+      expect(
+        computeConfigIssues({
+          ...base,
+          contactAuthEnabled: true,
+          contactAuthDenyMessage: "Atendemos apenas clientes cadastrados.",
+        }),
+      ).toEqual([
+        { key: "contactAuthNoUrl", tab: "behavior", sectionId: "contactAuth" },
+      ]);
+    });
+
+    test("whitespace is not a URL", () => {
+      expect(
+        computeConfigIssues({
+          ...base,
+          contactAuthEnabled: true,
+          contactAuthUrl: "   ",
+          contactAuthDenyMessage: "Atendemos apenas clientes cadastrados.",
+        }).map((i) => i.key),
+      ).toEqual(["contactAuthNoUrl"]);
+    });
+
+    test("no flag when the gate is off — an unused URL field is not a problem", () => {
+      expect(
+        computeConfigIssues({ ...base, contactAuthEnabled: false }),
+      ).toEqual([]);
     });
   });
 

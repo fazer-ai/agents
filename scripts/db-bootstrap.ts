@@ -167,8 +167,7 @@ async function provisionCheckpointerSchema(
     }
   } else {
     // NOTE: reconciling an existing schema is the rotated-runtime-role case, and it has three
-    // depths,
-    // only the first of which is obvious:
+    // depths, only the first of which is obvious:
     //
     //   the schema      -- USAGE/CREATE, or nothing in it can be reached at all;
     //   the tables      -- granting on a schema does not reach what is inside it, and setup()
@@ -179,23 +178,22 @@ async function provisionCheckpointerSchema(
     //                      (@langchain/langgraph-checkpoint-postgres 1.0.4), and Postgres allows
     //                      that only to the table's owner.
     //
-    // NOTE: only the TABLES are re-owned. The schema itself stays with whoever holds it: setup()
-    // needs
-    // USAGE and CREATE on it, which a grant covers, and nothing it runs alters the schema — so
-    // taking it over buys nothing, and having it inside the same block would make a refusal there
-    // abort the table transfers that do matter. Identifiers are quoted by Postgres in the DO
-    // block rather than spliced here.
+    // NOTE: only the TABLES are re-owned. The schema itself stays with whoever holds it:
+    // setup() needs USAGE and CREATE on it, which a grant covers, and nothing it runs alters the
+    // schema — so taking it over buys nothing, and having it inside the same block would make a
+    // refusal there abort the table transfers that do matter. Identifiers are quoted by Postgres
+    // in the DO block rather than spliced here.
     //
-    // NOTE: that independence is also why the schema's owner already matching is NOT a shortcut
-    // out of
-    // here: a rotation A -> B leaves the schema with A and its tables with B, so a rollback to A
-    // finds its own name on the schema and no access to the tables. This runs whoever owns it, and
-    // is idempotent — on a healthy install it is two no-op grants and a loop over nothing.
+    // NOTE: that independence is also why the schema's owner already matching is NOT a
+    // shortcut out of here: a rotation A -> B leaves the schema with A and its tables with B, so a
+    // rollback to A finds its own name on the schema and no access to the tables. This runs
+    // whoever owns it, and is idempotent — on a healthy install it is two no-op grants and a loop
+    // over nothing.
+    //
     // NOTE: the grants go FIRST, and the order is load-bearing rather than stylistic: Postgres
-    // requires a
-    // table's prospective owner to hold CREATE on its schema, so on a fresh rotation -- where the
-    // new role has nothing on the old owner's schema yet -- the transfer below would fail, roll
-    // back its whole loop, and leave every table where it was.
+    // requires a table's prospective owner to hold CREATE on its schema, so on a fresh rotation,
+    // where the new role has nothing on the old owner's schema yet, the transfer below would fail,
+    // roll back its whole loop, and leave every table where it was.
     let adoptError: unknown;
     try {
       await client.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`);
@@ -323,11 +321,10 @@ async function provisionRuntimeRole(
     }
   } else if (plan === "syncPassword") {
     // NOTE: best-effort. What this script owes is that the role EXISTS and is unprivileged, and
-    // both
-    // already hold here. Rewriting the password needs ADMIN over the role, which an
-    // administrative role that did not create it does not have — and the authority on whether
-    // the password is right is the runtime's own connection seconds later, whose authentication
-    // error says so far more clearly than a failed boot does.
+    // both already hold here. Rewriting the password needs ADMIN over the role, which an
+    // administrative role that did not create it does not have — and the authority on whether the
+    // password is right is the runtime's own connection seconds later, whose authentication error
+    // says so far more clearly than a failed boot does.
     try {
       await runRoleDdl(client, plan);
     } catch (err) {
@@ -380,10 +377,9 @@ async function main() {
       password,
     ]);
 
-    // NOTE: one round trip for everything the branching needs. The last two columns decide nothing
-    // on
-    // their own; they are what turns a bare permission error into a message that names the mode
-    // the script was running in.
+    // NOTE: one round trip for everything the branching needs. The last two columns decide
+    // nothing on their own; they are what turns a bare permission error into a message that names
+    // the mode the script was running in.
     const state = await client.query<{
       app_exists: boolean;
       app_superuser: boolean;

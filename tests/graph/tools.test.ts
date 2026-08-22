@@ -4,6 +4,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import {
   buildNativeTools,
   type HandoffTurnState,
+  handoffAnsweredTheTurn,
   NATIVE_TOOL_NAMES,
 } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -940,4 +941,41 @@ describe("swallowed side effects reach onSideEffectError (issue #46)", () => {
       phase: "outbound_emit",
     });
   });
+});
+
+// Two facts, two fields, and the predicate needs both. They happen to be written in the same block
+// today, which is exactly why the table exists: the block that writes them was MOVED here by review
+// (the line used to be recorded on the way into the tool, so a first attempt that threw left its
+// promise behind for the retry to deliver in place of the recovery text the model wrote instead).
+// A caller that reads only "there is a line" would deliver that promise again.
+describe("handoffAnsweredTheTurn", () => {
+  const rows: [string, HandoffTurnState | undefined, boolean][] = [
+    ["no handoff state at all", undefined, false],
+    [
+      "a transfer that promised nothing",
+      { customerMessage: null, completed: true } as HandoffTurnState,
+      false,
+    ],
+    [
+      "a promise whose transfer never completed",
+      {
+        customerMessage: "já te encaminho",
+        completed: false,
+      } as HandoffTurnState,
+      false,
+    ],
+    [
+      "a completed transfer that promised a line",
+      {
+        customerMessage: "já te encaminho",
+        completed: true,
+      } as HandoffTurnState,
+      true,
+    ],
+  ];
+  for (const [name, state, expected] of rows) {
+    test(`${name} → ${expected}`, () => {
+      expect(handoffAnsweredTheTurn(state)).toBe(expected);
+    });
+  }
 });

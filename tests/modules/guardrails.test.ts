@@ -1058,6 +1058,48 @@ describe("buildGuardrailGate", () => {
     expect(f.calls()).toBe(1);
   });
 
+  // What the trail and the operator note report is what the guardrail DID, not what it was
+  // configured to do. `generated` with nothing to send in hand falls back to the template, and an
+  // operator reading "generated" on the line where the template went out is reading the config
+  // back at themselves.
+  test("a 'generated' action with no composed reply reports itself as the template", async () => {
+    const notes: string[] = [];
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg({
+        output: {
+          ...GUARDRAILS_DEFAULTS.output,
+          enabled: true,
+          action: "generated",
+          templateMessage: "TEMPLATE-FALLBACK",
+        },
+      }),
+      apiKey: "k",
+      client: {
+        sendPrivateNote: async (_c: number, t: string) => {
+          notes.push(t);
+        },
+      } as never,
+      conversationId: 1,
+      flow,
+      makeModel: (() =>
+        guardrailModel(async () => ({
+          content: JSON.stringify({
+            violated: true,
+            categories: ["toxicity"],
+            rationale: "rude",
+            suggestedReply: null,
+          }),
+        }))) as never,
+    });
+    expect(await gate("output", "olá")).toEqual({
+      kind: "replaced",
+      reply: "TEMPLATE-FALLBACK",
+    });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("— template.");
+    expect(notes[0]).not.toContain("generated");
+  });
+
   test("a construction that failed is not retried on the next call", async () => {
     const f = countingFactory(() => {
       throw new Error("nope");

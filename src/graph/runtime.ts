@@ -518,7 +518,7 @@ export async function runLoadedTurn(
 
   const deliverHandoffPromise = async (): Promise<void> => {
     if (!handoffAnsweredTheTurn(handoffState)) return;
-    const line = handoffState.customerMessage as string;
+    const line = handoffState.customerMessage;
     try {
       const guarded = await runGuardrail("output", line);
       // A trip here drops the turn's queued images, which is the rule the main gate below already

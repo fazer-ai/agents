@@ -592,7 +592,7 @@ export async function runAgentNudge(
     "messaged" | "noted-window" | "silent" | null
   > => {
     if (!handoffAnsweredTheTurn(handoffState)) return null;
-    const line = handoffState.customerMessage as string;
+    const line = handoffState.customerMessage;
     // Outside the window a free-form send is the one the provider refuses, and an approved template
     // says nothing about a transfer, so neither reaches the customer. The operator gets the sentence
     // instead, explained, like any other proactive text that could not be sent.
@@ -957,7 +957,15 @@ export async function runAgentNudge(
     // runs the post-actions too, so it closes a human-owned thread exactly as hard as a delivered
     // one would.
     if (guardrailRan(decision)) {
-      const owned = await botStillOwnsIt().catch(() => "unavailable" as const);
+      const owned = await botStillOwnsIt().catch((err) => {
+        // Swallowed on purpose (a throw here re-runs the turn and rewrites whatever the judge just
+        // wrote), but never silently: this is the mirror's own database read failing.
+        logger.warn(
+          { err, conversationId: String(conversationId) },
+          "agentNudge: ownership recheck after moderation could not read",
+        );
+        return "unavailable" as const;
+      });
       // Whether abandoning the turn is still free is whatever the judge just did, so the judge is
       // asked rather than assumed: a clean verdict leaves no trace and the step is worth running
       // again, while a trip or a failed screening has already written the operator note or a warn
@@ -965,7 +973,17 @@ export async function runAgentNudge(
       // verdict. Degrading costs the customer a follow-up nobody asked for; retrying costs the
       // operator up to NUDGE_RETRY_LIMIT copies of one alert. Neither is free, so neither is the
       // default. (The read itself failing is answered the same way, for the same reason.)
-      if (owned === "unavailable" && !guardrailLeftAMark(decision)) {
+      //
+      // Only the caller that opted into live gating is told, because it is the only one that can
+      // act: `live-unavailable` is documented as an outcome OF that gate, and the other three
+      // callers discard the return value entirely, so telling them loses the follow-up with no
+      // retry and no record. For them the recheck simply cannot say "still ours", and the note
+      // branch below is already the answer to that.
+      if (
+        owned === "unavailable" &&
+        !guardrailLeftAMark(decision) &&
+        params.requireLiveBotOwnership
+      ) {
         return "live-unavailable";
       }
       // A KNOWN takeover ends the episode either way: that outcome does not retry, so it costs no

@@ -102,9 +102,14 @@ export interface HandoffTurnState {
 // conversation then stays `pending`, i.e. still the bot's and queued to nobody, and the model gets
 // the tool error plus one more step. That recovery reply is what the customer reads instead, and
 // the undelivered promise is discarded with the turn that failed to keep it.
+// A TYPE guard and not a boolean, so the line it proves is there is typed as being there. Both
+// callers read `customerMessage` immediately after asking, and both used to cast it to `string` on
+// their own word: a cast is what a compiler accepts INSTEAD of a proof, so the guard could have been
+// deleted at either call site and nothing would have complained until a turn with no transfer
+// handed a null to the guardrail.
 export function handoffAnsweredTheTurn(
   state: HandoffTurnState | undefined,
-): boolean {
+): state is HandoffTurnState & { customerMessage: string } {
   return !!state && !!state.customerMessage && state.completed;
 }
 

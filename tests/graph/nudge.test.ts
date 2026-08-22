@@ -1501,6 +1501,86 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     );
   });
 
+  // The same broken read with a CLEAN verdict, which is where the mark stops covering for the
+  // caller. `live-unavailable` is documented as an outcome of the live-state gate: it means "run me
+  // again", and only `followUpHandler` — the caller that opted into that gate — reads it. The
+  // appointment reminder, the channel-redirect follow-up and the inbound webhook all discard the
+  // return value, so handing them that answer loses the message with no retry and no record. This
+  // caller never asked for live certainty, so it is told what the note branch already knows.
+  test("a mirror read that throws on a clean verdict does not ask an unlistening caller to retry", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9978, null);
+        const s = stub();
+        let ownershipReads = 0;
+        const brittle = appDb.$extends({
+          query: {
+            conversation: {
+              findUnique({ args, query }) {
+                const sel = args.select as Record<string, unknown> | undefined;
+                const isOwnershipRead =
+                  !!sel &&
+                  Object.keys(sel).length === 3 &&
+                  sel.assigneeType === true &&
+                  sel.assigneeId === true &&
+                  sel.status === true;
+                if (isOwnershipRead && ++ownershipReads === 2) {
+                  throw new Error("db went away");
+                }
+                return query(args);
+              },
+            },
+          },
+        }) as unknown as typeof appDb;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9978`,
+          nudge: { source: "event", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: brittle,
+          deps: {
+            makeModel: guardBranch(
+              JSON.stringify({
+                violated: false,
+                categories: [],
+                rationale: "fine",
+                suggestedReply: null,
+              }),
+              new FakeListChatModel({ responses: ["Ainda por aí?"] }),
+            ) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        // Not "live-unavailable": this caller would drop it. The operator gets the text instead,
+        // which is what "we cannot say the bot still owns this" has always meant here.
+        expect(outcome).toBe("noted");
+        expect(s.messages).toEqual([]);
+        expect(s.notes).toEqual([[9978, "Ainda por aí?"]]);
+        expect(s.resolved).toEqual([]);
+        expect(ownershipReads).toBe(2);
+      },
+    );
+  });
+
   // The recheck is the price of the judge's model call, so an agent with no output moderation — the
   // default — must not pay it. Before this, every free-form inactivity follow-up made a third live
   // GET for a window of zero length, and could be rescheduled on nothing but that request failing.
@@ -1748,6 +1828,88 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         expect(
           s.notes.filter(([, t]) => t.includes("Guardrail (output)")).length,
         ).toBe(1);
+      },
+    );
+  });
+
+  // The half of the recheck the probe CAN answer, on the caller that asked for certainty. A known
+  // takeover ends the episode instead of degrading to a note: the live-gated caller is the one that
+  // wants the step abandoned rather than delivered somewhere else, and the answer costs no
+  // repetition because "stale" does not retry.
+  test("a takeover the probe confirms after moderation ends the step as stale", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9977, null);
+        const s = stub();
+        const inner = await s.makeClient();
+        // Keyed on the judge having run, so this is the probe AFTER moderation and not the one
+        // before generation, which still has to answer "ours" for the turn to reach the judge.
+        let judged = false;
+        const client = {
+          ...inner,
+          getConversation: async (c: number) =>
+            judged
+              ? {
+                  id: c,
+                  status: "open",
+                  meta: { assignee: { id: 77, type: "user" } },
+                }
+              : { id: c, status: "pending", meta: {} },
+        } as unknown as ChatwootClient;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9977`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          requireLiveBotOwnership: true,
+          base: appDb,
+          deps: {
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    judged = true;
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "fine",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({
+                    responses: ["Ainda por aí?"],
+                  })) as never,
+            makeClient: async () => client,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(judged).toBe(true);
+        // "stale", not "noted": the caller that gates on live ownership asked to be told the
+        // episode is over, and a private note on a conversation a human is answering is not that.
+        expect(outcome).toBe("stale");
+        expect(s.messages).toEqual([]);
+        expect(s.notes).toEqual([]);
+        expect(s.labelSets).toEqual([]);
+        expect(s.resolved).toEqual([]);
       },
     );
   });

@@ -2540,6 +2540,68 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // #160: the handoff's closing line is customer-facing text the MODEL wrote, so the output policy
     // owns it exactly like any other reply. Today the tool posts it from inside the tool call, before
     // the turn has a reply to moderate, so the most rule-bound message is the only unscreened one.
+    // The promise guard on the delivery unit, which only shows itself when a judge is configured:
+    // `customerMessage` starts as null, so on a turn with no transfer the screening would be asked
+    // about NOTHING — and a `violated` verdict on nothing composes a replacement, which the unit
+    // then delivers. The customer reads an unprompted template on a turn that promised them
+    // nothing, and the operator gets a second note for a line that never existed.
+    test("a turn with no transfer never asks a judge about a promise it does not have", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-OUT",
+        },
+      });
+      await seedConv(966);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      let judged = 0;
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 966, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+            cfg.model === GUARD_MODEL
+              ? guardrailModel(async () => {
+                  judged += 1;
+                  return {
+                    content: JSON.stringify({
+                      violated: true,
+                      categories: ["toxicity"],
+                      rationale: "rude",
+                      suggestedReply: null,
+                    }),
+                  };
+                })
+              : new FakeListChatModel({ responses: ["Bom dia!"] }),
+          makeClient: guardStub(sent, notes),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      // Once, for the reply. The second call would be the phantom one.
+      expect(judged).toBe(1);
+      expect(sent).toEqual([[966, "TEMPLATE-OUT"]]);
+      expect(
+        notes.filter(([, t]) => t.includes("Guardrail (output)")).length,
+      ).toBe(1);
+    });
+
     test("a handoff's closing line is screened by the output guardrail", async () => {
       await setGuardrails({
         enabled: true,

@@ -283,14 +283,20 @@ async function provisionCheckpointerSchema(
     // the pg driver hands a scalar-subquery array back as its Postgres literal, not as a JS array.
     const foreignOwners = usable?.foreign_owners;
     if (foreignOwners) {
-      // NOTE: a warning and not a refusal, because this install works: DML is all the checkpointer
-      // needs until a package upgrade brings a migration that alters those tables, and refusing
-      // now would crash-loop a server that boots fine today.
+      // NOTE: a warning and not a refusal, and the wording is careful because the risk is not
+      // only in the future. setup() applies the checkpointer's migrations from the last version
+      // recorded in checkpoint_migrations, and the current last one is an ALTER TABLE — so a
+      // migration can be pending RIGHT NOW (a setup() interrupted between its DDL and the INSERT
+      // that records it), not just after a package upgrade. What this script cannot do is tell
+      // the two apart: that would mean reading a version number against a migration list owned by
+      // a third-party package, which is exactly the kind of coupling that rots silently. Refusing
+      // instead would crash-loop every install of this shape that boots fine today, which is the
+      // failure this whole script's rewrite is about. So it says what it knows and names the fix.
       console.warn(
         `db-bootstrap: runtime role "${role}" can use the langgraph tables but does not own ` +
-          `them (owned by ${foreignOwners}); a future ` +
-          "checkpointer migration that ALTERs them would fail at boot. Run as their owner or as " +
-          `a superuser: ALTER TABLE langgraph.<table> OWNER TO "${role}";`,
+          `them (owned by ${foreignOwners}). Any checkpointer migration that ALTERs them fails at ` +
+          "boot, including one already pending from an interrupted setup. Run as their owner or " +
+          `as a superuser: ALTER TABLE langgraph.<table> OWNER TO "${role}";`,
       );
     }
   }

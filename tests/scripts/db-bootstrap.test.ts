@@ -490,6 +490,14 @@ describe.skipIf(!dbUp)(
       const dmlOnly = await runBootstrap(ROTATED_PW, APP_ROLE);
       expect(dmlOnly.exitCode).toBe(0);
       expect(`${dmlOnly.stdout}${dmlOnly.stderr}`).toContain("does not own");
+      // NOTE: the named limit of this branch. A checkpointer migration can be pending right now,
+      // not only after an upgrade — setup() applies from the last version recorded in
+      // checkpoint_migrations, so an interrupted setup leaves the ALTER TABLE one to re-run — and
+      // this script cannot tell that state from a settled one without reading a third-party
+      // package's migration list. It says so instead of guessing, which is what this asserts.
+      expect(`${dmlOnly.stdout}${dmlOnly.stderr}`).toContain(
+        "including one already pending from an interrupted setup",
+      );
     });
 
     test("a rotation the administrator CAN complete is completed, tables included", async () => {

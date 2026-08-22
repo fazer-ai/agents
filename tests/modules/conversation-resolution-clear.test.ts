@@ -54,6 +54,25 @@ function convEvent(
   };
 }
 
+// The same event as above from a Chatwoot older than 4.0.2, which sends no `updated_at`. Those
+// conversation events still move status — `decideConversationWrites` falls back to
+// `last_activity_at` for them — so anything that treats "no version" as "cannot speak about status"
+// is wrong about every install on that line.
+function legacyConvEvent(
+  convId: number,
+  event: string,
+  status: string,
+  activityAt: number,
+) {
+  const { updated_at: _dropped, ...rest } = convEvent(
+    convId,
+    event,
+    status,
+    activityAt,
+  );
+  return rest;
+}
+
 async function mirror(payload: unknown) {
   const n = normalizeChatwootEvent(payload);
   if (!n) throw new Error("payload did not normalize");
@@ -123,6 +142,34 @@ describe.skipIf(!dbUp)(
         convEvent(31, "conversation_status_changed", "open", 1_700_000_002),
       );
       expect(await originOf(31)).toBeNull();
+    });
+
+    // Chatwoot < 4.0.2, where nothing carries a version and ordering falls back to
+    // `last_activity_at`. The stamp is written while our mirror still says open, the customer's
+    // reopen is mirrored first, and OUR resolve arrives behind it and loses. The close it describes
+    // never landed, so leaving the stamp would hand the agent whatever closes the conversation next.
+    test("a close that lost the activity ordering clears it, with no version in sight", async () => {
+      const at = 1_700_009_000;
+      await mirror(legacyConvEvent(38, "conversation_created", "open", at));
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 38,
+        },
+        origin: "agent",
+        observedStatus: "open",
+        base: appDb,
+      });
+      expect(await originOf(38)).toBe("agent");
+      // The customer's reopen is delivered first and moves the row's activity mark forward.
+      await mirror(legacyConvEvent(38, "conversation_updated", "open", at + 2));
+      expect(await originOf(38)).toBe("agent");
+      // Our own close, delayed: it states "resolved" and loses the only comparison there is.
+      await mirror(
+        legacyConvEvent(38, "conversation_status_changed", "resolved", at + 1),
+      );
+      expect(await originOf(38)).toBeNull();
     });
 
     test("a customer message reopening the conversation clears it too", async () => {

@@ -156,10 +156,12 @@ export async function mirrorChatwootEvent(
           storedStatus: existing.status,
           statedStatus: statePayload.status,
           appliedStatus: decision.status,
-          // Only a versioned conversation event may move status here; a message snapshot embeds one
-          // but is meant to move no state (issue #61).
-          sourceMayStateStatus:
-            statePayload.fromConversationEvent && statePayload.version != null,
+          // Exactly what the flag means: a conversation event speaks about status, a message
+          // snapshot embeds one but is meant to move no state (issue #61). NOT `&& version != null`:
+          // `decideConversationWrites` orders a versionless conversation event by `last_activity_at`
+          // and lets it move status, so requiring a version silently exempted every Chatwoot older
+          // than 4.0.2 from the rule below.
+          sourceMayStateStatus: statePayload.fromConversationEvent,
         });
 
       if (existing && decision.stale) {

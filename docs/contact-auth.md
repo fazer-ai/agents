@@ -98,6 +98,12 @@ the gate asking about an identity the customer no longer has. The tie is decided
 payload: an older snapshot that happens to carry an unrelated cleared field must not ride that in to
 rewrite the rest of what it holds.
 
+**On upgrade**, every contact's identity is cleared and its watermark seeded from the newest event
+that touched it. The old mirror wrote identity before the conversation's stale check, so what sits in
+those columns came from the last event to ARRIVE, not the newest to have happened, and nothing in the
+row says which. Values nobody can vouch for are not handed to an authorization decision: the gate
+reads the cleared row as `no_identity` and refuses until the contact's next event fills it back in.
+
 The mirrored contact is scoped by **Chatwoot instance**, which this feature is what made necessary:
 a Chatwoot contact id is unique inside one account, not across a tenant, so two accounts under the
 same tenant used to collapse contact 42 into one row and the mirror's last-writer-wins left one

@@ -14,6 +14,14 @@
 -- placed and is deleted: nothing references it, and the mirror rebuilds it on the next event.
 ALTER TABLE "contacts" ADD COLUMN "chatwoot_instance_id" BIGINT;
 
+-- `contacts` and `conversations` carry FORCE ROW LEVEL SECURITY, so `tenant_isolation` applies to
+-- the table OWNER too and only a superuser is exempt. docs/deploy.md allows MIGRATION_DATABASE_URL
+-- to be "superuser OR owner", and on managed Postgres the admin role is typically the owner without
+-- rolsuper: there every data statement below would match ZERO rows and report success, leaving the
+-- backfill undone and the `SET NOT NULL` at the end failing the deploy. Plain SET, not SET LOCAL:
+-- outside a transaction SET LOCAL is a no-op with only a warning, which is the failure this guards.
+SET app.is_super_admin = 'on';
+
 UPDATE "contacts" c
 SET "chatwoot_instance_id" = sub."chatwoot_instance_id"
 FROM (
@@ -54,6 +62,8 @@ SET "contact_id" = NULL
 FROM "contacts" ct
 WHERE c."contact_id" = ct."id"
   AND c."chatwoot_instance_id" IS DISTINCT FROM ct."chatwoot_instance_id";
+
+RESET app.is_super_admin;
 
 ALTER TABLE "contacts" ALTER COLUMN "chatwoot_instance_id" SET NOT NULL;
 

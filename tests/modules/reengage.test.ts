@@ -299,7 +299,7 @@ describe.skipIf(!dbUp)("reengage", () => {
         where: { id: agentId },
         data: {
           settings: {
-            contactAuth: { enabled: true, url: AUTH_URL, method: "GET" },
+            contactAuth: { enabled: true, url: AUTH_URL },
           },
         },
       });

@@ -347,7 +347,6 @@ function readBehaviorState(a: Agent) {
     contactAuth: {
       enabled: ca.enabled === true,
       url: str(ca.url),
-      method: str(ca.method).toUpperCase() === "POST" ? "POST" : "GET",
       credentialRef: str(ca.credentialRef),
       timeoutMs: num(ca.timeoutMs) || "5000",
       // NOTE: "0" is meaningful (notify on every refused message), and num(0) is the truthy
@@ -640,7 +639,6 @@ function AgentEditor() {
   const [contactAuth, setContactAuth] = useState<ContactAuthState>({
     enabled: false,
     url: "",
-    method: "GET",
     credentialRef: "",
     timeoutMs: "5000",
     noticeCooldownSeconds: "60",
@@ -1135,7 +1133,6 @@ function AgentEditor() {
       contactAuth: {
         enabled: contactAuth.enabled,
         url: contactAuth.url.trim() || null,
-        method: contactAuth.method === "POST" ? "POST" : "GET",
         credentialRef: contactAuth.credentialRef || null,
         timeoutMs: Number(contactAuth.timeoutMs) || 5000,
         // NOTE: 0 is meaningful (notify on every refused message), so `|| 60` would erase it;
@@ -1454,6 +1451,7 @@ function AgentEditor() {
   // t('editor.configIssuePending.contactAuth', 'The contact-authorization credential is referenced but not filled in yet, so the check fails and the agent stays silent.')
   // t('editor.configIssueUnresolved.contactAuth', 'The contact-authorization credential no longer exists, so the check fails and the agent stays silent.')
   // t('editor.configIssue.contactAuthUnlockHandoff', 'The access-code unlock and the handoff cancel each other out: the first refusal opens the conversation and assigns it, and a conversation that is open is no longer the AI\'s, so the code the customer sends next never reaches the check. Turn the handoff off to let contacts unlock themselves, or stop sending the message text if a human should take every refused conversation.')
+  // t('editor.configIssue.contactAuthSilentRefusal', 'A refused contact is left with nothing: no message is sent and the conversation is not opened for anyone, so their message goes unanswered and only a private note records it. Write the refusal message, or turn on the handoff to humans.')
   // t('editor.configIssue.embedding', 'A knowledge base needs indexing, but the tenant embedding is not configured.')
   // t('editor.configIssuePending.embedding', 'A knowledge base needs indexing, but the embedding credential is not filled in yet.')
   // t('editor.configIssue.redirect', 'Redirect is on but a WhatsApp or website-chat inbox is not set, so it will not run.')
@@ -1514,9 +1512,9 @@ function AgentEditor() {
     visionCredentialRef: vision.credentialRef,
     contactAuthEnabled: contactAuth.enabled,
     contactAuthCredentialRef: contactAuth.credentialRef,
-    contactAuthMethod: contactAuth.method,
     contactAuthIncludeMessageText: contactAuth.includeMessageText,
     contactAuthHandoffEnabled: contactAuth.handoffEnabled,
+    contactAuthDenyMessage: contactAuth.denyMessage,
     guardrailsEnabled: guardrails.enabled,
     guardrailsCredentialRef: guardrails.credentialRef ?? "",
     guardrailsFailures: guardrailHealth?.failures,

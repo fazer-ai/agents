@@ -6,7 +6,6 @@ import {
   channelSlug,
   checkContactAuthorization,
   classifyAuthorizationResponse,
-  credentialTakesIdentityParam,
   MAX_RESPONSE_BYTES,
   MESSAGE_TEXT_MAX,
   reasonSlug,
@@ -162,62 +161,39 @@ describe("channelSlug", () => {
 });
 
 describe("buildAuthorizationRequest", () => {
-  test("GET appends the scalar identifiers and preserves the existing query", () => {
+  // The identity is in the BODY and nowhere else: the operator's own query survives untouched, and
+  // nothing about the customer is appended to a URL that lands in the endpoint's access logs.
+  test("the identity never touches the query string, and the operator's own survives", () => {
     const { url, init } = buildAuthorizationRequest(
       cfg({ url: "https://api.example.com/authorize?tenant=t1" }),
       IDENTITY,
       null,
     );
+    expect([...url.searchParams.keys()]).toEqual(["tenant"]);
     expect(url.searchParams.get("tenant")).toBe("t1");
-    expect(url.searchParams.get("phone")).toBe(IDENTITY.phone);
-    expect(url.searchParams.get("contact_id")).toBe("42");
-    expect(url.searchParams.get("identifier")).toBe("client-4821");
-    expect(url.searchParams.get("email")).toBe("cliente@example.com");
-    // Never on a query string: the name, and anything the customer typed.
-    expect(url.searchParams.has("name")).toBe(false);
-    expect(init.method).toBe("GET");
-    expect(init.body).toBeUndefined();
+    expect(init.method).toBe("POST");
   });
 
-  test("GET omits what the mirror never learned", () => {
-    const { url } = buildAuthorizationRequest(
+  test("what the mirror never learned travels as null, not as an absent key", () => {
+    const { init } = buildAuthorizationRequest(
       cfg(),
-      {
-        ...IDENTITY,
-        phone: null,
-        email: null,
-        chatwootContactId: null,
-      },
+      { ...IDENTITY, phone: null, email: null, chatwootContactId: null },
       null,
     );
-    expect(url.searchParams.has("phone")).toBe(false);
-    expect(url.searchParams.has("contact_id")).toBe(false);
-    expect(url.searchParams.has("email")).toBe(false);
-    expect(url.searchParams.get("identifier")).toBe("client-4821");
+    const body = JSON.parse(String(init.body)) as {
+      contact: Record<string, unknown>;
+    };
+    expect(body.contact).toEqual({
+      phone: null,
+      name: "Cliente Exemplo",
+      email: null,
+      identifier: "client-4821",
+      chatwootContactId: null,
+    });
   });
 
-  test("GET never carries the message text, even when the flag leaks in", () => {
-    // The reader already forces includeMessageText off under GET; the builder does not rely on it.
-    const { url } = buildAuthorizationRequest(
-      cfg({ includeMessageText: true }),
-      { ...IDENTITY, messageText: "meu código é 4821" },
-      null,
-    );
-    expect(url.toString()).not.toContain("4821%20");
-    expect([...url.searchParams.keys()].sort()).toEqual([
-      "contact_id",
-      "email",
-      "identifier",
-      "phone",
-    ]);
-  });
-
-  test("POST separates trusted contact, conversation coordinates and no message by default", () => {
-    const { url, init } = buildAuthorizationRequest(
-      cfg({ method: "POST" }),
-      IDENTITY,
-      null,
-    );
+  test("separates trusted contact, conversation coordinates and no message by default", () => {
+    const { url, init } = buildAuthorizationRequest(cfg(), IDENTITY, null);
     expect(url.searchParams.has("phone")).toBe(false);
     expect(JSON.parse(String(init.body))).toEqual({
       contact: {
@@ -234,9 +210,9 @@ describe("buildAuthorizationRequest", () => {
     );
   });
 
-  test("POST with includeMessageText carries the text under message, apart from contact", () => {
+  test("includeMessageText carries the text under message, apart from contact", () => {
     const { init } = buildAuthorizationRequest(
-      cfg({ method: "POST", includeMessageText: true }),
+      cfg({ includeMessageText: true }),
       { ...IDENTITY, messageText: "  meu código é ABC-123  " },
       null,
     );
@@ -248,7 +224,7 @@ describe("buildAuthorizationRequest", () => {
 
   test("the forwarded text is capped, and an empty text sends no message at all", () => {
     const { init } = buildAuthorizationRequest(
-      cfg({ method: "POST", includeMessageText: true }),
+      cfg({ includeMessageText: true }),
       { ...IDENTITY, messageText: "x".repeat(MESSAGE_TEXT_MAX + 500) },
       null,
     );
@@ -257,7 +233,7 @@ describe("buildAuthorizationRequest", () => {
     };
     expect(body.message.text.length).toBe(MESSAGE_TEXT_MAX);
     const empty = buildAuthorizationRequest(
-      cfg({ method: "POST", includeMessageText: true }),
+      cfg({ includeMessageText: true }),
       { ...IDENTITY, messageText: "   " },
       null,
     );
@@ -266,9 +242,9 @@ describe("buildAuthorizationRequest", () => {
     ).not.toHaveProperty("message");
   });
 
-  test("POST without the opt-in sends no message even when text exists", () => {
+  test("without the opt-in no message is sent even when text exists", () => {
     const { init } = buildAuthorizationRequest(
-      cfg({ method: "POST" }),
+      cfg(),
       { ...IDENTITY, messageText: "meu código é ABC-123" },
       null,
     );
@@ -309,48 +285,6 @@ describe("buildAuthorizationRequest", () => {
   });
 });
 
-// GET carries the identity on the query string, and a query credential is written after it. A
-// credential whose parameter is one of those four names replaces the value it names: the endpoint is
-// asked about a phone number that is the secret, and the secret lands in its access logs as one.
-describe("credentialTakesIdentityParam", () => {
-  const queryCred = (paramName: string) => ({
-    value: "s3cr3t",
-    kind: "query",
-    paramName,
-  });
-
-  test("a query credential named after an identity field collides", () => {
-    for (const name of ["phone", "contact_id", "identifier", "email"]) {
-      expect(credentialTakesIdentityParam(cfg(), queryCred(name))).toBe(true);
-    }
-  });
-
-  test("any other parameter name is fine", () => {
-    expect(credentialTakesIdentityParam(cfg(), queryCred("api_key"))).toBe(
-      false,
-    );
-  });
-
-  test("no credential, or one that travels in a header, cannot collide", () => {
-    expect(credentialTakesIdentityParam(cfg(), null)).toBe(false);
-    expect(
-      credentialTakesIdentityParam(cfg(), {
-        value: "s3cr3t",
-        kind: "bearer_token",
-        paramName: null,
-      }),
-    ).toBe(false);
-  });
-
-  // Under POST the identity travels in the body, so the query is the operator's alone and the name
-  // is theirs to reuse.
-  test("POST does not reserve the names", () => {
-    expect(
-      credentialTakesIdentityParam(cfg({ method: "POST" }), queryCred("phone")),
-    ).toBe(false);
-  });
-});
-
 describe("checkContactAuthorization", () => {
   test("happy path: fetches the built request with redirect error and classifies", async () => {
     let seenUrl = "";
@@ -365,7 +299,8 @@ describe("checkContactAuthorization", () => {
       assertSafe: okUrl,
     });
     expect(v).toEqual({ outcome: "allowed", status: 200 });
-    expect(seenUrl).toContain("phone=%2B5511988887777");
+    expect(seenUrl).toBe("https://api.example.com/authorize");
+    expect(String(seenInit?.body)).toContain("+5511988887777");
     expect(seenInit?.redirect).toBe("error");
   });
 

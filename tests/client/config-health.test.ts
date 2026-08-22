@@ -1324,7 +1324,6 @@ describe("issueHasAction", () => {
     const unlocking = {
       ...base,
       contactAuthEnabled: true,
-      contactAuthMethod: "POST",
       contactAuthIncludeMessageText: true,
       contactAuthHandoffEnabled: true,
     };
@@ -1341,13 +1340,12 @@ describe("issueHasAction", () => {
 
     test("no flag with the handoff off — that is the working unlock setup", () => {
       expect(
-        computeConfigIssues({ ...unlocking, contactAuthHandoffEnabled: false }),
-      ).toEqual([]);
-    });
-
-    test("no flag under GET, which never carries the text", () => {
-      expect(
-        computeConfigIssues({ ...unlocking, contactAuthMethod: "GET" }),
+        computeConfigIssues({
+          ...unlocking,
+          contactAuthHandoffEnabled: false,
+          // A deny message, so the silent-refusal check below does not fire instead.
+          contactAuthDenyMessage: "Envie seu código de acesso.",
+        }),
       ).toEqual([]);
     });
 
@@ -1355,6 +1353,50 @@ describe("issueHasAction", () => {
       expect(
         computeConfigIssues({ ...unlocking, contactAuthEnabled: false }),
       ).toEqual([]);
+    });
+  });
+
+  // The other end: refuse, say nothing, hand nobody the conversation. The customer's message goes
+  // unanswered with no sign anything happened, and only a private note records it.
+  describe("a refusal that reaches nobody", () => {
+    const gated = { ...base, contactAuthEnabled: true };
+
+    test("flags a gate with no deny message and no handoff", () => {
+      expect(
+        computeConfigIssues({ ...gated, contactAuthHandoffEnabled: false }),
+      ).toEqual([
+        {
+          key: "contactAuthSilentRefusal",
+          tab: "behavior",
+          sectionId: "contactAuth",
+        },
+      ]);
+    });
+
+    test("a deny message alone clears it — silence towards a stranger is a choice", () => {
+      expect(
+        computeConfigIssues({
+          ...gated,
+          contactAuthHandoffEnabled: false,
+          contactAuthDenyMessage: "Atendemos apenas clientes cadastrados.",
+        }),
+      ).toEqual([]);
+    });
+
+    test("the handoff alone clears it — a human takes it from there", () => {
+      expect(
+        computeConfigIssues({ ...gated, contactAuthHandoffEnabled: true }),
+      ).toEqual([]);
+    });
+
+    test("whitespace is not a deny message", () => {
+      expect(
+        computeConfigIssues({
+          ...gated,
+          contactAuthHandoffEnabled: false,
+          contactAuthDenyMessage: "   ",
+        }).map((i) => i.key),
+      ).toEqual(["contactAuthSilentRefusal"]);
     });
   });
 

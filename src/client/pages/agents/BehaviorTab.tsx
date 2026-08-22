@@ -136,7 +136,6 @@ interface SttState {
 export interface ContactAuthState {
   enabled: boolean;
   url: string;
-  method: string;
   credentialRef: string;
   timeoutMs: string;
   noticeCooldownSeconds: string;
@@ -1093,11 +1092,6 @@ export function BehaviorTab({
       label: t("editor.availability", "Availability"),
     },
     {
-      id: "contactAuth",
-      icon: ShieldCheck,
-      label: t("editor.contactAuth", "Contact authorization"),
-    },
-    {
       id: "debounce",
       icon: Layers,
       label: t("editor.debounce", "Message grouping (debounce)"),
@@ -1131,6 +1125,14 @@ export function BehaviorTab({
       id: "sendImage",
       icon: ImagePlus,
       label: t("editor.sendImage", "Sending images"),
+    },
+    // Last of the behaviour sections and before the operational ones: most agents never turn this
+    // on, so it does not belong above the grouping/audio/memory settings every agent uses — but it
+    // decides whether the agent speaks at all, so it does not belong at the very bottom either.
+    {
+      id: "contactAuth",
+      icon: ShieldCheck,
+      label: t("editor.contactAuth", "Contact authorization"),
     },
     {
       id: "limits",
@@ -1210,214 +1212,6 @@ export function BehaviorTab({
                   )}
                 />
               </FormField>
-            )}
-          </Section>
-
-          <Section
-            id="contactAuth"
-            icon={ShieldCheck}
-            title={t("editor.contactAuth", "Contact authorization")}
-            description={t(
-              "editor.contactAuthHint",
-              "Before answering, ask an external system whether this contact may be served, by the identity Chatwoot holds for them (phone, email, identifier). Every message is re-checked, so revoking on your side takes effect immediately. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
-            )}
-          >
-            <SwitchField
-              checked={contactAuth.enabled}
-              onCheckedChange={(v) =>
-                setContactAuth({ ...contactAuth, enabled: v })
-              }
-              label={t(
-                "editor.contactAuthEnabled",
-                "Only answer contacts the external check authorizes",
-              )}
-            />
-            {contactAuth.enabled && (
-              <>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <FormField
-                    label={t("editor.contactAuthUrl", "Authorization URL")}
-                    description={t(
-                      "editor.contactAuthUrlHint",
-                      'GET receives phone, contact_id, identifier and email on the query string; POST receives the identity in a JSON body (contact, conversation, message). The endpoint answers { "authorized": true | false }.',
-                    )}
-                    error={
-                      contactAuthUrlInvalid
-                        ? t(
-                            "editor.contactAuthUrlInvalid",
-                            "Required: a valid http(s) URL, with any credential in the vault rather than in the URL.",
-                          )
-                        : null
-                    }
-                  >
-                    <Input
-                      value={contactAuth.url}
-                      onChange={(e) =>
-                        setContactAuth({ ...contactAuth, url: e.target.value })
-                      }
-                      placeholder="https://api.example.com/contacts/authorize"
-                    />
-                  </FormField>
-                  <FormField label={t("editor.contactAuthMethod", "Method")}>
-                    <Select
-                      value={contactAuth.method}
-                      onChange={(e) =>
-                        setContactAuth({
-                          ...contactAuth,
-                          method: e.target.value,
-                        })
-                      }
-                    >
-                      {(["GET", "POST"] as const).map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </Select>
-                  </FormField>
-                </div>
-                <FormField
-                  label={t("editor.contactAuthCredential", "Credential")}
-                  group
-                  description={t(
-                    "editor.contactAuthCredentialHint",
-                    "Optional. Sent the way the credential's type declares (Bearer, header or query parameter).",
-                  )}
-                >
-                  <CredentialPicker
-                    value={contactAuth.credentialRef}
-                    onChange={(v) =>
-                      setContactAuth({ ...contactAuth, credentialRef: v })
-                    }
-                    compatibleTypes={[
-                      "bearer_token",
-                      "header",
-                      "query",
-                      "basic_auth",
-                    ]}
-                    defaultCreateType="bearer_token"
-                    ariaLabel={t("editor.contactAuthCredential", "Credential")}
-                  />
-                </FormField>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <FormField
-                    label={t("editor.contactAuthTimeout", "Timeout (ms)")}
-                    description={t(
-                      "editor.contactAuthTimeoutHint",
-                      "1,000-10,000. Past it the check counts as failed and the agent stays silent.",
-                    )}
-                  >
-                    <Input
-                      type="number"
-                      min={1000}
-                      max={10000}
-                      value={contactAuth.timeoutMs}
-                      onChange={(e) =>
-                        setContactAuth({
-                          ...contactAuth,
-                          timeoutMs: e.target.value,
-                        })
-                      }
-                    />
-                  </FormField>
-                  <FormField
-                    label={t(
-                      "editor.contactAuthNoticeCooldown",
-                      "Notice cooldown (s)",
-                    )}
-                    description={t(
-                      "editor.contactAuthNoticeCooldownHint",
-                      "Every message is re-checked; this only spaces the deny message and the private note for the same conversation. 0-3,600; 0 notifies on every refused message.",
-                    )}
-                  >
-                    <Input
-                      type="number"
-                      min={0}
-                      max={3600}
-                      value={contactAuth.noticeCooldownSeconds}
-                      onChange={(e) =>
-                        setContactAuth({
-                          ...contactAuth,
-                          noticeCooldownSeconds: e.target.value,
-                        })
-                      }
-                    />
-                  </FormField>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <SwitchField
-                    checked={
-                      contactAuth.method === "POST" &&
-                      contactAuth.includeMessageText
-                    }
-                    onCheckedChange={(v) =>
-                      setContactAuth({ ...contactAuth, includeMessageText: v })
-                    }
-                    disabled={contactAuth.method !== "POST"}
-                    label={t(
-                      "editor.contactAuthIncludeText",
-                      "Send the customer's message text",
-                    )}
-                  />
-                  <p className="text-text-muted text-xs">
-                    {t(
-                      "editor.contactAuthIncludeTextHint",
-                      "POST only. The triggering message travels as its own message.text field, apart from the mirrored identity, so your endpoint can accept an unlock code the customer sends. It is never logged.",
-                    )}
-                  </p>
-                </div>
-                <FormField
-                  label={t(
-                    "editor.contactAuthDenyMessage",
-                    "Message to a denied contact",
-                  )}
-                  description={t(
-                    "editor.contactAuthDenyMessageHint",
-                    "Sent when the check denies the contact, at most once per notice cooldown. Leave empty to send nothing.",
-                  )}
-                >
-                  <Textarea
-                    value={contactAuth.denyMessage}
-                    onChange={(e) =>
-                      setContactAuth({
-                        ...contactAuth,
-                        denyMessage: e.target.value,
-                      })
-                    }
-                    rows={2}
-                    maxLength={TEMPLATE_MESSAGE_MAX}
-                    placeholder={t(
-                      "editor.contactAuthDenyMessagePlaceholder",
-                      "This channel serves registered customers only.",
-                    )}
-                  />
-                </FormField>
-                <SwitchField
-                  checked={contactAuth.handoffEnabled}
-                  onCheckedChange={(v) =>
-                    setContactAuth({ ...contactAuth, handoffEnabled: v })
-                  }
-                  label={t(
-                    "editor.contactAuthHandoff",
-                    "Open refused conversations for humans",
-                  )}
-                />
-                {contactAuth.handoffEnabled && (
-                  <ContactAuthTeamSelect
-                    agentId={agentId}
-                    value={contactAuth.handoffTeamId}
-                    onChange={(v, instanceId) =>
-                      setContactAuth({
-                        ...contactAuth,
-                        handoffTeamId: v,
-                        // Cleared with the team: a recorded account with no team pins nothing, and
-                        // a stale one would outlive the choice it belonged to.
-                        handoffTeamInstanceId: v ? instanceId : "",
-                      })
-                    }
-                  />
-                )}
-              </>
             )}
           </Section>
 
@@ -2305,6 +2099,191 @@ export function BehaviorTab({
                 placeholder="cdn.minhaloja.com.br"
               />
             </FormField>
+          </Section>
+
+          <Section
+            id="contactAuth"
+            icon={ShieldCheck}
+            title={t("editor.contactAuth", "Contact authorization")}
+            description={t(
+              "editor.contactAuthHint",
+              "Before answering, ask an external system whether this contact may be served, by the identity Chatwoot holds for them (phone, email, identifier). Every message is re-checked, so revoking on your side takes effect immediately. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
+            )}
+          >
+            <SwitchField
+              checked={contactAuth.enabled}
+              onCheckedChange={(v) =>
+                setContactAuth({ ...contactAuth, enabled: v })
+              }
+              label={t(
+                "editor.contactAuthEnabled",
+                "Only answer contacts the external check authorizes",
+              )}
+            />
+            {contactAuth.enabled && (
+              <>
+                <FormField
+                  label={t("editor.contactAuthUrl", "Authorization URL")}
+                  description={t(
+                    "editor.contactAuthUrlHint",
+                    'Receives a POST with the identity in a JSON body (contact, conversation, message) and answers { "authorized": true | false }.',
+                  )}
+                  error={
+                    contactAuthUrlInvalid
+                      ? t(
+                          "editor.contactAuthUrlInvalid",
+                          "Required: a valid http(s) URL, with any credential in the vault rather than in the URL.",
+                        )
+                      : null
+                  }
+                >
+                  <Input
+                    value={contactAuth.url}
+                    onChange={(e) =>
+                      setContactAuth({ ...contactAuth, url: e.target.value })
+                    }
+                    placeholder="https://api.example.com/contacts/authorize"
+                  />
+                </FormField>
+                <FormField
+                  label={t("editor.contactAuthCredential", "Credential")}
+                  group
+                  description={t(
+                    "editor.contactAuthCredentialHint",
+                    "Optional. Sent the way the credential's type declares (Bearer, header or query parameter).",
+                  )}
+                >
+                  <CredentialPicker
+                    value={contactAuth.credentialRef}
+                    onChange={(v) =>
+                      setContactAuth({ ...contactAuth, credentialRef: v })
+                    }
+                    compatibleTypes={[
+                      "bearer_token",
+                      "header",
+                      "query",
+                      "basic_auth",
+                    ]}
+                    defaultCreateType="bearer_token"
+                    ariaLabel={t("editor.contactAuthCredential", "Credential")}
+                  />
+                </FormField>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FormField
+                    label={t("editor.contactAuthTimeout", "Timeout (ms)")}
+                    description={t(
+                      "editor.contactAuthTimeoutHint",
+                      "1,000-10,000. Past it the check counts as failed and the agent stays silent.",
+                    )}
+                  >
+                    <Input
+                      type="number"
+                      min={1000}
+                      max={10000}
+                      value={contactAuth.timeoutMs}
+                      onChange={(e) =>
+                        setContactAuth({
+                          ...contactAuth,
+                          timeoutMs: e.target.value,
+                        })
+                      }
+                    />
+                  </FormField>
+                  <FormField
+                    label={t(
+                      "editor.contactAuthNoticeCooldown",
+                      "Notice cooldown (s)",
+                    )}
+                    description={t(
+                      "editor.contactAuthNoticeCooldownHint",
+                      "Every message is re-checked; this only spaces the deny message and the private note for the same conversation. 0-3,600; 0 notifies on every refused message.",
+                    )}
+                  >
+                    <Input
+                      type="number"
+                      min={0}
+                      max={3600}
+                      value={contactAuth.noticeCooldownSeconds}
+                      onChange={(e) =>
+                        setContactAuth({
+                          ...contactAuth,
+                          noticeCooldownSeconds: e.target.value,
+                        })
+                      }
+                    />
+                  </FormField>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <SwitchField
+                    checked={contactAuth.includeMessageText}
+                    onCheckedChange={(v) =>
+                      setContactAuth({ ...contactAuth, includeMessageText: v })
+                    }
+                    label={t(
+                      "editor.contactAuthIncludeText",
+                      "Send the customer's message text",
+                    )}
+                  />
+                  <p className="text-text-muted text-xs">
+                    {t(
+                      "editor.contactAuthIncludeTextHint",
+                      "The triggering message travels as its own message.text field, apart from the mirrored identity, so your endpoint can accept an unlock code the customer sends. It is never logged.",
+                    )}
+                  </p>
+                </div>
+                <FormField
+                  label={t(
+                    "editor.contactAuthDenyMessage",
+                    "Message to a denied contact",
+                  )}
+                  description={t(
+                    "editor.contactAuthDenyMessageHint",
+                    "Sent when the check denies the contact, at most once per notice cooldown. Leave empty to send nothing.",
+                  )}
+                >
+                  <Textarea
+                    value={contactAuth.denyMessage}
+                    onChange={(e) =>
+                      setContactAuth({
+                        ...contactAuth,
+                        denyMessage: e.target.value,
+                      })
+                    }
+                    rows={2}
+                    maxLength={TEMPLATE_MESSAGE_MAX}
+                    placeholder={t(
+                      "editor.contactAuthDenyMessagePlaceholder",
+                      "This channel serves registered customers only.",
+                    )}
+                  />
+                </FormField>
+                <SwitchField
+                  checked={contactAuth.handoffEnabled}
+                  onCheckedChange={(v) =>
+                    setContactAuth({ ...contactAuth, handoffEnabled: v })
+                  }
+                  label={t(
+                    "editor.contactAuthHandoff",
+                    "Open refused conversations for humans",
+                  )}
+                />
+                {contactAuth.handoffEnabled && (
+                  <ContactAuthTeamSelect
+                    agentId={agentId}
+                    value={contactAuth.handoffTeamId}
+                    onChange={(v, instanceId) =>
+                      setContactAuth({
+                        ...contactAuth,
+                        handoffTeamId: v,
+                        // Cleared with the team: a recorded account with no team pins nothing, and
+                        // a stale one would outlive the choice it belonged to.
+                        handoffTeamInstanceId: v ? instanceId : "",
+                      })
+                    }
+                  />
+                )}
+              </>
+            )}
           </Section>
 
           <Section

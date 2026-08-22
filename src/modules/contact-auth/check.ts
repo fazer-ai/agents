@@ -2,17 +2,16 @@ import config from "@/config";
 import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
 import type { InjectableCredential } from "@/modules/vault/injectable";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
-import { type ContactAuthConfig, sendsMessageText } from "./settings";
+import type { ContactAuthConfig } from "./settings";
 
 // One authorization request and the reading of its answer. The contract is deliberately small
-// (docs/contact-auth.md): GET carries the short scalar identifiers (`phone`, `contact_id`,
-// `identifier`, `email`) on the query string; POST carries the mirrored identity under `contact`,
-// the conversation coordinates under `conversation` and, only when the agent opted in, the
-// customer's text under `message`. A 2xx must answer `{ "authorized": boolean }`; 401/403/404 mean
-// denied; and anything else (another status, a timeout, a network failure, a blocked URL, an answer
-// that does not fit) is an ERROR, which the gate treats as fail-closed. `classifyAuthorizationResponse`
-// is the pure half so the decision table is testable without a socket; `checkContactAuthorization`
-// is the network half, with fetch and the SSRF assertion injectable.
+// (docs/contact-auth.md): one POST, carrying the mirrored identity under `contact`, the conversation
+// coordinates under `conversation` and, only when the agent opted in, the customer's text under
+// `message`. A 2xx must answer `{ "authorized": boolean }`; 401/403/404 mean denied; and anything
+// else (another status, a timeout, a network failure, a blocked URL, an answer that does not fit) is
+// an ERROR, which the gate treats as fail-closed. `classifyAuthorizationResponse` is the pure half
+// so the decision table is testable without a socket; `checkContactAuthorization` is the network
+// half, with fetch and the SSRF assertion injectable.
 
 export type AuthorizationOutcome = "allowed" | "denied" | "error";
 
@@ -62,8 +61,8 @@ export interface ContactIdentity {
   inboxId: number | null;
   // The inbox's channel as a slug ("whatsapp", "web_widget", ...); null when unknown.
   channel: string | null;
-  // The text of the message that triggered the check; null on a proactive nudge. Sent only as
-  // `message.text` on a POST with includeMessageText, capped at MESSAGE_TEXT_MAX chars.
+  // The text of the message that triggered the check; null on a proactive nudge. Sent as
+  // `message.text` when includeMessageText is on, capped at MESSAGE_TEXT_MAX chars.
   messageText: string | null;
 }
 
@@ -147,44 +146,31 @@ export function buildAuthorizationRequest(
 ): { url: URL; init: RequestInit } {
   if (!cfg.url) throw new Error("contact authorization url is not configured");
   const url = new URL(cfg.url);
-  const headers: Record<string, string> = { accept: "application/json" };
-  let body: string | undefined;
-  if (cfg.method === "POST") {
-    headers["content-type"] = "application/json";
-    const text =
-      sendsMessageText(cfg) && identity.messageText?.trim()
-        ? identity.messageText.trim().slice(0, MESSAGE_TEXT_MAX)
-        : null;
-    // NOTE: The nesting IS the contract: `contact` is what Chatwoot mirrored (trusted context),
-    // `message` is what the customer typed. An endpoint must never read identity out of `message`.
-    body = JSON.stringify({
-      contact: {
-        phone: identity.phone,
-        name: identity.name,
-        email: identity.email,
-        identifier: identity.identifier,
-        chatwootContactId: identity.chatwootContactId,
-      },
-      conversation: {
-        id: identity.conversationId,
-        inboxId: identity.inboxId,
-        channel: identity.channel,
-      },
-      ...(text !== null ? { message: { text } } : {}),
-    });
-  } else {
-    // NOTE: GET carries only the short scalar identifiers, appended to whatever query the operator
-    // wrote into the URL. No name and no message text: a query string lands in access logs on the
-    // endpoint's side. The opt-in stays stored, but `sendsMessageText` is false under GET.
-    if (identity.phone) url.searchParams.set("phone", identity.phone);
-    if (identity.chatwootContactId !== null) {
-      url.searchParams.set("contact_id", String(identity.chatwootContactId));
-    }
-    if (identity.identifier) {
-      url.searchParams.set("identifier", identity.identifier);
-    }
-    if (identity.email) url.searchParams.set("email", identity.email);
-  }
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    "content-type": "application/json",
+  };
+  const text =
+    cfg.includeMessageText && identity.messageText?.trim()
+      ? identity.messageText.trim().slice(0, MESSAGE_TEXT_MAX)
+      : null;
+  // NOTE: The nesting IS the contract: `contact` is what Chatwoot mirrored (trusted context),
+  // `message` is what the customer typed. An endpoint must never read identity out of `message`.
+  const body = JSON.stringify({
+    contact: {
+      phone: identity.phone,
+      name: identity.name,
+      email: identity.email,
+      identifier: identity.identifier,
+      chatwootContactId: identity.chatwootContactId,
+    },
+    conversation: {
+      id: identity.conversationId,
+      inboxId: identity.inboxId,
+      channel: identity.channel,
+    },
+    ...(text !== null ? { message: { text } } : {}),
+  });
   if (credential) {
     const inj = resolveSecretInjection(
       credential.kind,
@@ -195,36 +181,7 @@ export function buildAuthorizationRequest(
     else if (inj?.target === "query") url.searchParams.set(inj.name, inj.value);
     else headers.authorization = `Bearer ${credential.value}`;
   }
-  return { url, init: { method: cfg.method, headers, body } };
-}
-
-// The query names a GET request reserves for the mirrored identity, exactly as `buildAuthorizationRequest`
-// writes them. A credential injected into the query under one of these REPLACES the value it names:
-// `set` is last-write-wins and the credential goes on after the identity, so the endpoint would read
-// the secret as the customer's phone number and decide about the wrong person — while the secret
-// itself lands in that endpoint's access logs under a field nobody treats as one. Matched exactly,
-// because that is what makes the two collide; a differently-cased name is a second parameter, not a
-// replacement.
-export const RESERVED_QUERY_PARAMS: readonly string[] = [
-  "phone",
-  "contact_id",
-  "identifier",
-  "email",
-];
-
-// Whether this credential would take one of those names. Pure, and separate from the builder, so the
-// pairing can be refused BEFORE a request that would carry a secret where an identity belongs.
-export function credentialTakesIdentityParam(
-  cfg: ContactAuthConfig,
-  credential: InjectableCredential | null,
-): boolean {
-  if (!credential || cfg.method !== "GET") return false;
-  const inj = resolveSecretInjection(
-    credential.kind,
-    credential.value,
-    credential.paramName,
-  );
-  return inj?.target === "query" && RESERVED_QUERY_PARAMS.includes(inj.name);
+  return { url, init: { method: "POST", headers, body } };
 }
 
 // Reads at most `max` bytes; null when the body is larger (declared or streamed). The cap is applied

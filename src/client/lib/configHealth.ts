@@ -32,6 +32,9 @@ export type ConfigIssueKey =
   // conversation to still be the bot's when the code arrives, and the handoff gives it away on the
   // first refusal.
   | "contactAuthUnlockHandoff"
+  // Nor a missing credential: an enabled gate that neither answers the customer nor opens the
+  // conversation, so a refusal reaches nobody.
+  | "contactAuthSilentRefusal"
   | "knowledge"
   | "embedding"
   | "redirect"
@@ -193,11 +196,11 @@ export interface ConfigHealthInput {
   // gate fails closed and the agent goes silent for every contact.
   contactAuthEnabled?: boolean;
   contactAuthCredentialRef?: string;
-  // The three fields of the unlock-vs-handoff contradiction: the text only ships on POST, and the
-  // handoff only happens when it is on.
-  contactAuthMethod?: string;
+  // The two sides of the unlock-vs-handoff contradiction, plus the copy: an enabled gate that
+  // neither speaks nor hands over leaves a refused customer with nothing at all.
   contactAuthIncludeMessageText?: boolean;
   contactAuthHandoffEnabled?: boolean;
+  contactAuthDenyMessage?: string;
   // Guardrails run on a model of their own, and theirs is the one credential whose failure is not
   // just a feature going quiet: `loadAgentConfig` fails open, so the analysis is skipped and every
   // message is delivered as if it had been screened and approved.
@@ -513,12 +516,27 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // wrong on its own, so this is said rather than silently resolved.
   if (
     input.contactAuthEnabled &&
-    (input.contactAuthMethod ?? "").toUpperCase() === "POST" &&
     input.contactAuthIncludeMessageText &&
     input.contactAuthHandoffEnabled
   ) {
     issues.push({
       key: "contactAuthUnlockHandoff",
+      tab: "behavior",
+      sectionId: "contactAuth",
+    });
+  }
+  // The other end of the same switchboard: a gate that refuses, says nothing and hands nobody the
+  // conversation. The customer's message goes unanswered with no sign that anything happened, and
+  // the only record is a private note somebody has to go and read. Both switches are legitimate on
+  // their own — silence suits an unknown number, and no-handoff suits the unlock flow — so this is
+  // said rather than forced: the fix is a deny message, or the handoff, and the operator picks.
+  if (
+    input.contactAuthEnabled &&
+    !(input.contactAuthDenyMessage ?? "").trim() &&
+    !input.contactAuthHandoffEnabled
+  ) {
+    issues.push({
+      key: "contactAuthSilentRefusal",
       tab: "behavior",
       sectionId: "contactAuth",
     });

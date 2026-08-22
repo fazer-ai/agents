@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
-import { CONTACT_AUTH_METHODS } from "@/modules/contact-auth/settings";
 import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
@@ -281,7 +280,6 @@ const contactAuth = z.looseObject({
     .nullable()
     .optional()
     .describe("the authorization endpoint; fixed origin, no placeholders"),
-  method: oneOf(CONTACT_AUTH_METHODS).optional(),
   credentialRef: credentialRef(),
   timeoutMs: z.number().optional().describe("1000-10000, clamped"),
   noticeCooldownSeconds: z
@@ -294,7 +292,7 @@ const contactAuth = z.looseObject({
     .boolean()
     .optional()
     .describe(
-      "POST only: forward the message text so the endpoint can accept an unlock code; false under GET",
+      "forward the message text under `message.text` so the endpoint can accept an unlock code",
     ),
   denyMessage: z
     .string()

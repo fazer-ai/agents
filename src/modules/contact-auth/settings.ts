@@ -9,18 +9,12 @@ import { clipText, TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 // the verdict, so revoking there takes effect on the customer's next message. Off by default; every
 // other field clamps rather than throws, so a malformed write can never break the webhook.
 
-export type ContactAuthMethod = "GET" | "POST";
-// A lista existe para o schema do MCP não repetir os dois valores por conta própria: o par
-// "reader aceita" / "schema declara" já divergiu em outros blocos, e aqui há uma fonte só.
-export const CONTACT_AUTH_METHODS: ContactAuthMethod[] = ["GET", "POST"];
-
 export interface ContactAuthConfig {
   enabled: boolean;
-  // The authorization endpoint: a fixed origin, no placeholders (the identity travels as query or
-  // body). https in production; http only where the SSRF guard allows private targets, the same rule
-  // HTTP tools follow. null = not configured, which an enabled gate treats as an error (fail-closed).
+  // The authorization endpoint: a fixed origin, no placeholders (the identity travels in the body).
+  // https in production; http only where the SSRF guard allows private targets, the same rule HTTP
+  // tools follow. null = not configured, which an enabled gate treats as an error (fail-closed).
   url: string | null;
-  method: ContactAuthMethod;
   // `vault:<id>` of the credential sent with the request, injected per the entry's kind (bearer /
   // header / query). null = the endpoint needs none.
   credentialRef: string | null;
@@ -30,9 +24,10 @@ export interface ContactAuthConfig {
   // messages from a refused contact with handoff off would be answered with the same copy five
   // times. 0 = notify on every refused message.
   noticeCooldownSeconds: number;
-  // POST only: forward the triggering message's text as `message.text`, so an endpoint can accept
-  // something the customer sends to unlock themselves (an access code, a protocol number). Read as
-  // false under GET, where the text would land on the query string and in access logs.
+  // Forward the triggering message's text as `message.text`, so an endpoint can accept something the
+  // customer sends to unlock themselves (an access code, a protocol number). It travels under its
+  // own key, never inside `contact`: what the customer typed and what Chatwoot mirrored are not the
+  // same kind of claim, and the endpoint has to be able to tell them apart.
   includeMessageText: boolean;
   // What the customer receives when the endpoint denies them. null = say nothing.
   denyMessage: string | null;
@@ -55,7 +50,6 @@ export interface ContactAuthConfig {
 export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
   enabled: false,
   url: null,
-  method: "GET",
   credentialRef: null,
   timeoutMs: 5000,
   noticeCooldownSeconds: 60,
@@ -65,13 +59,6 @@ export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
   handoffTeamId: null,
   handoffTeamInstanceId: null,
 };
-
-// Whether the triggering message's text actually travels: the operator's opt-in AND a POST, since
-// GET would put customer text on a query string and into the endpoint's access logs. Stored and
-// effective are deliberately separate — a method switch must not erase a setting it never named.
-export function sendsMessageText(cfg: ContactAuthConfig): boolean {
-  return cfg.method === "POST" && cfg.includeMessageText;
-}
 
 export const CONTACT_AUTH_TIMEOUT_MIN_MS = 1000;
 export const CONTACT_AUTH_TIMEOUT_MAX_MS = 10_000;
@@ -120,14 +107,11 @@ export function readContactAuthConfig(settings: unknown): ContactAuthConfig {
     typeof b.denyMessage === "string"
       ? clipText(b.denyMessage.trim(), TEMPLATE_MESSAGE_MAX)
       : "";
-  const method: ContactAuthMethod =
-    str(b.method)?.toUpperCase() === "POST" ? "POST" : "GET";
   return {
     // Strict boolean, like the availability switch: a malformed write can only ever leave the gate
     // off, never start refusing customers nobody asked it to.
     enabled: b.enabled === true,
     url: readContactAuthUrl(b.url),
-    method,
     credentialRef: str(b.credentialRef),
     timeoutMs: clampInt(
       b.timeoutMs,
@@ -141,11 +125,6 @@ export function readContactAuthConfig(settings: unknown): ContactAuthConfig {
       0,
       CONTACT_AUTH_NOTICE_COOLDOWN_MAX_SECONDS,
     ),
-    // NOTE: The RAW opt-in, not the effective one. Forcing it to false here made the claim above it
-    // untrue: `mergeBehaviorSettings` persists what this reader returns, so a patch that changed
-    // only the method to GET wrote the flag off for good and switching back to POST could not bring
-    // it back — the operator's setting was erased by an edit that never mentioned it. Whether the
-    // text actually travels is `sendsMessageText`, decided when the request is built.
     includeMessageText: b.includeMessageText === true,
     denyMessage: deny || null,
     handoffEnabled:

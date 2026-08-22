@@ -290,7 +290,6 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     const contactAuthBase = {
       enabled: true,
       url: AUTH_URL,
-      method: "GET",
       credentialRef: `vault:${authKey.id}`,
       noticeCooldownSeconds: 300,
     };
@@ -338,7 +337,6 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
           split: { enabled: false },
           contactAuth: {
             ...contactAuthBase,
-            method: "POST",
             includeMessageText: true,
             denyMessage: UNLOCK_COPY,
             handoffEnabled: false,
@@ -478,7 +476,7 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
 
     // The endpoint was asked with the mirrored identity, not with anything typed.
     expect(auth.calls).toHaveLength(1);
-    expect(auth.calls[0]).toContain(`phone=${encodeURIComponent(PHONE)}`);
+    expect(auth.bodies[0]).toMatchObject({ contact: { phone: PHONE } });
     // The customer got exactly the operator's copy, as the persona bot.
     expect(cw.publicOn(convId)).toEqual([
       {

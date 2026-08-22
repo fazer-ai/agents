@@ -29,12 +29,11 @@ read, so a malformed bag can never break the webhook.
 | ----------------------- | ------- | ------------------------------------------------------------------- |
 | `enabled`               | `false` | The gate as a whole. Strict boolean: anything else reads as off.    |
 | `url`                   | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
-| `method`                | `GET`   | `GET` or `POST` (the two request shapes below).                     |
 | `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). A kind the vault marks as never-injected (`mcp_env`, `langfuse`) is refused as an error rather than falling back to a Bearer, which would hand an unrelated secret to the endpoint. |
 | `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error. Covers every step that waits: the SSRF/DNS check on the final URL, the request, and the body. |
 | `noticeCooldownSeconds` | `60`    | Clamped 0-3600. Cooldown on the NOTICES for a refused message (the customer copy and the operator note, per conversation), never on the verdict: the endpoint is asked on every message regardless. 0 = notify on every refused message. |
-| `includeMessageText`    | `false` | POST only: forward the triggering message's text as `message.text`, so the endpoint can accept an unlock code the customer sends. The opt-in is stored as set; a GET request simply does not carry the text, and switching the method back to POST brings it back. |
-| `denyMessage`           | `null`  | Fixed copy the CUSTOMER receives on a denial (≤ `TEMPLATE_MESSAGE_MAX`). `null` = say nothing. |
+| `includeMessageText`    | `false` | Forward the triggering message's text as `message.text`, so the endpoint can accept an unlock code the customer sends. Under its own key, never inside `contact`. |
+| `denyMessage`           | `null`  | Fixed copy the CUSTOMER receives on a denial (≤ `TEMPLATE_MESSAGE_MAX`). `null` = say nothing, which is a real choice: with the handoff on, a human takes the conversation and may not want an automated refusal ahead of them, and towards an unknown number a reply confirms the channel exists. Null AND the handoff off means a refused customer gets nothing at all, so the editor raises `contactAuthSilentRefusal` for that pair. |
 | `handoffEnabled`        | `true`  | Open a refused conversation for humans (the `handoff_to_human` mechanics: bot-token `toggle_status open`). |
 | `handoffTeamId`         | `null`  | Chatwoot team assigned after the open (bot-token `assignments`). `null` = inbox routing. Flat beside `handoffEnabled` for the mergeBehaviorSettings one-level-merge reason the tts block documents. |
 | `handoffTeamInstanceId` | `null`  | Our ChatwootInstance id the team above was picked from, recorded with it: a team id belongs to one account, and the team is assigned only in that account. `null` = a value stored before this field existed (falls back to the multi-account check). |
@@ -52,18 +51,15 @@ The request separates two kinds of data, and the separation IS the contract:
   must never read identity out of it; its use is an **unlock**: "send your access code to be
   served", where the endpoint validates the code against its own records.
 
+The request is always a **POST**: there is no GET shape and no `method` setting. A query string
+lands in the endpoint's access logs, cannot carry the customer's text at all, and reserves four
+parameter names that a query-injected credential would then silently overwrite. One shape also means
+one thing to document, one thing to test, and one place for the identity to be.
+
 Shapes:
 
-- **GET**: the short scalar identifiers are appended to the configured URL's query string (an
-  existing query survives): `phone`, `contact_id`, `identifier`, `email`, each omitted when the
-  mirror does not hold it. No `name` and no message text on GET: a query string lands in the
-  endpoint's access logs. Those four names are RESERVED under GET: a credential injected into the
-  query under one of them would replace the identity it names (the credential is written after it),
-  so the endpoint would read the secret as the customer's phone number — and the secret would land
-  in those same access logs under a field nobody treats as one. The pairing is refused
-  (`credential_param_collision`, an error, so fail-closed) rather than one of the two silently
-  winning. Under POST the identity travels in the body and the name is the operator's to reuse.
-- **POST** (`content-type: application/json`):
+- **Request** (`content-type: application/json`). The operator's own query string, if the configured
+  URL has one, is left untouched: nothing about the contact is appended to the URL.
 
   ```jsonc
   {
@@ -76,6 +72,8 @@ Shapes:
     },
     "conversation": { "id": 987, "inboxId": 12, "channel": "whatsapp" },
     "message": { "text": "..." }    // only with includeMessageText, capped at 4000 chars
+                                    // absent when the opt-in is off, the text is empty,
+                                    // or the check came from a nudge or a re-engage
   }
   ```
 
@@ -174,7 +172,7 @@ matters (the open ends the bot's attribution and the gate stops running); with h
 what keeps five messages from drawing five identical replies. Losing the cooldown on a restart
 merely repeats a notice.
 
-**The unlock flow** (`includeMessageText`, POST only): a denied customer is told, via `denyMessage`,
+**The unlock flow** (`includeMessageText`): a denied customer is told, via `denyMessage`,
 how to unlock (for example "send the access code from your invoice"). Their next message arrives,
 the gate runs again (nothing was cached), and the endpoint now sees `message.text` carrying the
 code: it validates the code against its own records, links the contact, answers

@@ -16,7 +16,6 @@ import {
   CONTACT_AUTH_DEFAULTS,
   readContactAuthConfig,
   readContactAuthUrl,
-  sendsMessageText,
 } from "@/modules/contact-auth/settings";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsGet, agentSettingsSet } from "@/modules/mcp/write";
@@ -70,50 +69,27 @@ describe("readContactAuthConfig", () => {
   test("includeMessageText needs a real boolean, and is the STORED opt-in", () => {
     expect(
       readContactAuthConfig({
-        contactAuth: { method: "POST", includeMessageText: true },
+        contactAuth: { includeMessageText: true },
       }).includeMessageText,
     ).toBe(true);
     expect(
       readContactAuthConfig({
-        contactAuth: { method: "POST", includeMessageText: "true" },
+        contactAuth: { includeMessageText: "true" },
       }).includeMessageText,
     ).toBe(false);
-    expect(
-      readContactAuthConfig({ contactAuth: { method: "POST" } })
-        .includeMessageText,
-    ).toBe(false);
+    expect(readContactAuthConfig({ contactAuth: {} }).includeMessageText).toBe(
+      false,
+    );
   });
 
-  // The reader used to force it off under GET, and `mergeBehaviorSettings` persists what the reader
-  // returns: a patch that changed only the method wrote the opt-in off for good, and switching back
-  // to POST could not restore a setting that edit never mentioned. Stored and effective are now
-  // separate, and only the effective one looks at the method.
-  test("a method switch does not erase the opt-in; only the request suppresses it", () => {
-    const underGet = readContactAuthConfig({
+  // A stored `method` is a leftover from when the request could be a GET. It is not a setting any
+  // more, and reading it back as one would resurrect a choice the operator can no longer make.
+  test("a leftover method in the bag is ignored, not carried forward", () => {
+    const cfg = readContactAuthConfig({
       contactAuth: { method: "GET", includeMessageText: true },
     });
-    expect(underGet.includeMessageText).toBe(true);
-    expect(sendsMessageText(underGet)).toBe(false);
-
-    const underPost = readContactAuthConfig({
-      contactAuth: { method: "POST", includeMessageText: true },
-    });
-    expect(sendsMessageText(underPost)).toBe(true);
-    expect(
-      sendsMessageText(
-        readContactAuthConfig({ contactAuth: { method: "POST" } }),
-      ),
-    ).toBe(false);
-  });
-
-  test("method is GET unless POST was stored (case-insensitively)", () => {
-    expect(readContactAuthConfig({ contactAuth: {} }).method).toBe("GET");
-    expect(
-      readContactAuthConfig({ contactAuth: { method: "post" } }).method,
-    ).toBe("POST");
-    expect(
-      readContactAuthConfig({ contactAuth: { method: "DELETE" } }).method,
-    ).toBe("GET");
+    expect(cfg.includeMessageText).toBe(true);
+    expect(cfg).not.toHaveProperty("method");
   });
 
   test("denyMessage is trimmed and empty collapses to null", () => {
@@ -329,7 +305,6 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
     expect(readContactAuthConfig(row.settings)).toEqual({
       enabled: true,
       url: "https://api.example.com/check?tenant=t1",
-      method: "POST",
       credentialRef: `vault:${credId}`,
       timeoutMs: 10_000,
       noticeCooldownSeconds: 0,

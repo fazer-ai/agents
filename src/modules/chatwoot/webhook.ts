@@ -48,10 +48,7 @@ import {
   type ContactAuthOutcome,
   contactAuthFlowEvent,
 } from "@/modules/contact-auth/service";
-import {
-  readContactAuthConfig,
-  sendsMessageText,
-} from "@/modules/contact-auth/settings";
+import { readContactAuthConfig } from "@/modules/contact-auth/settings";
 import {
   type ContactAuthNotice,
   claimContactAuthNotice,
@@ -699,8 +696,6 @@ const CONTACT_AUTH_ERROR_LABELS: Record<string, string> = {
   credential_unavailable: "credencial indisponível",
   credential_not_injectable:
     "a credencial escolhida nunca é enviada numa requisição",
-  credential_param_collision:
-    "o parâmetro da credencial tem o mesmo nome de um campo de identidade",
   invalid_response: "resposta inválida",
   body_too_large: "resposta grande demais",
   unexpected_status: "status inesperado",
@@ -1504,7 +1499,7 @@ async function maybeConsumeCommandOrGate(params: {
         messageText: n.message?.content ?? null,
         // The message id under an unlock flow, where the verdict is a function of the text; the
         // source otherwise. Never the text itself: it must not reach a cache key.
-        requestKey: sendsMessageText(authCfg)
+        requestKey: authCfg.includeMessageText
           ? `msg:${n.message?.id ?? "none"}`
           : "inbox",
         cfg: authCfg,

@@ -789,11 +789,14 @@ describe.skipIf(!dbUp)(
     test("a healthy re-boot does not lock the checkpointer's tables", async () => {
       const admin = new URL(suUrl as string);
       const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
-      // NOTE: `ALTER TABLE ... OWNER TO` takes an ACCESS EXCLUSIVE lock even when the owner does
-      // not change, and this script runs on EVERY boot — including the overlap of a rolling deploy,
-      // where the previous container is still answering customers. So the reconciliation loop has
-      // to skip what the role already owns, and the way to prove it is to hold a reader's lock and
-      // watch bootstrap walk past it rather than to inspect the SQL.
+      // NOTE: the ordinary deploy — administrator and runtime role are different accounts, the
+      // tables are the runtime role's — held against a reader's lock. `ALTER TABLE ... OWNER TO`
+      // takes an ACCESS EXCLUSIVE lock even when the owner does not change, and this script runs on
+      // EVERY boot, including the overlap where the previous container is still answering
+      // customers. Either half of the transfer's filter keeps this case out of the loop, so no
+      // single mutation shows up here; what it pins is that the common path never takes the lock,
+      // however that comes about. Measured: 60ms as it stands, 2070ms with the filter gone
+      // entirely, the latter being the lock_timeout deadline rather than a race.
       await onProbe(superuserOnProbe, async (c) => {
         await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
         await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${APP_ROLE}`);
@@ -821,11 +824,9 @@ describe.skipIf(!dbUp)(
         const elapsed = Date.now() - started;
 
         // NOTE: the wait is the assertion, not the exit code — a lock timeout inside the transfer
-        // is caught and, on an install that already owns everything, correctly swallowed, so an
-        // unfiltered loop still exits 0. What it cannot hide is having waited. Measured on this
-        // machine: 56ms filtered, 2047ms unfiltered, the latter being the lock_timeout deadline
-        // rather than a race, so the threshold sits an order of magnitude above the healthy time
-        // and half the timeout below the broken one.
+        // is caught and, on an install that needs no transfer, correctly swallowed, so a broken
+        // loop still exits 0. What it cannot hide is having waited. The threshold sits an order of
+        // magnitude above the healthy time and half the timeout below the broken one.
         expect(exitCode).toBe(0);
         expect(elapsed).toBeLessThan(1000);
       } finally {
@@ -879,6 +880,7 @@ describe.skipIf(!dbUp)(
         const elapsed = Date.now() - started;
 
         // Same threshold and same reasoning as the re-boot case above: the wait is the assertion.
+        // Measured: 126ms as it stands, 2131ms with `<> v_role` dropped from the filter.
         expect(exitCode).toBe(0);
         expect(elapsed).toBeLessThan(1000);
       } finally {

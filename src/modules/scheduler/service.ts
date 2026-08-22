@@ -253,6 +253,10 @@ export function claimPendingByKeyPrefix(
   limit: number,
   base: PrismaClient = basePrisma,
   tenantId?: bigint,
+  // Rows this drain already handled. Required in practice, not an optimization: ignoring run_at is
+  // what lets the barrier see a deferred job, and it also defeats FAILURE backoff — a row that just
+  // failed is due again immediately, so a looping drain would burn every attempt in milliseconds.
+  excludeIds?: bigint[],
 ): Promise<ClaimedJob[]> {
   return claimWhere(
     limit,
@@ -260,7 +264,7 @@ export function claimPendingByKeyPrefix(
     new Date(),
     Prisma.sql`kind = ${kind}::"SchedulerJobKind"`,
     tenantId,
-    undefined,
+    excludeIds,
     prefix,
   );
 }

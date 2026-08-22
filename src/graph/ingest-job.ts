@@ -165,6 +165,10 @@ export async function ingestHandler(
     role: p.role,
     base,
     ...(checkpointer ? { checkpointer } : {}),
+    // Only a RETRY can find its own append already in the channel: the row write and the append are
+    // not atomic, so attempt 2 may be repairing a half-done attempt 1. Passed as a flag rather than
+    // checked always, because the check costs a channel read on a path that does not need one.
+    retrying: job.attempts > 0,
     onAttendanceClosed: (previousConversationId) =>
       armCompaction({
         tenantId,
@@ -216,6 +220,12 @@ export async function drainPendingIngest(
   base: PrismaClient,
 ): Promise<void> {
   try {
+    // Every row this drain has touched, kept out of the next pass. Ignoring run_at is what lets the
+    // barrier see a job deferred for an earlier turn, and the same waiver defeats failure backoff:
+    // a row that just failed is due again immediately, so without this a transient checkpointer
+    // error would be retried five times inside one turn and dead-letter the message in
+    // milliseconds — spending the whole budget that exists for coming back LATER.
+    const seen: bigint[] = [];
     for (let pass = 0; pass < 5; pass++) {
       const claimed = await claimPendingByKeyPrefix(
         "INGEST_MESSAGE",
@@ -223,9 +233,13 @@ export async function drainPendingIngest(
         50,
         base,
         tenantId,
+        seen,
       );
       if (claimed.length === 0) return;
-      for (const job of claimed) await runClaimed(job, base);
+      for (const job of claimed) {
+        seen.push(job.id);
+        await runClaimed(job, base);
+      }
     }
   } catch (err) {
     logger.warn(

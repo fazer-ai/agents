@@ -83,13 +83,37 @@ describe("rememberIngested", () => {
     expect(rememberIngested([200], 100)).toEqual([200, 100]);
   });
 
-  test("caps by dropping the oldest ARRIVAL, not the lowest id", () => {
+  // The floor `ingestVerdict` reads is the minimum of the set, so eviction decides whether that
+  // floor can move BACKWARDS. Dropping the oldest arrival lets it: a delayed low id would push out
+  // the highest id that happened to arrive first, and every id between the two would stop being
+  // remembered while still reading as above the floor — a re-delivery of one comes back as `new`.
+  test("caps by dropping the LOWEST id, so the floor never moves backwards", () => {
     const recent = rememberIngested(full(1000), 42);
     expect(recent.length).toBe(INGEST_ID_WINDOW);
-    // 1000 arrived first, so it is what leaves; 42 is lowest and stays, because the cap protects
-    // the memory of recent WORK and 42 is the most recent work there is.
+    // 42 is the lowest, so 42 is what leaves; 1000 stays and remains the floor.
+    expect(recent).not.toContain(42);
+    expect(Math.min(...recent)).toBe(1000);
+  });
+
+  test("an evicted id does not become ingestable again", () => {
+    // Saturated at 1000-1063; a delayed 1050 is already known, so take a genuinely new high id.
+    let recent = full(1000);
+    recent = rememberIngested(recent, 2000);
+    // 1000 was the floor and is gone, so it must read as ancient rather than new.
     expect(recent).not.toContain(1000);
-    expect(recent.at(-1)).toBe(42);
+    expect(ingestVerdict(recent, 1000)).toBe("ancient");
+    expect(ingestVerdict(recent, 2000)).toBe("duplicate");
+  });
+
+  test("the migration's fill hands over one entry at a time", () => {
+    // Every entry is the same id, so eviction must drop ONE copy and not all of them.
+    const recent = rememberIngested(
+      Array.from({ length: INGEST_ID_WINDOW }, () => 500),
+      600,
+    );
+    expect(recent.length).toBe(INGEST_ID_WINDOW);
+    expect(recent.filter((id) => id === 500).length).toBe(INGEST_ID_WINDOW - 1);
+    expect(Math.min(...recent)).toBe(500);
   });
 
   // The pair has to compose: an id just remembered must read as a duplicate on the next delivery,

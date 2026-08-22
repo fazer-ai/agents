@@ -133,6 +133,9 @@ export interface IngestMessageParams {
   // that sets it is the scheduler job, because it is the only one with somewhere to come back from:
   // deferring on a path that cannot retry would just drop the message by a different route.
   deferIfTurnInFlight?: boolean;
+  // This is not the first attempt, so the append may already be in the channel from a previous one.
+  // See the check below; skipped when false because it costs a channel read.
+  retrying?: boolean;
 }
 
 export async function ingestMessageIntoThread(
@@ -227,22 +230,44 @@ export async function ingestMessageIntoThread(
         attendanceAlreadyStarted: alreadyStarted,
       });
 
+      // A RETRY REPAIRING ITS OWN HALF-DONE ATTEMPT MUST NOT REWRITE THE MESSAGE. The append and the
+      // row that records it are not atomic, so attempt 2 can find attempt 1's message already in the
+      // channel — and it would not write the same thing twice over: the boundary claim now sees this
+      // conversation's stamp already present, so `writeDivider` is false, and the derived id makes
+      // the reducer REPLACE the divider-bearing message with a plain one. The attendance boundary
+      // would be silently erased by the retry that was supposed to be idempotent.
+      //
+      // So the append is skipped outright when its id is already there. Only the row write is owed,
+      // which is exactly what failed the first time.
+      const alreadyAppended =
+        params.retrying === true &&
+        (
+          (
+            (
+              await graph.getState({
+                configurable: { thread_id: graphThreadId },
+              })
+            ).values as { messages?: BaseMessage[] } | undefined
+          )?.messages ?? []
+        ).some((m) => m.id === `ingest:${messageId}`);
+
       // Every message carries the conversation it belongs to, which is what the compaction cut reads.
       // Markers go through their factories because nothing else can make a message COUNT as one —
       // the text alone never does, or a customer could type it (src/graph/markers.ts).
-      await graph.updateState(
-        { configurable: { thread_id: graphThreadId } },
-        {
-          messages: ingestedMessages(
-            params.role,
-            params.text,
-            conversationId,
-            claim.writeDivider,
-            messageId,
-          ),
-        },
-        THREAD_STATE_NODE,
-      );
+      if (!alreadyAppended)
+        await graph.updateState(
+          { configurable: { thread_id: graphThreadId } },
+          {
+            messages: ingestedMessages(
+              params.role,
+              params.text,
+              conversationId,
+              claim.writeDivider,
+              messageId,
+            ),
+          },
+          THREAD_STATE_NODE,
+        );
 
       // Remember THIS direction's message, and only it. The scalar stays the HIGHEST id folded in,
       // which is now a `max` rather than an assignment: a message ingested out of order must not

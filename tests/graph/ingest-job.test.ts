@@ -244,6 +244,48 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(left).toBe(0);
   });
 
+  // The drain ignores run_at so it can see a job deferred for an EARLIER turn, and that same waiver
+  // defeats failure backoff: a row that just failed is immediately due again. Without excluding what
+  // it has already touched, one drain re-claims the same failing row on every pass and spends the
+  // whole retry budget inside a single turn — dead-lettering a customer's message in milliseconds,
+  // using up the very budget that exists for coming back later.
+  test("one drain spends one attempt on a failing row, not the whole budget", async () => {
+    const contactInboxId = 12505;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await armIngest({
+      tenantId,
+      instanceId,
+      conversationId: 984,
+      contactInboxId,
+      graphThreadId,
+      messageId: 600,
+      text: "isso aqui vai falhar",
+      role: "customer",
+      agentId: 1n,
+      compactionEnabled: false,
+      base: appDb,
+    });
+    // Make the handler throw deterministically: an instanceId that is not a number at all.
+    await suDb.$executeRawUnsafe(
+      `UPDATE scheduler_jobs SET payload = jsonb_set(payload, '{instanceId}', '"nao-e-numero"')
+        WHERE tenant_id = ${tenantId} AND dedupe_key = 'ingest:${graphThreadId}:600'`,
+    );
+
+    await drainPendingIngest(tenantId, graphThreadId, appDb);
+
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, dedupeKey: `ingest:${graphThreadId}:600` },
+      select: { attempts: true, status: true },
+    });
+    expect(row.attempts).toBe(1);
+    // Still retryable, and by the tick rather than by this turn.
+    expect(row.status).toBe("PENDING");
+  });
+
   // Two turns really do overlap on one thread (../../src/graph/inflight.ts counts rather than sets),
   // and a deferral that read the count as a boolean flag would resume on the FIRST release while the
   // second invoke is still reading — appending into exactly the window it stood down for.

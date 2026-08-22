@@ -56,19 +56,27 @@ export function ingestVerdict(
   return "new";
 }
 
-// The window after folding `messageId` in. Most recent LAST, capped by dropping from the front, so
-// the oldest id it remembers is the one `ingestVerdict` reads as the floor.
+// The window after folding `messageId` in, capped by dropping the LOWEST id it holds.
 //
-// Ordered by ARRIVAL rather than by id, deliberately. What the cap is protecting is the memory of
-// recent work, and the message that just arrived is the most recent work by definition even when
-// its id is lower than its neighbour's — which, on this path, is the ordinary case rather than the
-// exception.
+// The first version of this dropped the oldest ARRIVAL instead, which reads better and is wrong. The
+// floor `ingestVerdict` uses is the minimum of this set, and evicting by arrival lets that floor go
+// BACKWARDS: a delayed low id (the case this whole change exists to accept) pushes out the highest
+// id that happened to arrive first, and the floor drops to the delayed one. Every id between the two
+// then stops being remembered while still reading as above the floor, so a re-delivery of one is
+// classified `new` and appended a second time — the ordering fix handing the deduplication bug back.
+//
+// Dropping the lowest keeps the set equal to "the highest N ids seen", which makes the floor
+// monotonic: inserting above it evicts the old minimum and raises the floor, and an id below the
+// floor never gets inserted at all, because `ingestVerdict` already called it `ancient`.
 export function rememberIngested(
   recent: readonly number[],
   messageId: number,
 ): number[] {
   const next = [...recent, messageId];
-  return next.length > INGEST_ID_WINDOW
-    ? next.slice(next.length - INGEST_ID_WINDOW)
-    : next;
+  if (next.length <= INGEST_ID_WINDOW) return next;
+  // Only ONE has to go, and `indexOf` on the minimum drops a single copy — which is what the
+  // migration's saturated fill depends on, since every one of its entries is the same id.
+  const lowest = Math.min(...next);
+  next.splice(next.indexOf(lowest), 1);
+  return next;
 }

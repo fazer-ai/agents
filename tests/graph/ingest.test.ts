@@ -380,6 +380,81 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
   // on nothing, so an attendant answering a voice note is folded in FIRST. On one shared column that
   // higher id advances the watermark and the customer's message is skipped for good: the fix for a
   // memory missing the team's half would have started losing the customer's.
+  // The retry that repairs a half-done attempt must not rewrite the message. The append and the row
+  // recording it are not atomic, so attempt 2 can find attempt 1's message already in the channel —
+  // and by then the boundary claim sees this conversation's stamp and says the divider is not owed,
+  // so a plain replacement would erase the attendance boundary the first attempt wrote. Simulated
+  // the way it actually happens: the append lands, the row write does not.
+  test("a retry does not strip the divider off its own earlier append", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12405;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const ingestOn = (
+      conversationId: number,
+      messageId: number,
+      text: string,
+    ) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId,
+        text,
+        role: "customer",
+      });
+    const ingest = (retrying: boolean) =>
+      ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: 990,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId: 700,
+        text: "bom dia, voltei",
+        role: "customer",
+        retrying,
+      });
+    const contents = async () => {
+      const cp = await saver.get({
+        configurable: { thread_id: graphThreadId },
+      });
+      return (
+        ((cp?.channel_values as { messages?: BaseMessage[] })?.messages ??
+          []) as BaseMessage[]
+      ).map((m) => String(m.content));
+    };
+
+    // An earlier attendance on this same thread, so message 700 opens a NEW one and is owed the
+    // divider. Without a previous conversation there is no boundary to erase.
+    expect(await ingestOn(989, 699, "obrigado")).toBe("ingested");
+    expect(await ingest(false)).toBe("ingested");
+    const first = (await contents()).slice(1);
+    expect(first.length).toBe(1);
+    expect(first[0]).toContain(CONVERSATION_DIVIDER);
+
+    // The row write rolled back: the thread has no record of the message, but the channel does.
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_threads WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${contactInboxId}`,
+    );
+
+    expect(await ingest(true)).toBe("ingested");
+    const after = (await contents()).slice(1);
+    expect(after.length).toBe(1);
+    // The divider survives, which is the whole point: without the guard the reducer replaces the
+    // divider-bearing message with a plain one and the attendance boundary is gone for good.
+    expect(after[0]).toContain(CONVERSATION_DIVIDER);
+  });
+
   test("an attendant's reply does not suppress a customer message ingested after it", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12399;

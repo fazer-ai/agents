@@ -119,34 +119,35 @@ function message(err: unknown): string {
 
 // Makes the LangGraph checkpointer schema usable by the runtime role, which is three different
 // jobs depending on what is already there and only looks like one.
+//
+// The schema is owned by the runtime role so PostgresSaver.setup() can create its tables
+// (thread_id prefixing is the tenant fence here). Which statement is needed, and whether a refusal
+// may be survived, depends on what is already there — the two cases fail differently and one catch
+// over both would answer the wrong question:
+//
+//   ABSENT is a convenience. `setup()` runs its own `CREATE SCHEMA IF NOT EXISTS langgraph` at
+//   boot and the runtime role holds CREATE ON DATABASE for exactly that reason
+//   (docs/graph.md), so doing it here only settles the owner earlier — and when the server does
+//   it instead the owner comes out the same, because the runtime role is the creator. Creating
+//   it OWNED BY another role is what needs the membership taken above, so a refusal must not
+//   abort a boot that completes itself a minute later.
+//
+//   PRESENT is not, and it is the case a rotated runtime role lands in. `CREATE SCHEMA IF NOT
+//   EXISTS` is a no-op there, for us and for `setup()` alike, so nothing downstream repairs it:
+//   the checkpointer fails at boot on schema or table access, and reporting a successful
+//   bootstrap first is what makes that unreadable.
+//
+// A present schema is reconciled whoever owns it, and the schema's own owner is deliberately not
+// a shortcut out of that. Ownership of the schema and of the tables move independently here (only
+// the tables are transferred), so a rotation A -> B leaves the schema with A and its tables with
+// B — and a rollback to A would then find `owner === role`, skip everything, and boot into a
+// checkpointer that cannot read the tables A no longer owns. The reconciliation is idempotent, so
+// running it on a healthy install costs two no-op grants and a loop over nothing.
 async function provisionCheckpointerSchema(
   client: Client,
   role: string,
   ident: string,
 ) {
-  // LangGraph checkpointer schema, owned by the runtime role so PostgresSaver.setup() can create
-  // its tables (thread_id prefixing is the tenant fence here). Which statement is needed, and
-  // whether a refusal may be survived, depends on what is already there — the two cases fail
-  // differently and one catch over both would answer the wrong question:
-  //
-  //   ABSENT is a convenience. `setup()` runs its own `CREATE SCHEMA IF NOT EXISTS langgraph` at
-  //   boot and the runtime role holds CREATE ON DATABASE for exactly that reason
-  //   (docs/graph.md), so doing it here only settles the owner earlier — and when the server does
-  //   it instead the owner comes out the same, because the runtime role is the creator. Creating
-  //   it OWNED BY another role is what needs the membership taken above, so a refusal must not
-  //   abort a boot that completes itself a minute later.
-  //
-  //   PRESENT is not, and it is the case a rotated runtime role lands in. `CREATE SCHEMA IF NOT
-  //   EXISTS` is a no-op there, for us and for `setup()` alike, so nothing downstream repairs it:
-  //   the checkpointer fails at boot on schema or table access, and reporting a successful
-  //   bootstrap first is what makes that unreadable.
-  //
-  // A present schema is reconciled whoever owns it, and the schema's own owner is deliberately not
-  // a shortcut out of that. Ownership of the schema and of the tables move independently here (only
-  // the tables are transferred), so a rotation A -> B leaves the schema with A and its tables with
-  // B — and a rollback to A would then find `owner === role`, skip everything, and boot into a
-  // checkpointer that cannot read the tables A no longer owns. The reconciliation is idempotent, so
-  // running it on a healthy install costs two no-op grants and a loop over nothing.
   const schemaOwner = (
     await client.query<{ owner: string }>(
       "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'langgraph'",
@@ -165,7 +166,8 @@ async function provisionCheckpointerSchema(
       );
     }
   } else {
-    // Reconciling an existing schema is the rotated-runtime-role case, and it has three depths,
+    // NOTE: reconciling an existing schema is the rotated-runtime-role case, and it has three
+    // depths,
     // only the first of which is obvious:
     //
     //   the schema      -- USAGE/CREATE, or nothing in it can be reached at all;
@@ -177,17 +179,20 @@ async function provisionCheckpointerSchema(
     //                      (@langchain/langgraph-checkpoint-postgres 1.0.4), and Postgres allows
     //                      that only to the table's owner.
     //
-    // Only the TABLES are re-owned. The schema itself stays with whoever holds it: setup() needs
+    // NOTE: only the TABLES are re-owned. The schema itself stays with whoever holds it: setup()
+    // needs
     // USAGE and CREATE on it, which a grant covers, and nothing it runs alters the schema — so
     // taking it over buys nothing, and having it inside the same block would make a refusal there
     // abort the table transfers that do matter. Identifiers are quoted by Postgres in the DO
     // block rather than spliced here.
     //
-    // That independence is also why the schema's owner already matching is NOT a shortcut out of
+    // NOTE: that independence is also why the schema's owner already matching is NOT a shortcut
+    // out of
     // here: a rotation A -> B leaves the schema with A and its tables with B, so a rollback to A
     // finds its own name on the schema and no access to the tables. This runs whoever owns it, and
     // is idempotent — on a healthy install it is two no-op grants and a loop over nothing.
-    // The grants go FIRST, and the order is load-bearing rather than stylistic: Postgres requires a
+    // NOTE: the grants go FIRST, and the order is load-bearing rather than stylistic: Postgres
+    // requires a
     // table's prospective owner to hold CREATE on its schema, so on a fresh rotation -- where the
     // new role has nothing on the old owner's schema yet -- the transfer below would fail, roll
     // back its whole loop, and leave every table where it was.
@@ -220,7 +225,7 @@ async function provisionCheckpointerSchema(
       adoptError ??= err;
     }
 
-    // What decides the outcome is a privilege check, not the absence of an error above: this
+    // NOTE: what decides the outcome is a privilege check, not the absence of an error above: this
     // administrator may be refused everything while the runtime role already holds what it needs
     // from someone else, and it may equally hold only half of it.
     //
@@ -268,12 +273,12 @@ async function provisionCheckpointerSchema(
           `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO "${role}";`,
       );
     }
-    // NULL when every table is the runtime role's (and when there are no tables at all): the
+    // NOTE: NULL when every table is the runtime role's (and when there are no tables at all): the
     // aggregate only sees rows whose owner differs. Deliberately a string rather than an array --
     // the pg driver hands a scalar-subquery array back as its Postgres literal, not as a JS array.
     const foreignOwners = usable?.foreign_owners;
     if (foreignOwners) {
-      // A warning and not a refusal, because this install works: DML is all the checkpointer
+      // NOTE: a warning and not a refusal, because this install works: DML is all the checkpointer
       // needs until a package upgrade brings a migration that alters those tables, and refusing
       // now would crash-loop a server that boots fine today.
       console.warn(
@@ -297,7 +302,8 @@ async function provisionRuntimeRole(
   plan: RoleProvisioningPlan,
 ) {
   if (plan === "demote") {
-    // Fatal: RLS is a silent no-op for a privileged role, so the server refuses to serve with it
+    // NOTE: fatal on purpose. RLS is a silent no-op for a privileged role, so the server refuses
+    // to serve with it
     // anyway. Only a real superuser can take the attributes back off, so when we are not one,
     // name the statement a superuser has to run instead of dying on `permission denied`.
     try {
@@ -316,7 +322,8 @@ async function provisionRuntimeRole(
       );
     }
   } else if (plan === "syncPassword") {
-    // Best-effort: what this script owes is that the role EXISTS and is unprivileged, and both
+    // NOTE: best-effort. What this script owes is that the role EXISTS and is unprivileged, and
+    // both
     // already hold here. Rewriting the password needs ADMIN over the role, which an
     // administrative role that did not create it does not have — and the authority on whether
     // the password is right is the runtime's own connection seconds later, whose authentication
@@ -373,7 +380,8 @@ async function main() {
       password,
     ]);
 
-    // One round trip for everything the branching needs. The last two columns decide nothing on
+    // NOTE: one round trip for everything the branching needs. The last two columns decide nothing
+    // on
     // their own; they are what turns a bare permission error into a message that names the mode
     // the script was running in.
     const state = await client.query<{

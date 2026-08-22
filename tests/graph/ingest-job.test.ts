@@ -11,7 +11,7 @@ import { armIngest, ingestHandler } from "@/graph/ingest-job";
 import { runScopedOn } from "@/lib/tenancy";
 import {
   type ClaimedJob,
-  claimDueJobs,
+  claimDueTrafficJobs,
   revokeJobsByKeyPrefixOn,
 } from "@/modules/scheduler/service";
 import { runClaimed } from "@/modules/scheduler/worker";
@@ -113,7 +113,7 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
       base: appDb,
     });
     const claimed = (
-      await claimDueJobs(50, appDb, new Date(), tenantId)
+      await claimDueTrafficJobs(50, appDb, new Date(), tenantId)
     ).filter(
       (j) =>
         j.kind === "INGEST_MESSAGE" &&
@@ -314,9 +314,9 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
       compactionEnabled: false,
       base: appDb,
     });
-    const second = (await claimDueJobs(50, appDb, new Date(), tenantId)).find(
-      (j) => j.id === first.id,
-    );
+    const second = (
+      await claimDueTrafficJobs(50, appDb, new Date(), tenantId)
+    ).find((j) => j.id === first.id);
     expect(second?.claimSeq).toBe(first.claimSeq + 1);
 
     // The FIRST run, finally through the lock, finds the row is no longer its own.
@@ -373,7 +373,9 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     await arm(400, "primeira da rajada");
     await arm(401, "segunda da rajada");
 
-    const claimed = await claimDueJobs(50, appDb, new Date(), tenantId);
+    // Claimed from the traffic-proportional half of the shared lane: ingestion no longer competes
+    // with the fixed-rate kinds for the same batch (src/modules/scheduler/lanes.ts).
+    const claimed = await claimDueTrafficJobs(50, appDb, new Date(), tenantId);
     // Read from the dedicated column, not from the JSON: the ciphertext of a contact's own words
     // does not live in `payload` (CLAUDE.md, Encryption).
     const texts = claimed
@@ -416,7 +418,7 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     );
     // A due-only claim does not see it, which is the trap this guards.
     expect(
-      (await claimDueJobs(50, appDb, new Date(), tenantId)).filter(
+      (await claimDueTrafficJobs(50, appDb, new Date(), tenantId)).filter(
         (j) => j.kind === "INGEST_MESSAGE",
       ),
     ).toEqual([]);

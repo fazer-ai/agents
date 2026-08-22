@@ -10,6 +10,7 @@ import {
 import {
   type ClaimedJob,
   claimDueJobs,
+  claimDueTrafficJobs,
   completeJob,
   failJob,
   reapStaleJobs,
@@ -195,12 +196,27 @@ export async function runSchedulerTick(
       await dispatchDeadLetter(job, "reaped: the claim never finished", base);
     }
   }
-  const jobs = await claimDueJobs(
-    opts.batchSize,
-    base,
-    new Date(),
-    opts.tenantId,
-  );
+  // TWO CLAIMS, ONE DRAIN. The fixed-rate kinds take the batch; the traffic-proportional ones take a
+  // share of it on top (../scheduler/lanes.ts, JOB_TRAFFIC_PROPORTIONAL). A single claim ordered by
+  // run_at cannot serve both: ingestion rows are armed for `now` and arrive at the rate contacts
+  // write, so on a busy fleet they are always the oldest and always fill the batch, and an
+  // appointment reminder — a kind whose whole purpose is to arrive before something — is never
+  // claimed at all, however overdue it gets.
+  //
+  // A share rather than the whole batch again, because these are the rows that can be unbounded, and
+  // a quarter of a batch every tick is generous for work whose latency nothing waits on: every
+  // reader of a memory thread drains it before reading, so the tick is only the backstop for threads
+  // nobody touches.
+  const trafficShare = Math.max(1, Math.floor(opts.batchSize / 4));
+  const jobs = [
+    ...(await claimDueJobs(opts.batchSize, base, new Date(), opts.tenantId)),
+    ...(await claimDueTrafficJobs(
+      trafficShare,
+      base,
+      new Date(),
+      opts.tenantId,
+    )),
+  ];
   // NOTE: The batch drains CONCURRENTLY, which is what the debounce and compaction lanes always did
   // and this one did not (issue #165). Serially, the lane advanced at the speed of whatever was
   // running: one large document being indexed, or one follow-up whose model call is slow, delayed

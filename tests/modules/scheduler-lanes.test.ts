@@ -3,8 +3,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import {
+  JOB_DELETE_ON_DONE,
   JOB_LANE,
   JOB_SPENDS_PROVIDER,
+  JOB_TRAFFIC_PROPORTIONAL,
   type SchedulerLane,
   sharedProviderConcurrency,
 } from "@/modules/scheduler/lanes";
@@ -12,6 +14,7 @@ import {
   claimDueCompactionJobs,
   claimDueDebounceJobs,
   claimDueJobs,
+  claimDueTrafficJobs,
   enqueueJob,
   type SchedulerJobKind,
 } from "@/modules/scheduler/service";
@@ -102,6 +105,40 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   INGEST_MESSAGE: false,
 };
 
+// Same discipline again, and both of these maps were added by the change that introduced
+// INGEST_MESSAGE — the only kind that is `true` in either. A behaviour test can only exercise that
+// one end to end, so what stops a SECOND kind from being flipped is this list and nothing else, and
+// the two failures are quiet ones: a kind marked traffic-proportional silently leaves the fixed-rate
+// batch and is drained at a quarter of the rate; a kind marked delete-on-done stops leaving a
+// completed row behind, and the rows nothing sweeps are simply gone.
+const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
+  INGEST_MESSAGE: true,
+  FOLLOWUP: false,
+  FOLLOWUP_SWEEP: false,
+  WEBHOOK_RETRY: false,
+  DEBOUNCE: false,
+  RAG_INGEST: false,
+  HEARTBEAT: false,
+  FLOWLOG_SWEEP: false,
+  APPOINTMENT_REMINDER: false,
+  REDIRECT_FOLLOWUP: false,
+  MEMORY_COMPACT: false,
+};
+
+const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
+  INGEST_MESSAGE: true,
+  FOLLOWUP: false,
+  FOLLOWUP_SWEEP: false,
+  WEBHOOK_RETRY: false,
+  DEBOUNCE: false,
+  RAG_INGEST: false,
+  HEARTBEAT: false,
+  FLOWLOG_SWEEP: false,
+  APPOINTMENT_REMINDER: false,
+  REDIRECT_FOLLOWUP: false,
+  MEMORY_COMPACT: false,
+};
+
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];
 
 describe.skipIf(!dbUp)("scheduler lanes", () => {
@@ -146,7 +183,16 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
         claimedBy.set(kind, [...(claimedBy.get(kind) ?? []), lane]);
       }
     };
+    // The shared lane is claimed in TWO halves — the fixed-rate kinds and the traffic-proportional
+    // ones — so that a kind whose row count follows inbound traffic cannot fill the batch and starve
+    // the rest (../../src/modules/scheduler/lanes.ts, JOB_TRAFFIC_PROPORTIONAL). Both are recorded
+    // as "shared", because they are one lane: what the assertion below still means is that no kind
+    // is claimed by two lanes or by none, and a kind dropped from BOTH halves fails it.
     record("shared", await claimDueJobs(50, appDb, new Date(), tenantId));
+    record(
+      "shared",
+      await claimDueTrafficJobs(50, appDb, new Date(), tenantId),
+    );
     record(
       "debounce",
       await claimDueDebounceJobs(50, appDb, new Date(), tenantId),
@@ -330,6 +376,8 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     // Which kinds the bound APPLIES to, stated independently of the source. One kind is exercised
     // above; the rest are only ever covered here.
     expect(JOB_SPENDS_PROVIDER).toEqual(EXPECTED_SPENDS_PROVIDER);
+    expect(JOB_TRAFFIC_PROPORTIONAL).toEqual(EXPECTED_TRAFFIC_PROPORTIONAL);
+    expect(JOB_DELETE_ON_DONE).toEqual(EXPECTED_DELETE_ON_DONE);
   }, 30_000);
 
   // The production sizing, which the test above deliberately does not exercise: never the whole

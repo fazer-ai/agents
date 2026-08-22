@@ -8,7 +8,7 @@ import { isHumanAgentTurn } from "@/graph/markers";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { renderTranscript } from "@/modules/memory/summarize";
-import { claimDueJobs } from "@/modules/scheduler/service";
+import { claimDueTrafficJobs } from "@/modules/scheduler/service";
 import { runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -156,11 +156,18 @@ describe.skipIf(!dbUp)(
       };
     }
 
-    // INGEST_MESSAGE rides the SHARED lane, so this is the claim the main tick makes. Looped
+    // INGEST_MESSAGE rides the shared lane, in the TRAFFIC-PROPORTIONAL half of it: the tick claims
+    // that half separately and with a cap, so one kind whose row count follows inbound traffic cannot
+    // fill the batch and starve an appointment reminder (src/modules/scheduler/lanes.ts). Looped
     // because one delivery can queue more than a claim's worth over a burst.
     async function drainIngest(): Promise<void> {
       for (let pass = 0; pass < 10; pass++) {
-        const claimed = await claimDueJobs(50, appDb, new Date(), tenantId);
+        const claimed = await claimDueTrafficJobs(
+          50,
+          appDb,
+          new Date(),
+          tenantId,
+        );
         if (claimed.length === 0) return;
         for (const job of claimed) await runClaimed(job, appDb);
       }

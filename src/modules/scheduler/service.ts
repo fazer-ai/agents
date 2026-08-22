@@ -39,8 +39,11 @@ const MAX_ATTEMPTS = 5;
 // lane at all, or in two: nothing compared them, and the shared lane's was a NOT IN, so forgetting it
 // there silently WIDENED that lane. The values are enum members from a compile-time map, never user
 // input, so embedding them is safe — same property the literals had.
-function laneFilter(lane: SchedulerLane): Prisma.Sql {
-  return Prisma.sql`kind IN (${Prisma.join(kindsInLane(lane))})`;
+function laneFilter(
+  lane: SchedulerLane,
+  trafficProportional?: boolean,
+): Prisma.Sql {
+  return Prisma.sql`kind IN (${Prisma.join(kindsInLane(lane, trafficProportional))})`;
 }
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -319,7 +322,21 @@ export function claimDueJobs(
   now: Date = new Date(),
   tenantId?: bigint,
 ): Promise<ClaimedJob[]> {
-  return claimWhere(limit, base, now, laneFilter("shared"), tenantId);
+  return claimWhere(limit, base, now, laneFilter("shared", false), tenantId);
+}
+
+// The traffic-proportional half of the shared lane, claimed separately and with its own limit. One
+// FIFO batch cannot hold both: these rows are armed for `now` and arrive at the rate contacts write,
+// so ordered by run_at they are always the oldest and always fill it, and a fixed-rate kind that
+// exists to arrive on time never gets claimed at all (../scheduler/lanes.ts,
+// JOB_TRAFFIC_PROPORTIONAL). Splitting the claim is what reserves the rest of the batch for them.
+export function claimDueTrafficJobs(
+  limit: number,
+  base: PrismaClient = basePrisma,
+  now: Date = new Date(),
+  tenantId?: bigint,
+): Promise<ClaimedJob[]> {
+  return claimWhere(limit, base, now, laneFilter("shared", true), tenantId);
 }
 
 // Claims every PENDING job of one kind whose dedupeKey starts with `prefix`, DUE OR NOT. The one

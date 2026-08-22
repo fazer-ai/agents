@@ -118,8 +118,45 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   INGEST_MESSAGE: true,
 };
 
-export function kindsInLane(lane: SchedulerLane): SchedulerJobKind[] {
+// Whether the NUMBER of rows of this kind follows inbound traffic, rather than a population the
+// install controls. A third question about a kind, and the reason it is not the lane's: everything
+// here shares one tick, and one FIFO batch of a fixed size.
+//
+// Every other kind is bounded by something that does not scale with how much a contact writes — one
+// per agent, per appointment, per closed attendance, per retry. INGEST_MESSAGE is one per MESSAGE the
+// agent did not answer, so a busy fleet can arm more of them per tick than the batch can hold. Being
+// armed for `now`, they are also the oldest rows, so a claim ordered by run_at fills every batch with
+// them and never reaches an appointment reminder — a kind that exists to arrive BEFORE something —
+// no matter how long it waits.
+//
+// The answer is not a lane of its own. Ingestion's tick latency does not matter at all: every reader
+// of a memory thread drains it before reading (../../graph/ingest-drain.ts), so the tick is a
+// backstop for threads nobody touches, and a lane would only add a worker flag that an install can
+// leave off. What it needs is a CAP — the shared tick claims these separately, with a share of the
+// batch, so the fixed-rate kinds always have the rest.
+export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
+  FOLLOWUP: false,
+  FOLLOWUP_SWEEP: false,
+  WEBHOOK_RETRY: false,
+  DEBOUNCE: false,
+  RAG_INGEST: false,
+  HEARTBEAT: false,
+  FLOWLOG_SWEEP: false,
+  APPOINTMENT_REMINDER: false,
+  REDIRECT_FOLLOWUP: false,
+  MEMORY_COMPACT: false,
+  INGEST_MESSAGE: true,
+};
+
+export function kindsInLane(
+  lane: SchedulerLane,
+  // Narrow to one side of JOB_TRAFFIC_PROPORTIONAL. Omitted ⇒ the whole lane.
+  trafficProportional?: boolean,
+): SchedulerJobKind[] {
   return (Object.keys(JOB_LANE) as SchedulerJobKind[]).filter(
-    (kind) => JOB_LANE[kind] === lane,
+    (kind) =>
+      JOB_LANE[kind] === lane &&
+      (trafficProportional === undefined ||
+        JOB_TRAFFIC_PROPORTIONAL[kind] === trafficProportional),
   );
 }

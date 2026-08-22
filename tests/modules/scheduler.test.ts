@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import {
   claimDueCompactionJobs,
   claimDueJobs,
+  claimDueTrafficJobs,
   completeJob,
   enqueueJob,
   failJob,
@@ -184,6 +185,51 @@ describe.skipIf(!dbUp)("scheduler", () => {
     const mine = await claimDueCompactionJobs(50, appDb, new Date(), tenantId);
     const mineIds = mine.map((j) => j.id);
     expect(mineIds).toEqual([compaction]);
+  });
+
+  // Round-12 review finding (P1). The shared lane holds one FIFO batch of a fixed size, and one kind
+  // in it — INGEST_MESSAGE — has a row count proportional to how much contacts write, armed for
+  // `now`. Ordered by run_at those rows are always the oldest, so on a fleet arming more of them per
+  // tick than the batch holds, they fill every batch and an APPOINTMENT_REMINDER is never claimed at
+  // all, however overdue: a kind whose entire purpose is to arrive BEFORE something.
+  //
+  // Staged at the boundary that matters: the batch is smaller than the ingestion backlog.
+  test("a batch full of ingestion still leaves room for a due reminder", async () => {
+    const reminder = await enqueueJob({
+      tenantId,
+      kind: "APPOINTMENT_REMINDER",
+      dedupeKey: "dk-share-reminder",
+      // Due, but NEWER than the ingestion backlog below — which is the whole trap: FIFO by run_at
+      // puts it last, and the batch never reaches it.
+      runAt: past(),
+      base: appDb,
+    });
+    const ingest: bigint[] = [];
+    for (let i = 0; i < 8; i++) {
+      ingest.push(
+        await enqueueJob({
+          tenantId,
+          kind: "INGEST_MESSAGE",
+          dedupeKey: `dk-share-ingest-${i}`,
+          runAt: new Date(Date.now() - 600_000 - i * 1000),
+          base: appDb,
+        }),
+      );
+    }
+
+    // A batch of four: smaller than the ingestion backlog, so a single claim ordered by run_at would
+    // return four ingestion rows and nothing else.
+    const fixed = await claimDueJobs(4, appDb, new Date(), tenantId);
+    expect(fixed.map((j) => j.id)).toContain(reminder);
+    expect(fixed.every((j) => j.kind !== "INGEST_MESSAGE")).toBe(true);
+
+    // The traffic half is claimed separately and capped, so it drains steadily without ever being
+    // able to crowd the batch above out.
+    const traffic = await claimDueTrafficJobs(1, appDb, new Date(), tenantId);
+    expect(traffic).toHaveLength(1);
+    expect(traffic[0]?.kind).toBe("INGEST_MESSAGE");
+    // The oldest one first: capped is not unordered.
+    expect(traffic[0]?.id).toBe(ingest[7] as bigint);
   });
 
   // The exclusion has to happen in the CLAIM, not after it: a row left PENDING is protected by the

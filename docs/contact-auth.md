@@ -174,6 +174,16 @@ otherwise be lost), minus the resolve: nothing reached the customer. Ownership i
 the check is a round-trip with a ten-second ceiling, and stamping labels on a conversation a human
 took during it would be writing on theirs.
 
+**Manual re-engage** (`reengageConversation` in `src/modules/conversations/reengage.ts`, behind the
+console button, `POST /v1/conversations/:id/reengage` and the MCP write action): the same check,
+after the assignee gate and before the model. Re-engage answers the unanswered tail, which may be
+unanswered precisely BECAUSE the contact was refused when it arrived, and the operator pressing the
+button is not the authorization — the endpoint is. A refusal ends as the `not-authorized` outcome,
+reported to whoever pressed it (a toast in the console, the outcome in the API/MCP result) and
+written to the flowlog; nothing is sent to the customer and there is no handoff, because both exist
+to answer a message the customer just sent and here there is none. Like a nudge it carries no
+`message` and never shares a single-flight with an incoming one.
+
 **Playground**: the gate does not run; there is no Chatwoot contact to ask about, and the
 playground exists to test the agent's own behavior.
 

@@ -1456,7 +1456,8 @@ export function ConversationDetailPage() {
   }
 
   // Re-engage (item 6): re-fire the agent turn over the unanswered tail, without waiting for a new
-  // customer message. Toast reflects the outcome (posted / gate held by a human / nothing to answer).
+  // customer message. Toast reflects the outcome (posted / gate held by a human / contact not
+  // authorized / nothing to answer).
   async function reengage() {
     setOfferReengage(false);
     setBusy(true);
@@ -1475,6 +1476,14 @@ export function ConversationDetailPage() {
           t(
             "conversation.reengage.gateClosed",
             "A human owns this conversation; return it to the AI first.",
+          ),
+          "warning",
+        );
+      } else if (data.outcome === "not-authorized") {
+        showToast(
+          t(
+            "conversation.reengage.notAuthorized",
+            "The authorization endpoint did not clear this contact, so the AI did not reply.",
           ),
           "warning",
         );

@@ -407,6 +407,7 @@
       "failedTitle": "A IA não conseguiu concluir o último turno",
       "gateClosed": "Um humano está cuidando desta conversa. Devolva para a IA primeiro.",
       "noReply": "A IA não gerou resposta.",
+      "notAuthorized": "O endpoint de autorização não liberou este contato, então a IA não respondeu.",
       "posted": "A IA respondeu."
     },
     "reminders": {

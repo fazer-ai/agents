@@ -35,6 +35,11 @@ const suDb = su as PrismaClient;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
+let agentId = 0n;
+
+// A literal address in TEST-NET-3: the SSRF guard vets the final URL for real here, and an IP needs
+// no resolver to be vetted.
+const AUTH_URL = "https://203.0.113.9:9443/check";
 
 const REPLY = "Desculpe a demora, já te ajudo!";
 const fakeModel = () => new FakeListChatModel({ responses: [REPLY] });
@@ -68,7 +73,11 @@ function page(msgs: Array<{ id: number; content: string; type?: number }>) {
 
 async function seedConversation(
   convId: number,
-  over: { assigneeType?: string | null; lastError?: string | null } = {},
+  over: {
+    assigneeType?: string | null;
+    lastError?: string | null;
+    contactId?: bigint;
+  } = {},
 ): Promise<bigint> {
   const c = await suDb.conversation.create({
     data: {
@@ -78,6 +87,7 @@ async function seedConversation(
       status: "pending",
       assigneeType: over.assigneeType ?? null,
       inboxId: inboxDbId,
+      ...(over.contactId ? { contactId: over.contactId } : {}),
       threadId: `${tenantId}:${instanceId}:${convId}`,
       lastEventAt: new Date(),
       lastError: over.lastError ?? null,
@@ -128,6 +138,7 @@ describe.skipIf(!dbUp)("reengage", () => {
         name: "Atendente",
       },
     });
+    agentId = agent.id;
     const inbox = await suDb.inbox.create({
       data: {
         tenantId,
@@ -145,6 +156,7 @@ describe.skipIf(!dbUp)("reengage", () => {
       for (const table of [
         "llm_usage",
         "conversations",
+        "contacts",
         "inboxes",
         "agents",
         "vault_entries",
@@ -231,5 +243,130 @@ describe.skipIf(!dbUp)("reengage", () => {
     );
     expect(res.outcome).toBe("empty");
     expect(sent).toEqual([]);
+  });
+
+  // Re-engage runs the model and SENDS its answer, so it is a turn, and the contact-authorization
+  // invariant covers it: an operator pressing the button is not the authorization. The tail this
+  // answers may be unanswered precisely because the contact was refused when it arrived.
+  describe("with the contact-authorization gate on", () => {
+    let previousSettings: unknown = null;
+
+    beforeAll(async () => {
+      const before = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { settings: true },
+      });
+      previousSettings = before.settings;
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            contactAuth: { enabled: true, url: AUTH_URL, method: "GET" },
+          },
+        },
+      });
+    });
+
+    afterAll(async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: previousSettings as object },
+      });
+    });
+
+    async function seedContact(chatwootContactId: number): Promise<bigint> {
+      const c = await suDb.contact.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootContactId,
+          phone: `+55119888877${chatwootContactId}`,
+        },
+        select: { id: true },
+      });
+      return c.id;
+    }
+
+    function answering(authorized: boolean, calls: { n: number }) {
+      return (async () => {
+        calls.n += 1;
+        return new Response(JSON.stringify({ authorized }), { status: 200 });
+      }) as unknown as typeof fetch;
+    }
+
+    test("a refused contact is not re-engaged (no model, no post)", async () => {
+      const id = await seedConversation(903, {
+        contactId: await seedContact(41),
+      });
+      const sent: Array<[number, string]> = [];
+      const calls = { n: 0 };
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(false, calls),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("not-authorized");
+      expect(calls.n).toBe(1);
+      expect(sent).toEqual([]);
+    });
+
+    test("an authorized contact is re-engaged as usual", async () => {
+      const id = await seedConversation(904, {
+        contactId: await seedContact(42),
+      });
+      const sent: Array<[number, string]> = [];
+      const calls = { n: 0 };
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(true, calls),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      expect(calls.n).toBe(1);
+      expect(sent).toEqual([[904, REPLY]]);
+    });
+
+    // Nothing to ask the endpoint about is not a pass: the mirror holds no phone, no e-mail and no
+    // identifier, so the request is never made and the answer is a refusal.
+    test("a contact with no identity is refused without asking", async () => {
+      const id = await seedConversation(905);
+      const sent: Array<[number, string]> = [];
+      const calls = { n: 0 };
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(true, calls),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("not-authorized");
+      expect(calls.n).toBe(0);
+      expect(sent).toEqual([]);
+    });
   });
 });

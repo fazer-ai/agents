@@ -406,6 +406,7 @@
       "failedTitle": "The AI couldn't finish its last turn",
       "gateClosed": "A human owns this conversation; return it to the AI first.",
       "noReply": "The AI produced no reply.",
+      "notAuthorized": "The authorization endpoint did not clear this contact, so the AI did not reply.",
       "posted": "The AI replied."
     },
     "reminders": {

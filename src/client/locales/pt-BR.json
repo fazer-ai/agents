@@ -680,6 +680,7 @@
     "cloneTitle": "Clonar agente",
     "cloneUnsavedNote": "A clonagem usa a última versão salva; suas alterações não salvas não serão incluídas.",
     "configIssue": {
+      "contactAuthNoUrl": "A verificação de autorização está ligada, mas sem endereço para consultar. Sem ele a verificação falha em toda mensagem e o agente para de responder a todo mundo. Preencha a URL do endpoint, ou desligue a verificação.",
       "contactAuthSilentRefusal": "Um contato recusado fica sem nada: nenhuma mensagem é enviada e a conversa não é aberta para ninguém, então ele fica sem resposta e só uma nota privada registra o que houve. Escreva a mensagem de recusa, ou ligue a passagem para atendimento humano.",
       "contactAuthUnlockHandoff": "O destravamento por código e a passagem para atendimento humano se anulam: a primeira recusa abre a conversa e a atribui, e uma conversa aberta não é mais da IA, então o código que o cliente mandar em seguida nunca chega à verificação. Desligue a passagem para humano para deixar o contato se destravar, ou pare de enviar o texto da mensagem se um humano deve assumir toda conversa recusada.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas o embedding do tenant não está configurado.",

@@ -678,6 +678,7 @@
     "cloneTitle": "Clone agent",
     "cloneUnsavedNote": "Cloning uses the last saved version; your unsaved changes won't be included.",
     "configIssue": {
+      "contactAuthNoUrl": "The authorization check is on but has no endpoint to ask. Without one it fails on every message and the agent stops answering anyone. Fill in the endpoint URL, or turn the check off.",
       "contactAuthSilentRefusal": "A refused contact is left with nothing: no message is sent and the conversation is not opened for anyone, so their message goes unanswered and only a private note records it. Write the refusal message, or turn on the handoff to humans.",
       "contactAuthUnlockHandoff": "The access-code unlock and the handoff cancel each other out: the first refusal opens the conversation and assigns it, and a conversation that is open is no longer the AI's, so the code the customer sends next never reaches the check. Turn the handoff off to let contacts unlock themselves, or stop sending the message text if a human should take every refused conversation.",
       "embedding": "A knowledge base needs indexing, but the tenant embedding is not configured.",

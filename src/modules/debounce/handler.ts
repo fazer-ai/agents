@@ -417,11 +417,15 @@ export async function flushDebounceJob(
             chatwootConversationId: conversationId,
           },
         },
-        select: { status: true, assigneeType: true },
+        // assigneeId is part of the question, not decoration: without it shouldBotHandle cannot
+        // tell OUR bot from another one, and a conversation handed to a different bot during the
+        // authorization call would read as still ours.
+        select: { status: true, assigneeType: true, assigneeId: true },
       });
       return shouldBotHandle(
         {
           assigneeType: conv?.assigneeType ?? null,
+          assigneeId: conv?.assigneeId ?? null,
           status: conv?.status ?? null,
         },
         { ourAgentBotId: agentBotId },

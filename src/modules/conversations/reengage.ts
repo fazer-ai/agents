@@ -197,11 +197,15 @@ export async function reengageConversation(
     const stillOurs = await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
         where: { id: resolved.convDbId },
-        select: { status: true, assigneeType: true },
+        // assigneeId is part of the question, not decoration: without it shouldBotHandle cannot
+        // tell OUR bot from another one, and a conversation handed to a different bot during the
+        // authorization call would read as still ours.
+        select: { status: true, assigneeType: true, assigneeId: true },
       });
       return shouldBotHandle(
         {
           assigneeType: conv?.assigneeType ?? null,
+          assigneeId: conv?.assigneeId ?? null,
           status: conv?.status ?? null,
         },
         { ourAgentBotId: resolved.loaded.agentBotId },

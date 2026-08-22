@@ -85,26 +85,33 @@ export interface TurnState {
 // Isolated from TurnState on purpose: reactive turns and proactive nudges share handoff delivery,
 // while resolve/image post-actions have different semantics on those two paths.
 export interface HandoffTurnState {
-  // The closing line reached the customer (best-effort send, so it can be false on a live handoff).
-  customerMessageSent: boolean;
+  // The closing line the model wants the customer to read before the transfer. RECORDED here, never
+  // sent from the tool: the runtime is the single writer of customer-facing text, so this line goes
+  // out through the same output guardrail, the same modality choice and the same pacing as any other
+  // reply (issue #160). Null when the model supplied none.
+  customerMessage: string | null;
   // The conversation left `pending`, so the human queue owns it and the bot is done talking.
   completed: boolean;
 }
 
-// Whether the handoff already said everything this turn had to say, which is the ONE question both
-// runtimes ask. Two bits and not one, because the tool's first step is not the caller's question:
-// only a handoff that both gave the customer a closing line AND completed makes the model's final
-// text a second copy of something already read.
+// Whether the handoff supplies this turn's customer-facing text, which is the ONE question both
+// runtimes ask. Two conditions and not one, because a transfer with nothing to say leaves the
+// model's own final text as the only thing the customer would get, and that text is still theirs.
 //
 // A transfer that threw halfway answers false, and has to. sendPrivateNote and toggleStatus are not
-// best-effort, so either can throw after the customer was already told a human is coming; the
+// best-effort, so either can throw AFTER the model composed a line promising a human; the
 // conversation then stays `pending`, i.e. still the bot's and queued to nobody, and the model gets
-// the tool error plus one more step. That recovery reply is the only thing standing between the
-// customer and a promise nobody is going to keep.
+// the tool error plus one more step. That recovery reply is what the customer reads instead, and
+// the undelivered promise is discarded with the turn that failed to keep it.
+// A TYPE guard and not a boolean, so the line it proves is there is typed as being there. Both
+// callers read `customerMessage` immediately after asking, and both used to cast it to `string` on
+// their own word: a cast is what a compiler accepts INSTEAD of a proof, so the guard could have been
+// deleted at either call site and nothing would have complained until a turn with no transfer
+// handed a null to the guardrail.
 export function handoffAnsweredTheTurn(
   state: HandoffTurnState | undefined,
-): boolean {
-  return !!state && state.customerMessageSent && state.completed;
+): state is HandoffTurnState & { customerMessage: string } {
+  return !!state && !!state.customerMessage && state.completed;
 }
 
 export interface PendingImage {
@@ -254,28 +261,6 @@ function handoffTool(ctx: ToolCtx) {
       assignTo?: string;
       customerMessage?: string;
     }) => {
-      // Reply to the CUSTOMER first (the persona's closing line) so they are not left in silence once
-      // the bot goes quiet after the handoff. Best-effort — a send failure must not block the transfer.
-      if (customerMessage?.trim()) {
-        try {
-          await ctx.client.sendMessage(
-            ctx.conversationId,
-            customerMessage.trim(),
-          );
-          if (ctx.handoffState) ctx.handoffState.customerMessageSent = true;
-        } catch (e) {
-          logger.warn(
-            "handoff customer message failed (conv=%s): %s",
-            String(ctx.conversationId),
-            e instanceof Error ? e.message : String(e),
-          );
-          ctx.onSideEffectError?.({
-            tool: "handoff_to_human",
-            phase: "customer_message",
-            err: e,
-          });
-        }
-      }
       // Transfer-with-summary: a private note for the human BEFORE handing off, gated by the
       // per-agent toggle (default on).
       if (reason && ctx.transferWithSummary !== false) {
@@ -287,7 +272,23 @@ function handoffTool(ctx: ToolCtx) {
       // Only here: everything above can throw, and a handoff that did not reach this line has not
       // happened. The optional assignment below is best-effort by design — the conversation is
       // already out of `pending`, so a routing miss does not put it back.
-      if (ctx.handoffState) ctx.handoffState.completed = true;
+      //
+      // The closing line is recorded HERE, from THIS invocation's argument, and never above: the
+      // caller delivers it, and it must belong to the transfer that actually happened. A model whose
+      // first attempt threw is handed the error and calls the tool again, and a second attempt that
+      // succeeds with no line of its own would otherwise deliver the first one's promise and
+      // suppress the recovery text the model wrote instead.
+      //
+      // Recorded rather than sent from here: sending it from inside the tool is what put the most
+      // rule-bound message of the turn outside the output guardrail, outside TTS and outside the
+      // pacing every other reply gets (#160). The cost is ordering — the customer reads it just
+      // after the transfer instead of just before, which Chatwoot never shows them.
+      if (ctx.handoffState) {
+        if (customerMessage?.trim()) {
+          ctx.handoffState.customerMessage = customerMessage.trim();
+        }
+        ctx.handoffState.completed = true;
+      }
 
       // Optional targeting (best-effort: the handoff already happened, so an assignment failure must
       // not break the turn). In `route` mode nothing is assigned (Chatwoot routes).

@@ -4,6 +4,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import {
   buildNativeTools,
   type HandoffTurnState,
+  handoffAnsweredTheTurn,
   NATIVE_TOOL_NAMES,
 } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -93,24 +94,36 @@ describe("native tools", () => {
     expect(String(out)).toContain("human");
   });
 
-  test("handoff with customerMessage replies to the customer before the note and transfer", async () => {
+  // #160: the tool writes NOTHING to the customer. The closing line is recorded for the caller, which
+  // is what puts it through the output guardrail and the shared delivery path.
+  test("handoff with customerMessage sends only the note and the transfer", async () => {
     const { client, calls } = recordingClient();
-    const tools = buildNativeTools({ client, conversationId: 42 });
+    const handoffState: HandoffTurnState = {
+      customerMessage: null,
+      completed: false,
+    };
+    const tools = buildNativeTools({
+      client,
+      conversationId: 42,
+      handoffState,
+    });
     await byName(tools, "handoff_to_human").invoke({
       customerMessage: "Vou te transferir para um atendente, um momento.",
       reason: "cliente pediu humano",
     });
     expect(calls).toEqual([
-      ["sendMessage", [42, "Vou te transferir para um atendente, um momento."]],
       ["sendPrivateNote", [42, "cliente pediu humano"]],
       ["toggleStatus", [42, "open"]],
     ]);
+    expect(handoffState.customerMessage).toBe(
+      "Vou te transferir para um atendente, um momento.",
+    );
   });
 
-  test("a delivered handoff customerMessage marks the turn as terminal", async () => {
+  test("a recorded handoff customerMessage marks the turn as terminal", async () => {
     const { client } = recordingClient();
     const handoffState: HandoffTurnState = {
-      customerMessageSent: false,
+      customerMessage: null,
       completed: false,
     };
     const tools = buildNativeTools({
@@ -121,14 +134,19 @@ describe("native tools", () => {
     await byName(tools, "handoff_to_human").invoke({
       customerMessage: "Vou te transferir para um atendente, um momento.",
     });
-    expect(handoffState.customerMessageSent).toBe(true);
+    expect(handoffState.customerMessage).not.toBeNull();
     expect(handoffState.completed).toBe(true);
   });
 
-  // The two bits are not the same event. toggleStatus is where the conversation actually leaves
-  // `pending`, and it is not best-effort: a throw there means the customer was promised a human
-  // nobody was told about, and the caller must let the model speak again.
-  test("a handoff whose toggleStatus throws delivered the line but did NOT complete", async () => {
+  // toggleStatus is where the conversation actually leaves `pending`, and it is not best-effort: a
+  // throw there means nobody was told about a customer the model was about to promise a human to, so
+  // the caller must let the model speak again — and the undelivered promise must NOT go out, which is
+  // what recording instead of sending buys.
+  //
+  // It records NOTHING, and that is the point: the model is handed the error and calls the tool
+  // again, so a line left behind by the attempt that failed would be delivered by the attempt that
+  // worked, in place of whatever the model decided to say the second time.
+  test("a handoff whose toggleStatus throws records nothing at all", async () => {
     const client = {
       sendMessage: async () => ({}),
       sendPrivateNote: async () => ({}),
@@ -137,7 +155,7 @@ describe("native tools", () => {
       },
     } as unknown as ChatwootClient;
     const handoffState: HandoffTurnState = {
-      customerMessageSent: false,
+      customerMessage: null,
       completed: false,
     };
     const tools = buildNativeTools({
@@ -151,7 +169,7 @@ describe("native tools", () => {
         reason: "cliente pediu humano",
       }),
     ).rejects.toThrow();
-    expect(handoffState.customerMessageSent).toBe(true);
+    expect(handoffState.customerMessage).toBeNull();
     expect(handoffState.completed).toBe(false);
   });
 
@@ -851,40 +869,6 @@ describe("swallowed side effects reach onSideEffectError (issue #46)", () => {
     expect(effects[0]?.err).toBeInstanceOf(Error);
   });
 
-  test("handoff customer-message failure reports phase customer_message and the transfer proceeds", async () => {
-    const calls: string[] = [];
-    const client = {
-      sendMessage: async () => {
-        throw new Error("send blew up");
-      },
-      toggleStatus: async () => {
-        calls.push("toggleStatus");
-        return {};
-      },
-    } as unknown as ChatwootClient;
-    const effects: SideEffect[] = [];
-    const handoffState: HandoffTurnState = {
-      customerMessageSent: false,
-      completed: false,
-    };
-    const tools = buildNativeTools({
-      client,
-      conversationId: 5,
-      handoffState,
-      onSideEffectError: (e) => effects.push(e),
-    });
-    const out = String(
-      await byName(tools, "handoff_to_human").invoke({
-        customerMessage: "Um humano vai te atender.",
-      }),
-    );
-    expect(out).toContain("Handed off to a human");
-    expect(calls).toContain("toggleStatus");
-    expect(effects.map((e) => e.phase)).toEqual(["customer_message"]);
-    expect(effects[0]?.tool).toBe("handoff_to_human");
-    expect(handoffState.customerMessageSent).toBe(false);
-  });
-
   test("set_custom_attribute mirror write-through failure reports phase mirror_write after the Chatwoot write", async () => {
     const { client, calls } = recordingClient();
     const effects: SideEffect[] = [];
@@ -957,4 +941,41 @@ describe("swallowed side effects reach onSideEffectError (issue #46)", () => {
       phase: "outbound_emit",
     });
   });
+});
+
+// Two facts, two fields, and the predicate needs both. They happen to be written in the same block
+// today, which is exactly why the table exists: the block that writes them was MOVED here by review
+// (the line used to be recorded on the way into the tool, so a first attempt that threw left its
+// promise behind for the retry to deliver in place of the recovery text the model wrote instead).
+// A caller that reads only "there is a line" would deliver that promise again.
+describe("handoffAnsweredTheTurn", () => {
+  const rows: [string, HandoffTurnState | undefined, boolean][] = [
+    ["no handoff state at all", undefined, false],
+    [
+      "a transfer that promised nothing",
+      { customerMessage: null, completed: true } as HandoffTurnState,
+      false,
+    ],
+    [
+      "a promise whose transfer never completed",
+      {
+        customerMessage: "já te encaminho",
+        completed: false,
+      } as HandoffTurnState,
+      false,
+    ],
+    [
+      "a completed transfer that promised a line",
+      {
+        customerMessage: "já te encaminho",
+        completed: true,
+      } as HandoffTurnState,
+      true,
+    ],
+  ];
+  for (const [name, state, expected] of rows) {
+    test(`${name} → ${expected}`, () => {
+      expect(handoffAnsweredTheTurn(state)).toBe(expected);
+    });
+  }
 });

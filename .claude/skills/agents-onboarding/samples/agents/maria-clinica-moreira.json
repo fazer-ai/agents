@@ -30,7 +30,7 @@
         "voice": "33B4UnXyTNbgLmdEDh5P",
         "baseURL": null,
         "provider": "elevenlabs",
-        "normalize": false,
+        "normalize": true,
         "credentialRef": "ElevenLabs"
       },
       "split": {

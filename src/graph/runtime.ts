@@ -4,7 +4,6 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { verdictAskMode } from "@/graph/model-config";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
@@ -30,8 +29,11 @@ import {
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
-import { analyzeGuardrail } from "@/modules/guardrails/analyze";
-import { loggableCategories } from "@/modules/guardrails/log-categories";
+import {
+  buildGuardrailGate,
+  guardrailTripped,
+  screenedText,
+} from "@/modules/guardrails/gate";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
 import { deliverReply } from "@/modules/split/service";
@@ -54,7 +56,7 @@ import {
   markTurnInFlight,
 } from "./inflight";
 import { conversationDividerMessage, conversationStamp } from "./markers";
-import { createChatModel, type ResolvedModelConfig } from "./models";
+import type { ResolvedModelConfig } from "./models";
 import {
   type AgentConfig,
   buildCallbacks,
@@ -114,6 +116,12 @@ export interface RuntimeDeps {
   normalizeSpeech?: (text: string) => Promise<string>;
   // Injectable sleep for the split/typing pacing (tests pass a no-op); real setTimeout otherwise.
   sleep?: (ms: number) => Promise<void>;
+  // Injectable clock (tests); `new Date()` otherwise. The proactive path reads the wall clock in
+  // exactly one place, the 24h service window, and that read has to be asserted on both sides of a
+  // model call. A fixed sleep cannot assert it: the window is an hour at its narrowest, and a test
+  // that leans on real time to cross the boundary passes for the wrong reason the moment the
+  // machine is slow enough to cross it before the first read.
+  now?: () => Date;
 }
 
 export interface RunLoadedTurnParams {
@@ -296,7 +304,10 @@ export async function runLoadedTurn(
     imagesInFlight: 0,
     imagesSeq: 0,
   };
-  const handoffState = { customerMessageSent: false, completed: false };
+  const handoffState = {
+    customerMessage: null as string | null,
+    completed: false,
+  };
   const tools = await buildToolset(
     loaded,
     {
@@ -390,105 +401,181 @@ export async function runLoadedTurn(
     tools,
   });
 
-  // Guardrails (input/output moderation): build the guardrails agent's model once (its OWN
-  // credential, resolved in loadAgentConfig). runGuardrail returns null when nothing tripped,
-  // { reply: string } to send/replace with, or { reply: null } to suppress (the "silent" action).
-  // A trip logs a `guardrail` flow line (warn → may alert) + posts a private operator note so a
-  // blocked/replaced reply is never invisible. Fail-open (see analyzeGuardrail).
-  const gr = loaded.guardrails;
-  const guardrailModel =
-    gr.enabled && loaded.guardrailsApiKey
-      ? (params.deps?.makeModel ?? createChatModel)({
-          provider: gr.provider,
-          model: gr.model,
-          baseURL:
-            loaded.guardrailsCredentialBaseUrl ?? gr.baseURL ?? undefined,
-          apiKey: loaded.guardrailsApiKey,
-          temperature: 0,
-        })
-      : null;
-  const runGuardrail = async (
-    direction: "input" | "output",
-    // NOTE: Named `subject` rather than `text` on purpose. As `text` it shadowed this function's
-    // enclosing `text` (the customer's message), and the answer_relevance check below needs BOTH:
-    // the reply under review and the message it is supposed to answer.
-    subject: string,
-  ): Promise<{ reply: string | null } | null> => {
-    const dir = gr[direction];
-    if (!guardrailModel || !dir.enabled) return null;
-    const verdict = await analyzeGuardrail(
-      guardrailModel,
-      {
-        direction,
-        text: subject,
-        checks: dir.checks,
-        competitors: gr.competitors,
-        customPolicy: gr.customPolicy,
-        systemPrompt: direction === "output" ? loaded.systemPrompt : undefined,
-        // The raw inbound text, not `turnText`: on the first turn of a new conversation the latter
-        // carries CONVERSATION_DIVIDER, and handing the guardrail a system marker as the customer's
-        // words would make it judge the reply against something nobody said.
-        customerMessage: direction === "output" ? text : undefined,
-        generationPrompt:
-          dir.action === "generated" ? dir.generationPrompt : undefined,
-      },
-      // Constrained where the endpoint implements it, in the dialect it speaks, and asked for in
-      // the prompt everywhere else. The provider decides, not the model id: the same adapter serves
-      // OpenAI itself and whatever an operator points `openai-compatible` at (issue #131).
-      verdictAskMode(gr.provider),
+  // Guardrails (input/output moderation): one gate, shared with the proactive path (see
+  // modules/guardrails/gate.ts). A trip logs a `guardrail` flow line (warn → may alert) + posts a
+  // private operator note, so a blocked/replaced reply is never invisible.
+  const runGuardrail = buildGuardrailGate({
+    cfg: loaded.guardrails,
+    apiKey: loaded.guardrailsApiKey,
+    credentialBaseUrl: loaded.guardrailsCredentialBaseUrl,
+    client,
+    conversationId,
+    flow,
+    systemPrompt: loaded.systemPrompt,
+    // The raw inbound text, not `turnText`: on the first turn of a new conversation the latter
+    // carries CONVERSATION_DIVIDER, and handing the guardrail a system marker as the customer's
+    // words would make it judge the reply against something nobody said.
+    customerMessage: text,
+    makeModel: params.deps?.makeModel,
+  });
+
+  // One piece of customer-facing text, delivered the way this agent delivers text: as audio when the
+  // modality calls for it, otherwise split into typing-paced balloons. Returns how many balloons
+  // landed (1 for audio). TTS is best-effort — a synthesis failure falls back to text and never
+  // drops the message.
+  const deliverText = async (
+    text: string,
+    voiceReply: boolean | null,
+  ): Promise<number> => {
+    const wantAudio = shouldReplyWithAudio(
+      loaded.ttsConfig.mode,
+      params.userSentAudio ?? false,
+      voiceReply,
     );
-    // A guardrail that could not run reads exactly like one that ran and approved, so without this
-    // line an expired credential is silent moderation for as long as nobody notices. The turn is
-    // NOT blocked (fail-open stays), only recorded.
-    if (verdict.error) {
-      emitFlowEvent(flow, {
-        stage: "guardrail",
-        status: "error",
-        level: "warn",
-        detail: { direction, outcome: "analysis_failed" },
-        errorMessage: verdict.error,
-      });
+    if (wantAudio) {
+      try {
+        // Opt-in LLM speech normalization (or the injected normalizer in tests). Its callbacks are
+        // built fresh rather than reusing this turn's array: same usage/trace identity, different
+        // node and model, and a nested Langfuse generation instead of a second root update.
+        const normalizeSpeech =
+          params.deps?.normalizeSpeech ??
+          buildSpeechNormalizer(loaded, {
+            makeModel: params.deps?.makeModel,
+            callbacks: {
+              tenantId,
+              threadId,
+              base,
+              persistUsage: params.deps?.persistUsage,
+              turnId: flow.turnId,
+            },
+            flow,
+          });
+        const tts = await synthesizeReply({
+          tenantId,
+          cfg: loaded.ttsConfig,
+          text,
+          channelType: loaded.channelType,
+          base,
+          deps: { fetchImpl: params.deps?.ttsFetch, normalizeSpeech },
+          flow,
+        });
+        if (tts) {
+          await client.sendAudioMessage(
+            conversationId,
+            tts.audio,
+            tts.fileName,
+            tts.mime,
+            { transcribedText: text },
+          );
+          logger.info(
+            "chatwoot agent replied (audio): conv=%s thread=%s len=%d",
+            String(conversationId),
+            threadId,
+            text.length,
+          );
+          return 1;
+        }
+      } catch (e) {
+        logger.warn(
+          "tts failed (conv=%s), falling back to text: %s",
+          String(conversationId),
+          e instanceof Error ? e.message : String(e),
+        );
+      }
     }
-    if (!verdict.violated) return null;
-    // NOTE: The turn trail and the operator note report what the guardrail DID, not what it was
-    // configured to do. `generated` with no replacement in hand sends the template — when the model
-    // returns none, and on the input direction every time (see modules/guardrails/analyze.ts) — and
-    // an operator reading "generated" on a line where the template went out is reading the config
-    // back, not the event.
-    const replacement =
-      dir.action === "generated" ? verdict.suggestedReply : null;
-    const effectiveAction =
-      dir.action === "generated" && replacement === null
-        ? "template"
-        : dir.action;
-    emitFlowEvent(flow, {
-      stage: "guardrail",
-      status: "ok",
-      level: "warn",
-      // NOTE: `categories` and `rationale` are both model-written, so neither can be copied into
-      // this row as it stands: `rationale` explains what in the message violated the policy, so it
-      // quotes the message, and `categories` is asked for as policy keys but arrives as whatever
-      // the model wrote. What goes in is the part with a known vocabulary, plus a COUNT of what did
-      // not match it, which is how "it violated something we cannot name here" stays visible. The
-      // private note two lines below carries both in full, on the conversation the text came from.
-      detail: {
-        direction,
-        action: effectiveAction,
-        ...loggableCategories(verdict.categories),
-      },
-    });
-    await client
-      .sendPrivateNote(
-        conversationId,
-        `Guardrail (${direction}): ${verdict.categories.join(", ") || "policy"} — ${effectiveAction}. ${verdict.rationale}`,
-      )
-      .catch(() => {});
-    if (dir.action === "silent") return { reply: null };
-    return { reply: replacement ?? dir.templateMessage };
+    const balloons = await deliverReply(
+      client,
+      conversationId,
+      text,
+      loaded.splitConfig,
+      params.deps?.sleep,
+      flow,
+    );
+    logger.info(
+      "chatwoot agent replied: conv=%s thread=%s len=%d balloons=%d",
+      String(conversationId),
+      threadId,
+      text.length,
+      balloons,
+    );
+    return balloons;
   };
+
   // How many balloons the (text) reply was delivered as, surfaced on `finished` so the UI can hold a
   // "delivering" indicator until the paced balloons land. 1 for audio / single send; null on no post.
   let deliveredBalloons: number | null = null;
+
+  // The sentence the transfer promised the customer, delivered on the way OUT of the turn — whatever
+  // the way out is. Nothing downstream may take it back, and nothing downstream can be retried into
+  // sending it: the conversation reads `open` from the moment the tool set it, so every later
+  // attempt stops at its own ownership gate. Four findings on this change were this one loss
+  // arriving through four different failures, which is why the delivery sits outside the flow
+  // instead of each failure getting a fence.
+  //
+  // Two call sites, and they are exclusive: the failure path always rethrows, so the normal one is
+  // unreachable after it. Anything that adds a third owns the at-most-once question, because a
+  // promise delivered twice is the duplicate #158 was about.
+  // The contact's voice preference as of NOW. `set_voice_preference` writes it DURING the invoke, so
+  // the pre-turn snapshot is stale for a customer who asked for audio in the very turn that handed
+  // them over — the reply path already rereads it (inside the ownership recheck below, in that
+  // read's transaction), and the closing line has the same claim to the fresh value.
+  //
+  // Best-effort, which is the difference from that one: this read sits on the path that must not
+  // fail. The promised sentence has to leave even when the database will not answer, so a failure
+  // falls back to the snapshot instead of ending the turn.
+  const currentVoiceReply = async (): Promise<boolean | null> => {
+    if (loaded.contactDbId == null) return loaded.contactVoiceReply;
+    try {
+      const c = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.contact.findUnique({
+          where: { id: loaded.contactDbId as bigint },
+          select: { voiceReply: true },
+        }),
+      );
+      return c?.voiceReply ?? null;
+    } catch {
+      return loaded.contactVoiceReply;
+    }
+  };
+
+  const deliverHandoffPromise = async (): Promise<void> => {
+    if (!handoffAnsweredTheTurn(handoffState)) return;
+    const line = handoffState.customerMessage;
+    try {
+      const guarded = await runGuardrail("output", line);
+      // A trip here drops the turn's queued images, which is the rule the main gate below already
+      // keeps ("the safe reply replaces what the model wrote, images included"). The closing line is
+      // screened on its own because it leaves before that gate, but a verdict on this turn's
+      // customer-facing text means the same thing wherever it is reached: a `silent` action that
+      // suppressed the goodbye and then let a photo through would be the operator's policy applied
+      // to one artefact and not the other.
+      if (guardrailTripped(guarded)) turnState.pendingImages.length = 0;
+      const screened = screenedText(guarded, line);
+      if (screened === null) return;
+      deliveredBalloons = await deliverText(
+        screened,
+        await currentVoiceReply(),
+      );
+    } catch (e) {
+      // Best-effort, the semantics the line had while the tool sent it. The transfer succeeded, so
+      // branding the turn as errored would stamp lastError and announce "a human has to take over"
+      // on a thread a human already owns — and on the failure path this must never mask the error
+      // that actually ended the turn.
+      logger.warn(
+        "handoff closing line failed to deliver (conv=%s): %s",
+        String(conversationId),
+        e instanceof Error ? e.message : String(e),
+      );
+      emitFlowEvent(flow, {
+        stage: "split",
+        status: "error",
+        level: "warn",
+        detail: { outcome: "handoff_closing_line_undelivered" },
+        errorMessage: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
+
   status.started();
   // Mark this conversation's turn as in-flight so a concurrently-fired follow-up backs off instead
   // of nudging mid-turn (cleared in the finally on every exit). See ./inflight.
@@ -619,17 +706,19 @@ export async function runLoadedTurn(
 
     // INPUT guardrail: screen the customer message BEFORE the agent processes it. On a violation,
     // send the configured template / a guardrails-generated safe reply and skip the graph, or stay
-    // silent (send nothing). null ⇒ nothing tripped, proceed as normal.
+    // silent (send nothing). Anything short of a trip proceeds as normal — including a screening
+    // that could not run, which is the fail-open half of the policy.
     const inGuard = await runGuardrail("input", text);
-    if (inGuard) {
-      if (inGuard.reply !== null) {
+    if (guardrailTripped(inGuard)) {
+      const inReply = screenedText(inGuard, text);
+      if (inReply !== null) {
         // NOTE: The guardrail reply is a post like any other, so it claims the trigger through the
         // same gate: without this, two concurrent deliveries that both trip the guardrail each post
         // their template, and a stale one posts over newer customer input.
         if (params.shouldPost && !(await params.shouldPost())) {
           return "superseded";
         }
-        await client.sendMessage(conversationId, inGuard.reply);
+        await client.sendMessage(conversationId, inReply);
         deliveredBalloons = 1;
         return "posted";
       }
@@ -637,6 +726,10 @@ export async function runLoadedTurn(
     }
 
     // Invoke the thread (network: LLM + any tool calls). The checkpointer resumes prior history.
+    //
+    // Wrapped so a throw from INSIDE the graph still delivers what a handoff already promised: the
+    // tool can complete the transfer and the model's next step can then fail, and the exception
+    // leaves through here with the line still unsent and no later attempt able to send it.
     const result = await withFlowStage(
       flow,
       "generate",
@@ -665,27 +758,26 @@ export async function runLoadedTurn(
             callbacks: [...callbacks, status, toolLogger],
           },
         ),
-    );
+    ).catch(async (e) => {
+      await deliverHandoffPromise();
+      throw e;
+    });
     let reply = lastAssistantText(result.messages).trim();
 
-    // The handoff already answered, so this final text would be a second copy of a line the
-    // customer has read — and the mirror recheck below cannot catch it, because Chatwoot's
-    // open/assignee event may still be in flight and the row still reads bot-owned.
-    //
-    // Blanked rather than returned early, so every gate after this point still applies. An image
-    // queued earlier in the same turn is not a duplicate of anything and still belongs to the
-    // customer, and its caption is model-written customer-facing text the output guardrail screens.
-    // An early return would deliver that image unscreened, or not at all.
-    // Dropped on the TRANSFER, not on the suppression: a conversation the human queue now owns is
-    // not ours to close, and that holds even when the closing line failed to send. The two questions
-    // have different answers exactly there.
+    // The deferred resolve falls with the TRANSFER, not with the suppression of the final text: a
+    // conversation the human queue now owns is not ours to close, and that holds even when the
+    // closing line never reached the customer. The two questions have different answers exactly
+    // there.
     if (handoffState.completed) turnState.resolveRequested = false;
     const handedOff = handoffAnsweredTheTurn(handoffState);
-    if (handedOff) {
-      reply = "";
-      // The tool posted exactly one balloon, on every exit reachable from here.
-      deliveredBalloons = 1;
-    }
+    // The model's own final text after a handoff is a second copy of a line the customer is about to
+    // read (#158), and the mirror recheck below cannot catch it: Chatwoot's open/assignee event may
+    // still be in flight and the row still reads bot-owned. Blanked rather than returned early, so
+    // everything ELSE the turn produced still passes every gate below — a queued image is not a
+    // duplicate of anything, and its caption is model-written customer-facing text the output
+    // guardrail has to screen.
+    if (handedOff) reply = "";
+    await deliverHandoffPromise();
 
     // Re-check the live assignee (mirror) before posting: a human may have taken over during
     // the LLM call. NOTE: small TOCTOU between this read and the POST (the post is network and
@@ -723,12 +815,11 @@ export async function runLoadedTurn(
       }
       return { ours, voiceReply, status: conv?.status ?? null };
     });
-    // NOTE: A handoff we completed this turn reads as "not ours" here too, and the mirror records
-    // no reason for a status change, so there is nothing to tell our own transition apart from a
-    // human who grabbed the conversation in the same window. This gate exists for the second one,
-    // so it keeps failing closed for both: past this point the bot posts nothing, and an image the
-    // model queued before handing off is delivered only while Chatwoot's event is still in flight.
-    // Widening it on `handoffState.completed` would hand a genuine takeover back to the bot.
+    // Both gates below drop what is no longer wanted: a human took the conversation, or a newer
+    // customer message made this answer obsolete. Neither can reach the closing line, which left
+    // before them — and neither has a carve-out, because a handed-off turn arrives here holding only
+    // what it has no special claim to: a queued photo is not something the transfer promised, and
+    // over a human who is already answering it is exactly what should not land.
     if (!recheck.ours) {
       emitFlowEvent(flow, {
         stage: "handoff",
@@ -756,10 +847,11 @@ export async function runLoadedTurn(
       .filter((c): c is string => !!c);
     const screened = [reply, ...captions].filter(Boolean).join("\n");
     const outGuard = screened ? await runGuardrail("output", screened) : null;
-    if (outGuard) {
+    if (outGuard && guardrailTripped(outGuard)) {
       turnState.pendingImages.length = 0;
-      if (outGuard.reply === null) return "blocked";
-      reply = outGuard.reply;
+      const replacement = screenedText(outGuard, screened);
+      if (replacement === null) return "blocked";
+      reply = replacement;
     }
 
     // Empty reply: no text to post, but the queued images and a deferred resolve intent still apply
@@ -803,90 +895,7 @@ export async function runLoadedTurn(
     // reply must not swallow the attachment.
     await deliverPendingImages(client, conversationId, turnState, flow);
 
-    // Reply modality: audio (TTS) per the agent's mode + the customer's modality/preference, else
-    // text. TTS is best-effort — any synthesis failure falls back to a text reply, never drops it.
-    const wantAudio = shouldReplyWithAudio(
-      loaded.ttsConfig.mode,
-      params.userSentAudio ?? false,
-      recheck.voiceReply,
-    );
-    if (wantAudio) {
-      try {
-        // Opt-in LLM speech normalization (or the injected normalizer in tests). Its callbacks are
-        // built fresh rather than reusing this turn's array: same usage/trace identity, different
-        // node and model, and a nested Langfuse generation instead of a second root update.
-        const normalizeSpeech =
-          params.deps?.normalizeSpeech ??
-          buildSpeechNormalizer(loaded, {
-            makeModel: params.deps?.makeModel,
-            callbacks: {
-              tenantId,
-              threadId,
-              base,
-              persistUsage: params.deps?.persistUsage,
-              turnId: flow.turnId,
-            },
-            flow,
-          });
-        const tts = await synthesizeReply({
-          tenantId,
-          cfg: loaded.ttsConfig,
-          text: reply,
-          channelType: loaded.channelType,
-          base,
-          deps: { fetchImpl: params.deps?.ttsFetch, normalizeSpeech },
-          flow,
-        });
-        if (tts) {
-          await client.sendAudioMessage(
-            conversationId,
-            tts.audio,
-            tts.fileName,
-            tts.mime,
-            { transcribedText: reply },
-          );
-          logger.info(
-            "chatwoot agent replied (audio): conv=%s thread=%s len=%d",
-            String(conversationId),
-            threadId,
-            reply.length,
-          );
-          deliveredBalloons = 1;
-          await applyDeferredResolve(client, conversationId, turnState, flow, {
-            tenantId,
-            instanceId,
-            base,
-            observedStatus: recheck.status,
-          });
-          return "posted";
-        }
-      } catch (e) {
-        logger.warn(
-          "tts failed (conv=%s), falling back to text: %s",
-          String(conversationId),
-          e instanceof Error ? e.message : String(e),
-        );
-      }
-    }
-
-    // Post the reply via the bot token (network), reusing the client built for the tools. Split +
-    // typing-paced into balloons when the agent enables it (humanized delivery), else a single send.
-    const balloons = await deliverReply(
-      client,
-      conversationId,
-      reply,
-      loaded.splitConfig,
-      params.deps?.sleep,
-      flow,
-    );
-    logger.info(
-      "chatwoot agent replied: conv=%s thread=%s len=%d balloons=%d",
-      String(conversationId),
-      threadId,
-      reply.length,
-      balloons,
-    );
-    deliveredBalloons = balloons;
+    deliveredBalloons = await deliverText(reply, recheck.voiceReply);
     await applyDeferredResolve(client, conversationId, turnState, flow, {
       tenantId,
       instanceId,

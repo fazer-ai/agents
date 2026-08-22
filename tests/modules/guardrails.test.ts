@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { analyzeGuardrail, splitAnalyses } from "@/modules/guardrails/analyze";
+import { buildGuardrailGate } from "@/modules/guardrails/gate";
 import { buildGuardrailSystemPrompt } from "@/modules/guardrails/prompts";
 import {
   GUARDRAILS_DEFAULTS,
   readGuardrailsConfig,
 } from "@/modules/guardrails/settings";
+import { guardrailModel } from "../utils/scripted-models";
 
 // A minimal fake chat model: invoke returns a message with the given content (or throws).
 function fakeModel(content: string): BaseChatModel {
@@ -865,5 +867,280 @@ describe("analyzeGuardrail", () => {
       base,
     );
     expect(v.error).toBeUndefined();
+  });
+});
+
+// The gate both runtimes call. What is tested here is the part that runs BEFORE any analysis: who
+// gets a model built for them and who does not. It is a decision table rather than a wiring test
+// because the cost of getting it wrong is not a missed moderation — it is a turn that fails on a
+// model it was never going to call (see the header of gate.ts).
+describe("buildGuardrailGate", () => {
+  const flow = {
+    tenantId: 1n,
+    turnId: "gate-test",
+    source: "playground" as const,
+    // A base that cannot write: emitFlowEvent is fire-and-forget and swallows its own failures, so
+    // the gate's decisions are observable without a database.
+    base: {} as never,
+  };
+  const client = {
+    sendPrivateNote: async () => {},
+  } as never;
+
+  // Counts construction attempts, so "never built" and "built and unused" stay distinguishable.
+  function countingFactory(impl: () => BaseChatModel) {
+    let calls = 0;
+    return {
+      calls: () => calls,
+      make: ((..._args: unknown[]) => {
+        calls += 1;
+        return impl();
+      }) as never,
+    };
+  }
+
+  const enabledCfg = (over: Partial<typeof GUARDRAILS_DEFAULTS> = {}) => ({
+    ...GUARDRAILS_DEFAULTS,
+    enabled: true,
+    ...over,
+  });
+
+  const cases: {
+    name: string;
+    cfg: typeof GUARDRAILS_DEFAULTS;
+    apiKey: string;
+  }[] = [
+    {
+      name: "guardrails are switched off entirely",
+      cfg: { ...GUARDRAILS_DEFAULTS, enabled: false },
+      apiKey: "k",
+    },
+    {
+      name: "the guardrails agent has no credential",
+      cfg: enabledCfg(),
+      apiKey: "",
+    },
+    {
+      name: "this direction is switched off",
+      cfg: enabledCfg({
+        output: { ...GUARDRAILS_DEFAULTS.output, enabled: false },
+      }),
+      apiKey: "k",
+    },
+    // The gate drops answer_relevance when there is no customer message to judge against (every
+    // proactive message), and an agent whose only output check is that one is then left asking
+    // nothing. The model answers an empty policy list anyway, so this is not a saved call: it is a
+    // `violated: true` that could replace or suppress a message no rule objected to.
+    {
+      name: "the only output check needs a customer message and there is none",
+      cfg: enabledCfg({
+        output: {
+          ...GUARDRAILS_DEFAULTS.output,
+          enabled: true,
+          checks: {
+            toxicity: false,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+            answerRelevance: true,
+          },
+        },
+      }),
+      apiKey: "k",
+    },
+  ];
+
+  // The same hole on the other direction, which the prompt closes for its own reason: both of these
+  // checks describe a REPLY, so an input prompt never lists them however the agent is configured.
+  test("builds no model when every input check only means something on a reply", async () => {
+    const f = countingFactory(() => {
+      throw new Error("should never be constructed");
+    });
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg({
+        input: {
+          ...GUARDRAILS_DEFAULTS.input,
+          enabled: true,
+          checks: {
+            toxicity: false,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: true,
+            answerRelevance: true,
+          },
+        },
+      }),
+      apiKey: "k",
+      client,
+      conversationId: 1,
+      flow,
+      makeModel: f.make,
+    });
+    expect(await gate("input", "olá")).toEqual({ kind: "not-run" });
+    expect(f.calls()).toBe(0);
+  });
+
+  // ...and the operator's own policy is a policy: it has no check to switch on, so a config that
+  // relies on it alone must still be screened.
+  test("a custom policy alone is enough to screen", async () => {
+    const f = countingFactory(() =>
+      guardrailModel(async () => ({
+        content: JSON.stringify({
+          violated: false,
+          categories: [],
+          rationale: "",
+          suggestedReply: null,
+        }),
+      })),
+    );
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg({
+        customPolicy: "  never promise a delivery date  ",
+        output: {
+          ...GUARDRAILS_DEFAULTS.output,
+          enabled: true,
+          checks: {
+            toxicity: false,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+            answerRelevance: false,
+          },
+        },
+      }),
+      apiKey: "k",
+      client,
+      conversationId: 1,
+      flow,
+      makeModel: f.make,
+    });
+    expect(await gate("output", "olá")).toEqual({ kind: "clean" });
+    expect(f.calls()).toBe(1);
+  });
+
+  for (const c of cases) {
+    test(`builds no model when ${c.name}`, async () => {
+      const f = countingFactory(() => {
+        throw new Error("should never be constructed");
+      });
+      const gate = buildGuardrailGate({
+        cfg: c.cfg,
+        apiKey: c.apiKey,
+        client,
+        conversationId: 1,
+        flow,
+        makeModel: f.make,
+      });
+      // "not-run", not "clean": nothing was judged and nothing was delayed, and a caller that has
+      // to decide whether re-running the turn is free reads exactly this difference.
+      expect(await gate("output", "olá")).toEqual({ kind: "not-run" });
+      expect(f.calls()).toBe(0);
+    });
+  }
+
+  // The reason the check above is not just an optimization: createChatModel throws SYNCHRONOUSLY on
+  // a configuration it cannot satisfy, and this gate is built on every turn and every follow-up.
+  test("a model that cannot be constructed is fail-open, not a failed turn", async () => {
+    const f = countingFactory(() => {
+      throw new Error("openai-compatible provider requires a base URL");
+    });
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg(),
+      apiKey: "k",
+      client,
+      conversationId: 1,
+      flow,
+      makeModel: f.make,
+    });
+    // Fail-open for the customer, and "unavailable" rather than "clean" for the operator: the warn
+    // it just emitted is the mark a retry would repeat.
+    expect(await gate("output", "olá")).toEqual({ kind: "unavailable" });
+    expect(f.calls()).toBe(1);
+  });
+
+  // What the trail and the operator note report is what the guardrail DID, not what it was
+  // configured to do. `generated` with nothing to send in hand falls back to the template, and an
+  // operator reading "generated" on the line where the template went out is reading the config
+  // back at themselves.
+  test("a 'generated' action with no composed reply reports itself as the template", async () => {
+    const notes: string[] = [];
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg({
+        output: {
+          ...GUARDRAILS_DEFAULTS.output,
+          enabled: true,
+          action: "generated",
+          templateMessage: "TEMPLATE-FALLBACK",
+        },
+      }),
+      apiKey: "k",
+      client: {
+        sendPrivateNote: async (_c: number, t: string) => {
+          notes.push(t);
+        },
+      } as never,
+      conversationId: 1,
+      flow,
+      makeModel: (() =>
+        guardrailModel(async () => ({
+          content: JSON.stringify({
+            violated: true,
+            categories: ["toxicity"],
+            rationale: "rude",
+            suggestedReply: null,
+          }),
+        }))) as never,
+    });
+    expect(await gate("output", "olá")).toEqual({
+      kind: "replaced",
+      reply: "TEMPLATE-FALLBACK",
+    });
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("— template.");
+    expect(notes[0]).not.toContain("generated");
+  });
+
+  test("a construction that failed is not retried on the next call", async () => {
+    const f = countingFactory(() => {
+      throw new Error("nope");
+    });
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg(),
+      apiKey: "k",
+      client,
+      conversationId: 1,
+      flow,
+      makeModel: f.make,
+    });
+    await gate("output", "um");
+    await gate("output", "dois");
+    expect(f.calls()).toBe(1);
+  });
+
+  test("one model serves both directions of the same turn", async () => {
+    // The shared stub, which answers in either dialect: `fakeModel` only speaks prose, and the
+    // default provider asks for a schema, so it would report "unavailable" — a true answer about a
+    // broken double, and not the one this test is asking about.
+    const f = countingFactory(() =>
+      guardrailModel(async () => ({
+        content: JSON.stringify({
+          violated: false,
+          categories: [],
+          rationale: "",
+          suggestedReply: null,
+        }),
+      })),
+    );
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg(),
+      apiKey: "k",
+      client,
+      conversationId: 1,
+      flow,
+      makeModel: f.make,
+    });
+    expect(await gate("input", "olá")).toEqual({ kind: "clean" });
+    expect(await gate("output", "oi")).toEqual({ kind: "clean" });
+    expect(f.calls()).toBe(1);
   });
 });

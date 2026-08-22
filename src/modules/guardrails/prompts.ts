@@ -73,6 +73,35 @@ const OUTPUT_ONLY_CHECKS: (keyof GuardrailChecks)[] = [
   "answerRelevance",
 ];
 
+// The checks this direction's prompt will actually LIST. Two of them only mean something about a
+// reply, so an input prompt never carries them however the operator configured the agent — and the
+// gate drops `answerRelevance` again when there is no customer message to judge the reply against.
+export function activeChecks(p: {
+  direction: "input" | "output";
+  checks: GuardrailChecks;
+}): (keyof GuardrailChecks)[] {
+  return (Object.keys(p.checks) as (keyof GuardrailChecks)[]).filter(
+    (k) =>
+      p.checks[k] &&
+      (!OUTPUT_ONLY_CHECKS.includes(k) || p.direction === "output"),
+  );
+}
+
+// Whether a screening would ask the model ANYTHING. Not an optimisation: a prompt carrying no policy
+// is not a cheap screening, it is one whose verdict means nothing — and the model answers anyway, so
+// a `violated: true` out of an empty list replaces or suppresses a message that broke no rule. The
+// configurations that reach it are real: output moderation with only `answer_relevance` on, screening
+// a proactive message that answers no question, and input moderation with only the two reply checks.
+//
+// Asked HERE, where the list the prompt prints is built, so the answer cannot drift from the prompt.
+export function judgesAnything(p: {
+  direction: "input" | "output";
+  checks: GuardrailChecks;
+  customPolicy: string;
+}): boolean {
+  return activeChecks(p).length > 0 || p.customPolicy.trim() !== "";
+}
+
 export const CUSTOMER_MESSAGE_TAG = "<customer_message>";
 const CUSTOMER_MESSAGE_CLOSE = "</customer_message>";
 
@@ -115,11 +144,7 @@ export function buildGuardrailSystemPrompt(p: GuardrailPromptParams): string {
     p.direction === "input"
       ? "a message a CUSTOMER sent to a support assistant"
       : "a REPLY a support assistant is about to send to a customer";
-  const active = (Object.keys(p.checks) as (keyof GuardrailChecks)[]).filter(
-    (k) =>
-      p.checks[k] &&
-      (!OUTPUT_ONLY_CHECKS.includes(k) || p.direction === "output"),
-  );
+  const active = activeChecks(p);
   const lines: string[] = [
     `You are a content-moderation guardrail. Analyze ${subject} and decide whether it violates any of the ENABLED policies below.`,
     "",

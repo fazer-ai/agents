@@ -283,6 +283,55 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
     expect(line?.errorMessage ?? "").not.toContain(SEEDED_TEXT);
   });
 
+  // The two roads to DEAD publish ONE vocabulary. They disagree about the attempt count while meaning
+  // the same thing — failJob increments the row and hands the hook the claim it was given, so the
+  // fifth failure would report four, while the reaper increments in SQL and returns five — so the
+  // count is not on the line at all, and what tells the roads apart is the error the reaper writes.
+  test("the road that ended it is readable from the line, and not from an attempt count", async () => {
+    const ci = 6003;
+    await seedConversation(864);
+    const threadId = await seedThread(ci, 864, 865);
+    const row = await armedJob(`mdl-roads-${process.pid}`, ci, 864, {
+      attempts: 4,
+      claimedAt: new Date(Date.now() - 600_000),
+    });
+    await runCompactionTick(appDb, 0, {}, 5 * 60_000);
+    await waitForLines(threadId, 1);
+    const reapedLine = (await memoryLines(threadId))[0];
+    expect(reapedLine?.errorMessage ?? "").toContain("reaped");
+    expect(JSON.stringify(reapedLine?.detail ?? {})).not.toContain("attempts");
+    expect(row.id).toBeDefined();
+
+    // The other road, on its own thread, saying the same thing in the same shape.
+    const ci2 = 6004;
+    await seedConversation(866);
+    const thread2 = await seedThread(ci2, 866, 867);
+    const row2 = await armedJob(`mdl-roads2-${process.pid}`, ci2, 866, {
+      attempts: 4,
+    });
+    await runClaimed(
+      {
+        id: row2.id,
+        tenantId,
+        kind: "MEMORY_COMPACT",
+        payload: jobPayload(ci2, 866),
+        attempts: 4,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+    await waitForLines(thread2, 1);
+    const failedLine = (await memoryLines(thread2))[0];
+    expect(failedLine?.errorMessage ?? "").not.toContain("reaped");
+    expect(failedLine?.errorMessage ?? "").toContain("memory compaction");
+    // Same shape on both roads: nothing an operator reads differs except the reason.
+    expect(
+      Object.keys(JSON.parse(JSON.stringify(failedLine?.detail))).sort(),
+    ).toEqual(
+      Object.keys(JSON.parse(JSON.stringify(reapedLine?.detail))).sort(),
+    );
+  });
+
   // ── The other road to DEAD ───────────────────────────────────────────────────────────────────
   test("a compaction the compaction lane's own reaper kills is announced too", async () => {
     const ci = 6002;

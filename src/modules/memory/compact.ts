@@ -789,7 +789,14 @@ const compactHandler = async (
 // one moment the scheduler can say nobody is coming back for it, which is also the moment worth an
 // alert channel's attention. What this trades away is a failure whose CAUSE changed between attempts:
 // the line carries the last error, so four refusals from the provider followed by a lost race at the
-// rewrite report the race. The row's own `attempts` is on the line so that reading is available.
+// rewrite report the race.
+//
+// The attempt count is deliberately NOT on the line. It looked like it would say which road ended the
+// job and it does not: both roads end at the cap, and the two disagree about the number while meaning
+// the same thing — `failJob` increments the row and hands the hook the claim it was given, so the
+// fifth failure reports four, while the reaper increments in SQL and returns five. What actually
+// tells the roads apart is the error itself, which the reaper writes as "reaped: the claim never
+// finished" and nothing else does.
 //
 // `error`, not `warn`: the convention elsewhere is that a stage whose failure the caller RECOVERS
 // from is an advisory. Nothing recovers this one. The next attendance re-arms with a fresh budget, so
@@ -844,8 +851,6 @@ export async function announceDeadCompaction(
         // to name and the arming is the only true anchor.
         attendanceConversationId: conversationId,
         reason,
-        // Which road ended it: the cap, or the reaper (a claim that hung and was never failed).
-        attempts: job.attempts,
       },
       // Sanitized and bounded by emitFlowEvent. This is the half an operator acts on —
       // `credential_not_found` and "the provider returned 401" are different problems.

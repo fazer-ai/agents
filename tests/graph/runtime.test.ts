@@ -16,7 +16,7 @@ import {
 } from "@/graph/inflight";
 import { ingestMessageIntoThread } from "@/graph/ingest";
 import { armIngest } from "@/graph/ingest-job";
-import { isConversationDivider } from "@/graph/markers";
+import { isConversationDivider, stampedConversationId } from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { runAgentTurn } from "@/graph/runtime";
 import type { TenantContext } from "@/lib/tenancy";
@@ -593,6 +593,104 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(at.lastConversationId).toBe(9311);
     // The frontier the ingestion was measured against: written by the TURN, not by an ingestion.
     expect(at.lastSyncedMessageId).toBe(5003);
+  });
+
+  // Round-10 review finding (P1), and the case an earlier round DISMISSED: `advanceMarker` is false
+  // in two different situations, and only one of them is harmless. Here the boundary is DEFERRED
+  // because another invoke is reading the thread (../../src/graph/attendance-boundary.ts, case 1) —
+  // the conversation really is new, this turn really is handling its first message, and the marker
+  // deliberately stays on the previous one. A turn that records no inbound id there leaves the
+  // frontier back in the previous attendance, so a delayed message from it reads as CURRENT, stamps
+  // itself at the end of the channel, and the cut then reads the live conversation as closed.
+  test("a turn whose boundary was deferred still moves the inbound frontier", async () => {
+    const contactInboxId = 7013;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    for (const convId of [9320, 9321]) {
+      await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: convId,
+          contactInboxId,
+          status: "pending",
+          threadId: `${tenantId}:${instanceId}:${convId}`,
+          lastEventAt: new Date(),
+        },
+      });
+    }
+    const saver = new MemorySaver();
+    const turn = (conversationId: number, messageId: number) =>
+      runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({
+          conversationId,
+          contactInboxId,
+          message: {
+            id: messageId,
+            content: "oi",
+            messageType: "incoming",
+            private: false,
+          },
+        }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStubClient([]),
+          checkpointer: saver,
+        },
+      });
+
+    expect(await turn(9320, 6001)).toBe("posted");
+    // The new conversation's first turn, with ANOTHER invoke already reading the thread: the
+    // boundary is deferred and the marker stays on the old conversation.
+    markTurnInFlight(graphThreadId);
+    try {
+      expect(await turn(9321, 6003)).toBe("posted");
+    } finally {
+      clearTurnInFlight(graphThreadId);
+    }
+    const deferred = await suDb.agentThread.findUniqueOrThrow({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { lastConversationId: true, lastSyncedMessageId: true },
+    });
+    // The marker did stay behind — that is the deferral working — and the frontier did NOT.
+    expect(deferred.lastConversationId).toBe(9320);
+    expect(deferred.lastSyncedMessageId).toBe(6003);
+
+    // So the delayed message from the old conversation is late, and claims nothing: no stamp, which
+    // is what keeps the live conversation out of the closed prefix.
+    expect(
+      await ingestMessageIntoThread({
+        tenantId,
+        instanceId,
+        conversationId: 9320,
+        contactInboxId,
+        graphThreadId,
+        base: appDb,
+        checkpointer: saver,
+        messageId: 6002,
+        text: "<audio> do primeiro",
+        role: "customer",
+      }),
+    ).toBe("ingested");
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    const last = messages[messages.length - 1];
+    expect(String(last?.content)).toContain("<audio> do primeiro");
+    expect(last && stampedConversationId(last)).toBe(null);
   });
 
   // THE BARRIER (issue #194), at the reader a customer is waiting on. Continuous ingestion is a

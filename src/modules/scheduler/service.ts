@@ -177,14 +177,20 @@ export async function revokeJobsByKeyPrefix(
   base: PrismaClient = basePrisma,
 ): Promise<number> {
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const res = await db.schedulerJob.updateMany({
-      where: {
-        kind,
-        status: { in: ["PENDING", "CLAIMED"] },
-        dedupeKey: { startsWith: prefix },
-      },
-      data: { status: "DONE" },
-    });
+    const where = {
+      kind,
+      status: { in: ["PENDING" as const, "CLAIMED" as const] },
+      dedupeKey: { startsWith: prefix },
+    };
+    // DELETED where the kind says a finished row leaves nothing behind. Marking it DONE is how the
+    // two cancellations above retire a row, and for a reusable key that is exactly right — but a
+    // revoked ingestion can never reach `completeJob`, which is where JOB_DELETE_ON_DONE is normally
+    // spent, because by then the row is no longer CLAIMED by anyone and the CAS matches nothing. It
+    // would sit there forever holding the encrypted message body the reset was asked to erase, on a
+    // table nothing sweeps. Reading the same map is what keeps the two answers from drifting.
+    const res = JOB_DELETE_ON_DONE[kind]
+      ? await db.schedulerJob.deleteMany({ where })
+      : await db.schedulerJob.updateMany({ where, data: { status: "DONE" } });
     return res.count;
   });
 }

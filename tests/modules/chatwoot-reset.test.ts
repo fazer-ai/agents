@@ -346,8 +346,12 @@ describe.skipIf(!dbUp)(
         orderBy: { dedupeKey: "asc" },
       });
       const byKey = new Map(statuses.map((r) => [r.dedupeKey, r.status]));
-      expect(byKey.get(`ingest:${threadId}:900`)).toBe("DONE");
-      expect(byKey.get(`ingest:${threadId}:901`)).toBe("DONE");
+      // GONE, not retired as DONE. An ingestion row's key names one message and nothing reuses it,
+      // so a finished one leaves nothing behind — and a revoked one can never reach the completion
+      // that normally deletes it. Retired instead, it would sit there forever holding the encrypted
+      // message body this reset was asked to erase.
+      expect(byKey.has(`ingest:${threadId}:900`)).toBe(false);
+      expect(byKey.has(`ingest:${threadId}:901`)).toBe(false);
       expect(byKey.get(`ingest:${otherThread}:902`)).toBe("PENDING");
     });
 

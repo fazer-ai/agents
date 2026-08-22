@@ -673,11 +673,17 @@ export async function runLoadedTurn(
             // compared newer than a stale mark, walked the marker back and armed compaction for the
             // conversation being served.
             //
-            // Written where the row is already being written, at a BOUNDARY. Recording between
-            // boundaries survived its mutation, and the reason is that it cannot change an answer:
-            // the frontier exists to suppress a boundary claim, and a message inside the attendance
-            // the thread is already on claims none either way. So a turn inside one attendance goes
-            // on writing nothing, as it did before.
+            // ON EVERY HANDLED TURN, and `lastConversationId` alone stays conditional. An earlier
+            // round cut this back to boundaries only, reasoning that the frontier merely suppresses a
+            // boundary claim — which was already false by then, because the same change had given it
+            // a second job: it also decides whether the message may carry an attendance STAMP. And
+            // `advanceMarker` is false in two different situations, not one. The second is a boundary
+            // DEFERRED because another invoke is reading (./attendance-boundary.ts, case 1): the
+            // conversation really is new, this turn really is handling its first message, and the
+            // marker deliberately stays behind. Recording nothing there leaves the frontier back in
+            // the previous attendance, so a delayed message from it reads as current, stamps itself
+            // at the end of the channel, and the compaction cut then treats the live conversation as
+            // the closed prefix.
             //
             // The scalar only. `recentSyncedMessageIds` is ingestion's own ledger of what IT folded
             // in, and the two never overlap by construction — a message a turn answers is never
@@ -688,7 +694,7 @@ export async function runLoadedTurn(
               inboundId === undefined
                 ? null
                 : Math.max(existing?.lastSyncedMessageId ?? 0, inboundId);
-            if (claim.advanceMarker) {
+            if (claim.advanceMarker || markedId !== null) {
               await db.agentThread.upsert({
                 where: key,
                 create: {

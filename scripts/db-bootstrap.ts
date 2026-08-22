@@ -503,6 +503,12 @@ async function main() {
 
     // Re-read rather than reuse the row above: the demotion may have just changed the answer, and
     // on a role that WAS a superuser the answer above is meaningless (see the function's header).
+    // NOTE: `pg_has_role(..., 'USAGE')` rather than `pg_auth_members.inherit_option`, which says the
+    // same thing and only since PostgreSQL 16 — this script has to run on older servers, where that
+    // column does not exist and the query would fail on every boot. The function is the portable
+    // spelling of the question (pre-16 it reads the member's `rolinherit`), and it is the one the
+    // other two privilege checks here already use. The only 16-only syntax left in this file is the
+    // `WITH SET / INHERIT` grant, which is behind the version gate; a test pins that.
     const privileged = (
       await client.query<{
         reaches: string | null;
@@ -517,7 +523,8 @@ async function main() {
               FROM pg_auth_members am
               JOIN pg_roles r ON r.oid = am.member
               JOIN pg_roles d ON d.oid = am.roleid
-             WHERE r.rolname = $1 AND am.inherit_option
+             WHERE r.rolname = $1
+               AND pg_has_role(r.oid, d.oid, 'USAGE')
                AND EXISTS (SELECT 1 FROM pg_roles p
                             WHERE (p.rolsuper OR p.rolbypassrls)
                               AND pg_has_role(d.oid, p.oid, 'USAGE'))) AS revokable`,

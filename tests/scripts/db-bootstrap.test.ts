@@ -296,6 +296,46 @@ describe("planRoleProvisioning", () => {
     });
   });
 
+  // NOTE: this reads the script's own source, which is not how anything else here is tested, and
+  // the reason is that the failure it guards cannot be reached from this suite: the only servers
+  // available run PostgreSQL 17, and the statement in question is one an older server refuses to
+  // PARSE. A review round caught `pg_auth_members.inherit_option` — 16-only, added on a boot path
+  // that runs everywhere — after it had already shipped into the branch, and nothing red would
+  // have said so. So the rule is asserted where it can be: every 16-only spelling in this file
+  // lives inside the version gate, and the portable spelling is used everywhere else.
+  test("16-only syntax stays behind the version gate", async () => {
+    const source = await Bun.file(
+      new URL("../../scripts/db-bootstrap.ts", import.meta.url).pathname,
+    ).text();
+    const gateStart = source.indexOf("if (s.server_version_num >= 160000) {");
+    expect(gateStart).toBeGreaterThan(-1);
+    const gateEnd = source.indexOf("\n    }", gateStart);
+    expect(gateEnd).toBeGreaterThan(gateStart);
+
+    // Spellings PostgreSQL 15 cannot parse or resolve, as they appear in a statement.
+    const sixteenOnly = [
+      "WITH SET",
+      "WITH INHERIT",
+      "inherit_option",
+      "set_option",
+    ];
+    const offenders = source
+      .split("\n")
+      .map((line, i) => ({ line, at: i }))
+      .filter(({ line }) => {
+        const code = line.trim();
+        if (code.startsWith("//") || code.startsWith("*")) return false;
+        return sixteenOnly.some((t) => code.includes(t));
+      })
+      .filter(({ at }) => {
+        const offset = source.split("\n").slice(0, at).join("\n").length;
+        return offset < gateStart || offset > gateEnd;
+      })
+      .map(({ line }) => line.trim());
+
+    expect(offenders).toEqual([]);
+  });
+
   describe("parseAppRole", () => {
     const cases: [string, string, "ok" | "rejects"][] = [
       ["a plain name", "postgres://app_role:pw@h:5432/db", "ok"],

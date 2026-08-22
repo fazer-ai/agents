@@ -95,11 +95,12 @@ describe.skipIf(!dbUp)(
       await app?.$disconnect();
     });
 
+    // Production ordering, which is the only one that reaches the recorder's rules: the toggle
+    // happens in Chatwoot, we stamp immediately (our own mirror still says open, because our
+    // webhook has not come back yet), and the resolved event lands after. A helper that stamped
+    // AFTER the event would be exercising a sequence the code never sees.
     async function closeThenStamp(convId: number, at: number) {
       await mirror(convEvent(convId, "conversation_created", "open", at));
-      await mirror(
-        convEvent(convId, "conversation_status_changed", "resolved", at + 1),
-      );
       await recordResolutionOrigin({
         tenantId,
         conversation: {
@@ -107,8 +108,12 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: convId,
         },
         origin: "agent",
+        observedStatus: "open",
         base: appDb,
       });
+      await mirror(
+        convEvent(convId, "conversation_status_changed", "resolved", at + 1),
+      );
       expect(await originOf(convId)).toBe("agent");
     }
 
@@ -155,6 +160,64 @@ describe.skipIf(!dbUp)(
       expect(await originOf(34)).toBe("agent");
     });
 
+    // Review round 4 on #199. An operator in the Chatwoot UI, an automation rule, or
+    // `auto_resolve_after` closes the conversation and deliberately leaves the origin NULL — none of
+    // them reach our code. Our own toggle then succeeds as a no-op, and stamping on the back of it
+    // would credit the agent with somebody else's close, in the Resolution KPI, in the direction
+    // this whole change exists to stop.
+    test("a close that already happened outside our code is not claimed", async () => {
+      const V0 = 1_700_011_000;
+      await mirror(convEvent(42, "conversation_created", "open", V0));
+      // Chatwoot resolved it on its own and we mirrored that: no origin, by design.
+      await mirror(
+        convEvent(42, "conversation_status_changed", "resolved", V0 + 1),
+      );
+      expect(await originOf(42)).toBeNull();
+      // What the caller observes is the row it read before deciding to close — here, already
+      // resolved by somebody else. Production passes exactly this: nudge.ts hands over the live
+      // probe's answer, runtime.ts the ownership recheck's, the console the row it loaded.
+      const observed = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 42 },
+        select: { status: true },
+      });
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 42,
+        },
+        origin: "agent",
+        observedStatus: observed.status,
+        base: appDb,
+      });
+      expect(await originOf(42)).toBeNull();
+    });
+
+    // The other half of rule 2, and the one a re-read of the row could not get right: the mirror can
+    // carry OUR OWN close before the turn ends (zero lag, which `mirrorOnToggle` in
+    // tests/graph/runtime.test.ts treats as the worst case). What the caller saw is still "open", so
+    // the close is ours and must be recorded.
+    test("our own close, mirrored with zero lag, is still recorded", async () => {
+      const V0 = 1_700_012_000;
+      await mirror(convEvent(43, "conversation_created", "open", V0));
+      // The webhook for our toggle lands before we get to the stamp.
+      await mirror(
+        convEvent(43, "conversation_status_changed", "resolved", V0 + 1),
+      );
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 43,
+        },
+        origin: "agent",
+        // What the ownership recheck saw before the toggle.
+        observedStatus: "pending",
+        base: appDb,
+      });
+      expect(await originOf(43)).toBe("agent");
+    });
+
     // Review round 3 on #199. Resolving an already-resolved conversation is a no-op in Chatwoot, so
     // the cause of the current resolved state does not change because somebody asked a second time.
     // The console accepts exactly that (REST and MCP both take `resolved` unconditionally), and the
@@ -168,6 +231,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 38,
         },
         origin: "console",
+        observedStatus: "open",
         base: appDb,
       });
       expect(await originOf(38)).toBe("agent");
@@ -188,6 +252,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 39,
         },
         origin: "console",
+        observedStatus: "open",
         base: appDb,
       });
       expect(await originOf(39)).toBe("console");
@@ -227,6 +292,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 40,
         },
         origin: "agent",
+        observedStatus: "open",
         base: appDb,
       });
       // The label write from earlier in the same turn, serialized at V0+1, delivered late. Newer than
@@ -282,6 +348,7 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 41,
         },
         origin: "agent",
+        observedStatus: "open",
         base: appDb,
       });
       const out = await reconcile(41, "pending", V0 + 1);

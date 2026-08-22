@@ -143,6 +143,9 @@ export interface ToolCtx {
   // step right after set_custom_attribute writes to Chatwoot (see mirrorAttributeWrite). Absent ⇒
   // the write-through is skipped and the mirror catches up on the next webhook event.
   conversationDbId?: bigint | null;
+  // The conversation's status as the turn observed it, for the immediate resolve_conversation path.
+  // Absent ⇒ the close is not recorded rather than claimed: see record-resolution.ts rule 2.
+  observedStatus?: string | null;
   // The contact's CURRENT stored voice preference (snapshot at turn prep), surfaced in the
   // set_voice_preference description so the model knows the existing value before changing it.
   // true = audio, false = text, null/undefined = not set yet.
@@ -738,6 +741,7 @@ function resolveConversationTool(ctx: ToolCtx) {
           tenantId: ctx.tenantId,
           conversation: { id: ctx.conversationDbId },
           origin: "agent",
+          observedStatus: ctx.observedStatus ?? "resolved",
           base: ctx.base,
         });
       }

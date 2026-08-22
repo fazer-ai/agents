@@ -165,6 +165,8 @@ export async function armRedirectChatFollowUp(
 
 interface WhatsAppSibling {
   chatwootConversationId: number;
+  // Mirrored status, read before the closing toggle: see record-resolution.ts rule 2.
+  status: string;
   chatwootContactId: number;
   lastInboundAt: Date | null;
   channelType: string | null;
@@ -204,6 +206,7 @@ async function resolveWhatsAppSibling(
       },
       select: {
         chatwootConversationId: true,
+        status: true,
         lastInboundAt: true,
         contact: { select: { chatwootContactId: true } },
         inbox: { select: { channelType: true, provider: true } },
@@ -213,6 +216,7 @@ async function resolveWhatsAppSibling(
     if (!sibling?.contact?.chatwootContactId) return null;
     return {
       chatwootConversationId: sibling.chatwootConversationId,
+      status: sibling.status,
       chatwootContactId: sibling.contact.chatwootContactId,
       lastInboundAt: sibling.lastInboundAt,
       channelType: sibling.inbox?.channelType ?? null,
@@ -432,7 +436,13 @@ async function deliverClosing(
   conversationId: number,
   closingMessage: string,
   sendMode: ProactiveSendMode,
-  origin: { tenantId: bigint; instanceId: bigint; base: PrismaClient },
+  origin: {
+    tenantId: bigint;
+    instanceId: bigint;
+    base: PrismaClient;
+    // The conversation's status as the caller loaded it, before this function's own toggle.
+    observedStatus: string | null;
+  },
 ): Promise<void> {
   await client.sendMessage(conversationId, closingMessage, {
     private: sendMode !== "freeform",
@@ -447,6 +457,7 @@ async function deliverClosing(
       chatwootConversationId: conversationId,
     },
     origin: "redirect_closing",
+    observedStatus: origin.observedStatus,
     base: origin.base,
   });
 }
@@ -509,6 +520,7 @@ export async function deliverRedirectClosing(
         },
       },
       select: {
+        status: true,
         lastInboundAt: true,
         inbox: { select: { agentId: true, channelType: true, provider: true } },
       },
@@ -545,7 +557,12 @@ export async function deliverRedirectClosing(
       p.closingMessage,
       chatMode,
 
-      { tenantId: p.tenantId, instanceId: p.instanceId, base },
+      {
+        tenantId: p.tenantId,
+        instanceId: p.instanceId,
+        base,
+        observedStatus: cx.widget.status,
+      },
     );
   }
 
@@ -568,7 +585,12 @@ export async function deliverRedirectClosing(
       p.closingMessage,
       waMode,
 
-      { tenantId: p.tenantId, instanceId: p.instanceId, base },
+      {
+        tenantId: p.tenantId,
+        instanceId: p.instanceId,
+        base,
+        observedStatus: sibling.status,
+      },
     );
   }
   return "delivered";

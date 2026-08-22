@@ -154,7 +154,14 @@ async function applyDeferredResolve(
   conversationId: number,
   turnState: TurnState,
   flow: FlowContext,
-  origin: { tenantId: bigint; instanceId: bigint; base: PrismaClient },
+  origin: {
+    tenantId: bigint;
+    instanceId: bigint;
+    base: PrismaClient;
+    // What the ownership recheck saw. Read from the row BEFORE the toggle, because after it the
+    // mirror may already carry our own close and a re-read could not tell it from somebody else's.
+    observedStatus: string | null;
+  },
 ): Promise<void> {
   if (!turnState.resolveRequested) return;
   turnState.resolveRequested = false;
@@ -170,6 +177,7 @@ async function applyDeferredResolve(
         chatwootConversationId: conversationId,
       },
       origin: "agent",
+      observedStatus: origin.observedStatus,
       base: origin.base,
     });
     emitFlowEvent(flow, {
@@ -713,7 +721,7 @@ export async function runLoadedTurn(
         });
         voiceReply = c?.voiceReply ?? null;
       }
-      return { ours, voiceReply };
+      return { ours, voiceReply, status: conv?.status ?? null };
     });
     // NOTE: A handoff we completed this turn reads as "not ours" here too, and the mirror records
     // no reason for a status change, so there is nothing to tell our own transition apart from a
@@ -786,6 +794,7 @@ export async function runLoadedTurn(
         tenantId,
         instanceId,
         base,
+        observedStatus: recheck.status,
       });
       return sent || handedOff ? "posted" : "empty";
     }
@@ -847,6 +856,7 @@ export async function runLoadedTurn(
             tenantId,
             instanceId,
             base,
+            observedStatus: recheck.status,
           });
           return "posted";
         }
@@ -881,6 +891,7 @@ export async function runLoadedTurn(
       tenantId,
       instanceId,
       base,
+      observedStatus: recheck.status,
     });
     return "posted";
   } finally {

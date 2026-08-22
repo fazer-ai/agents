@@ -51,7 +51,11 @@ async function seedClosedConversation(p: {
       chatwootInstanceId: instanceId,
       inboxId: inboxDbId,
       chatwootConversationId: p.convId,
-      status: p.status,
+      // Created OPEN even for the resolved cases, then closed below. The recorder refuses to stamp a
+      // row that already reads resolved (a resolve on a resolved conversation is a no-op in Chatwoot
+      // and does not change who closed it), so seeding straight to resolved would exercise an
+      // ordering production never produces.
+      status: "open",
       assigneeType: p.assigneeType ?? null,
       threadId: `${tenantId}:${instanceId}:${p.convId}`,
       lastEventAt: new Date(),
@@ -75,7 +79,14 @@ async function seedClosedConversation(p: {
       tenantId,
       conversation: { id: conv.id },
       origin: p.origin,
+      observedStatus: "open",
       base: appDb,
+    });
+  }
+  if (p.status !== "open") {
+    await suDb.conversation.update({
+      where: { id: conv.id },
+      data: { status: p.status },
     });
   }
 }

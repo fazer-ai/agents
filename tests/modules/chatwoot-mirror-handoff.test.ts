@@ -1517,6 +1517,82 @@ describe.skipIf(!dbUp)(
         expect(row.resolvedBy).toBe("agent");
       });
 
+      // The other half of round 4, and the one first-writer-wins does NOT cover: an external close
+      // (Chatwoot UI, automation rule, auto_resolve_after) leaves the origin NULL by design, so the
+      // NULL predicate alone would happily let the operator's no-op claim it. What refuses is the
+      // status the console loaded BEFORE its toggle.
+      test("re-resolving a conversation closed outside our code records nothing", async () => {
+        const T = 1_786_514_000;
+        await mirror({
+          event: "conversation_resolved",
+          ...convPayload(73, {
+            status: "resolved",
+            lastActivityAt: T,
+            updatedAt: T + 1,
+          }),
+        });
+        expect(
+          (
+            await suDb.conversation.findFirstOrThrow({
+              where: { tenantId, chatwootConversationId: 73 },
+              select: { resolvedBy: true },
+            })
+          ).resolvedBy,
+        ).toBeNull();
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(73),
+          "resolved",
+          {
+            makeClient: stubClient({
+              status: "resolved",
+              lastActivityAt: T,
+              updatedAt: T + 2,
+            }).makeClient,
+          },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 73 },
+          select: { status: true, resolvedBy: true },
+        });
+        expect(row.status).toBe("resolved");
+        expect(row.resolvedBy).toBeNull();
+      });
+
+      // Only a CLOSE is a closing. Moving a conversation to pending records nothing, or the column
+      // would stop meaning "who closed this".
+      test("sending a conversation to pending records no origin", async () => {
+        const T = 1_786_515_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(74, {
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(74),
+          "pending",
+          {
+            makeClient: stubClient({
+              status: "pending",
+              lastActivityAt: T,
+              updatedAt: T + 1,
+            }).makeClient,
+          },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 74 },
+          select: { status: true, resolvedBy: true },
+        });
+        expect(row.status).toBe("pending");
+        expect(row.resolvedBy).toBeNull();
+      });
+
       // Reopening from the console has to drop the stamp for the same reason the webhook mirror
       // does. This path is the UNVERSIONED fallback (the live read failed), which is exactly where a
       // clear that only lived in the versioned writer would be missed.

@@ -453,6 +453,10 @@ export async function runAgentNudge(
       client,
       conversationId,
       threadId: params.threadId,
+      // The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
+      // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
+      // one that had already happened.
+      observedStatus: loaded.status,
       handoffState,
     },
     { buildNativeTools, mcp: params.deps?.mcp, flow },
@@ -737,6 +741,10 @@ export async function runAgentNudge(
             chatwootConversationId: conversationId,
           },
           origin: "followup_abandonment",
+          // `loaded.status` is the probe's LIVE answer on this path: requireLiveBotOwnership makes
+          // probeLiveOwnership run a GET immediately before this, and it writes what it saw back
+          // onto `loaded`.
+          observedStatus: loaded.status,
           base,
         });
       } catch (err) {

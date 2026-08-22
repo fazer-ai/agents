@@ -1317,21 +1317,30 @@ export async function setConversationStatus(
   await client.toggleStatus(conv.chatwootConversationId, status, {
     asAdmin: true,
   });
-  const state = await mirrorConsoleWrite(ctx, base, id, conv, client, {
-    status,
-  });
   // An operator closing a conversation is not the agent resolving it, and the two are
   // indistinguishable from status + assignee alone (this path deliberately does NOT assign the
   // operator: the audit shows the instance admin, not the persona). Recording it is what keeps it
   // out of the Resolution funnel. Non-resolved statuses need nothing: the mirror clears the stamp.
+  //
+  // BEFORE the mirror write, not after: the recorder only stamps a row that is not already resolved
+  // (a resolve on a resolved conversation is a no-op in Chatwoot and does not change who closed it),
+  // and mirrorConsoleWrite is what makes this row resolved. Running it second would refuse every
+  // console stamp; running it first also makes the re-resolve case fall out for free, because then
+  // the row it reads is the pre-toggle one.
   if (status === "resolved") {
     await recordResolutionOrigin({
       tenantId,
       conversation: { id },
       origin: "console",
+      // conv is the row as loaded BEFORE the toggle, so an operator re-resolving an already
+      // resolved conversation records nothing: their call was a no-op in Chatwoot too.
+      observedStatus: conv.status,
       base,
     });
   }
+  const state = await mirrorConsoleWrite(ctx, base, id, conv, client, {
+    status,
+  });
   broadcastConversationEvent(tenantId, {
     conversationId: String(id),
     status: state?.status ?? status,

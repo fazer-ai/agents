@@ -28,7 +28,7 @@ interface AppRole {
   password: string;
 }
 
-function parseAppRole(databaseUrl: string): AppRole {
+export function parseAppRole(databaseUrl: string): AppRole {
   const u = new URL(databaseUrl);
   const role = decodeURIComponent(u.username);
   const password = decodeURIComponent(u.password);
@@ -78,6 +78,11 @@ export function planRoleProvisioning(
 // The DDL that carries the password. It reads role and password from session GUCs rather than from
 // a string we build, so the password is never spliced into SQL we assemble or log. The templates
 // are our own constants with no quotes to escape; only %I/%L are filled, by Postgres itself.
+//
+// NOTE: the four NO* on `create` are what `CREATE ROLE` defaults to anyway (measured: a bare
+// `CREATE ROLE x LOGIN PASSWORD y` lands with all four false), so they buy no behaviour and no
+// test can tell them from their absence. They are here to say out loud what this role is allowed
+// to be, next to a `demote` line where the same words are the entire point.
 const ROLE_DDL: Record<RoleProvisioningPlan, string> = {
   create:
     "CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE",
@@ -166,40 +171,45 @@ async function provisionCheckpointerSchema(
       );
     }
   } else {
-    // NOTE: reconciling an existing schema is the rotated-runtime-role case, and it has three
-    // depths, only the first of which is obvious:
+    // NOTE: an existing schema has to be reached at two depths, only the first of which is obvious:
     //
-    //   the schema      -- USAGE/CREATE, or nothing in it can be reached at all;
-    //   the tables      -- granting on a schema does not reach what is inside it, and setup()
-    //                      opens with `SELECT v FROM langgraph.checkpoint_migrations` and writes
-    //                      to the same table one statement later;
-    //   their ownership -- setup() also runs the checkpointer's own migrations, one of which is
-    //                      `ALTER TABLE ... ALTER COLUMN blob DROP NOT NULL`
-    //                      (@langchain/langgraph-checkpoint-postgres 1.0.4), and Postgres allows
-    //                      that only to the table's owner.
+    //   the schema — USAGE/CREATE, or nothing in it can be reached at all;
+    //   the tables — granting on a schema does not reach what is inside it, and setup() opens with
+    //                `SELECT v FROM langgraph.checkpoint_migrations` and writes to the same table
+    //                one statement later.
     //
-    // NOTE: only the TABLES are re-owned. The schema itself stays with whoever holds it:
+    // Ownership is a third thing setup() needs — one of the checkpointer's own migrations is
+    // `ALTER TABLE ... ALTER COLUMN blob DROP NOT NULL`
+    // (@langchain/langgraph-checkpoint-postgres 1.0.4), which Postgres allows only to the owner —
+    // but it is deliberately NOT reconciled in general. See the transfer below.
+    //
+    // NOTE: only the TABLES are ever re-owned. The schema itself stays with whoever holds it:
     // setup() needs USAGE and CREATE on it, which a grant covers, and nothing it runs alters the
     // schema — so taking it over buys nothing, and having it inside the same block would make a
     // refusal there abort the table transfers that do matter. Identifiers are quoted by Postgres
     // in the DO block rather than spliced here.
     //
-    // NOTE: that independence is also why the schema's owner already matching is NOT a
-    // shortcut out of here: a rotation A -> B leaves the schema with A and its tables with B, so a
-    // rollback to A finds its own name on the schema and no access to the tables. This runs
-    // whoever owns it, and is idempotent — on a healthy install it is two no-op grants and a loop
-    // over nothing.
-    //
     // NOTE: the grants go FIRST, and the order is load-bearing rather than stylistic: Postgres
-    // requires a table's prospective owner to hold CREATE on its schema, so on a fresh rotation,
-    // where the new role has nothing on the old owner's schema yet, the transfer below would fail,
-    // roll back its whole loop, and leave every table where it was.
+    // requires a table's prospective owner to hold CREATE on its schema, so where the new role has
+    // nothing on the old owner's schema yet, the transfer below would fail, roll back its whole
+    // loop, and leave every table where it was. Reaching them is also the part that carries the
+    // most: the grants alone serve every checkpointer read and write, and only the ALTER inside a
+    // pending migration needs more than that.
     //
-    // NOTE: the loop skips tables the role already owns, and that filter is not an optimisation.
-    // `ALTER TABLE ... OWNER TO` takes an ACCESS EXCLUSIVE lock even when the owner does not change
-    // (measured), and this runs on EVERY boot, including the overlap of a rolling deploy where the
-    // previous container is still serving — so an unfiltered loop would freeze the checkpointer's
-    // reads and writes once per deploy for no change at all.
+    // NOTE: the transfer takes ONLY the tables this administrator itself owns, and that is the
+    // whole rule rather than an optimisation. `ALTER TABLE ... OWNER TO` strips the previous
+    // owner's implicit privileges the moment it commits (measured), and this runs on EVERY boot,
+    // including the overlap of a rolling deploy where the previous container is still answering
+    // customers on the old role. The script cannot tell a retired owner from a serving one — but it
+    // knows one owner that is certainly not serving: itself, because setup() connects as the
+    // RUNTIME role (config.langgraphDatabaseUrl) and never as this one. So a brownfield install
+    // whose tables were created through a superuser DATABASE_URL — the case this script exists for
+    // — is adopted, while a runtime role that may still be live is left alone and reported.
+    //
+    // NOTE: `<> v_role` on top of that is what keeps a healthy re-boot free: `ALTER TABLE ... OWNER
+    // TO` takes an ACCESS EXCLUSIVE lock even when the owner does not change (measured), so on an
+    // install where the administrator and the runtime role are the same account, an unfiltered loop
+    // would freeze the checkpointer once per deploy for no change at all.
     let adoptError: unknown;
     try {
       await client.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`);
@@ -220,6 +230,7 @@ async function provisionCheckpointerSchema(
             SELECT c.relname FROM pg_class c
               JOIN pg_namespace n ON n.oid = c.relnamespace
              WHERE n.nspname = 'langgraph' AND c.relkind IN ('r', 'p')
+               AND pg_get_userbyid(c.relowner) = current_user
                AND pg_get_userbyid(c.relowner) <> v_role
           LOOP
             EXECUTE format('ALTER TABLE langgraph.%I OWNER TO %I', r.relname, v_role);
@@ -459,6 +470,12 @@ async function main() {
     // that fixes it is one an administrative role may make (it holds ADMIN), and `WITH SET` is
     // itself 16+ syntax, so older servers neither need it nor parse it. Best-effort: if it does not
     // go through, the CREATE SCHEMA below is the statement that reports the real problem.
+    //
+    // NOTE: what repairs it is the explicit GRANT, not the `WITH SET TRUE` on it — measured, a bare
+    // `GRANT a TO b` already lands with set_option true. Only the membership CREATEROLE confers
+    // implicitly carries set_option false, which is why an administrator that created the role
+    // still cannot SET ROLE to it. The clause is spelled out because a default that is silently
+    // relied upon is a default that changes.
     if (s.server_version_num >= 160000) {
       try {
         await client.query(`GRANT ${ident} TO CURRENT_USER WITH SET TRUE`);

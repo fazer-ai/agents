@@ -97,10 +97,10 @@ END $$;
 -- tables is hardened in a later phase).
 CREATE SCHEMA IF NOT EXISTS langgraph AUTHORIZATION :"app_role";
 GRANT USAGE, CREATE ON SCHEMA langgraph TO :"app_role";
--- No-op on a first provisioning, and the whole point on a rotated runtime role: granting on a
--- schema does not reach the tables inside it, which still belong to the previous owner, and
--- PostgresSaver.setup() opens with `SELECT v FROM langgraph.checkpoint_migrations`. Grants only:
--- re-owning those tables (which setup()'s own migrations need, since one of them ALTERs a table)
--- is a rotation concern, and rotation happens at boot, which is db-bootstrap.ts's job, not this
--- one's -- this script provisions.
+-- No-op on a first provisioning, and the whole point on an existing schema: granting on a schema
+-- does not reach the tables inside it, which still belong to whoever created them, and
+-- PostgresSaver.setup() opens with `SELECT v FROM langgraph.checkpoint_migrations`. Grants only,
+-- and deliberately: re-owning a table strips its previous owner's implicit privileges, which takes
+-- down anything still serving on that role, so db-bootstrap.ts does it only for tables the
+-- administrator running it owns itself. This script is run once, by hand, and provisions.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO :"app_role";

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
-import { planRoleProvisioning } from "../../scripts/db-bootstrap";
+import { parseAppRole, planRoleProvisioning } from "../../scripts/db-bootstrap";
 
 // The bug this file exists for only exists on a database whose ADMINISTRATIVE role is not a real
 // superuser, which is every managed Postgres (RDS, Coolify, EasyPanel) and no local docker one. So
@@ -27,7 +27,11 @@ const FOREIGN_ROLE = `fazerai_bs_foreign_${process.pid}`;
 const UNREACHABLE_ROLE = `fazerai_bs_unreachable_${process.pid}`;
 const ROT_A_ROLE = `fazerai_bs_rot_a_${process.pid}`;
 const ROT_B_ROLE = `fazerai_bs_rot_b_${process.pid}`;
+const SOLO_ROLE = `fazerai_bs_solo_${process.pid}`;
+const SPLIT_OWNER = `fazerai_bs_split_${process.pid}`;
+const PRIV_ROLE = `fazerai_bs_priv_${process.pid}`;
 const PROBE_DB = `fazerai_bs_probe_${process.pid}`;
+const SOLO_DB = `fazerai_bs_solo_db_${process.pid}`;
 const ADMIN_PW = "bs-admin-pw";
 const APP_PW = "bs-app-pw";
 const ROTATED_PW = "bs-app-pw-rotated";
@@ -185,18 +189,74 @@ describe("planRoleProvisioning", () => {
     });
   }
 
-  // NOTE: the module used to call main() at import time, so importing it to test the
-  // decision above would have run a real bootstrap against whatever the environment pointed at.
-  test("importing the script does not run the bootstrap", () => {
-    expect(
-      planRoleProvisioning({
-        exists: false,
-        isSuperuser: false,
-        bypassesRls: false,
-        hasCreateDb: false,
-        hasCreateRole: false,
-      }),
-    ).toBe("create");
+  // NOTE: the module used to call main() at import time, so importing it to test the decision
+  // above would have run a real bootstrap against whatever the environment pointed at. Asserting
+  // that from inside this file is not possible — the import at the top has already happened, and a
+  // main() that ran and succeeded would look exactly like one that never ran. So this spawns a
+  // fresh process whose environment would make a real bootstrap fail loudly, and watches nothing
+  // happen.
+  test("importing the script does not run the bootstrap", async () => {
+    const proc = Bun.spawn(
+      [
+        "bun",
+        "-e",
+        'await import("./scripts/db-bootstrap.ts"); console.log("imported");',
+      ],
+      {
+        cwd: REPO_ROOT,
+        env: {
+          ...process.env,
+          MIGRATION_DATABASE_URL: "postgres://nobody:x@127.0.0.1:1/nope",
+          DATABASE_URL: "postgres://nobody:x@127.0.0.1:1/nope",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect({ exitCode, stdout: stdout.trim() }).toEqual({
+      exitCode: 0,
+      stdout: "imported",
+    });
+    expect(stderr).not.toContain("ECONNREFUSED");
+  });
+
+  // NOTE: the role name is interpolated into DDL as a double-quoted identifier, so this regex is
+  // the only thing between a role name and the quotes. It is defense in depth rather than a
+  // boundary against external input — DATABASE_URL is operator-supplied — but an unquoted-identifier
+  // check that accepts a quote is not defense at all, so it gets a table of its own.
+  describe("parseAppRole", () => {
+    const cases: [string, string, "ok" | "rejects"][] = [
+      ["a plain name", "postgres://app_role:pw@h:5432/db", "ok"],
+      ["a hyphenated name", "postgres://app-role:pw@h:5432/db", "ok"],
+      ["digits", "postgres://app9:pw@h:5432/db", "ok"],
+      ["an embedded double quote", "postgres://ap%22p:pw@h:5432/db", "rejects"],
+      ["a semicolon", "postgres://app%3Bdrop:pw@h:5432/db", "rejects"],
+      ["a space", "postgres://ap%20p:pw@h:5432/db", "rejects"],
+      ["an empty role", "postgres://:pw@h:5432/db", "rejects"],
+    ];
+    for (const [name, url, expected] of cases) {
+      test(`${expected === "ok" ? "accepts" : "rejects"} ${name}`, () => {
+        if (expected === "ok") {
+          expect(parseAppRole(url).role).toMatch(/^[A-Za-z0-9_-]+$/);
+        } else {
+          expect(() => parseAppRole(url)).toThrow("unsafe app role name");
+        }
+      });
+    }
+
+    // NOTE: separate from the table because it fails on the OTHER field, and a password the URL
+    // does not carry is the one input an operator hits by accident: bootstrap would then set the
+    // role's password to the empty string and the server would fail to authenticate one step later.
+    test("refuses a DATABASE_URL with no password", () => {
+      expect(() => parseAppRole("postgres://app_role@h:5432/db")).toThrow(
+        "must include the app role's password",
+      );
+    });
   });
 });
 
@@ -216,12 +276,16 @@ describe.skipIf(!dbUp)(
       // control. Both suites therefore take their turn instead of racing to `tuple concurrently
       // updated`.
       await db.query("SELECT pg_advisory_lock(729104553)");
+      await db.query(`DROP DATABASE IF EXISTS ${SOLO_DB}`);
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ROT_B_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${SOLO_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${SPLIT_OWNER}`);
+      await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       // NOTE: the shape of an RDS master user / a Coolify-provisioned owner: it can create roles and owns
       // the database, and `rolsuper` is false.
@@ -241,12 +305,16 @@ describe.skipIf(!dbUp)(
 
     afterAll(async () => {
       const db = su as Client;
+      await db.query(`DROP DATABASE IF EXISTS ${SOLO_DB}`);
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ROT_B_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${SOLO_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${SPLIT_OWNER}`);
+      await db.query(`DROP ROLE IF EXISTS ${PRIV_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ADMIN_ROLE}`);
       await db.query("SELECT pg_advisory_unlock(729104553)");
       await db.end();
@@ -500,21 +568,27 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    test("a rotation the administrator CAN complete is completed, tables included", async () => {
+    test("a transfer the administrator COULD do is still not forced through", async () => {
       const admin = new URL(suUrl as string);
       const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
-      // NOTE: same shape as above, except the administrator is given the membership that lets it grant
-      // on the previous owner's objects. The point is that bootstrap then finishes the rotation
-      // rather than refusing: the refusal above is about what it cannot do, not about the case.
+      // NOTE: the pair to the grants-only case below. There the administrator could not re-own the
+      // tables; here it is given membership in the previous owner, so it can — and the point is
+      // that it still does not, because being able to strip a role's privileges says nothing about
+      // whether something is still serving on that role. Refusing has to be the rule rather than
+      // the symptom of a missing grant, and this is what tells the two apart.
       await onProbe(superuserOnProbe, (c) =>
         c.query(`GRANT ${FOREIGN_ROLE} TO ${ADMIN_ROLE} WITH SET TRUE`),
       );
 
-      const { exitCode } = await runBootstrap(ROTATED_PW, APP_ROLE);
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        ROTATED_PW,
+        APP_ROLE,
+      );
       expect(exitCode).toBe(0);
+      expect(`${stdout}${stderr}`).toContain("does not own");
 
-      // NOTE: to the effect, not to the exit code: the runtime role reads the table the checkpointer
-      // reads first, AND owns it — which is what lets setup() run the migration that ALTERs it.
+      // NOTE: to the effect, not to the exit code — the runtime role reads the table the
+      // checkpointer reads first and writes the one it writes, on a table it does not own.
       const state = await onProbe(
         urlFor(APP_ROLE, ROTATED_PW, PROBE_DB),
         async (c) => ({
@@ -527,25 +601,26 @@ describe.skipIf(!dbUp)(
           ).rows[0].owner,
         }),
       );
-      expect(state).toEqual({ rows: [], owner: APP_ROLE });
+      expect(state).toEqual({ rows: [], owner: FOREIGN_ROLE });
     });
 
-    test("a FRESH rotation transfers ownership too, with nothing granted first", async () => {
+    test("the transfer the script DOES make needs the schema grant to go first", async () => {
       const admin = new URL(suUrl as string);
       const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
-      // NOTE: the test above reached ownership, but only because an earlier phase had already granted
-      // USAGE/CREATE on the schema. Postgres requires a table's prospective owner to hold CREATE on
-      // its schema, so a rotation that starts with nothing -- the real one -- is a different case:
-      // with the transfer attempted before the grants, the whole loop rolls back and every table
-      // stays with the previous owner, reported as a warning.
+      // NOTE: the case the script adopts — tables the administrator itself owns, which is what a
+      // brownfield install looks like when its DATABASE_URL was the migration account — sitting in
+      // a schema owned by someone else. Postgres requires a table's prospective owner to hold
+      // CREATE on its schema, so with the transfer attempted before the grants the whole loop rolls
+      // back and every table stays put. Ordering is the only thing between working and not.
       await onProbe(superuserOnProbe, async (c) => {
         await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
         await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${FOREIGN_ROLE}`);
-        await c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)");
-        await c.query(
-          `ALTER TABLE langgraph.checkpoint_migrations OWNER TO ${FOREIGN_ROLE}`,
-        );
       });
+      // As the administrator, so the tables are its own — the shape setup() leaves behind when the
+      // runtime URL and the migration URL are the same account.
+      await onProbe(urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB), (c) =>
+        c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)"),
+      );
 
       const { exitCode, stdout, stderr } = await runBootstrap(
         ROTATED_PW,
@@ -613,11 +688,11 @@ describe.skipIf(!dbUp)(
     test("rolling a rotation back is reconciled, not skipped", async () => {
       const admin = new URL(suUrl as string);
       const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
-      // NOTE: ownership of the schema and of its tables move independently here -- only the tables are
-      // transferred -- so a rotation A -> B leaves the schema with A and the tables with B. Rolling
-      // DATABASE_URL back to A then lands on a schema A still owns and tables A no longer can
-      // touch, which is exactly the state a "the owner already matches, nothing to do" shortcut
-      // waves through and the checkpointer then fails on.
+      // NOTE: ownership of the schema and of its tables move independently, so an install can land
+      // with the schema on A and the tables on B. Rolling DATABASE_URL back to A then finds a
+      // schema A still owns and tables A cannot touch — exactly the state a "the owner already
+      // matches, nothing to do" shortcut waves through and the checkpointer then fails on. The
+      // tables are not re-owned (B may still be serving), so the grants are what has to land.
       await onProbe(superuserOnProbe, async (c) => {
         await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
         await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${APP_ROLE}`);
@@ -633,7 +708,7 @@ describe.skipIf(!dbUp)(
       const { exitCode } = await runBootstrap(ROTATED_PW, APP_ROLE);
       expect(exitCode).toBe(0);
 
-      const owner = await onProbe(
+      const state = await onProbe(
         urlFor(APP_ROLE, ROTATED_PW, PROBE_DB),
         async (c) => {
           await c.query(
@@ -646,55 +721,69 @@ describe.skipIf(!dbUp)(
           ).rows[0];
         },
       );
-      expect(owner).toEqual({ owner: APP_ROLE });
+      expect(state).toEqual({ owner: FOREIGN_ROLE });
     });
 
-    test("a rotation driven entirely by the script itself lands the whole way", async () => {
+    test("a rotation serves the incoming role without cutting off the outgoing one", async () => {
       const admin = new URL(suUrl as string);
       const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
-      // NOTE: every rotation case above builds its fixture by hand, which is precise but not faithful:
-      // it grants the administrator its membership over the previous owner outright, where a real
+      // NOTE: every case above builds its fixture by hand, which is precise but not faithful: it
+      // grants the administrator its membership over the previous owner outright, where a real
       // install gets that membership from bootstrap's own `GRANT <role> TO CURRENT_USER WITH SET
-      // TRUE` on the boot that created the role. Whether that grant is enough is the whole
-      // question -- the membership CREATEROLE confers implicitly carries INHERIT false, so an
-      // administrator that only had THAT one could not exercise the old owner's rights at all.
-      // This walks the real path end to end and asserts the answer instead of assuming it.
+      // TRUE` on the boot that created the role. This walks the real path end to end instead.
+      //
+      // NOTE: and it measures BOTH sides of the overlap, because a rolling deploy has two live
+      // containers. The incoming role has to be able to serve; the outgoing one has to keep
+      // serving until it is drained, which is what re-owning its tables would take away.
       await onProbe(superuserOnProbe, (c) =>
         c.query("DROP SCHEMA IF EXISTS langgraph CASCADE"),
       );
       const first = await runBootstrap(APP_PW, ROT_A_ROLE);
       expect(first.exitCode).toBe(0);
 
-      // NOTE: what PostgresSaver.setup() does on that boot, as the runtime role.
+      // What PostgresSaver.setup() does on that boot, as the runtime role.
       await onProbe(urlFor(ROT_A_ROLE, APP_PW, PROBE_DB), (c) =>
         c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)"),
       );
 
-      const rotated = await runBootstrap(APP_PW, ROT_B_ROLE);
-      expect(`${rotated.stdout}${rotated.stderr}`).not.toContain(
-        "does not own",
-      );
-      expect(rotated.exitCode).toBe(0);
+      // The old container: a live connection on the old role, held across the rotation.
+      const serving = new Client({
+        connectionString: urlFor(ROT_A_ROLE, APP_PW, PROBE_DB),
+      });
+      await serving.connect();
+      try {
+        const rotated = await runBootstrap(APP_PW, ROT_B_ROLE);
+        expect(rotated.exitCode).toBe(0);
+        expect(`${rotated.stdout}${rotated.stderr}`).toContain("does not own");
 
-      // NOTE: the new role has to be able to do both things setup() does: write the migrations table,
-      // and ALTER it -- which only its owner may.
-      const worked = await onProbe(
-        urlFor(ROT_B_ROLE, APP_PW, PROBE_DB),
-        async (c) => {
-          await c.query(
-            "INSERT INTO langgraph.checkpoint_migrations (v) VALUES (1)",
-          );
-          await c.query(
-            "ALTER TABLE langgraph.checkpoint_migrations ALTER COLUMN v DROP NOT NULL",
-          );
-          return (
+        // The incoming role serves: the checkpointer's first read and its write both go through.
+        const worked = await onProbe(
+          urlFor(ROT_B_ROLE, APP_PW, PROBE_DB),
+          async (c) => {
             await c.query(
-              "SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE oid = 'langgraph.checkpoint_migrations'::regclass",
+              "INSERT INTO langgraph.checkpoint_migrations (v) VALUES (1)",
+            );
+            return (
+              await c.query("SELECT v FROM langgraph.checkpoint_migrations")
+            ).rows;
+          },
+        );
+        expect(worked).toEqual([{ v: 1 }]);
+
+        // And the outgoing one still does, on the same table.
+        await serving.query(
+          "INSERT INTO langgraph.checkpoint_migrations (v) VALUES (2)",
+        );
+        expect(
+          (
+            await serving.query(
+              "SELECT v FROM langgraph.checkpoint_migrations ORDER BY v",
             )
-          ).rows[0];
-        },
-      );
-      expect(worked).toEqual({ owner: ROT_B_ROLE });
+          ).rows,
+        ).toEqual([{ v: 1 }, { v: 2 }]);
+      } finally {
+        await serving.end();
+      }
     });
 
     test("a healthy re-boot does not lock the checkpointer's tables", async () => {
@@ -743,6 +832,184 @@ describe.skipIf(!dbUp)(
         await reader.query("ROLLBACK").catch(() => {});
         await reader.end();
       }
+    });
+
+    test("one account doing both jobs does not lock its own tables either", async () => {
+      const db = su as Client;
+      const admin = new URL(suUrl as string);
+      // NOTE: the case the `<> v_role` half of the filter exists for, and it is not hypothetical:
+      // an install can point MIGRATION_DATABASE_URL and DATABASE_URL at the same account. Measured:
+      // that install is STABLE rather than self-correcting — a role may not alter itself even with
+      // CREATEROLE, so this script cannot strip its own privileges and the shape survives every
+      // boot. The owner filter alone would then match every table (the account owns them all) and
+      // re-own each one to itself, taking ACCESS EXCLUSIVE for no change, once per deploy.
+      await db.query(
+        `CREATE ROLE ${SOLO_ROLE} LOGIN PASSWORD '${APP_PW}' CREATEROLE NOSUPERUSER NOBYPASSRLS`,
+      );
+      await db.query(`CREATE DATABASE ${SOLO_DB} OWNER ${SOLO_ROLE}`);
+      await onProbe(urlFor(admin.username, admin.password, SOLO_DB), (c) =>
+        c.query("CREATE EXTENSION IF NOT EXISTS vector"),
+      );
+
+      const soloUrl = urlFor(SOLO_ROLE, APP_PW, SOLO_DB);
+      const bootSolo = (extraEnv: Record<string, string> = {}) =>
+        runBootstrap(APP_PW, SOLO_ROLE, {
+          MIGRATION_DATABASE_URL: soloUrl,
+          DATABASE_URL: soloUrl,
+          ...extraEnv,
+        });
+
+      expect((await bootSolo()).exitCode).toBe(0);
+      // What PostgresSaver.setup() does on that boot — as the runtime role, which here is also the
+      // administrative one, so the tables land owned by `current_user`.
+      await onProbe(soloUrl, (c) =>
+        c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)"),
+      );
+
+      const reader = new Client({ connectionString: soloUrl });
+      await reader.connect();
+      try {
+        await reader.query("BEGIN");
+        await reader.query("SELECT v FROM langgraph.checkpoint_migrations");
+
+        const started = Date.now();
+        const { exitCode } = await bootSolo({
+          PGOPTIONS: "-c lock_timeout=2000",
+        });
+        const elapsed = Date.now() - started;
+
+        // Same threshold and same reasoning as the re-boot case above: the wait is the assertion.
+        expect(exitCode).toBe(0);
+        expect(elapsed).toBeLessThan(1000);
+      } finally {
+        await reader.query("ROLLBACK").catch(() => {});
+        await reader.end();
+      }
+    });
+
+    test("half the tables reachable is not reachable", async () => {
+      const db = su as Client;
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // NOTE: `has_table_privilege` over a set has to be ALL of them, and the two ways to get that
+      // wrong both look right on a one-table fixture: a comma-separated privilege list is OR rather
+      // than AND, and aggregating with bool_or instead of bool_and passes a schema where a single
+      // table is reachable. setup() touches every table it manages, so anything short of all of
+      // them is a boot that dies partway. This owner is deliberately one the administrator has no
+      // membership in, so bootstrap's own blanket GRANT cannot quietly repair the fixture.
+      await db.query(`CREATE ROLE ${SPLIT_OWNER} NOLOGIN`);
+      await onProbe(superuserOnProbe, async (c) => {
+        await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
+        await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${SPLIT_OWNER}`);
+        await c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)");
+        await c.query("CREATE TABLE langgraph.checkpoint_writes (v int)");
+        for (const t of ["checkpoint_migrations", "checkpoint_writes"]) {
+          await c.query(`ALTER TABLE langgraph.${t} OWNER TO ${SPLIT_OWNER}`);
+        }
+        await c.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${APP_ROLE}`);
+        // Everything on the first table, nothing on the second.
+        await c.query(
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON langgraph.checkpoint_migrations TO ${APP_ROLE}`,
+        );
+      });
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        ROTATED_PW,
+        APP_ROLE,
+      );
+      expect(exitCode).toBe(1);
+      expect(`${stdout}${stderr}`).toContain("the tables already in it");
+    });
+
+    test("neither schema privilege stands in for the other", async () => {
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // NOTE: the two schema privileges are checked as an AND, and this is the case that tells them
+      // apart. Measured: with USAGE but not CREATE, `CREATE TABLE IF NOT EXISTS` is refused on the
+      // schema even when the table already exists — Postgres checks the privilege before it checks
+      // the IF NOT EXISTS — so setup() dies on its own migrations. A check that asked for USAGE
+      // alone would report this install as fine.
+      await onProbe(superuserOnProbe, async (c) => {
+        await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
+        await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${SPLIT_OWNER}`);
+        await c.query("CREATE TABLE langgraph.checkpoint_migrations (v int)");
+        await c.query(
+          `ALTER TABLE langgraph.checkpoint_migrations OWNER TO ${SPLIT_OWNER}`,
+        );
+        await c.query(`GRANT USAGE ON SCHEMA langgraph TO ${APP_ROLE}`);
+        await c.query(
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO ${APP_ROLE}`,
+        );
+      });
+
+      const usageOnly = await runBootstrap(ROTATED_PW, APP_ROLE);
+      const usageOutput = `${usageOnly.stdout}${usageOnly.stderr}`;
+      expect(usageOnly.exitCode).toBe(1);
+      expect(usageOutput).toContain("the schema itself");
+      expect(usageOutput).not.toContain("the tables already in it");
+
+      // NOTE: and the other way round, which is the half that hides: `has_table_privilege` does not
+      // consider schema privileges at all, so a role holding CREATE but not USAGE reports every
+      // table as reachable while being unable to name a single one of them. Dropping the USAGE
+      // check would call this install healthy and let the server die on its first query.
+      await onProbe(superuserOnProbe, async (c) => {
+        await c.query(`REVOKE USAGE ON SCHEMA langgraph FROM ${APP_ROLE}`);
+        await c.query(`GRANT CREATE ON SCHEMA langgraph TO ${APP_ROLE}`);
+      });
+
+      const createOnly = await runBootstrap(ROTATED_PW, APP_ROLE);
+      expect(createOnly.exitCode).toBe(1);
+      expect(`${createOnly.stdout}${createOnly.stderr}`).toContain(
+        "the schema itself",
+      );
+
+      // The reason it is fatal, rather than something inferred from the privilege bits.
+      await expect(
+        onProbe(urlFor(APP_ROLE, ROTATED_PW, PROBE_DB), (c) =>
+          c.query("SELECT v FROM langgraph.checkpoint_migrations"),
+        ),
+      ).rejects.toThrow("permission denied for schema langgraph");
+    });
+
+    test("a superuser administrator actually strips the attributes", async () => {
+      const db = su as Client;
+      const admin = new URL(suUrl as string);
+      // NOTE: the refusal case above proves what a CREATEROLE administrator CANNOT do; nothing so
+      // far proves the demotion works when it is allowed, so the DDL behind it went unmeasured —
+      // an `ALTER ROLE` missing NOSUPERUSER or NOBYPASSRLS passed every test in this file. Only a
+      // superuser can take those away, so only a superuser administrator exercises this path.
+      await db.query(
+        `CREATE ROLE ${PRIV_ROLE} LOGIN PASSWORD '${APP_PW}' SUPERUSER BYPASSRLS`,
+      );
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        APP_PW,
+        PRIV_ROLE,
+        {
+          MIGRATION_DATABASE_URL: urlFor(
+            admin.username,
+            admin.password,
+            PROBE_DB,
+          ),
+        },
+      );
+      expect(`${stdout}${stderr}`).not.toContain("makes RLS a no-op");
+      expect(exitCode).toBe(0);
+
+      // NOTE: to the catalog, because the catalog IS the effect here — RLS being enforced for this
+      // role is exactly "these two columns are false", and the boot guard reads the same ones.
+      const attrs = (
+        await db.query(
+          "SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole FROM pg_roles WHERE rolname = $1",
+          [PRIV_ROLE],
+        )
+      ).rows[0];
+      expect(attrs).toEqual({
+        rolsuper: false,
+        rolbypassrls: false,
+        rolcreatedb: false,
+        rolcreaterole: false,
+      });
     });
   },
 );

@@ -231,11 +231,23 @@ export async function mirrorChatwootEvent(
             : {}),
           ...(decision.unversioned && contactId != null ? { contactId } : {}),
           ...(appliedStatus != null ? { status: appliedStatus } : {}),
-          // A conversation that leaves "resolved" has no resolution to attribute any more, and the
+          // A conversation that LEAVES "resolved" has no resolution to attribute any more, and the
           // stamp must not survive into whatever closes it next. Rides on `appliedStatus` so it
           // inherits the same version ordering as the status itself: a stale payload that loses the
           // comparison writes neither.
-          ...(appliedStatus != null && appliedStatus !== "resolved"
+          //
+          // The `existing.status` half is the load-bearing one. "This event says non-resolved" and
+          // "the conversation left resolved" are different questions, and only the second justifies
+          // dropping the stamp. Between our own toggle and the arrival of ITS event, the mirror
+          // still reads the pre-toggle status, so a conversation event serialized BEFORE the toggle
+          // (an assign_label or set_custom_attribute earlier in the same turn) and delivered after
+          // it still outranks the stored version and applies its own non-resolved status — over an
+          // identical stored one, changing nothing. Without this clause that no-op erased the stamp,
+          // and the resolved event arriving next preserved the NULL, so a genuine agent resolution
+          // was lost for good.
+          ...(appliedStatus != null &&
+          appliedStatus !== "resolved" &&
+          existing.status === "resolved"
             ? { resolvedBy: null }
             : {}),
           ...(assigneeKnown

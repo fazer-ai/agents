@@ -158,6 +158,56 @@ describe.skipIf(!dbUp)(
     // The webhook is not the only writer of `status`. A live probe (every proactive send, and every
     // console write whose GET answers with a version) reconciles the row from Chatwoot's own answer,
     // and a reopen can arrive that way with no webhook involved at all.
+    test("a live probe that finds the conversation reopened clears it", async () => {
+      await closeThenStamp(35, 1_700_004_000);
+      const out = await reconcile(35, "open", 1_700_004_010);
+      expect(out.applied).toBe(true);
+      expect(await originOf(35)).toBeNull();
+    });
+
+    test("a live probe that still finds it resolved keeps it", async () => {
+      await closeThenStamp(36, 1_700_005_000);
+      await reconcile(36, "resolved", 1_700_005_010);
+      expect(await originOf(36)).toBe("agent");
+    });
+
+    // Review round 2 on #199. Between our own toggle and the arrival of ITS event, the mirror still
+    // reads the pre-toggle status. A conversation event serialized BEFORE the toggle (an assign_label
+    // or set_custom_attribute earlier in the same turn) can be delivered after the stamp, still
+    // outrank the stored version, and apply its own non-resolved status over an identical stored one.
+    // That no-op used to erase the stamp, and the resolved event arriving next preserved the NULL:
+    // a real agent resolution, lost for good, on the one closing the funnel counts.
+    test("a pre-toggle event delivered after the stamp does not erase it", async () => {
+      const V0 = 1_700_007_000;
+      await mirror(convEvent(40, "conversation_created", "open", V0));
+      // Our toggle happens in Chatwoot (version V0+2). Its webhook has not arrived yet, so the mirror
+      // still says "open" at V0 — which is exactly the state the stamp is written on top of.
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 40,
+        },
+        origin: "agent",
+        base: appDb,
+      });
+      // The label write from earlier in the same turn, serialized at V0+1, delivered late. Newer than
+      // the stored version, so it applies; its status is the pre-toggle one, identical to the stored.
+      await mirror(convEvent(40, "conversation_updated", "open", V0 + 1));
+      expect(await originOf(40)).toBe("agent");
+      // Our own resolve event lands last and does not restore anything — it never could.
+      await mirror(
+        convEvent(40, "conversation_status_changed", "resolved", V0 + 2),
+      );
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 40 },
+        select: { status: true, resolvedBy: true },
+      });
+      expect(row.status).toBe("resolved");
+      expect(row.resolvedBy).toBe("agent");
+    });
+
+    // The same shape through the live probe, which writes status on its own path.
     async function reconcile(
       convId: number,
       status: string,
@@ -179,17 +229,26 @@ describe.skipIf(!dbUp)(
       });
     }
 
-    test("a live probe that finds the conversation reopened clears it", async () => {
-      await closeThenStamp(35, 1_700_004_000);
-      const out = await reconcile(35, "open", 1_700_004_010);
+    // The live probe takes its snapshot from the CALLER, so the same race the webhook path has is
+    // reachable here: a snapshot fetched before our toggle, applied after the stamp, reporting a
+    // non-resolved status that differs from the stored one. "The snapshot says non-resolved" is not
+    // "the conversation left resolved", and only the second may drop the stamp — the two writers have
+    // to answer that the same way or the rule is only half true.
+    test("a live probe moving between two non-resolved statuses does not erase it", async () => {
+      const V0 = 1_700_008_000;
+      await mirror(convEvent(41, "conversation_created", "open", V0));
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 41,
+        },
+        origin: "agent",
+        base: appDb,
+      });
+      const out = await reconcile(41, "pending", V0 + 1);
       expect(out.applied).toBe(true);
-      expect(await originOf(35)).toBeNull();
-    });
-
-    test("a live probe that still finds it resolved keeps it", async () => {
-      await closeThenStamp(36, 1_700_005_000);
-      await reconcile(36, "resolved", 1_700_005_010);
-      expect(await originOf(36)).toBe("agent");
+      expect(await originOf(41)).toBe("agent");
     });
 
     test("a live probe older than the close cannot clear it", async () => {

@@ -159,13 +159,13 @@ export async function reconcileMirrorFromLive(
           ...(statusOrdered && live.status !== current.status
             ? { status: live.status }
             : {}),
-          // Same rule as the webhook mirror: leaving "resolved" drops the recorded origin, so the
-          // stamp cannot survive into whatever closes the conversation next. Gated on the same
-          // `statusOrdered` + actually-changed pair as the status write above, so a live read this
-          // row already outranks writes neither.
+          // Same rule as the webhook mirror, including its `current.status` half: only LEAVING
+          // "resolved" drops the recorded origin. Gated on the same `statusOrdered` +
+          // actually-changed pair as the status write above, so a live read this row already
+          // outranks writes neither.
           ...(statusOrdered &&
           live.status !== current.status &&
-          live.status !== "resolved"
+          current.status === "resolved"
             ? { resolvedBy: null }
             : {}),
           ...(assigneeOrdered &&

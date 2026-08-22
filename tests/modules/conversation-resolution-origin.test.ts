@@ -3,6 +3,7 @@ import {
   type ConversationOutcome,
   type ConversationOutcomeRow,
   classifyOutcome,
+  clearsResolutionOrigin,
   isResolutionOrigin,
   RESOLUTION_ORIGINS,
 } from "@/modules/conversations/resolution-origin";
@@ -112,6 +113,145 @@ describe("classifyOutcome", () => {
     );
     expect(counted).toEqual(["agent"]);
   });
+});
+
+describe("clearsResolutionOrigin", () => {
+  // Decision table over the three facts every status writer has: what the row says, what the source
+  // says, and what the ordering decided to write. Six review rounds of this change were six wrong
+  // ways to ask this question inline; the point of the table is that a seventh cannot be added
+  // anywhere else.
+  const cases: [
+    name: string,
+    source: Parameters<typeof clearsResolutionOrigin>[0],
+    expected: boolean,
+  ][] = [
+    [
+      "a winning reopen over a resolved row ends the resolution",
+      {
+        storedStatus: "resolved",
+        statedStatus: "open",
+        appliedStatus: "open",
+        sourceMayStateStatus: true,
+      },
+      true,
+    ],
+    [
+      "a reopen that LOST the ordering leaves the row resolved and the origin standing",
+      {
+        storedStatus: "resolved",
+        statedStatus: "open",
+        appliedStatus: null,
+        sourceMayStateStatus: true,
+      },
+      false,
+    ],
+    [
+      "our close losing to a reopen drops the stamp it wrote ahead of its own event",
+      {
+        storedStatus: "open",
+        statedStatus: "resolved",
+        appliedStatus: null,
+        sourceMayStateStatus: true,
+      },
+      true,
+    ],
+    [
+      "our close landing keeps it",
+      {
+        storedStatus: "open",
+        statedStatus: "resolved",
+        appliedStatus: "resolved",
+        sourceMayStateStatus: true,
+      },
+      false,
+    ],
+    [
+      "an unrelated event writing the SAME non-resolved status is not a reopen",
+      {
+        storedStatus: "open",
+        statedStatus: "open",
+        appliedStatus: "open",
+        sourceMayStateStatus: true,
+      },
+      false,
+    ],
+    [
+      "an event that states no status decides nothing",
+      {
+        storedStatus: "open",
+        statedStatus: null,
+        appliedStatus: null,
+        sourceMayStateStatus: true,
+      },
+      false,
+    ],
+    [
+      "a frozen message snapshot saying 'resolved' is not a close that lost (issue #61)",
+      {
+        storedStatus: "open",
+        statedStatus: "resolved",
+        appliedStatus: null,
+        sourceMayStateStatus: false,
+      },
+      false,
+    ],
+    [
+      "the reopen a new incoming message carries faithfully still ends the resolution",
+      {
+        storedStatus: "resolved",
+        statedStatus: "open",
+        appliedStatus: "open",
+        sourceMayStateStatus: false,
+      },
+      true,
+    ],
+    [
+      "a duplicate old close on an already-resolved row says nothing about the stamp",
+      {
+        storedStatus: "resolved",
+        statedStatus: "resolved",
+        appliedStatus: null,
+        sourceMayStateStatus: true,
+      },
+      false,
+    ],
+    [
+      "leaving 'resolved' for 'pending' is a leave like any other",
+      {
+        storedStatus: "resolved",
+        statedStatus: "pending",
+        appliedStatus: "pending",
+        sourceMayStateStatus: true,
+      },
+      true,
+    ],
+    [
+      "a close arriving over a row already held resolved keeps the earlier origin",
+      {
+        storedStatus: "resolved",
+        statedStatus: "resolved",
+        appliedStatus: "resolved",
+        sourceMayStateStatus: true,
+      },
+      false,
+    ],
+    [
+      "a snapshot that may not state status cannot reopen on its word alone",
+      {
+        storedStatus: "pending",
+        statedStatus: "resolved",
+        appliedStatus: null,
+        sourceMayStateStatus: false,
+      },
+      false,
+    ],
+  ];
+
+  for (const [name, source, expected] of cases) {
+    test(name, () => {
+      expect(clearsResolutionOrigin(source)).toBe(expected);
+    });
+  }
 });
 
 describe("isResolutionOrigin", () => {

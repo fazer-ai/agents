@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import type { LiveConversationState } from "./normalize";
 
 // Applies a LIVE conversation snapshot (a REST `GET /conversations/:id`) to the mirror row, under the
@@ -159,21 +160,14 @@ export async function reconcileMirrorFromLive(
           ...(statusOrdered && live.status !== current.status
             ? { status: live.status }
             : {}),
-          // Same rule as the webhook mirror, including its `current.status` half: only LEAVING
-          // "resolved" drops the recorded origin. Gated on the same `statusOrdered` +
-          // actually-changed pair as the status write above, so a live read this row already
-          // outranks writes neither.
-          ...(statusOrdered &&
-          live.status !== current.status &&
-          current.status === "resolved"
-            ? { resolvedBy: null }
-            : {}),
-          // Same second rule as the webhook mirror: a snapshot that says "resolved" and LOST the
-          // version comparison is a close the row already moved past, so a stamp not attached to
-          // any accepted close is a stamp about a close that is gone.
-          ...(!statusOrdered &&
-          live.status === "resolved" &&
-          current.status !== "resolved"
+          // The same rule the webhook mirror applies, from the same function: a live read always
+          // speaks about status, and what it is allowed to WRITE is `statusOrdered`.
+          ...(clearsResolutionOrigin({
+            storedStatus: current.status,
+            statedStatus: live.status,
+            appliedStatus: statusOrdered ? live.status : null,
+            sourceMayStateStatus: true,
+          })
             ? { resolvedBy: null }
             : {}),
           ...(assigneeOrdered &&

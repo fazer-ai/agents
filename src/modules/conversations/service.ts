@@ -608,9 +608,12 @@ async function updateMirror(
       where: { id },
       data: {
         ...data,
-        // Same rule as the webhook mirror and the live reconcile: leaving "resolved" drops the
-        // recorded origin. This is the unversioned fallback, so it writes whatever the console
-        // action asked for, including the reopen a stale live read would have missed.
+        // Deliberately NOT `clearsResolutionOrigin`. That function answers "did the ordering leave
+        // this close standing?", and this write has no ordering: it is the unversioned fallback for
+        // an operator's own click, so it is a command, not a payload to be ranked. An explicit
+        // reopen ends the resolution whatever the mirror currently reads — including the case the
+        // shared rule would refuse, where a stale row still says non-resolved and Chatwoot is the
+        // one holding the close.
         ...(data.status != null && data.status !== "resolved"
           ? { resolvedBy: null }
           : {}),

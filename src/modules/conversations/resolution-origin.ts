@@ -36,6 +36,60 @@
  * the funnel stepping down one day with no explanation.
  */
 
+/**
+ * Whether a status write kills the recorded origin.
+ *
+ * ONE function and not a clause per writer. The stamp is written on four paths and dropped on
+ * three (the webhook mirror, the live reconcile, the console write), and the first six review
+ * rounds of this change were six variations of the same mistake: each writer restating the rule in
+ * its own local vocabulary (`decision.stale`, `appliedStatus == null`, `statusOrdered`) and getting
+ * a different one of them wrong. The vocabulary IS the bug — `stale` in particular is
+ * `olderThanStatus && olderThanAssignee`, so a delayed close that loses the status axis while
+ * winning the assignee one is not stale, and a rule written on that axis skips it.
+ *
+ * So the writers state facts and this states the rule. The facts are the same three everywhere:
+ * what the row says now, what the incoming source says, and what the ordering decided to write.
+ *
+ * ## The rule
+ *
+ * The stamp names a close. It dies when that close is not the row's state, which happens two ways:
+ *
+ *   1. **The conversation LEFT "resolved".** A resolution that existed is over — reopened by a
+ *      customer message, by an operator, by anything. Whatever closes it next is a different close
+ *      and gets its own origin.
+ *   2. **A source entitled to speak said "resolved" and LOST the ordering.** Our own toggle writes
+ *      the stamp before its event arrives, so between the two the row reads non-resolved while
+ *      carrying a stamp. If a reopen wins in that window, the close it describes never lands, and
+ *      leaving the stamp would credit the agent for whoever closes the conversation next.
+ *
+ * Both need `statusAfter !== "resolved"`, and neither is `statusAfter !== "resolved"` on its own:
+ * during that same window an unrelated event (a label, an attribute) leaves the row non-resolved
+ * while saying nothing about the close, and clearing there loses a genuine resolution for good.
+ *
+ * `sourceMayStateStatus` is what keeps case 2 off a frozen message snapshot. A snapshot embeds the
+ * conversation's status but is not allowed to move state (issue #61), so its "resolved" is not a
+ * claim that lost — it is not a claim at all.
+ */
+export function clearsResolutionOrigin(source: {
+  /** The status stored on the row before this write. */
+  storedStatus: string;
+  /** The status the incoming payload or live snapshot states, null when it states none. */
+  statedStatus: string | null;
+  /** The status the ordering decided to write, null to keep the stored one. */
+  appliedStatus: string | null;
+  /** Whether this source is allowed to move status at all: a versioned conversation event, or a live read. */
+  sourceMayStateStatus: boolean;
+}): boolean {
+  const { storedStatus, statedStatus, appliedStatus, sourceMayStateStatus } =
+    source;
+  const statusAfter = appliedStatus ?? storedStatus;
+  if (statusAfter === "resolved") return false;
+  const leftResolved = storedStatus === "resolved";
+  const closeLostTheOrdering =
+    sourceMayStateStatus && statedStatus === "resolved";
+  return leftResolved || closeLostTheOrdering;
+}
+
 /** Recorded when WE close a conversation. Null = we did not, or the row is not resolved. */
 export const RESOLUTION_ORIGINS = [
   /** `resolve_conversation`: the agent judged the customer's request handled. */

@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import { isNewIncomingMessage } from "./normalize";
 import { decideConversationWrites, type StatePayload } from "./state-order";
@@ -145,38 +146,29 @@ export async function mirrorChatwootEvent(
           : null,
         now,
       );
-      // A close of ours that the ORDERING REFUSED. The stamp is written while our mirror still says
-      // open, so between it and the arrival of our own resolve event a customer reply can reopen the
-      // conversation; our resolve then loses and is never applied, leaving a stamp about a close that
-      // no longer exists — and the next close, an operator's or a timer's, would be read as the
-      // agent's.
-      //
-      // The axis matters, and getting it wrong is what round 5 did. `decision.stale` is
-      // `olderThanStatus && olderThanAssignee`, but the reopen exception advances only the STATUS
-      // mark, so the delayed resolve routinely loses the status axis while still winning the
-      // assignee one — not stale, and skipped. What the rule is actually about is one thing: this
-      // payload said "resolved" and the decision did not apply it.
-      //
-      // Restricted to a VERSIONED CONVERSATION event, which is the whole of why this cannot be read
-      // from `appliedStatus == null` in the write below: there it also matches a frozen message
-      // snapshot, which claims no version and is meant to move no state (issue #61). And gated on
-      // the row not being held resolved, so a duplicate old close landing on a resolved conversation
-      // says nothing about the stamp.
-      const rejectedOurClose =
+      // Whether this event kills a recorded resolution origin, asked ONCE for both exits below: the
+      // stale branch returns before the update, and rounds 5 and 6 of this change were the same rule
+      // stated twice and getting a different axis wrong each time. The rule itself, and why it takes
+      // these three facts and not `decision.stale`, is in `clearsResolutionOrigin`.
+      const dropsResolutionOrigin =
         existing != null &&
-        statePayload.fromConversationEvent &&
-        statePayload.version != null &&
-        statePayload.status === "resolved" &&
-        decision.status !== "resolved" &&
-        existing.status !== "resolved";
+        clearsResolutionOrigin({
+          storedStatus: existing.status,
+          statedStatus: statePayload.status,
+          appliedStatus: decision.status,
+          // Only a versioned conversation event may move status here; a message snapshot embeds one
+          // but is meant to move no state (issue #61).
+          sourceMayStateStatus:
+            statePayload.fromConversationEvent && statePayload.version != null,
+        });
 
       if (existing && decision.stale) {
-        // A stale event says nothing about the conversation, with ONE exception: see
-        // `rejectedOurClose` above. Written here because this branch returns before the update.
+        // A stale event says nothing about the conversation, with ONE exception: a close of ours
+        // that this ordering refused. Written here because this branch returns before the update.
         // `resolvedBy != null` is a write-avoidance guard, not part of the rule: this branch is
         // taken by every out-of-order delivery, and clearing a column that is already null would
         // add an UPDATE to each one.
-        if (rejectedOurClose && existing.resolvedBy != null) {
+        if (dropsResolutionOrigin && existing.resolvedBy != null) {
           await db.conversation.update({
             where: { id: existing.id },
             data: { resolvedBy: null },
@@ -268,27 +260,9 @@ export async function mirrorChatwootEvent(
             : {}),
           ...(decision.unversioned && contactId != null ? { contactId } : {}),
           ...(appliedStatus != null ? { status: appliedStatus } : {}),
-          // A conversation that LEAVES "resolved" has no resolution to attribute any more, and the
-          // stamp must not survive into whatever closes it next. Rides on `appliedStatus` so it
-          // inherits the same version ordering as the status itself: a stale payload that loses the
-          // comparison writes neither.
-          //
-          // The `existing.status` half is the load-bearing one. "This event says non-resolved" and
-          // "the conversation left resolved" are different questions, and only the second justifies
-          // dropping the stamp. Between our own toggle and the arrival of ITS event, the mirror
-          // still reads the pre-toggle status, so a conversation event serialized BEFORE the toggle
-          // (an assign_label or set_custom_attribute earlier in the same turn) and delivered after
-          // it still outranks the stored version and applies its own non-resolved status — over an
-          // identical stored one, changing nothing. Without this clause that no-op erased the stamp,
-          // and the resolved event arriving next preserved the NULL, so a genuine agent resolution
-          // was lost for good.
-          ...(appliedStatus != null &&
-          appliedStatus !== "resolved" &&
-          existing.status === "resolved"
-            ? { resolvedBy: null }
-            : {}),
-          // The other half, for the events that are not whole-event stale: see `rejectedOurClose`.
-          ...(rejectedOurClose ? { resolvedBy: null } : {}),
+          // The same question the stale branch asked, and the same answer: see
+          // `dropsResolutionOrigin` above.
+          ...(dropsResolutionOrigin ? { resolvedBy: null } : {}),
           ...(assigneeKnown
             ? {
                 assigneeId: n.assigneeId ?? null,

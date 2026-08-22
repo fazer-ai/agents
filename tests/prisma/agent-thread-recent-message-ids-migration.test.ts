@@ -25,7 +25,7 @@ import { INGEST_ID_WINDOW } from "@/graph/ingest-dedup";
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const MIGRATION =
-  "prisma/migrations/20260822150000_agent_thread_recent_message_ids/migration.sql";
+  "prisma/migrations/20260822151000_agent_thread_recent_message_ids/migration.sql";
 
 // Comments first (so a `--` line naming a statement cannot be mistaken for one), then split on the
 // statement terminator and drop the DDL. Both counts are asserted at the call site: a restructured

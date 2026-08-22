@@ -24,9 +24,19 @@
  * the only durable fact is the one recorded at the moment WE close a conversation. Everything else
  * is `null` and therefore unattributed, which is the honest answer rather than a default of "ours".
  *
- * `auto_resolve_after` is why the narrow fix was not enough. It produces the exact symptom the issue
- * reports (a lead that never answered lands at the bottom of the success funnel) on an instance that
- * does not use our follow-up ladder at all.
+ * Why the narrow fix was not enough, measured against Chatwoot 4.17.0 rather than argued: an
+ * operator resolving from the Chatwoot UI does NOT assign themselves, so the conversation comes back
+ * `resolved` with `meta.assignee_type: "AgentBot"` and the old predicate counted it as the agent's.
+ * That is an ordinary daily action, it never reaches our code, and no flag on our own call sites
+ * could have told it apart.
+ *
+ * `auto_resolve_after` belongs on the list too, but it is NARROWER than it looks and the reason is
+ * worth writing down: `Conversation.resolvable_all` / `resolvable_not_waiting` scope to `open`, while
+ * a conversation our agent is handling is `pending` — and on an inbox with an active bot a customer
+ * coming back sends it to `pending` again (`Message#reopen_resolved_conversation`), not to `open`.
+ * So the timer does not close the ordinary unanswered lead on a bot inbox. It reaches one only once
+ * something else has left it `open` with no human on it: a snoozed conversation woken by an incoming
+ * message, or an operator opening and unassigning.
  *
  * ## Rows that predate the column
  *

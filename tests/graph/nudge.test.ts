@@ -147,6 +147,9 @@ function stub() {
   const notes: Array<[number, string]> = [];
   const labelSets: string[][] = [];
   const resolved: number[] = [];
+  // The approved HSM sends. Reachable from the moderated branch only since the service-window mode
+  // started being read after the judge instead of before it.
+  const templates: Array<[number, string]> = [];
   // Ordered log of side effects, so a test can assert message-before-resolve.
   const order: string[] = [];
   let currentLabels: string[] = [];
@@ -173,6 +176,11 @@ function stub() {
       order.push("resolve");
       return {};
     },
+    sendTemplate: async (c: number, payload: { name: string }) => {
+      templates.push([c, payload.name]);
+      order.push("template");
+      return {};
+    },
   } as unknown as ChatwootClient;
   return {
     client,
@@ -180,6 +188,7 @@ function stub() {
     notes,
     labelSets,
     resolved,
+    templates,
     order,
     makeClient: async () => client,
   };
@@ -1169,6 +1178,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   async function withGuardrails(
     g: Record<string, unknown>,
     fn: () => Promise<void>,
+    rest: Record<string, unknown> = {},
   ) {
     const agent = await suDb.agent.findFirstOrThrow({
       where: { tenantId },
@@ -1181,7 +1191,10 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     await suDb.agent.update({
       where: { id: agent.id },
       data: {
-        settings: { guardrails: { ...g, credentialRef: `vault:${key.id}` } },
+        settings: {
+          ...rest,
+          guardrails: { ...g, credentialRef: `vault:${key.id}` },
+        },
       },
     });
     try {
@@ -1903,6 +1916,297 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         expect(s.messages).toEqual([[9962, "GEN-HANDOFF-NUDGE"]]);
         // The transfer is not hostage to the moderation, and the resolve still falls with it.
         expect(s.resolved).toEqual([9962]);
+      },
+    );
+  });
+
+  // The 24h window is the second thing this path reads before the judge and spends after it, and it
+  // is the one that expires on its own: the ownership recheck above answers "did a human arrive",
+  // these two answer "is the window still open". A screening has a 15s ceiling, so at the boundary
+  // the mode decided before it is a free-form send the provider has meanwhile started refusing —
+  // and a follow-up chasing a customer who has gone quiet is aimed at that boundary by design.
+  //
+  // The clock is injected and moved by the JUDGE, which is what makes these a rendezvous and not a
+  // sleep: the boundary is crossed BECAUSE the model call happened. A test that leaned on real time
+  // would go green on a slow machine for the opposite reason — the window already shut before the
+  // first read — so each one also asserts that the judge ran at all, which is only possible when
+  // that first read said `freeform`.
+  test("a window that closes during moderation notes the follow-up instead of losing the send", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        const t0 = new Date();
+        // Inside the window when the turn starts, outside it two hours later.
+        await seedConv(9973, null, new Date(t0.getTime() - 23 * 3_600_000));
+        const s = stub();
+        let judged = false;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9973`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            now: () => (judged ? new Date(t0.getTime() + 2 * 3_600_000) : t0),
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    judged = true;
+                    // Clean: what moves here is the clock, not the text.
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "fine",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({
+                    responses: ["Ainda por aí?"],
+                  })) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        // The judge ran, so the window WAS open when this branch was entered. Without this the test
+        // would be satisfied by a window that had already closed, which proves nothing.
+        expect(judged).toBe(true);
+        expect(outcome).toBe("noted-window");
+        expect(s.messages).toEqual([]);
+        expect(s.notes).toEqual([
+          [9973, `${OUTSIDE_WINDOW_NOTE_PREFIX}Ainda por aí?`],
+        ]);
+        // noted-window does not resolve: nothing reached the customer.
+        expect(s.resolved).toEqual([]);
+        expect(s.labelSets).toEqual([["follow-up"]]);
+      },
+    );
+  });
+
+  // The same crossing on the handoff path, where losing it is permanent: the tool already set the
+  // conversation to `open`, so every later attempt stops at its own ownership gate, and the catch
+  // that used to receive the provider's rejection reports the turn as `silent`.
+  test("a window that closes during moderation notes the promised line instead of losing it", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        const t0 = new Date();
+        await seedConv(9974, null, new Date(t0.getTime() - 23 * 3_600_000));
+        const s = stub();
+        let judged = false;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9974`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            now: () => (judged ? new Date(t0.getTime() + 2 * 3_600_000) : t0),
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    judged = true;
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "fine",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : (new HandoffThenReplyModel(
+                    "Vou te encaminhar!",
+                    "Um humano vai te atender.",
+                  ) as unknown as BaseChatModel)) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        // Same proof as above: the promised line only reaches a judge while the window is open.
+        expect(judged).toBe(true);
+        expect(outcome).toBe("noted-window");
+        expect(s.messages).toEqual([]);
+        // The line the transfer promised, as an explained note — not a rejected send swallowed by
+        // the catch, and not the model's final text.
+        expect(s.notes).toEqual([
+          [9974, `${OUTSIDE_WINDOW_NOTE_PREFIX}Um humano vai te atender.`],
+        ]);
+        expect(s.labelSets).toEqual([["follow-up"]]);
+        // The `open` the transfer itself set; the note path adds no resolve on top of it.
+        expect(s.resolved).toEqual([9974]);
+      },
+    );
+  });
+
+  // The branch the crossing woke up. Before the mode was read after the judge, a reply that got this
+  // far had already been decided `freeform`, so the template send below was unreachable from the
+  // moderated path: the only other way into it was a takeover, and a takeover fails the
+  // `canMessagePost` on the block itself. Now the window can close under a conversation still ours,
+  // and an operator who configured an approved template gets it used instead of a yellow note.
+  test("a window that closes during moderation sends the approved template when one is configured", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        const t0 = new Date();
+        await seedConv(9975, null, new Date(t0.getTime() - 23 * 3_600_000));
+        const s = stub();
+        let judged = false;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9975`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            now: () => (judged ? new Date(t0.getTime() + 2 * 3_600_000) : t0),
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    judged = true;
+                    return {
+                      content: JSON.stringify({
+                        violated: false,
+                        categories: [],
+                        rationale: "fine",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : new FakeListChatModel({
+                    responses: ["Ainda por aí?"],
+                  })) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(judged).toBe(true);
+        expect(outcome).toBe("templated");
+        expect(s.templates).toEqual([[9975, "reengage"]]);
+        expect(s.messages).toEqual([]);
+        expect(s.notes).toEqual([]);
+        // A template DID reach the customer, so unlike the note branch this one resolves.
+        expect(s.labelSets).toEqual([["follow-up"]]);
+        expect(s.resolved).toEqual([9975]);
+      },
+      { serviceWindow: { templateName: "reengage" } },
+    );
+  });
+
+  // The other half of reading the window twice: the first reading still short-circuits, and what it
+  // saves is not a model call but the operator's note. A promised line that cannot be sent is
+  // written to the OPERATOR, and the judge's verdict governs what the CUSTOMER reads — so a policy
+  // set to `silent` must not be able to delete the notice that explains the bot's silence.
+  test("outside the window, the promised line is noted without asking a judge at all", async () => {
+    await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => {
+        await seedConv(9976, null, new Date(Date.now() - 48 * 3_600_000));
+        const s = stub();
+        let judged = false;
+        const outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9976`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          postActions: { assignLabels: ["follow-up"], resolve: true },
+          base: appDb,
+          deps: {
+            makeModel: ((cfg: { model: string }) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => {
+                    judged = true;
+                    return {
+                      content: JSON.stringify({
+                        violated: true,
+                        categories: ["toxicity"],
+                        rationale: "rude",
+                        suggestedReply: null,
+                      }),
+                    };
+                  })
+                : (new HandoffThenReplyModel(
+                    "Vou te encaminhar!",
+                    "Um humano vai te atender.",
+                  ) as unknown as BaseChatModel)) as never,
+            makeClient: s.makeClient,
+            checkpointer: new MemorySaver(),
+            persistUsage: async () => {},
+          },
+        });
+        expect(judged).toBe(false);
+        expect(outcome).toBe("noted-window");
+        expect(s.messages).toEqual([]);
+        expect(s.notes).toEqual([
+          [9976, `${OUTSIDE_WINDOW_NOTE_PREFIX}Um humano vai te atender.`],
+        ]);
       },
     );
   });

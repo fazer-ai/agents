@@ -115,6 +115,12 @@ export interface RuntimeDeps {
   normalizeSpeech?: (text: string) => Promise<string>;
   // Injectable sleep for the split/typing pacing (tests pass a no-op); real setTimeout otherwise.
   sleep?: (ms: number) => Promise<void>;
+  // Injectable clock (tests); `new Date()` otherwise. The proactive path reads the wall clock in
+  // exactly one place, the 24h service window, and that read has to be asserted on both sides of a
+  // model call. A fixed sleep cannot assert it: the window is an hour at its narrowest, and a test
+  // that leans on real time to cross the boundary passes for the wrong reason the moment the
+  // machine is slow enough to cross it before the first read.
+  now?: () => Date;
 }
 
 export interface RunLoadedTurnParams {

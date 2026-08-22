@@ -534,6 +534,23 @@ export async function runAgentNudge(
     // No prior checkpoint / state unavailable → proceed.
   }
 
+  // What this channel allows RIGHT NOW, asked as a function instead of held as a value. The 24h
+  // service window is measured from the customer's last message, so it is the only input on this
+  // path that expires on its own while the turn is still running — and the guardrail below is a
+  // model round-trip with a 15s ceiling sitting between the question and the send.
+  //
+  // A closure rather than a `let` because asking costs nothing (a subtraction, no I/O) while
+  // forgetting to ask again costs the whole message: outside the window the provider rejects the
+  // free-form send, and on the handoff path that rejection lands in a catch with no second attempt
+  // behind it, so the sentence the transfer promised is lost instead of becoming a note.
+  const sendModeNow = () =>
+    proactiveSendMode(
+      cfg.serviceWindowConfig,
+      loaded.lastInboundAt,
+      params.deps?.now?.() ?? new Date(),
+      { channelType: loaded.channelType, provider: loaded.provider },
+    );
+
   // OUTPUT guardrail for proactive text (#160). A follow-up is a message the customer never asked
   // for, which makes it the last one that should go out unmoderated — and until this unit existed
   // the proactive path never called the guardrails module at all. Same gate the reactive turn uses,
@@ -576,25 +593,31 @@ export async function runAgentNudge(
   > => {
     if (!handoffAnsweredTheTurn(handoffState)) return null;
     const line = handoffState.customerMessage as string;
-    const mode = proactiveSendMode(
-      cfg.serviceWindowConfig,
-      loaded.lastInboundAt,
-      new Date(),
-      { channelType: loaded.channelType, provider: loaded.provider },
-    );
+    // Outside the window a free-form send is the one the provider refuses, and an approved template
+    // says nothing about a transfer, so neither reaches the customer. The operator gets the sentence
+    // instead, explained, like any other proactive text that could not be sent.
+    //
+    // What it carries is the line the MODEL wrote, on both paths that reach here and not only the
+    // one that never screened it: a private note is written to the operator, and what the operator
+    // needs to read is what the transfer promised. A judge that objected to it has already said so,
+    // in its own note on this same conversation.
+    const noteOutsideWindow = async () => {
+      await client.sendPrivateNote(
+        conversationId,
+        `${OUTSIDE_WINDOW_NOTE_PREFIX}${line}`,
+      );
+      return "noted-window" as const;
+    };
     try {
-      if (mode !== "freeform") {
-        // Outside the window a free-form send is the one the provider refuses, and an approved
-        // template says nothing about a transfer, so neither reaches the customer. The operator gets
-        // the sentence instead, explained, like any other proactive text that could not be sent.
-        await client.sendPrivateNote(
-          conversationId,
-          `${OUTSIDE_WINDOW_NOTE_PREFIX}${line}`,
-        );
-        return "noted-window";
-      }
+      // The same question at two instants, and only the second one governs the send. Asked before
+      // the screening so a line that cannot go out anyway costs no model call, and asked again
+      // after it because that call is precisely where the window closes: 15 seconds is nothing
+      // against 24 hours except at the boundary, and the boundary is exactly where a follow-up
+      // chasing a customer who has gone quiet tends to land.
+      if (sendModeNow() !== "freeform") return await noteOutsideWindow();
       const line2 = screenedText(await screenOutput(line), line);
       if (line2 === null) return "silent";
+      if (sendModeNow() !== "freeform") return await noteOutsideWindow();
       await client.sendMessage(conversationId, line2);
       logger.info(
         "agentNudge handed off: conv=%s source=%s",
@@ -906,23 +929,18 @@ export async function runAgentNudge(
   // otherwise it becomes a private note (never message over a human).
   // WhatsApp 24h service window: free-form only within it. Outside → an approved template (HSM) if
   // configured, else fall through to a private note (never a free-form message WhatsApp rejects).
-  const mode = proactiveSendMode(
-    cfg.serviceWindowConfig,
-    loaded.lastInboundAt,
-    new Date(),
-    { channelType: loaded.channelType, provider: loaded.provider },
-  );
-
-  // Screened BEFORE the last word on ownership, so the ownership answer is the newer of the two.
+  //
+  // Screened BEFORE the last word on either of those, so both answers are newer than the screening.
   // Moderation is a model round-trip with a 15s ceiling, and it was added to this path by the same
   // change that reads this comment: the ownership taken before generation used to be consumed
   // immediately, and now it would be consumed seconds later — by the send AND by the post-actions,
   // which resolve the conversation. Closing a thread a human took over during those seconds is not
-  // a message landing late, it is the human's conversation being shut.
+  // a message landing late, it is the human's conversation being shut, and a window that shut in
+  // the same seconds turns the send into one the provider refuses.
   //
   // A completed transfer is exempt, as it is everywhere else here: its closing line left through
   // `deliverPromisedLine` above and never reaches this branch.
-  if (canMessagePre && canMessagePost && mode === "freeform") {
+  if (canMessagePre && canMessagePost && sendModeNow() === "freeform") {
     // The one branch whose text the CUSTOMER reads, so the one branch that is screened. A failed
     // send still throws here: nothing has been done to the conversation that a retry cannot repeat,
     // so the job should run again rather than swallow the miss.
@@ -961,7 +979,12 @@ export async function runAgentNudge(
       await applyPostActions();
       return "silent";
     }
-    if (canMessagePost) {
+    // The window is asked again for the same reason the ownership is, and about the same stretch of
+    // time: the judge's model call. Both were read before it and are spent here. A mode that has
+    // gone stale sends a free-form message the provider now refuses, and this is the last point
+    // where the reply can still fall through to the template/note branch below instead of being
+    // lost to that rejection — on the handoff path, permanently.
+    if (canMessagePost && sendModeNow() === "freeform") {
       await client.sendMessage(conversationId, screened);
       logger.info(
         "agentNudge messaged: conv=%s source=%s",
@@ -972,12 +995,13 @@ export async function runAgentNudge(
       await applyPostActions();
       return "messaged";
     }
-    // A human arrived while the judge was reading. Everything below already knows what to do with a
-    // conversation that is no longer ours, and `canMessagePost` already says so.
+    // A human arrived while the judge was reading, or the window closed while it did. Everything
+    // below already knows what to do with either: `canMessagePost` carries the first, and the
+    // second is answered by asking again.
   }
 
   if (canMessagePre && canMessagePost) {
-    if (mode === "template") {
+    if (sendModeNow() === "template") {
       const payload = buildTemplatePayload(
         cfg.serviceWindowConfig,
         cfg.contactName,

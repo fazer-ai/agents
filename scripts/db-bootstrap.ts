@@ -236,26 +236,51 @@ async function main() {
     }
 
     // LangGraph checkpointer schema, owned by the runtime role so PostgresSaver.setup() can create
-    // its tables (thread_id prefixing is the tenant fence here).
+    // its tables (thread_id prefixing is the tenant fence here). Which statement is needed, and
+    // whether a refusal may be survived, depends on what is already there — the two cases fail
+    // differently and one catch over both would answer the wrong question:
     //
-    // Best-effort, and this is the one place where that needs saying out loud, because the schema
-    // looks required and is not: `setup()` runs its own `CREATE SCHEMA IF NOT EXISTS langgraph` at
-    // boot, and the runtime role holds CREATE ON DATABASE for exactly that reason (docs/graph.md).
-    // Creating it here only settles the owner earlier — and when it is created there instead, the
-    // owner comes out the same, because the runtime role is the creator. Creating it OWNED BY
-    // another role is the statement that needs the membership above, so an install whose
-    // administrative role cannot take that membership would abort here on something the boot does
-    // for itself a minute later.
-    try {
-      await client.query(
-        `CREATE SCHEMA IF NOT EXISTS langgraph AUTHORIZATION ${ident}`,
-      );
-      await client.query(`GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`);
-    } catch (err) {
-      console.warn(
-        `db-bootstrap: could not provision the langgraph schema (${message(err)}); ` +
-          `leaving it to the server, which creates it as "${role}" on its first boot`,
-      );
+    //   ABSENT is a convenience. `setup()` runs its own `CREATE SCHEMA IF NOT EXISTS langgraph` at
+    //   boot and the runtime role holds CREATE ON DATABASE for exactly that reason
+    //   (docs/graph.md), so doing it here only settles the owner earlier — and when the server does
+    //   it instead the owner comes out the same, because the runtime role is the creator. Creating
+    //   it OWNED BY another role is what needs the membership taken above, so a refusal must not
+    //   abort a boot that completes itself a minute later.
+    //
+    //   PRESENT UNDER ANOTHER OWNER is not, and it is the case a rotated runtime role lands in.
+    //   `CREATE SCHEMA IF NOT EXISTS` is a no-op there, for us and for `setup()` alike, so nothing
+    //   downstream repairs it: without USAGE/CREATE the checkpointer fails at boot on schema
+    //   access, and reporting a successful bootstrap first is what makes that unreadable.
+    const schemaOwner = (
+      await client.query<{ owner: string }>(
+        "SELECT pg_get_userbyid(nspowner) AS owner FROM pg_namespace WHERE nspname = 'langgraph'",
+      )
+    ).rows[0]?.owner;
+
+    if (schemaOwner === undefined) {
+      try {
+        await client.query(
+          `CREATE SCHEMA IF NOT EXISTS langgraph AUTHORIZATION ${ident}`,
+        );
+      } catch (err) {
+        console.warn(
+          `db-bootstrap: could not create the langgraph schema (${message(err)}); ` +
+            `leaving it to the server, which creates it as "${role}" on its first boot`,
+        );
+      }
+    } else if (schemaOwner !== role) {
+      try {
+        await client.query(
+          `GRANT USAGE, CREATE ON SCHEMA langgraph TO ${ident}`,
+        );
+      } catch (err) {
+        throw new Error(
+          `the langgraph schema is owned by "${schemaOwner}", not by the runtime role "${role}", ` +
+            `and this administrative role cannot grant on it (${message(err)}). The checkpointer ` +
+            `would fail at boot instead. Run as its owner or as a superuser: ` +
+            `GRANT USAGE, CREATE ON SCHEMA langgraph TO "${role}";`,
+        );
+      }
     }
 
     console.log(

@@ -127,6 +127,11 @@ describe("planRoleProvisioning", () => {
 describe.skipIf(!dbUp)(
   "db-bootstrap against a non-superuser admin role",
   () => {
+    // NOTE: these run in order and share state on purpose — they walk one install's lifecycle
+    // (first boot, later boot, a rotated password, a privileged role, a role we did not create, a
+    // schema we do not own), which is the shape the failures actually come in. Running one alone
+    // with `-t` skips the boot that created the role and fails on a missing role, not on the
+    // behaviour under test.
     beforeAll(async () => {
       const db = su as Client;
       // Roles and databases are CLUSTER-WIDE catalogs that Postgres does not serialize for
@@ -265,7 +270,7 @@ describe.skipIf(!dbUp)(
         FOREIGN_ROLE,
       );
       expect(`${stdout}${stderr}`).toContain(
-        "could not provision the langgraph schema",
+        "could not create the langgraph schema",
       );
       expect(exitCode).toBe(0);
 
@@ -293,6 +298,32 @@ describe.skipIf(!dbUp)(
         },
       );
       expect(owner).toEqual({ owner: FOREIGN_ROLE });
+    });
+
+    test("a langgraph schema owned by someone else is not silently accepted", async () => {
+      const admin = new URL(suUrl as string);
+      const superuserOnProbe = urlFor(admin.username, admin.password, PROBE_DB);
+      // A rotated runtime role lands here: the schema is left behind under the previous owner.
+      // `CREATE SCHEMA IF NOT EXISTS` is a no-op there, for us AND for PostgresSaver.setup(), so
+      // nothing downstream can repair it — the checkpointer would fail at boot on schema access.
+      // Warning and reporting success is the one outcome that must not happen.
+      //
+      // The previous owner has to be a role the administrator cannot act as, which is what makes
+      // the GRANT fail: it holds SET membership over the roles it created (taken above, for the
+      // AUTHORIZATION), and none over FOREIGN_ROLE, which the superuser created.
+      await onProbe(superuserOnProbe, async (c) => {
+        await c.query("DROP SCHEMA IF EXISTS langgraph CASCADE");
+        await c.query(`CREATE SCHEMA langgraph AUTHORIZATION ${FOREIGN_ROLE}`);
+      });
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        ROTATED_PW,
+        APP_ROLE,
+      );
+      const output = `${stdout}${stderr}`;
+      expect(exitCode).toBe(1);
+      expect(output).toContain(FOREIGN_ROLE);
+      expect(output).toContain("GRANT USAGE, CREATE ON SCHEMA langgraph");
     });
   },
 );

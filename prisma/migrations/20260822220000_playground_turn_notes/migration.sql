@@ -6,6 +6,7 @@ CREATE TABLE "playground_turn_notes" (
     "thread_id" TEXT NOT NULL,
     "message_id" TEXT,
     "anchor_message_id" TEXT,
+    "user_message_id" TEXT,
     "user_text" TEXT,
     "reply" TEXT NOT NULL,
     "guardrails" JSONB NOT NULL,

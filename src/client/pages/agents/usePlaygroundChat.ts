@@ -338,6 +338,19 @@ export function usePlaygroundChat(
                 ...(rt.extracted ? { extracted: rt.extracted } : {}),
               };
             }
+            // A follow-up the guardrail removed reloads as the SAME note the live turn rendered.
+            // As an assistant bubble saying "(no reply)" it would read as the agent choosing
+            // silence, which is the distinction the note exists to make.
+            if (rt.followup && rt.suppressed) {
+              return {
+                role: "note",
+                text: t(
+                  "playground.followup.suppressed",
+                  "Follow-up: the agent wrote one and the guardrail removed it. Nothing would be sent.",
+                ),
+                trace: rt.trace,
+              };
+            }
             const ttsM = rt.media?.find((m) => m.kind === "tts_audio");
             return {
               role: "assistant",

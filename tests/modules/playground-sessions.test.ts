@@ -101,6 +101,7 @@ describe("applyTurnNotes", () => {
   const note = (over: Partial<LoadedTurnNote> = {}): LoadedTurnNote => ({
     messageId: null,
     anchorMessageId: null,
+    userMessageId: null,
     userText: null,
     reply: "",
     guardrails: [],
@@ -174,6 +175,76 @@ describe("applyTurnNotes", () => {
 
   // Losing the turn entirely is the failure this exists to prevent, so an anchor that no longer
   // resolves still renders rather than being dropped.
+  // The blocked turn goes through the SAME renderer as every other one, so the audio marker is
+  // unwrapped and the media id survives. Built by hand, it rendered "<mensagem-de-audio>…" as plain
+  // user text and had nothing for the recording to hang off.
+  test("a blocked audio turn is unwrapped and keeps its message id", () => {
+    const out = applyTurnNotes(
+      [],
+      [
+        note({
+          anchorMessageId: null,
+          userMessageId: "h1",
+          userText: "<mensagem-de-audio>bom dia</mensagem-de-audio>",
+          reply: "T",
+        }),
+      ],
+    );
+    expect(out[0]).toMatchObject({
+      role: "user",
+      text: "bom dia",
+      audio: true,
+      messageId: "h1",
+    });
+    expect(out[0]?.text).not.toContain("mensagem-de-audio");
+  });
+
+  // Direction is position: the input screening ran before the graph and the output one after.
+  test("an input verdict is restored ahead of the graph's own entries", () => {
+    const withTrace = {
+      ...turn("assistant", "cru", "a1"),
+      trace: [
+        { type: "tool_call" as const, id: "c1", name: "calculator", args: {} },
+      ],
+    };
+    const out = applyTurnNotes(
+      [turn("user", "oi"), withTrace],
+      [
+        note({
+          messageId: "a1",
+          reply: "T",
+          guardrails: [
+            { type: "guardrail", direction: "input", outcome: "clean" },
+            { type: "guardrail", direction: "output", outcome: "replaced" },
+          ],
+        }),
+      ],
+    );
+    expect(out[1]?.trace.map((e) => e.type)).toEqual([
+      "guardrail",
+      "tool_call",
+      "guardrail",
+    ]);
+  });
+
+  // "Nothing was sent" and "the agent chose silence" are different statements, and the reload has
+  // to keep them apart the way the live turn does.
+  test("a suppressed follow-up is flagged so the reload can say why", () => {
+    const out = applyTurnNotes(
+      [{ ...turn("assistant", "escrita", "a1"), followup: true }],
+      [
+        note({
+          messageId: "a1",
+          reply: "",
+          guardrails: [
+            { type: "guardrail", direction: "output", outcome: "suppressed" },
+          ],
+        }),
+      ],
+    );
+    expect(out[0]?.suppressed).toBe(true);
+  });
+
   test("an unresolvable anchor still renders, at the end", () => {
     const out = applyTurnNotes(
       [turn("user", "oi"), turn("assistant", "r", "a1")],

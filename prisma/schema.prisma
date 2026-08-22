@@ -786,6 +786,9 @@ model PlaygroundTurnNote {
   // Last message id in the thread when a blocked turn happened, so the rebuild can place it. Null
   // means the thread was empty, i.e. it goes first.
   anchorMessageId String? @map("anchor_message_id")
+  // The synthesized human message id for a blocked turn, so the media saved for it joins back on
+  // reload exactly as it does for a turn that reached the thread.
+  userMessageId String? @map("user_message_id")
   // The customer's own text, carried only for a blocked turn (the thread never received it).
   userText String? @map("user_text")
   // What the operator saw in place of the model's reply. Empty for a suppressed one.

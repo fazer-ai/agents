@@ -433,6 +433,36 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(rows[0]?.reply).toBe(TEMPLATE);
   });
 
+  // The blocked path returned before the media save, so a blocked voice note lost the recording.
+  test("an input block still persists the recording it blocked", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentInput,
+      message: "<mensagem-de-audio>fale do concorrente</mensagem-de-audio>",
+      userMedia: {
+        kind: "user_audio",
+        mime: "audio/webm",
+        fileName: "nota.webm",
+        bytes: new Uint8Array([1, 2, 3]).buffer,
+      },
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.userMediaId).toBeTruthy();
+    const rows = await suDb.playgroundTurnNote.findMany({
+      where: { threadId: r.threadId },
+    });
+    expect(rows[0]?.userMessageId).toBeTruthy();
+    // The id the media hangs off has to be the SAME one the note carries, or the reload joins
+    // nothing and the recording is there but unreachable.
+    const media = await suDb.playgroundMedia.findMany({
+      where: { threadId: r.threadId },
+      select: { messageId: true },
+    });
+    expect(media[0]?.messageId).toBe(rows[0]?.userMessageId ?? "");
+  });
+
   test("a turn the guardrail never touched writes no note", async () => {
     const m = models({ violated: false });
     const r = await runPlaygroundTurn({

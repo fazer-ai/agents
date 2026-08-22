@@ -468,6 +468,24 @@ export async function runPlaygroundTurn(
   // reply while the customer would have received the template, or nothing at all — the one setting
   // the playground exists to let them test. Announcements land in the trace instead of a private
   // note, because there is no conversation here to put a note on.
+  //
+  // The human message id is minted BEFORE the screening, because a blocked turn needs it too: the
+  // media is linked to it, and the input direction returns before the graph produces any message.
+  const humanId = params.userMedia ? crypto.randomUUID() : undefined;
+  const saveInboundMedia = async (): Promise<string | undefined> =>
+    params.userMedia && humanId
+      ? ((await savePlaygroundMedia(base, {
+          tenantId,
+          agentId,
+          threadId,
+          messageId: humanId,
+          kind: params.userMedia.kind,
+          mime: params.userMedia.mime,
+          fileName: params.userMedia.fileName ?? null,
+          bytes: params.userMedia.bytes,
+        })) ?? undefined)
+      : undefined;
+
   const gTrace: TraceGuardrail[] = [];
   const screen = screensThisTurn(params)
     ? buildGuardrailGate({
@@ -499,12 +517,17 @@ export async function runPlaygroundTurn(
     );
     // The graph never ran, so the thread holds neither the message nor the reply and a reload would
     // simply lose the turn. The note carries both, anchored to whatever the thread ended on.
+    const blockedMediaId = await saveInboundMedia();
     await savePlaygroundTurnNote(base, {
       tenantId,
       agentId,
       threadId,
       messageId: null,
       anchorMessageId: await lastThreadMessageId(graph, threadId),
+      userMessageId: humanId ?? null,
+      // The RENDERED text, markers and all, because the rebuild unwraps them exactly as it does for
+      // a turn that reached the thread. Storing the clean text would need a SECOND renderer, which
+      // is what got the audio and file turns wrong to begin with.
       userText: text,
       reply: blockedReply,
       guardrails: [...gTrace],
@@ -514,14 +537,12 @@ export async function runPlaygroundTurn(
       threadId,
       trace: [...gTrace],
       sources: [],
+      ...(blockedMediaId ? { userMediaId: blockedMediaId } : {}),
     };
   }
   // Everything screened before the graph belongs ahead of the graph's own entries in the trace.
   const beforeGraph = gTrace.length;
 
-  // Give the human message an explicit id when we have media to link to it (so reopening the
-  // session can re-attach the recorded audio / uploaded file to this exact turn).
-  const humanId = params.userMedia ? crypto.randomUUID() : undefined;
   const human = humanId
     ? new HumanMessage({ content: text, id: humanId })
     : new HumanMessage(text);
@@ -583,6 +604,7 @@ export async function runPlaygroundTurn(
       threadId,
       messageId: lastAiMessageId(result.messages) ?? null,
       anchorMessageId: null,
+      userMessageId: null,
       userText: null,
       reply,
       guardrails: [...gTrace],
@@ -590,20 +612,7 @@ export async function runPlaygroundTurn(
   }
 
   // Persist the user's inbound media (best-effort) for replay on reopen.
-  let userMediaId: string | undefined;
-  if (params.userMedia && humanId) {
-    userMediaId =
-      (await savePlaygroundMedia(base, {
-        tenantId,
-        agentId,
-        threadId,
-        messageId: humanId,
-        kind: params.userMedia.kind,
-        mime: params.userMedia.mime,
-        fileName: params.userMedia.fileName ?? null,
-        bytes: params.userMedia.bytes,
-      })) ?? undefined;
-  }
+  const userMediaId = await saveInboundMedia();
 
   // TTS reply: the agent's mode decides (mirror/preference), or the manual toggle forces it. Audio
   // is best-effort — synthesis failure falls back to the text reply.
@@ -852,6 +861,7 @@ export async function runPlaygroundFollowup(
       threadId,
       messageId: lastAiMessageId(result.messages) ?? null,
       anchorMessageId: null,
+      userMessageId: null,
       userText: null,
       reply,
       guardrails: [...gTrace],

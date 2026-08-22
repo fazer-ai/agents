@@ -1,4 +1,8 @@
-import type { BaseMessage } from "@langchain/core/messages";
+import {
+  AIMessage,
+  type BaseMessage,
+  HumanMessage,
+} from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -129,6 +133,10 @@ export interface RebuiltTurn {
   messageId?: string;
   // Persisted media attached to this turn (recorded audio / uploaded file / TTS reply).
   media?: RebuiltMedia[];
+  // The guardrail removed a reply the agent DID write. Only meaningful on a follow-up, where the
+  // client renders a suppression note instead of an empty bubble, because "nothing was sent" and
+  // "the agent chose silence" are different statements.
+  suppressed?: boolean;
   trace: TraceEntry[];
   sources: TraceSource[];
 }
@@ -235,37 +243,58 @@ export function applyTurnNotes(
     if (n.messageId) overrides.set(n.messageId, n);
     else inserts.push(n);
   }
+  // A turn the thread never received is rebuilt through the SAME renderer as every other turn, from
+  // the two messages it would have been. Building it by hand is what lost the audio/file unwrapping
+  // and the media join: the marker text rendered as a plain bubble, and there was no message id to
+  // hang the recording on. The verdict lands on the last turn of the pair, which is the one the
+  // operator reads it against.
+  const blockedTurns = (n: LoadedTurnNote): RebuiltTurn[] => {
+    const msgs: BaseMessage[] = [
+      new HumanMessage({
+        content: n.userText ?? "",
+        ...(n.userMessageId ? { id: n.userMessageId } : {}),
+      }),
+    ];
+    if (n.reply) msgs.push(new AIMessage({ content: n.reply }));
+    const built = rebuildPlaygroundTurns(msgs);
+    const last = built[built.length - 1];
+    if (last) last.trace = [...last.trace, ...n.guardrails];
+    return built;
+  };
   const out: RebuiltTurn[] = [];
   const placed = new Set<LoadedTurnNote>();
-  const blockedPair = (n: LoadedTurnNote): RebuiltTurn[] => [
-    { role: "user", text: n.userText ?? "", trace: [], sources: [] },
-    { role: "assistant", text: n.reply, trace: [...n.guardrails], sources: [] },
-  ];
   for (const n of inserts) {
     if (n.anchorMessageId === null) {
-      out.push(...blockedPair(n));
+      out.push(...blockedTurns(n));
       placed.add(n);
     }
   }
   for (const turn of turns) {
     const note = turn.messageId ? overrides.get(turn.messageId) : undefined;
-    out.push(
-      note && turn.role === "assistant"
-        ? {
-            ...turn,
-            text: note.reply,
-            trace: [...turn.trace, ...note.guardrails],
-          }
-        : turn,
-    );
+    if (note && turn.role === "assistant") {
+      // Direction IS position: the input screening ran before the graph and the output one after,
+      // so appending both would report an execution sequence the turn never had.
+      const before = note.guardrails.filter((g) => g.direction === "input");
+      const after = note.guardrails.filter((g) => g.direction !== "input");
+      out.push({
+        ...turn,
+        text: note.reply,
+        ...(after.some((g) => g.outcome === "suppressed")
+          ? { suppressed: true }
+          : {}),
+        trace: [...before, ...turn.trace, ...after],
+      });
+    } else {
+      out.push(turn);
+    }
     for (const n of inserts) {
       if (!placed.has(n) && n.anchorMessageId === turn.messageId) {
-        out.push(...blockedPair(n));
+        out.push(...blockedTurns(n));
         placed.add(n);
       }
     }
   }
-  for (const n of inserts) if (!placed.has(n)) out.push(...blockedPair(n));
+  for (const n of inserts) if (!placed.has(n)) out.push(...blockedTurns(n));
   return out;
 }
 

@@ -27,6 +27,7 @@ export interface PlaygroundTurnNote {
   messageId: string | null;
   // Where a thread-less turn belongs: the last message id at the time. Null = the thread was empty.
   anchorMessageId: string | null;
+  userMessageId: string | null;
   userText: string | null;
   reply: string;
   guardrails: TraceGuardrail[];
@@ -49,6 +50,7 @@ export async function savePlaygroundTurnNote(
           threadId: params.threadId,
           messageId: params.messageId,
           anchorMessageId: params.anchorMessageId,
+          userMessageId: params.userMessageId,
           userText: params.userText,
           reply: params.reply,
           guardrails: params.guardrails as never,
@@ -92,6 +94,7 @@ export async function listThreadTurnNotes(
       select: {
         messageId: true,
         anchorMessageId: true,
+        userMessageId: true,
         userText: true,
         reply: true,
         guardrails: true,
@@ -102,6 +105,7 @@ export async function listThreadTurnNotes(
   return rows.map((r) => ({
     messageId: r.messageId,
     anchorMessageId: r.anchorMessageId,
+    userMessageId: r.userMessageId,
     userText: r.userText,
     reply: r.reply,
     guardrails: Array.isArray(r.guardrails)

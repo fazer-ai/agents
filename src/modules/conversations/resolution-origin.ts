@@ -57,10 +57,20 @@
  *   1. **The conversation LEFT "resolved".** A resolution that existed is over — reopened by a
  *      customer message, by an operator, by anything. Whatever closes it next is a different close
  *      and gets its own origin.
- *   2. **A source entitled to speak said "resolved" and LOST the ordering.** Our own toggle writes
- *      the stamp before its event arrives, so between the two the row reads non-resolved while
- *      carrying a stamp. If a reopen wins in that window, the close it describes never lands, and
- *      leaving the stamp would credit the agent for whoever closes the conversation next.
+ *   2. **A source entitled to speak said "resolved" and LOST the ordering, and that claim is newer
+ *      than the stamp.** Our own toggle writes the stamp before its event arrives, so between the
+ *      two the row reads non-resolved while carrying a stamp. If a reopen wins in that window, the
+ *      close it describes never lands, and leaving the stamp would credit the agent for whoever
+ *      closes the conversation next.
+ *
+ *      The "newer than the stamp" half is the whole of `stampedAfterVersion`, and without it the
+ *      rule eats resolutions it has no business touching: a delayed `resolved` from an EARLIER
+ *      episode loses the ordering in exactly the same shape, and clearing on it wipes a close that
+ *      is still on its way. That close's own event then finds nothing to restore, so a real agent
+ *      resolution is reported as somebody else's, permanently. The floor is the row's status
+ *      version at stamp time, so a claim at or below it predates the stamp and is a different
+ *      close. Null on either side means there is nothing to compare (a Chatwoot that sends no
+ *      versions), and the rule falls back to its unprotected form rather than refusing to clear.
  *
  * Both need `statusAfter !== "resolved"`, and neither is `statusAfter !== "resolved"` on its own:
  * during that same window an unrelated event (a label, an attribute) leaves the row non-resolved
@@ -77,16 +87,30 @@ export function clearsResolutionOrigin(source: {
   statedStatus: string | null;
   /** The status the ordering decided to write, null to keep the stored one. */
   appliedStatus: string | null;
-  /** Whether this source is allowed to move status at all: a versioned conversation event, or a live read. */
+  /** Whether this source is allowed to move status at all: a conversation event, or a live read. */
   sourceMayStateStatus: boolean;
+  /** The incoming source's own version, null when it carries none. */
+  statedVersion: number | null;
+  /** `Conversation.resolvedByAt`: the row's status version when the stamp was written. */
+  stampedAfterVersion: number | null;
 }): boolean {
-  const { storedStatus, statedStatus, appliedStatus, sourceMayStateStatus } =
-    source;
+  const {
+    storedStatus,
+    statedStatus,
+    appliedStatus,
+    sourceMayStateStatus,
+    statedVersion,
+    stampedAfterVersion,
+  } = source;
   const statusAfter = appliedStatus ?? storedStatus;
   if (statusAfter === "resolved") return false;
   const leftResolved = storedStatus === "resolved";
+  const predatesTheStamp =
+    stampedAfterVersion != null &&
+    statedVersion != null &&
+    statedVersion <= stampedAfterVersion;
   const closeLostTheOrdering =
-    sourceMayStateStatus && statedStatus === "resolved";
+    sourceMayStateStatus && statedStatus === "resolved" && !predatesTheStamp;
   return leftResolved || closeLostTheOrdering;
 }
 

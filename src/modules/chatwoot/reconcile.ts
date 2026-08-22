@@ -96,6 +96,7 @@ export async function reconcileMirrorFromLive(
             assigneeName: true,
             lastEventAt: true,
             chatwootStatusAt: true,
+            resolvedByAt: true,
             chatwootAssigneeAt: true,
           },
         });
@@ -167,8 +168,10 @@ export async function reconcileMirrorFromLive(
             statedStatus: live.status,
             appliedStatus: statusOrdered ? live.status : null,
             sourceMayStateStatus: true,
+            statedVersion: live.updatedAt,
+            stampedAfterVersion: current.resolvedByAt,
           })
-            ? { resolvedBy: null }
+            ? { resolvedBy: null, resolvedByAt: null }
             : {}),
           ...(assigneeOrdered &&
           (live.assigneeType !== current.assigneeType ||

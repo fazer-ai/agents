@@ -131,6 +131,7 @@ export async function mirrorChatwootEvent(
           assigneeName: true,
           status: true,
           resolvedBy: true,
+          resolvedByAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -162,6 +163,8 @@ export async function mirrorChatwootEvent(
           // and lets it move status, so requiring a version silently exempted every Chatwoot older
           // than 4.0.2 from the rule below.
           sourceMayStateStatus: statePayload.fromConversationEvent,
+          statedVersion: statePayload.version,
+          stampedAfterVersion: existing.resolvedByAt,
         });
 
       if (existing && decision.stale) {
@@ -173,7 +176,7 @@ export async function mirrorChatwootEvent(
         if (dropsResolutionOrigin && existing.resolvedBy != null) {
           await db.conversation.update({
             where: { id: existing.id },
-            data: { resolvedBy: null },
+            data: { resolvedBy: null, resolvedByAt: null },
           });
         }
         return {
@@ -264,7 +267,9 @@ export async function mirrorChatwootEvent(
           ...(appliedStatus != null ? { status: appliedStatus } : {}),
           // The same question the stale branch asked, and the same answer: see
           // `dropsResolutionOrigin` above.
-          ...(dropsResolutionOrigin ? { resolvedBy: null } : {}),
+          ...(dropsResolutionOrigin
+            ? { resolvedBy: null, resolvedByAt: null }
+            : {}),
           ...(assigneeKnown
             ? {
                 assigneeId: n.assigneeId ?? null,

@@ -2,6 +2,12 @@
 -- resolved it" from status + assignee. See src/modules/conversations/resolution-origin.ts.
 ALTER TABLE "conversations" ADD COLUMN "resolved_by" TEXT;
 
+-- The status version the stamp above was written against. Without it, a delayed `resolved` event
+-- from an earlier episode is indistinguishable from our own close failing to land, and clearing on
+-- the second erases the first. Left NULL by the backfill below: a row resolved before this ran has
+-- no close of ours to date.
+ALTER TABLE "conversations" ADD COLUMN "resolved_by_at" DOUBLE PRECISION;
+
 -- `conversations` carries FORCE ROW LEVEL SECURITY, which binds the table OWNER too; only a
 -- superuser (or a BYPASSRLS role) is exempt. docs/deploy.md allows MIGRATION_DATABASE_URL to be
 -- "superuser OR DB owner", and on managed Postgres the administrative role is typically the owner

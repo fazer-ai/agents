@@ -86,15 +86,30 @@ export async function recordResolutionOrigin(params: {
   if (observedStatus === "resolved") return;
   try {
     await runScopedOn(base, sysCtx(tenantId), (db) =>
-      // updateMany, not update: a conversation deleted (or never mirrored) between the toggle and
-      // this write is a no-op, not a throw.
-      db.conversation.updateMany({
-        where: {
-          ...("id" in conversation ? { id: conversation.id } : conversation),
-          resolvedBy: null,
-        },
-        data: { resolvedBy: origin },
-      }),
+      // Raw, and not `updateMany`, for one reason: `resolved_by_at` has to be the row's OWN
+      // `chatwoot_status_at`, and Prisma cannot write one column from another. Reading it first and
+      // writing it back would reopen the gap both predicates close by being evaluated in the same
+      // statement — two closings landing at once could then both pass.
+      //
+      // The floor is what tells our close apart from an older one. See the column's comment in
+      // schema.prisma and `clearsResolutionOrigin`. A row deleted (or never mirrored) between the
+      // toggle and this write matches nothing, which is a no-op rather than a throw.
+      "id" in conversation
+        ? db.$executeRaw`
+            UPDATE "conversations"
+               SET "resolved_by" = ${origin},
+                   "resolved_by_at" = "chatwoot_status_at"
+             WHERE "id" = ${conversation.id}
+               AND "tenant_id" = ${tenantId}
+               AND "resolved_by" IS NULL`
+        : db.$executeRaw`
+            UPDATE "conversations"
+               SET "resolved_by" = ${origin},
+                   "resolved_by_at" = "chatwoot_status_at"
+             WHERE "chatwoot_instance_id" = ${conversation.chatwootInstanceId}
+               AND "chatwoot_conversation_id" = ${conversation.chatwootConversationId}
+               AND "tenant_id" = ${tenantId}
+               AND "resolved_by" IS NULL`,
     );
   } catch (err) {
     logger.warn(

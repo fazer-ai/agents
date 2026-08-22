@@ -615,7 +615,7 @@ async function updateMirror(
         // shared rule would refuse, where a stale row still says non-resolved and Chatwoot is the
         // one holding the close.
         ...(data.status != null && data.status !== "resolved"
-          ? { resolvedBy: null }
+          ? { resolvedBy: null, resolvedByAt: null }
           : {}),
       },
     }),

@@ -172,6 +172,46 @@ describe.skipIf(!dbUp)(
       expect(await originOf(38)).toBeNull();
     });
 
+    // A delayed close from an EARLIER episode, which loses the ordering in exactly the shape of our
+    // own close failing to land. Clearing on it wiped the stamp of a close that was still on its
+    // way, and that close's own event found nothing to restore — so a real agent resolution was
+    // reported as somebody else's, for good. The version floor recorded with the stamp is what
+    // tells the two apart.
+    test("a delayed close from an earlier episode leaves a newer stamp alone", async () => {
+      const at = 1_700_050_000;
+      await mirror(convEvent(50, "conversation_created", "open", at));
+      await mirror(
+        convEvent(50, "conversation_status_changed", "resolved", at + 1),
+      );
+      await mirror(
+        convEvent(50, "conversation_status_changed", "open", at + 2),
+      );
+      expect(await originOf(50)).toBeNull();
+      // Second episode: the agent closes again, and we stamp while our own webhook is still in
+      // flight, so the row still reads open.
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 50,
+        },
+        origin: "agent",
+        observedStatus: "open",
+        base: appDb,
+      });
+      expect(await originOf(50)).toBe("agent");
+      // The FIRST episode's resolved event, retried late.
+      await mirror(
+        convEvent(50, "conversation_status_changed", "resolved", at + 1),
+      );
+      expect(await originOf(50)).toBe("agent");
+      // And the second close's own event lands, with the origin intact.
+      await mirror(
+        convEvent(50, "conversation_status_changed", "resolved", at + 3),
+      );
+      expect(await originOf(50)).toBe("agent");
+    });
+
     test("a customer message reopening the conversation clears it too", async () => {
       await closeThenStamp(32, 1_700_001_000);
       await mirror(
@@ -540,6 +580,37 @@ describe.skipIf(!dbUp)(
       const out = await reconcile(41, "pending", V0 + 1);
       expect(out.applied).toBe(true);
       expect(await originOf(41)).toBe("agent");
+    });
+
+    // The round-8 shape through the live probe. A GET that predates the reopen still reports the
+    // FIRST episode's "resolved"; it loses the version comparison, and without the floor that loss
+    // reads as our own close failing to land, so the stamp of the close still in flight is wiped.
+    // The reconcile has to answer this the same way the webhook mirror does.
+    test("a stale live probe reporting an earlier close leaves a newer stamp alone", async () => {
+      const V0 = 1_700_010_000;
+      await mirror(convEvent(60, "conversation_created", "open", V0));
+      await mirror(
+        convEvent(60, "conversation_status_changed", "resolved", V0 + 1),
+      );
+      await mirror(
+        convEvent(60, "conversation_status_changed", "open", V0 + 2),
+      );
+      expect(await originOf(60)).toBeNull();
+      await recordResolutionOrigin({
+        tenantId,
+        conversation: {
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 60,
+        },
+        origin: "agent",
+        observedStatus: "open",
+        base: appDb,
+      });
+      expect(await originOf(60)).toBe("agent");
+      // The probe's snapshot is from the first episode: resolved, at V0+1.
+      const out = await reconcile(60, "resolved", V0 + 1);
+      expect(out.outrankedByVersion).toBe(true);
+      expect(await originOf(60)).toBe("agent");
     });
 
     test("a live probe older than the close cannot clear it", async () => {

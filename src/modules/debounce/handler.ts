@@ -39,7 +39,7 @@ import {
 } from "@/modules/scheduler/worker";
 import { readLastMessageId } from "./service";
 import { readDebounceConfig } from "./settings";
-import { advanceHandledWatermark } from "./watermark";
+import { advanceHandledWatermark, readHandledWatermark } from "./watermark";
 
 // The DEBOUNCE flush: re-fetch the conversation from Chatwoot, coalesce the inbound messages past the
 // watermark into one turn, and answer once. Two re-fetches by design: the first builds the burst to
@@ -71,7 +71,12 @@ export interface CoalesceTurnContext {
   convDbId: bigint;
   loaded: AgentConfig;
   settings: unknown;
-  selectPending: (messages: ChatwootMessageRow[]) => ChatwootMessageRow[];
+  // May be async: the debounce flush re-reads the handled watermark here, at the latest point
+  // before the burst is chosen, because an authorization refusal that landed while this flush was
+  // asking the endpoint has already moved it.
+  selectPending: (
+    messages: ChatwootMessageRow[],
+  ) => ChatwootMessageRow[] | Promise<ChatwootMessageRow[]>;
   // Label for the single summary log line ("debounce flush" / "reengage").
   label: string;
   // When set (the debounce flush passes "debounce"), emit a flow line for the coalescing under the
@@ -106,7 +111,7 @@ export async function coalesceAndRunTurn(
   // the attachment-meta write-back 404s, so this is the only way a voice note's transcription (or a
   // vision extraction) reaches the flush (issue #49). Meta values, when present, stay authoritative.
   overlayMediaAnnotations(tenantId, instanceId, messages);
-  let pending = ctx.selectPending(messages);
+  let pending = await ctx.selectPending(messages);
   if (pending.length === 0) return "empty";
 
   const cfg = readDebounceConfig(ctx.settings);
@@ -416,7 +421,27 @@ export async function flushDebounceJob(
         convDbId: ctx.convDbId,
         loaded: ctx.loaded,
         settings: ctx.settings,
-        selectPending: (messages) => pendingIncoming(messages, watermark),
+        // Re-read, not the value captured before the authorization call: that call is a round-trip
+        // to somebody else's endpoint with a ceiling of ten seconds, and a message that arrived and
+        // was REFUSED inside that window has already had the watermark advanced past it by its own
+        // delivery. Against the stale value it would be selected here and handed to the model, and
+        // the post gate would only withhold the reply — after the tools had run. The floor is the
+        // one this flush read at claim time, so a watermark that somehow reads lower cannot widen
+        // the burst.
+        selectPending: async (messages) => {
+          const fresh = await readHandledWatermark({
+            tenantId,
+            conversationDbId: ctx.convDbId,
+            base,
+          });
+          const floor =
+            fresh === null
+              ? watermark
+              : watermark === null
+                ? fresh
+                : Math.max(fresh, watermark);
+          return pendingIncoming(messages, floor);
+        },
         label: "debounce flush",
         coalesceStage: "debounce",
       },

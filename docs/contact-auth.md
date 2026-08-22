@@ -80,7 +80,9 @@ Shapes:
   `conversation.channel` is the inbox's channel as a slug (`whatsapp`, `web_widget`, `api`, ...).
 - **Answer**: a 2xx with JSON `{ "authorized": boolean, "reason"?: string }`. A 2xx without the
   boolean is an **error**, not a pass. `401`/`403`/`404` read as **denied** (so an endpoint may
-  answer REST-style without a body). Any other status, a timeout, a network failure, a redirect
+  answer REST-style without a body), and they are read that way BEFORE the body: only a 2xx has to
+  carry its verdict, so only a 2xx needs a body small enough to read. A 403 behind a proxy that
+  serves a large HTML error page is still a refusal, not a transient failure. Any other status, a timeout, a network failure, a redirect
   (`redirect: "error"`), a blocked URL (SSRF guard on the final URL; https-only in production, http
   where `SSRF_ALLOW_PRIVATE_TARGETS` applies, like HTTP tools), an unresolvable/pending credential,
   or a body over 64 KB is an **error**.
@@ -203,7 +205,10 @@ the check is a round-trip with a ten-second ceiling, and stamping labels on a co
 took during it would be writing on theirs.
 
 **Debounce flush** (`flushDebounceJob` in `src/modules/debounce/handler.ts`): checked again, after
-the assignee gate and before the model. The webhook checks every incoming message, but a turn is not
+the assignee gate and before the model, and the burst is selected against the handled watermark as
+it stands AFTER that check: the check is a round-trip to somebody else's endpoint, and a message
+that arrived and was refused during it has already had the watermark advanced past it by its own
+delivery. The webhook checks every incoming message, but a turn is not
 a message: with debounce on, one allowed message arms a flush that a later refused message rides
 into (the refused delivery arms nothing, but the pending flush re-fetches everything past the
 watermark), and a verdict revoked inside the coalescing window is the same hole from the other side.

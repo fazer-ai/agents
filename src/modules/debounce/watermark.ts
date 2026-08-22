@@ -43,3 +43,24 @@ export async function advanceHandledWatermark(
     return cas.count > 0;
   });
 }
+
+// The watermark as it stands RIGHT NOW. Read where the burst is selected, not where the flush
+// started: between those two points sits an authorization round-trip to somebody else's endpoint,
+// and a message that arrived and was REFUSED during it has already had the watermark advanced past
+// it by its own delivery. Selecting against the older value would hand that refused message to the
+// model — and the post-gate CAS below only withholds the reply, after the turn has already run its
+// tools.
+export async function readHandledWatermark(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  base?: PrismaClient;
+}): Promise<number | null> {
+  const base = params.base ?? basePrisma;
+  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const row = await db.conversation.findUnique({
+      where: { id: params.conversationDbId },
+      select: { lastHandledMessageId: true },
+    });
+    return row?.lastHandledMessageId ?? null;
+  });
+}

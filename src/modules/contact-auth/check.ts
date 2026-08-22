@@ -110,9 +110,23 @@ export function classifyAuthorizationResponse(
   status: number,
   body: string | null,
 ): AuthorizationVerdict {
+  const json = body === null ? null : parseJsonObject(body);
+  // FIRST, because these three say everything they need to say in the status line: an endpoint may
+  // answer REST-style with no body at all, so a body we could not read cannot turn the answer into
+  // something else. Checked after the body used to mean a 403 behind a proxy with a large error
+  // page landed as an ERROR — read as transient, so the customer got no deny message, nobody got
+  // the handoff, and every following message asked again about a refusal that was permanent.
+  if (status === 401 || status === 403 || status === 404) {
+    const endpointReason = reasonSlug(json?.reason);
+    return {
+      outcome: "denied",
+      status,
+      ...(endpointReason ? { endpointReason } : {}),
+    };
+  }
+  // Only a 2xx has to CARRY its verdict, so only a 2xx needs a body we could read.
   if (body === null)
     return { outcome: "error", status, reason: "body_too_large" };
-  const json = parseJsonObject(body);
   if (status >= 200 && status < 300) {
     if (!json || typeof json.authorized !== "boolean") {
       return { outcome: "error", status, reason: "invalid_response" };
@@ -120,14 +134,6 @@ export function classifyAuthorizationResponse(
     const endpointReason = reasonSlug(json.reason);
     return {
       outcome: json.authorized ? "allowed" : "denied",
-      status,
-      ...(endpointReason ? { endpointReason } : {}),
-    };
-  }
-  if (status === 401 || status === 403 || status === 404) {
-    const endpointReason = reasonSlug(json?.reason);
-    return {
-      outcome: "denied",
       status,
       ...(endpointReason ? { endpointReason } : {}),
     };

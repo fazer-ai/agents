@@ -135,6 +135,24 @@ describe("classifyAuthorizationResponse", () => {
       status: 200,
       reason: "body_too_large",
     });
+    expect(classifyAuthorizationResponse(500, null)).toEqual({
+      outcome: "error",
+      status: 500,
+      reason: "body_too_large",
+    });
+  });
+
+  // A refusal says everything it needs to say in the status line, so a body we could not read
+  // cannot turn it into something else. Behind a proxy a 403 arrives with a large HTML error page,
+  // and reading that as an error made a permanent refusal look transient: no deny message, no
+  // handoff, and the next message asking all over again.
+  test("401/403/404 stay denials even when the body is unreadable", () => {
+    for (const status of [401, 403, 404]) {
+      expect(classifyAuthorizationResponse(status, null)).toEqual({
+        outcome: "denied",
+        status,
+      });
+    }
   });
 });
 

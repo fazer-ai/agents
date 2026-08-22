@@ -681,6 +681,59 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(await watermarkOf(840)).toBe(7);
     });
 
+    // The authorization call is a round-trip to somebody else's endpoint with a ten-second ceiling.
+    // A message arriving and being REFUSED during it has already had the watermark advanced past it
+    // by its own delivery, so the burst must be chosen against the watermark as it stands THEN, not
+    // as it was when the flush started. Against the stale value the refused message would reach the
+    // model, and the post gate would only withhold the reply, after the tools had run.
+    test("a refusal landing during the check keeps its message out of the burst", async () => {
+      await seedConversation(842);
+      await seedContactOn(842, 63);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 842 },
+        select: { id: true },
+      });
+      const sent: Array<[number, string]> = [];
+      // What the defect is about is the MODEL running, not the reply going out: the post gate's CAS
+      // already withholds a reply whose watermark moved, which is why asserting on `sent` alone
+      // passes with the fix reverted. Counting the model is what separates "did not answer" from
+      // "never ran", and a turn that ran spent tokens and may have called side-effecting tools.
+      let modelBuilds = 0;
+      const countingModel = () => {
+        modelBuilds += 1;
+        return fakeModel();
+      };
+      // The concurrent refusal, played out while this flush is asking the endpoint: message 9 is
+      // refused by its own delivery, which advances the watermark over it.
+      const fetchImpl = (async () => {
+        await advanceHandledWatermark({
+          tenantId,
+          conversationDbId: conv.id,
+          toMessageId: 9,
+          base: appDb,
+        });
+        return new Response('{"authorized":true}', { status: 200 });
+      }) as unknown as typeof fetch;
+      const out = await flushDebounceJob({
+        job: jobFor(842),
+        base: appDb,
+        deps: {
+          makeModel: countingModel,
+          makeClient: makeStub({
+            pages: [page([{ id: 9, content: "e esse aqui?" }])],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: fetchImpl,
+        },
+      });
+      // Nothing left to answer: the only message in the page is already past the watermark.
+      expect(out).toEqual({ outcome: "done" });
+      expect(modelBuilds).toBe(0);
+      expect(sent).toEqual([]);
+    });
+
     test("an authorized contact flushes as usual", async () => {
       await seedConversation(841);
       await seedContactOn(841, 62);

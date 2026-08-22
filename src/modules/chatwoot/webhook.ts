@@ -699,6 +699,8 @@ const CONTACT_AUTH_ERROR_LABELS: Record<string, string> = {
   credential_unavailable: "credencial indisponível",
   credential_not_injectable:
     "a credencial escolhida nunca é enviada numa requisição",
+  credential_param_collision:
+    "o parâmetro da credencial tem o mesmo nome de um campo de identidade",
   invalid_response: "resposta inválida",
   body_too_large: "resposta grande demais",
   unexpected_status: "status inesperado",
@@ -1417,12 +1419,27 @@ async function maybeConsumeCommandOrGate(params: {
       // Opens the conversation for the human queue (the handoff_to_human mechanics: status `open`
       // ends the bot's attribution, the optional team assignment routes it). Best-effort the same
       // way the tool is: the open is what matters, an assignment failure never undoes it.
-      // A Chatwoot team id belongs to ONE account. The editor stops offering a target once the
-      // agent serves several, but a value can still arrive through REST, MCP or an import, and the
-      // runtime would then apply that number through whichever account owns this conversation: a
-      // different team there, or none. Asked only when a target is configured, and only on a
-      // refusal, which is rare and already spending two API calls.
+      // A Chatwoot team id belongs to ONE account, so the stored number is only meaningful in the
+      // account it was picked from. The editor records that account alongside it and stops offering
+      // a target once the agent serves several — but a value can still arrive through REST, MCP or
+      // an import, and an agent MOVED between accounts keeps a number the editor has no reason to
+      // question: there is one account again, just not the one the id came from. So the recorded
+      // account is what decides, and counting accounts is only the fallback for a value stored
+      // before the field existed. Asked only when a target is configured, and only on a refusal,
+      // which is rare and already spending two API calls.
       const teamTargetUsable = async (teamId: number): Promise<boolean> => {
+        const pinnedTo = authCfg.handoffTeamInstanceId;
+        if (pinnedTo !== null) {
+          if (pinnedTo === Number(instanceId)) return true;
+          logger.warn(
+            "chatwoot: contact-auth team target ignored (conv=%s team=%s) — it was picked in Chatwoot account %s and this conversation is in %s",
+            String(conversationId),
+            String(teamId),
+            String(pinnedTo),
+            String(instanceId),
+          );
+          return false;
+        }
         const instances = await runScopedOn(base, sysCtx(tenantId), (db) =>
           db.inbox.findMany({
             where: { agentId },

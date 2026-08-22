@@ -13,6 +13,7 @@ import {
   type ContactAuthVerdict,
   channelSlug,
   checkContactAuthorization,
+  credentialTakesIdentityParam,
   reasonSlug,
 } from "./check";
 import type { ContactAuthConfig } from "./settings";
@@ -145,6 +146,19 @@ export async function authorizeContact(
             String(agentId),
           );
           return { outcome: "error", reason: "credential_not_injectable" };
+        }
+        // A query credential whose parameter is one of the four names GET reserves for the identity.
+        // The builder writes the identity first and the credential after, so the credential wins and
+        // the endpoint is asked about a phone number that is actually a secret. Refused rather than
+        // reordered: with the identity winning instead, the request simply goes out unauthenticated
+        // and comes back 401, which the gate reads as a DENIAL and turns into a refusal aimed at the
+        // customer. Neither order is safe, so the pairing is the thing to reject.
+        if (credentialTakesIdentityParam(cfg, credential)) {
+          logger.warn(
+            "contact-auth: the credential's query parameter collides with an identity field (agent=%s)",
+            String(agentId),
+          );
+          return { outcome: "error", reason: "credential_param_collision" };
         }
       }
       return checkContactAuthorization(

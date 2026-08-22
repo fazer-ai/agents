@@ -6,6 +6,7 @@ import {
   channelSlug,
   checkContactAuthorization,
   classifyAuthorizationResponse,
+  credentialTakesIdentityParam,
   MAX_RESPONSE_BYTES,
   MESSAGE_TEXT_MAX,
   reasonSlug,
@@ -305,6 +306,48 @@ describe("buildAuthorizationRequest", () => {
       paramName,
     });
     expect(check(init.headers as Record<string, string>, url)).toBe(true);
+  });
+});
+
+// GET carries the identity on the query string, and a query credential is written after it. A
+// credential whose parameter is one of those four names replaces the value it names: the endpoint is
+// asked about a phone number that is the secret, and the secret lands in its access logs as one.
+describe("credentialTakesIdentityParam", () => {
+  const queryCred = (paramName: string) => ({
+    value: "s3cr3t",
+    kind: "query",
+    paramName,
+  });
+
+  test("a query credential named after an identity field collides", () => {
+    for (const name of ["phone", "contact_id", "identifier", "email"]) {
+      expect(credentialTakesIdentityParam(cfg(), queryCred(name))).toBe(true);
+    }
+  });
+
+  test("any other parameter name is fine", () => {
+    expect(credentialTakesIdentityParam(cfg(), queryCred("api_key"))).toBe(
+      false,
+    );
+  });
+
+  test("no credential, or one that travels in a header, cannot collide", () => {
+    expect(credentialTakesIdentityParam(cfg(), null)).toBe(false);
+    expect(
+      credentialTakesIdentityParam(cfg(), {
+        value: "s3cr3t",
+        kind: "bearer_token",
+        paramName: null,
+      }),
+    ).toBe(false);
+  });
+
+  // Under POST the identity travels in the body, so the query is the operator's alone and the name
+  // is theirs to reuse.
+  test("POST does not reserve the names", () => {
+    expect(
+      credentialTakesIdentityParam(cfg({ method: "POST" }), queryCred("phone")),
+    ).toBe(false);
   });
 });
 

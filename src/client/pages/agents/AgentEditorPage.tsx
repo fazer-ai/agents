@@ -358,6 +358,7 @@ function readBehaviorState(a: Agent) {
       handoffEnabled:
         typeof ca.handoffEnabled === "boolean" ? ca.handoffEnabled : true,
       handoffTeamId: num(ca.handoffTeamId),
+      handoffTeamInstanceId: num(ca.handoffTeamInstanceId),
     },
     tts: readTtsFormState(tt),
     split: {
@@ -647,6 +648,7 @@ function AgentEditor() {
     denyMessage: "",
     handoffEnabled: true,
     handoffTeamId: "",
+    handoffTeamInstanceId: "",
   });
   // Text-to-speech (audio replies). Mode + provider mirror modules/tts.
   // Same reader the saved agent goes through, so a new field can never exist in one and not the
@@ -1148,6 +1150,11 @@ function AgentEditor() {
         denyMessage: contactAuth.denyMessage.trim() || null,
         handoffEnabled: contactAuth.handoffEnabled,
         handoffTeamId: Number(contactAuth.handoffTeamId) || null,
+        // The account the team was picked from, saved with it. Never on its own: without a team it
+        // pins nothing, and a leftover from a cleared choice would outlive what it described.
+        handoffTeamInstanceId: contactAuth.handoffTeamId
+          ? Number(contactAuth.handoffTeamInstanceId) || null
+          : null,
       },
       tts: ttsSettingsFrom(tts),
       split: {

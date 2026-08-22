@@ -37,6 +37,7 @@ read, so a malformed bag can never break the webhook.
 | `denyMessage`           | `null`  | Fixed copy the CUSTOMER receives on a denial (≤ `TEMPLATE_MESSAGE_MAX`). `null` = say nothing. |
 | `handoffEnabled`        | `true`  | Open a refused conversation for humans (the `handoff_to_human` mechanics: bot-token `toggle_status open`). |
 | `handoffTeamId`         | `null`  | Chatwoot team assigned after the open (bot-token `assignments`). `null` = inbox routing. Flat beside `handoffEnabled` for the mergeBehaviorSettings one-level-merge reason the tts block documents. |
+| `handoffTeamInstanceId` | `null`  | Our ChatwootInstance id the team above was picked from, recorded with it: a team id belongs to one account, and the team is assigned only in that account. `null` = a value stored before this field existed (falls back to the multi-account check). |
 
 ## Request / response contract
 
@@ -56,7 +57,12 @@ Shapes:
 - **GET**: the short scalar identifiers are appended to the configured URL's query string (an
   existing query survives): `phone`, `contact_id`, `identifier`, `email`, each omitted when the
   mirror does not hold it. No `name` and no message text on GET: a query string lands in the
-  endpoint's access logs.
+  endpoint's access logs. Those four names are RESERVED under GET: a credential injected into the
+  query under one of them would replace the identity it names (the credential is written after it),
+  so the endpoint would read the secret as the customer's phone number — and the secret would land
+  in those same access logs under a field nobody treats as one. The pairing is refused
+  (`credential_param_collision`, an error, so fail-closed) rather than one of the two silently
+  winning. Under POST the identity travels in the body and the name is the operator's to reuse.
 - **POST** (`content-type: application/json`):
 
   ```jsonc
@@ -137,10 +143,14 @@ message is folded into the memory thread like any other unanswered one.
   `handoffEnabled`: a contact the gate can never authorize would otherwise stay pending and
   unanswered forever.
 
-A `handoffTeamId` is ignored when the agent serves more than one Chatwoot account: a team id belongs
-to one account, so the same number means a different team there, or none. The editor stops offering
-a target, and the runtime checks too, because the value can still arrive through REST, MCP or an
-import. Refused conversations then fall back to Chatwoot's own inbox routing.
+A Chatwoot team id belongs to ONE account, so `handoffTeamInstanceId` records the account the team
+was picked in and the runtime assigns the team only in that one. The editor stops offering a target
+while the agent serves several accounts, but that check cannot see the case it matters most in: an
+agent MOVED to another account has one account again, and the stored number belongs to the old one.
+A value with no recorded account (stored before this field existed, or written through REST, MCP or
+an import) falls back to the older question — is more than one account served? Either way a target
+that cannot be vouched for is skipped and the refused conversation falls back to Chatwoot's own
+inbox routing; the open still happens.
 
 The verdict is per message; the **notices** are not. The customer copy and the private note sit
 behind `noticeCooldownSeconds` (per conversation, in process memory), so a refused burst is voiced

@@ -144,6 +144,9 @@ export interface ContactAuthState {
   denyMessage: string;
   handoffEnabled: boolean;
   handoffTeamId: string;
+  // The ChatwootInstance the team above was picked from, recorded with it: a team id belongs to one
+  // account, and the runtime only assigns it in that one.
+  handoffTeamInstanceId: string;
 }
 
 interface SplitState {
@@ -635,12 +638,16 @@ function ContactAuthTeamSelect({
 }: {
   agentId: string;
   value: string;
-  onChange: (v: string) => void;
+  // The team AND the account it came from: stored together, because the id alone means nothing
+  // outside it.
+  onChange: (teamId: string, instanceId: string) => void;
 }) {
   const { t } = useTranslation();
   const [data, setData] = useState<{
     teams: Array<{ id: number; name: string }>;
     accountCount: number;
+    // Our ChatwootInstance id of the single account, when there is exactly one.
+    instanceId: string;
   } | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -652,12 +659,16 @@ function ContactAuthTeamSelect({
         if (!cancelled) {
           setData(
             d
-              ? { teams: d.teams, accountCount: d.accounts.length }
-              : { teams: [], accountCount: 0 },
+              ? {
+                  teams: d.teams,
+                  accountCount: d.accounts.length,
+                  instanceId: d.accounts[0]?.instanceId ?? "",
+                }
+              : { teams: [], accountCount: 0, instanceId: "" },
           );
         }
       } catch {
-        if (!cancelled) setData({ teams: [], accountCount: 0 });
+        if (!cancelled) setData({ teams: [], accountCount: 0, instanceId: "" });
       }
     })();
     return () => {
@@ -666,6 +677,9 @@ function ContactAuthTeamSelect({
   }, [agentId]);
   const teams = data?.teams ?? [];
   const listed = teams.some((tm) => String(tm.id) === value);
+  // Populated only when the agent serves exactly one account, which is the only case the picker
+  // offers teams in.
+  const instanceId = data?.accountCount === 1 ? data.instanceId : "";
   // A Chatwoot team id means something inside ONE account. When the agent serves several, the
   // listing deliberately comes back empty, and keeping the stored id as a "(not listed)" option
   // re-saved a target that the runtime then applies through EVERY account's client: in the other
@@ -674,7 +688,7 @@ function ContactAuthTeamSelect({
   // saying why, and still has to press save.
   const multiAccount = data !== null && data.accountCount > 1;
   useEffect(() => {
-    if (multiAccount && value) onChange("");
+    if (multiAccount && value) onChange("", "");
   }, [multiAccount, value, onChange]);
   return (
     <FormField
@@ -688,7 +702,7 @@ function ContactAuthTeamSelect({
       <div className="flex flex-col gap-1.5">
         <Select
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => onChange(e.target.value, instanceId)}
           aria-label={t("editor.contactAuthTeam", "Assign to team")}
         >
           <option value="">
@@ -1392,8 +1406,14 @@ export function BehaviorTab({
                   <ContactAuthTeamSelect
                     agentId={agentId}
                     value={contactAuth.handoffTeamId}
-                    onChange={(v) =>
-                      setContactAuth({ ...contactAuth, handoffTeamId: v })
+                    onChange={(v, instanceId) =>
+                      setContactAuth({
+                        ...contactAuth,
+                        handoffTeamId: v,
+                        // Cleared with the team: a recorded account with no team pins nothing, and
+                        // a stale one would outlive the choice it belonged to.
+                        handoffTeamInstanceId: v ? instanceId : "",
+                      })
                     }
                   />
                 )}

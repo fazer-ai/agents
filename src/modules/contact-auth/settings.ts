@@ -42,6 +42,14 @@ export interface ContactAuthConfig {
   // only the team would otherwise silently reset the switch (the tts block has the same note).
   handoffEnabled: boolean;
   handoffTeamId: number | null;
+  // Our ChatwootInstance DB id the team above was picked from. A Chatwoot team id belongs to ONE
+  // account, so the pinned number is only meaningful in the account it came from; the runtime
+  // assigns the team ONLY when the conversation's instance matches. The editor already refuses to
+  // pin while the agent spans several accounts, and this covers the drift it cannot see: an agent
+  // MOVED to another account keeps the number it was given in the old one, and there the editor
+  // sees a single account and has nothing to warn about. null ⇒ legacy value stored before this
+  // field existed (applied under the older, weaker check).
+  handoffTeamInstanceId: number | null;
 }
 
 export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
@@ -55,6 +63,7 @@ export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
   denyMessage: null,
   handoffEnabled: true,
   handoffTeamId: null,
+  handoffTeamInstanceId: null,
 };
 
 // Whether the triggering message's text actually travels: the operator's opt-in AND a POST, since
@@ -144,5 +153,6 @@ export function readContactAuthConfig(settings: unknown): ContactAuthConfig {
         ? b.handoffEnabled
         : CONTACT_AUTH_DEFAULTS.handoffEnabled,
     handoffTeamId: posInt(b.handoffTeamId),
+    handoffTeamInstanceId: posInt(b.handoffTeamInstanceId),
   };
 }

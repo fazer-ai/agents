@@ -303,6 +303,9 @@ const contactAuth = z.looseObject({
     .describe("what a REFUSED contact receives; null = say nothing"),
   handoffEnabled: z.boolean().optional(),
   handoffTeamId: chatwootId().describe("Chatwoot team id"),
+  handoffTeamInstanceId: chatwootId().describe(
+    "our ChatwootInstance id the team was picked from; the team is only assigned in that account",
+  ),
 });
 
 const channelRedirect = z.looseObject({

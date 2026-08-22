@@ -316,6 +316,7 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
             denyMessage: "  Atendemos apenas clientes.  ",
             handoffEnabled: false,
             handoffTeamId: 12,
+            handoffTeamInstanceId: 3,
           },
         },
       },
@@ -336,6 +337,7 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
       denyMessage: "Atendemos apenas clientes.",
       handoffEnabled: false,
       handoffTeamId: 12,
+      handoffTeamInstanceId: 3,
     });
   });
 

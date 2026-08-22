@@ -59,6 +59,7 @@ const PHONE = "+5511977776666";
 const INBOX_FULL = 771; // deny message + handoff to team 77
 const INBOX_NO_COPY = 772; // denyMessage null, handoff on
 const INBOX_UNLOCK = 773; // POST + includeMessageText, handoff off (the unlock flow)
+const INBOX_FOREIGN_TEAM = 774; // handoff to a team pinned in ANOTHER Chatwoot account
 const TEAM_ID = 77;
 const UNLOCK_COPY = "Envie seu código de acesso para ser atendido.";
 
@@ -67,6 +68,8 @@ let instanceId = 0n;
 let inboxFullDbId = 0n;
 let inboxNoCopyDbId = 0n;
 let inboxUnlockDbId = 0n;
+let inboxForeignTeamDbId = 0n;
+let foreignTeamAgentId = 0n;
 
 interface Sent {
   conversationId: number;
@@ -303,6 +306,7 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
             denyMessage: DENY_COPY,
             handoffEnabled: true,
             handoffTeamId: TEAM_ID,
+            handoffTeamInstanceId: Number(instanceId),
           },
         },
       },
@@ -343,10 +347,32 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       },
       select: { id: true },
     });
+    // Same team NUMBER, recorded against a Chatwoot account this conversation is not in. The shape an
+    // agent MOVED between accounts ends up in: one account again, and the id belongs to the old one.
+    const foreignTeam = await suDb.agent.create({
+      data: {
+        ...baseAgent,
+        name: "Time de outra conta",
+        settings: {
+          debounce: { enabled: false },
+          split: { enabled: false },
+          contactAuth: {
+            ...contactAuthBase,
+            denyMessage: DENY_COPY,
+            handoffEnabled: true,
+            handoffTeamId: TEAM_ID,
+            handoffTeamInstanceId: Number(instanceId) + 1000,
+          },
+        },
+      },
+      select: { id: true },
+    });
+    foreignTeamAgentId = foreignTeam.id;
     for (const [agentId, botId] of [
       [full.id, 21],
       [noCopy.id, 22],
       [unlock.id, 23],
+      [foreignTeam.id, 24],
     ] as const) {
       await suDb.chatwootAgentBot.create({
         data: {
@@ -394,6 +420,17 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       select: { id: true },
     });
     inboxUnlockDbId = c.id;
+    const d = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: INBOX_FOREIGN_TEAM,
+        name: "Time de outra conta",
+        agentId: foreignTeam.id,
+      },
+      select: { id: true },
+    });
+    inboxForeignTeamDbId = d.id;
   });
 
   beforeEach(() => {
@@ -675,5 +712,62 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     // No team configured: open only, Chatwoot routes.
     expect(cw.teamAssignments).toEqual([]);
     expect(cw.notesOn(convId)).toHaveLength(1);
+  });
+
+  // A Chatwoot team id belongs to ONE account. The editor cannot warn about an agent MOVED to
+  // another one — it sees a single account again — so the account the team was picked from is
+  // recorded with it, and that is what decides.
+  test("a team pinned in another account is not assigned; the open still happens", async () => {
+    const convId = 9311;
+    await seedConversation(convId, inboxForeignTeamDbId);
+    const cw = stubChatwoot();
+    const auth = authDouble(() => denied());
+    await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_FOREIGN_TEAM,
+      senderId: 807,
+      phone: PHONE,
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+    });
+    // Refused and handed over, but routed by the inbox rather than to whatever team 77 is here.
+    expect(cw.statusToggles).toEqual([[convId, "open"]]);
+    expect(cw.teamAssignments).toEqual([]);
+    expect(cw.publicOn(convId)).toHaveLength(1);
+  });
+
+  // A value stored before the account was recorded alongside it. Nothing can say which account it
+  // came from, so it falls back to the older question: does this agent serve more than one?
+  test("a legacy target with no recorded account is still applied on a single-account agent", async () => {
+    const stored = await suDb.agent.findUniqueOrThrow({
+      where: { id: foreignTeamAgentId },
+      select: { settings: true },
+    });
+    const bag = stored.settings as Record<string, unknown>;
+    await suDb.agent.update({
+      where: { id: foreignTeamAgentId },
+      data: {
+        settings: {
+          ...bag,
+          contactAuth: {
+            ...(bag.contactAuth as Record<string, unknown>),
+            handoffTeamInstanceId: null,
+          },
+        },
+      },
+    });
+    const convId = 9312;
+    await seedConversation(convId, inboxForeignTeamDbId);
+    const cw = stubChatwoot();
+    const auth = authDouble(() => denied());
+    await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_FOREIGN_TEAM,
+      senderId: 808,
+      phone: PHONE,
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+    });
+    expect(cw.teamAssignments).toEqual([[convId, TEAM_ID]]);
   });
 });

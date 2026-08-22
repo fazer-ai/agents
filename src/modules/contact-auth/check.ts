@@ -198,6 +198,35 @@ export function buildAuthorizationRequest(
   return { url, init: { method: cfg.method, headers, body } };
 }
 
+// The query names a GET request reserves for the mirrored identity, exactly as `buildAuthorizationRequest`
+// writes them. A credential injected into the query under one of these REPLACES the value it names:
+// `set` is last-write-wins and the credential goes on after the identity, so the endpoint would read
+// the secret as the customer's phone number and decide about the wrong person — while the secret
+// itself lands in that endpoint's access logs under a field nobody treats as one. Matched exactly,
+// because that is what makes the two collide; a differently-cased name is a second parameter, not a
+// replacement.
+export const RESERVED_QUERY_PARAMS: readonly string[] = [
+  "phone",
+  "contact_id",
+  "identifier",
+  "email",
+];
+
+// Whether this credential would take one of those names. Pure, and separate from the builder, so the
+// pairing can be refused BEFORE a request that would carry a secret where an identity belongs.
+export function credentialTakesIdentityParam(
+  cfg: ContactAuthConfig,
+  credential: InjectableCredential | null,
+): boolean {
+  if (!credential || cfg.method !== "GET") return false;
+  const inj = resolveSecretInjection(
+    credential.kind,
+    credential.value,
+    credential.paramName,
+  );
+  return inj?.target === "query" && RESERVED_QUERY_PARAMS.includes(inj.name);
+}
+
 // Reads at most `max` bytes; null when the body is larger (declared or streamed). The cap is applied
 // BEFORE parsing, so an oversized answer costs neither memory nor a JSON.parse of it.
 async function readBodyCapped(

@@ -15,6 +15,7 @@ import {
   attributesForModel,
   type ChatwootVocab,
 } from "@/modules/chatwoot/vocab";
+import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import type { HandoffConfig } from "@/modules/handoff/settings";
 import {
   type HandoffTargets,
@@ -729,6 +730,17 @@ function resolveConversationTool(ctx: ToolCtx) {
         return "Resolve scheduled: the conversation will be marked resolved after your final reply in this turn is delivered.";
       }
       await ctx.client.toggleStatus(ctx.conversationId, "resolved");
+      // Same origin as the deferred path in runtime.ts: the agent judged the request handled. The
+      // row id and tenant are absent on hand-built contexts (and the playground never reaches a
+      // real Chatwoot), so an unrecordable close is left unattributed rather than guessed at.
+      if (ctx.tenantId != null && ctx.conversationDbId != null) {
+        await recordResolutionOrigin({
+          tenantId: ctx.tenantId,
+          conversation: { id: ctx.conversationDbId },
+          origin: "agent",
+          base: ctx.base,
+        });
+      }
       return "Conversation resolved.";
     },
     {

@@ -22,6 +22,7 @@ import {
 } from "@/modules/chatwoot/instance";
 import { parseLiveConversation } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
 import type { FollowUpDelayUnit } from "@/modules/followups/settings";
 import {
@@ -603,7 +604,18 @@ async function updateMirror(
   },
 ): Promise<void> {
   await runScopedOn(base, ctx, (db) =>
-    db.conversation.updateMany({ where: { id }, data }),
+    db.conversation.updateMany({
+      where: { id },
+      data: {
+        ...data,
+        // Same rule as the webhook mirror and the live reconcile: leaving "resolved" drops the
+        // recorded origin. This is the unversioned fallback, so it writes whatever the console
+        // action asked for, including the reopen a stale live read would have missed.
+        ...(data.status != null && data.status !== "resolved"
+          ? { resolvedBy: null }
+          : {}),
+      },
+    }),
   );
 }
 
@@ -1308,6 +1320,18 @@ export async function setConversationStatus(
   const state = await mirrorConsoleWrite(ctx, base, id, conv, client, {
     status,
   });
+  // An operator closing a conversation is not the agent resolving it, and the two are
+  // indistinguishable from status + assignee alone (this path deliberately does NOT assign the
+  // operator: the audit shows the instance admin, not the persona). Recording it is what keeps it
+  // out of the Resolution funnel. Non-resolved statuses need nothing: the mirror clears the stamp.
+  if (status === "resolved") {
+    await recordResolutionOrigin({
+      tenantId,
+      conversation: { id },
+      origin: "console",
+      base,
+    });
+  }
   broadcastConversationEvent(tenantId, {
     conversationId: String(id),
     status: state?.status ?? status,

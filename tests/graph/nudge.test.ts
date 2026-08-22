@@ -34,6 +34,7 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
   HandoffThenReplyModel,
+  ResolveThenReplyModel,
 } from "../utils/scripted-models";
 
 describe("renderNudge (prompt-injection boundary)", () => {
@@ -823,6 +824,91 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.labelSets).toEqual([["follow-up"]]);
     // Exactly one status call: the handoff's own `open`. A second one would be the resolve.
     expect(s.resolved).toEqual([9905]);
+  });
+
+  // Issue #188: the last step of a follow-up ladder closes out a customer who stopped answering, and
+  // that close used to be indistinguishable from the agent resolving the conversation itself — so a
+  // lead that ghosted raised the Resolution funnel. The origin is now recorded at the close.
+  test("the last follow-up step's resolve is recorded as an abandonment", async () => {
+    await seedConv(9906, null);
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9906`,
+      nudge: { source: "followup", kind: "inactivity", step: 3 },
+      postActions: { assignLabels: ["cold-lead"], resolve: true },
+      base: appDb,
+      deps: {
+        // The customer never answered, so the agent has nothing to say: the silent branch is the
+        // one the abandonment step actually takes in production.
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("silent");
+    expect(s.resolved).toEqual([9906]);
+    const row = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: 9906 },
+      select: { resolvedBy: true },
+    });
+    expect(row?.resolvedBy).toBe("followup_abandonment");
+  });
+
+  // The complement, and the one that would silently mis-credit the agent: a resolve that never ran
+  // must leave nothing behind. `allowResolve: false` skips only the toggle, and a stamp written
+  // regardless would be read months later as a resolution that never happened.
+  test("a suppressed resolve records no origin at all", async () => {
+    await seedConv(9908, null);
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9908`,
+      nudge: { source: "followup", kind: "inactivity", step: 3 },
+      postActions: { assignLabels: ["follow-up"], resolve: true },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffThenReplyModel("", "Um humano vai te atender.") as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    const row = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: 9908 },
+      select: { resolvedBy: true },
+    });
+    expect(row?.resolvedBy).toBeNull();
+  });
+
+  // A nudge turn carries no turnState, so resolve_conversation takes the IMMEDIATE branch instead of
+  // the deferred one runtime.ts applies. Both must record the same origin: this is the only closing
+  // the funnel counts, so a producer that forgets to stamp silently undercounts real resolutions,
+  // and one that stamps on the wrong path inflates them.
+  test("the agent's own resolve on a nudge turn is recorded as the agent's", async () => {
+    await seedConv(9909, null);
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9909`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new ResolveThenReplyModel("Tudo certo por aqui!") as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(s.resolved).toEqual([9909]);
+    const row = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: 9909 },
+      select: { resolvedBy: true },
+    });
+    expect(row?.resolvedBy).toBe("agent");
   });
 
   test("outside the 24h window, a handoff still leaves the operator the note and the label", async () => {

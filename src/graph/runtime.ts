@@ -23,6 +23,7 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { advanceHandledWatermark } from "@/modules/debounce/watermark";
 import {
   emitFlowEvent,
@@ -153,11 +154,24 @@ async function applyDeferredResolve(
   conversationId: number,
   turnState: TurnState,
   flow: FlowContext,
+  origin: { tenantId: bigint; instanceId: bigint; base: PrismaClient },
 ): Promise<void> {
   if (!turnState.resolveRequested) return;
   turnState.resolveRequested = false;
   try {
     await client.toggleStatus(conversationId, "resolved");
+    // The one closing the Resolution funnel counts: the agent called resolve_conversation, so it
+    // judged the customer's request handled. Every other way a conversation reaches "resolved" is
+    // recorded under its own origin, or not at all when it happens outside our code.
+    await recordResolutionOrigin({
+      tenantId: origin.tenantId,
+      conversation: {
+        chatwootInstanceId: origin.instanceId,
+        chatwootConversationId: conversationId,
+      },
+      origin: "agent",
+      base: origin.base,
+    });
     emitFlowEvent(flow, {
       stage: "handoff",
       status: "ok",
@@ -768,7 +782,11 @@ export async function runLoadedTurn(
           "send_image: nenhuma imagem foi entregue e o turno não tinha resposta em texto",
         );
       }
-      await applyDeferredResolve(client, conversationId, turnState, flow);
+      await applyDeferredResolve(client, conversationId, turnState, flow, {
+        tenantId,
+        instanceId,
+        base,
+      });
       return sent || handedOff ? "posted" : "empty";
     }
 
@@ -825,7 +843,11 @@ export async function runLoadedTurn(
             reply.length,
           );
           deliveredBalloons = 1;
-          await applyDeferredResolve(client, conversationId, turnState, flow);
+          await applyDeferredResolve(client, conversationId, turnState, flow, {
+            tenantId,
+            instanceId,
+            base,
+          });
           return "posted";
         }
       } catch (e) {
@@ -855,7 +877,11 @@ export async function runLoadedTurn(
       balloons,
     );
     deliveredBalloons = balloons;
-    await applyDeferredResolve(client, conversationId, turnState, flow);
+    await applyDeferredResolve(client, conversationId, turnState, flow, {
+      tenantId,
+      instanceId,
+      base,
+    });
     return "posted";
   } finally {
     clearTurnInFlight(threadId);

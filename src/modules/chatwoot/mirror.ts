@@ -231,6 +231,13 @@ export async function mirrorChatwootEvent(
             : {}),
           ...(decision.unversioned && contactId != null ? { contactId } : {}),
           ...(appliedStatus != null ? { status: appliedStatus } : {}),
+          // A conversation that leaves "resolved" has no resolution to attribute any more, and the
+          // stamp must not survive into whatever closes it next. Rides on `appliedStatus` so it
+          // inherits the same version ordering as the status itself: a stale payload that loses the
+          // comparison writes neither.
+          ...(appliedStatus != null && appliedStatus !== "resolved"
+            ? { resolvedBy: null }
+            : {}),
           ...(assigneeKnown
             ? {
                 assigneeId: n.assigneeId ?? null,

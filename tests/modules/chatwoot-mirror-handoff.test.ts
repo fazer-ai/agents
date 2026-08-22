@@ -1445,6 +1445,98 @@ describe.skipIf(!dbUp)(
         expect((await mirrored(43)).status).toBe("open");
       });
 
+      // Issue #188: this path resolves with the instance ADMIN token and deliberately does not
+      // assign the operator, so status + assignee cannot tell it apart from the agent closing the
+      // conversation itself. It is recorded instead.
+      test("an operator resolving from the console is recorded as the console's doing", async () => {
+        const T = 1_786_511_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(70, {
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        const stub = stubClient({
+          status: "resolved",
+          lastActivityAt: T,
+          updatedAt: T + 1,
+        });
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(70),
+          "resolved",
+          { makeClient: stub.makeClient },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 70 },
+          select: { status: true, resolvedBy: true },
+        });
+        expect(row.status).toBe("resolved");
+        expect(row.resolvedBy).toBe("console");
+      });
+
+      // Reopening from the console has to drop the stamp for the same reason the webhook mirror
+      // does. This path is the UNVERSIONED fallback (the live read failed), which is exactly where a
+      // clear that only lived in the versioned writer would be missed.
+      test("reopening from the console clears the recorded origin", async () => {
+        const T = 1_786_512_000;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(71, {
+            status: "open",
+            lastActivityAt: T,
+            updatedAt: T + 0.1,
+          }),
+        });
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(71),
+          "resolved",
+          {
+            makeClient: stubClient({
+              status: "resolved",
+              lastActivityAt: T,
+              updatedAt: T + 1,
+            }).makeClient,
+          },
+          appDb,
+        );
+        expect(
+          (
+            await suDb.conversation.findFirstOrThrow({
+              where: { tenantId, chatwootConversationId: 71 },
+              select: { resolvedBy: true },
+            })
+          ).resolvedBy,
+        ).toBe("console");
+        // The live read throws, so mirrorConsoleWrite falls through to updateMirror with the
+        // operator's own intent.
+        await setConversationStatus(
+          opCtx(),
+          await rowIdOf(71),
+          "open",
+          {
+            makeClient: async () =>
+              ({
+                toggleStatus: async () => ({}),
+                getConversation: async () => {
+                  throw new Error("live read down");
+                },
+              }) as never,
+          },
+          appDb,
+        );
+        const row = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 71 },
+          select: { status: true, resolvedBy: true },
+        });
+        expect(row.status).toBe("open");
+        expect(row.resolvedBy).toBeNull();
+      });
+
       // The console renders the click optimistically off this publish and only reconciles when the
       // inbound webhook arrives, which may be seconds later or (on a conversation Chatwoot has
       // nothing more to say about) never. So a publish of the INTENT after a write that did not land

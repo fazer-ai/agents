@@ -5,6 +5,7 @@ import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadAgentBot, loadChatwootClient } from "@/modules/chatwoot/instance";
+import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
@@ -431,11 +432,23 @@ async function deliverClosing(
   conversationId: number,
   closingMessage: string,
   sendMode: ProactiveSendMode,
+  origin: { tenantId: bigint; instanceId: bigint; base: PrismaClient },
 ): Promise<void> {
   await client.sendMessage(conversationId, closingMessage, {
     private: sendMode !== "freeform",
   });
   await client.toggleStatus(conversationId, "resolved");
+  // Tidying up the channel the episode moved AWAY from. Whatever the outcome was, it was not decided
+  // here, so this closing is not a resolution the agent can be credited with.
+  await recordResolutionOrigin({
+    tenantId: origin.tenantId,
+    conversation: {
+      chatwootInstanceId: origin.instanceId,
+      chatwootConversationId: conversationId,
+    },
+    origin: "redirect_closing",
+    base: origin.base,
+  });
 }
 
 export interface DeliverRedirectClosingParams {
@@ -531,6 +544,8 @@ export async function deliverRedirectClosing(
       p.widgetConversationId,
       p.closingMessage,
       chatMode,
+
+      { tenantId: p.tenantId, instanceId: p.instanceId, base },
     );
   }
 
@@ -552,6 +567,8 @@ export async function deliverRedirectClosing(
       sibling.chatwootConversationId,
       p.closingMessage,
       waMode,
+
+      { tenantId: p.tenantId, instanceId: p.instanceId, base },
     );
   }
   return "delivered";

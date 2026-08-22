@@ -422,6 +422,14 @@ model Conversation {
   // Display name of the current human assignee (meta.assignee.name), mirrored so the console shows a
   // real name instead of "Human #id". NULL when unassigned or assigned to a bot.
   assigneeName           String?   @map("assignee_name")
+  // Who closed this conversation, recorded at the moment WE close it: "agent" (the
+  // resolve_conversation tool), "followup_abandonment", "redirect_closing", "console", or
+  // "legacy_unknown" for a row the migration found already resolved. NULL = not resolved, or
+  // resolved by something outside our code (an operator in the Chatwoot UI, an automation rule,
+  // `auto_resolve_after`) — none of which reach us, which is why the dashboard reads a recorded
+  // origin instead of inferring one from status + assignee. Cleared whenever the mirror applies a
+  // status that is not "resolved". See src/modules/analytics/resolution-origin.ts.
+  resolvedBy             String?   @map("resolved_by")
   threadId               String    @map("thread_id") // tenantId:instanceId:convId
   // Mirror of the conversation's Chatwoot custom attributes and of the LINKED KANBAN CARD's ones
   // (conversation.custom_attributes / conversation.kanban_task.custom_attributes on the webhook

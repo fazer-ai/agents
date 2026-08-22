@@ -767,6 +767,15 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       if (!resolvedLogged) await new Promise((r) => setTimeout(r, 100));
     }
     expect(resolvedLogged).toBe(true);
+
+    // Issue #188: the agent calling resolve_conversation is the ONE closing the Resolution funnel
+    // counts, and it is only distinguishable from the five that are not because the origin is
+    // recorded here. The row is read after the flow event above, so the write has had its turn.
+    const resolvedRow = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 910 },
+      select: { resolvedBy: true },
+    });
+    expect(resolvedRow.resolvedBy).toBe("agent");
   });
 
   test("handoff customerMessage is terminal when the mirror status event lags", async () => {

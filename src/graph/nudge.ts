@@ -11,6 +11,7 @@ import {
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { armCompaction } from "@/modules/memory/compact";
 import {
@@ -726,6 +727,18 @@ export async function runAgentNudge(
     if (allowResolve && actions.resolve) {
       try {
         await client.toggleStatus(conversationId, "resolved");
+        // A follow-up ladder only advances while the customer stays silent (an inbound ends the
+        // episode), so the last step firing means nobody ever answered. Recording that keeps the
+        // Resolution funnel from reading an abandoned lead as a conversation the agent resolved.
+        await recordResolutionOrigin({
+          tenantId,
+          conversation: {
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+          origin: "followup_abandonment",
+          base,
+        });
       } catch (err) {
         logger.warn(
           { err, conversationId: String(conversationId) },

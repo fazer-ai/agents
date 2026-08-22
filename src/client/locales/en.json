@@ -509,7 +509,8 @@
       "involvement": "Involvement",
       "involvementHint": "{{involved}} of {{total}} handled by AI",
       "resolution": "Resolution",
-      "resolutionHint": "{{resolved}} of AI-handled conversations resolved without a human",
+      "resolutionHint": "{{resolved}} closed by the agent itself",
+      "resolutionUntracked": "{{untracked}} more were resolved before this instance began recording who closed a conversation, so they are not counted here.",
       "total": "Conversations",
       "totalHint": "in the period"
     },

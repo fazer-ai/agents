@@ -95,7 +95,10 @@ nothing to ask the endpoint about, and fail-closed means nobody unidentified is 
 Every identity field follows one rule in the mirror: a payload that does not CARRY the field leaves
 what is stored (a degraded payload must not wipe identity), and one that carries it is written as
 Chatwoot says, cleared included — a phone kept after it was removed asks the endpoint about whoever
-used to have it. They share one source watermark (`contacts.identity_at`).
+used to have it. Each field carries its OWN source watermark (`contacts.name_at`, `email_at`,
+`phone_at`, `attributes_at`), because a payload states a subset of them: one row-wide position would
+be moved by an event that never spoke about the field it then protects, and a name-only event would
+reject a phone clear arriving behind it.
 
 `last_activity_at` has one-second resolution, so two events inside one second cannot be ordered by
 it at all, and a tie is settled per FIELD against the value already STORED: a stated value that
@@ -107,7 +110,7 @@ of asking the operator's endpoint about an identity that is not theirs. Per fiel
 snapshot that happens to carry an unrelated cleared field must not ride that in to rewrite the rest
 of what it holds.
 
-**On upgrade**, every contact's identity is cleared and its watermark seeded from the newest event
+**On upgrade**, every contact's identity is cleared and its watermarks seeded from the newest event
 that touched it. The old mirror wrote identity before the conversation's stale check, so what sits in
 those columns came from the last event to ARRIVE, not the newest to have happened, and nothing in the
 row says which. Values nobody can vouch for are not handed to an authorization decision: the gate
@@ -198,6 +201,16 @@ post-actions (the step fired and the sequence advances either way, so the operat
 otherwise be lost), minus the resolve: nothing reached the customer. Ownership is re-probed first —
 the check is a round-trip with a ten-second ceiling, and stamping labels on a conversation a human
 took during it would be writing on theirs.
+
+**Debounce flush** (`flushDebounceJob` in `src/modules/debounce/handler.ts`): checked again, after
+the assignee gate and before the model. The webhook checks every incoming message, but a turn is not
+a message: with debounce on, one allowed message arms a flush that a later refused message rides
+into (the refused delivery arms nothing, but the pending flush re-fetches everything past the
+watermark), and a verdict revoked inside the coalescing window is the same hole from the other side.
+A refusal ends the flush the way a human takeover does: the burst counts as handled, the watermark
+advances off the payload's own last id, nothing is posted. No customer copy and no handoff — those
+answer a message the customer just sent, and the webhook path already gave them to the delivery it
+refused. The flow line is what tells the operator the burst was dropped.
 
 **Manual re-engage** (`reengageConversation` in `src/modules/conversations/reengage.ts`, behind the
 console button, `POST /v1/conversations/:id/reengage` and the MCP write action): the same check,

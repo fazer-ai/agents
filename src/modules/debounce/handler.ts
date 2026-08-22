@@ -21,6 +21,10 @@ import {
 import { shouldBotHandle } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import {
+  authorizeContact,
+  contactAuthFlowEvent,
+} from "@/modules/contact-auth/service";
+import {
   clearConversationError,
   recordConversationError,
 } from "@/modules/conversations/error";
@@ -289,7 +293,7 @@ export async function flushDebounceJob(
     }
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
-      select: { agentId: true },
+      select: { agentId: true, chatwootInboxId: true },
     });
     if (!inbox?.agentId) return null;
     const agentRow = await db.agent.findUnique({
@@ -306,6 +310,7 @@ export async function flushDebounceJob(
     if (!loaded) return null;
     return {
       convDbId: conv.id,
+      inboxChatwootId: inbox.chatwootInboxId,
       watermark: conv.lastHandledMessageId,
       loaded,
       settings: agentRow?.settings ?? {},
@@ -329,6 +334,70 @@ export async function flushDebounceJob(
       });
     }
     return { outcome: "done" };
+  }
+
+  // The contact-authorization gate, again, at the point the TURN happens. The webhook checks every
+  // incoming message, but the turn is not the message: debounce means one message can arm a flush
+  // that a later, refused message then rides into. The refused delivery returns "consumed" and arms
+  // nothing, yet the flush already pending re-fetches everything past the watermark, so the refused
+  // message reaches the model anyway — and a revocation landing inside the coalescing window is the
+  // same hole from the other side. "No turn for a contact the endpoint will not vouch for" is a
+  // statement about turns, so it has to be checked where a turn begins.
+  //
+  // A refusal ends the flush exactly like a human takeover does: the burst counts as handled (the
+  // watermark advances off the payload's own last id, no fetch needed) and nothing is posted. No
+  // customer copy and no handoff — those answer a message the customer just sent, and the webhook
+  // path already gave them to the delivery that was refused; a verdict that flipped inside the
+  // window reaches the customer on their next message, which is what "re-checked every message"
+  // means. The flow line is what tells the operator this burst was dropped.
+  if (ctx.loaded.contactAuthConfig.enabled) {
+    const auth = await authorizeContact({
+      tenantId,
+      agentId: ctx.loaded.agentId,
+      contactDbId: ctx.loaded.contactDbId,
+      conversationId,
+      inboxId: ctx.inboxChatwootId,
+      channelType: ctx.loaded.channelType,
+      // The burst is many messages, not one: there is no single text to forward, and an unlock code
+      // is something the customer sends on a message of their own, which the webhook path checks.
+      messageText: null,
+      // Its own asking, for the reason the nudge has one: it carries no message text and must never
+      // join (or be joined by) the flight of an incoming message that does.
+      requestKey: "debounce",
+      cfg: ctx.loaded.contactAuthConfig,
+      base,
+      fetchImpl: deps?.contactAuthFetch,
+    });
+    emitFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: ctx.convDbId,
+        agentId: ctx.loaded.agentId,
+        inboxId: ctx.loaded.inboxDbId,
+        threadId,
+        base,
+      },
+      contactAuthFlowEvent(auth),
+    );
+    if (auth.outcome !== "allowed") {
+      logger.info(
+        "debounce flush: contact not authorized (conv=%s outcome=%s), dropping the burst",
+        String(conversationId),
+        auth.outcome,
+      );
+      const last = readLastMessageId(job.payload);
+      if (last !== null) {
+        await advanceHandledWatermark({
+          tenantId,
+          conversationDbId: ctx.convDbId,
+          toMessageId: last,
+          base,
+        });
+      }
+      return { outcome: "done" };
+    }
   }
 
   // Coalesce the burst past the watermark and answer once. A thrown error (LLM/Chatwoot) bubbles to

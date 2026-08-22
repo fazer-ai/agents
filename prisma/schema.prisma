@@ -397,12 +397,18 @@ model Contact {
   // touched by several conversations, so the write is gated on it to keep the snapshot monotonic.
   customAttributes   Json      @default("{}") @map("custom_attributes")
   customAttributesAt DateTime? @map("custom_attributes_at")
-  // Source watermark of the identity fields above (name, email, phone, attributes), for the same
-  // reason customAttributesAt exists one field up: the write is unconditional otherwise, and
-  // deliveries do arrive out of order, so an older event could restore what a newer one cleared.
-  // This one is load-bearing beyond the prompt — the authorization gate asks the endpoint about
-  // whoever these values name.
-  identityAt         DateTime? @map("identity_at")
+  // Source watermark of each identity field above, for the same reason customAttributesAt exists one
+  // field up: the write is unconditional otherwise, and deliveries do arrive out of order, so an
+  // older event could restore what a newer one cleared. These are load-bearing beyond the prompt —
+  // the authorization gate asks the endpoint about whoever these values name.
+  //
+  // One per FIELD, because a Chatwoot payload states a subset of them and absent is not cleared: a
+  // row-wide position would let an event that says nothing about the phone advance the phone's own
+  // position, and a clear arriving late behind it would then be rejected as stale.
+  nameAt             DateTime? @map("name_at")
+  emailAt            DateTime? @map("email_at")
+  phoneAt            DateTime? @map("phone_at")
+  attributesAt       DateTime? @map("attributes_at")
   // Per-contact audio-reply preference (TTS mode "preference"): true = wants audio, false = wants
   // text, null = unknown (falls back to mirroring what the customer sent). Set by the agent's
   // set_voice_preference native tool. RLS-scoped column — NOT a Chatwoot custom attribute.

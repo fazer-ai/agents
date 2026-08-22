@@ -54,6 +54,7 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 let tenantId = 0n;
+let agentDbId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
 
@@ -242,6 +243,7 @@ describe.skipIf(!dbUp)("debounce", () => {
         },
       },
     });
+    agentDbId = agent.id;
     await suDb.chatwootAgentBot.create({
       data: {
         tenantId,
@@ -587,6 +589,121 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([]);
     expect(calls.getMessages).toBe(0);
+  });
+
+  // The webhook checks every incoming message, but a turn is not a message: one allowed message can
+  // arm a flush that a later, refused message rides into, and a verdict revoked inside the window is
+  // the same hole from the other side. The check belongs where a turn begins, so it runs here too.
+  describe("with the contact-authorization gate on", () => {
+    let previousSettings: unknown = null;
+
+    beforeAll(async () => {
+      const before = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentDbId },
+        select: { settings: true },
+      });
+      previousSettings = before.settings;
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: {
+          settings: {
+            ...(before.settings as object),
+            contactAuth: {
+              enabled: true,
+              url: "https://203.0.113.9:9443/check",
+            },
+          },
+        },
+      });
+    });
+
+    afterAll(async () => {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { settings: previousSettings as object },
+      });
+    });
+
+    async function seedContactOn(convId: number, chatwootContactId: number) {
+      const contact = await suDb.contact.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootContactId,
+          phone: `+5511955550${chatwootContactId}`,
+        },
+        select: { id: true },
+      });
+      await suDb.conversation.update({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: convId,
+          },
+        },
+        data: { contactId: contact.id },
+      });
+    }
+
+    const answering = (authorized: boolean, calls: { n: number }) =>
+      (async () => {
+        calls.n += 1;
+        return new Response(JSON.stringify({ authorized }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+    test("a refused contact drops the burst: no fetch, no post, watermark advanced", async () => {
+      await seedConversation(840);
+      await seedContactOn(840, 61);
+      const sent: Array<[number, string]> = [];
+      const calls = { getMessages: 0 };
+      const auth = { n: 0 };
+      const out = await flushDebounceJob({
+        job: jobFor(840, { lastMessageId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            pages: [page([{ id: 7, content: "oi" }])],
+            sent,
+            calls,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(false, auth),
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(auth.n).toBe(1);
+      expect(sent).toEqual([]);
+      // Asked before any Chatwoot work, and the burst still counts as handled so the job does not
+      // come back for the same messages.
+      expect(calls.getMessages).toBe(0);
+      expect(await watermarkOf(840)).toBe(7);
+    });
+
+    test("an authorized contact flushes as usual", async () => {
+      await seedConversation(841);
+      await seedContactOn(841, 62);
+      const sent: Array<[number, string]> = [];
+      const auth = { n: 0 };
+      const out = await flushDebounceJob({
+        job: jobFor(841),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            pages: [page([{ id: 1, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(true, auth),
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(auth.n).toBe(1);
+      expect(sent).toEqual([[841, REPLY]]);
+    });
   });
 
   // ── Issue #8: the watermark must advance on every deliberate skip, not only on a post ──

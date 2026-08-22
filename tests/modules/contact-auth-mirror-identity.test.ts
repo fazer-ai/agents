@@ -300,7 +300,7 @@ describe.if(dbUp)("the identity the gate is given", () => {
     });
     const seeded = await contactOf(instC);
     expect(seeded.phone).toBe("+5511900000020");
-    expect(seeded.identityAt).toBeNull();
+    expect(seeded.phoneAt).toBeNull();
 
     await mirror(instC, {
       conversationId: 8010,
@@ -322,7 +322,37 @@ describe.if(dbUp)("the identity the gate is given", () => {
     });
     const positioned = await contactOf(instC);
     expect(positioned.phone).toBe("+5511900000022");
-    expect(positioned.identityAt).not.toBeNull();
+    expect(positioned.phoneAt).not.toBeNull();
+  });
+
+  // A payload states a SUBSET of the identity, so one field's position may not be moved by an event
+  // that never mentioned it. With a row-wide watermark, the name-only event below would have
+  // rejected the phone clear behind it and left the gate asking about a number that is gone.
+  test("a name-only event does not move the phone's position", async () => {
+    await mirror(instC, {
+      conversationId: 8020,
+      phone: "+5511900000030",
+      identifier: "com-telefone",
+      updatedAt: 1787100000,
+    });
+    // Newer, and says nothing about the phone: only the name is stated.
+    await mirror(instC, {
+      conversationId: 8020,
+      phoneAbsent: true,
+      identifierAbsent: true,
+      updatedAt: 1787103600,
+    });
+    // Older than that one, but newer than the phone's OWN position: the clear must land.
+    await mirror(instC, {
+      conversationId: 8020,
+      phone: null,
+      identifierAbsent: true,
+      updatedAt: 1787101800,
+    });
+    const row = await contactOf(instC);
+    expect(row.phone).toBeNull();
+    // And the identifier, which neither of the two later events mentioned, is untouched.
+    expect(row.attributes).toEqual({ identifier: "com-telefone" });
   });
 
   // Deliveries do arrive out of order, and this write runs before the conversation's stale guard.

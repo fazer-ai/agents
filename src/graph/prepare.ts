@@ -191,9 +191,9 @@ export interface AgentConfig {
   // WhatsApp 24h service-window gate for proactive sends + the contact name for template params.
   serviceWindowConfig: ServiceWindowConfig;
   handoffConfig: HandoffConfig;
-  // Contact authorization gate (docs/contact-auth.md). Enforced by the webhook gate, the proactive
-  // nudge and the manual re-engage, NOT here; carried on the config so they need no second
-  // settings read.
+  // Contact authorization gate (docs/contact-auth.md). Enforced by the webhook gate, the debounce
+  // flush, the proactive nudge and the manual re-engage, NOT here; carried on the config so they
+  // need no second settings read.
   contactAuthConfig: ContactAuthConfig;
   // Hosts the send_image tool may fetch an image from (operator-set; empty = the tool refuses).
   sendImageConfig: SendImageConfig;

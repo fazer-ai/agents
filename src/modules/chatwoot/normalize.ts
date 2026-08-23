@@ -119,12 +119,19 @@ export function normalizeChatwootEvent(
   // Contact: conversation events carry it at meta.sender (EventDataPresenter push_meta).
   if (sender) {
     const contactAttrs = attrs(sender.custom_attributes);
+    // Presence of the KEY is the signal, for every identity field: absent leaves the stored value
+    // alone, present-and-empty clears it. `str()` alone turned both into null and the clear was
+    // lost, so a removed phone or e-mail went on being the identity the gate asks about.
+    const stated = (key: string, raw: unknown) =>
+      key in sender ? { [key]: str(raw) || null } : {};
     normalized.contact = {
       id: num(sender.id),
-      name: str(sender.name),
-      email: str(sender.email),
-      phone: str(sender.phone_number),
-      identifier: str(sender.identifier),
+      ...stated("name", sender.name),
+      ...stated("email", sender.email),
+      ...(("phone_number" in sender
+        ? { phone: str(sender.phone_number) || null }
+        : {}) as { phone?: string | null }),
+      ...stated("identifier", sender.identifier),
       ...(contactAttrs ? { customAttributes: contactAttrs } : {}),
     };
   }

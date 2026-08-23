@@ -84,12 +84,18 @@ export interface NormalizedChatwootMessage {
 
 // Mirror-relevant contact metadata (from conversation `meta.sender` / a message `sender`).
 // This is the tenant's own data (RLS-fenced); fleet/read-API projections strip PII separately.
+// The identity fields all follow the same three-state rule: the KEY's presence says whether this
+// payload speaks about the field at all. `undefined` = it did not ⇒ keep what is stored, because a
+// degraded payload must not wipe identity; `null` = Chatwoot CLEARED it ⇒ clear ours, because the
+// authorization gate asks the endpoint about whoever these values name, and a phone kept after it
+// was removed asks about the person who used to have it.
 export interface NormalizedChatwootContact {
   id: number | null;
-  name: string | null;
-  email: string | null;
-  phone: string | null;
-  identifier: string | null;
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  // The operator's own customer id, stamped on the Chatwoot contact.
+  identifier?: string | null;
   // NOTE: meta.sender.custom_attributes — Contact#push_event_data ships the whole jsonb on every
   // event, which is what lets the agent READ it with no extra API call. `undefined` = the payload
   // did not carry it ⇒ the mirror keeps whatever it had (never wiped by a degraded payload).

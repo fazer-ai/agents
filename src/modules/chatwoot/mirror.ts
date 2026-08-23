@@ -108,7 +108,13 @@ export async function mirrorChatwootEvent(
       : null;
 
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const contactId = await upsertContact(db, tenantId, n, newLastEventAt);
+    const contactId = await upsertContact(
+      db,
+      tenantId,
+      instanceId,
+      n,
+      newLastEventAt,
+    );
     const inboxRowId = await upsertInbox(db, tenantId, instanceId, n);
 
     const threadId = `${tenantId}:${instanceId}:${convId}`;
@@ -339,44 +345,120 @@ export async function mirrorChatwootEvent(
 async function upsertContact(
   db: ScopedDb,
   tenantId: bigint,
+  instanceId: bigint,
   n: NormalizedChatwootEvent,
   eventAt: Date | null,
 ): Promise<bigint | null> {
   const c = n.contact;
   if (!c || c.id == null) return null;
-  const attributes = (
-    c.identifier ? { identifier: c.identifier } : {}
-  ) as Prisma.InputJsonValue;
+  // Every identity field follows one rule, because they feed one decision. ABSENT (`undefined`)
+  // keeps what is stored: a degraded payload must not wipe identity. STATED is written exactly as
+  // Chatwoot says, cleared included — the gate asks the endpoint about whoever these values name,
+  // so a phone kept after it was removed asks about whoever used to have it.
+  const nameStated = c.name !== undefined;
+  const emailStated = c.email !== undefined;
+  const phoneStated = c.phone !== undefined;
+  const attrsStated = c.identifier !== undefined;
+  const attrs = JSON.stringify(
+    c.identifier ? { identifier: c.identifier } : {},
+  );
+
+  // Keyed by INSTANCE too: a Chatwoot contact id is unique inside one account, and two accounts
+  // under the same tenant were collapsing contact 42 into one row.
   const row = await db.contact.upsert({
     where: {
-      tenantId_chatwootContactId: { tenantId, chatwootContactId: c.id },
+      tenantId_chatwootInstanceId_chatwootContactId: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: c.id,
+      },
     },
     create: {
       tenantId,
+      chatwootInstanceId: instanceId,
       chatwootContactId: c.id,
-      name: c.name,
-      email: c.email,
-      phone: c.phone,
-      attributes,
+      name: c.name ?? null,
+      email: c.email ?? null,
+      phone: c.phone ?? null,
+      attributes: (c.identifier
+        ? { identifier: c.identifier }
+        : {}) as Prisma.InputJsonValue,
     },
-    update: {
-      ...(c.name != null ? { name: c.name } : {}),
-      ...(c.email != null ? { email: c.email } : {}),
-      ...(c.phone != null ? { phone: c.phone } : {}),
-    },
+    // Identity is written below, under a compare-and-set. Unconditionally here, a delivery arriving
+    // late would restore what a newer one changed or cleared.
+    update: {},
     select: { id: true },
   });
-  // NOTE: Chatwoot ships the contact's whole custom_attributes hash on every event, so it is
-  // assigned wholesale — but only when this payload carried it (absent ⇒ keep the stored snapshot),
-  // and only when it is NEWER than what produced the stored one. This upsert runs before the
-  // conversation's stale check (the conversation row needs the contact id), and one contact is
-  // shared by all its conversations, so the conversation guard cannot cover it: the watermark is
-  // per-contact. Single statement ⇒ the compare-and-set is atomic under concurrent deliveries.
+
+  // The upsert runs BEFORE the conversation's stale check (the conversation row needs the contact
+  // id), and one contact is shared by all its conversations, so the conversation guard cannot cover
+  // it: the watermark has to be per-contact. ONE statement ⇒ the compare-and-set is atomic under
+  // concurrent deliveries, and every field is settled inside the same visit to the row.
   //
-  // `custom_attributes_at` is a SOURCE position, never a receipt time: stamping an undated payload
-  // with our own clock would make it beat every real Chatwoot timestamp and poison the ordering. An
-  // undated payload therefore only BOOTSTRAPS a contact nothing has positioned yet, and leaves the
-  // watermark null so the first dated event still takes over.
+  // A watermark PER FIELD, not per row. A payload states a SUBSET of the identity, so a row-wide
+  // position would be advanced by an event that never spoke about the field it then protects: a
+  // name-only event at t3 would reject a phone clear from t2 arriving behind it, and the gate would
+  // go on asking about a number the customer no longer has. Absent means "I know nothing about
+  // this", and knowing nothing may not move anything, value or position.
+  //
+  // These are SOURCE positions, never receipt times: stamping an undated payload with our own clock
+  // would make it beat every real Chatwoot timestamp and poison the ordering. An undated payload
+  // therefore has NO position, and a write with no position is a write decided by arrival order —
+  // the one thing this block exists to prevent — so it writes nothing at all. It used to be let
+  // through as a "bootstrap" for a row nothing had positioned yet, except that the watermark stayed
+  // null afterwards, so the next undated payload bootstrapped it again, and the one after that: two
+  // degraded deliveries naming different phones settled it by whoever arrived last. The bootstrap
+  // belongs to the `create` above, which runs exactly once per row. Identity only reaches us on
+  // conversation and message events, which carry `last_activity_at` (bots never receive
+  // `contact_updated`), so this is the degraded path, and the degraded path fails closed: a contact
+  // with nothing positioned reads as `no_identity` at the gate.
+  //
+  // Each field has two ways to be written, and they are the two CASE arms below:
+  //
+  //   * STRICTLY NEWER than the field's position: the stated value wins and the position moves.
+  //   * EQUAL to it: a tie, decided by DISAGREEMENT rather than arrival order. `last_activity_at`
+  //     has one-second resolution, so two events inside one second cannot be ordered at all. Two
+  //     payloads that AGREE are one event delivered twice and settle nothing new. Two that state
+  //     different values are a conflict nothing can break, and there the field is emptied: keeping
+  //     either is a coin toss about whose phone number this is, and the gate would carry the winner
+  //     to the operator's endpoint as fact. The position does not move — a tie positions nothing.
+  //
+  // Anything older than the position falls through to ELSE and changes nothing.
+  if (eventAt && (nameStated || emailStated || phoneStated || attrsStated)) {
+    await db.$executeRaw`
+      UPDATE contacts SET
+        name = CASE
+          WHEN ${nameStated} AND (name_at IS NULL OR name_at < ${eventAt}) THEN ${c.name ?? null}::text
+          WHEN ${nameStated} AND name_at = ${eventAt} AND name IS DISTINCT FROM ${c.name ?? null}::text THEN NULL
+          ELSE name END,
+        name_at = CASE
+          WHEN ${nameStated} AND (name_at IS NULL OR name_at < ${eventAt}) THEN ${eventAt}
+          ELSE name_at END,
+        email = CASE
+          WHEN ${emailStated} AND (email_at IS NULL OR email_at < ${eventAt}) THEN ${c.email ?? null}::text
+          WHEN ${emailStated} AND email_at = ${eventAt} AND email IS DISTINCT FROM ${c.email ?? null}::text THEN NULL
+          ELSE email END,
+        email_at = CASE
+          WHEN ${emailStated} AND (email_at IS NULL OR email_at < ${eventAt}) THEN ${eventAt}
+          ELSE email_at END,
+        phone = CASE
+          WHEN ${phoneStated} AND (phone_at IS NULL OR phone_at < ${eventAt}) THEN ${c.phone ?? null}::text
+          WHEN ${phoneStated} AND phone_at = ${eventAt} AND phone IS DISTINCT FROM ${c.phone ?? null}::text THEN NULL
+          ELSE phone END,
+        phone_at = CASE
+          WHEN ${phoneStated} AND (phone_at IS NULL OR phone_at < ${eventAt}) THEN ${eventAt}
+          ELSE phone_at END,
+        attributes = CASE
+          WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN ${attrs}::jsonb
+          WHEN ${attrsStated} AND attributes_at = ${eventAt} AND attributes IS DISTINCT FROM ${attrs}::jsonb THEN '{}'::jsonb
+          ELSE attributes END,
+        attributes_at = CASE
+          WHEN ${attrsStated} AND (attributes_at IS NULL OR attributes_at < ${eventAt}) THEN ${eventAt}
+          ELSE attributes_at END
+      WHERE id = ${row.id} AND tenant_id = ${tenantId}
+    `;
+  }
+
   if (c.customAttributes) {
     const bag = JSON.stringify(c.customAttributes);
     await (eventAt

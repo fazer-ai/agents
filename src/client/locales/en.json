@@ -406,6 +406,7 @@
       "failedTitle": "The AI couldn't finish its last turn",
       "gateClosed": "A human owns this conversation; return it to the AI first.",
       "noReply": "The AI produced no reply.",
+      "notAuthorized": "The authorization endpoint did not clear this contact, so the AI did not reply.",
       "posted": "The AI replied."
     },
     "reminders": {
@@ -677,6 +678,9 @@
     "cloneTitle": "Clone agent",
     "cloneUnsavedNote": "Cloning uses the last saved version; your unsaved changes won't be included.",
     "configIssue": {
+      "contactAuthNoUrl": "The authorization check is on but has no endpoint to ask. Without one it fails on every message and the agent stops answering anyone. Fill in the endpoint URL, or turn the check off.",
+      "contactAuthSilentRefusal": "A refused contact is left with nothing: no message is sent and the conversation is not opened for anyone, so their message goes unanswered and only a private note records it. Write the refusal message, or turn on the handoff to humans.",
+      "contactAuthUnlockHandoff": "The access-code unlock and the handoff cancel each other out: the first refusal opens the conversation and assigns it, and a conversation that is open is no longer the AI's, so the code the customer sends next never reaches the check. Turn the handoff off to let contacts unlock themselves, or stop sending the message text if a human should take every refused conversation.",
       "embedding": "A knowledge base needs indexing, but the tenant embedding is not configured.",
       "guardrails": "Guardrails are on but have no API key set, so messages go out unscreened.",
       "memoryModel": "A separate model is set for attendance summaries but its configuration cannot run, so attendances that end will not be summarized and the contact keeps no memory of them. Check its provider, model, key and endpoint.",
@@ -693,6 +697,7 @@
     "configIssueOutOfHoursBoth": "Chatwoot already replies out of hours on {{inboxes}}, and this agent's out-of-hours message is on as well, so the customer gets both. The two schedules are set in different products and Chatwoot's has no dates in it, so on a holiday they will disagree too.",
     "configIssueOutOfHoursChatwoot": "Chatwoot replies out of hours on {{inboxes}}, and this agent does not read that schedule: it answers whenever its own says it is open. The customer can be told the business is closed and served in the same breath.",
     "configIssuePending": {
+      "contactAuth": "The contact-authorization credential is referenced but not filled in yet, so the check fails and the agent stays silent.",
       "embedding": "A knowledge base needs indexing, but the embedding credential is not filled in yet.",
       "guardrails": "The guardrails credential is referenced but not filled in yet, so messages go out unscreened.",
       "memoryModel": "The summary-model credential is referenced but not filled in yet, so attendances that end are not summarized.",
@@ -706,6 +711,7 @@
     "configIssueTextCap": "{{field}} holds {{len}} characters and the limit is {{max}}: everything past that is ignored.",
     "configIssueTextCapNoField": "{{field}} holds {{len}} characters and the limit is {{max}}: everything past that is ignored. This note has no field in the console, so it can only be shortened through the API.",
     "configIssueUnresolved": {
+      "contactAuth": "The contact-authorization credential no longer exists, so the check fails and the agent stays silent.",
       "embedding": "A knowledge base needs indexing, but the embedding credential no longer exists.",
       "guardrails": "The guardrails credential no longer exists, so messages go out unscreened.",
       "memoryModel": "The summary-model credential no longer exists, so attendances that end are not summarized.",
@@ -716,6 +722,29 @@
       "vision": "The image-reading credential no longer exists, so images and documents are not read."
     },
     "conflictToast": "This agent was changed elsewhere. Reload, or save again to overwrite.",
+    "contactAuth": "Contact authorization",
+    "contactAuthCredential": "Credential",
+    "contactAuthCredentialHint": "Optional. Sent the way the credential's type declares (Bearer, header or query parameter).",
+    "contactAuthDenyMessage": "Message to a denied contact",
+    "contactAuthDenyMessageHint": "Sent when the check denies the contact, once per verdict. Leave empty to send nothing.",
+    "contactAuthDenyMessagePlaceholder": "This channel serves registered customers only.",
+    "contactAuthEnabled": "Only answer contacts the external check authorizes",
+    "contactAuthHandoff": "Open refused conversations for humans",
+    "contactAuthHint": "Before answering, ask an external system whether this contact may be served, by the phone number Chatwoot holds for them. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
+    "contactAuthIncludeText": "Send the customer's message text",
+    "contactAuthIncludeTextHint": "The triggering message travels as its own message.text field, apart from the mirrored identity, so your endpoint can accept an unlock code the customer sends. It is never logged.",
+    "contactAuthNoTeam": "No team (inbox routing)",
+    "contactAuthNoticeCooldown": "Notice cooldown (s)",
+    "contactAuthNoticeCooldownHint": "Every message is re-checked; this only spaces the deny message and the private note for the same conversation. 0-3,600; 0 notifies on every refused message.",
+    "contactAuthTeam": "Assign to team",
+    "contactAuthTeamHint": "Optional. Without a team, Chatwoot's inbox routing decides who takes it.",
+    "contactAuthTeamMultiAccount": "This agent serves more than one Chatwoot account. A team id belongs to one account, so no team can be targeted here — Chatwoot's inbox routing decides who takes a refused conversation.",
+    "contactAuthTeamStored": "Team #{{id}} (not listed)",
+    "contactAuthTimeout": "Timeout (ms)",
+    "contactAuthTimeoutHint": "1,000-10,000. Past it the check counts as failed and the agent stays silent.",
+    "contactAuthUrl": "Authorization URL",
+    "contactAuthUrlHint": "Receives a POST with the identity in a JSON body (contact, conversation, message) and answers { \"authorized\": true | false }.",
+    "contactAuthUrlInvalid": "Required: a valid http(s) URL, with any credential in the vault rather than in the URL.",
     "credential": "API key",
     "dangerZone": "Danger zone",
     "dangerZoneHint": "Permanently delete this agent. This cannot be undone.",
@@ -1417,6 +1446,7 @@
       "playground": "Playground"
     },
     "stage": {
+      "contact_auth": "Contact authorization",
       "debounce": "Message grouping",
       "embed": "Embedding",
       "generate": "Generation",

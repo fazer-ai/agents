@@ -407,6 +407,7 @@
       "failedTitle": "A IA não conseguiu concluir o último turno",
       "gateClosed": "Um humano está cuidando desta conversa. Devolva para a IA primeiro.",
       "noReply": "A IA não gerou resposta.",
+      "notAuthorized": "O endpoint de autorização não liberou este contato, então a IA não respondeu.",
       "posted": "A IA respondeu."
     },
     "reminders": {
@@ -679,6 +680,9 @@
     "cloneTitle": "Clonar agente",
     "cloneUnsavedNote": "A clonagem usa a última versão salva; suas alterações não salvas não serão incluídas.",
     "configIssue": {
+      "contactAuthNoUrl": "A verificação de autorização está ligada, mas sem endereço para consultar. Sem ele a verificação falha em toda mensagem e o agente para de responder a todo mundo. Preencha a URL do endpoint, ou desligue a verificação.",
+      "contactAuthSilentRefusal": "Um contato recusado fica sem nada: nenhuma mensagem é enviada e a conversa não é aberta para ninguém, então ele fica sem resposta e só uma nota privada registra o que houve. Escreva a mensagem de recusa, ou ligue a passagem para atendimento humano.",
+      "contactAuthUnlockHandoff": "O destravamento por código e a passagem para atendimento humano se anulam: a primeira recusa abre a conversa e a atribui, e uma conversa aberta não é mais da IA, então o código que o cliente mandar em seguida nunca chega à verificação. Desligue a passagem para humano para deixar o contato se destravar, ou pare de enviar o texto da mensagem se um humano deve assumir toda conversa recusada.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas o embedding do tenant não está configurado.",
       "guardrails": "Os guardrails estão ligados, mas sem chave de API definida, então as mensagens saem sem triagem.",
       "memoryModel": "Há um modelo separado configurado para os resumos de atendimento, mas a configuração dele não roda: os atendimentos encerrados não serão resumidos e o contato não guarda memória deles. Confira provedor, modelo, chave e endpoint.",
@@ -695,6 +699,7 @@
     "configIssueOutOfHoursBoth": "O Chatwoot já responde fora do horário em {{inboxes}}, e a mensagem de fora do horário deste agente também está ligada, então o cliente recebe as duas. Os dois horários são configurados em produtos diferentes e o do Chatwoot não tem datas, então em feriado eles também vão divergir.",
     "configIssueOutOfHoursChatwoot": "O Chatwoot responde fora do horário em {{inboxes}}, e este agente não lê esse horário: ele responde sempre que o dele diz que está aberto. O cliente pode ouvir que está fechado e ser atendido logo em seguida.",
     "configIssuePending": {
+      "contactAuth": "A credencial da autorização do contato está referenciada, mas ainda não foi preenchida; a verificação falha e o agente fica em silêncio.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding ainda não foi preenchida.",
       "guardrails": "A credencial dos guardrails está referenciada, mas ainda não foi preenchida, então as mensagens saem sem triagem.",
       "memoryModel": "A credencial do modelo de resumo está referenciada mas ainda não foi preenchida, então os atendimentos encerrados não são resumidos.",
@@ -708,6 +713,7 @@
     "configIssueTextCap": "{{field}} tem {{len}} caracteres e o limite é {{max}}: tudo que passa disso é ignorado.",
     "configIssueTextCapNoField": "{{field}} tem {{len}} caracteres e o limite é {{max}}: tudo que passa disso é ignorado. Esta orientação não tem campo no console, então só pode ser encurtada pela API.",
     "configIssueUnresolved": {
+      "contactAuth": "A credencial da autorização do contato não existe mais; a verificação falha e o agente fica em silêncio.",
       "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding não existe mais.",
       "guardrails": "A credencial dos guardrails não existe mais, então as mensagens saem sem triagem.",
       "memoryModel": "A credencial do modelo de resumo não existe mais, então os atendimentos encerrados não são resumidos.",
@@ -718,6 +724,29 @@
       "vision": "A credencial de leitura de imagens não existe mais, então imagens e documentos não são lidos."
     },
     "conflictToast": "Este agente foi alterado em outro lugar. Recarregue, ou salve de novo para sobrescrever.",
+    "contactAuth": "Autorização do contato",
+    "contactAuthCredential": "Credencial",
+    "contactAuthCredentialHint": "Opcional. Enviada conforme o tipo da credencial (Bearer, header ou parâmetro de query).",
+    "contactAuthDenyMessage": "Mensagem para contato negado",
+    "contactAuthDenyMessageHint": "Enviada quando a verificação nega o contato, no máximo uma vez por intervalo de avisos. Deixe vazio para não enviar nada.",
+    "contactAuthDenyMessagePlaceholder": "Este canal atende apenas clientes cadastrados.",
+    "contactAuthEnabled": "Responder apenas contatos autorizados pela verificação externa",
+    "contactAuthHandoff": "Abrir conversas recusadas para humanos",
+    "contactAuthHint": "Antes de responder, pergunta a um sistema externo se este contato pode ser atendido, pela identidade que o Chatwoot tem dele (telefone, e-mail, identificador). Toda mensagem é verificada de novo, então revogar do seu lado vale imediatamente. Enquanto a verificação nega ou não consegue responder, o agente fica em silêncio com o cliente e o operador recebe uma nota privada. Não roda no playground.",
+    "contactAuthIncludeText": "Enviar o texto da mensagem do cliente",
+    "contactAuthIncludeTextHint": "A mensagem que disparou a verificação viaja no campo próprio message.text, separada da identidade espelhada, para o seu endpoint aceitar um código de desbloqueio enviado pelo cliente. Nunca vai para os logs.",
+    "contactAuthNoTeam": "Sem time (roteamento da caixa)",
+    "contactAuthNoticeCooldown": "Intervalo entre avisos (s)",
+    "contactAuthNoticeCooldownHint": "Toda mensagem é verificada de novo; isto só espaça a mensagem de recusa e a nota privada na mesma conversa. 0-3.600; 0 avisa em toda mensagem recusada.",
+    "contactAuthTeam": "Atribuir ao time",
+    "contactAuthTeamHint": "Opcional. Sem um time, o roteamento da caixa de entrada do Chatwoot decide quem assume.",
+    "contactAuthTeamMultiAccount": "Este agente atende mais de uma conta do Chatwoot. Um id de time pertence a uma conta, então nenhum time pode ser alvo aqui: quem pega a conversa recusada é o roteamento de inbox do Chatwoot.",
+    "contactAuthTeamStored": "Time #{{id}} (fora da lista)",
+    "contactAuthTimeout": "Timeout (ms)",
+    "contactAuthTimeoutHint": "1.000-10.000. Passado isso, a verificação conta como falha e o agente fica em silêncio.",
+    "contactAuthUrl": "URL de autorização",
+    "contactAuthUrlHint": "Recebe um POST com a identidade em um corpo JSON (contact, conversation, message) e responde { \"authorized\": true | false }.",
+    "contactAuthUrlInvalid": "Obrigatória: uma URL http(s) válida, com credencial no cofre em vez de na URL.",
     "credential": "Chave de API",
     "dangerZone": "Zona de perigo",
     "dangerZoneHint": "Exclui este agente permanentemente. Não é possível desfazer.",
@@ -1422,6 +1451,7 @@
       "playground": "Playground"
     },
     "stage": {
+      "contact_auth": "Autorização do contato",
       "debounce": "Agrupamento de mensagens",
       "embed": "Embedding",
       "generate": "Geração",

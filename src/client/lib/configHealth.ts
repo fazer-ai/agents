@@ -27,6 +27,15 @@ export type ConfigIssueKey =
   | "vision"
   | "guardrails"
   | "guardrailsFailing"
+  | "contactAuth"
+  // Not a missing credential: two switches that cancel each other out. The unlock flow needs the
+  // conversation to still be the bot's when the code arrives, and the handoff gives it away on the
+  // first refusal.
+  | "contactAuthUnlockHandoff"
+  // Nor a missing credential: an enabled gate that neither answers the customer nor opens the
+  // conversation, so a refusal reaches nobody.
+  | "contactAuthSilentRefusal"
+  | "contactAuthNoUrl"
   | "knowledge"
   | "embedding"
   | "redirect"
@@ -183,6 +192,19 @@ export interface ConfigHealthInput {
   ttsNormalizeBaseURL?: string;
   visionEnabled: boolean;
   visionCredentialRef: string;
+  // The contact authorization gate. Its credential is OPTIONAL (a public or IP-fenced endpoint
+  // needs none), so an absent ref raises nothing; a ref that is pending or gone does, because the
+  // gate fails closed and the agent goes silent for every contact.
+  contactAuthEnabled?: boolean;
+  contactAuthCredentialRef?: string;
+  // The endpoint itself. `readContactAuthConfig` normalizes a missing or malformed URL to null and
+  // leaves `enabled` alone, so the pair is storable — and the gate then refuses every message.
+  contactAuthUrl?: string;
+  // The two sides of the unlock-vs-handoff contradiction, plus the copy: an enabled gate that
+  // neither speaks nor hands over leaves a refused customer with nothing at all.
+  contactAuthIncludeMessageText?: boolean;
+  contactAuthHandoffEnabled?: boolean;
+  contactAuthDenyMessage?: string;
   // Guardrails run on a model of their own, and theirs is the one credential whose failure is not
   // just a feature going quiet: `loadAgentConfig` fails open, so the analysis is skipped and every
   // message is delivered as if it had been screened and approved.
@@ -478,6 +500,63 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     { key: "vision", tab: "behavior", sectionId: "vision" },
     credIssue(input.visionEnabled, input.visionCredentialRef, pending, known),
   );
+  // NOTE: gated on the ref being present, so "missing" can never fire for this feature: enabled
+  // without a credential is a legitimate configuration here, unlike the blocks above.
+  push(
+    { key: "contactAuth", tab: "behavior", sectionId: "contactAuth" },
+    credIssue(
+      Boolean(input.contactAuthEnabled) &&
+        Boolean(input.contactAuthCredentialRef),
+      input.contactAuthCredentialRef ?? "",
+      pending,
+      known,
+    ),
+  );
+  // The unlock flow and the handoff want opposite things from the same refusal. Forwarding the
+  // message text exists so the customer can send an access code and be let in on their NEXT message;
+  // the handoff opens the conversation and assigns it, and an open conversation is no longer the
+  // bot's, so that next message never reaches the gate. The first refusal is then the last one, and
+  // the copy asking for a code is asking for something that can no longer be read. Neither switch is
+  // wrong on its own, so this is said rather than silently resolved.
+  if (
+    input.contactAuthEnabled &&
+    input.contactAuthIncludeMessageText &&
+    input.contactAuthHandoffEnabled
+  ) {
+    issues.push({
+      key: "contactAuthUnlockHandoff",
+      tab: "behavior",
+      sectionId: "contactAuth",
+    });
+  }
+  // An enabled gate with no endpoint to ask. The URL reader normalizes anything it cannot parse to
+  // null and keeps `enabled` as it found it, so REST, MCP and an import can store the pair; the
+  // runtime then fails closed on EVERY message with `not_configured`. That is the loudest failure
+  // this feature has (the agent answers nobody) and the quietest to diagnose, because nothing about
+  // a blank field says the gate in front of it is armed.
+  if (input.contactAuthEnabled && !(input.contactAuthUrl ?? "").trim()) {
+    issues.push({
+      key: "contactAuthNoUrl",
+      tab: "behavior",
+      sectionId: "contactAuth",
+    });
+  }
+  // The other end of the same switchboard: a gate that refuses, says nothing and hands nobody the
+  // conversation. The customer's message goes unanswered with no sign that anything happened, and
+  // the only record is a private note somebody has to go and read. Both switches are legitimate on
+  // their own — silence suits an unknown number, and no-handoff suits the unlock flow — so this is
+  // said rather than forced: the fix is a deny message, or the handoff, and the operator picks.
+  if (
+    input.contactAuthEnabled &&
+    !(input.contactAuthDenyMessage ?? "").trim() &&
+    !input.contactAuthHandoffEnabled
+  ) {
+    issues.push({
+      key: "contactAuthSilentRefusal",
+      tab: "behavior",
+      sectionId: "contactAuth",
+    });
+  }
   const guardrailsCred = credIssue(
     Boolean(input.guardrailsEnabled),
     input.guardrailsCredentialRef ?? "",

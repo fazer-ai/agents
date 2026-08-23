@@ -325,7 +325,12 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
       adminToken: encryptJson("t"),
     });
     const contact = await suDb.contact.create({
-      data: { tenantId: tnt, chatwootContactId: 5, name: "C" },
+      data: {
+        chatwootInstanceId: acct.id,
+        tenantId: tnt,
+        chatwootContactId: 5,
+        name: "C",
+      },
     });
     await suDb.conversation.create({
       data: {

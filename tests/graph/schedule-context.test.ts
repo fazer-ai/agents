@@ -132,7 +132,12 @@ describe.skipIf(!dbUp)("schedule variables in the system prompt", () => {
       })
     ).id;
     const contact = await suDb.contact.create({
-      data: { tenantId, chatwootContactId: 4343, name: "Maria" },
+      data: {
+        chatwootInstanceId: instanceId,
+        tenantId,
+        chatwootContactId: 4343,
+        name: "Maria",
+      },
     });
     await suDb.conversation.create({
       data: {

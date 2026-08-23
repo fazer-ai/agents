@@ -80,6 +80,7 @@ async function seedConversation(
 ): Promise<{ id: bigint; contactId: bigint }> {
   const contact = await suDb.contact.create({
     data: {
+      chatwootInstanceId: instanceId,
       tenantId,
       chatwootContactId: 4000 + chatwootConversationId,
       name: "Lead",

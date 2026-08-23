@@ -5,7 +5,7 @@ import {
   countOwedByKeyPrefix,
   reapStaleJobs,
 } from "@/modules/scheduler/service";
-import { runClaimed } from "@/modules/scheduler/worker";
+import { announceReaped, runClaimed } from "@/modules/scheduler/worker";
 
 // Kept apart from ./ingest-job.ts on purpose. The handler there reaches for `armCompaction`, and
 // compaction is one of the readers that has to call this — importing the handler's module to get the
@@ -69,13 +69,16 @@ export async function drainPendingIngest(
     // at all — these readers ARE its independent path — and a CLAIMED row counts as owed below, so
     // without this one crash would make every later compaction on that thread reschedule forever.
     // Reaping the same kind from two places is harmless: the second pass finds it already re-pended.
-    await reapStaleJobs(
+    const reaped = await reapStaleJobs(
       STALE_CLAIM_MS,
       base,
       new Date(),
       tenantId,
       "INGEST_MESSAGE",
     );
+    // No hook is registered for this kind today, so this is a loop over an empty list. It is here so
+    // that a kind which later says what its own loss means does not have to find this line first.
+    await announceReaped(reaped, base);
     // Every row this drain has touched, kept out of the next pass. It used to carry the failure case
     // too, and no longer does: the claim itself now honours backoff for a row that has failed
     // (../modules/scheduler/service.ts). What is left is the DEFERRAL loop, which the claim cannot

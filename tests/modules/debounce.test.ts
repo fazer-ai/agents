@@ -54,6 +54,7 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 let tenantId = 0n;
+let agentDbId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
 
@@ -242,6 +243,7 @@ describe.skipIf(!dbUp)("debounce", () => {
         },
       },
     });
+    agentDbId = agent.id;
     await suDb.chatwootAgentBot.create({
       data: {
         tenantId,
@@ -587,6 +589,217 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([]);
     expect(calls.getMessages).toBe(0);
+  });
+
+  // The webhook checks every incoming message, but a turn is not a message: one allowed message can
+  // arm a flush that a later, refused message rides into, and a verdict revoked inside the window is
+  // the same hole from the other side. The check belongs where a turn begins, so it runs here too.
+  describe("with the contact-authorization gate on", () => {
+    let previousSettings: unknown = null;
+
+    beforeAll(async () => {
+      const before = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentDbId },
+        select: { settings: true },
+      });
+      previousSettings = before.settings;
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: {
+          settings: {
+            ...(before.settings as object),
+            contactAuth: {
+              enabled: true,
+              url: "https://203.0.113.9:9443/check",
+            },
+          },
+        },
+      });
+    });
+
+    afterAll(async () => {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { settings: previousSettings as object },
+      });
+    });
+
+    async function seedContactOn(convId: number, chatwootContactId: number) {
+      const contact = await suDb.contact.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootContactId,
+          phone: `+5511955550${chatwootContactId}`,
+        },
+        select: { id: true },
+      });
+      await suDb.conversation.update({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: convId,
+          },
+        },
+        data: { contactId: contact.id },
+      });
+    }
+
+    const answering = (authorized: boolean, calls: { n: number }) =>
+      (async () => {
+        calls.n += 1;
+        return new Response(JSON.stringify({ authorized }), { status: 200 });
+      }) as unknown as typeof fetch;
+
+    test("a refused contact drops the burst: no fetch, no post, watermark advanced", async () => {
+      await seedConversation(840);
+      await seedContactOn(840, 61);
+      const sent: Array<[number, string]> = [];
+      const calls = { getMessages: 0 };
+      const auth = { n: 0 };
+      const out = await flushDebounceJob({
+        job: jobFor(840, { lastMessageId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            pages: [page([{ id: 7, content: "oi" }])],
+            sent,
+            calls,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(false, auth),
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(auth.n).toBe(1);
+      expect(sent).toEqual([]);
+      // Asked before any Chatwoot work, and the burst still counts as handled so the job does not
+      // come back for the same messages.
+      expect(calls.getMessages).toBe(0);
+      expect(await watermarkOf(840)).toBe(7);
+    });
+
+    // The authorization call is a round-trip to somebody else's endpoint with a ten-second ceiling.
+    // A message arriving and being REFUSED during it has already had the watermark advanced past it
+    // by its own delivery, so the burst must be chosen against the watermark as it stands THEN, not
+    // as it was when the flush started. Against the stale value the refused message would reach the
+    // model, and the post gate would only withhold the reply, after the tools had run.
+    test("a refusal landing during the check keeps its message out of the burst", async () => {
+      await seedConversation(842);
+      await seedContactOn(842, 63);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 842 },
+        select: { id: true },
+      });
+      const sent: Array<[number, string]> = [];
+      // What the defect is about is the MODEL running, not the reply going out: the post gate's CAS
+      // already withholds a reply whose watermark moved, which is why asserting on `sent` alone
+      // passes with the fix reverted. Counting the model is what separates "did not answer" from
+      // "never ran", and a turn that ran spent tokens and may have called side-effecting tools.
+      let modelBuilds = 0;
+      const countingModel = () => {
+        modelBuilds += 1;
+        return fakeModel();
+      };
+      // The concurrent refusal, played out while this flush is asking the endpoint: message 9 is
+      // refused by its own delivery, which advances the watermark over it.
+      const fetchImpl = (async () => {
+        await advanceHandledWatermark({
+          tenantId,
+          conversationDbId: conv.id,
+          toMessageId: 9,
+          base: appDb,
+        });
+        return new Response('{"authorized":true}', { status: 200 });
+      }) as unknown as typeof fetch;
+      const out = await flushDebounceJob({
+        job: jobFor(842),
+        base: appDb,
+        deps: {
+          makeModel: countingModel,
+          makeClient: makeStub({
+            pages: [page([{ id: 9, content: "e esse aqui?" }])],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: fetchImpl,
+        },
+      });
+      // Nothing left to answer: the only message in the page is already past the watermark.
+      expect(out).toEqual({ outcome: "done" });
+      expect(modelBuilds).toBe(0);
+      expect(sent).toEqual([]);
+    });
+
+    test("an authorized contact flushes as usual", async () => {
+      await seedConversation(841);
+      await seedContactOn(841, 62);
+      const sent: Array<[number, string]> = [];
+      const auth = { n: 0 };
+      const out = await flushDebounceJob({
+        job: jobFor(841),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            pages: [page([{ id: 1, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(true, auth),
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(auth.n).toBe(1);
+      expect(sent).toEqual([[841, REPLY]]);
+    });
+
+    // The window the gate opens: the assignee gate runs before a round-trip that can take ten
+    // seconds, so a human arriving inside it used to get the burst answered over their shoulder.
+    // The post gate withholds the reply, but by then the turn's tools have run.
+    test("a human taking over during the authorization call ends the flush before the model", async () => {
+      await seedConversation(843);
+      await seedContactOn(843, 64);
+      const sent: Array<[number, string]> = [];
+      const calls = { getMessages: 0 };
+      let modelBuilds = 0;
+      const takeOverThenAllow = (async () => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 843 },
+          data: { assigneeType: "User", status: "open" },
+        });
+        return new Response(JSON.stringify({ authorized: true }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch;
+      const out = await flushDebounceJob({
+        job: jobFor(843, { lastMessageId: 9 }),
+        base: appDb,
+        deps: {
+          makeModel: () => {
+            modelBuilds += 1;
+            return fakeModel();
+          },
+          makeClient: makeStub({
+            pages: [page([{ id: 1, content: "oi" }])],
+            sent,
+            calls,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: takeOverThenAllow,
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(modelBuilds).toBe(0);
+      expect(sent).toEqual([]);
+      // Handled all the same: the human owns the burst now, so the next flush after they hand the
+      // conversation back must not re-answer it. Same rule as a gate that was already closed.
+      expect(await watermarkOf(843)).toBe(9);
+    });
   });
 
   // ── Issue #8: the watermark must advance on every deliberate skip, not only on a post ──

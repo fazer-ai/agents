@@ -273,6 +273,39 @@ const availability = z.looseObject({
     ),
 });
 
+const contactAuth = z.looseObject({
+  enabled: z.boolean().optional(),
+  url: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("the authorization endpoint; fixed origin, no placeholders"),
+  credentialRef: credentialRef(),
+  timeoutMs: z.number().optional().describe("1000-10000, clamped"),
+  noticeCooldownSeconds: z
+    .number()
+    .optional()
+    .describe(
+      "cooldown on the refusal NOTICES, never on the verdict; 0 = notify on every refusal",
+    ),
+  includeMessageText: z
+    .boolean()
+    .optional()
+    .describe(
+      "forward the message text under `message.text` so the endpoint can accept an unlock code",
+    ),
+  denyMessage: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("what a REFUSED contact receives; null = say nothing"),
+  handoffEnabled: z.boolean().optional(),
+  handoffTeamId: chatwootId().describe("Chatwoot team id"),
+  handoffTeamInstanceId: chatwootId().describe(
+    "our ChatwootInstance id the team was picked from; the team is only assigned in that account",
+  ),
+});
+
 const channelRedirect = z.looseObject({
   enabled: z.boolean().optional(),
   entryInboxId: chatwootId().describe(
@@ -355,7 +388,7 @@ const memory = z.looseObject({
     .optional(),
 });
 
-// The 16 behavior blocks of `agent_settings_set`, each a partial patch over the stored block.
+// The 17 behavior blocks of `agent_settings_set`, each a partial patch over the stored block.
 export const BEHAVIOR_PATCH_SHAPE = {
   debounce: debounce.optional(),
   stt: stt.optional(),
@@ -368,6 +401,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   handoff: handoff.optional(),
   limits: limits.optional(),
   availability: availability.optional(),
+  contactAuth: contactAuth.optional(),
   channelRedirect: channelRedirect.optional(),
   attributeContext: attributeContext.optional(),
   sendImage: sendImage.optional(),

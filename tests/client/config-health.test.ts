@@ -1317,6 +1317,129 @@ describe("computeConfigIssues — text stored over its cap", () => {
 // for a field the console has no control for: an embedding issue also carries no tab, and its fix
 // (fill the vault entry, or set the tenant embedding) is exactly what the button is for.
 describe("issueHasAction", () => {
+  // The unlock flow needs the conversation to still be the bot's when the code arrives, and the
+  // handoff gives it away on the first refusal. Neither switch is wrong alone, so the pair is
+  // reported rather than resolved.
+  describe("the unlock flow against the handoff", () => {
+    const unlocking = {
+      ...base,
+      contactAuthEnabled: true,
+      contactAuthUrl: "https://ops.example.com/authorize",
+      contactAuthIncludeMessageText: true,
+      contactAuthHandoffEnabled: true,
+    };
+
+    test("flags the pair, deep-linking to behavior/contactAuth", () => {
+      expect(computeConfigIssues(unlocking)).toEqual([
+        {
+          key: "contactAuthUnlockHandoff",
+          tab: "behavior",
+          sectionId: "contactAuth",
+        },
+      ]);
+    });
+
+    test("no flag with the handoff off — that is the working unlock setup", () => {
+      expect(
+        computeConfigIssues({
+          ...unlocking,
+          contactAuthHandoffEnabled: false,
+          // A deny message, so the silent-refusal check below does not fire instead.
+          contactAuthDenyMessage: "Envie seu código de acesso.",
+        }),
+      ).toEqual([]);
+    });
+
+    test("no flag when the gate itself is off", () => {
+      expect(
+        computeConfigIssues({ ...unlocking, contactAuthEnabled: false }),
+      ).toEqual([]);
+    });
+  });
+
+  // The other end: refuse, say nothing, hand nobody the conversation. The customer's message goes
+  // unanswered with no sign anything happened, and only a private note records it.
+  describe("a refusal that reaches nobody", () => {
+    const gated = {
+      ...base,
+      contactAuthEnabled: true,
+      contactAuthUrl: "https://ops.example.com/authorize",
+    };
+
+    test("flags a gate with no deny message and no handoff", () => {
+      expect(
+        computeConfigIssues({ ...gated, contactAuthHandoffEnabled: false }),
+      ).toEqual([
+        {
+          key: "contactAuthSilentRefusal",
+          tab: "behavior",
+          sectionId: "contactAuth",
+        },
+      ]);
+    });
+
+    test("a deny message alone clears it — silence towards a stranger is a choice", () => {
+      expect(
+        computeConfigIssues({
+          ...gated,
+          contactAuthHandoffEnabled: false,
+          contactAuthDenyMessage: "Atendemos apenas clientes cadastrados.",
+        }),
+      ).toEqual([]);
+    });
+
+    test("the handoff alone clears it — a human takes it from there", () => {
+      expect(
+        computeConfigIssues({ ...gated, contactAuthHandoffEnabled: true }),
+      ).toEqual([]);
+    });
+
+    test("whitespace is not a deny message", () => {
+      expect(
+        computeConfigIssues({
+          ...gated,
+          contactAuthHandoffEnabled: false,
+          contactAuthDenyMessage: "   ",
+        }).map((i) => i.key),
+      ).toEqual(["contactAuthSilentRefusal"]);
+    });
+  });
+
+  // An enabled gate with no usable endpoint. `readContactAuthConfig` normalizes a missing or
+  // malformed URL to null and keeps `enabled` as it found it, so REST and MCP can store the pair —
+  // and the runtime then fails closed on EVERY message with `not_configured`. Silent by
+  // construction: the agent stops answering and nothing on the page says why.
+  describe("an enabled gate with no endpoint", () => {
+    test("flags a gate with no URL, deep-linking to behavior/contactAuth", () => {
+      expect(
+        computeConfigIssues({
+          ...base,
+          contactAuthEnabled: true,
+          contactAuthDenyMessage: "Atendemos apenas clientes cadastrados.",
+        }),
+      ).toEqual([
+        { key: "contactAuthNoUrl", tab: "behavior", sectionId: "contactAuth" },
+      ]);
+    });
+
+    test("whitespace is not a URL", () => {
+      expect(
+        computeConfigIssues({
+          ...base,
+          contactAuthEnabled: true,
+          contactAuthUrl: "   ",
+          contactAuthDenyMessage: "Atendemos apenas clientes cadastrados.",
+        }).map((i) => i.key),
+      ).toEqual(["contactAuthNoUrl"]);
+    });
+
+    test("no flag when the gate is off — an unused URL field is not a problem", () => {
+      expect(
+        computeConfigIssues({ ...base, contactAuthEnabled: false }),
+      ).toEqual([]);
+    });
+  });
+
   test("a targetless textCap issue has no action, and everything else does", () => {
     expect(
       issueHasAction({ key: "textCap", field: "toolGuidance.private_note" }),

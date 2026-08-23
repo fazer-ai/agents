@@ -13,6 +13,7 @@ import {
   Plus,
   Scissors,
   ScrollText,
+  ShieldCheck,
   Trash2,
   Volume2,
 } from "lucide-react";
@@ -130,6 +131,23 @@ interface SttState {
   baseURL: string;
 }
 
+// NOTE: The contact authorization gate (agent.settings.contactAuth). Numbers stay text so a
+// half-typed value survives editing; the runtime reader clamps on read and the save normalizes.
+export interface ContactAuthState {
+  enabled: boolean;
+  url: string;
+  credentialRef: string;
+  timeoutMs: string;
+  noticeCooldownSeconds: string;
+  includeMessageText: boolean;
+  denyMessage: string;
+  handoffEnabled: boolean;
+  handoffTeamId: string;
+  // The ChatwootInstance the team above was picked from, recorded with it: a team id belongs to one
+  // account, and the runtime only assigns it in that one.
+  handoffTeamInstanceId: string;
+}
+
 interface SplitState {
   enabled: boolean;
   maxChars: string;
@@ -217,6 +235,8 @@ interface BehaviorTabProps {
   stt: SttState;
   setStt: React.Dispatch<React.SetStateAction<SttState>>;
   sttCredBaseUrl: string | null;
+  contactAuth: ContactAuthState;
+  setContactAuth: React.Dispatch<React.SetStateAction<ContactAuthState>>;
   tts: TtsFormState;
   setTts: React.Dispatch<React.SetStateAction<TtsFormState>>;
   // The agent's own model, to render the speech rewrite's inherited default honestly (blank there
@@ -606,6 +626,118 @@ function AttributeContextPickers({
   );
 }
 
+// Team a refused conversation is assigned to after the open. Fed by the same live listing the
+// handoff pinned-target picker uses, which only lists when the agent serves exactly ONE Chatwoot
+// account (teams are account-scoped). A stored id that is not in the listing still shows, so a
+// saved choice is never silently hidden.
+function ContactAuthTeamSelect({
+  agentId,
+  value,
+  onChange,
+}: {
+  agentId: string;
+  value: string;
+  // The team AND the account it came from: stored together, because the id alone means nothing
+  // outside it.
+  onChange: (teamId: string, instanceId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [data, setData] = useState<{
+    teams: Array<{ id: number; name: string }>;
+    accountCount: number;
+    // Our ChatwootInstance id of the single account, when there is exactly one.
+    instanceId: string;
+  } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { data: d } = await api.api.v1.chatwoot["agents-teams"]({
+          agentId,
+        }).get();
+        if (!cancelled) {
+          setData(
+            d
+              ? {
+                  teams: d.teams,
+                  accountCount: d.accounts.length,
+                  instanceId: d.accounts[0]?.instanceId ?? "",
+                }
+              : { teams: [], accountCount: 0, instanceId: "" },
+          );
+        }
+      } catch {
+        if (!cancelled) setData({ teams: [], accountCount: 0, instanceId: "" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
+  const teams = data?.teams ?? [];
+  const listed = teams.some((tm) => String(tm.id) === value);
+  // Populated only when the agent serves exactly one account, which is the only case the picker
+  // offers teams in.
+  const instanceId = data?.accountCount === 1 ? data.instanceId : "";
+  // A Chatwoot team id means something inside ONE account. When the agent serves several, the
+  // listing deliberately comes back empty, and keeping the stored id as a "(not listed)" option
+  // re-saved a target that the runtime then applies through EVERY account's client: in the other
+  // accounts that number is a different team or none, so refused contacts are routed nowhere.
+  // Cleared here rather than at save time, so the operator sees the field empty and the warning
+  // saying why, and still has to press save.
+  const multiAccount = data !== null && data.accountCount > 1;
+  useEffect(() => {
+    if (multiAccount && value) onChange("", "");
+  }, [multiAccount, value, onChange]);
+  return (
+    <FormField
+      label={t("editor.contactAuthTeam", "Assign to team")}
+      group
+      description={t(
+        "editor.contactAuthTeamHint",
+        "Optional. Without a team, Chatwoot's inbox routing decides who takes it.",
+      )}
+    >
+      <div className="flex flex-col gap-1.5">
+        <Select
+          value={value}
+          onChange={(e) => onChange(e.target.value, instanceId)}
+          aria-label={t("editor.contactAuthTeam", "Assign to team")}
+        >
+          <option value="">
+            {t("editor.contactAuthNoTeam", "No team (inbox routing)")}
+          </option>
+          {!listed && value && !multiAccount && (
+            <option value={value}>
+              {t("editor.contactAuthTeamStored", "Team #{{id}} (not listed)", {
+                id: value,
+              })}
+            </option>
+          )}
+          {teams.map((tm) => (
+            <option key={tm.id} value={String(tm.id)}>
+              {tm.name}
+            </option>
+          ))}
+        </Select>
+        {data && data.accountCount !== 1 && (
+          <span className="text-text-muted text-xs">
+            {data.accountCount === 0
+              ? t(
+                  "editor.handoffPinnedNoInbox",
+                  "Bind at least one inbox in the Channels tab first.",
+                )
+              : t(
+                  "editor.contactAuthTeamMultiAccount",
+                  "This agent serves more than one Chatwoot account. A team id belongs to one account, so no team can be targeted here — Chatwoot's inbox routing decides who takes a refused conversation.",
+                )}
+          </span>
+        )}
+      </div>
+    </FormField>
+  );
+}
+
 // The multi-step follow-up editor: an ordered list of step cards (delay + instructions + optional
 // label, and a resolve toggle on the LAST step). Labels are fetched once per agent from the inbox.
 function FollowUpStepsEditor({
@@ -796,6 +928,8 @@ export function BehaviorTab({
   stt,
   setStt,
   sttCredBaseUrl,
+  contactAuth,
+  setContactAuth,
   tts,
   setTts,
   agentModelProvider,
@@ -842,6 +976,25 @@ export function BehaviorTab({
     stt.provider === "openai-compatible" &&
     !sttCredBaseUrl &&
     !isValidHttpUrl(stt.baseURL);
+
+  // Required while the gate is on: an enabled gate with no reachable URL fails closed on every
+  // message, which is the whole agent going silent with nothing on screen to explain it. A URL
+  // carrying `user:pass@` is refused here for the same reason the reader refuses it (credentials
+  // belong in the vault); without this check the save would succeed and the runtime would read the
+  // field as unconfigured.
+  const contactAuthUrlHasCredentials = (() => {
+    try {
+      const u = new URL(contactAuth.url.trim());
+      return Boolean(u.username || u.password);
+    } catch {
+      return false;
+    }
+  })();
+  const contactAuthUrlInvalid =
+    contactAuth.enabled &&
+    (!contactAuth.url.trim() ||
+      !isValidHttpUrl(contactAuth.url) ||
+      contactAuthUrlHasCredentials);
 
   const visionBaseUrlInvalid =
     vision.enabled &&
@@ -972,6 +1125,14 @@ export function BehaviorTab({
       id: "sendImage",
       icon: ImagePlus,
       label: t("editor.sendImage", "Sending images"),
+    },
+    // Last of the behaviour sections and before the operational ones: most agents never turn this
+    // on, so it does not belong above the grouping/audio/memory settings every agent uses — but it
+    // decides whether the agent speaks at all, so it does not belong at the very bottom either.
+    {
+      id: "contactAuth",
+      icon: ShieldCheck,
+      label: t("editor.contactAuth", "Contact authorization"),
     },
     {
       id: "limits",
@@ -1941,6 +2102,191 @@ export function BehaviorTab({
           </Section>
 
           <Section
+            id="contactAuth"
+            icon={ShieldCheck}
+            title={t("editor.contactAuth", "Contact authorization")}
+            description={t(
+              "editor.contactAuthHint",
+              "Before answering, ask an external system whether this contact may be served, by the identity Chatwoot holds for them (phone, email, identifier). Every message is re-checked, so revoking on your side takes effect immediately. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
+            )}
+          >
+            <SwitchField
+              checked={contactAuth.enabled}
+              onCheckedChange={(v) =>
+                setContactAuth({ ...contactAuth, enabled: v })
+              }
+              label={t(
+                "editor.contactAuthEnabled",
+                "Only answer contacts the external check authorizes",
+              )}
+            />
+            {contactAuth.enabled && (
+              <>
+                <FormField
+                  label={t("editor.contactAuthUrl", "Authorization URL")}
+                  description={t(
+                    "editor.contactAuthUrlHint",
+                    'Receives a POST with the identity in a JSON body (contact, conversation, message) and answers { "authorized": true | false }.',
+                  )}
+                  error={
+                    contactAuthUrlInvalid
+                      ? t(
+                          "editor.contactAuthUrlInvalid",
+                          "Required: a valid http(s) URL, with any credential in the vault rather than in the URL.",
+                        )
+                      : null
+                  }
+                >
+                  <Input
+                    value={contactAuth.url}
+                    onChange={(e) =>
+                      setContactAuth({ ...contactAuth, url: e.target.value })
+                    }
+                    placeholder="https://api.example.com/contacts/authorize"
+                  />
+                </FormField>
+                <FormField
+                  label={t("editor.contactAuthCredential", "Credential")}
+                  group
+                  description={t(
+                    "editor.contactAuthCredentialHint",
+                    "Optional. Sent the way the credential's type declares (Bearer, header or query parameter).",
+                  )}
+                >
+                  <CredentialPicker
+                    value={contactAuth.credentialRef}
+                    onChange={(v) =>
+                      setContactAuth({ ...contactAuth, credentialRef: v })
+                    }
+                    compatibleTypes={[
+                      "bearer_token",
+                      "header",
+                      "query",
+                      "basic_auth",
+                    ]}
+                    defaultCreateType="bearer_token"
+                    ariaLabel={t("editor.contactAuthCredential", "Credential")}
+                  />
+                </FormField>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FormField
+                    label={t("editor.contactAuthTimeout", "Timeout (ms)")}
+                    description={t(
+                      "editor.contactAuthTimeoutHint",
+                      "1,000-10,000. Past it the check counts as failed and the agent stays silent.",
+                    )}
+                  >
+                    <Input
+                      type="number"
+                      min={1000}
+                      max={10000}
+                      value={contactAuth.timeoutMs}
+                      onChange={(e) =>
+                        setContactAuth({
+                          ...contactAuth,
+                          timeoutMs: e.target.value,
+                        })
+                      }
+                    />
+                  </FormField>
+                  <FormField
+                    label={t(
+                      "editor.contactAuthNoticeCooldown",
+                      "Notice cooldown (s)",
+                    )}
+                    description={t(
+                      "editor.contactAuthNoticeCooldownHint",
+                      "Every message is re-checked; this only spaces the deny message and the private note for the same conversation. 0-3,600; 0 notifies on every refused message.",
+                    )}
+                  >
+                    <Input
+                      type="number"
+                      min={0}
+                      max={3600}
+                      value={contactAuth.noticeCooldownSeconds}
+                      onChange={(e) =>
+                        setContactAuth({
+                          ...contactAuth,
+                          noticeCooldownSeconds: e.target.value,
+                        })
+                      }
+                    />
+                  </FormField>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <SwitchField
+                    checked={contactAuth.includeMessageText}
+                    onCheckedChange={(v) =>
+                      setContactAuth({ ...contactAuth, includeMessageText: v })
+                    }
+                    label={t(
+                      "editor.contactAuthIncludeText",
+                      "Send the customer's message text",
+                    )}
+                  />
+                  <p className="text-text-muted text-xs">
+                    {t(
+                      "editor.contactAuthIncludeTextHint",
+                      "The triggering message travels as its own message.text field, apart from the mirrored identity, so your endpoint can accept an unlock code the customer sends. It is never logged.",
+                    )}
+                  </p>
+                </div>
+                <FormField
+                  label={t(
+                    "editor.contactAuthDenyMessage",
+                    "Message to a denied contact",
+                  )}
+                  description={t(
+                    "editor.contactAuthDenyMessageHint",
+                    "Sent when the check denies the contact, at most once per notice cooldown. Leave empty to send nothing.",
+                  )}
+                >
+                  <Textarea
+                    value={contactAuth.denyMessage}
+                    onChange={(e) =>
+                      setContactAuth({
+                        ...contactAuth,
+                        denyMessage: e.target.value,
+                      })
+                    }
+                    rows={2}
+                    maxLength={TEMPLATE_MESSAGE_MAX}
+                    placeholder={t(
+                      "editor.contactAuthDenyMessagePlaceholder",
+                      "This channel serves registered customers only.",
+                    )}
+                  />
+                </FormField>
+                <SwitchField
+                  checked={contactAuth.handoffEnabled}
+                  onCheckedChange={(v) =>
+                    setContactAuth({ ...contactAuth, handoffEnabled: v })
+                  }
+                  label={t(
+                    "editor.contactAuthHandoff",
+                    "Open refused conversations for humans",
+                  )}
+                />
+                {contactAuth.handoffEnabled && (
+                  <ContactAuthTeamSelect
+                    agentId={agentId}
+                    value={contactAuth.handoffTeamId}
+                    onChange={(v, instanceId) =>
+                      setContactAuth({
+                        ...contactAuth,
+                        handoffTeamId: v,
+                        // Cleared with the team: a recorded account with no team pins nothing, and
+                        // a stale one would outlive the choice it belonged to.
+                        handoffTeamInstanceId: v ? instanceId : "",
+                      })
+                    }
+                  />
+                )}
+              </>
+            )}
+          </Section>
+
+          <Section
             id="limits"
             icon={Gauge}
             title={t("editor.limits", "Execution limits")}
@@ -2401,6 +2747,7 @@ export function BehaviorTab({
         onSave={onSave}
         onDiscard={onDiscard}
         saveDisabled={
+          contactAuthUrlInvalid ||
           sttBaseUrlInvalid ||
           visionBaseUrlInvalid ||
           normalizeBaseUrlInvalid ||

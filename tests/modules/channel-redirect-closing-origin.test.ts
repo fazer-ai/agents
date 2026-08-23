@@ -132,7 +132,8 @@ describe.skipIf(!dbUp)("the redirect closing records its own origin", () => {
     // stage answers "already-closed" before it reaches the sibling.
     const WIDGET_CONV_2 = 502;
     const contact = await suDb.contact.create({
-      data: { tenantId, chatwootContactId: 77 },
+      // Scoped by instance: a Chatwoot contact id is unique inside one account.
+      data: { tenantId, chatwootInstanceId: instanceId, chatwootContactId: 77 },
     });
     const widgetInbox = await suDb.inbox.findFirstOrThrow({
       where: { tenantId, chatwootInboxId: 41 },

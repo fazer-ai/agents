@@ -48,6 +48,11 @@ export interface SecretType {
   // The generic credential form renders each field as a separate input; masked=true → password input.
   // When absent, the value is expected to be a plain non-empty string.
   fields?: { key: string; masked?: boolean }[];
+  // The VALUE must NEVER travel in an outbound HTTP request: it is consumed somewhere else entirely
+  // (mcp_env by the stdio loader, langfuse by observability). `injection: "none"` alone does NOT
+  // mean this — `generic` carries it too, and there it means the opposite: no rule, so a caller may
+  // apply its own default.
+  neverOutbound?: boolean;
   // Logical service identity (drives the credential logo + the per-context "compatible types"
   // filter on the client). Absent for generic mechanisms.
   service?: string;
@@ -186,13 +191,20 @@ export const SECRET_TYPES: SecretType[] = [
   // NAME is operator-supplied in VaultEntry.paramName (needsParamName). injection "none": NEVER injected
   // into an outbound HTTP request — the stdio loader (buildConnConfig) reads paramName+secret and
   // spawns the process with `env: { [paramName]: secret }`. No baseUrl, no connectivity test.
-  { id: "mcp_env", injection: "none", service: "mcp", needsParamName: true },
+  {
+    id: "mcp_env",
+    injection: "none",
+    neverOutbound: true,
+    service: "mcp",
+    needsParamName: true,
+  },
   // Langfuse tracing keys. The VALUE is a JSON pair { publicKey, secretKey } (not a single string),
   // consumed directly by observability — never injected into an outbound request, hence "none".
   // Created/updated via the generic credential form (baseUrl holds the Langfuse host URL).
   {
     id: "langfuse",
     injection: "none",
+    neverOutbound: true,
     service: "langfuse",
     requiresBaseUrl: true,
     fields: [{ key: "publicKey" }, { key: "secretKey", masked: true }],
@@ -265,6 +277,19 @@ export function getSecretTypeFields(
 export type ResolvedInjection =
   | { target: "header"; name: string; value: string }
   | { target: "query"; name: string; value: string };
+
+// A kind that must NEVER travel in an outbound HTTP request. `resolveSecretInjection` returns null
+// for these AND for a kind with no injection rule at all, and a caller that falls back to a Bearer
+// on null would send exactly these secrets to somebody else's endpoint. The two nulls mean opposite
+// things: no rule is "use your default", never-outbound is "there is a rule and it says no". The
+// catalogue says which, because deriving it from `injection: "none"` swept in `generic`, whose whole
+// purpose IS that default — and reading the two as one silenced every contact of an operator using
+// a generic credential.
+export function isNonInjectableSecret(
+  kind: string | null | undefined,
+): boolean {
+  return getSecretType(kind)?.neverOutbound === true;
+}
 
 export function resolveSecretInjection(
   kind: string | null | undefined,

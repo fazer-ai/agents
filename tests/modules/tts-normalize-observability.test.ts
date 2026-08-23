@@ -230,7 +230,12 @@ describe.skipIf(!dbUp)("tts speech normalization observability", () => {
       normalizeCredentialRef: "vault:999999999",
     });
     const contact = await suDb.contact.create({
-      data: { tenantId, name: "Cliente", chatwootContactId: 1 },
+      data: {
+        chatwootInstanceId: instanceId,
+        tenantId,
+        name: "Cliente",
+        chatwootContactId: 1,
+      },
     });
     contactId = contact.id;
   });

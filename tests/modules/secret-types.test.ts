@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  isNonInjectableSecret,
   isSecretTypeId,
   resolveSecretInjection,
 } from "@/modules/vault/secret-types";
@@ -69,5 +70,20 @@ describe("secret-types catalog", () => {
     expect(resolveSecretInjection("nope", "x")).toBeNull();
     expect(resolveSecretInjection(null, "x")).toBeNull();
     expect(resolveSecretInjection("bearer_token", "")).toBeNull();
+  });
+
+  // `resolveSecretInjection` returns null for two opposite reasons, and a caller that falls back to
+  // a Bearer has to tell them apart: `generic` means "no rule, use your default" — that fallback IS
+  // its purpose — while mcp_env and langfuse mean "there is a rule and it says never". Deriving the
+  // answer from `injection: "none"` swept in `generic` and fail-closed every contact of an operator
+  // using one.
+  test("never-outbound is a rule of its own, not `injection: none`", () => {
+    expect(isNonInjectableSecret("mcp_env")).toBe(true);
+    expect(isNonInjectableSecret("langfuse")).toBe(true);
+    expect(isNonInjectableSecret("generic")).toBe(false);
+    expect(resolveSecretInjection("generic", "x")).toBeNull();
+    expect(isNonInjectableSecret("bearer_token")).toBe(false);
+    expect(isNonInjectableSecret("nope")).toBe(false);
+    expect(isNonInjectableSecret(null)).toBe(false);
   });
 });

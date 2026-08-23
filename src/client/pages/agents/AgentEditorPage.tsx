@@ -78,6 +78,7 @@ import { readMemoryConfig } from "@/modules/memory/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import {
   BehaviorTab,
+  type ContactAuthState,
   type MemoryState,
   type SendImageState,
 } from "./BehaviorTab";
@@ -313,6 +314,7 @@ function readBehaviorState(a: Agent) {
   const ac = (s.attributeContext ?? {}) as Record<string, unknown>;
   const si = (s.sendImage ?? {}) as Record<string, unknown>;
   const av = (s.availability ?? {}) as Record<string, unknown>;
+  const ca = (s.contactAuth ?? {}) as Record<string, unknown>;
 
   // NOTE: Attribute keys per scope: plain string lists (the runtime reader trims/dedups/caps them).
   const attrKeys = (v: unknown): string[] =>
@@ -341,6 +343,21 @@ function readBehaviorState(a: Agent) {
       language: str(st.language) || "pt",
       credentialRef: str(st.credentialRef),
       baseURL: str(st.baseURL),
+    },
+    contactAuth: {
+      enabled: ca.enabled === true,
+      url: str(ca.url),
+      credentialRef: str(ca.credentialRef),
+      timeoutMs: num(ca.timeoutMs) || "5000",
+      // NOTE: "0" is meaningful (notify on every refused message), and num(0) is the truthy
+      // string "0", so the fallback only fills a genuinely absent value.
+      noticeCooldownSeconds: num(ca.noticeCooldownSeconds) || "60",
+      includeMessageText: ca.includeMessageText === true,
+      denyMessage: str(ca.denyMessage),
+      handoffEnabled:
+        typeof ca.handoffEnabled === "boolean" ? ca.handoffEnabled : true,
+      handoffTeamId: num(ca.handoffTeamId),
+      handoffTeamInstanceId: num(ca.handoffTeamInstanceId),
     },
     tts: readTtsFormState(tt),
     split: {
@@ -618,6 +635,19 @@ function AgentEditor() {
     credentialRef: "",
     baseURL: "",
   });
+  // Contact authorization gate. Mirrors agent.settings.contactAuth (modules/contact-auth).
+  const [contactAuth, setContactAuth] = useState<ContactAuthState>({
+    enabled: false,
+    url: "",
+    credentialRef: "",
+    timeoutMs: "5000",
+    noticeCooldownSeconds: "60",
+    includeMessageText: false,
+    denyMessage: "",
+    handoffEnabled: true,
+    handoffTeamId: "",
+    handoffTeamInstanceId: "",
+  });
   // Text-to-speech (audio replies). Mode + provider mirror modules/tts.
   // Same reader the saved agent goes through, so a new field can never exist in one and not the
   // other: the Behavior save REPLACES this block wholesale.
@@ -857,6 +887,7 @@ function AgentEditor() {
     setSettings(b.settings);
     setDebounce(b.debounce);
     setStt(b.stt);
+    setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
     setServiceWindow(b.serviceWindow);
@@ -893,6 +924,7 @@ function AgentEditor() {
     setSettings(b.settings);
     setDebounce(b.debounce);
     setStt(b.stt);
+    setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
     setServiceWindow(b.serviceWindow);
@@ -1098,6 +1130,29 @@ function AgentEditor() {
         // displayed (credential's) value — keep the user's own config or null.
         baseURL: stt.baseURL.trim() || null,
       },
+      contactAuth: {
+        enabled: contactAuth.enabled,
+        url: contactAuth.url.trim() || null,
+        credentialRef: contactAuth.credentialRef || null,
+        timeoutMs: Number(contactAuth.timeoutMs) || 5000,
+        // NOTE: 0 is meaningful (notify on every refused message), so `|| 60` would erase it;
+        // only an emptied field falls back to the default.
+        noticeCooldownSeconds:
+          contactAuth.noticeCooldownSeconds.trim() === ""
+            ? 60
+            : Math.max(0, Number(contactAuth.noticeCooldownSeconds) || 0),
+        // NOTE: Stored even under GET (the runtime reader ignores it there), so flipping the
+        // method back and forth does not lose the choice.
+        includeMessageText: contactAuth.includeMessageText,
+        denyMessage: contactAuth.denyMessage.trim() || null,
+        handoffEnabled: contactAuth.handoffEnabled,
+        handoffTeamId: Number(contactAuth.handoffTeamId) || null,
+        // The account the team was picked from, saved with it. Never on its own: without a team it
+        // pins nothing, and a leftover from a cleared choice would outlive what it described.
+        handoffTeamInstanceId: contactAuth.handoffTeamId
+          ? Number(contactAuth.handoffTeamInstanceId) || null
+          : null,
+      },
       tts: ttsSettingsFrom(tts),
       split: {
         enabled: split.enabled,
@@ -1201,6 +1256,7 @@ function AgentEditor() {
       followUpHoursId,
       debounce,
       stt,
+      contactAuth,
       tts,
       split,
       serviceWindow,
@@ -1392,6 +1448,11 @@ function AgentEditor() {
   // t('editor.configIssuePending.stt', 'The transcription credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.tts', 'The audio-reply credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.vision', 'The image-reading credential is referenced but not filled in yet.')
+  // t('editor.configIssuePending.contactAuth', 'The contact-authorization credential is referenced but not filled in yet, so the check fails and the agent stays silent.')
+  // t('editor.configIssueUnresolved.contactAuth', 'The contact-authorization credential no longer exists, so the check fails and the agent stays silent.')
+  // t('editor.configIssue.contactAuthUnlockHandoff', 'The access-code unlock and the handoff cancel each other out: the first refusal opens the conversation and assigns it, and a conversation that is open is no longer the AI\'s, so the code the customer sends next never reaches the check. Turn the handoff off to let contacts unlock themselves, or stop sending the message text if a human should take every refused conversation.')
+  // t('editor.configIssue.contactAuthSilentRefusal', 'A refused contact is left with nothing: no message is sent and the conversation is not opened for anyone, so their message goes unanswered and only a private note records it. Write the refusal message, or turn on the handoff to humans.')
+  // t('editor.configIssue.contactAuthNoUrl', 'The authorization check is on but has no endpoint to ask. Without one it fails on every message and the agent stops answering anyone. Fill in the endpoint URL, or turn the check off.')
   // t('editor.configIssue.embedding', 'A knowledge base needs indexing, but the tenant embedding is not configured.')
   // t('editor.configIssuePending.embedding', 'A knowledge base needs indexing, but the embedding credential is not filled in yet.')
   // t('editor.configIssue.redirect', 'Redirect is on but a WhatsApp or website-chat inbox is not set, so it will not run.')
@@ -1450,6 +1511,12 @@ function AgentEditor() {
     ttsNormalizeBaseURL: ttsNormalizeCredBaseUrl ?? tts.normalizeBaseURL,
     visionEnabled: vision.enabled,
     visionCredentialRef: vision.credentialRef,
+    contactAuthEnabled: contactAuth.enabled,
+    contactAuthUrl: contactAuth.url,
+    contactAuthCredentialRef: contactAuth.credentialRef,
+    contactAuthIncludeMessageText: contactAuth.includeMessageText,
+    contactAuthHandoffEnabled: contactAuth.handoffEnabled,
+    contactAuthDenyMessage: contactAuth.denyMessage,
     guardrailsEnabled: guardrails.enabled,
     guardrailsCredentialRef: guardrails.credentialRef ?? "",
     guardrailsFailures: guardrailHealth?.failures,
@@ -1933,6 +2000,7 @@ function AgentEditor() {
     setSettings(b.settings);
     setDebounce(b.debounce);
     setStt(b.stt);
+    setContactAuth(b.contactAuth);
     setTts(b.tts);
     setSplit(b.split);
     setServiceWindow(b.serviceWindow);
@@ -2832,6 +2900,8 @@ function AgentEditor() {
                 stt={stt}
                 setStt={setStt}
                 sttCredBaseUrl={sttCredBaseUrl}
+                contactAuth={contactAuth}
+                setContactAuth={setContactAuth}
                 tts={tts}
                 setTts={setTts}
                 // The SAVED model, not the one being edited on General (see savedModel above), and

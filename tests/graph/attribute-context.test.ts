@@ -115,6 +115,7 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
     ).id;
     const contact = await suDb.contact.create({
       data: {
+        chatwootInstanceId: instanceId,
         tenantId,
         chatwootContactId: 4242,
         name: "Maria",
@@ -323,6 +324,7 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
   test("a pre-write snapshot delivered late cannot erase the write-through", async () => {
     const contact = await suDb.contact.create({
       data: {
+        chatwootInstanceId: instanceId,
         tenantId,
         chatwootContactId: 4243,
         name: "Rita",

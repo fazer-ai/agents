@@ -15,7 +15,7 @@ import {
 } from "@/graph/checkpointer";
 import type { IngestRole } from "@/graph/ingest";
 import { armIngest } from "@/graph/ingest-job";
-import { runAgentTurn } from "@/graph/runtime";
+import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { withEntityLock } from "@/lib/locks";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -44,6 +44,18 @@ import {
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
 import {
+  authorizeContact,
+  type ContactAuthOutcome,
+  contactAuthFlowEvent,
+} from "@/modules/contact-auth/service";
+import { readContactAuthConfig } from "@/modules/contact-auth/settings";
+import {
+  type ContactAuthNotice,
+  claimContactAuthNotice,
+  contactAuthNoticeKey,
+  releaseContactAuthNotice,
+} from "@/modules/contact-auth/state";
+import {
   clearConversationError,
   recordConversationError,
 } from "@/modules/conversations/error";
@@ -53,6 +65,7 @@ import {
 } from "@/modules/conversations/failure-note";
 import { armDebounce, resolveDebounceConfig } from "@/modules/debounce/service";
 import { advanceHandledWatermark } from "@/modules/debounce/watermark";
+import { emitFlowEvent } from "@/modules/flowlog/service";
 import { armCompaction } from "@/modules/memory/compact";
 import { clearContactMemory } from "@/modules/memory/reset";
 import { readMemoryConfig } from "@/modules/memory/settings";
@@ -326,6 +339,8 @@ export interface ProcessChatwootParams {
   agentBotId: number | null;
   normalized: NormalizedChatwootEvent;
   base?: PrismaClient;
+  // Injectable runtime deps (tests): fake model/client/checkpointer + the contact-auth fetch.
+  deps?: RuntimeDeps;
 }
 
 function errMsg(err: unknown): string {
@@ -476,10 +491,11 @@ export async function runEagerMedia(
 
 // Continuous ingestion: fold into the agent's per-contact-inbox memory thread the messages a
 // turn did NOT handle, so the bot has full context when it resumes — a customer message it stayed
-// silent on (out of hours, or a human took over), and a HUMAN agent's reply sent while it was silent.
+// silent on (out of hours, a refused contact, or a human took over), and a HUMAN agent's reply sent
+// while it was silent.
 // Our own bot's outgoing reply is already in the thread (from the turn) and is skipped; so are
 // notes/activities/templates. The CALLER gates this on an ENABLED + PRODUCTION agent (test/disabled
-// never ingest — no cost), so a `consumed` incoming here is always an out-of-hours silence. Eager
+// never ingest — no cost), so a `consumed` incoming here is a message some gate silenced. Eager
 // media (run before the gate for production) means the rendered customer text carries its
 // transcription/extraction. Best-effort: a failure never strands the delivery.
 async function ingestUnhandledMessage(args: {
@@ -519,9 +535,13 @@ async function ingestUnhandledMessage(args: {
   // conversations — the population the whole feature exists for.
   // WHAT gets folded in, and AS WHOM. Two disjoint cases:
   //
-  //  - a customer incoming message the bot will NOT answer: silenced out of hours (act && consumed)
-  //    or not bot-handled (!act — a human owns it, or it is not pending). An answered/debounced
-  //    message is covered by its own turn and is NOT re-ingested here.
+  //  - a customer incoming message the bot will NOT answer: silenced by a gate (act && consumed —
+  //    out of hours, or a contact the authorization gate refused) or not bot-handled (!act — a
+  //    human owns it, or it is not pending). An answered/debounced message is covered by its own
+  //    turn and is NOT re-ingested here. A refusal ingests for the same reason out-of-hours does,
+  //    and it is what makes the unlock flow read as one conversation: when the code finally lands
+  //    and the turn runs, the agent sees what the customer said while it was refused, instead of
+  //    answering a code out of nowhere.
   //  - a HUMAN agent's reply to the customer, whatever the gate decided. No turn ever covers one:
   //    the bot did not write it. On the most ordinary shape of a real deployment — the agent
   //    qualifies a lead, a human takes over, the human closes the sale — this is the entire business
@@ -670,6 +690,60 @@ export async function releaseAwayMessage(params: {
   }
 }
 
+// pt-BR labels for the runtime's own failure codes, for the operator note below. Codes without a
+// label (an endpoint's custom reason) are shown as the code itself.
+const CONTACT_AUTH_ERROR_LABELS: Record<string, string> = {
+  timeout: "tempo esgotado",
+  network: "falha de rede",
+  unsafe_url: "URL bloqueada",
+  invalid_url: "URL inválida",
+  not_configured: "URL não configurada",
+  credential_unavailable: "credencial indisponível",
+  credential_not_injectable:
+    "a credencial escolhida nunca é enviada numa requisição",
+  invalid_response: "resposta inválida",
+  body_too_large: "resposta grande demais",
+  unexpected_status: "status inesperado",
+};
+
+// Operator-facing note for a conversation the contact-authorization gate refused (pt-BR, the same
+// register as the one-shot test-mode / out-of-hours notices). Reasons are short codes by the time
+// they get here (the slug guard upstream drops prose), so the note can carry one without carrying
+// anything the customer wrote. This is also the ONE place the endpoint's own reason surfaces: the
+// note sits in the operator's Chatwoot, on the conversation it is about, unlike the execution log
+// that alert channels read.
+export function contactAuthNoteText(
+  verdict: {
+    outcome: ContactAuthOutcome;
+    status?: number;
+    reason?: string;
+    endpointReason?: string;
+  },
+  handedOff: boolean,
+): string {
+  const handoffLine = handedOff
+    ? " A conversa foi aberta para atendimento humano."
+    : "";
+  if (verdict.outcome === "no_identity") {
+    return (
+      "🔒 Autorização do contato: não foi possível verificar porque o contato não tem telefone, e-mail nem identificador cadastrados. O agente não respondeu automaticamente." +
+      handoffLine
+    );
+  }
+  if (verdict.outcome === "denied") {
+    const motivo = verdict.endpointReason ?? verdict.reason;
+    const reason = motivo ? ` Motivo: ${motivo}.` : "";
+    return `🔒 Contato não autorizado pela verificação externa.${reason} O agente não respondeu automaticamente.${handoffLine}`;
+  }
+  const cause =
+    verdict.status !== undefined
+      ? `HTTP ${verdict.status}`
+      : (CONTACT_AUTH_ERROR_LABELS[verdict.reason ?? ""] ??
+        verdict.reason ??
+        "falha desconhecida");
+  return `⚠️ A verificação de autorização do contato falhou (${cause}). O agente não respondeu automaticamente; a próxima mensagem tenta novamente.`;
+}
+
 // Test-mode gate + the /teste and /reset commands (item 1 + 2). Runs at the TOP of the actionable
 // branch, before eager STT / debounce / the agent turn. Returns true when the delivery is consumed
 // here — a command was handled, or a "test" agent must stay silent because this conversation hasn't
@@ -685,8 +759,11 @@ async function maybeConsumeCommandOrGate(params: {
   command: ControlCommand | null;
   commandActive: boolean;
   base: PrismaClient;
+  // Injectable runtime deps (tests): the Chatwoot client factory and the contact-auth fetch.
+  deps?: RuntimeDeps;
 }): Promise<boolean> {
-  const { tenantId, instanceId, n, command, commandActive, base } = params;
+  const { tenantId, instanceId, n, command, commandActive, base, deps } =
+    params;
   if (n.conversationId === null) return false;
   const conversationId = n.conversationId;
   const isTeste = commandActive && command === "teste";
@@ -719,6 +796,7 @@ async function maybeConsumeCommandOrGate(params: {
     if (!conv) return null;
     let agentId: bigint | null = null;
     let inboxChatwootId: number | null = null;
+    let channelType: string | null = null;
     let agentSettings: unknown = null;
     let mode = "production";
     let agentEnabled = true;
@@ -726,9 +804,10 @@ async function maybeConsumeCommandOrGate(params: {
     if (conv.inboxId !== null) {
       const inbox = await db.inbox.findUnique({
         where: { id: conv.inboxId },
-        select: { agentId: true, chatwootInboxId: true },
+        select: { agentId: true, chatwootInboxId: true, channelType: true },
       });
       inboxChatwootId = inbox?.chatwootInboxId ?? null;
+      channelType = inbox?.channelType ?? null;
       if (inbox?.agentId) {
         agentId = inbox.agentId;
         const agent = await db.agent.findUnique({
@@ -763,6 +842,7 @@ async function maybeConsumeCommandOrGate(params: {
       agentEnabled,
       hours,
       inboxChatwootId,
+      channelType,
       agentSettings,
     };
   });
@@ -788,6 +868,7 @@ async function maybeConsumeCommandOrGate(params: {
   const personaClient = async (): Promise<ChatwootClient> =>
     loadChatwootClient(tenantId, instanceId, {
       base,
+      makeClient: deps?.makeClient,
       botToken: (await persona())?.accessToken,
     });
 
@@ -1318,6 +1399,208 @@ async function maybeConsumeCommandOrGate(params: {
     );
     return true;
   }
+
+  // ── Contact authorization gate: an agent that may only serve contacts a system outside the
+  //    console knows about (docs/contact-auth.md) asks it before spending a turn. Last of the gates
+  //    on purpose: a conversation an earlier gate already silenced costs no authorization call. The
+  //    identity is what Chatwoot mirrored for the contact (phone, email, the operator's own
+  //    identifier), never anything the customer typed; under POST with includeMessageText the
+  //    triggering text rides along too, in its own `message` field, so the endpoint can accept an
+  //    unlock code. EVERY message is re-checked (no verdict outlives its request), so a revocation
+  //    or an unlock on the endpoint's side takes effect on the very next message. Denied ⇒ the
+  //    operator's fixed copy + a handoff to humans; cannot-tell (an endpoint failure, a contact
+  //    with no identifiers) ⇒ fail-closed silence toward the customer, with a private note telling
+  //    the operator why. Copy and note sit behind a cooldown (noticeCooldownSeconds), the verdict
+  //    never does: a refused burst is re-checked every time but voiced once per window. ──
+  if (ctx.agentId !== null && ctx.agentEnabled && isNewIncomingMessage(n)) {
+    const authCfg = readContactAuthConfig(ctx.agentSettings);
+    if (authCfg.enabled) {
+      const agentId = ctx.agentId;
+      // Opens the conversation for the human queue (the handoff_to_human mechanics: status `open`
+      // ends the bot's attribution, the optional team assignment routes it). Best-effort the same
+      // way the tool is: the open is what matters, an assignment failure never undoes it.
+      // A Chatwoot team id belongs to ONE account, so the stored number is only meaningful in the
+      // account it was picked from. The editor records that account alongside it and stops offering
+      // a target once the agent serves several — but a value can still arrive through REST, MCP or
+      // an import, and an agent MOVED between accounts keeps a number the editor has no reason to
+      // question: there is one account again, just not the one the id came from. So the recorded
+      // account is what decides, and counting accounts is only the fallback for a value stored
+      // before the field existed. Asked only when a target is configured, and only on a refusal,
+      // which is rare and already spending two API calls.
+      const teamTargetUsable = async (teamId: number): Promise<boolean> => {
+        const pinnedTo = authCfg.handoffTeamInstanceId;
+        if (pinnedTo !== null) {
+          if (pinnedTo === Number(instanceId)) return true;
+          logger.warn(
+            "chatwoot: contact-auth team target ignored (conv=%s team=%s) — it was picked in Chatwoot account %s and this conversation is in %s",
+            String(conversationId),
+            String(teamId),
+            String(pinnedTo),
+            String(instanceId),
+          );
+          return false;
+        }
+        const instances = await runScopedOn(base, sysCtx(tenantId), (db) =>
+          db.inbox.findMany({
+            where: { agentId },
+            select: { chatwootInstanceId: true },
+            distinct: ["chatwootInstanceId"],
+          }),
+        );
+        if (instances.length <= 1) return true;
+        logger.warn(
+          "chatwoot: contact-auth team target ignored (conv=%s team=%s) — the agent serves %s Chatwoot accounts and a team id belongs to one",
+          String(conversationId),
+          String(teamId),
+          String(instances.length),
+        );
+        return false;
+      };
+
+      const openForHumans = async (teamId: number | null): Promise<boolean> => {
+        try {
+          // The same fence the customer copy carries, for the same reason: the authorization
+          // request is a network round-trip to somebody else's endpoint, and a human can take the
+          // conversation while it is in flight. Without this, the copy was correctly withheld and
+          // the conversation was reopened and re-routed to a team anyway — a human's conversation
+          // pulled back out of their hands by a gate that had already decided to stay quiet.
+          if (!(await stillOurs())) {
+            logger.info(
+              "chatwoot: contact-auth handoff skipped (conv=%s) — the conversation is no longer the bot's",
+              String(conversationId),
+            );
+            return false;
+          }
+          const client = await personaClient();
+          await client.toggleStatus(conversationId, "open");
+          if (teamId !== null && (await teamTargetUsable(teamId))) {
+            try {
+              await client.assignTeam(conversationId, teamId);
+            } catch (err) {
+              logger.warn(
+                "chatwoot: contact-auth team assignment failed (conv=%s): %s",
+                String(conversationId),
+                errMsg(err),
+              );
+            }
+          }
+          return true;
+        } catch (err) {
+          logger.warn(
+            "chatwoot: contact-auth handoff failed (conv=%s): %s",
+            String(conversationId),
+            errMsg(err),
+          );
+          return false;
+        }
+      };
+      const verdict = await authorizeContact({
+        tenantId,
+        agentId,
+        contactDbId: ctx.conv.contactId,
+        conversationId,
+        inboxId: ctx.inboxChatwootId,
+        channelType: ctx.channelType,
+        messageText: n.message?.content ?? null,
+        // The message id under an unlock flow, where the verdict is a function of the text; the
+        // source otherwise. Never the text itself: it must not reach a cache key.
+        requestKey: authCfg.includeMessageText
+          ? `msg:${n.message?.id ?? "none"}`
+          : "inbox",
+        cfg: authCfg,
+        base,
+        fetchImpl: deps?.contactAuthFetch,
+      });
+      emitFlowEvent(
+        {
+          tenantId,
+          turnId: crypto.randomUUID(),
+          source: "inbox",
+          conversationId: ctx.conv.id,
+          agentId,
+          inboxId: ctx.conv.inboxId,
+          threadId: chatwootThreadId(tenantId, instanceId, conversationId),
+          base,
+        },
+        contactAuthFlowEvent(verdict),
+      );
+      if (verdict.outcome !== "allowed") {
+        // Coalescing the QUESTION is not coalescing the ANSWER's consequences. The single-flight
+        // asks the endpoint once about a contact, which is right; the copy, the handoff and the
+        // note belong to a CONVERSATION, and one contact can have two open ones. Gating these on
+        // `!verdict.shared` meant the follower's conversation got no copy, no note and above all no
+        // handoff — opening the leader's does not open the follower's, so a refused contact sat
+        // there unanswered. What stops two deliveries of the SAME conversation from both speaking
+        // is the notice claim below, which is per conversation and synchronous.
+        //
+        // Actions in this order: customer copy first (after the open the conversation is no longer
+        // the bot's and the fence would rightly withhold it), then the handoff, then the note, so
+        // the note can say what actually happened. An ERROR hands nothing off: it is transient by
+        // contract (the next message retries), and escalating every blip of the endpoint would page
+        // humans for conversations the next message answers.
+        {
+          const cooldownMs = authCfg.noticeCooldownSeconds * 1000;
+          const claim = (notice: ContactAuthNotice) =>
+            claimContactAuthNotice(
+              contactAuthNoticeKey(tenantId, agentId, ctx.conv.id, notice),
+              cooldownMs,
+            );
+          // The copy's window is claimed only when a copy is actually going out. Sharing one claim
+          // with the note let an ERROR, which speaks to nobody, spend the customer's window and
+          // silence the denial that followed it.
+          const denyMessage =
+            verdict.outcome === "denied" ? authCfg.denyMessage : null;
+          const copyClaim = denyMessage ? claim("copy") : false;
+          if (denyMessage && copyClaim) {
+            // The window is claimed before the send, because two settled deliveries racing must not
+            // both speak — so a send that does not land has to give it back. Kept, it would silence
+            // the next refusal for the whole window over a message the customer never received.
+            if (!(await postPublicMessage(denyMessage))) {
+              releaseContactAuthNotice(copyClaim);
+            }
+          }
+          let handedOff = false;
+          if (verdict.outcome !== "error" && authCfg.handoffEnabled) {
+            // NOTE: Outside the cooldown on purpose: the open is what ends the bot's
+            // attribution, and a first attempt that failed must be retried on the next refused
+            // message, notice or no notice.
+            handedOff = await openForHumans(authCfg.handoffTeamId);
+          }
+          const noteClaim = claim("note");
+          if (noteClaim) {
+            if (
+              !(await postPrivateNote(contactAuthNoteText(verdict, handedOff)))
+            ) {
+              releaseContactAuthNotice(noteClaim);
+            }
+          }
+        }
+        logger.info(
+          "chatwoot: contact-auth silent (conv=%s outcome=%s shared=%s)",
+          String(conversationId),
+          verdict.outcome,
+          String(verdict.shared),
+        );
+        return true;
+      }
+      // Allowed, and up to ten seconds may have gone by inside somebody else's endpoint. The
+      // attribution gate that let this delivery through ran BEFORE that wait, and `runAgentTurn`
+      // re-checks ownership only AFTER the model has answered — which withholds the reply and
+      // nothing else, so a human who took the conversation during the round-trip would find the
+      // agent's tools writing on it: a label, a Kanban card, a custom attribute, an outbound HTTP
+      // call. The turn's own build-and-invoke is slow too and this does not pretend to fence that
+      // (it is the runtime's window, and every agent has it); what it does is not WIDEN it by the
+      // length of an operator's network call. Asked against the mirror, the same source the first
+      // gate read.
+      if (!(await stillOurs())) {
+        logger.info(
+          "chatwoot: contact-auth allowed but the conversation is no longer the bot's (conv=%s)",
+          String(conversationId),
+        );
+        return true;
+      }
+    }
+  }
   return false;
 }
 
@@ -1623,6 +1906,7 @@ export async function processChatwootDelivery(
       command,
       commandActive,
       base,
+      deps: params.deps,
     });
     if (!consumed) {
       // Eager media (STT/vision) so the debounce re-fetch (and the direct path) get text instead of an
@@ -1695,6 +1979,8 @@ export async function processChatwootDelivery(
             instanceId: params.instanceId,
             agentBotId: params.agentBotId,
             event: n,
+            base,
+            deps: params.deps,
           });
           logger.info(
             "chatwoot agent turn: conv=%s event=%s outcome=%s mirror=%s",

@@ -21,6 +21,10 @@ import {
 import { shouldBotHandle } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import {
+  authorizeContact,
+  contactAuthFlowEvent,
+} from "@/modules/contact-auth/service";
+import {
   clearConversationError,
   recordConversationError,
 } from "@/modules/conversations/error";
@@ -35,7 +39,7 @@ import {
 } from "@/modules/scheduler/worker";
 import { readLastMessageId } from "./service";
 import { readDebounceConfig } from "./settings";
-import { advanceHandledWatermark } from "./watermark";
+import { advanceHandledWatermark, readHandledWatermark } from "./watermark";
 
 // The DEBOUNCE flush: re-fetch the conversation from Chatwoot, coalesce the inbound messages past the
 // watermark into one turn, and answer once. Two re-fetches by design: the first builds the burst to
@@ -67,7 +71,12 @@ export interface CoalesceTurnContext {
   convDbId: bigint;
   loaded: AgentConfig;
   settings: unknown;
-  selectPending: (messages: ChatwootMessageRow[]) => ChatwootMessageRow[];
+  // May be async: the debounce flush re-reads the handled watermark here, at the latest point
+  // before the burst is chosen, because an authorization refusal that landed while this flush was
+  // asking the endpoint has already moved it.
+  selectPending: (
+    messages: ChatwootMessageRow[],
+  ) => ChatwootMessageRow[] | Promise<ChatwootMessageRow[]>;
   // Label for the single summary log line ("debounce flush" / "reengage").
   label: string;
   // When set (the debounce flush passes "debounce"), emit a flow line for the coalescing under the
@@ -102,7 +111,7 @@ export async function coalesceAndRunTurn(
   // the attachment-meta write-back 404s, so this is the only way a voice note's transcription (or a
   // vision extraction) reaches the flush (issue #49). Meta values, when present, stay authoritative.
   overlayMediaAnnotations(tenantId, instanceId, messages);
-  let pending = ctx.selectPending(messages);
+  let pending = await ctx.selectPending(messages);
   if (pending.length === 0) return "empty";
 
   const cfg = readDebounceConfig(ctx.settings);
@@ -289,7 +298,7 @@ export async function flushDebounceJob(
     }
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
-      select: { agentId: true },
+      select: { agentId: true, chatwootInboxId: true },
     });
     if (!inbox?.agentId) return null;
     const agentRow = await db.agent.findUnique({
@@ -306,6 +315,7 @@ export async function flushDebounceJob(
     if (!loaded) return null;
     return {
       convDbId: conv.id,
+      inboxChatwootId: inbox.chatwootInboxId,
       watermark: conv.lastHandledMessageId,
       loaded,
       settings: agentRow?.settings ?? {},
@@ -331,6 +341,114 @@ export async function flushDebounceJob(
     return { outcome: "done" };
   }
 
+  // The contact-authorization gate, again, at the point the TURN happens. The webhook checks every
+  // incoming message, but the turn is not the message: debounce means one message can arm a flush
+  // that a later, refused message then rides into. The refused delivery returns "consumed" and arms
+  // nothing, yet the flush already pending re-fetches everything past the watermark, so the refused
+  // message reaches the model anyway — and a revocation landing inside the coalescing window is the
+  // same hole from the other side. "No turn for a contact the endpoint will not vouch for" is a
+  // statement about turns, so it has to be checked where a turn begins.
+  //
+  // A refusal ends the flush exactly like a human takeover does: the burst counts as handled (the
+  // watermark advances off the payload's own last id, no fetch needed) and nothing is posted. No
+  // customer copy and no handoff — those answer a message the customer just sent, and the webhook
+  // path already gave them to the delivery that was refused; a verdict that flipped inside the
+  // window reaches the customer on their next message, which is what "re-checked every message"
+  // means. The flow line is what tells the operator this burst was dropped.
+  if (ctx.loaded.contactAuthConfig.enabled) {
+    const auth = await authorizeContact({
+      tenantId,
+      agentId: ctx.loaded.agentId,
+      contactDbId: ctx.loaded.contactDbId,
+      conversationId,
+      inboxId: ctx.inboxChatwootId,
+      channelType: ctx.loaded.channelType,
+      // The burst is many messages, not one: there is no single text to forward, and an unlock code
+      // is something the customer sends on a message of their own, which the webhook path checks.
+      messageText: null,
+      // Its own asking, for the reason the nudge has one: it carries no message text and must never
+      // join (or be joined by) the flight of an incoming message that does.
+      requestKey: "debounce",
+      cfg: ctx.loaded.contactAuthConfig,
+      base,
+      fetchImpl: deps?.contactAuthFetch,
+    });
+    emitFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: ctx.convDbId,
+        agentId: ctx.loaded.agentId,
+        inboxId: ctx.loaded.inboxDbId,
+        threadId,
+        base,
+      },
+      contactAuthFlowEvent(auth),
+    );
+    if (auth.outcome !== "allowed") {
+      logger.info(
+        "debounce flush: contact not authorized (conv=%s outcome=%s), dropping the burst",
+        String(conversationId),
+        auth.outcome,
+      );
+      const last = readLastMessageId(job.payload);
+      if (last !== null) {
+        await advanceHandledWatermark({
+          tenantId,
+          conversationDbId: ctx.convDbId,
+          toMessageId: last,
+          base,
+        });
+      }
+      return { outcome: "done" };
+    }
+    // Allowed, and the attribution gate above ran BEFORE a round-trip that may have taken ten
+    // seconds. A human who took the conversation during it would otherwise get the burst answered
+    // over their shoulder: the post gate withholds the reply, but the tools have run by then. Same
+    // question as the gate above, asked again against the mirror; the burst still counts as handled,
+    // exactly as it does when the gate was already closed on the way in.
+    const stillOurs = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const conv = await db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        },
+        // assigneeId is part of the question, not decoration: without it shouldBotHandle cannot
+        // tell OUR bot from another one, and a conversation handed to a different bot during the
+        // authorization call would read as still ours.
+        select: { status: true, assigneeType: true, assigneeId: true },
+      });
+      return shouldBotHandle(
+        {
+          assigneeType: conv?.assigneeType ?? null,
+          assigneeId: conv?.assigneeId ?? null,
+          status: conv?.status ?? null,
+        },
+        { ourAgentBotId: agentBotId },
+      );
+    });
+    if (!stillOurs) {
+      logger.info(
+        "debounce flush: a human took the conversation during the authorization call (conv=%s)",
+        String(conversationId),
+      );
+      const last = readLastMessageId(job.payload);
+      if (last !== null) {
+        await advanceHandledWatermark({
+          tenantId,
+          conversationDbId: ctx.convDbId,
+          toMessageId: last,
+          base,
+        });
+      }
+      return { outcome: "done" };
+    }
+  }
+
   // Coalesce the burst past the watermark and answer once. A thrown error (LLM/Chatwoot) bubbles to
   // the worker → retry with backoff (watermark not advanced, so the retry re-answers the same burst).
   // The error is also surfaced on the conversation (item 6) so the operator can re-engage; a
@@ -347,7 +465,27 @@ export async function flushDebounceJob(
         convDbId: ctx.convDbId,
         loaded: ctx.loaded,
         settings: ctx.settings,
-        selectPending: (messages) => pendingIncoming(messages, watermark),
+        // Re-read, not the value captured before the authorization call: that call is a round-trip
+        // to somebody else's endpoint with a ceiling of ten seconds, and a message that arrived and
+        // was REFUSED inside that window has already had the watermark advanced past it by its own
+        // delivery. Against the stale value it would be selected here and handed to the model, and
+        // the post gate would only withhold the reply — after the tools had run. The floor is the
+        // one this flush read at claim time, so a watermark that somehow reads lower cannot widen
+        // the burst.
+        selectPending: async (messages) => {
+          const fresh = await readHandledWatermark({
+            tenantId,
+            conversationDbId: ctx.convDbId,
+            base,
+          });
+          const floor =
+            fresh === null
+              ? watermark
+              : watermark === null
+                ? fresh
+                : Math.max(fresh, watermark);
+          return pendingIncoming(messages, floor);
+        },
         label: "debounce flush",
         coalesceStage: "debounce",
       },

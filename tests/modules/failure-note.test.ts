@@ -230,6 +230,13 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       adminToken: encryptJson("ADMIN"),
     });
     instanceId = inst.id;
+    // NOTE: A REAL vault entry, so the turn gets as far as the model call: the double answers that
+    // call 401 (it authenticates like Chatwoot and knows no OpenAI route), and THAT is the death
+    // this suite is about. A dangling ref would not die, it would be the orderly "no-agent" silence.
+    const llmKey = await suDb.vaultEntry.create({
+      data: { tenantId, name: "llm-key", secret: encryptJson("sk-test") },
+      select: { id: true },
+    });
     const agent = await suDb.agent.create({
       data: {
         tenantId,
@@ -238,7 +245,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
         modelConfig: {
           provider: "openai",
           model: "gpt-4o-mini",
-          credentialRef: "vault:999999999",
+          credentialRef: `vault:${llmKey.id}`,
         },
         // Debounce off: the direct path is the one with no retry, and the one this suite fences.
         settings: { debounce: { enabled: false }, split: { enabled: false } },
@@ -612,10 +619,10 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
   });
 
   // The direct webhook path, end to end: a delivery arrives, the turn dies inside the runtime, and the
-  // operator finds out INSIDE Chatwoot. Nothing here is injected — `processChatwootDelivery` has no
-  // seam for the runtime, so the turn runs for real and the note is posted by the real client against
-  // the double, which authenticates like Chatwoot. The turn cannot succeed by accident: its model
-  // credential does not resolve and every outbound call it could make lands on the double.
+  // operator finds out INSIDE Chatwoot. Nothing runtime-shaped is injected — no fake model, no stub
+  // client — so the turn runs for real and the note is posted by the real client against the double,
+  // which authenticates like Chatwoot. The turn cannot succeed by accident: every outbound call it
+  // could make lands on the double, and the double answers the model call 401, which is the death.
   test("a turn that dies on the direct path leaves a note on the conversation", async () => {
     const conv = await seedConversation();
     const payload = {

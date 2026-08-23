@@ -13,6 +13,7 @@ import {
   claimDueTrafficJobs,
   completeJob,
   failJob,
+  type ReapedJob,
   reapStaleJobs,
   rescheduleJob,
 } from "./service";
@@ -87,6 +88,30 @@ async function dispatchDeadLetter(
       { err, jobId: String(job.id), kind: job.kind },
       "scheduler: dead-letter hook failed",
     );
+  }
+}
+
+// THE SECOND ROAD TO DEAD, and the one with nothing else to read: a claim that crashed or hung never
+// reaches failJob, so it carries no `lastError` explaining anything — just a row that stopped moving.
+// Every caller of `reapStaleJobs` owes this call.
+//
+// It is a shared function rather than the loop it replaced because reaping is NOT the scheduler
+// tick's alone: a lane with its own worker reaps its own kind (the compaction lane, the ingest
+// drain), for reasons written at those call sites, and the loop was copied to none of them. Which
+// reaper announced was therefore decided by whichever won the atomic UPDATE — the scheduler's, and
+// the announcement happened; the lane's, and it did not. A kind whose lane runs with the scheduler
+// worker disabled — a configuration the boot sequence supports — never announced at all.
+//
+// Free for a kind with no hook registered, which is what makes "every reaper calls it" a rule a
+// fourth lane can follow without knowing which kinds have one.
+export async function announceReaped(
+  reaped: ReapedJob[],
+  base: PrismaClient,
+): Promise<void> {
+  for (const job of reaped) {
+    if (job.status === "DEAD") {
+      await dispatchDeadLetter(job, "reaped: the claim never finished", base);
+    }
   }
 }
 
@@ -189,13 +214,7 @@ export async function runSchedulerTick(
     new Date(),
     opts.tenantId,
   );
-  // NOTE: The reaper is the other road to DEAD — a claim that crashed or hung never reaches failJob,
-  // so without this a job that exhausts its attempts by hanging dies unannounced.
-  for (const job of reaped) {
-    if (job.status === "DEAD") {
-      await dispatchDeadLetter(job, "reaped: the claim never finished", base);
-    }
-  }
+  await announceReaped(reaped, base);
   // TWO CLAIMS, ONE DRAIN. The fixed-rate kinds take the batch; the traffic-proportional ones take a
   // share of it on top (../scheduler/lanes.ts, JOB_TRAFFIC_PROPORTIONAL). A single claim ordered by
   // run_at cannot serve both: ingestion rows are armed for `now` and arrive at the rate contacts

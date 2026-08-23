@@ -61,7 +61,12 @@ describe.skipIf(!dbUp)("listConversations", () => {
       },
     });
     const contact = await suDb.contact.create({
-      data: { tenantId: tenantA, chatwootContactId: 5, name: "Alice" },
+      data: {
+        chatwootInstanceId: instA,
+        tenantId: tenantA,
+        chatwootContactId: 5,
+        name: "Alice",
+      },
     });
     // Two conversations for A (different statuses + recency) and one for B (isolation check).
     await suDb.conversation.create({

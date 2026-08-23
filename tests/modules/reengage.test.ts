@@ -35,6 +35,11 @@ const suDb = su as PrismaClient;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
+let agentId = 0n;
+
+// A literal address in TEST-NET-3: the SSRF guard vets the final URL for real here, and an IP needs
+// no resolver to be vetted.
+const AUTH_URL = "https://203.0.113.9:9443/check";
 
 const REPLY = "Desculpe a demora, já te ajudo!";
 const fakeModel = () => new FakeListChatModel({ responses: [REPLY] });
@@ -55,20 +60,31 @@ function makeStub(opts: { page: unknown; sent: Array<[number, string]> }) {
   return async () => client;
 }
 
-function page(msgs: Array<{ id: number; content: string; type?: number }>) {
+function page(
+  msgs: Array<{
+    id: number;
+    content: string;
+    type?: number;
+    private?: boolean;
+  }>,
+) {
   return {
     payload: msgs.map((m) => ({
       id: m.id,
       content: m.content,
       message_type: m.type ?? 0,
-      private: false,
+      private: m.private ?? false,
     })),
   };
 }
 
 async function seedConversation(
   convId: number,
-  over: { assigneeType?: string | null; lastError?: string | null } = {},
+  over: {
+    assigneeType?: string | null;
+    lastError?: string | null;
+    contactId?: bigint;
+  } = {},
 ): Promise<bigint> {
   const c = await suDb.conversation.create({
     data: {
@@ -78,6 +94,7 @@ async function seedConversation(
       status: "pending",
       assigneeType: over.assigneeType ?? null,
       inboxId: inboxDbId,
+      ...(over.contactId ? { contactId: over.contactId } : {}),
       threadId: `${tenantId}:${instanceId}:${convId}`,
       lastEventAt: new Date(),
       lastError: over.lastError ?? null,
@@ -128,6 +145,7 @@ describe.skipIf(!dbUp)("reengage", () => {
         name: "Atendente",
       },
     });
+    agentId = agent.id;
     const inbox = await suDb.inbox.create({
       data: {
         tenantId,
@@ -145,6 +163,7 @@ describe.skipIf(!dbUp)("reengage", () => {
       for (const table of [
         "llm_usage",
         "conversations",
+        "contacts",
         "inboxes",
         "agents",
         "vault_entries",
@@ -231,5 +250,284 @@ describe.skipIf(!dbUp)("reengage", () => {
     );
     expect(res.outcome).toBe("empty");
     expect(sent).toEqual([]);
+  });
+
+  // A private note is the operator's team talking to itself, and Chatwoot stores it after the message
+  // it is about. Counted as a reply it empties the tail, and the conversations most likely to be
+  // re-engaged are exactly the ones carrying one: a failed turn, an out-of-hours notice, a refusal.
+  test("a private note is not a reply, so the tail behind it is still answered", async () => {
+    const id = await seedConversation(906);
+    const sent: Array<[number, string]> = [];
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([
+            { id: 1, content: "oi, alguém aí?", type: 0 },
+            {
+              id: 2,
+              content: "contato não autorizado",
+              type: 1,
+              private: true,
+            },
+          ]),
+          sent,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("posted");
+    expect(sent).toEqual([[906, REPLY]]);
+  });
+
+  // Re-engage runs the model and SENDS its answer, so it is a turn, and the contact-authorization
+  // invariant covers it: an operator pressing the button is not the authorization. The tail this
+  // answers may be unanswered precisely because the contact was refused when it arrived.
+  describe("with the contact-authorization gate on", () => {
+    let previousSettings: unknown = null;
+
+    beforeAll(async () => {
+      const before = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { settings: true },
+      });
+      previousSettings = before.settings;
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            contactAuth: { enabled: true, url: AUTH_URL },
+          },
+        },
+      });
+    });
+
+    afterAll(async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: previousSettings as object },
+      });
+    });
+
+    async function seedContact(chatwootContactId: number): Promise<bigint> {
+      const c = await suDb.contact.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootContactId,
+          phone: `+55119888877${chatwootContactId}`,
+        },
+        select: { id: true },
+      });
+      return c.id;
+    }
+
+    function answering(authorized: boolean, calls: { n: number }) {
+      return (async () => {
+        calls.n += 1;
+        return new Response(JSON.stringify({ authorized }), { status: 200 });
+      }) as unknown as typeof fetch;
+    }
+
+    test("a refused contact is not re-engaged (no model, no post)", async () => {
+      const id = await seedConversation(903, {
+        contactId: await seedContact(41),
+      });
+      const sent: Array<[number, string]> = [];
+      const calls = { n: 0 };
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(false, calls),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("not-authorized");
+      expect(calls.n).toBe(1);
+      expect(sent).toEqual([]);
+    });
+
+    test("an authorized contact is re-engaged as usual", async () => {
+      const id = await seedConversation(904, {
+        contactId: await seedContact(42),
+      });
+      const sent: Array<[number, string]> = [];
+      const calls = { n: 0 };
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(true, calls),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      expect(calls.n).toBe(1);
+      expect(sent).toEqual([[904, REPLY]]);
+    });
+
+    // A message that arrives and is REFUSED while this re-engage waits on the endpoint has already
+    // had the watermark advanced past it by its own delivery. The tail here is chosen from the last
+    // OUTGOING message, which a refusal never writes, so without a watermark floor that refused
+    // message rides into the very turn the gate exists to prevent.
+    //
+    // The floor is blunt on purpose: the watermark is aggregate, so it covers the older unanswered
+    // tail too and the re-engage comes back "empty". That IS the fail-closed side — what a
+    // concurrent delivery consumed is not this button's to re-answer — and it applies only with the
+    // gate on, so the button keeps its old reach everywhere else.
+    test("a message refused during the authorization call is not re-answered", async () => {
+      const id = await seedConversation(908, {
+        contactId: await seedContact(45),
+      });
+      const sent: Array<[number, string]> = [];
+      let modelBuilds = 0;
+      const refusedDuringTheCall = (async () => {
+        // The refused delivery's own webhook did this while we were asking.
+        await suDb.conversation.update({
+          where: { id },
+          data: { lastHandledMessageId: 2 },
+        });
+        return new Response(JSON.stringify({ authorized: true }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch;
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => {
+            modelBuilds += 1;
+            return fakeModel();
+          },
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "a primeira" },
+              { id: 2, content: "a recusada" },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: refusedDuringTheCall,
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("empty");
+      expect(modelBuilds).toBe(0);
+      expect(sent).toEqual([]);
+    });
+
+    // The floor only ever removes what something else handled. With nothing concurrent, the tail is
+    // the tail and the button does its job — which is what stops the guard above from quietly
+    // turning re-engage into a no-op wherever the gate is on.
+    test("with nothing handled concurrently the tail is answered as usual", async () => {
+      const id = await seedConversation(909, {
+        contactId: await seedContact(46),
+      });
+      const sent: Array<[number, string]> = [];
+      const calls = { n: 0 };
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "oi" },
+              { id: 2, content: "alguém aí?" },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(true, calls),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      expect(calls.n).toBe(1);
+      expect(sent).toEqual([[909, REPLY]]);
+    });
+
+    // The assignee gate runs before the authorization round-trip, which has a ten-second ceiling. A
+    // human arriving inside it used to get the turn run on their conversation: the post gate holds
+    // the reply back, and by then the tools have written.
+    test("a human taking over during the authorization call closes the gate", async () => {
+      const id = await seedConversation(907, {
+        contactId: await seedContact(44),
+      });
+      const sent: Array<[number, string]> = [];
+      let modelBuilds = 0;
+      const takeOverThenAllow = (async () => {
+        await suDb.conversation.update({
+          where: { id },
+          data: { assigneeType: "User", status: "open" },
+        });
+        return new Response(JSON.stringify({ authorized: true }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch;
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => {
+            modelBuilds += 1;
+            return fakeModel();
+          },
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: takeOverThenAllow,
+        },
+        appDb,
+      );
+      // "gate-closed", not "not-authorized": the endpoint DID clear the contact, and what stopped
+      // the turn is the same thing the early check reports.
+      expect(res.outcome).toBe("gate-closed");
+      expect(modelBuilds).toBe(0);
+      expect(sent).toEqual([]);
+    });
+
+    // Nothing to ask the endpoint about is not a pass: the mirror holds no phone, no e-mail and no
+    // identifier, so the request is never made and the answer is a refusal.
+    test("a contact with no identity is refused without asking", async () => {
+      const id = await seedConversation(905);
+      const sent: Array<[number, string]> = [];
+      const calls = { n: 0 };
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(true, calls),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("not-authorized");
+      expect(calls.n).toBe(0);
+      expect(sent).toEqual([]);
+    });
   });
 });

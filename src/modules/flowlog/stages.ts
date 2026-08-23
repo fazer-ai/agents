@@ -8,6 +8,7 @@ export const FLOW_STAGES = [
   "vision", // inbound image/document extraction
   "embed", // RAG embedding (search / ingest)
   "debounce", // inbound burst coalesced before a turn (one line per flush)
+  "contact_auth", // external contact-authorization gate (allowed/denied/error before the turn)
   "generate", // the LLM turn (graph.invoke)
   "guardrail", // input/output moderation trip (a guardrails check fired)
   "tool", // a tool call the agent made during the turn (name + status + duration)

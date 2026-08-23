@@ -12,17 +12,20 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 // at all. Copying the screened text into the checkpointer would make the playground diverge from
 // the production it exists to reproduce, so the transcript gets its own row instead (issue #136).
 //
-// Only turns the guardrail touched get one. Everything else still comes from the checkpointer, and
-// a note that fails to write costs the reload its annotation, never the turn.
+// Written for every turn the guardrail RAN on, the clean verdicts included, because the toggle is
+// per turn and a reload with no clean mark cannot tell an approved reply from an unscreened one.
+// Turns it never ran on still come from the checkpointer alone, and a note that fails to write
+// costs the reload its annotation, never the turn.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
 // NOTE: There is deliberately no per-tenant cap here, unlike the media store. Bytes are what the
-// media cap exists to bound; a note is a short row, and pruning one while its session is still
-// reloadable would silently put the transcript back to the raw reply the guardrail removed. The
-// note's life is the session's: `deletePlaygroundSession` deletes both.
+// media cap exists to bound, and a screened session writes one short row per turn, bounded by an
+// operator typing turns by hand. Pruning one while its session is still reloadable would silently
+// put the transcript back to the raw reply the guardrail removed, which is the failure the row
+// exists to prevent. The note's life is the session's: `deletePlaygroundSession` deletes both.
 
 export interface PlaygroundTurnNote {
   // The AIMessage this overrides, or null for a turn the thread has no record of.

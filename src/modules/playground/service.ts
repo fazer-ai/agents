@@ -610,8 +610,17 @@ export async function runPlaygroundTurn(
   );
 
   // The checkpointer holds the model's OWN reply, as production's thread does, so a reload would
-  // show the text the guardrail took away and no sign that it acted. Only turns it touched get a
-  // note; `gTrace` empty means it never ran.
+  // show the text the guardrail took away and no sign that it acted. Every turn the guardrail RAN
+  // on gets a note, a clean verdict included: the toggle is per turn, so without the clean mark a
+  // reopened session cannot tell an approved reply from one nothing ever screened, which is the
+  // ambiguity the issue is about. `gTrace` empty means it never ran, and writes nothing.
+  //
+  // NOTE: The two stores are not written atomically, and cannot be: `graph.invoke` has already
+  // committed the model's own reply to the checkpointer by the time the screening (a model call)
+  // returns. A second mount reopening this same session in that window rebuilds from the
+  // checkpointer alone and reads the raw reply. Left open deliberately — see `.codex-review-waived`
+  // for what each way of closing it costs, all of them more than a seconds-long window on a
+  // surface one operator drives.
   if (gTrace.length > 0) {
     await savePlaygroundTurnNote(base, {
       tenantId,

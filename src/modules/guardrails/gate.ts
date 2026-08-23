@@ -136,6 +136,21 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     direction: "input" | "output",
   ): BaseChatModel | null => {
     if (model !== undefined) return model;
+    // A key that never resolved is a gate configured to run that cannot, which is the same answer
+    // as a model that refuses to build and belongs on the same side of the fence. It used to sit up
+    // in the early guard next to "the operator switched this off", so one condition answered two
+    // questions and the operator's own reading of a deleted vault entry was "no guardrail ran" —
+    // the one case of the three the issue names that stayed invisible.
+    if (!p.apiKey) {
+      model = null;
+      emitFlowEvent(p.flow, {
+        stage: "guardrail",
+        status: "error",
+        level: "warn",
+        detail: { direction, outcome: "credential_unresolved" },
+      });
+      return model;
+    }
     try {
       model = (p.makeModel ?? createChatModel)({
         provider: gr.provider,
@@ -168,8 +183,9 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     subject: string,
   ): Promise<{ d: GuardrailDecision; r: GuardrailReport | null }> => {
     const dir = gr[direction];
-    if (!gr.enabled || !p.apiKey || !dir.enabled)
-      return { d: { kind: "not-run" }, r: null };
+    // Only what the operator SWITCHED OFF reads as not-run. Whether the gate can actually run is a
+    // different question, answered by `resolveModel`.
+    if (!gr.enabled || !dir.enabled) return { d: { kind: "not-run" }, r: null };
     const judgesRelevance = direction === "output" && !!p.customerMessage;
     const checks = judgesRelevance
       ? dir.checks

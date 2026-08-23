@@ -4,6 +4,7 @@ import { analyzeGuardrail, splitAnalyses } from "@/modules/guardrails/analyze";
 import {
   buildGuardrailGate,
   chatwootNoteSink,
+  type GuardrailReport,
 } from "@/modules/guardrails/gate";
 import { buildGuardrailSystemPrompt } from "@/modules/guardrails/prompts";
 import {
@@ -935,11 +936,6 @@ describe("buildGuardrailGate", () => {
       apiKey: "k",
     },
     {
-      name: "the guardrails agent has no credential",
-      cfg: enabledCfg(),
-      apiKey: "",
-    },
-    {
       name: "this direction is switched off",
       cfg: enabledCfg({
         output: { ...GUARDRAILS_DEFAULTS.output, enabled: false },
@@ -1053,6 +1049,31 @@ describe("buildGuardrailGate", () => {
       expect(f.calls()).toBe(0);
     });
   }
+
+  // A deleted or cross-tenant vault entry leaves `guardrailsApiKey` empty (prepare.ts), and the
+  // operator has no way to see that from the console: the editor still shows a credentialRef, so
+  // the toggle still reads as available. It used to report `not-run`, the same answer as "you
+  // switched this off", which is the one case of the three the issue names that stayed invisible.
+  test("a credential that did not resolve is unavailable, not switched off", async () => {
+    const f = countingFactory(() => {
+      throw new Error("should never be constructed");
+    });
+    const seen: GuardrailReport[] = [];
+    const gate = buildGuardrailGate({
+      cfg: enabledCfg(),
+      apiKey: "",
+      announce: (r) => {
+        seen.push(r);
+      },
+      flow,
+      makeModel: f.make,
+    });
+    expect(await gate("output", "olá")).toEqual({ kind: "unavailable" });
+    // No key means no call to make, so nothing is built and nothing is billed — the difference
+    // from `not-run` is entirely in what the operator is told.
+    expect(f.calls()).toBe(0);
+    expect(seen).toEqual([{ direction: "output", outcome: "unavailable" }]);
+  });
 
   // The reason the check above is not just an optimization: createChatModel throws SYNCHRONOUSLY on
   // a configuration it cannot satisfy, and this gate is built on every turn and every follow-up.

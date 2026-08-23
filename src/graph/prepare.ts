@@ -190,7 +190,9 @@ export interface AgentConfig {
   credentialBaseUrl: string | null;
   // Guardrails (input/output moderation): config + the guardrails agent's OWN resolved API key /
   // baseURL (its chat model is separate from the main agent's). apiKey "" ⇒ disabled or the
-  // credential did not resolve ⇒ the runtime skips analysis (fail-open).
+  // credential did not resolve ⇒ the runtime skips the analysis (fail-open). The gate tells those
+  // two apart: switched off reads as `not-run`, an empty key on an ENABLED direction as
+  // `unavailable`, which is what puts an unresolvable ref in front of the operator.
   guardrails: GuardrailsConfig;
   guardrailsApiKey: string;
   guardrailsCredentialBaseUrl: string | null;
@@ -360,7 +362,8 @@ export async function loadAgentConfig(
     credentialBaseUrl = entry.baseUrl;
   }
   // Guardrails agent's own credential (separate model). Resolved only when enabled; a missing/
-  // unresolvable credential leaves the key empty and the runtime skips analysis (fail-open, logged).
+  // unresolvable credential leaves the key empty and the runtime skips the analysis (fail-open,
+  // logged), reporting `unavailable` rather than `not-run` so the operator can see it happened.
   const guardrails = readGuardrailsConfig(effSettings);
   let guardrailsApiKey = "";
   let guardrailsCredentialBaseUrl: string | null = null;

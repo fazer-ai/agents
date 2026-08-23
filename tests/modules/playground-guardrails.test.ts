@@ -12,6 +12,7 @@ import {
 } from "@/modules/playground/service";
 import {
   deletePlaygroundSession,
+  getPlaygroundSessionTurns,
   rebuildPlaygroundTurns,
 } from "@/modules/playground/sessions";
 import { guardrailModel } from "../utils/scripted-models";
@@ -50,6 +51,7 @@ let agentTemplate = 0n;
 let agentSilent = 0n;
 let agentInput = 0n;
 let agentBrokenGuard = 0n;
+let agentDeadCredential = 0n;
 let agentBoth = 0n;
 let agentInputSilent = 0n;
 
@@ -222,6 +224,15 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       guardrails: guardrails({ input: dir({ enabled: true }), output: dir() }),
     });
     agentBrokenGuard = await mk("Broken", outputOnly());
+    // Enabled, with a credentialRef pointing at a vault entry that is not there (deleted, or from
+    // another tenant). `prepare.ts` leaves the key empty and logs; the console shows a ref and an
+    // available toggle, so this is the misconfiguration the operator cannot see from the editor.
+    agentDeadCredential = await mk("DeadCredential", {
+      guardrails: {
+        ...guardrails({ input: dir(), output: dir({ enabled: true }) }),
+        credentialRef: "vault:999999999",
+      },
+    });
     agentInputSilent = await mk("InputSilent", {
       guardrails: guardrails({
         input: dir({ enabled: true, action: "silent" }),
@@ -346,6 +357,26 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(r.trace.filter((e) => e.type === "guardrail")).toMatchObject([
       { outcome: "unavailable" },
     ]);
+  });
+
+  // Same case, one step earlier: the credential itself never resolved, so there is no model to try.
+  // It used to report `not-run`, which is the answer for a guardrail the operator switched OFF, and
+  // is the one of the issue's three cases that stayed invisible.
+  test("a guardrail whose credential is gone is unavailable, not silently off", async () => {
+    const m = models({ violated: true });
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentDeadCredential,
+      message: "oi",
+      base: appDb,
+      deps: deps(m),
+    });
+    expect(r.reply).toBe(RAW_REPLY);
+    expect(r.trace.filter((e) => e.type === "guardrail")).toMatchObject([
+      { outcome: "unavailable", direction: "output" },
+    ]);
+    // No key, so nothing was asked and nothing was billed.
+    expect(m.judgeCalls()).toBe(0);
   });
 
   // A screening that ran and approved is still worth a line: "the guardrail is on and let this
@@ -548,6 +579,73 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       deps: deps(m),
     });
     expect(r.suppressed).toBe(false);
+  });
+
+  // Reload, end to end and through the REAL checkpointer, because every other assertion here is on
+  // one half: the row that gets written, or the fold over a row handed in. Five review rounds found
+  // the same defect in the seam between them, so the seam gets a test that spans it. The first turn
+  // answers with nothing on purpose: the rebuild drops an empty AI message, so the raw tail of the
+  // thread and the last message the transcript SHOWS are different ids, and an anchor taken from
+  // the wrong one moves the blocked turn to the end.
+  test("a reload renders the blocked turn in the place it happened", async () => {
+    const silentModel = (() => ({
+      async invoke() {
+        return new AIMessage("");
+      },
+      bindTools() {
+        return this;
+      },
+    })) as never;
+    const first = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentInput,
+      message: "primeira",
+      guardrails: false,
+      base: appDb,
+      deps: { makeModel: silentModel },
+    });
+    await runPlaygroundTurn({
+      tenantId,
+      agentId: agentInput,
+      message: "fale do concorrente",
+      threadId: first.threadId,
+      base: appDb,
+      deps: { makeModel: models({ violated: true }).make },
+    });
+    await runPlaygroundTurn({
+      tenantId,
+      agentId: agentInput,
+      message: "terceira",
+      threadId: first.threadId,
+      base: appDb,
+      deps: { makeModel: models({ violated: false }).make },
+    });
+
+    const turns = await getPlaygroundSessionTurns(
+      tenantId,
+      agentInput,
+      first.threadId,
+      appDb,
+    );
+    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
+      "user:primeira",
+      "user:fale do concorrente",
+      `assistant:${TEMPLATE}`,
+      "user:terceira",
+      `assistant:${RAW_REPLY}`,
+    ]);
+    // The verdict rides the turn it belongs to, and nowhere else.
+    const blocked = turns[2];
+    expect(blocked?.trace).toMatchObject([
+      { type: "guardrail", direction: "input" },
+    ]);
+    // A clean screening survives the reload too. Without it, reopening a session cannot tell a turn
+    // that was screened and approved from one run with the toggle off, which is the ambiguity this
+    // whole issue is about. The first turn ran with the toggle off and carries nothing.
+    expect(turns[4]?.trace).toMatchObject([
+      { type: "guardrail", outcome: "clean" },
+    ]);
+    expect(turns[0]?.trace.some((e) => e.type === "guardrail")).toBe(false);
   });
 
   // The anchor says where a thread-less turn goes, and `applyTurnNotes` resolves it against the

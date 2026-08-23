@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clipText, replaceLoneSurrogates } from "@/lib/text";
+import { clipText, clipTextEnd, replaceLoneSurrogates } from "@/lib/text";
 
 // An unpaired surrogate is the failure both functions exist to prevent, so every assertion below is
 // ultimately this predicate. `for...of` yields a well-formed pair as ONE two-unit string, so a
@@ -44,6 +44,37 @@ describe("clipText", () => {
     // replaceLoneSurrogates' job — the two do different halves of the same problem.
     const lone = JSON.parse('"ab\\udc00cd"') as string;
     expect(loneSurrogates(clipText(lone, 3))).toBe(1);
+  });
+});
+
+describe("clipTextEnd", () => {
+  const cases: [string, string, number, string][] = [
+    ["under the cap is untouched", "abc", 10, "abc"],
+    ["exactly at the cap is untouched", "abcd", 4, "abcd"],
+    ["keeps the END, not the start", "abcdef", 4, "cdef"],
+    ["a start BETWEEN the halves drops the orphan", "abc😀def", 4, "def"],
+    ["a start ON a whole pair keeps it", "abc😀def", 5, "😀def"],
+    ["a cap of zero yields empty", "😀", 0, ""],
+    ["an all-astral value can lose its only character", "😀", 1, ""],
+  ];
+  for (const [name, input, max, want] of cases) {
+    test(name, () => {
+      expect(clipTextEnd(input, max)).toBe(want);
+    });
+  }
+
+  test("no start position of an astral string ever leaves an orphan half", () => {
+    const s = "😀🙂🎉ok😀";
+    for (let max = 0; max <= s.length + 2; max++) {
+      expect(loneSurrogates(clipTextEnd(s, max))).toBe(0);
+    }
+  });
+
+  test("a HIGH surrogate at the start is left alone: it is the start that makes orphans", () => {
+    // The mirror of its sibling's rule. An orphan already in the input belongs to
+    // replaceLoneSurrogates.
+    const lone = JSON.parse('"ab\ud800cd"') as string;
+    expect(loneSurrogates(clipTextEnd(lone, 3))).toBe(1);
   });
 });
 

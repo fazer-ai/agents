@@ -241,7 +241,33 @@ describe("no text cap ever cuts an astral character in half", () => {
   });
 });
 
-// EVERY REMAINING `.slice(0, …)` IN `src/`, AND WHY IT IS NOT A TEXT CAP.
+// Caps that keep the END of a value rather than the start. Same defect, mirrored: a start index
+// that lands between an emoji's halves leaves the result BEGINNING with a lone low surrogate. Found
+// in review, after a first sweep that looked only for `.slice(0, …)` and so could not see them.
+describe("no tail cap ever starts on half a character", () => {
+  test("memory: the attendance transcript, clipped from the front", async () => {
+    const { renderTranscript } = await import("@/modules/memory/summarize");
+    const { HumanMessage } = await import("@langchain/core/messages");
+    // Two cuts live in clipTranscript: a flat 60k-character ceiling, and a token-budget pass that
+    // recomputes its own start index. Sweep the emoji across both, one unit at a time.
+    const offenders: string[] = [];
+    for (let pad = 59_997; pad <= 60_003; pad++) {
+      const body = `😀${"x".repeat(pad)}`;
+      const out = renderTranscript([new HumanMessage(body)]);
+      if (loneSurrogates(out) > 0) offenders.push(`chars@${pad}`);
+    }
+    for (let tokens = 40; tokens <= 60; tokens++) {
+      // Long enough that the token pass has to cut, with emoji spread through the tail so some
+      // start index lands inside one.
+      const body = `${"x".repeat(400)}${"😀y".repeat(60)}`;
+      const out = renderTranscript([new HumanMessage(body)], tokens);
+      if (loneSurrogates(out) > 0) offenders.push(`tokens@${tokens}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+// EVERY REMAINING TEXT-CAP-SHAPED `.slice(…)` IN `src/`, AND WHY IT IS NOT ONE.
 //
 // The behavioural table above proves the caps it can reach. It cannot prove the ABSENCE of a cap it
 // forgot, and forgetting is the documented failure mode here: #216 named four, the first sweep found
@@ -253,6 +279,11 @@ describe("no text cap ever cuts an astral character in half", () => {
 // can do is refuse to let anyone decide it silently: every remaining occurrence is counted here with
 // a judgement attached, and a routed cap leaves no occurrence at all. A new bare cut — text or not —
 // fails this test until somebody writes down which it is.
+//
+// TWO shapes are counted, and the second was added after review found a cap the first could not see:
+// `.slice(0, n)` keeps the head, `.slice(-n)` / `.slice(x.length - n)` keeps the tail. Both bound a
+// value to a maximum length; every other `.slice(…)` in the tree names a position the code computed
+// (a delimiter, a marker's length, a caret, a tokenizer's window) and cannot be a cap at all.
 //
 //   array         bounds how MANY entries are kept, not how long a string is
 //   index         slices at a position the code computed (a delimiter, a trailing character, a caret)
@@ -280,6 +311,7 @@ const BARE_SLICES: Record<
   "src/client/pages/LogsPage.tsx": [1, "array"],
   "src/client/pages/agents/AgentEditorPage.tsx": [1, "array"],
   "src/client/pages/agents/CapabilityMap.tsx": [1, "array"],
+  "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
   "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
   "src/client/pages/resources/ToolEditModal.tsx": [1, "index"],
   "src/graph/tools/mcp.ts": [4, "ascii"],
@@ -288,14 +320,17 @@ const BARE_SLICES: Record<
   "src/graph/trace.ts": [2, "array + index"],
   "src/lib/redact.ts": [1, "array"],
   "src/lib/ssrf.ts": [1, "index"],
-  "src/lib/text.ts": [2, "the-cut"],
+  "src/lib/text.ts": [3, "the-cut"],
   "src/modules/agents/credential-paths.ts": [2, "array"],
+  "src/modules/agents/text-caps.ts": [1, "array"],
   "src/modules/analytics/langfuse-costs.ts": [2, "fixed-format"],
   "src/modules/api-keys/verify.ts": [1, "ascii"],
   "src/modules/appointments/settings.ts": [1, "array"],
   "src/modules/business-hours/announce.ts": [2, "fixed-format"],
   "src/modules/business-hours/hours.ts": [1, "fixed-format"],
   "src/modules/chatwoot/attributes.ts": [1, "array"],
+  "src/modules/conversations/service.ts": [1, "array"],
+  "src/modules/debounce/handler.ts": [1, "array"],
   "src/modules/flowlog/export.ts": [2, "fixed-format + array"],
   "src/modules/flowlog/read.ts": [1, "array"],
   "src/modules/followups/settings.ts": [1, "array"],
@@ -314,7 +349,7 @@ const BARE_SLICES: Record<
   // Zod issue PATHS, which name our own schema's keys, never the received values.
   "src/modules/integrations/mappers.ts": [1, "ascii"],
   "src/modules/mcp/write-agents.ts": [1, "array"],
-  "src/modules/memory/cut.ts": [1, "index"],
+  "src/modules/memory/cut.ts": [2, "index + array"],
   "src/modules/playground/service.ts": [1, "array"],
   "src/modules/split/service.ts": [1, "array"],
   "src/modules/tool-definitions/body-shape.ts": [1, "array"],
@@ -330,7 +365,10 @@ describe("every bare cut left in src/ is accounted for", () => {
     const found: Record<string, number> = {};
     for await (const rel of new Glob("**/*.{ts,tsx}").scan("src")) {
       const src = await Bun.file(`src/${rel}`).text();
-      const n = src.split(".slice(0,").length - 1;
+      const n = (
+        src.match(/\.slice\(\s*(?:0\s*,|-|[A-Za-z_$][\w$.]*\.length\s*-)/g) ??
+        []
+      ).length;
       if (n > 0) found[`src/${rel}`] = n;
     }
     const expected = Object.fromEntries(

@@ -20,6 +20,18 @@ export function clipText(value: string, max: number): string {
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
+// The mirror of `clipText`, for a cap that keeps the END of a value: a start index that lands
+// between two halves leaves the result BEGINNING with an orphan low surrogate. Same cost, same
+// remedy, and it exists as its own function because the two are not interchangeable — a caller that
+// keeps the tail is answering a different question ("what is the most recent 60k characters") and
+// would silently keep the wrong end if handed the other one.
+export function clipTextEnd(value: string, max: number): string {
+  if (value.length <= max) return value;
+  const cut = value.slice(value.length - max);
+  const first = cut.charCodeAt(0);
+  return first >= 0xdc00 && first <= 0xdfff ? cut.slice(1) : cut;
+}
+
 // How much room above a cap an OVERFLOW PROBE needs. A caller that bounds a value at `cap + 1` and
 // then tests `length > cap` is asking one number two questions, and `clipText` can spend that single
 // spare unit dropping an orphan half: the value comes back exactly `cap` long, reads as "nothing was

@@ -6,6 +6,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { runScopedOn } from "@/lib/tenancy";
 import {
   runPlaygroundFollowup,
   runPlaygroundTurn,
@@ -789,6 +790,53 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     const anchor = rows[0]?.anchorMessageId;
     expect(typeof anchor).toBe("string");
     expect(rendered).toContain(anchor as string);
+  });
+
+  // Every tenant-scoped model is registered with the tenancy extension, which supplies tenant_id on
+  // insert so callers need not, and OVERRIDES a caller-supplied one (anti-spoof). The helper here
+  // passes it explicitly, so nothing broke without the registration; what was missing is the
+  // contract, and both halves of it are asserted through a plain scoped create.
+  test("a turn note is written under the tenancy extension's own rules", async () => {
+    const threadId = `${tenantId}:playground:${agentTemplate}:${crypto.randomUUID()}`;
+    const other = await suDb.tenant.create({
+      data: { name: "PGG-other", slug: `pgg-other-${process.pid}` },
+    });
+    await runScopedOn(
+      appDb,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      async (db) => {
+        // No tenantId in the data at all: the extension supplies it.
+        await db.playgroundTurnNote.create({
+          data: {
+            agentId: agentTemplate,
+            threadId,
+            reply: "sem tenant",
+            guardrails: [],
+          } as never,
+          select: { id: true },
+        });
+        // ...and a foreign one is overridden rather than written or refused.
+        await db.playgroundTurnNote.create({
+          data: {
+            tenantId: other.id,
+            agentId: agentTemplate,
+            threadId,
+            reply: "tenant alheio",
+            guardrails: [],
+          },
+          select: { id: true },
+        });
+      },
+    );
+    const rows = await suDb.playgroundTurnNote.findMany({
+      where: { threadId },
+      select: { tenantId: true, reply: true },
+      orderBy: { id: "asc" },
+    });
+    expect(rows.map((r) => r.tenantId)).toEqual([tenantId, tenantId]);
+    expect(rows.map((r) => r.reply)).toEqual(["sem tenant", "tenant alheio"]);
+    await suDb.playgroundTurnNote.deleteMany({ where: { threadId } });
+    await suDb.tenant.delete({ where: { id: other.id } });
   });
 
   // The note's life is the session's. Pruned on its own, a still-reloadable session would go back

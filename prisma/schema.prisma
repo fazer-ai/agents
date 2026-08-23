@@ -774,6 +774,11 @@ model PlaygroundSession {
 // thread at all (issue #136). The playground rebuilds its transcript from the checkpointer, so
 // without this row a reload shows the reply the guardrail took away, with no sign it ever acted.
 //
+// Registered in TENANT_SCOPED_MODELS (src/lib/tenancy/multi-tenant.ts), like every table with a
+// tenant_id that is not global/identity: the extension supplies the tenant on insert and overrides
+// a caller-supplied one. A guard in tests/lib/tenancy.test.ts reads both sides, because that list
+// is kept by hand and this row joined it one review round late.
+//
 // Every turn the guardrail RAN on gets a row, the clean verdicts included: the playground's toggle
 // is per turn, so a reload with no clean mark cannot tell an approved reply from one nothing ever
 // screened. A turn it never ran on has no row and still comes from the checkpointer alone.

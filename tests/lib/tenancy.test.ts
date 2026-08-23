@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   authorize,
   isAdminRole,
@@ -84,5 +85,70 @@ describe("resolveRequestTenantContext", () => {
     const { context, anomaly } = resolveRequestTenantContext(agent, "9");
     expect(context?.tenantId).toBe(3n);
     expect(anomaly).toBe(true);
+  });
+});
+
+// The registry of tenant-scoped models is a hand-kept list in `multi-tenant.ts`, and nothing
+// checked it against the schema — so a new table with a `tenant_id` joined it only if whoever
+// added the table remembered. `PlaygroundTurnNote` did not (issue #136, review round 9), and it is
+// not the first. This reads both sides and forces the next one to be a DECISION: register it, or
+// name it below with a reason.
+//
+// The list is not an approval of what is on it. Everything except the documented global/identity
+// tables predates this guard and has never been audited; the point is that the set cannot grow
+// silently any more.
+describe("every model with a tenant_id is accounted for", () => {
+  const KNOWN_UNREGISTERED: Record<string, string> = {
+    // Documented exclusions (see the comment above TENANT_SCOPED_MODELS): global/identity tables.
+    User: "identity, not tenant data",
+    AuditLog: "written for global actions too",
+    McpOAuthAccessToken: "OAuth identity table",
+    McpOAuthRefreshToken: "OAuth identity table",
+    McpOAuthAuthorizationCode: "OAuth identity table",
+    McpOAuthPendingAuthorization: "OAuth identity table",
+    // Undocumented, and older than this guard. Every write to these passes tenantId explicitly, so
+    // nothing is broken today; what they lack is the anti-spoof override. Not touched here: this
+    // PR's scope is the playground, and changing seven write paths on the strength of a sweep is
+    // how a fix becomes an incident.
+    AgentThread: "pre-existing gap, not audited",
+    ChatwootAgentBot: "pre-existing gap, not audited",
+    ChatwootDeployment: "pre-existing gap, not audited",
+    Invitation: "pre-existing gap, not audited",
+    KnowledgeDocument: "pre-existing gap, not audited",
+    PlaygroundMedia: "pre-existing gap, not audited",
+    PlaygroundSession: "pre-existing gap, not audited",
+  };
+
+  test("it is registered, or named here with a reason", () => {
+    const schema = readFileSync("prisma/schema.prisma", "utf8");
+    const withTenantId = [...schema.matchAll(/^model (\w+) \{([\s\S]*?)^\}/gm)]
+      .filter(([, , body]) => /^\s*tenantId\s+BigInt/m.test(body ?? ""))
+      .map(([, name]) => name as string);
+    // A sweep that finds nothing is a broken sweep, not a clean repo.
+    expect(withTenantId.length).toBeGreaterThan(20);
+
+    const src = readFileSync("src/lib/tenancy/multi-tenant.ts", "utf8");
+    const registered = new Set(
+      [
+        ...(src
+          .match(
+            /TENANT_SCOPED_MODELS = new Set<string>\(\[([\s\S]*?)\]\)/,
+          )?.[1]
+          ?.matchAll(/"(\w+)"/g) ?? []),
+      ].map(([, m]) => m as string),
+    );
+    expect(registered.has("PlaygroundTurnNote")).toBe(true);
+
+    const unaccounted = withTenantId.filter(
+      (m) => !registered.has(m) && !(m in KNOWN_UNREGISTERED),
+    );
+    expect(unaccounted).toEqual([]);
+    // ...and the ledger cannot outlive what it excuses: a name here that IS registered, or that no
+    // longer exists, is a line nobody removed.
+    expect(
+      Object.keys(KNOWN_UNREGISTERED).filter(
+        (m) => registered.has(m) || !withTenantId.includes(m),
+      ),
+    ).toEqual([]);
   });
 });

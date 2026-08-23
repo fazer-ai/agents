@@ -89,10 +89,10 @@ const exportedGrantSchema = z.discriminatedUnion("source", [
 // import). Knowledge bases carry metadata; their documents' SOURCE TEXT is bundled only with the
 // separate ?documents opt-in (re-chunked + re-embedded at the destination — embeddings/chunks, being
 // derived and model-specific, are never exported).
-// Wire-format constant, not data. `tool_definitions.risk_tier` is `@ignore`d in the schema (issue
-// #149), so the field is not on the row here and reading it would not compile: the export writes
-// this instead. The KEY stays on the wire for the reason spelled out on `riskTier` below, and the
-// value is arbitrary because no build in any supported version acts on it.
+// Wire-format constant, not data. `tool_definitions.risk_tier` was retired behind `@ignore` (#176)
+// and then dropped from the database (#149), so there is no field on the row to read: the export
+// writes this instead. The KEY stays on the wire for the reason spelled out on `riskTier` below,
+// and the value is arbitrary because no build in any supported version acts on it.
 const RETIRED_RISK_TIER = "medium";
 
 const exportedHttpToolSchema = z.object({

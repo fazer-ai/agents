@@ -49,7 +49,7 @@
     "invalidDocumentTemplateName": "O nome do modelo de documento deve ter entre 1 e 120 caracteres",
     "invalidDocumentTemplateReason": "Este modelo de documento não é válido: {{reason}}",
     "invalidDocumentValues": "Os valores não correspondem ao que este modelo declara",
-    "invalidId": "This id is not valid",
+    "invalidId": "Este id não é válido",
     "invalidPassword": "Senha incorreta",
     "invalidSetupToken": "Token de configuração inválido ou ausente",
     "invalidSiteUrl": "URL do site inválida",

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { guardrailTraceLabel } from "@/client/pages/agents/PlaygroundChat";
 import {
   agentTurn,
   type PlaygroundTurn,
@@ -110,5 +111,88 @@ describe("agentTurn is the only place an agent turn is built", () => {
   test("every path that receives a reply renders it through agentTurn", () => {
     // text, follow-up, file, voice note, and the reload — the five that produce an agent turn.
     expect(src.match(/agentTurn\(t, \{/g)?.length).toBe(5);
+  });
+});
+
+// The other row-level renderer of this PR, and the same failure twice over: two independent fields
+// decide the sentence, and a nested ternary answered one of them with a constant. The direction arm
+// was caught in review round 8; the action arm survived to round 11, telling the operator "the
+// configured reply" on text the judge itself had written.
+describe("guardrailTraceLabel", () => {
+  const t = (_k: string, fallback: string) => fallback;
+
+  const rows: {
+    name: string;
+    entry: Parameters<typeof guardrailTraceLabel>[1];
+    says: string;
+  }[] = [
+    {
+      name: "approved",
+      entry: { direction: "output", outcome: "clean" },
+      says: "approved",
+    },
+    {
+      name: "unscreened input",
+      entry: { direction: "input", outcome: "unavailable" },
+      says: "the message reached the agent unchecked",
+    },
+    {
+      name: "unscreened output",
+      entry: { direction: "output", outcome: "unavailable" },
+      says: "the reply went out unscreened",
+    },
+    {
+      name: "suppressed",
+      entry: { direction: "output", outcome: "suppressed", action: "silent" },
+      says: "nothing would be sent",
+    },
+    {
+      name: "replaced by the template",
+      entry: { direction: "output", outcome: "replaced", action: "template" },
+      says: "the configured reply",
+    },
+    {
+      name: "replaced by text the judge wrote",
+      entry: { direction: "output", outcome: "replaced", action: "generated" },
+      says: "a reply the guardrail wrote",
+    },
+    // `action` is absent on a report that predates it being recorded. The configured reply is the
+    // safe half of the pair: it describes what an operator can go and read.
+    {
+      name: "replaced with no action recorded",
+      entry: { direction: "output", outcome: "replaced" },
+      says: "the configured reply",
+    },
+  ];
+
+  for (const row of rows) {
+    test(row.name, () => {
+      expect(guardrailTraceLabel(t, row.entry)).toContain(row.says);
+    });
+  }
+
+  // The template arm and the generated arm are DIFFERENT sentences. Asserting `toContain` on each
+  // separately would still pass if both returned the generated one.
+  test("the two replacement sentences are not the same sentence", () => {
+    const template = guardrailTraceLabel(t, {
+      direction: "output",
+      outcome: "replaced",
+      action: "template",
+    });
+    const generated = guardrailTraceLabel(t, {
+      direction: "output",
+      outcome: "replaced",
+      action: "generated",
+    });
+    expect(template).not.toBe(generated);
+  });
+
+  test("the row does not write any of these sentences itself", () => {
+    const src = readFileSync(
+      "src/client/pages/agents/PlaygroundChat.tsx",
+      "utf8",
+    );
+    // Once where it is defined, once where the row calls it.
+    expect(src.match(/guardrailTraceLabel/g)?.length).toBe(2);
   });
 });

@@ -1787,6 +1787,7 @@
       "guardrailInput": "Guardrail na mensagem",
       "guardrailOutput": "Guardrail na resposta",
       "guardrailReplaced": "substituída pela resposta configurada",
+      "guardrailReplacedGenerated": "substituída por uma resposta escrita pelo guardrail",
       "guardrailSuppressed": "bloqueada, nada seria enviado",
       "guardrailUnavailableInput": "não pôde ser analisada, e a mensagem chegou ao agente sem triagem",
       "guardrailUnavailableOutput": "não pôde ser analisada, e a resposta saiu sem triagem",

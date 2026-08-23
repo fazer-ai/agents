@@ -1369,11 +1369,11 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   // the product that nothing screened.
   const GUARD_MODEL = "guard-sentinel-nudge";
 
-  async function withGuardrails(
+  async function withGuardrails<T>(
     g: Record<string, unknown>,
-    fn: () => Promise<void>,
+    fn: () => Promise<T>,
     rest: Record<string, unknown> = {},
-  ) {
+  ): Promise<T> {
     const agent = await suDb.agent.findFirstOrThrow({
       where: { tenantId },
       select: { id: true },
@@ -1387,12 +1387,15 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       data: {
         settings: {
           ...rest,
-          guardrails: { ...g, credentialRef: `vault:${key.id}` },
+          // The ref is spread FIRST so a caller can hand in a dangling one: "the operator deleted
+          // the vault entry" is a state the gate answers differently from every other, and there
+          // is no other way to reach it from here.
+          guardrails: { credentialRef: `vault:${key.id}`, ...g },
         },
       },
     });
     try {
-      await fn();
+      return await fn();
     } finally {
       await suDb.agent.update({
         where: { id: agent.id },
@@ -2024,6 +2027,82 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         ).toBe(1);
       },
     );
+  });
+
+  // The third way to reach `unavailable`, and the one where no model call was made: the operator
+  // deleted the vault entry. Nothing took seconds at a provider, so nothing the turn read before it
+  // went stale, and the recheck this branch pays for has no window to cover.
+  //
+  // Asked as a COMPARISON against the same follow-up with the gate switched off, not as a probe
+  // count: the claim is "a dead credential costs no extra live read", and a hardcoded number would
+  // only be re-deriving how many reads the phase before generation happens to make today. Both arms
+  // move together if that ever changes; the difference between them is what is under test.
+  test("a dead credential costs the follow-up no extra ownership probe", async () => {
+    const run = async (conversationId: number) => {
+      await seedConv(conversationId, null);
+      const s = stub();
+      const inner = await s.makeClient();
+      let probes = 0;
+      const client = {
+        ...inner,
+        getConversation: async (c: number) => {
+          probes += 1;
+          return { id: c, status: "pending", meta: {} };
+        },
+      } as unknown as ChatwootClient;
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:${conversationId}`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        postActions: { assignLabels: ["follow-up"], resolve: true },
+        requireLiveBotOwnership: true,
+        base: appDb,
+        deps: {
+          makeModel: ((cfg: { model: string }) => {
+            if (cfg.model === GUARD_MODEL)
+              throw new Error("the judge must not be built without a key");
+            return new FakeListChatModel({ responses: ["Ainda por aí?"] });
+          }) as never,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      return { probes, outcome, messages: s.messages };
+    };
+
+    const off = await run(9958);
+    const dead = await withGuardrails(
+      {
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        // Well-formed and pointing at nothing, which is what an operator leaves behind by deleting
+        // the vault entry a guardrail still names.
+        credentialRef: "vault:00000000-0000-0000-0000-000000000000",
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "template",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-NUDGE",
+        },
+      },
+      async () => run(9959),
+    );
+
+    // Fail-open on both, and the customer gets the same follow-up either way.
+    expect(off.outcome).toBe("messaged");
+    expect(dead.outcome).toBe("messaged");
+    expect(dead.messages).toEqual([[9959, "Ainda por aí?"]]);
+    // The line under test. `unavailable` used to answer "a judge ran" here, and this number was one
+    // higher — a live Chatwoot GET per follow-up, on every agent whose guardrail credential is gone.
+    expect(dead.probes).toBe(off.probes);
   });
 
   // The half of the recheck the probe CAN answer, on the caller that asked for certainty. A known

@@ -1319,6 +1319,51 @@ function TracePanel({
   );
 }
 
+// What one guardrail row SAYS. A table rather than a chain of ternaries, because two independent
+// fields decide it and the chain grew a wrong arm for each: one sentence for both directions said
+// the REPLY went out unscreened, on rows where the reply was screened and approved a line below;
+// and every trip said "the configured reply", on text the judge itself had written.
+export function guardrailTraceLabel(
+  t: (key: string, fallback: string) => string,
+  entry: Pick<
+    Extract<TraceEntry, { type: "guardrail" }>,
+    "direction" | "outcome" | "action"
+  >,
+): string {
+  switch (entry.outcome) {
+    case "clean":
+      return t("playground.trace.guardrailClean", "approved");
+    case "unavailable":
+      return entry.direction === "input"
+        ? t(
+            "playground.trace.guardrailUnavailableInput",
+            "could not be checked, so the message reached the agent unchecked",
+          )
+        : t(
+            "playground.trace.guardrailUnavailableOutput",
+            "could not be checked, so the reply went out unscreened",
+          );
+    case "suppressed":
+      return t(
+        "playground.trace.guardrailSuppressed",
+        "blocked, nothing would be sent",
+      );
+    case "replaced":
+      // `generated` reaches here only when the judge actually handed text back: the gate reports
+      // `template` when the action was `generated` and no reply came with it, so this reads the
+      // event and not the configuration.
+      return entry.action === "generated"
+        ? t(
+            "playground.trace.guardrailReplacedGenerated",
+            "replaced by a reply the guardrail wrote",
+          )
+        : t(
+            "playground.trace.guardrailReplaced",
+            "replaced by the configured reply",
+          );
+  }
+}
+
 function TraceRow({ entry }: { entry: TraceEntry }) {
   const { t } = useTranslation();
   if (entry.type === "assistant") {
@@ -1355,30 +1400,7 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
             ? t("playground.trace.guardrailInput", "Guardrail on the message")
             : t("playground.trace.guardrailOutput", "Guardrail on the reply")}
           <span className="font-normal text-text-muted">
-            {entry.outcome === "clean"
-              ? t("playground.trace.guardrailClean", "approved")
-              : entry.outcome === "unavailable"
-                ? // What went unscreened depends on the direction, and one sentence for both said
-                  // the reply did. On an input failure the reply may have been screened and
-                  // approved a line below, so the shared wording contradicted the very next row.
-                  entry.direction === "input"
-                  ? t(
-                      "playground.trace.guardrailUnavailableInput",
-                      "could not be checked, so the message reached the agent unchecked",
-                    )
-                  : t(
-                      "playground.trace.guardrailUnavailableOutput",
-                      "could not be checked, so the reply went out unscreened",
-                    )
-                : entry.outcome === "suppressed"
-                  ? t(
-                      "playground.trace.guardrailSuppressed",
-                      "blocked, nothing would be sent",
-                    )
-                  : t(
-                      "playground.trace.guardrailReplaced",
-                      "replaced by the configured reply",
-                    )}
+            {guardrailTraceLabel(t, entry)}
           </span>
         </span>
         {tripped && (

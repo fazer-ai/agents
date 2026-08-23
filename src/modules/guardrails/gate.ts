@@ -19,14 +19,17 @@ import type { GuardrailAction, GuardrailsConfig } from "./settings";
 // down", set through a callback. Three consecutive review rounds found a caller reading one of the
 // three for another's question, so they became one union with the three answers in it.
 export type GuardrailDecision =
-  // Nothing was screened: guardrails off, no credential, or this direction switched off. No model
-  // call, no delay, nothing written.
+  // Nothing was screened: guardrails off, this direction switched off, or nothing left to ask. No
+  // model call, no delay, nothing written.
   | { kind: "not-run" }
   // Screened and approved. A model call happened; nothing was written down.
   | { kind: "clean" }
-  // Could NOT be screened: the model would not build, or the analysis failed. Fail-open, so the
-  // subject still goes out — but a warn was written, and a warn pages.
-  | { kind: "unavailable" }
+  // Could NOT be screened. Fail-open, so the subject still goes out — but a warn was written, and a
+  // warn pages. `modelRan` separates the two ways in, because they cost different amounts of TIME:
+  // an analysis that errored had already spent a round trip to the provider, while a credential
+  // that never resolved and a model that would not build never left this process. A caller whose
+  // earlier reads go stale while the judge thinks asks that question, not the kind.
+  | { kind: "unavailable"; modelRan: boolean }
   // Tripped: send this instead of the subject. The operator note was written.
   | { kind: "replaced"; reply: string }
   // Tripped with the `silent` action: send nothing. The operator note was written.
@@ -55,9 +58,12 @@ export function guardrailLeftAMark(d: GuardrailDecision): boolean {
 }
 
 // A model call was attempted, so whatever the caller read before this is now as old as that call.
-// The only answer that is NOT stale afterwards is the one where no judge ran at all.
+// Two of the answers are reached without one: nothing was screened, and the screening could not be
+// set up at all. Neither spends the seconds this exists to detect.
 export function guardrailRan(d: GuardrailDecision): boolean {
-  return d.kind !== "not-run";
+  if (d.kind === "not-run") return false;
+  if (d.kind === "unavailable") return d.modelRan;
+  return true;
 }
 
 export type GuardrailGate = (
@@ -205,7 +211,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     const model = resolveModel(direction);
     if (!model)
       return {
-        d: { kind: "unavailable" },
+        d: { kind: "unavailable", modelRan: false },
         r: { direction, outcome: "unavailable" },
       };
     const verdict = await analyzeGuardrail(
@@ -244,8 +250,12 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       });
     }
     if (!verdict.violated) {
-      const kind = verdict.error ? "unavailable" : "clean";
-      return { d: { kind }, r: { direction, outcome: kind } };
+      // The call went out and came back, however it came back, so both answers here are downstream
+      // of a round trip the caller's earlier reads did not survive.
+      const d: GuardrailDecision = verdict.error
+        ? { kind: "unavailable", modelRan: true }
+        : { kind: "clean" };
+      return { d, r: { direction, outcome: d.kind } };
     }
     // NOTE: The turn trail and the operator note report what the guardrail DID, not what it was
     // configured to do. `generated` with no replacement in hand sends the template — when the model

@@ -1782,6 +1782,7 @@
       "guardrailInput": "Guardrail on the message",
       "guardrailOutput": "Guardrail on the reply",
       "guardrailReplaced": "replaced by the configured reply",
+      "guardrailReplacedGenerated": "replaced by a reply the guardrail wrote",
       "guardrailSuppressed": "blocked, nothing would be sent",
       "guardrailUnavailableInput": "could not be checked, so the message reached the agent unchecked",
       "guardrailUnavailableOutput": "could not be checked, so the reply went out unscreened",

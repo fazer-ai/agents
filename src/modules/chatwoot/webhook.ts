@@ -1278,8 +1278,8 @@ async function maybeConsumeCommandOrGate(params: {
     // two sides, and when it is a side but no conversation is RECORDED as the other one — and then
     // every step below falls back to naming this conversation alone, which is all it can honestly
     // claim.
-    let redirectSibling: number | null = null;
-    let ladderConversationId = conversationId;
+    let redirectSiblings: number[] = [];
+    let ladderConversationIds: number[] = [conversationId];
     if (ctx.conv.contactId !== null && ctx.agentSettings != null) {
       const contactDbId = ctx.conv.contactId;
       const redirectCfg = readChannelRedirectConfig(ctx.agentSettings);
@@ -1298,13 +1298,18 @@ async function maybeConsumeCommandOrGate(params: {
           // Only a NAMED pair is widened to. Without one the sibling would be the contact's latest
           // conversation on the other inbox, which for a contact starting a new funnel is last
           // month's — and this command tombstones that conversation's appointment reminders.
-          redirectSibling = ep.siblingConversationId;
+          redirectSiblings = ep.siblingConversationIds;
           // The ladder is keyed by the WIDGET thread. Typed on the widget it is this conversation,
-          // linked or not; typed on the entry it is only reachable through the pair.
-          ladderConversationId =
-            (ep.side === "widget"
-              ? conversationId
-              : ep.siblingConversationId) ?? conversationId;
+          // linked or not; typed on the entry it is only reachable through the pair — and there the
+          // pair can be several chats, each with its own armed ladder. The fallback to this
+          // conversation keeps the unpaired entry side asking about its own key, which was never
+          // enqueued and answers zero.
+          ladderConversationIds =
+            ep.side === "widget"
+              ? [conversationId]
+              : ep.siblingConversationIds.length > 0
+                ? ep.siblingConversationIds
+                : [conversationId];
         },
       );
     }
@@ -1349,25 +1354,27 @@ async function maybeConsumeCommandOrGate(params: {
         base,
       ),
     );
-    await step(
-      "cancel redirect follow-up",
-      "follow-up de redirecionamento",
-      () =>
-        retireRedirectFollowUp(
-          tenantId,
-          chatwootThreadId(tenantId, instanceId, ladderConversationId),
-          base,
-        ),
-    );
-    // NOTE: Both sides of the pair, for the same reason the ladder is retired by the widget's key: in a
+    for (const ladderConvId of ladderConversationIds) {
+      await step(
+        "cancel redirect follow-up",
+        "follow-up de redirecionamento",
+        () =>
+          retireRedirectFollowUp(
+            tenantId,
+            chatwootThreadId(tenantId, instanceId, ladderConvId),
+            base,
+          ),
+      );
+    }
+    // NOTE: Every side of the pair, for the same reason the ladder is retired by the widget's key: in a
     // redirect episode the AI does not serve the entry conversation at all — the gate answers there
     // with a fixed message and no model, and every turn (so every booking) happens in the widget
     // (docs/channel-redirect.md). A /reset typed on the entry side would therefore cancel reminders
     // on a thread that never booked anything, and the test appointment would go on nudging the
-    // customer about an episode the operator was told had been erased.
-    for (const convId of redirectSibling === null
-      ? [conversationId]
-      : [conversationId, redirectSibling]) {
+    // customer about an episode the operator was told had been erased. Every widget chat of this
+    // entry and not just the live one, on the same reasoning as the ladder: what is being cancelled
+    // is SCHEDULED work, so the question is what is still armed, not which chat the lead is in.
+    for (const convId of [conversationId, ...redirectSiblings]) {
       await step(
         "cancel appointment reminders",
         "lembretes de agendamento",
@@ -1621,14 +1628,14 @@ async function maybeConsumeCommandOrGate(params: {
         }),
       ),
     );
-    if (redirectSibling !== null) {
-      const siblingId = redirectSibling;
+    if (redirectSiblings.length > 0) {
+      const siblingIds = redirectSiblings;
       await step("clear the paired conversation's anchors", "marcadores", () =>
         runScopedOn(base, sysCtx(tenantId), (db) =>
           db.conversation.updateMany({
             where: {
               chatwootInstanceId: instanceId,
-              chatwootConversationId: siblingId,
+              chatwootConversationId: { in: siblingIds },
             },
             data: redirectAnchors,
           }),

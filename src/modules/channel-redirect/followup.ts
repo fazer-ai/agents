@@ -99,8 +99,16 @@ export interface RedirectEpisode {
   // a widget conversation nobody ever linked is still the widget side, and the ladder is still keyed
   // by its thread.
   side: "entry" | "widget" | null;
-  // The OTHER conversation of this conversation's episode, or null when it has none.
-  siblingConversationId: number | null;
+  // EVERY conversation on the other side of this one, empty when there is none.
+  //
+  // A LIST, because the two sides are not symmetric. A widget chat records exactly one entry, so
+  // from there it holds at most one id. From the ENTRY side it can hold several: the funnel resumes
+  // the contact's widget conversation on re-entry, but only while one is open, so a lead who comes
+  // back after the chat was resolved opens a NEW one — and every one of them recorded this same
+  // entry. Answering with only the newest left the older ones armed, and this ladder's terminal
+  // stage messages and RESOLVES both sides, so an old ladder could say goodbye to and close the very
+  // conversation a /reset had just reported clean.
+  siblingConversationIds: number[];
 }
 
 export async function resolveRedirectEpisode(
@@ -121,7 +129,7 @@ export async function resolveRedirectEpisode(
   // consumers added since. It also loses nothing: with the redirect off nothing tries to close
   // anything, so the stale anchor is inert, and a /reset after re-enabling clears it — which is the
   // moment it starts to matter.
-  if (!cfg.enabled) return { side: null, siblingConversationId: null };
+  if (!cfg.enabled) return { side: null, siblingConversationIds: [] };
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     const me = await db.conversation.findUnique({
       where: {
@@ -145,7 +153,7 @@ export async function resolveRedirectEpisode(
           : inboxId === cfg.widgetInboxId
             ? "widget"
             : null;
-    if (side === null) return { side: null, siblingConversationId: null };
+    if (side === null) return { side: null, siblingConversationIds: [] };
     // Asked from the widget side, the answer is already on the row. Constrained to the CONFIGURED
     // entry inbox anyway, so a stored id belonging to another funnel's pair — which is what a
     // backfilled row can hold, the migration having no access to the agent's config — matches no row
@@ -166,16 +174,17 @@ export async function resolveRedirectEpisode(
             });
       return {
         side,
-        siblingConversationId: entry?.chatwootConversationId ?? null,
+        siblingConversationIds:
+          entry === null ? [] : [entry.chatwootConversationId],
       };
     }
-    // And from the entry side it is the same question read the other way: the widget chat that
-    // recorded THIS conversation as the one it opened from. `redirectLinkedAt` orders them because
-    // one entry conversation can send the link up to `maxResends` times and the lead can open a new
-    // chat from each, so the pair is the most recently linked of them — the live one.
-    if (cfg.widgetInboxId === null)
-      return { side, siblingConversationId: null };
-    const widget = await db.conversation.findFirst({
+    // And from the entry side it is the same question read the other way: the widget chats that
+    // recorded THIS conversation as the one they opened from. ALL of them, not the newest: they each
+    // carry a ladder keyed by their own thread, and the caller is cancelling scheduled work, which
+    // is a question about what is still armed rather than about which chat is live. Ordered newest
+    // first only so the answer is stable.
+    if (cfg.widgetInboxId === null) return { side, siblingConversationIds: [] };
+    const widgets = await db.conversation.findMany({
       where: {
         contactId,
         chatwootInstanceId: instanceId,
@@ -187,7 +196,7 @@ export async function resolveRedirectEpisode(
     });
     return {
       side,
-      siblingConversationId: widget?.chatwootConversationId ?? null,
+      siblingConversationIds: widgets.map((w) => w.chatwootConversationId),
     };
   });
 }

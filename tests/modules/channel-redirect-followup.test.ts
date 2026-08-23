@@ -989,7 +989,7 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
           cfg,
           appDb,
         ),
-      ).toEqual({ side: "widget", siblingConversationId: ENTRY_CONV });
+      ).toEqual({ side: "widget", siblingConversationIds: [ENTRY_CONV] });
       expect(
         await resolveRedirectEpisode(
           tenantId,
@@ -999,7 +999,13 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
           cfg,
           appDb,
         ),
-      ).toEqual({ side: "entry", siblingConversationId: FRESH_CONV });
+        // BOTH chats, newest first. The suite's own fixture already had a widget conversation
+        // recording this entry, so seeding a second one here is the ordinary shape rather than a
+        // contrived one — and answering with the newest alone is what left the other's ladder armed.
+      ).toEqual({
+        side: "entry",
+        siblingConversationIds: [FRESH_CONV, WIDGET_CONV],
+      });
     } finally {
       globalThis.fetch = originalFetch;
       await suDb.conversation.delete({ where: { id: fresh.id } });
@@ -1097,7 +1103,7 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
           },
           appDb,
         ),
-      ).toEqual({ side: "widget", siblingConversationId: null });
+      ).toEqual({ side: "widget", siblingConversationIds: [] });
       // The operator still gets both cross-link notes, and at the conversation that actually
       // redirected rather than the one that is merely the most recent. That guess costs a human one
       // click on the wrong tab; the identity above would have cost a goodbye and a RESOLVE on a

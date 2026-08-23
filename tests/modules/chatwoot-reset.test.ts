@@ -1412,6 +1412,76 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // One entry, SEVERAL widget chats. The funnel resumes the contact's widget conversation on
+    // re-entry, but only while one is open — a lead who comes back after the chat was resolved opens
+    // a new one, and every one of them recorded this same entry. Answering the pair with the newest
+    // alone left the older ladders armed, and their terminal stage messages and RESOLVES the entry
+    // conversation: the one the operator is typing /reset into.
+    test("every widget chat of this entry has its ladder cancelled", async () => {
+      await withRedirectPair(async (_convId, widgetThread) => {
+        const live = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: 44 },
+          select: { contactId: true, inboxId: true },
+        });
+        const OLD_WIDGET = 43;
+        const oldThread = `${tenantId}:${instanceId}:${OLD_WIDGET}`;
+        await suDb.conversation.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            inboxId: live.inboxId,
+            contactId: live.contactId,
+            chatwootConversationId: OLD_WIDGET,
+            contactInboxId: 305,
+            status: "resolved",
+            threadId: oldThread,
+            // Linked BEFORE the live one, which is what made it the loser of the old ordering.
+            redirectLinkedAt: new Date(Date.now() - 600_000),
+            redirectEntryConversationId: CONV_ID,
+          },
+        });
+        try {
+          for (const thread of [widgetThread, oldThread]) {
+            await suDb.schedulerJob.create({
+              data: {
+                tenantId,
+                kind: "REDIRECT_FOLLOWUP",
+                dedupeKey: `redirect-followup:${thread}`,
+                runAt: new Date(Date.now() + 3_600_000),
+                payload: { stage: "closing", widgetThreadId: thread },
+              },
+            });
+          }
+          const cw = fakeChatwoot();
+          globalThis.fetch = cw.impl;
+          await sendReset();
+
+          const jobs = await suDb.schedulerJob.findMany({
+            where: { tenantId, kind: "REDIRECT_FOLLOWUP" },
+            select: { dedupeKey: true, status: true },
+            orderBy: { dedupeKey: "asc" },
+          });
+          expect(jobs.map((j) => j.status)).toEqual(["DONE", "DONE"]);
+          // And the older chat is unpaired with the rest, so nothing finds it as this entry's other
+          // half again. Leaving the id behind is what let it be found in the first place.
+          const oldRow = await suDb.conversation.findFirstOrThrow({
+            where: { tenantId, chatwootConversationId: OLD_WIDGET },
+            select: {
+              redirectEntryConversationId: true,
+              redirectLinkedAt: true,
+            },
+          });
+          expect(oldRow.redirectEntryConversationId).toBeNull();
+          expect(oldRow.redirectLinkedAt).toBeNull();
+        } finally {
+          await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+          await suDb.conversation.deleteMany({
+            where: { tenantId, chatwootConversationId: OLD_WIDGET },
+          });
+        }
+      });
+    });
+
     // A ladder the worker had ALREADY picked up. Cancelling reaches PENDING rows only, so the row
     // survives — and this ladder's terminal stage posts a closing on both conversations and resolves
     // them, after the operator was told the episode was cleared. The stamp is what an in-flight

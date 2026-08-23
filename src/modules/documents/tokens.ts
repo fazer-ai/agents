@@ -9,6 +9,8 @@
 //      an unknown token is refused when the template is written, and renders as empty if one ever
 //      reaches the renderer anyway.
 
+import { clipText } from "@/lib/text";
+
 export const DOCUMENT_TOKEN_RE = /\{\{\s*([a-z][a-z0-9_]*)\s*\}\}/g;
 
 // A declared field may not take one of these prefixes. Without the rule, a field named
@@ -85,7 +87,13 @@ export function sanitizeDocumentValue(
     }
     const control =
       code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
-    if (control) {
+    // And half of a character. `for...of` yields a real astral character as ONE two-unit string, so
+    // a single-unit one in the surrogate range never had its other half. It arrives that way from
+    // any JSON source that spells it out (`"\ud800"`) — which is what a model writing a tool call
+    // and a mirrored Chatwoot attribute both are — and the snapshot this value ends up in is a
+    // `jsonb` column, where Postgres refuses the write outright rather than degrading it.
+    const half = ch.length === 1 && code >= 0xd800 && code <= 0xdfff;
+    if (control || half) {
       out += " ";
       continue;
     }
@@ -93,13 +101,13 @@ export function sanitizeDocumentValue(
   }
   // Trailing spaces per line, then runs of blank lines down to one, so a value pasted from a
   // spreadsheet does not open a hole in the middle of the page.
-  return out
+  const collapsed = out
     .split("\n")
     .map((line) => line.replace(/[ \t]+$/g, "").replace(/[ \t]{2,}/g, " "))
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
-    .trim()
-    .slice(0, max);
+    .trim();
+  return clipText(collapsed, max);
 }
 
 // Every token name a piece of text asks for, in order, deduplicated.
@@ -121,8 +129,10 @@ export function malformedTokenIn(text: string): string | null {
     .sort((a, b) => a - b)[0];
   if (first === undefined || at < 0) return null;
   // A short slice around the offending braces: the author needs to see WHICH one, and the whole
-  // block's text would bury it.
-  return leftover.slice(first, first + 40).split("\u0000")[0] ?? "{{";
+  // block's text would bury it. Through `clipText` because the 40 is a CAP on the author's own
+  // text, not a position the code computed: an emoji sitting on that boundary would otherwise put
+  // half a character into the refusal, which is then quoted back through the API and to the model.
+  return clipText(leftover.slice(first), 40).split("\u0000")[0] ?? "{{";
 }
 
 export function tokensIn(text: string): string[] {

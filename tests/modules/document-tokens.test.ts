@@ -46,6 +46,19 @@ describe("sanitizeDocumentValue", () => {
     expect(/\s/.test("\u0085")).toBe(false);
   });
 
+  // The cut at the far end is `clipText`, which the astral sweep covers. This is the OTHER half of
+  // the same problem and the sweep cannot reach it: an unpaired surrogate that was never cut, but
+  // spelled out by the JSON source it arrived in (`"\ud800"`) — which is what a model writing a tool
+  // call and a mirrored Chatwoot attribute both are. It survives `clipText` untouched, and the
+  // snapshot it lands in is a `jsonb` column, where Postgres refuses the whole write.
+  test("drops half a character that arrived that way, and keeps whole ones", () => {
+    const lone = "\ud800";
+    expect(sanitizeDocumentValue(`Eve${lone}Ana 😀`)).toBe("Eve Ana 😀");
+    expect(JSON.stringify(sanitizeDocumentValue(`a${lone}b`))).not.toContain(
+      "\\ud8",
+    );
+  });
+
   test("collapses runs of blank lines and trailing spaces, and bounds the length", () => {
     expect(sanitizeDocumentValue("a\n\n\n\n\nb")).toBe("a\n\nb");
     expect(sanitizeDocumentValue("a   \nb")).toBe("a\nb");

@@ -78,10 +78,10 @@ export interface IssuedDocumentResult {
 }
 
 // Which day a stored document is DATED. The frozen one, never a slice of the instant:
-// `issuedAt.slice(0, 10)` is the UTC calendar day, a day ahead of the customer's for every evening
-// issuance east of UTC-0. The slice survives only as the fallback for a row written before the
-// frozen day existed — that row was rendered with exactly that answer, so re-rendering it must not
-// silently move its date.
+// the first ten characters of `issuedAt` are the UTC calendar day, a day ahead of the customer's
+// for every evening issuance east of UTC-0. That cut survives only as the fallback for a row
+// written before the frozen day existed — that row was rendered with exactly that answer, so
+// re-rendering it must not silently move its date.
 export function printedDate(snapshot: {
   issuedAt: string;
   issuedDate?: string;

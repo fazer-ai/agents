@@ -867,11 +867,17 @@ export async function runLoadedTurn(
             chatwootConversationId: conversationId,
           },
         },
-        select: { assigneeType: true, status: true, chatwootStatusAt: true },
+        select: {
+          assigneeType: true,
+          assigneeId: true,
+          status: true,
+          chatwootStatusAt: true,
+        },
       });
       const ours = shouldBotHandle(
         {
           assigneeType: conv?.assigneeType ?? null,
+          assigneeId: conv?.assigneeId ?? null,
           status: conv?.status ?? null,
         },
         { ourAgentBotId: ourBot },

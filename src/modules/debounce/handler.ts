@@ -282,6 +282,7 @@ export async function flushDebounceJob(
         id: true,
         status: true,
         assigneeType: true,
+        assigneeId: true,
         inboxId: true,
         lastHandledMessageId: true,
       },
@@ -290,7 +291,11 @@ export async function flushDebounceJob(
     // Gate: only the bot still owns it (pending, no human / our bot).
     if (
       !shouldBotHandle(
-        { assigneeType: conv.assigneeType, status: conv.status },
+        {
+          assigneeType: conv.assigneeType,
+          assigneeId: conv.assigneeId,
+          status: conv.status,
+        },
         { ourAgentBotId: agentBotId },
       )
     ) {

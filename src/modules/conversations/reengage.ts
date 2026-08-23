@@ -90,6 +90,7 @@ export async function reengageConversation(
         threadId: true,
         status: true,
         assigneeType: true,
+        assigneeId: true,
         inboxId: true,
       },
     });
@@ -120,6 +121,7 @@ export async function reengageConversation(
       threadId: conv.threadId,
       status: conv.status,
       assigneeType: conv.assigneeType,
+      assigneeId: conv.assigneeId,
       loaded,
       settings: agentRow?.settings ?? {},
     };
@@ -142,7 +144,11 @@ export async function reengageConversation(
   // Assignee gate: never re-fire over a conversation a human owns (they should "return to agent"
   // first). runLoadedTurn re-checks before posting too, but gating early avoids a wasted LLM call.
   const gateOpen = shouldBotHandle(
-    { assigneeType: resolved.assigneeType, status: resolved.status },
+    {
+      assigneeType: resolved.assigneeType,
+      assigneeId: resolved.assigneeId,
+      status: resolved.status,
+    },
     { ourAgentBotId: resolved.loaded.agentBotId },
   );
   if (!gateOpen) return { outcome: "gate-closed" };

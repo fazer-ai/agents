@@ -161,6 +161,7 @@ async function seedConversation(
   convId: number,
   over: {
     assigneeType?: string | null;
+    assigneeId?: number | null;
     lastHandledMessageId?: number | null;
   } = {},
 ) {
@@ -171,6 +172,7 @@ async function seedConversation(
       chatwootConversationId: convId,
       status: "pending",
       assigneeType: over.assigneeType ?? null,
+      assigneeId: over.assigneeId ?? null,
       inboxId: inboxDbId,
       threadId: threadOf(convId),
       lastEventAt: new Date(),
@@ -589,6 +591,54 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([]);
     expect(calls.getMessages).toBe(0);
+  });
+
+  // Our bot is 9 (the job payload's agentBotId, and the ChatwootAgentBot row); 77 is another bot on
+  // the same account. The burst was armed while the conversation was still free and an automation
+  // handed it away before the window closed, so the flush is the last place that can notice.
+  test("another bot took the conversation: the flush gate closes before any Chatwoot fetch", async () => {
+    await seedConversation(850, { assigneeType: "AgentBot", assigneeId: 77 });
+    const sent: Array<[number, string]> = [];
+    const calls = { getMessages: 0 };
+    const out = await flushDebounceJob({
+      job: jobFor(850),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 1, content: "oi" }])],
+          sent,
+          calls,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]);
+    expect(calls.getMessages).toBe(0);
+  });
+
+  // The same seat held by OUR bot: assignment to ourselves is the normal steady state once the agent
+  // has taken a conversation, so closing the gate on it would silence every burst.
+  test("our own bot holding the conversation does not close the flush gate", async () => {
+    await seedConversation(851, { assigneeType: "AgentBot", assigneeId: 9 });
+    const sent: Array<[number, string]> = [];
+    const calls = { getMessages: 0 };
+    await flushDebounceJob({
+      job: jobFor(851),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 1, content: "oi" }])],
+          sent,
+          calls,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls.getMessages).toBeGreaterThan(0);
+    expect(sent).toHaveLength(1);
   });
 
   // The webhook checks every incoming message, but a turn is not a message: one allowed message can

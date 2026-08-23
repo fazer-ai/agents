@@ -1012,6 +1012,75 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
   });
 
+  test("a chat linked after a reset is still named by its sole entry", async () => {
+    const FRESH_CONV = 7177;
+    const widgetInbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 111 },
+    });
+    const contact = await suDb.contact.findFirstOrThrow({
+      where: { tenantId, chatwootContactId: 991 },
+    });
+    // What /reset leaves on the entry conversation: the anchors gone, the link it already sent still
+    // live for its 24h. The lead then clicks it. There is still exactly one conversation this chat
+    // can have opened from, so the identity is provable — and reading it off the anchor instead
+    // would store nothing here, permanently, because the link watermark closes the one-shot.
+    const before = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: ENTRY_CONV },
+      select: { redirectSentAt: true },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: ENTRY_CONV },
+      data: { redirectSentAt: null, redirectCount: 0 },
+    });
+    const fresh = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: widgetInbox.id,
+        contactId: contact.id,
+        chatwootConversationId: FRESH_CONV,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${FRESH_CONV}`,
+        lastEventAt: new Date(),
+      },
+    });
+    globalThis.fetch = httpDouble;
+    try {
+      await linkRedirectConversations({
+        tenantId,
+        instanceId,
+        agentId,
+        mode: "production",
+        cfg: {
+          ...CHANNEL_REDIRECT_DEFAULTS,
+          enabled: true,
+          entryInboxId: 110,
+          widgetInboxId: 111,
+        },
+        widgetConv: {
+          id: fresh.id,
+          displayId: FRESH_CONV,
+          testActivatedAt: null,
+          contactId: contact.id,
+        },
+        base: appDb,
+      });
+
+      const row = await suDb.conversation.findUniqueOrThrow({
+        where: { id: fresh.id },
+        select: { redirectEntryConversationId: true },
+      });
+      expect(row.redirectEntryConversationId).toBe(ENTRY_CONV);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await suDb.conversation.delete({ where: { id: fresh.id } });
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: ENTRY_CONV },
+        data: { redirectSentAt: before.redirectSentAt },
+      });
+    }
+  });
+
   test("a second conversation on the entry inbox leaves the episode unnamed", async () => {
     const FRESH_CONV = 7175;
     const SECOND_ENTRY = 7176;

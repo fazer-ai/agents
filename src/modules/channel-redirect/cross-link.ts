@@ -128,6 +128,13 @@ export async function linkRedirectConversations(
   // minted on one of these, so with one of them there is nothing else the chat could have opened
   // from, whatever the anchors say now.
   //
+  // Read off the CANDIDATE and not off `sibling`, which would put the anchor back in the middle of
+  // the rule it was taken out of: `sibling` requires a `redirectSentAt`, and the case this whole
+  // predicate exists for is the one where /reset wiped that anchor while the link it sent stayed
+  // live. There the sole conversation still proves the origin and the guess has nothing to show a
+  // human, and gating one on the other stored no identity at all — permanently, since
+  // `redirectLinkedAt` closes the one-shot on the way out.
+  //
   // With two of them the answer is unknowable here, and not merely unknown. A redirect link is a
   // single-use token with a fixed 24h TTL (docs/channel-redirect.md), so more than one can be live at
   // a time and the newest is only the one we happened to mint last. Nothing in this repo can tell
@@ -136,8 +143,8 @@ export async function linkRedirectConversations(
   // stays unknown and the callers act on one conversation alone, which is what they did before this
   // column existed.
   const entryConversationId =
-    sibling !== null && candidates.length === 1
-      ? sibling.chatwootConversationId
+    candidates.length === 1
+      ? (candidates[0]?.chatwootConversationId ?? null)
       : null;
 
   const propagate = shouldPropagateTestMode(

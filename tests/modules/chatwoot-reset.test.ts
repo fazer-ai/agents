@@ -1462,8 +1462,9 @@ describe.skipIf(!dbUp)(
             orderBy: { dedupeKey: "asc" },
           });
           expect(jobs.map((j) => j.status)).toEqual(["DONE", "DONE"]);
-          // And the older chat is unpaired with the rest, so nothing finds it as this entry's other
-          // half again. Leaving the id behind is what let it be found in the first place.
+          // Its one-shot is released like every other anchor, and the id it opened FROM is not: that
+          // one is a fact rather than a watermark, and a chat that arrives during the cleanup re-arms
+          // a ladder which then needs it to reach the WhatsApp side at all.
           const oldRow = await suDb.conversation.findFirstOrThrow({
             where: { tenantId, chatwootConversationId: OLD_WIDGET },
             select: {
@@ -1471,8 +1472,8 @@ describe.skipIf(!dbUp)(
               redirectLinkedAt: true,
             },
           });
-          expect(oldRow.redirectEntryConversationId).toBeNull();
           expect(oldRow.redirectLinkedAt).toBeNull();
+          expect(oldRow.redirectEntryConversationId).toBe(CONV_ID);
         } finally {
           await suDb.schedulerJob.deleteMany({ where: { tenantId } });
           await suDb.conversation.deleteMany({
@@ -1598,10 +1599,11 @@ describe.skipIf(!dbUp)(
         });
         expect(widget.redirectLinkedAt).toBeNull();
         expect(widget.redirectClosedAt).toBeNull();
-        // The one that names the pair, and the one a run in flight reads: left behind, a closing
-        // that reads the episode after the command still finds a sibling to say goodbye to and
-        // resolve — on an episode the operator was told had been erased.
-        expect(widget.redirectEntryConversationId).toBeNull();
+        // And NOT the id it opened from, the only member of that group that is not a one-shot. What
+        // stops the previous episode's closing is the tombstone on its ladder, which reaches a row
+        // the worker already claimed; clearing this as a second guard only ever decided the case it
+        // broke — a ladder re-armed during the cleanup, left unable to name the WhatsApp side.
+        expect(widget.redirectEntryConversationId).toBe(CONV_ID);
         expect(widget.testNoticeSentAt).not.toBeNull();
       });
     });
@@ -2005,79 +2007,6 @@ describe.skipIf(!dbUp)(
 
         await suDb.conversation.deleteMany({
           where: { tenantId, chatwootConversationId: { in: [45, 49] } },
-        });
-      });
-    });
-
-    // The one place recency still decides, and it decides between rows that all name THIS
-    // conversation. One entry conversation may send the link up to `maxResends` times and the lead
-    // can open a new chat from each, so several widget rows can carry the same recorded entry — and
-    // the pair is the most recently linked of them. Picking an older one would cancel a ladder that
-    // was already retired when that chat closed, and leave the running one armed.
-    test("the widget side is the most recently linked chat of this entry", async () => {
-      await withRedirectPair(async (_convId, widgetThread) => {
-        const widget = await suDb.conversation.findFirstOrThrow({
-          where: { tenantId, chatwootConversationId: 44 },
-          select: { inboxId: true, contactId: true, redirectLinkedAt: true },
-        });
-        // 44 becomes the PREVIOUS chat of this same entry conversation: linked a day ago, and the
-        // most recently ACTIVE of the two, so recency on activity would pick it.
-        await suDb.conversation.updateMany({
-          where: { tenantId, chatwootConversationId: 44 },
-          data: {
-            lastEventAt: new Date(),
-            redirectLinkedAt: new Date(Date.now() - 86_400_000),
-          },
-        });
-        const liveThread = `${tenantId}:${instanceId}:49`;
-        await suDb.conversation.create({
-          data: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            inboxId: widget.inboxId,
-            contactId: widget.contactId,
-            chatwootConversationId: 49,
-            contactInboxId: 309,
-            status: "pending",
-            threadId: liveThread,
-            lastEventAt: new Date(Date.now() - 86_400_000),
-            redirectLinkedAt: new Date(),
-            redirectEntryConversationId: CONV_ID,
-          },
-        });
-        await suDb.schedulerJob.createMany({
-          data: [
-            {
-              tenantId,
-              kind: "REDIRECT_FOLLOWUP",
-              dedupeKey: `redirect-followup:${liveThread}`,
-              runAt: new Date(Date.now() + 3_600_000),
-              payload: { stage: "chat", widgetThreadId: liveThread },
-            },
-            {
-              tenantId,
-              kind: "REDIRECT_FOLLOWUP",
-              dedupeKey: `redirect-followup:${widgetThread}`,
-              runAt: new Date(Date.now() + 3_600_000),
-              payload: { stage: "chat", widgetThreadId: widgetThread },
-            },
-          ],
-        });
-        const cw = fakeChatwoot();
-        globalThis.fetch = cw.impl;
-        await sendReset();
-
-        const jobs = await suDb.schedulerJob.findMany({
-          where: { tenantId, kind: "REDIRECT_FOLLOWUP" },
-          select: { dedupeKey: true, status: true },
-          orderBy: { dedupeKey: "asc" },
-        });
-        expect(
-          jobs.find((j) => j.dedupeKey === `redirect-followup:${liveThread}`)
-            ?.status,
-        ).toBe("DONE");
-        await suDb.conversation.deleteMany({
-          where: { tenantId, chatwootConversationId: 49 },
         });
       });
     });

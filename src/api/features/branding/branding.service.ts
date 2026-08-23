@@ -1,6 +1,7 @@
 import prisma from "@/api/lib/prisma";
 import config from "@/config";
 import { sanitizeBranding } from "@/lib/branding";
+import { clipText } from "@/lib/text";
 
 // Global app identity/branding (a single row, id = 1). GLOBAL state — NOT tenant-scoped — so this
 // uses the base prisma client directly (no runScoped). Reads are public; writes are gated to
@@ -111,7 +112,7 @@ export function sanitizeBrandName(value: unknown): string | null {
     })
     .join("")
     .trim();
-  return cleaned ? cleaned.slice(0, MAX_BRAND_NAME_LEN) : null;
+  return cleaned ? clipText(cleaned, MAX_BRAND_NAME_LEN) : null;
 }
 
 const MAX_BRAND_NAME_LEN = 64;

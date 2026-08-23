@@ -296,6 +296,33 @@ describe.skipIf(!dbUp)("MCP resource-write tools (DB)", () => {
     ).toBe(1);
   });
 
+  test("an orphan half in the NAME does not cost the audit row", async () => {
+    // The audit projection here carries `args.name` as the caller sent it, not the value read back
+    // from the row — so nothing has round-tripped through a text column to sanitise it on the way.
+    // `audit_logs.after` is jsonb, the experiment has already been created by then, and a refusal
+    // would apply the change, report a failure and drop the record of who made it.
+    const p = principal({ tenantId: tenantA });
+    const name = (JSON.parse('{"n":"Teste \\ud800 A/B"}') as { n: string }).n;
+    const r = await experimentCreate(
+      p,
+      {
+        name,
+        variants: [
+          { key: "a", weight: 1, system_prompt: "be formal" },
+          { key: "b", weight: 1, system_prompt: "be casual" },
+        ],
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    expect(
+      await suDb.auditLog.count({
+        where: { tenantId: tenantA, action: "mcp.experiment_create" },
+      }),
+    ).toBe(2);
+  });
+
   test("tenant_settings_update embedding with unknown credential → needsCredential", async () => {
     const p = principal({ tenantId: tenantA });
     const r = await tenantSettingsUpdate(

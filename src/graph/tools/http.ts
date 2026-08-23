@@ -7,6 +7,7 @@ import {
 } from "@/graph/tools/http-status";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { clipText } from "@/lib/text";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
 import { normalizeToolName } from "./toolName";
@@ -602,7 +603,7 @@ export function buildHttpTool(
       const text = await res.text();
       const trimmed =
         text.length > maxChars
-          ? `${text.slice(0, maxChars)}…[truncated]`
+          ? `${clipText(text, maxChars)}…[truncated]`
           : text;
       // NOTE: By default every non-2xx is an integration failure worth alerting on — a broken
       // credential, a provider outage, a rejected payload (issue #40) — unless the operator declared

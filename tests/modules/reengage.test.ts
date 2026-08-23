@@ -8,6 +8,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { PromptCapturingModel } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -82,6 +83,7 @@ async function seedConversation(
   convId: number,
   over: {
     assigneeType?: string | null;
+    assigneeId?: number | null;
     lastError?: string | null;
     contactId?: bigint;
   } = {},
@@ -93,6 +95,7 @@ async function seedConversation(
       chatwootConversationId: convId,
       status: "pending",
       assigneeType: over.assigneeType ?? null,
+      assigneeId: over.assigneeId ?? null,
       inboxId: inboxDbId,
       ...(over.contactId ? { contactId: over.contactId } : {}),
       threadId: `${tenantId}:${instanceId}:${convId}`,
@@ -227,6 +230,51 @@ describe.skipIf(!dbUp)("reengage", () => {
     );
     expect(res.outcome).toBe("gate-closed");
     expect(sent).toEqual([]);
+  });
+
+  // NOTE: Our bot is 9 (beforeAll); 77 is another AgentBot on the same Chatwoot account. The
+  // button was pressed on a conversation that is not ours to answer, and the gate is the only
+  // thing that knows: the re-engage has no incoming payload to consult, only the mirror.
+  test("another bot's conversation closes the gate (no fetch, no post)", async () => {
+    const id = await seedConversation(910, {
+      assigneeType: "AgentBot",
+      assigneeId: 77,
+    });
+    const sent: Array<[number, string]> = [];
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({ page: page([{ id: 1, content: "oi" }]), sent }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("gate-closed");
+    expect(sent).toEqual([]);
+  });
+
+  // NOTE: The same seat, taken by OUR bot: the gate has to stay open, or the fix would buy silence
+  // rather than discrimination.
+  test("our own bot holding the conversation keeps the gate open", async () => {
+    const id = await seedConversation(911, {
+      assigneeType: "AgentBot",
+      assigneeId: 9,
+    });
+    const sent: Array<[number, string]> = [];
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({ page: page([{ id: 1, content: "oi" }]), sent }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("posted");
+    expect(sent).toEqual([[911, REPLY]]);
   });
 
   test("nothing unanswered → empty (no post)", async () => {
@@ -380,6 +428,42 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(res.outcome).toBe("posted");
       expect(calls.n).toBe(1);
       expect(sent).toEqual([[904, REPLY]]);
+    });
+
+    // The button re-asks the endpoint for the same reason it re-reads the mirror, so the facts it
+    // volunteers are current. Asserted on the prompt the model received: the block is built
+    // elsewhere, and this is what proves this path forwards the verdict it just read.
+    test("an authorized contact's facts reach the model of the re-engaged turn", async () => {
+      const id = await seedConversation(912, {
+        contactId: await seedContact(48),
+      });
+      const sent: Array<[number, string]> = [];
+      const model = new PromptCapturingModel(REPLY);
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => model,
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: (async () =>
+            new Response(
+              JSON.stringify({
+                authorized: true,
+                context: { plan: "premium" },
+              }),
+              { status: 200 },
+            )) as unknown as typeof fetch,
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      expect(model.systemPrompts[0] ?? "").toContain(
+        '<campo chave="plan" valor="premium"/>',
+      );
     });
 
     // A message that arrives and is REFUSED while this re-engage waits on the endpoint has already

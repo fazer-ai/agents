@@ -1,4 +1,5 @@
-import { clipText, TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
+import { clipText } from "@/lib/text";
+import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 
 // Per-agent contact authorization gate, read from the free-form `agent.settings.contactAuth` bag
 // (same pattern as availability / limits). Some agents may only serve contacts that a system outside

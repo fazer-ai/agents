@@ -15,9 +15,9 @@ import {
   type TraceEntry,
   type TraceSource,
 } from "@/graph/trace";
-
 import { NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { documentToolName } from "@/modules/documents/templates";
 import { listThreadMedia } from "./media";
 import { isValidPlaygroundThread } from "./thread";
@@ -392,7 +392,7 @@ export async function upsertPlaygroundSession(
   titleHint: string,
 ): Promise<void> {
   if (!isValidPlaygroundThread(threadId, tenantId, agentId)) return;
-  const title = titleHint.replace(/\s+/g, " ").trim().slice(0, TITLE_MAX);
+  const title = clipText(titleHint.replace(/\s+/g, " ").trim(), TITLE_MAX);
   try {
     await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.playgroundSession.upsert({

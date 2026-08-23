@@ -5,6 +5,7 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { tryResolveVaultSecret } from "@/modules/vault/service";
 import { nextBackoffMs } from "@/modules/webhooks/outbound/service";
 import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
@@ -70,7 +71,7 @@ function sysCtx(tenantId: bigint): TenantContext {
 
 function errMsg(err: unknown): string {
   const m = err instanceof Error ? err.message : String(err);
-  return m.length > MAX_ERROR_LEN ? `${m.slice(0, MAX_ERROR_LEN)}…` : m;
+  return m.length > MAX_ERROR_LEN ? `${clipText(m, MAX_ERROR_LEN)}…` : m;
 }
 
 async function mapWithConcurrency<T, R>(
@@ -222,7 +223,7 @@ function buildBody(a: ClaimedAlert): { rawBody: string; contentType: string } {
     const icon = a.level === "error" ? "🔴" : "🟠";
     const content = `${icon} **fazer.ai agents** \`${a.stage ?? "—"}\` ${a.level}${times}\n${a.summary}`;
     return {
-      rawBody: JSON.stringify({ content: content.slice(0, 1900) }),
+      rawBody: JSON.stringify({ content: clipText(content, 1900) }),
       contentType: "application/json",
     };
   }

@@ -1,6 +1,7 @@
 import { type StructuredToolInterface, tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
 import { createSuggestion, searchKnowledge } from "@/modules/rag/service";
 
@@ -61,7 +62,7 @@ function knowledgeBasesXml(
   for (const k of kbs) {
     const d = k.description?.trim();
     const el = d
-      ? `  <knowledge_base${xmlAttr("name", k.name)}>${xmlEscape(d.slice(0, 140))}</knowledge_base>`
+      ? `  <knowledge_base${xmlAttr("name", k.name)}>${xmlEscape(clipText(d, 140))}</knowledge_base>`
       : `  <knowledge_base${xmlAttr("name", k.name)}/>`;
     if (used + el.length > BUDGET && els.length > 0) {
       dropped++;

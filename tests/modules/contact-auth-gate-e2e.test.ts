@@ -20,6 +20,7 @@ import {
   contactAuthNoticeEntries,
 } from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { PromptCapturingModel } from "../utils/scripted-models";
 
 // The contact authorization gate, wired end to end through processChatwootDelivery: what a denied /
 // failed / unidentified contact actually experiences, and what the operator sees. The unit decision
@@ -250,6 +251,22 @@ async function flowRows(convId: number) {
     await new Promise((r) => setTimeout(r, 20));
   }
   throw new Error(`no contact_auth flow line for conv ${convId}`);
+}
+
+// The audited prompt of the turn that ran, from the row the Logs page serves.
+async function auditedPrompt(convId: number): Promise<string> {
+  const threadId = `${tenantId}:${instanceId}:${convId}`;
+  for (let i = 0; i < 200; i++) {
+    const row = await suDb.executionLog.findFirst({
+      where: { tenantId, threadId, stage: "generate" },
+      select: { detail: true },
+      orderBy: { id: "asc" },
+    });
+    const detail = row?.detail as { systemPrompt?: string } | null;
+    if (detail?.systemPrompt) return detail.systemPrompt;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`no generate flow line for conv ${convId}`);
 }
 
 describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
@@ -707,6 +724,51 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       "denied",
       "allowed",
     ]);
+  });
+
+  // The context bag: the endpoint already resolved WHO this contact is to answer the question, so a
+  // turn that starts right after it should not have to ask the same system the same thing again.
+  // Asserted on the message the model received, not on the builder: this path is the one the
+  // compiler cannot force (`runAgentTurn` carries the context as an optional param, because making
+  // it required would edit 81 test call sites), so what proves the wiring is the effect.
+  test("an authorized contact's facts reach the model, and only their size reaches the log", async () => {
+    const convId = 9314;
+    await seedConversation(convId, inboxFullDbId);
+    const cw = stubChatwoot();
+    const auth = authDouble(
+      () =>
+        new Response(
+          JSON.stringify({
+            authorized: true,
+            context: { plan: "premium", account_id: "AC-8821" },
+          }),
+          { status: 200 },
+        ),
+    );
+    const model = new PromptCapturingModel("Claro, posso ajudar!");
+    await deliverCustomerMessage({
+      convId,
+      chatwootInboxId: INBOX_FULL,
+      senderId: 813,
+      phone: PHONE,
+      fetchImpl: auth.fetchImpl,
+      makeClient: cw.makeClient,
+      makeModel: () => model,
+    });
+    expect(cw.publicOn(convId).map((m) => m.content)).toEqual([
+      "Claro, posso ajudar!",
+    ]);
+    const prompt = model.systemPrompts[0] ?? "";
+    expect(prompt).toContain('<campo chave="plan" valor="premium"/>');
+    expect(prompt).toContain('<campo chave="account_id" valor="AC-8821"/>');
+    // The operator's own text still opens the prompt: the block is appended, never interpolated,
+    // so a value that reads like a placeholder stays literal.
+    expect(prompt.startsWith("Você é prestativa.")).toBe(true);
+    // `execution_logs.detail` is promised free of customer data and is served to alert channels.
+    const audited = await auditedPrompt(convId);
+    expect(audited).toContain("<autorizacao chars=");
+    expect(audited).not.toContain("premium");
+    expect(audited).not.toContain("AC-8821");
   });
 
   test("a contact with no identifiers is refused with its own reason, no copy, still handed off", async () => {

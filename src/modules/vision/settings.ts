@@ -1,4 +1,5 @@
-import { clipText, EXTRACTION_PROMPT_MAX } from "@/modules/agents/text-caps";
+import { clipText } from "@/lib/text";
+import { EXTRACTION_PROMPT_MAX } from "@/modules/agents/text-caps";
 import { DEFAULT_EXTRACTION_PROMPT } from "./prompt-default";
 import { VISION_PROVIDER_NAMES } from "./providers";
 

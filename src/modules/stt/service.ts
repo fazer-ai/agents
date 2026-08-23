@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
@@ -291,7 +292,7 @@ export async function transcribePlaygroundAudio(
       fetchImpl: params.deps?.fetchImpl ?? fetch,
     });
   } catch (e) {
-    const detail = (e instanceof Error ? e.message : String(e)).slice(0, 300);
+    const detail = clipText(e instanceof Error ? e.message : String(e), 300);
     throw new AppError(
       `transcription failed: ${detail}`,
       502,

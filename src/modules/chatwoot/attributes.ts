@@ -1,4 +1,5 @@
 import { sanitizePromptValue } from "@/graph/prompt";
+import { clipText, OVERFLOW_PROBE_MARGIN } from "@/lib/text";
 import { xmlAttr } from "@/lib/xml";
 
 // NOTE: The agent's READ side of Chatwoot custom attributes (the write side is the
@@ -99,9 +100,12 @@ function plainBag(v: unknown): Record<string, unknown> {
 export const ATTRIBUTE_VALUE_MAX = 400;
 
 function boundValue(v: string): string {
-  const clean = sanitizePromptValue(v, ATTRIBUTE_VALUE_MAX + 1);
+  const clean = sanitizePromptValue(
+    v,
+    ATTRIBUTE_VALUE_MAX + OVERFLOW_PROBE_MARGIN,
+  );
   return clean.length > ATTRIBUTE_VALUE_MAX
-    ? `${clean.slice(0, ATTRIBUTE_VALUE_MAX)}…`
+    ? `${clipText(clean, ATTRIBUTE_VALUE_MAX)}…`
     : clean;
 }
 

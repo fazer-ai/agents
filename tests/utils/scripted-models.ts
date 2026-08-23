@@ -72,6 +72,34 @@ export class UsageReportingModel extends BaseChatModel {
   }
 }
 
+// Records the system prompt it is handed, then answers. The prompt is what several features
+// ASSEMBLE (context blocks appended after the operator's own text), and the only place their result
+// is observable is the message the model actually receives: asserting on the builder's output
+// instead would pass with the block built and never wired to a turn.
+export class PromptCapturingModel extends BaseChatModel {
+  systemPrompts: string[] = [];
+  constructor(private readonly reply: string) {
+    super({});
+  }
+  _llmType() {
+    return "fake-prompt-capture";
+  }
+  // The graph binds tools before invoking; without this the bound copy is a different object and
+  // the turn's own call would be recorded nowhere.
+  override bindTools(_tools: BindToolsInput[]) {
+    return this;
+  }
+  async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+    const system = messages.find((m) => m.getType() === "system");
+    this.systemPrompts.push(
+      typeof system?.content === "string" ? system.content : "",
+    );
+    return {
+      generations: [{ text: this.reply, message: new AIMessage(this.reply) }],
+    };
+  }
+}
+
 // A model that calls resolve_conversation once and then answers (possibly with empty text) —
 // the "resolve + final reply in the same turn" shape seen in production. The raw invoke covers
 // the hard-limit path. Shared by the runtime and debounce suites so the deferred-resolve

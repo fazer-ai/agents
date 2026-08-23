@@ -1,3 +1,4 @@
+import { clipText } from "@/lib/text";
 // Renders ONE inbound customer message into the text the agent actually sees, mirroring the n8n
 // "Extrair mensagem" node so the agent gets modality + reply context instead of a silent blank:
 //   * audio  → the transcription wrapped in <mensagem-de-audio>…</mensagem-de-audio> (or a
@@ -91,7 +92,7 @@ export function renderInboundMessage(
         ? ctx.resolveQuoted(m.inReplyTo)
         : null;
     const para = quoted
-      ? ` para: "${quoted.replace(/\s+/g, " ").trim().slice(0, QUOTE_MAX)}"`
+      ? ` para: "${clipText(quoted.replace(/\s+/g, " ").trim(), QUOTE_MAX)}"`
       : "";
     return `<reação do cliente emoji="${emoji}"${para}>`;
   }
@@ -145,7 +146,7 @@ export function renderInboundMessage(
   if (m.inReplyTo != null && ctx.resolveQuoted) {
     const quoted = ctx.resolveQuoted(m.inReplyTo);
     if (quoted) {
-      const snippet = quoted.replace(/\s+/g, " ").trim().slice(0, QUOTE_MAX);
+      const snippet = clipText(quoted.replace(/\s+/g, " ").trim(), QUOTE_MAX);
       if (snippet) body = `<em resposta a: "${snippet}">\n${body}`;
     }
   }

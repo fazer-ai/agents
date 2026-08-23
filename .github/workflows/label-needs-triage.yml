@@ -13,7 +13,19 @@ jobs:
     if: github.repository == 'fazer-ai/agents'
     runs-on: ubuntu-latest
     steps:
-      - run: gh issue edit "$NUMBER" --repo "$GH_REPO" --add-label "needs triage"
+      # The label is a DERIVED view of the invariant "an open issue carries an Issue Type", so it
+      # reads the invariant before writing the view, at run time rather than from the event payload.
+      # That is what closes the race with a session opening an issue already triaged: on #214 the
+      # create landed at :28, the type at :37, the session's own remove-label at :37 (a no-op — the
+      # label did not exist yet) and this workflow's write at :39. A typed issue kept a `needs
+      # triage` that had to be removed by hand.
+      - run: |
+          type=$(gh api "repos/$GH_REPO/issues/$NUMBER" --jq '.type.name // ""')
+          if [ -n "$type" ]; then
+            echo "issue #$NUMBER already carries a type ($type) — nothing to flag"
+            exit 0
+          fi
+          gh issue edit "$NUMBER" --repo "$GH_REPO" --add-label "needs triage"
         env:
           GH_TOKEN: ${{ github.token }}
           NUMBER: ${{ github.event.issue.number }}

@@ -4,6 +4,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
@@ -11,6 +12,7 @@ import {
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { withAuthContextSection } from "@/modules/contact-auth/context";
 import {
   authorizeContact,
   contactAuthFlowEvent,
@@ -189,16 +191,14 @@ export function isNudgeSilent(reply: string): boolean {
 // newlines to a single line (so it cannot forge multi-line "system" framing), drop the data fence
 // token, and bound the length. Never let this text read as instructions.
 function sanitizeFreeText(s: string, max: number): string {
-  return (
-    s
-      // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control chars is the point.
-      .replace(/[\u0000-\u001F\u007F]+/g, " ")
-      .split(DATA_FENCE)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, max)
-  );
+  const collapsed = s
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control chars is the point.
+    .replace(/[\u0000-\u001F\u007F]+/g, " ")
+    .split(DATA_FENCE)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clipText(collapsed, max);
 }
 
 // The system turn the agent sees: the AUTHORITATIVE directive first, then the untrusted event
@@ -331,7 +331,10 @@ export async function runAgentNudge(
     return "silent";
   }
   if (!loaded) return "no-agent";
-  const cfg: AgentConfig = loaded.cfg;
+  // `let` for one reason: an authorized contact's facts are appended to the prompt below, after the
+  // gate that produced them. Everything downstream (toolset, graph, guardrail) reads this binding,
+  // so the block reaches all three without a second name to keep in sync.
+  let cfg: AgentConfig = loaded.cfg;
   const contactInboxId = cfg.contactInboxId;
 
   // Invoke on the SAME per-contact-inbox memory thread the reactive turn uses (resolveGraphThreadId),
@@ -635,6 +638,10 @@ export async function runAgentNudge(
       );
       return "silent";
     }
+    // The facts the endpoint volunteered about this contact, for this turn's prompt. A proactive
+    // turn benefits from them the same way a reactive one does, and the check that produced them is
+    // the one that just allowed this send.
+    cfg = withAuthContextSection(cfg, auth.context ?? null);
   }
 
   const tools = await buildToolset(

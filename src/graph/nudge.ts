@@ -11,6 +11,7 @@ import {
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { withAuthContextSection } from "@/modules/contact-auth/context";
 import {
   authorizeContact,
   contactAuthFlowEvent,
@@ -331,7 +332,10 @@ export async function runAgentNudge(
     return "silent";
   }
   if (!loaded) return "no-agent";
-  const cfg: AgentConfig = loaded.cfg;
+  // `let` for one reason: an authorized contact's facts are appended to the prompt below, after the
+  // gate that produced them. Everything downstream (toolset, graph, guardrail) reads this binding,
+  // so the block reaches all three without a second name to keep in sync.
+  let cfg: AgentConfig = loaded.cfg;
   const contactInboxId = cfg.contactInboxId;
 
   // Invoke on the SAME per-contact-inbox memory thread the reactive turn uses (resolveGraphThreadId),
@@ -635,6 +639,10 @@ export async function runAgentNudge(
       );
       return "silent";
     }
+    // The facts the endpoint volunteered about this contact, for this turn's prompt. A proactive
+    // turn benefits from them the same way a reactive one does, and the check that produced them is
+    // the one that just allowed this send.
+    cfg = withAuthContextSection(cfg, auth.context ?? null);
   }
 
   const tools = await buildToolset(

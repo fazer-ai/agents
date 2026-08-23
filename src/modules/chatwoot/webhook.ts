@@ -43,6 +43,7 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
+import type { AuthContext } from "@/modules/contact-auth/check";
 import {
   authorizeContact,
   type ContactAuthOutcome,
@@ -761,6 +762,12 @@ async function maybeConsumeCommandOrGate(params: {
   base: PrismaClient;
   // Injectable runtime deps (tests): the Chatwoot client factory and the contact-auth fetch.
   deps?: RuntimeDeps;
+  // Handed what the authorization endpoint said ABOUT the contact when this gate lets the delivery
+  // through, so the direct turn can put it in the prompt (issue #190). A callback rather than a
+  // second return value because the returns here are a plain "was this delivery consumed", written
+  // in two dozen places and in nested closures of their own; the verdict is a different question
+  // asked in exactly one of them.
+  onAuthContext: (context: AuthContext | null) => void;
 }): Promise<boolean> {
   const { tenantId, instanceId, n, command, commandActive, base, deps } =
     params;
@@ -1599,6 +1606,8 @@ async function maybeConsumeCommandOrGate(params: {
         );
         return true;
       }
+      // Allowed, and still ours: the facts the endpoint volunteered travel to the turn below.
+      params.onAuthContext(verdict.context ?? null);
     }
   }
   return false;
@@ -1897,6 +1906,9 @@ export async function processChatwootDelivery(
   // Hoisted so the ingestion pass below can tell an out-of-hours-silenced incoming (consumed) from an
   // answered one. Stays false on every path that never runs the gate.
   let consumed = false;
+  // What the contact-authorization gate below learned about this contact, for the direct turn's
+  // prompt. Null when the gate is off, or when the delivery never reaches a turn.
+  const gate: { authContext: AuthContext | null } = { authContext: null };
   if (act && isNewIncoming) {
     // Test-mode gate + /teste and /reset commands — may consume the delivery (skip all agent work).
     consumed = await maybeConsumeCommandOrGate({
@@ -1907,6 +1919,9 @@ export async function processChatwootDelivery(
       commandActive,
       base,
       deps: params.deps,
+      onAuthContext: (context) => {
+        gate.authContext = context;
+      },
     });
     if (!consumed) {
       // Eager media (STT/vision) so the debounce re-fetch (and the direct path) get text instead of an
@@ -1981,6 +1996,7 @@ export async function processChatwootDelivery(
             event: n,
             base,
             deps: params.deps,
+            authContext: gate.authContext,
           });
           logger.info(
             "chatwoot agent turn: conv=%s event=%s outcome=%s mirror=%s",

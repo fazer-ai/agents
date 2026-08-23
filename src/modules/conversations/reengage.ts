@@ -9,6 +9,7 @@ import {
   pendingIncoming,
 } from "@/modules/chatwoot/messages";
 import { shouldBotHandle } from "@/modules/chatwoot/normalize";
+import type { AuthContext } from "@/modules/contact-auth/check";
 import {
   authorizeContact,
   contactAuthFlowEvent,
@@ -165,6 +166,7 @@ export async function reengageConversation(
   // is none. It is logged, though — a refused re-engage that left no trace would read in the
   // flowlog as if the click never happened.
   const authCfg = resolved.loaded.contactAuthConfig;
+  let authContext: AuthContext | null = null;
   if (authCfg.enabled) {
     const auth = await authorizeContact({
       tenantId,
@@ -197,6 +199,9 @@ export async function reengageConversation(
       contactAuthFlowEvent(auth),
     );
     if (auth.outcome !== "allowed") return { outcome: "not-authorized" };
+    // The facts the endpoint volunteered about this contact, for the prompt of the turn below: this
+    // path re-asks the gate for the same reason it re-reads the mirror, so the answer is current.
+    authContext = auth.context ?? null;
     // Allowed, after a round-trip that may have taken ten seconds. The assignee gate above ran
     // before it, so a human arriving during the wait would have the turn's tools run on their
     // conversation — the post gate only withholds the reply. Re-read the mirror and report the same
@@ -231,6 +236,7 @@ export async function reengageConversation(
       convDbId: resolved.convDbId,
       loaded: resolved.loaded,
       settings: resolved.settings,
+      authContext,
       // With the gate on, the tail is filtered by the handled watermark as well, re-read at the
       // point the burst is chosen. The authorization call above is a round-trip to somebody else's
       // endpoint, and a message that arrived and was REFUSED during it has already had the

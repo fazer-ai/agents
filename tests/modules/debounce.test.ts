@@ -27,6 +27,7 @@ import {
 import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
+  PromptCapturingModel,
   ResolveThenReplyModel,
 } from "../utils/scripted-models";
 
@@ -702,6 +703,43 @@ describe.skipIf(!dbUp)("debounce", () => {
         calls.n += 1;
         return new Response(JSON.stringify({ authorized }), { status: 200 });
       }) as unknown as typeof fetch;
+
+    // The flush asks the endpoint again at the point the turn begins, so the facts it volunteers are
+    // as fresh as the verdict that allowed the burst. Asserted on the prompt the model received:
+    // the block is built elsewhere and this is the only thing that proves this path wires it.
+    test("an allowed contact's facts reach the model of the coalesced turn", async () => {
+      await seedConversation(844);
+      await seedContactOn(844, 65);
+      const sent: Array<[number, string]> = [];
+      const calls = { getMessages: 0 };
+      const model = new PromptCapturingModel("Claro!");
+      const out = await flushDebounceJob({
+        job: jobFor(844, { lastMessageId: 9 }),
+        base: appDb,
+        deps: {
+          makeModel: () => model,
+          makeClient: makeStub({
+            pages: [page([{ id: 9, content: "oi" }])],
+            sent,
+            calls,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: (async () =>
+            new Response(
+              JSON.stringify({
+                authorized: true,
+                context: { plan: "premium" },
+              }),
+              { status: 200 },
+            )) as unknown as typeof fetch,
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(sent).toEqual([[844, "Claro!"]]);
+      expect(model.systemPrompts[0] ?? "").toContain(
+        '<campo chave="plan" valor="premium"/>',
+      );
+    });
 
     test("a refused contact drops the burst: no fetch, no post, watermark advanced", async () => {
       await seedConversation(840);

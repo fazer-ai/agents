@@ -1,4 +1,5 @@
 import config from "@/config";
+import { sanitizePromptValue } from "@/graph/prompt";
 import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
 import type { InjectableCredential } from "@/modules/vault/injectable";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
@@ -23,6 +24,9 @@ export type ContactAuthOutcome = AuthorizationOutcome | "no_identity";
 
 export interface AuthorizationVerdict {
   outcome: AuthorizationOutcome;
+  // What the endpoint said ABOUT the contact, kept only on a verdict that lets a turn happen.
+  // Absent (never empty) when there is nothing to say. See readAuthContext.
+  context?: AuthContext;
   // HTTP status of the answer, when one arrived.
   status?: number;
   // OUR failure code, from the fixed list below. Safe to log because we wrote every possible value.
@@ -38,6 +42,7 @@ export interface AuthorizationVerdict {
 // A verdict as the gate consumes it: the outcome widened with the runtime's own fourth answer.
 export interface ContactAuthVerdict {
   outcome: ContactAuthOutcome;
+  context?: AuthContext;
   status?: number;
   reason?: string;
   endpointReason?: string;
@@ -87,6 +92,65 @@ export const MESSAGE_TEXT_MAX = 4000;
 
 export function reasonSlug(v: unknown): string | undefined {
   return typeof v === "string" && REASON_SLUG_RE.test(v) ? v : undefined;
+}
+
+// The endpoint resolved WHO this contact is in order to answer at all, so it may hand the facts it
+// already has to the turn that follows (issue #190): the alternative is the model spending its
+// first tool call asking the operator's system the same question. What travels is a flat bag of
+// codes to one-line values, and both halves are bounded here rather than at the prompt, so nothing
+// downstream has to remember that this text came from outside.
+//
+// Trusted the way the mirrored identity is trusted: it arrives from the operator's own system over
+// an authenticated channel, never from the customer's text. Trusted is not unbounded, though. The
+// endpoint may well be echoing something the customer typed into it, so a value is stripped of
+// anything that could forge a new line of prompt framing and cut to a length a fact fits in.
+export const AUTH_CONTEXT_KEYS_MAX = 20;
+export const AUTH_CONTEXT_VALUE_MAX = 200;
+// The bag rides in EVERY turn's prompt, so its cost is paid per turn, forever; the per-value cap
+// alone would let twenty long fields in. No scan bound is needed on top: the body this is parsed
+// from was already refused past MAX_RESPONSE_BYTES.
+export const AUTH_CONTEXT_TOTAL_MAX = 2000;
+
+export interface AuthContextField {
+  key: string;
+  value: string;
+}
+export type AuthContext = readonly AuthContextField[];
+
+// A value as one prompt-safe line, or null when it has none. Objects and arrays have no honest
+// one-line form and are dropped ALONE, so an endpoint that adds a nested field later does not
+// silence the flat ones beside it.
+function contextValue(v: unknown): string | null {
+  if (typeof v === "boolean") return String(v);
+  if (typeof v === "number") return Number.isFinite(v) ? String(v) : null;
+  if (typeof v !== "string") return null;
+  // Cut to the cap INCLUDING the ellipsis, and always end in one: a value cut without a mark reads
+  // to the model as the whole fact ("AC-88" for "AC-8821").
+  const clean = sanitizePromptValue(v, AUTH_CONTEXT_VALUE_MAX + 1);
+  if (!clean) return null;
+  return clean.length > AUTH_CONTEXT_VALUE_MAX
+    ? `${clean.slice(0, AUTH_CONTEXT_VALUE_MAX - 1)}…`
+    : clean;
+}
+
+// The `context` object as the runtime keeps it. Null when there is nothing to keep, so a caller
+// never has to tell an absent bag from an empty one: both mean no block in the prompt.
+export function readAuthContext(v: unknown): AuthContext | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const out: AuthContextField[] = [];
+  let total = 0;
+  for (const [key, raw] of Object.entries(v as Record<string, unknown>)) {
+    // The same rule as the endpoint's own `reason`: a key NAMES a fact, it is not the fact, so
+    // anything shaped like a sentence (or like data) is not one.
+    if (!REASON_SLUG_RE.test(key)) continue;
+    const value = contextValue(raw);
+    if (value === null) continue;
+    if (total + key.length + value.length > AUTH_CONTEXT_TOTAL_MAX) break;
+    total += key.length + value.length;
+    out.push({ key, value });
+    if (out.length >= AUTH_CONTEXT_KEYS_MAX) break;
+  }
+  return out.length > 0 ? out : null;
 }
 
 // "Channel::WebWidget" (the mirror's raw channel_type) as the slug the endpoint sees ("web_widget").
@@ -144,10 +208,15 @@ export function classifyAuthorizationResponse(
       return { outcome: "error", status, reason: "invalid_response" };
     }
     const endpointReason = reasonSlug(json.reason);
+    // Context only on the branch that lets a turn happen. A denial and an error end the turn, so
+    // facts for them describe a prompt nobody will build: dead weight as a verdict field, and one
+    // more place customer data would be carried around for nothing.
+    const context = json.authorized ? readAuthContext(json.context) : null;
     return {
       outcome: json.authorized ? "allowed" : "denied",
       status,
       ...(endpointReason ? { endpointReason } : {}),
+      ...(context ? { context } : {}),
     };
   }
   return { outcome: "error", status, reason: "unexpected_status" };

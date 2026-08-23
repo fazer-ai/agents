@@ -15,6 +15,7 @@ import { runAgentNudge } from "@/graph/nudge";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { PromptCapturingModel } from "../utils/scripted-models";
 
 // The gate on the PROACTIVE side: a follow-up is a turn the agent starts, so a contact the reactive
 // gate would refuse must not be reached out to either. A refused nudge ends as "silent", before any
@@ -317,6 +318,40 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     expect(auth.calls).toHaveLength(1);
     expect(modelBuilds).toBe(0);
     expect(s.messages).toEqual([]);
+  });
+
+  // A proactive turn benefits from the endpoint's facts the same way a reactive one does, and the
+  // check that produced them is the one that just allowed this send. Asserted on the prompt the
+  // model received: this path builds its own graph rather than going through runLoadedTurn, so it
+  // is the one place a block wired only into the reactive tail would silently be missing.
+  test("an authorized contact's facts reach the model of the nudge", async () => {
+    await seedConv(9406);
+    const s = stub();
+    const auth = authFetch(
+      () =>
+        new Response(
+          JSON.stringify({ authorized: true, context: { plan: "premium" } }),
+          { status: 200 },
+        ),
+    );
+    const model = new PromptCapturingModel("Oi! Tudo bem?");
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9406`,
+      nudge: { source: "followup", kind: "inactivity" },
+      base: appDb,
+      deps: {
+        makeModel: () => model,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+        contactAuthFetch: auth.fetchImpl,
+      },
+    });
+    expect(outcome).toBe("messaged");
+    expect(model.systemPrompts[0] ?? "").toContain(
+      '<campo chave="plan" valor="premium"/>',
+    );
   });
 
   test("an authorized contact is followed up normally (the control)", async () => {

@@ -22,6 +22,8 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import type { AuthContext } from "@/modules/contact-auth/check";
+import { withAuthContextSection } from "@/modules/contact-auth/context";
 import {
   type ObservedConversation,
   observeBeforeClose,
@@ -134,6 +136,11 @@ export interface RuntimeDeps {
 
 export interface RunLoadedTurnParams {
   loaded: AgentConfig;
+  // What the authorization endpoint said about this contact on the check that let THIS turn happen,
+  // or null when the gate is off (or this path has no verdict of its own). Required, not optional:
+  // every path that reaches here asks the gate immediately before it, and a path that forgot to
+  // forward the answer would silently drop the block from the prompt instead of failing.
+  authContext: AuthContext | null;
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
@@ -285,15 +292,13 @@ async function deliverPendingImages(
 export async function runLoadedTurn(
   params: RunLoadedTurnParams,
 ): Promise<RunAgentTurnOutcome> {
-  const {
-    loaded,
-    tenantId,
-    instanceId,
-    conversationId,
-    agentBotId,
-    threadId,
-    text,
-  } = params;
+  // Applied HERE, before anything reads the config, so the prompt the model is built on, the one
+  // the output guardrail judges adherence against, and the one the audited row records are the same
+  // prompt. Appending it later, at the graph build, would leave the other two describing a turn
+  // that did not happen.
+  const loaded = withAuthContextSection(params.loaded, params.authContext);
+  const { tenantId, instanceId, conversationId, agentBotId, threadId, text } =
+    params;
   const base = params.base ?? basePrisma;
 
   // Execution-flow telemetry context: one turnId correlates every stage of this turn. Source is
@@ -1003,6 +1008,11 @@ export interface RunAgentTurnParams {
   event: NormalizedChatwootEvent;
   base?: PrismaClient;
   deps?: RuntimeDeps;
+  // What the authorization endpoint said about this contact, from the gate the webhook ran on THIS
+  // delivery (`maybeConsumeCommandOrGate`), for the block the turn appends to its prompt. Optional
+  // here and required one layer down: the gate is a caller's business, and every test that runs a
+  // turn without one would otherwise have to say so.
+  authContext?: AuthContext | null;
 }
 
 // Direct (no-debounce) entry: one incoming message → resolve the inbox's Agent → run the turn.
@@ -1129,6 +1139,7 @@ export async function runAgentTurn(
 
   const outcome = await runLoadedTurn({
     loaded,
+    authContext: params.authContext ?? null,
     tenantId,
     instanceId,
     conversationId,

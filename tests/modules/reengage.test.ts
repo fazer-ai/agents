@@ -8,6 +8,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { PromptCapturingModel } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -427,6 +428,42 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(res.outcome).toBe("posted");
       expect(calls.n).toBe(1);
       expect(sent).toEqual([[904, REPLY]]);
+    });
+
+    // The button re-asks the endpoint for the same reason it re-reads the mirror, so the facts it
+    // volunteers are current. Asserted on the prompt the model received: the block is built
+    // elsewhere, and this is what proves this path forwards the verdict it just read.
+    test("an authorized contact's facts reach the model of the re-engaged turn", async () => {
+      const id = await seedConversation(912, {
+        contactId: await seedContact(48),
+      });
+      const sent: Array<[number, string]> = [];
+      const model = new PromptCapturingModel(REPLY);
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => model,
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: (async () =>
+            new Response(
+              JSON.stringify({
+                authorized: true,
+                context: { plan: "premium" },
+              }),
+              { status: 200 },
+            )) as unknown as typeof fetch,
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      expect(model.systemPrompts[0] ?? "").toContain(
+        '<campo chave="plan" valor="premium"/>',
+      );
     });
 
     // A message that arrives and is REFUSED while this re-engage waits on the endpoint has already

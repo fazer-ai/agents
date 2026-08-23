@@ -25,6 +25,11 @@ function pairs(ctx: AuthContext | null): string[] {
   return (ctx ?? []).map((f) => `${f.key}=${f.value}`);
 }
 
+function isLoneSurrogate(ch: string): boolean {
+  const code = ch.charCodeAt(0);
+  return ch.length === 1 && code >= 0xd800 && code <= 0xdfff;
+}
+
 describe("readAuthContext: what the endpoint may say about a contact", () => {
   test("flat strings, numbers and booleans are kept, in the endpoint's own order", () => {
     expect(
@@ -86,6 +91,19 @@ describe("readAuthContext: what the endpoint may say about a contact", () => {
     const value = ctx?.[0]?.value ?? "";
     expect(value.length).toBe(AUTH_CONTEXT_VALUE_MAX);
     expect(value.endsWith("…")).toBe(true);
+  });
+
+  test("the cut never splits a character in half", () => {
+    // The cap counts UTF-16 units and an emoji is two of them, so a plain cut can land between the
+    // halves of one. What survives then is a lone surrogate: not a character, and replaced or
+    // refused on the way to a provider. Positioned so the pair straddles the cut exactly.
+    const value =
+      bag({
+        note: `${"x".repeat(AUTH_CONTEXT_VALUE_MAX - 2)}\u{1F600}tail`,
+      })?.[0]?.value ?? "";
+    expect(value.endsWith("…")).toBe(true);
+    expect([...value].every((ch) => !isLoneSurrogate(ch))).toBe(true);
+    expect(JSON.stringify(value)).not.toContain("\\ud");
   });
 
   test("the bag is bounded by count and by total size", () => {

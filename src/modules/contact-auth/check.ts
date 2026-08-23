@@ -1,6 +1,7 @@
 import config from "@/config";
 import { sanitizePromptValue } from "@/graph/prompt";
 import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
+import { clipText } from "@/modules/agents/text-caps";
 import type { InjectableCredential } from "@/modules/vault/injectable";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
 import type { ContactAuthConfig } from "./settings";
@@ -125,11 +126,15 @@ function contextValue(v: unknown): string | null {
   if (typeof v === "number") return Number.isFinite(v) ? String(v) : null;
   if (typeof v !== "string") return null;
   // Cut to the cap INCLUDING the ellipsis, and always end in one: a value cut without a mark reads
-  // to the model as the whole fact ("AC-88" for "AC-8821").
+  // to the model as the whole fact ("AC-88" for "AC-8821"). `clipText` rather than `slice`, because
+  // the cap counts UTF-16 units and an emoji is two of them: a plain cut through one leaves a lone
+  // surrogate, which is not a character at all and is replaced or refused on the way to a provider.
+  // The other branch needs no such care: it returns a string that was never cut (anything the
+  // sanitizer DID cut is longer than the cap and lands here).
   const clean = sanitizePromptValue(v, AUTH_CONTEXT_VALUE_MAX + 1);
   if (!clean) return null;
   return clean.length > AUTH_CONTEXT_VALUE_MAX
-    ? `${clean.slice(0, AUTH_CONTEXT_VALUE_MAX - 1)}…`
+    ? `${clipText(clean, AUTH_CONTEXT_VALUE_MAX - 1)}…`
     : clean;
 }
 

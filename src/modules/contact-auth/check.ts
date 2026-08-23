@@ -69,6 +69,12 @@ export interface ContactIdentity {
 export interface CheckDeps {
   fetchImpl?: typeof fetch;
   assertSafe?: (url: string) => Promise<URL>;
+  // A deadline already running when this is called, and everything it covers already counted
+  // against `timeoutMs`. The orchestration passes one because the credential is resolved BEFORE the
+  // request, and a managed-OAuth entry refreshes its token there under a ceiling of its own: timed
+  // from here, a gate set to one second could hold the webhook for eleven. When absent, the check
+  // arms its own — the shape every test and every direct caller uses.
+  signal?: AbortSignal;
 }
 
 // What an endpoint may say in `reason` and have it kept: a code, not a sentence.
@@ -234,10 +240,10 @@ async function readBodyCapped(
 }
 
 // Awaits a promise, but never past the signal. `assertSafeOutboundUrl` resolves DNS and takes no
-// AbortSignal, so this is what puts it under the same deadline as the request it is vetting. The
-// lookup itself keeps running when we walk away from it — what matters is that the caller does not
-// wait on it.
-function underSignal<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+// AbortSignal, and neither does a managed-OAuth token refresh, so this is what puts them under the
+// same deadline as the request they precede. The work itself keeps running when we walk away from
+// it — what matters is that the caller does not wait on it.
+export function underSignal<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(new Error("aborted"));
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(new Error("aborted"));
@@ -270,15 +276,18 @@ export async function checkContactAuthorization(
   // unreachable resolver would otherwise hold the pre-turn gate — and the webhook turn behind it —
   // for as long as the resolver takes, with `timeoutMs` only starting to count afterwards. The
   // budget covers every step that waits: the lookup, the fetch, and the body.
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
+  // A deadline handed in is already running and already covers work done before this call; only a
+  // check with none of its own arms one here.
+  const ctrl = deps.signal ? null : new AbortController();
+  const signal = deps.signal ?? (ctrl as AbortController).signal;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), cfg.timeoutMs) : null;
   try {
     try {
       // NOTE: On the FINAL URL, with the identity and any query credential already on it,
       // immediately before the fetch. What is asserted is what is sent.
-      await underSignal(assertSafe(url.toString()), ctrl.signal);
+      await underSignal(assertSafe(url.toString()), signal);
     } catch (err) {
-      if (ctrl.signal.aborted) return { outcome: "error", reason: "timeout" };
+      if (signal.aborted) return { outcome: "error", reason: "timeout" };
       return {
         outcome: "error",
         reason: err instanceof SsrfError ? "unsafe_url" : "invalid_url",
@@ -287,7 +296,7 @@ export async function checkContactAuthorization(
     const res = await doFetch(url.toString(), {
       ...init,
       redirect: "error",
-      signal: ctrl.signal,
+      signal,
     });
     // NOTE: The timer stays armed while the body is read: a server that answers the status line and
     // then stalls would otherwise hold the gate past its timeout.
@@ -308,10 +317,9 @@ export async function checkContactAuthorization(
     return classifyAuthorizationResponse(res.status, body);
   } catch (err) {
     const aborted =
-      ctrl.signal.aborted ||
-      (err instanceof Error && err.name === "AbortError");
+      signal.aborted || (err instanceof Error && err.name === "AbortError");
     return { outcome: "error", reason: aborted ? "timeout" : "network" };
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }

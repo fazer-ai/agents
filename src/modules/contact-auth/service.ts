@@ -14,6 +14,7 @@ import {
   channelSlug,
   checkContactAuthorization,
   reasonSlug,
+  underSignal,
 } from "./check";
 import type { ContactAuthConfig } from "./settings";
 import { contactAuthFlightKey, singleFlight } from "./state";
@@ -58,6 +59,9 @@ export interface AuthorizeContactParams {
   base?: PrismaClient;
   fetchImpl?: typeof fetch;
   assertSafe?: CheckDeps["assertSafe"];
+  // Injectable for tests, like the two above. The real one refreshes a managed-OAuth token, which
+  // is the whole reason the deadline has to start before it rather than inside the request.
+  resolveCredential?: typeof resolveInjectableCredentialEntry;
 }
 
 function trimmed(v: unknown): string | null {
@@ -111,58 +115,80 @@ export async function authorizeContact(
         return { outcome: "no_identity", reason: "no_identifiers" };
       }
       if (!cfg.url) return { outcome: "error", reason: "not_configured" };
-      let credential: InjectableCredential | null = null;
-      if (cfg.credentialRef) {
-        try {
-          // NOTE: Outside any tx: a managed-OAuth entry may refresh its token here.
-          credential = await resolveInjectableCredentialEntry(
-            base,
-            tenantId,
-            cfg.credentialRef,
-          );
-        } catch (err) {
-          logger.warn(
-            "contact-auth: credential resolution failed (agent=%s): %s",
-            String(agentId),
-            err instanceof Error ? err.message : String(err),
-          );
+      // The deadline starts HERE, not inside the request, because the credential is resolved first
+      // and a managed-OAuth entry refreshes its token to produce it — a network call with a
+      // ten-second ceiling of its own. Timed from the request, a gate configured for one second
+      // could hold the webhook for eleven, while `timeoutMs` promises to cover every step that
+      // waits. From this line to the answer is one budget.
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
+      try {
+        let credential: InjectableCredential | null = null;
+        if (cfg.credentialRef) {
+          let timedOut = false;
+          try {
+            // NOTE: Outside any tx: a managed-OAuth entry may refresh its token here. Under the
+            // signal, so a refresh that hangs spends the gate's budget instead of its own.
+            const resolve =
+              params.resolveCredential ?? resolveInjectableCredentialEntry;
+            credential = await underSignal(
+              resolve(base, tenantId, cfg.credentialRef),
+              ctrl.signal,
+            );
+          } catch (err) {
+            timedOut = ctrl.signal.aborted;
+            logger.warn(
+              "contact-auth: credential resolution failed (agent=%s): %s",
+              String(agentId),
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+          // A budget spent before the endpoint was even asked is a timeout, not an unreadable
+          // credential: the operator's key may be perfectly fine and merely slower than the gate.
+          if (timedOut) return { outcome: "error", reason: "timeout" };
+          // A missing, pending or unreadable credential is an error, not a request without it: the
+          // endpoint would answer 401 and the gate would read that as "denied", telling the customer
+          // they are not registered because of a key the operator has not filled in.
+          if (!credential) {
+            return { outcome: "error", reason: "credential_unavailable" };
+          }
+          // A kind whose rule says it never travels in an outbound request (mcp_env is read by the
+          // stdio loader, langfuse by observability). The request builder falls back to a generic
+          // Bearer when the vault has no injection rule, which is right for a kind it does not know
+          // and exactly wrong here: it would hand an unrelated secret to somebody else's endpoint.
+          // The editor cannot offer these, but REST, MCP and import can carry one.
+          if (isNonInjectableSecret(credential.kind)) {
+            logger.warn(
+              "contact-auth: credential kind %s is never injected into an outbound request (agent=%s)",
+              String(credential.kind),
+              String(agentId),
+            );
+            return { outcome: "error", reason: "credential_not_injectable" };
+          }
         }
-        // A missing, pending or unreadable credential is an error, not a request without it: the
-        // endpoint would answer 401 and the gate would read that as "denied", telling the customer
-        // they are not registered because of a key the operator has not filled in.
-        if (!credential) {
-          return { outcome: "error", reason: "credential_unavailable" };
-        }
-        // A kind whose rule says it never travels in an outbound request (mcp_env is read by the
-        // stdio loader, langfuse by observability). The request builder falls back to a generic
-        // Bearer when the vault has no injection rule, which is right for a kind it does not know
-        // and exactly wrong here: it would hand an unrelated secret to somebody else's endpoint.
-        // The editor cannot offer these, but REST, MCP and import can carry one.
-        if (isNonInjectableSecret(credential.kind)) {
-          logger.warn(
-            "contact-auth: credential kind %s is never injected into an outbound request (agent=%s)",
-            String(credential.kind),
-            String(agentId),
-          );
-          return { outcome: "error", reason: "credential_not_injectable" };
-        }
+        return await checkContactAuthorization(
+          cfg,
+          {
+            phone,
+            name: trimmed(contact?.name),
+            email,
+            identifier,
+            chatwootContactId: contact?.chatwootContactId ?? null,
+            conversationId: params.conversationId,
+            inboxId: params.inboxId,
+            channel: channelSlug(params.channelType),
+            messageText: params.messageText,
+          },
+          credential,
+          {
+            fetchImpl: params.fetchImpl,
+            assertSafe: params.assertSafe,
+            signal: ctrl.signal,
+          },
+        );
+      } finally {
+        clearTimeout(timer);
       }
-      return checkContactAuthorization(
-        cfg,
-        {
-          phone,
-          name: trimmed(contact?.name),
-          email,
-          identifier,
-          chatwootContactId: contact?.chatwootContactId ?? null,
-          conversationId: params.conversationId,
-          inboxId: params.inboxId,
-          channel: channelSlug(params.channelType),
-          messageText: params.messageText,
-        },
-        credential,
-        { fetchImpl: params.fetchImpl, assertSafe: params.assertSafe },
-      );
     },
   );
   return { ...verdict, shared };

@@ -1,5 +1,6 @@
 import logger from "@/api/lib/logger";
 import config from "@/config";
+import { asProviderFailure } from "@/lib/provider-failure";
 import { Semaphore } from "@/lib/semaphore";
 
 // Policy point for every agent model call: the LLM round-trip in the LangGraph agent node
@@ -46,17 +47,29 @@ function isEmptyCompletionFault(err: unknown): boolean {
   return err instanceof TypeError && err.message.includes("generations");
 }
 
-// That same message lands verbatim in Conversation.lastError and in the flow log. Name what happened
-// instead, keeping the original as `cause`. An error that is NOT this fault travels untouched, so
-// the message never claims a cause it does not have.
-function describeEmptyCompletion(err: unknown): unknown {
+// The one place that knows an error came from a provider, which is what makes it the place to say
+// what it may repeat. This used to name the empty-completion fault and let everything else "travel
+// untouched" — and untouched is the leak: the request carried the whole conversation, so a refusal
+// quoting its input put the customer's words verbatim into the flow log, the alert body POSTed to
+// the operator's channel, `Conversation.lastError` and the private note this failure writes into the
+// customer's own Chatwoot conversation. All four read `.message` of whatever was thrown, so this
+// single substitution closes all four and no call site downstream changes.
+//
+// The empty-completion case keeps its own sentence because that diagnosis is OURS: nothing in the
+// response says it, we concluded it from the expression that failed. Everything else goes to the
+// closed vocabulary in `@/lib/provider-failure`, with the original kept as `cause` for the process
+// log.
+function describeProviderFault(err: unknown): unknown {
   if (isEmptyCompletionFault(err)) {
+    // No log of its own: this fault is only ever reached after the retry, which already logged the
+    // failing expression with the error object. A second line here was written and removed once
+    // mutation showed it killed nothing — the retry's log is what covers this path.
     return new Error(
       "the model provider returned no completion (empty generations)",
       { cause: err },
     );
   }
-  return err;
+  return asProviderFailure(err);
 }
 
 export async function runModelCall<T>(
@@ -68,7 +81,7 @@ export async function runModelCall<T>(
     try {
       return await fn();
     } catch (err) {
-      if (!isEmptyCompletionFault(err)) throw err;
+      if (!isEmptyCompletionFault(err)) throw describeProviderFault(err);
       onRetry?.({ attempt: 1, error: err });
       logger.warn(
         { err },
@@ -78,7 +91,7 @@ export async function runModelCall<T>(
       try {
         return await fn();
       } catch (retryErr) {
-        throw describeEmptyCompletion(retryErr);
+        throw describeProviderFault(retryErr);
       }
     }
   });

@@ -776,9 +776,15 @@ describe("analyzeGuardrail", () => {
   // Fail-open is the right policy and it is also indistinguishable, from the outside, from a
   // guardrail that ran and approved. The verdict has to say which one happened, or an operator whose
   // credential expired keeps reading "no violations" forever. Same argument as `onModelRetry` (#63).
+  // The point is that it is REPORTED — a judge that could not run must not read as one that ran and
+  // approved. What it reports is a word of ours: the request under review is the customer's own
+  // message, so a refusal quoting it would put that message into the guardrail line (this `error`
+  // becomes `errorMessage` in `gate.ts`). See @/lib/provider-failure.
   test("a model error is reported as a failure to analyze, not as approval", async () => {
     const v = await analyzeProse(throwingModel, base);
-    expect(v.error).toContain("boom");
+    expect(v.violated).toBe(false);
+    expect(v.error).toBe("provider error");
+    expect(v.error).not.toContain("boom");
   });
 
   // Two different ways the output can be unusable, and they leave by different branches: no JSON

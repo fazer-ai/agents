@@ -1,4 +1,5 @@
 import { OpenAIEmbeddings } from "@langchain/openai";
+import { throughProvider } from "@/lib/provider-failure";
 
 // Embedding wrapper. OpenAI-compatible by default (text-embedding-3-small → 1536 dims, matching
 // the knowledge_chunks vector(1536) column). The API key is resolved from the vault by the
@@ -27,12 +28,12 @@ export async function embedTexts(
   cfg: EmbeddingConfig,
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
-  return client(cfg).embedDocuments(texts);
+  return throughProvider(() => client(cfg).embedDocuments(texts));
 }
 
 export async function embedQuery(
   text: string,
   cfg: EmbeddingConfig,
 ): Promise<number[]> {
-  return client(cfg).embedQuery(text);
+  return throughProvider(() => client(cfg).embedQuery(text));
 }

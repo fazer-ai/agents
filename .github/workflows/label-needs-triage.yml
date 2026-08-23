@@ -1,0 +1,20 @@
+name: Label new issues for triage
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  label:
+    # Issues live in the public repo; the master and pro mirrors don't triage.
+    if: github.repository == 'fazer-ai/agents'
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh issue edit "$NUMBER" --repo "$GH_REPO" --add-label "needs triage"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          GH_REPO: ${{ github.repository }}

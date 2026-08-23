@@ -17,6 +17,7 @@ import {
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
 import { DATA_FENCE } from "@/graph/nudge";
+import { providerFailure } from "@/lib/provider-failure";
 
 // Condenses the raw turns of a closed attendance into the memory the agent keeps of it.
 //
@@ -218,67 +219,11 @@ export function renderTranscript(
   return clipTranscript(joined, maxHistoryTokens);
 }
 
-// A number is admissible where the vendor's strings are not, because the client PARSED it out of the
-// status line and a number cannot carry a transcript. That argument only covers a number that IS a
-// status, though: an adapter is free to expose `status: 0` for "never connected", a NaN from a failed
-// parse, or some figure lifted out of the body. Those are neither a status nor this module's to
-// publish, and `HTTP NaN` is not in the vocabulary this file promises.
-function httpStatus(v: unknown): number | null {
-  return typeof v === "number" && Number.isInteger(v) && v >= 100 && v <= 599
-    ? v
-    : null;
-}
-
-// WHAT A PROVIDER REFUSAL IS ALLOWED TO SAY, once it leaves this module.
-//
-// One question decides every field, and it is WHO CHOSE THE VALUE — never what the value looks like.
-// The request this error answers carried the whole attendance transcript, so anything the server
-// authored may be the customer's words coming back (a content-filter refusal quoting its input is the
-// ordinary case), and `execution_logs.errorMessage` is a column `docs/logs.md` promises never carries
-// them, read by the Logs page, exported by `GET /v1/logs`, and copied into alert bodies.
-// `sanitizeErrorMessage` does not help: it redacts substrings shaped like SECRETS, and a name is not
-// one.
-//
-// So `message`, `code`, `type` and even `name` are all out — the first obviously, the middle two
-// because they are vendor identifiers by convention only and this product accepts an arbitrary
-// OpenAI-compatible endpoint, the last because it reads like the SDK's class and is a plain writable
-// property. A shape test rescues none of them: rejecting prose still admits a bare token, and a
-// phone number, a CPF and a first name are all bare tokens. The status is the one thing the server
-// chooses that survives, and not by trust — the client parsed it into a NUMBER, and a number cannot
-// carry a transcript (see httpStatus above for what that argument does not cover).
-//
-// What is left is a CLOSED vocabulary this module owns:
-//
-//   "timeout"        — decided by our own AbortSignal, not by anything in the response
-//   "HTTP <nnn>"     — a status the CLIENT parsed into a number, never read out of any text
-//   "provider error" — everything else, including a connection that never opened
-//
-// Coarse on purpose, and still the distinction an operator acts on: 401 the credential, 429 the
-// rate, 404 the model id, timeout the endpoint. The vendor's own words stay in the process log,
-// which makes no PII promise; the trail is the surface that does.
-//
-// The single consumer is the compaction job (./compact.ts), which fails with this text and hands it
-// to the scheduler; since issue #196 that text also reaches the operator's trail.
-export function providerFailure(err: unknown, timedOut = false): string {
-  if (timedOut) return "timeout";
-  if (!(err instanceof Error)) return "provider error";
-  const bag = err as unknown as Record<string, unknown>;
-  // A NUMBER field, and only a number field. The status is the one thing here the server does choose,
-  // and it is admissible for a reason that has nothing to do with trusting the server: the client
-  // parsed it out of the status line into a number, and a number cannot carry a transcript.
-  //
-  // Which is also why it is not dug out of the message when the field is absent. An earlier revision
-  // did that, on the grounds that the digits alone could not leak anything — and the digits are not
-  // the problem, being WRONG is: when there is an HTTP response the client sets the field, and when
-  // there is none (a connection that never opened) there is no status to find, so a 4xx-shaped number
-  // in the text is the customer's PIN or their invoice total far more often than it is a transport
-  // status. Naming a status the provider never returned sends the operator to the wrong thing to fix,
-  // and "provider error" at least sends them nowhere.
-  // One predicate over both spellings, rather than one per field: they ask the same question, and a
-  // rule written twice is a rule the second copy gets wrong.
-  const status = httpStatus(bag.status) ?? httpStatus(bag.statusCode);
-  return status === null ? "provider error" : `HTTP ${status}`;
-}
+// The rule this file used to own now lives in `@/lib/provider-failure`, because five other provider
+// boundaries needed the same one and a rule written once per call site is a rule the next call site
+// is born without. What stays here is the reading only this caller has: `runModelCall` has already
+// reduced whatever the provider wrote, but it cannot know that OUR signal is what stopped the wait,
+// so the abort is asserted from the signal rather than inferred from the error.
 
 export async function summarizeAttendance(
   model: BaseChatModel,

@@ -231,9 +231,9 @@ describe.skipIf(!dbUp)("reengage", () => {
     expect(sent).toEqual([]);
   });
 
-  // Our bot is 9 (beforeAll); 77 is another AgentBot on the same Chatwoot account. The button was
-  // pressed on a conversation that is not ours to answer, and the gate is the only thing that knows:
-  // the re-engage has no incoming payload to consult, only the mirror.
+  // NOTE: Our bot is 9 (beforeAll); 77 is another AgentBot on the same Chatwoot account. The
+  // button was pressed on a conversation that is not ours to answer, and the gate is the only
+  // thing that knows: the re-engage has no incoming payload to consult, only the mirror.
   test("another bot's conversation closes the gate (no fetch, no post)", async () => {
     const id = await seedConversation(910, {
       assigneeType: "AgentBot",
@@ -254,8 +254,8 @@ describe.skipIf(!dbUp)("reengage", () => {
     expect(sent).toEqual([]);
   });
 
-  // The same seat, taken by OUR bot: the gate has to stay open, or the fix would buy silence rather
-  // than discrimination.
+  // NOTE: The same seat, taken by OUR bot: the gate has to stay open, or the fix would buy silence
+  // rather than discrimination.
   test("our own bot holding the conversation keeps the gate open", async () => {
     const id = await seedConversation(911, {
       assigneeType: "AgentBot",

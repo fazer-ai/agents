@@ -165,7 +165,7 @@ describe("every strict ownership check is given the id it compares", () => {
       at !== -1;
       at = src.indexOf(NAME, at + 1)
     ) {
-      // An import or a mention in prose is not a call.
+      // NOTE: An import or a mention in prose is not a call.
       if (/[.\w]/.test(src[at - 1] ?? "")) continue;
       let depth = 0;
       let i = at + NAME.length - 1;
@@ -198,9 +198,9 @@ describe("every strict ownership check is given the id it compares", () => {
   );
   const strict = sites.filter((c) => /\bourAgentBotId\b/.test(c.opts));
 
-  // A parser that finds nothing would report every rule as satisfied, so pin the shape of what it
-  // found: the loose call in `eligibility.ts` is the one site that deliberately asks the other
-  // question, and it has to survive the filter as evidence that the filter discriminates.
+  // NOTE: A parser that finds nothing would report every rule as satisfied, so pin the shape of
+  // what it found: the loose call in `eligibility.ts` is the one site that deliberately asks the
+  // other question, and it has to survive the filter as evidence that the filter discriminates.
   test("the source walk finds the calls it is meant to police", () => {
     expect(sites.length).toBeGreaterThanOrEqual(8);
     expect(strict.length).toBeGreaterThanOrEqual(7);

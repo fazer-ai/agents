@@ -1062,9 +1062,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent).toEqual([]);
   });
 
-  // The payload says unassigned and the mirror knows better — the same window the human-takeover test
-  // above covers, with the other kind of new owner. Our bot is 9; 77 is another AgentBot on the same
-  // account, and the reply must not land in its conversation.
+  // NOTE: The payload says unassigned and the mirror knows better — the same window the
+  // human-takeover test above covers, with the other kind of new owner. Our bot is 9; 77 is another
+  // AgentBot on the same account, and the reply must not land in its conversation.
   test("another bot took over during the LLM call → does not post", async () => {
     await seedConversation(916, "AgentBot", 77);
     const sent: Array<[number, string]> = [];
@@ -1084,8 +1084,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent).toEqual([]);
   });
 
-  // Our own bot in the assignee seat is what a conversation the agent already answered looks like,
-  // so the recheck has to keep letting it through.
+  // NOTE: Our own bot in the assignee seat is what a conversation the agent already answered looks
+  // like, so the recheck has to keep letting it through.
   test("our own bot in the assignee seat still posts", async () => {
     await seedConversation(917, "AgentBot", 9);
     const sent: Array<[number, string]> = [];

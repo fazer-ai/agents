@@ -593,9 +593,10 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(calls.getMessages).toBe(0);
   });
 
-  // Our bot is 9 (the job payload's agentBotId, and the ChatwootAgentBot row); 77 is another bot on
-  // the same account. The burst was armed while the conversation was still free and an automation
-  // handed it away before the window closed, so the flush is the last place that can notice.
+  // NOTE: Our bot is 9 (the job payload's agentBotId, and the ChatwootAgentBot row); 77 is another
+  // bot on the same account. The burst was armed while the conversation was still free and an
+  // automation handed it away before the window closed, so the flush is the last place that can
+  // notice.
   test("another bot took the conversation: the flush gate closes before any Chatwoot fetch", async () => {
     await seedConversation(850, { assigneeType: "AgentBot", assigneeId: 77 });
     const sent: Array<[number, string]> = [];
@@ -618,8 +619,8 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(calls.getMessages).toBe(0);
   });
 
-  // The same seat held by OUR bot: assignment to ourselves is the normal steady state once the agent
-  // has taken a conversation, so closing the gate on it would silence every burst.
+  // NOTE: The same seat held by OUR bot: assignment to ourselves is the normal steady state once
+  // the agent has taken a conversation, so closing the gate on it would silence every burst.
   test("our own bot holding the conversation does not close the flush gate", async () => {
     await seedConversation(851, { assigneeType: "AgentBot", assigneeId: 9 });
     const sent: Array<[number, string]> = [];

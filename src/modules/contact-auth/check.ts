@@ -123,7 +123,15 @@ export type AuthContext = readonly AuthContextField[];
 // silence the flat ones beside it.
 function contextValue(v: unknown): string | null {
   if (typeof v === "boolean") return String(v);
-  if (typeof v === "number") return Number.isFinite(v) ? String(v) : null;
+  // A number is kept only when it survives the trip: `JSON.parse` gives back a double, so an
+  // integer past 2^53 was already ROUNDED before this line and `12345678901234567890` would be
+  // stated to the model as `12345678901234567000`. A fact that is quietly wrong is worse than one
+  // that is missing, and an endpoint whose ids are that large can send them as strings, which are
+  // kept verbatim. A fractional value is exact for what the parser produced.
+  if (typeof v === "number") {
+    if (!Number.isFinite(v)) return null;
+    return Number.isInteger(v) && !Number.isSafeInteger(v) ? null : String(v);
+  }
   if (typeof v !== "string") return null;
   // Cut to the cap INCLUDING the ellipsis, and always end in one: a value cut without a mark reads
   // to the model as the whole fact ("AC-88" for "AC-8821"). `clipText` rather than `slice`, because

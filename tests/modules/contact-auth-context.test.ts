@@ -93,6 +93,33 @@ describe("readAuthContext: what the endpoint may say about a contact", () => {
     expect(value.endsWith("…")).toBe(true);
   });
 
+  test("a number the wire already rounded is dropped, not stated", () => {
+    // `JSON.parse` hands back a double, so an integer past 2^53 arrived here ALREADY rounded: the
+    // endpoint's `12345678901234567890` is `...567000` by the time any check runs. Stating it would
+    // put an identifier in front of the model that matches nothing on the operator's side.
+    const parsed = JSON.parse(
+      '{"account_id": 12345678901234567890, "price": 12.5, "seats": 12, "big": "12345678901234567890"}',
+    ) as Record<string, unknown>;
+    expect(pairs(bag(parsed))).toEqual([
+      "price=12.5",
+      "seats=12",
+      // A string is kept verbatim, which is how an endpoint states an id that large.
+      "big=12345678901234567890",
+    ]);
+  });
+
+  test("half a character is dropped even when the value is far under the cap", () => {
+    // JSON spells an unpaired surrogate out (`"\ud800"`) and `JSON.parse` accepts it, so a short
+    // value can carry one without any truncation being involved.
+    const parsed = JSON.parse('{"plan":"pre\\ud800mium"}') as Record<
+      string,
+      unknown
+    >;
+    const value = bag(parsed)?.[0]?.value ?? "";
+    expect([...value].every((ch) => !isLoneSurrogate(ch))).toBe(true);
+    expect(JSON.stringify(value)).not.toContain("\\ud");
+  });
+
   test("the cut never splits a character in half", () => {
     // The cap counts UTF-16 units and an emoji is two of them, so a plain cut can land between the
     // halves of one. What survives then is a lone surrogate: not a character, and replaced or

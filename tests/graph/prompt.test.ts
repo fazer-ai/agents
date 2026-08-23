@@ -58,6 +58,17 @@ describe("interpolatePromptVars — {{ }} syntax", () => {
     expect(out.includes(nel)).toBe(false);
     expect(out.includes(csi)).toBe(false);
   });
+
+  test("drops half a character, and keeps whole ones", () => {
+    // An unpaired surrogate is not a character: Postgres refuses it inside a jsonb write and a
+    // provider replaces or rejects it. It reaches here from any JSON source that spells it out
+    // (`"\ud800"`), which both the mirrored attribute values and the authorization context are.
+    const lone = "\ud800";
+    const v = buildPromptVars({ contactName: `Eve${lone}Ana 😀` });
+    const out = interpolatePromptVars("{{nome_contato}}", v);
+    expect(out).toBe("Eve Ana 😀");
+    expect(JSON.stringify(out)).not.toContain("\\ud8");
+  });
 });
 
 describe("interpolatePromptVars — time variables", () => {

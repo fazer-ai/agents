@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Button, Card, FormField, Input, useToast } from "@/client/components";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import {
   afterCompanySave,
   companyChanges,
@@ -121,7 +122,14 @@ export function CompanyProfileCard({
       const { data, error } =
         await api.api.v1["tenant-settings"].company.put(sent);
       if (error || !data) {
-        showToast(t("documents.company.saveError", "Could not save."), "error");
+        // The server's own words when it sent any: a letterhead field is refused for a character the
+        // document fonts cannot print, and the refusal NAMES the field and the character. Six inputs
+        // and a generic sentence leave the operator hunting for which one.
+        showToast(
+          apiErrorMessage(error) ||
+            t("documents.company.saveError", "Could not save."),
+          "error",
+        );
         return;
       }
       // The text is now stored, so it becomes the baseline — see afterCompanySave. Anything typed
@@ -158,12 +166,18 @@ export function CompanyProfileCard({
   }
 
   async function upload(file: File) {
-    const failed = () =>
+    // The fallback names ONE of the three limits, and this route enforces three: the type, the byte
+    // size, and the pixel count. That makes the generic sentence actively wrong for the third — a
+    // 180 KB PNG at 8000x8000 is refused, and the operator is told to shrink a file that is already
+    // well under the size it names. So the server's own refusal wins whenever there is one, and the
+    // sentence below survives only for the case with no server behind it.
+    const failed = (e?: unknown) =>
       showToast(
-        t(
-          "documents.company.logoError",
-          "Could not upload. The logo must be a PNG or JPEG under 512 KB.",
-        ),
+        apiErrorMessage(e) ||
+          t(
+            "documents.company.logoError",
+            "Could not upload. The logo must be a PNG or JPEG under 512 KB.",
+          ),
         "error",
       );
     setBusy("upload");
@@ -171,10 +185,10 @@ export function CompanyProfileCard({
       const { data, error } = await api.api.v1[
         "tenant-settings"
       ].company.logo.post({ file });
-      if (error || !data) return failed();
+      if (error || !data) return failed(error);
       applyLogoOnly(data.company);
-    } catch {
-      failed();
+    } catch (e) {
+      failed(e);
     } finally {
       setBusy(null);
     }

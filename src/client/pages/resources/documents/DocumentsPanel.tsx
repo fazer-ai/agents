@@ -27,6 +27,7 @@ import {
   useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { mediaFetch } from "@/client/lib/media";
 import { type CompanyProfile, CompanyProfileCard } from "./CompanyProfileCard";
 import {
@@ -63,12 +64,6 @@ function companySummary(
 // `{ error }` whose `value` is the parsed body, and a refusal here is written for the operator (which
 // template has the name, which rule the name breaks) — throwing it away for a generic string is how
 // a fixable mistake becomes a dead end.
-function serverMessage(err: unknown): string | undefined {
-  const value = (err as { value?: unknown } | null)?.value;
-  const message = (value as { error?: unknown } | null)?.error;
-  return typeof message === "string" && message.trim() ? message : undefined;
-}
-
 export function DocumentsPanel() {
   const { t, i18n } = useTranslation();
   // The route defaults an absent locale to pt-BR, so an English console would create Portuguese
@@ -239,7 +234,7 @@ export function DocumentsPanel() {
         // The server's own words, shown next to the field that caused them. It says which template
         // already has the name, which a generic "could not create" cannot — and the operator is
         // three characters away from fixing it.
-        setCreateError(serverMessage(err) ?? null);
+        setCreateError(apiErrorMessage(err));
         return;
       }
       starterModal.close();

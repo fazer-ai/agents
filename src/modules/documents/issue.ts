@@ -249,8 +249,10 @@ export async function issueDocument(
     );
   }
 
-  // `create` rather than `createMany({ skipDuplicates })` because the counter must be bumped exactly
-  // once per row actually inserted, and skipDuplicates cannot say whether it inserted.
+  // `create` rather than `createMany({ skipDuplicates })` because the ROW is needed: what follows
+  // renders and publishes against this document's own id, and createMany returns a count, not rows.
+  // (The count is enough where only the fact of insertion matters — the bundle import uses exactly
+  // that, because a P2002 there would abort the transaction the whole import runs in.)
   //
   // Three scoped calls, not one: a P2002 ABORTS the PostgreSQL transaction it was raised in, so
   // recovering the winner cannot happen inside the transaction that lost. Catching the conflict and

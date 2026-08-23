@@ -1443,24 +1443,60 @@ async function createMissingComponents(
       });
       continue;
     }
-    await db.documentTemplate.create({
-      data: {
-        tenantId,
-        // The value the gate APPROVED, not the one it was handed: `templateNameSchema` trims before
-        // it measures, so a name padded with whitespace passes a bound the raw string fails. The
-        // name becomes the tool's title, carried by every granted agent on every turn.
-        name: approvedName,
-        slug: tpl.slug,
-        description: tpl.description ?? null,
-        blocks: content.content.blocks as unknown as Prisma.InputJsonValue,
-        fields: content.content.fields as unknown as Prisma.InputJsonValue,
-        style: parseDocumentStyle(
-          tpl.style,
-        ) as unknown as Prisma.InputJsonValue,
-        numberPrefix: tpl.numberPrefix ?? null,
-        enabled: tpl.enabled ?? true,
-      },
+    // `createMany({ skipDuplicates })` rather than `create`, and the enclosing transaction is the
+    // whole reason. Both pre-checks above can answer "free" and a writer commit before this insert
+    // — a second import, or someone saving a template in the console. A P2002 here does not cost one
+    // template: `importAgent` runs the ENTIRE import inside one `runScopedOn` transaction, so it
+    // aborts that transaction, every statement after it fails with "current transaction is aborted",
+    // and the operator loses the agent, the tools and the knowledge bases to a race over a name.
+    //
+    // A `catch` around the insert is the trap, not the remedy: by the time it runs the transaction
+    // is already dead, so it swallows the one legible error and replaces it with a confusing one.
+    // Only NOT RAISING works, and `ON CONFLICT DO NOTHING` covers BOTH unique indexes on this table,
+    // which is what the two pre-checks were separately trying to do.
+    const { count } = await db.documentTemplate.createMany({
+      data: [
+        {
+          tenantId,
+          // The value the gate APPROVED, not the one it was handed: `templateNameSchema` trims
+          // before it measures, so a name padded with whitespace passes a bound the raw string
+          // fails. The name becomes the tool's title, carried by every granted agent on every turn.
+          name: approvedName,
+          slug: tpl.slug,
+          description: tpl.description ?? null,
+          blocks: content.content.blocks as unknown as Prisma.InputJsonValue,
+          fields: content.content.fields as unknown as Prisma.InputJsonValue,
+          style: parseDocumentStyle(
+            tpl.style,
+          ) as unknown as Prisma.InputJsonValue,
+          numberPrefix: tpl.numberPrefix ?? null,
+          enabled: tpl.enabled ?? true,
+        },
+      ],
+      skipDuplicates: true,
     });
+    if (count === 0) {
+      // Lost the race. WHICH warning is right depends on which index refused, so it is re-asked
+      // rather than guessed — the row is committed by now, and each statement in a READ COMMITTED
+      // transaction takes a fresh snapshot, so this read sees it.
+      const holder = await db.documentTemplate.findFirst({
+        where: { name: approvedName },
+        select: { slug: true },
+      });
+      warnings.push(
+        holder
+          ? {
+              code: "documentTemplateNameTaken",
+              params: { name: approvedName, existing: holder.slug },
+              target: { kind: "document", name: tpl.slug },
+            }
+          : {
+              code: "documentTemplateReused",
+              params: { name: tpl.name },
+              target: { kind: "document", name: tpl.slug },
+            },
+      );
+    }
   }
 
   for (const kb of components.knowledgeBases) {

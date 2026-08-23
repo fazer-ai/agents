@@ -14,6 +14,7 @@ import {
   useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { DocumentPreview } from "./DocumentPreview";
 import { useDocumentPreview } from "./useDocumentPreview";
 
@@ -207,8 +208,13 @@ export function DocumentTemplateModal({
       }).patch(patch);
       if (session !== sessionRef.current) return;
       if (error) {
+        // What the save refuses for is not what the preview checks: a duplicate name and an
+        // oversized description are decided by the write, and the preview never sees either. The
+        // server words both, so the generic sentence would leave the operator with a form that looks
+        // valid and a button that keeps failing.
         showToast(
-          t("documents.saveError", "Could not save this template."),
+          apiErrorMessage(error) ||
+            t("documents.saveError", "Could not save this template."),
           "error",
         );
         return;

@@ -1030,6 +1030,85 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     );
   });
 
+  // The pre-check above answers "free", and the whole import runs inside ONE transaction. So a writer
+  // that commits in the window between that answer and the insert does not cost one template: the
+  // P2002 aborts the transaction, every statement after it fails with "current transaction is
+  // aborted", and the operator loses the entire import — agent, tools, knowledge bases — to a race.
+  //
+  // A `catch` around the insert cannot fix that, which is the trap here: it looks like the remedy and
+  // makes the failure less legible, because the transaction is already dead when it runs. Only NOT
+  // RAISING works, which is what `ON CONFLICT DO NOTHING` does.
+  //
+  // The race is produced rather than waited for: the interceptor below commits the colliding row on
+  // the SUPERUSER connection — a different transaction — at the moment the pre-check answers.
+  test("survives a writer that takes the name between the check and the insert", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const tampered = structuredClone(exp);
+    const tpl = tampered.components?.documentTemplates?.find(
+      (t) => t.slug === "orcamento",
+    );
+    if (!tpl) throw new Error("bundle missing the document template");
+    tpl.slug = `corrida_${process.pid}`;
+    tpl.name = `Corrida ${process.pid}`;
+
+    let raced = false;
+    const racing = appDb.$extends({
+      query: {
+        documentTemplate: {
+          async findFirst({ args, query }) {
+            const answer = await query(args);
+            // Fired on the NAME pre-check specifically, and measured rather than assumed: the first
+            // version fired on the SLUG one, so the name check that runs next found the row and took
+            // the ordinary warning path. The test passed against the unfixed code — a race test that
+            // never reaches the race, which is worse than no test.
+            const asksByName =
+              (args as { where?: { name?: unknown } }).where?.name !==
+              undefined;
+            if (!raced && asksByName && answer === null) {
+              raced = true;
+              await suDb.documentTemplate.create({
+                data: {
+                  tenantId: dstTenant,
+                  name: tpl.name,
+                  slug: `outro_${process.pid}`,
+                  blocks: [],
+                  fields: [],
+                  style: {},
+                },
+              });
+            }
+            return answer;
+          },
+        },
+      },
+    });
+
+    const { agent, warnings } = await importAgent(
+      dstCtx(),
+      tampered,
+      racing as unknown as typeof appDb,
+    );
+    // The rendezvous actually happened. Without this the test passes just as well when the
+    // interceptor never fired and no race was ever created.
+    expect(raced).toBe(true);
+    // The import completed, which is the whole point: an agent came back.
+    expect(agent.id).toBeTruthy();
+    expect(warnings.some((w) => w.code === "documentTemplateNameTaken")).toBe(
+      true,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agents WHERE id = ${BigInt(agent.id)}`,
+    );
+    await suDb.documentTemplate.deleteMany({
+      where: { tenantId: dstTenant, name: tpl.name },
+    });
+  });
+
   // A discriminated union refuses the WHOLE array on one unknown arm, so a grant of a source a newer
   // release added would make an otherwise importable agent unimportable — and say nothing about
   // which part was the problem. Dropped with a count instead.

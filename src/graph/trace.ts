@@ -82,6 +82,32 @@ export interface TraceGuardrail extends GuardrailReport {
   type: "guardrail";
 }
 
+// The one way a report becomes a trace row. `rationale` and `categories` are written by a model
+// that was shown the reply, so a token the reply leaked can come back quoted inside them — and this
+// row is returned over REST/MCP and persisted, exactly like the assistant text a few lines below,
+// which is redacted and bounded for that reason. Pushing the report through `...r` gave the judge's
+// prose a path into the trace that the agent's own prose does not have.
+export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
+  return {
+    type: "guardrail",
+    direction: r.direction,
+    outcome: r.outcome,
+    ...(r.action ? { action: r.action } : {}),
+    ...(r.categories?.length
+      ? {
+          // Bounded in count as well as in length: the list is model-written, so nothing upstream
+          // limits how many labels come back.
+          categories: r.categories
+            .slice(0, CATEGORIES_MAX)
+            .map((c) => redactSecretsInText(truncate(c, CATEGORY_MAX))),
+        }
+      : {}),
+    ...(r.rationale
+      ? { rationale: redactSecretsInText(truncate(r.rationale, OUTPUT_MAX)) }
+      : {}),
+  };
+}
+
 export type TraceEntry =
   | TraceToolCall
   | TraceToolResult
@@ -90,6 +116,10 @@ export type TraceEntry =
   | TraceGuardrail;
 
 const OUTPUT_MAX = 2000;
+// A category is a label ("toxicity", "competitor_mention"), not prose, and the operator reads the
+// whole list at a glance.
+const CATEGORIES_MAX = 12;
+const CATEGORY_MAX = 80;
 
 function msgType(m: BaseMessage): string {
   const anyM = m as unknown as {

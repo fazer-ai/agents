@@ -1,11 +1,16 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   AIMessage,
   HumanMessage,
   SystemMessage,
   ToolMessage,
 } from "@langchain/core/messages";
-import { buildPlaygroundTrace, collectTraceSources } from "@/graph/trace";
+import {
+  buildPlaygroundTrace,
+  collectTraceSources,
+  traceGuardrail,
+} from "@/graph/trace";
 
 // Pure shaping tests (no DB / no model): a tool-calling turn must produce a tool_call → tool_result
 // pair, surface the search_knowledge sources from the ToolMessage artifact, flag errors, exclude the
@@ -143,5 +148,64 @@ describe("buildPlaygroundTrace", () => {
     expect(trace).toHaveLength(2);
     expect(trace[0]?.type).toBe("tool_call");
     expect(trace.some((e) => e.type === "assistant")).toBe(false);
+  });
+});
+
+// The guardrail row goes to the same places the rows above do — over REST, into MCP, and into a
+// stored transcript — but its text is written by a model that was shown the reply, so the reply's
+// own leaks can come back quoted in it. It used to be spread in whole (`{ type, ...report }`),
+// which is the one path into the trace that skipped the redaction every other path applies.
+describe("traceGuardrail", () => {
+  const report = {
+    direction: "output" as const,
+    outcome: "replaced" as const,
+    action: "template" as const,
+  };
+
+  test("scrubs a secret the judge quoted back out of the reply", () => {
+    const e = traceGuardrail({
+      ...report,
+      rationale: "a resposta continha a chave sk-abcdefghijklmnopqrstuvwxyz",
+    });
+    expect(e.rationale).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+    expect(e.rationale).toContain("‹redacted›");
+  });
+
+  test("scrubs a secret in a category too", () => {
+    const e = traceGuardrail({
+      ...report,
+      categories: ["leaked: sk-abcdefghijklmnopqrstuvwxyz"],
+    });
+    expect(e.categories?.[0]).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+  });
+
+  test("bounds the rationale, which nothing upstream bounds", () => {
+    const e = traceGuardrail({ ...report, rationale: "x".repeat(9000) });
+    expect((e.rationale as string).length).toBeLessThan(9000);
+  });
+
+  test("bounds how many categories and how long each one is", () => {
+    const e = traceGuardrail({
+      ...report,
+      categories: Array.from({ length: 40 }, () => "y".repeat(500)),
+    });
+    expect(e.categories?.length).toBeLessThan(40);
+    for (const c of e.categories ?? []) expect(c.length).toBeLessThan(500);
+  });
+
+  test("carries the fields an operator reads, and adds no empty ones", () => {
+    const e = traceGuardrail({ direction: "input", outcome: "clean" });
+    expect(e).toEqual({
+      type: "guardrail",
+      direction: "input",
+      outcome: "clean",
+    });
+  });
+
+  test("nothing builds a guardrail row without going through it", () => {
+    const src = readFileSync("src/modules/playground/service.ts", "utf8");
+    // Both sinks (the turn and the follow-up) call it, and neither spreads the report itself.
+    expect(src.match(/traceGuardrail\(r\)/g)?.length).toBe(2);
+    expect(src).not.toContain('{ type: "guardrail", ...r }');
   });
 });

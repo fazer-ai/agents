@@ -859,6 +859,74 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     ).toBe(0);
   });
 
+  // ...and the thread goes with them, which is the half that made deleting the notes safe. The turn
+  // endpoint accepts any id that passes the tenant+agent fence, so a caller holding a deleted id
+  // could open a turn on it: our rows were gone and the checkpoint was not, and the old raw reply
+  // came back with nothing left to say a guardrail had removed it.
+  //
+  // Run on the REAL checkpointer, because an injected MemorySaver is not the store the delete
+  // reaches and the whole defect is the two stores disagreeing.
+  test("a deleted session cannot be reopened with its raw replies", async () => {
+    const first = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentTemplate,
+      message: "fale do concorrente",
+      base: appDb,
+      deps: { makeModel: models({ violated: true }).make },
+    });
+    expect(first.reply).toBe(TEMPLATE);
+
+    await deletePlaygroundSession(
+      tenantId,
+      agentTemplate,
+      first.threadId,
+      appDb,
+    );
+
+    // The same id, reused the way a caller that kept it would. A reply of its own, so the raw one
+    // the first turn left behind cannot be mistaken for this turn's.
+    await runPlaygroundTurn({
+      tenantId,
+      agentId: agentTemplate,
+      message: "segunda",
+      threadId: first.threadId,
+      guardrails: false,
+      base: appDb,
+      deps: {
+        makeModel: (() =>
+          new FakeListChatModel({ responses: ["resposta nova"] })) as never,
+      },
+    });
+
+    const turns = await getPlaygroundSessionTurns(
+      tenantId,
+      agentTemplate,
+      first.threadId,
+      appDb,
+    );
+    // Only the new turn. Before the thread was deleted too, this also carried "fale do concorrente"
+    // and the raw reply the template had replaced, presented as the agent's own words.
+    expect(turns.map((t) => t.text)).not.toContain("fale do concorrente");
+    expect(turns.map((t) => t.text)).not.toContain(RAW_REPLY);
+    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
+      "user:segunda",
+      "assistant:resposta nova",
+    ]);
+  });
+
+  // The line that makes the delete safe to perform at all: `deleteThread` is scoped by nothing, and
+  // every Chatwoot conversation lives in the same checkpointer.
+  test("a thread outside the fence is refused, not deleted", async () => {
+    await expect(
+      deletePlaygroundSession(
+        tenantId,
+        agentTemplate,
+        `${tenantId}:1:4242`,
+        appDb,
+      ),
+    ).rejects.toThrow();
+  });
+
   // Family sweep: the inbox's proactive path is screened (issue #160), so the playground's simulated
   // follow-up has to be, or the fix covers one of the two paths the playground reproduces.
   test("the simulated follow-up is screened on the output direction", async () => {

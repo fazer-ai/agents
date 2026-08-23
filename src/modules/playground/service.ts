@@ -37,6 +37,7 @@ import {
   type TraceGuardrail,
   type TraceLabelOpts,
   type TraceSource,
+  traceGuardrail,
 } from "@/graph/trace";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -510,7 +511,7 @@ export async function runPlaygroundTurn(
         apiKey: loaded.guardrailsApiKey,
         credentialBaseUrl: loaded.guardrailsCredentialBaseUrl,
         announce: (r) => {
-          gTrace.push({ type: "guardrail", ...r });
+          gTrace.push(traceGuardrail(r));
         },
         flow,
         systemPrompt: loaded.systemPrompt,
@@ -861,7 +862,7 @@ export async function runPlaygroundFollowup(
         apiKey: loaded.guardrailsApiKey,
         credentialBaseUrl: loaded.guardrailsCredentialBaseUrl,
         announce: (r) => {
-          gTrace.push({ type: "guardrail", ...r });
+          gTrace.push(traceGuardrail(r));
         },
         flow,
         systemPrompt: loaded.systemPrompt,

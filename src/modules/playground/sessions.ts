@@ -480,14 +480,27 @@ export async function getPlaygroundSessionTurns(
   return turns;
 }
 
-// Remove a session from history. Only our metadata row is deleted; the checkpointer thread is left
-// to LangGraph (it becomes unreachable from the UI, which is sufficient for a test surface).
+// Remove a session from history, thread and all — which is what the endpoint has always said it
+// does. Leaving the checkpointer thread behind used to be harmless, because the transcript WAS the
+// thread; now the annotations that explain it live in rows of ours, and the turn endpoint accepts
+// any thread id that passes the fence below. So a caller holding a deleted id could open a turn on
+// it and get the old conversation back with the moderation deleted: the raw replies a guardrail
+// replaced, presented as the agent's own (issue #136).
 export async function deletePlaygroundSession(
   tenantId: bigint,
   agentId: bigint,
   threadId: string,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
+  // The fence is what makes the line below safe to run at all: `deleteThread` is scoped by nothing,
+  // and every Chatwoot conversation is a thread in the same checkpointer.
+  if (!isValidPlaygroundThread(threadId, tenantId, agentId)) {
+    throw new NotFoundError("session not found", "errors.sessionNotFound");
+  }
+  // First, and not swallowed: a delete that dropped our rows and left the thread would leave
+  // exactly the state described above. Failing here leaves the session whole instead.
+  const checkpointer = await getCheckpointer();
+  await checkpointer.deleteThread(threadId);
   await runScopedOn(base, sysCtx(tenantId), async (db) => {
     // The transcript notes go with it. Left behind they would be orphans, and pruned separately
     // they would put a still-reloadable session back to the raw reply (issue #136).

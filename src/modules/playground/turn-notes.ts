@@ -25,7 +25,8 @@ function sysCtx(tenantId: bigint): TenantContext {
 // media cap exists to bound, and a screened session writes one short row per turn, bounded by an
 // operator typing turns by hand. Pruning one while its session is still reloadable would silently
 // put the transcript back to the raw reply the guardrail removed, which is the failure the row
-// exists to prevent. The note's life is the session's: `deletePlaygroundSession` deletes both.
+// exists to prevent. The note's life is the session's, and so is the checkpointer thread's:
+// `deletePlaygroundSession` deletes all three.
 
 export interface PlaygroundTurnNote {
   // The AIMessage this overrides, or null for a turn the thread has no record of. Set but no longer

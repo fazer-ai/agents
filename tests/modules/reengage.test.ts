@@ -382,6 +382,87 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(sent).toEqual([[904, REPLY]]);
     });
 
+    // A message that arrives and is REFUSED while this re-engage waits on the endpoint has already
+    // had the watermark advanced past it by its own delivery. The tail here is chosen from the last
+    // OUTGOING message, which a refusal never writes, so without a watermark floor that refused
+    // message rides into the very turn the gate exists to prevent.
+    //
+    // The floor is blunt on purpose: the watermark is aggregate, so it covers the older unanswered
+    // tail too and the re-engage comes back "empty". That IS the fail-closed side — what a
+    // concurrent delivery consumed is not this button's to re-answer — and it applies only with the
+    // gate on, so the button keeps its old reach everywhere else.
+    test("a message refused during the authorization call is not re-answered", async () => {
+      const id = await seedConversation(908, {
+        contactId: await seedContact(45),
+      });
+      const sent: Array<[number, string]> = [];
+      let modelBuilds = 0;
+      const refusedDuringTheCall = (async () => {
+        // The refused delivery's own webhook did this while we were asking.
+        await suDb.conversation.update({
+          where: { id },
+          data: { lastHandledMessageId: 2 },
+        });
+        return new Response(JSON.stringify({ authorized: true }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch;
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => {
+            modelBuilds += 1;
+            return fakeModel();
+          },
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "a primeira" },
+              { id: 2, content: "a recusada" },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: refusedDuringTheCall,
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("empty");
+      expect(modelBuilds).toBe(0);
+      expect(sent).toEqual([]);
+    });
+
+    // The floor only ever removes what something else handled. With nothing concurrent, the tail is
+    // the tail and the button does its job — which is what stops the guard above from quietly
+    // turning re-engage into a no-op wherever the gate is on.
+    test("with nothing handled concurrently the tail is answered as usual", async () => {
+      const id = await seedConversation(909, {
+        contactId: await seedContact(46),
+      });
+      const sent: Array<[number, string]> = [];
+      const calls = { n: 0 };
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "oi" },
+              { id: 2, content: "alguém aí?" },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(true, calls),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      expect(calls.n).toBe(1);
+      expect(sent).toEqual([[909, REPLY]]);
+    });
+
     // The assignee gate runs before the authorization round-trip, which has a ten-second ceiling. A
     // human arriving inside it used to get the turn run on their conversation: the post gate holds
     // the reply back, and by then the tools have written.

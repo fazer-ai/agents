@@ -571,7 +571,13 @@ export async function runAgentNudge(
   // "note instead" downgrade here, because the nudge's own text was written FOR the customer.
   // Asked after the live-ownership probe (a conversation that is no longer the bot's costs no
   // call) and before any tool/model work, so a refused nudge spends nothing.
-  if (cfg.contactAuthConfig.enabled) {
+  // Asked only when this nudge could actually REACH the contact. A nudge on a conversation a human
+  // already owns cannot: `canMessagePre` is false and the whole thing ends as a private note to the
+  // operator (docs/integrations.md — "human handling ⇒ private note, not a customer message"), which
+  // is signal FOR the human, not an approach to the customer. Asking there would spend a call on
+  // somebody else's endpoint to decide about a message that never goes out, and — since the answer
+  // is acted on — would turn that documented note into silence.
+  if (cfg.contactAuthConfig.enabled && canMessagePre) {
     const auth = await authorizeContact({
       tenantId,
       agentId: cfg.agentId,
@@ -617,6 +623,10 @@ export async function runAgentNudge(
     // wait would otherwise have the follow-up's tools run on it, and the post-model re-probe only
     // decides whether the TEXT goes out. A probe that cannot answer means we do not know, and a
     // follow-up we are unsure about is one we do not send.
+    //
+    // A TAKEOVER is what this is looking for, which is why it sits under `canMessagePre`: a
+    // conversation that was already the human's before the call has not changed hands, and its
+    // private-note path is not something to fence.
     if ((await botStillOwnsIt().catch(() => "unavailable")) !== "ours") {
       logger.info(
         "agentNudge: a human took the conversation during the authorization call (conv=%s)",

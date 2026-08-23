@@ -27,6 +27,23 @@ same as the early check), the nudge through its own live probe. The turn's build
 too and this does not pretend to fence that: it is the runtime's window, the same one every agent
 has. What the fence does is refuse to WIDEN it by the length of an operator's network call.
 
+Two callers narrow what the turn may contain, for the same reason. The **debounce flush** re-reads
+the handled watermark at the point the burst is chosen, and the **manual re-engage** filters its
+tail by it — a message that arrived and was REFUSED during the authorization call has already had
+the watermark advanced past it by its own delivery, and the re-engage tail is chosen from the last
+OUTGOING message, which a refusal never writes. The floor is blunt: the watermark is aggregate, so
+on re-engage it also covers an older unanswered tail and the button comes back "nothing new to
+answer". That is the fail-closed side of the trade, and it is why the floor applies only with the
+gate ON: everywhere else re-engage keeps its full reach.
+
+**The nudge asks only when it could reach the contact.** On a conversation a human already owns, an
+event nudge cannot message the customer — it ends as a private note for the operator
+(`docs/integrations.md`), which is signal FOR the human rather than an approach to the customer. No
+verdict is requested there, and none is acted on: doing so would spend a call on somebody else's
+endpoint to decide about a message that never goes out, and would turn that documented note into
+silence. The takeover fence above is about a conversation CHANGING hands during the call, not about
+one that was never the bot's.
+
 **A verdict describes the instant the endpoint evaluated it, and nothing after.** The guarantee is
 per message, not a global order: two checks that overlap in time (a nudge against an incoming
 message, or two messages under `includeMessageText`) are independent requests, and they can settle

@@ -14,6 +14,7 @@ import {
   contactAuthFlowEvent,
 } from "@/modules/contact-auth/service";
 import { coalesceAndRunTurn } from "@/modules/debounce/handler";
+import { readHandledWatermark } from "@/modules/debounce/watermark";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { clearConversationError } from "./error";
 
@@ -224,7 +225,29 @@ export async function reengageConversation(
       convDbId: resolved.convDbId,
       loaded: resolved.loaded,
       settings: resolved.settings,
-      selectPending: incomingAfterLastOutgoing,
+      // With the gate on, the tail is filtered by the handled watermark as well, re-read at the
+      // point the burst is chosen. The authorization call above is a round-trip to somebody else's
+      // endpoint, and a message that arrived and was REFUSED during it has already had the
+      // watermark advanced past it by its own delivery — but the tail is chosen from the last
+      // OUTGOING message, which a refusal never writes, so that refused message would be handed
+      // straight to the model. "No turn for a contact the endpoint will not vouch for" is a
+      // statement about turns, and this is one. The same guard the debounce flush carries.
+      //
+      // Only with the gate on: this floor is not free. A watermark ahead of the last outgoing
+      // message is exactly what a deliberate skip leaves behind (out of hours, a human took over),
+      // and re-engage exists to answer a tail nobody answered — so applying it unconditionally
+      // would turn the button into a no-op on the conversations it was written for.
+      selectPending: authCfg.enabled
+        ? async (messages) => {
+            const tail = incomingAfterLastOutgoing(messages);
+            const handled = await readHandledWatermark({
+              tenantId,
+              conversationDbId: resolved.convDbId,
+              base,
+            });
+            return handled === null ? tail : tail.filter((m) => m.id > handled);
+          }
+        : incomingAfterLastOutgoing,
       label: "reengage",
     },
     base,

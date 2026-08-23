@@ -246,6 +246,40 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     expect(s.messages).toEqual([]);
   });
 
+  // An event nudge on a conversation a human already owns has a documented path: it cannot message
+  // the customer, so it leaves a private note for the operator (docs/integrations.md). The gate has
+  // no business there — the note is signal FOR the human, not an approach to the customer — and the
+  // post-verdict takeover fence would otherwise read "not the bot's" (which was already true before
+  // the call) and turn that note into silence.
+  test("a human-owned event nudge keeps its private note and is never asked about", async () => {
+    await seedConv(9405);
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 9405 },
+      data: { assigneeType: "User", assigneeId: 52, status: "open" },
+    });
+    const s = stub();
+    const auth = authFetch(
+      () => new Response('{"authorized":true}', { status: 200 }),
+    );
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9405`,
+      nudge: { source: "followup", kind: "inactivity" },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["Pagamento confirmado."] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+        contactAuthFetch: auth.fetchImpl,
+      },
+    });
+    expect(outcome).toBe("noted");
+    expect(auth.calls).toEqual([]);
+    expect(s.messages).toEqual([]);
+  });
+
   // The ownership probe runs before the authorization round-trip, which has a ten-second ceiling. A
   // human arriving inside it used to have the follow-up's tools run on their conversation: the
   // post-model re-probe only decides whether the TEXT goes out.

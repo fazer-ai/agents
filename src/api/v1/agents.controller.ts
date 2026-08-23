@@ -207,6 +207,14 @@ function decodeMultipartText(raw: unknown): string | undefined {
   }
 }
 
+// A boolean that rides multipart as a string. ABSENT stays absent: the default for this flag lives
+// in the service (`screensThisTurn`), and coercing an omitted field to `true` here would put a
+// second copy of it on the two endpoints that happen to use multipart, where a change to the real
+// one would never reach. Only an explicit "false" is a decision.
+export function decodeMultipartFlag(raw: unknown): boolean | undefined {
+  return raw === undefined ? undefined : raw !== "false";
+}
+
 // The extract-only step reports one of three kinds; only these are honored as a precomputed value.
 function decodeExtractKind(
   raw: unknown,
@@ -873,7 +881,7 @@ export const agentsController = new Elysia({
           threadId: b.threadId,
           overrides,
           forceAudio: b.forceAudio === "true",
-          guardrails: b.guardrails !== "false",
+          guardrails: decodeMultipartFlag(b.guardrails),
           transcription: decodeMultipartText(b.transcription),
         })),
       };
@@ -995,7 +1003,7 @@ export const agentsController = new Elysia({
           threadId: b.threadId,
           overrides,
           forceAudio: b.forceAudio === "true",
-          guardrails: b.guardrails !== "false",
+          guardrails: decodeMultipartFlag(b.guardrails),
           kind: decodeExtractKind(b.kind),
           extracted: decodeMultipartText(b.extracted),
         })),

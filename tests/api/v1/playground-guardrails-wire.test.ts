@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Elysia } from "elysia";
 import {
+  decodeMultipartFlag,
   playgroundFollowupBodySchema,
   playgroundTurnBodySchema,
 } from "@/api/v1/agents.controller";
@@ -60,5 +61,18 @@ describe("playground guardrail toggle survives the HTTP boundary", () => {
   // normalizer that filled in a default would flip every turn's screening off.
   test("omitting it leaves it undefined, not false", async () => {
     expect(await post("/turn", { message: "oi" })).toEqual({ seen: null });
+  });
+
+  // The audio and file turns carry the flag as a multipart STRING, and the same rule has to hold
+  // there: absent means "whatever the service decides", not "on". Coerced to a boolean at the
+  // handler, the default would exist twice, and the copy on these two endpoints is the one a change
+  // to the real one would never reach.
+  test("the multipart flag keeps absent absent", () => {
+    expect(decodeMultipartFlag(undefined)).toBeUndefined();
+    expect(decodeMultipartFlag("false")).toBe(false);
+    expect(decodeMultipartFlag("true")).toBe(true);
+    // Anything else present is a decision to screen, which is the safe reading of a garbled field.
+    expect(decodeMultipartFlag("")).toBe(true);
+    expect(decodeMultipartFlag("no")).toBe(true);
   });
 });

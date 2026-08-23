@@ -28,10 +28,14 @@ function sysCtx(tenantId: bigint): TenantContext {
 // exists to prevent. The note's life is the session's: `deletePlaygroundSession` deletes both.
 
 export interface PlaygroundTurnNote {
-  // The AIMessage this overrides, or null for a turn the thread has no record of.
+  // The AIMessage this overrides, or null for a turn the thread has no record of. Set but no longer
+  // rendered when the agent's reply was empty, which the fold treats as a placement, not a loss.
   messageId: string | null;
-  // Where a thread-less turn belongs: the last message id at the time. Null = the thread was empty.
+  // Where a thread-less turn belongs: the last message the transcript SHOWED at the time, which is
+  // not always the last message in the thread. Null = the thread was empty, so it goes first.
   anchorMessageId: string | null;
+  // This turn's human message, minted for every turn. The media saved for a blocked turn joins back
+  // on it, and an annotation whose reply the rebuild dropped is placed after it.
   userMessageId: string | null;
   userText: string | null;
   reply: string;

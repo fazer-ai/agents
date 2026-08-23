@@ -533,7 +533,8 @@ export async function runPlaygroundTurn(
       params.titleHint ?? text,
     );
     // The graph never ran, so the thread holds neither the message nor the reply and a reload would
-    // simply lose the turn. The note carries both, anchored to whatever the thread ended on.
+    // simply lose the turn. The note carries both, anchored to the last message the transcript
+    // SHOWS (see lastRenderedMessageId), which is not always what the thread ends on.
     const blockedMediaId = await saveInboundMedia();
     await savePlaygroundTurnNote(base, {
       tenantId,

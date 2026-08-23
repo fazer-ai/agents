@@ -774,20 +774,26 @@ model PlaygroundSession {
 // thread at all (issue #136). The playground rebuilds its transcript from the checkpointer, so
 // without this row a reload shows the reply the guardrail took away, with no sign it ever acted.
 //
-// Only turns the guardrail touched get a row; everything else still comes from the checkpointer.
+// Every turn the guardrail RAN on gets a row, the clean verdicts included: the playground's toggle
+// is per turn, so a reload with no clean mark cannot tell an approved reply from one nothing ever
+// screened. A turn it never ran on has no row and still comes from the checkpointer alone.
 model PlaygroundTurnNote {
   id       BigInt @id @default(autoincrement())
   tenantId BigInt @map("tenant_id")
   agentId  BigInt @map("agent_id")
   threadId String @map("thread_id")
-  // The AIMessage this OVERRIDES. Null for a turn the thread has no record of, which is the input
-  // block: `anchorMessageId` then says which turn it follows.
+  // The AIMessage this OVERRIDES, when the rebuilt transcript still shows it. Null for a turn the
+  // thread has no record of (the input block); set but no longer shown when the agent's reply was
+  // empty, since the rebuild drops an AI message with no text. Both of those are placed instead,
+  // by the two ids below.
   messageId String? @map("message_id")
-  // Last message id in the thread when a blocked turn happened, so the rebuild can place it. Null
-  // means the thread was empty, i.e. it goes first.
+  // Where a blocked turn goes: the last message the rebuilt transcript SHOWED when it happened, so
+  // it lands after that turn. Deliberately not the raw tail of the thread, which can be a message
+  // the rebuild drops. Null means the thread was empty, i.e. it goes first.
   anchorMessageId String? @map("anchor_message_id")
-  // The synthesized human message id for a blocked turn, so the media saved for it joins back on
-  // reload exactly as it does for a turn that reached the thread.
+  // The human message of this turn, minted by the service for EVERY turn. Two readers: the media
+  // saved for a blocked turn joins back on it, and an annotation whose own reply was dropped is
+  // placed after it.
   userMessageId String? @map("user_message_id")
   // The customer's own text, carried only for a blocked turn (the thread never received it).
   userText String? @map("user_text")

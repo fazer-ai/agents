@@ -578,8 +578,9 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
     // `detail` and `errorMessage` together: the operator exports the row, not the column.
     const serialized = `${JSON.stringify(line?.detail ?? null)} ${line?.errorMessage ?? ""}`;
     expect(serialized).not.toContain(SEEDED_TEXT);
-    // And the line is still worth reading: the status is the half an operator acts on, and it is
-    // three digits the server cannot author around.
+    // And the line is still worth reading: the status is the half an operator acts on. The server
+    // does choose it — what makes it admissible is that the CLIENT parsed it into a number, and a
+    // number cannot carry a transcript.
     expect(line?.errorMessage ?? "").toContain("400");
     // The vendor's own `code` is NOT on it, clean-looking though this one is. It is a server-authored
     // string, and against an absolute promise the question is who chose the value, not what it looks

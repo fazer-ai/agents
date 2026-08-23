@@ -881,8 +881,12 @@ export async function announceDeadCompaction(
         attendanceConversationId: conversationId,
         reason,
       },
-      // Sanitized and bounded by emitFlowEvent. This is the half an operator acts on —
-      // `credential_not_found` and "the provider returned 401" are different problems.
+      // The half an operator acts on: `credential_not_found` and `HTTP 401` are different problems
+      // with different fixes. Everything that reaches here is already a closed vocabulary — the
+      // resolver's own reasons, the scheduler's "reaped: the claim never finished", and what
+      // ./summarize.ts allows a provider failure to say — so this is not where a provider's words
+      // would be filtered out, it is where they must never arrive. emitFlowEvent sanitizes and
+      // bounds it regardless, as defence in depth.
       errorMessage: error,
     },
   );

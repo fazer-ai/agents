@@ -196,6 +196,20 @@ const CAPS: {
     },
   },
   {
+    // The audit projection of an MCP write. `audit_logs.before`/`.after` are jsonb, and this row is
+    // written AFTER the change has committed: a refusal here applies the change, reports a failure,
+    // and drops the only record of who made it.
+    name: "mcp: audit projection",
+    cap: 4000,
+    run: async (s) => {
+      const { truncForAudit } = await import("@/modules/mcp/write");
+      return String(
+        (truncForAudit({ systemPrompt: s }) as { systemPrompt: string })
+          .systemPrompt,
+      );
+    },
+  },
+  {
     // The provider's own words, cut down to a detail line on a 502 the operator reads.
     name: "playground: invoke-error detail",
     cap: 300,
@@ -227,61 +241,101 @@ describe("no text cap ever cuts an astral character in half", () => {
   });
 });
 
-// The caps whose cut sits inside a module-private function, behind machinery no unit test reaches
-// for the price of one assertion (a whole toolset build, a live model call, a Chatwoot round trip).
-// For those the rule is checked where it is written: the cut expression that used to be bare must
-// not come back. Validated by un-routing one of them and watching this fail.
-const ROUTED_IN_SOURCE: { file: string; bare: RegExp; why: string }[] = [
-  {
-    file: "src/graph/nudge.ts",
-    bare: /\.slice\(0, max\)/,
-    why: "sanitizeFreeText: the untrusted inbound event text, bounded into the nudge turn",
-  },
-  {
-    file: "src/graph/tools/http.ts",
-    bare: /text\.slice\(0, maxChars\)/,
-    why: "the HTTP tool's response body, handed to the model and to the flow log",
-  },
-  {
-    file: "src/graph/tools/native.ts",
-    bare: /s\.slice\(0, max - 1\)/,
-    why: "the kanban card description rendered into the tool's context block",
-  },
-  {
-    file: "src/graph/tools/rag.ts",
-    bare: /d\.slice\(0, 140\)/,
-    why: "the knowledge-base description rendered into the search tool's block",
-  },
-  {
-    file: "src/modules/channel-redirect/gate.ts",
-    bare: /clonedMessage\.slice\(0, MAX_CLONE_CHARS\)/,
-    why: "the customer's WhatsApp message, cloned into the widget conversation",
-  },
-  {
-    file: "src/modules/playground/service.ts",
-    bare: /params\.context\.trim\(\)\.slice\(0, 500\)/,
-    why: "the simulated follow-up context, bounded into the playground's nudge prompt",
-  },
-  {
-    file: "src/modules/memory/summarize.ts",
-    bare: /text\.slice\(0, ATTENDANCE_SUMMARY_MAX\)/,
-    why: "the model-written attendance summary, stored and shown to the operator",
-  },
-];
+// EVERY REMAINING `.slice(0, …)` IN `src/`, AND WHY IT IS NOT A TEXT CAP.
+//
+// The behavioural table above proves the caps it can reach. It cannot prove the ABSENCE of a cap it
+// forgot, and forgetting is the documented failure mode here: #216 named four, the first sweep found
+// seventeen, and review found an eighteenth in `truncForAudit` — a walker with the same shape as
+// `redactSecretsDeep`, writing to the same kind of column, missed because its file was counted and
+// not read.
+//
+// A regex cannot tell a string cut from an array bound, so it cannot decide this on its own. What it
+// can do is refuse to let anyone decide it silently: every remaining occurrence is counted here with
+// a judgement attached, and a routed cap leaves no occurrence at all. A new bare cut — text or not —
+// fails this test until somebody writes down which it is.
+//
+//   array         bounds how MANY entries are kept, not how long a string is
+//   index         slices at a position the code computed (a delimiter, a trailing character, a caret)
+//   ascii         the value was already reduced to [a-z0-9_-] (or is ASCII by construction)
+//   fixed-format  a date or version string of known ASCII shape (`toISOString().slice(0, 10)`)
+//   parse-only    the cut result is handed to a parser and never used as text
+//   the-cut       `clipText` itself
+type NotACap =
+  | "array"
+  | "index"
+  | "ascii"
+  | "fixed-format"
+  | "parse-only"
+  | "the-cut";
 
-describe("caps whose call site no cheap entry point reaches", () => {
-  for (const { file, bare, why } of ROUTED_IN_SOURCE) {
-    test(`${file}: ${why}`, async () => {
-      // Reduced to booleans before the expect: a failing assertion that holds the whole file prints
-      // the whole file.
-      const src = await Bun.file(file).text();
-      expect({
-        routed: src.includes("clipText"),
-        bareCut: bare.test(src),
-      }).toEqual({
-        routed: true,
-        bareCut: false,
-      });
-    });
-  }
+const BARE_SLICES: Record<
+  string,
+  [number, NotACap | `${NotACap} + ${NotACap}`]
+> = {
+  "src/api/features/auth/auth.service.ts": [1, "ascii"],
+  "src/api/middlewares/rateLimit.ts": [1, "index"],
+  "src/client/components/Modal.tsx": [1, "array"],
+  "src/client/contexts/ThemeContext.tsx": [1, "index"],
+  "src/client/lib/breadcrumbs.ts": [1, "array"],
+  "src/client/pages/LogsPage.tsx": [1, "array"],
+  "src/client/pages/agents/AgentEditorPage.tsx": [1, "array"],
+  "src/client/pages/agents/CapabilityMap.tsx": [1, "array"],
+  "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
+  "src/client/pages/resources/ToolEditModal.tsx": [1, "index"],
+  "src/graph/tools/mcp.ts": [4, "ascii"],
+  "src/graph/tools/native.ts": [4, "array"],
+  "src/graph/tools/toolName.ts": [1, "ascii"],
+  "src/graph/trace.ts": [2, "array + index"],
+  "src/lib/redact.ts": [1, "array"],
+  "src/lib/ssrf.ts": [1, "index"],
+  "src/lib/text.ts": [2, "the-cut"],
+  "src/modules/agents/credential-paths.ts": [2, "array"],
+  "src/modules/analytics/langfuse-costs.ts": [2, "fixed-format"],
+  "src/modules/api-keys/verify.ts": [1, "ascii"],
+  "src/modules/appointments/settings.ts": [1, "array"],
+  "src/modules/business-hours/announce.ts": [2, "fixed-format"],
+  "src/modules/business-hours/hours.ts": [1, "fixed-format"],
+  "src/modules/chatwoot/attributes.ts": [1, "array"],
+  "src/modules/flowlog/export.ts": [2, "fixed-format + array"],
+  "src/modules/flowlog/read.ts": [1, "array"],
+  "src/modules/followups/settings.ts": [1, "array"],
+  "src/modules/images/fetch.ts": [1, "array"],
+  // The five response-body caps below all feed `JSON.parse` and nothing else. When one of them
+  // fires the document is truncated mid-structure and the parse fails either way, so routing the
+  // cut would change nothing about what anyone sees.
+  "src/modules/integrations/google-calendar.service.ts": [1, "parse-only"],
+  "src/modules/integrations/google-drive.service.ts": [1, "parse-only"],
+  "src/modules/integrations/toolpacks/asaas.ts": [
+    2,
+    "parse-only + fixed-format",
+  ],
+  "src/modules/integrations/toolpacks/google-calendar.ts": [1, "parse-only"],
+  "src/modules/integrations/toolpacks/google-drive.ts": [1, "parse-only"],
+  // Zod issue PATHS, which name our own schema's keys, never the received values.
+  "src/modules/integrations/mappers.ts": [1, "ascii"],
+  "src/modules/mcp/write-agents.ts": [1, "array"],
+  "src/modules/memory/cut.ts": [1, "index"],
+  "src/modules/playground/service.ts": [1, "array"],
+  "src/modules/split/service.ts": [1, "array"],
+  "src/modules/tool-definitions/body-shape.ts": [1, "array"],
+  "src/modules/updates/semver.ts": [1, "array"],
+  // Read only to be substring-matched against the provider's auth-failure shapes, then dropped:
+  // never stored, never shown, never sent anywhere.
+  "src/modules/vault/secret-test.ts": [1, "parse-only"],
+};
+
+describe("every bare cut left in src/ is accounted for", () => {
+  test("the file list and the per-file counts still match", async () => {
+    const { Glob } = await import("bun");
+    const found: Record<string, number> = {};
+    for await (const rel of new Glob("**/*.{ts,tsx}").scan("src")) {
+      const src = await Bun.file(`src/${rel}`).text();
+      const n = src.split(".slice(0,").length - 1;
+      if (n > 0) found[`src/${rel}`] = n;
+    }
+    const expected = Object.fromEntries(
+      Object.entries(BARE_SLICES).map(([f, [n]]) => [f, n]),
+    );
+    expect(found).toEqual(expected);
+  });
 });

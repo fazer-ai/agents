@@ -121,7 +121,7 @@ function readStep(raw: unknown): FollowUpStep | null {
   const labels: string[] = [];
   for (const l of rawLabels) {
     if (typeof l !== "string") continue;
-    const trimmed = l.trim().slice(0, 100);
+    const trimmed = clipText(l.trim(), 100);
     if (trimmed && !labels.includes(trimmed)) labels.push(trimmed);
   }
   if (labels.length > 0) step.assignLabels = labels;

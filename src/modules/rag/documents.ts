@@ -4,6 +4,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
@@ -621,7 +622,7 @@ async function runIngestJobForTenant(
       err instanceof AppError && err.translationKey
         ? err.translationKey
         : err instanceof Error
-          ? err.message.slice(0, 500)
+          ? clipText(err.message, 500)
           : String(err);
     logger.error({ err, documentId: String(documentId) }, "RAG ingest failed");
     // NOTE: the same release, and for the same reason. A failure belongs to the content this run

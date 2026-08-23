@@ -444,6 +444,27 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     expect(row?.systemPrompt).toBe("applied prompt");
   });
 
+  test("an astral character on the audit cap does not cost the audit row", async () => {
+    // `truncForAudit` cuts at 4000 units and `audit_logs.after` is jsonb, which Postgres refuses if
+    // the cut lands between an emoji's two halves. The agent update has already COMMITTED by then,
+    // so the failure is the worst shape available: the change is applied, the tool answers that it
+    // failed, and the row that records who changed the prompt is the one thing that does not exist.
+    const p = principal({ tenantId: tenantA });
+    const straddling = `${"x".repeat(3999)}😀 e o resto do prompt`;
+    const r = await promptSet(
+      p,
+      { agent_id: String(agentA), system_prompt: straddling, dry_run: false },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    const row = await suDb.agent.findUnique({ where: { id: agentA } });
+    expect(row?.systemPrompt).toBe(straddling);
+    const audits = await suDb.auditLog.count({
+      where: { tenantId: tenantA, action: "mcp.prompt_set" },
+    });
+    expect(audits).toBe(2);
+  });
+
   test("credential_create dry-run creates NOTHING", async () => {
     const p = principal({ tenantId: tenantA });
     const before = await suDb.vaultEntry.count({

@@ -20,6 +20,7 @@ import {
   type ScopedDb,
   type TenantContext,
 } from "@/lib/tenancy";
+import { clipText, replaceLoneSurrogates } from "@/lib/text";
 import {
   type BehaviorSettingsPatch,
   mergeBehaviorSettings,
@@ -88,11 +89,28 @@ export function diffFields(
 const AUDIT_STR_MAX = 4000;
 
 // Bound string sizes in the audit projection (a system prompt can be tens of KB).
+//
+// The same walker `redactSecretsDeep` is, aimed at the same kind of destination: `audit_logs.before`
+// and `.after` are `jsonb`, so an unpaired surrogate anywhere in the projection makes Postgres refuse
+// the whole write. Here the cost is worse than a lost log line — the change has already committed by
+// the time this row is written, so it lands, the tool reports a failure, and the record of who made
+// it is the only thing missing. Hence both repairs: `clipText` so the cut cannot manufacture an
+// orphan, and `replaceLoneSurrogates` for one that arrived with the value — a projection carries some
+// arguments as the MCP client sent them (`args.name`, `args.title`, `args.content`), and that JSON
+// can spell one out.
+//
+// NOTE: KEYS are not repaired here, and that asymmetry with redactSecretsDeep is deliberate rather
+// than an omission. Every key in a projection is a field name we wrote or an argument name taken
+// from the tool's own schema; the one bag whose keys are open-ended (`agent.settings`) is read back
+// out of a jsonb column, which is the very thing that cannot hold an orphan. The keys the other
+// walker repairs come from a model's tool-call arguments and from third parties' response bodies.
 export function truncForAudit(v: unknown): unknown {
   if (typeof v === "string") {
-    return v.length > AUDIT_STR_MAX
-      ? `${v.slice(0, AUDIT_STR_MAX)}…[truncated]`
-      : v;
+    return replaceLoneSurrogates(
+      v.length > AUDIT_STR_MAX
+        ? `${clipText(v, AUDIT_STR_MAX)}…[truncated]`
+        : v,
+    );
   }
   if (Array.isArray(v)) return v.map(truncForAudit);
   if (v && typeof v === "object") {

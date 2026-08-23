@@ -4,6 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { tryResolveVaultSecret } from "@/modules/vault/service";
 import { nextBackoffMs } from "./service";
 import { outboundHeaders } from "./signing";
@@ -71,7 +72,7 @@ function sysCtx(tenantId: bigint): TenantContext {
 
 function errMsg(err: unknown): string {
   const m = err instanceof Error ? err.message : String(err);
-  return m.length > MAX_ERROR_LEN ? `${m.slice(0, MAX_ERROR_LEN)}…` : m;
+  return m.length > MAX_ERROR_LEN ? `${clipText(m, MAX_ERROR_LEN)}…` : m;
 }
 
 async function mapWithConcurrency<T, R>(

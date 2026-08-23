@@ -20,6 +20,14 @@ export function clipText(value: string, max: number): string {
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
+// How much room above a cap an OVERFLOW PROBE needs. A caller that bounds a value at `cap + 1` and
+// then tests `length > cap` is asking one number two questions, and `clipText` can spend that single
+// spare unit dropping an orphan half: the value comes back exactly `cap` long, reads as "nothing was
+// cut", and loses the ellipsis that keeps a partial fact from reaching the model as a complete one
+// ("Rua X, 12" for "Rua X, 1234"). Two units cannot both be spent that way, because a cut drops at
+// most one.
+export const OVERFLOW_PROBE_MARGIN = 2;
+
 // A high surrogate with no low surrogate after it, or a low surrogate with no high surrogate before
 // it. The lookaround is what spares a well-formed pair.
 const LONE_SURROGATE_RE =

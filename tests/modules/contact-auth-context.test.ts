@@ -93,6 +93,17 @@ describe("readAuthContext: what the endpoint may say about a contact", () => {
     expect(value.endsWith("…")).toBe(true);
   });
 
+  test("the cut stays visible when an astral character sits on the cap", () => {
+    // Same trap as the Chatwoot attribute values: the overflow probe reserves room above the cap,
+    // and dropping half a character can spend exactly that room, so a truncated value would come
+    // back looking complete.
+    const ctx = bag({
+      plan: `${"x".repeat(AUTH_CONTEXT_VALUE_MAX)}😀 e mais texto depois`,
+    });
+    const value = ctx?.[0]?.value ?? "";
+    expect(value.endsWith("…")).toBe(true);
+  });
+
   test("a number the wire already rounded is dropped, not stated", () => {
     // `JSON.parse` hands back a double, so an integer past 2^53 arrived here ALREADY rounded: the
     // endpoint's `12345678901234567890` is `...567000` by the time any check runs. Stating it would

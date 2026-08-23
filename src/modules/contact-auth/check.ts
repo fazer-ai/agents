@@ -1,7 +1,7 @@
 import config from "@/config";
 import { sanitizePromptValue } from "@/graph/prompt";
 import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
-import { clipText } from "@/lib/text";
+import { clipText, OVERFLOW_PROBE_MARGIN } from "@/lib/text";
 
 import type { InjectableCredential } from "@/modules/vault/injectable";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
@@ -139,8 +139,12 @@ function contextValue(v: unknown): string | null {
   // the cap counts UTF-16 units and an emoji is two of them: a plain cut through one leaves a lone
   // surrogate, which is not a character at all and is replaced or refused on the way to a provider.
   // The other branch needs no such care: it returns a string that was never cut (anything the
-  // sanitizer DID cut is longer than the cap and lands here).
-  const clean = sanitizePromptValue(v, AUTH_CONTEXT_VALUE_MAX + 1);
+  // sanitizer DID cut is longer than the cap and lands here) — which holds only because the probe
+  // asks for OVERFLOW_PROBE_MARGIN units above the cap, not one. See src/lib/text.ts.
+  const clean = sanitizePromptValue(
+    v,
+    AUTH_CONTEXT_VALUE_MAX + OVERFLOW_PROBE_MARGIN,
+  );
   if (!clean) return null;
   return clean.length > AUTH_CONTEXT_VALUE_MAX
     ? `${clipText(clean, AUTH_CONTEXT_VALUE_MAX - 1)}…`

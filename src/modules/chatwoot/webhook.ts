@@ -47,6 +47,7 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
+import type { AuthContext } from "@/modules/contact-auth/check";
 import {
   authorizeContact,
   type ContactAuthOutcome,
@@ -780,6 +781,12 @@ async function maybeConsumeCommandOrGate(params: {
   base: PrismaClient;
   // Injectable runtime deps (tests): the Chatwoot client factory and the contact-auth fetch.
   deps?: RuntimeDeps;
+  // Handed what the authorization endpoint said ABOUT the contact when this gate lets the delivery
+  // through, so the direct turn can put it in the prompt (issue #190). A callback rather than a
+  // second return value because the returns here are a plain "was this delivery consumed", written
+  // in two dozen places and in nested closures of their own; the verdict is a different question
+  // asked in exactly one of them.
+  onAuthContext: (context: AuthContext | null) => void;
 }): Promise<boolean> {
   const { tenantId, instanceId, n, command, commandActive, base, deps } =
     params;
@@ -1605,11 +1612,23 @@ async function maybeConsumeCommandOrGate(params: {
       // A counter, so it goes back to zero rather than to null.
       redirectCount: 0,
       redirectLinkedAt: null,
-      // With them, because it is what names the pair: leaving it behind would let a ladder that
-      // reads the episode AFTER the command still find a sibling to say goodbye to and resolve.
-      redirectEntryConversationId: null,
       redirectClosedAt: null,
     };
+    // NOT `redirectEntryConversationId`, which used to be in that list and was the only member that
+    // is not a one-shot. The others are anchors this command exists to release so the funnel can run
+    // again; that one is a FACT — which entry conversation this chat opened from — and it does not
+    // stop being true because an operator started the conversation over.
+    //
+    // Clearing it broke the ladder this command deliberately lets live. A widget message arriving
+    // during the cleanup re-arms REDIRECT_FOLLOWUP after the retirement above, and a re-armed ladder
+    // is a NEW episode that is meant to survive; the clear then took its sibling away, so its
+    // WhatsApp and closing stages resolved nothing and the episode was silently dead. It does not
+    // heal on its own either: a follow-up ladder fires precisely when the lead has gone quiet, so
+    // the "next inbound re-links it" that the clear leaned on is the one thing that will not happen.
+    //
+    // What stops a ladder from the OLD episode is the tombstone, which is the mechanism built for
+    // it and reaches a row the worker has already claimed. The identity clear was a second guard
+    // against the same thing, and the only case it could still decide was the one it broke.
     await step("clear the conversation's watermarks", "marcadores", () =>
       runScopedOn(base, sysCtx(tenantId), (db) =>
         db.conversation.update({
@@ -2135,6 +2154,8 @@ async function maybeConsumeCommandOrGate(params: {
         );
         return true;
       }
+      // Allowed, and still ours: the facts the endpoint volunteered travel to the turn below.
+      params.onAuthContext(verdict.context ?? null);
     }
   }
   return false;
@@ -2433,6 +2454,9 @@ export async function processChatwootDelivery(
   // Hoisted so the ingestion pass below can tell an out-of-hours-silenced incoming (consumed) from an
   // answered one. Stays false on every path that never runs the gate.
   let consumed = false;
+  // What the contact-authorization gate below learned about this contact, for the direct turn's
+  // prompt. Null when the gate is off, or when the delivery never reaches a turn.
+  const gate: { authContext: AuthContext | null } = { authContext: null };
   // NOTE: `act || commandActive`, and the second half is the whole point: a control command is the
   // OPERATOR driving the tooling, not the agent speaking, so bot ownership is not its business. The
   // conversation a human took over is exactly where /reset has to work, and it is the state `act`
@@ -2454,6 +2478,9 @@ export async function processChatwootDelivery(
       agentBotId: params.agentBotId,
       base,
       deps: params.deps,
+      onAuthContext: (context) => {
+        gate.authContext = context;
+      },
     });
     if (!consumed) {
       // Eager media (STT/vision) so the debounce re-fetch (and the direct path) get text instead of an
@@ -2528,6 +2555,7 @@ export async function processChatwootDelivery(
             event: n,
             base,
             deps: params.deps,
+            authContext: gate.authContext,
           });
           logger.info(
             "chatwoot agent turn: conv=%s event=%s outcome=%s mirror=%s",

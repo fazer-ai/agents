@@ -1,3 +1,4 @@
+import { clipText } from "@/lib/text";
 import {
   formatNextOpen,
   formatWindowsSummary,
@@ -50,8 +51,9 @@ export interface PromptVarContext {
 
 export const VALUE_MAX = 120;
 
-// NOTE: Contact/inbox values are customer-controlled → drop control chars and newlines (so a value
-// can never forge multi-line "system" framing in the prompt), collapse whitespace, and bound length.
+// NOTE: Contact/inbox values are customer-controlled → drop control chars, newlines and half
+// characters (so a value can never forge multi-line "system" framing in the prompt, and can never
+// carry an unpaired surrogate), collapse whitespace, and bound length.
 // Exported as sanitizePromptValue because every OTHER customer-controlled string we splice into the
 // system prompt (e.g. the Chatwoot attribute values) must go through the same treatment. `max` is
 // per-caller: VALUE_MAX suits identity variables, but a stored attribute (an address, a note) is
@@ -69,9 +71,16 @@ export function sanitizePromptValue(
     // collapse below would let it through and a value could still forge a new line of framing.
     const control =
       code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
-    out += control ? " " : ch;
+    // NOTE: And half of a character. `for...of` yields a real astral character as ONE two-unit
+    // string, so a single-unit one in the surrogate range never had its other half: it is not a
+    // character at all, it is refused outright by Postgres inside a jsonb write (the same reason
+    // clipText exists), and a provider replaces or rejects it. It can arrive that way from any
+    // JSON source that spells it out (`"\ud800"`), which is how the mirrored attribute values and
+    // the authorization context both reach here.
+    const half = ch.length === 1 && code >= 0xd800 && code <= 0xdfff;
+    out += control || half ? " " : ch;
   }
-  return out.replace(/\s+/g, " ").trim().slice(0, max);
+  return clipText(out.replace(/\s+/g, " ").trim(), max);
 }
 
 // Placeholder → value. English canonical names plus the common pt-BR aliases the audience writes.

@@ -18,6 +18,7 @@ import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
 import { DATA_FENCE } from "@/graph/nudge";
 import { providerFailure } from "@/lib/provider-failure";
+import { clipText, clipTextEnd } from "@/lib/text";
 
 // Condenses the raw turns of a closed attendance into the memory the agent keeps of it.
 //
@@ -58,17 +59,14 @@ function clipTranscript(
   joined: string,
   maxHistoryTokens: number | null,
 ): string {
-  let text =
-    joined.length > TRANSCRIPT_MAX_CHARS
-      ? joined.slice(joined.length - TRANSCRIPT_MAX_CHARS)
-      : joined;
+  let text = clipTextEnd(joined, TRANSCRIPT_MAX_CHARS);
   if (!maxHistoryTokens || maxHistoryTokens <= 0) return text;
   for (let pass = 0; pass < CLIP_PASSES; pass++) {
     const estimate = estimateTokenCount(text);
     if (estimate <= maxHistoryTokens) break;
     const keep = Math.floor((text.length * maxHistoryTokens) / estimate);
     if (keep <= 0) return "";
-    text = text.slice(text.length - keep);
+    text = clipTextEnd(text, keep);
   }
   return text;
 }
@@ -273,7 +271,7 @@ export async function summarizeAttendance(
     });
     const text = contentToText(res.content).trim();
     if (!text) return { summary: "", error: "empty completion" };
-    return { summary: text.slice(0, ATTENDANCE_SUMMARY_MAX) };
+    return { summary: clipText(text, ATTENDANCE_SUMMARY_MAX) };
   } catch (err) {
     logger.warn({ err }, "memory: attendance summary failed, thread untouched");
     return {

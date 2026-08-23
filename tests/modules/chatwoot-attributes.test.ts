@@ -112,6 +112,16 @@ describe("stringifyAttributeValue", () => {
     expect(exact).toHaveLength(ATTRIBUTE_VALUE_MAX);
     expect(exact.endsWith("Z")).toBe(true);
   });
+
+  test("the marker survives an overflow that begins with an astral character", () => {
+    // The overflow probe asks for room ABOVE the cap and then measures what came back. An emoji
+    // sitting exactly on the cap costs a unit to the half-character rule, so a one-unit probe comes
+    // back exactly `cap` long and reports "nothing was cut" about a value that lost 40 characters.
+    const over = stringifyAttributeValue(
+      `${"x".repeat(ATTRIBUTE_VALUE_MAX)}😀 e mais um tanto de endereço`,
+    );
+    expect(over.endsWith("…")).toBe(true);
+  });
 });
 
 describe("buildAttributeContextSection", () => {

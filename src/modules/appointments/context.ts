@@ -1,4 +1,5 @@
 import type { ScopedDb } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { xmlAttr } from "@/lib/xml";
 
 // Per-turn appointment context (issue #22). The APPOINTMENT_REMINDER scheduler rows ARE the durable
@@ -41,9 +42,8 @@ function cleanText(v: unknown, max: number): string | null {
     // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control chars is the point.
     .replace(/[\u0000-\u001F\u007F]+/g, " ")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, max);
-  return s || null;
+    .trim();
+  return clipText(s, max) || null;
 }
 
 // NOTE: Date.parse rolls impossible calendar dates over ("2026-02-30" parses as March 2) while the

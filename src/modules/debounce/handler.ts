@@ -20,6 +20,7 @@ import {
 } from "@/modules/chatwoot/messages";
 import { shouldBotHandle } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
+import type { AuthContext } from "@/modules/contact-auth/check";
 import {
   authorizeContact,
   contactAuthFlowEvent,
@@ -71,6 +72,10 @@ export interface CoalesceTurnContext {
   convDbId: bigint;
   loaded: AgentConfig;
   settings: unknown;
+  // The authorization verdict's context bag for the check this caller ran immediately before the
+  // turn, or null when the gate is off. Required so a new caller of this tail has to answer the
+  // question rather than inherit a silent default.
+  authContext: AuthContext | null;
   // May be async: the debounce flush re-reads the handled watermark here, at the latest point
   // before the burst is chosen, because an authorization refusal that landed while this flush was
   // asking the endpoint has already moved it.
@@ -213,6 +218,7 @@ export async function coalesceAndRunTurn(
   const outcome = await runLoadedTurn({
     stillWanted: ctx.stillWanted,
     loaded,
+    authContext: ctx.authContext,
     tenantId,
     instanceId,
     conversationId,
@@ -295,6 +301,7 @@ export async function flushDebounceJob(
         id: true,
         status: true,
         assigneeType: true,
+        assigneeId: true,
         inboxId: true,
         lastHandledMessageId: true,
       },
@@ -303,7 +310,11 @@ export async function flushDebounceJob(
     // Gate: only the bot still owns it (pending, no human / our bot).
     if (
       !shouldBotHandle(
-        { assigneeType: conv.assigneeType, status: conv.status },
+        {
+          assigneeType: conv.assigneeType,
+          assigneeId: conv.assigneeId,
+          status: conv.status,
+        },
         { ourAgentBotId: agentBotId },
       )
     ) {
@@ -368,6 +379,7 @@ export async function flushDebounceJob(
   // path already gave them to the delivery that was refused; a verdict that flipped inside the
   // window reaches the customer on their next message, which is what "re-checked every message"
   // means. The flow line is what tells the operator this burst was dropped.
+  let authContext: AuthContext | null = null;
   if (ctx.loaded.contactAuthConfig.enabled) {
     const auth = await authorizeContact({
       tenantId,
@@ -416,6 +428,9 @@ export async function flushDebounceJob(
       }
       return { outcome: "done" };
     }
+    // The facts the endpoint volunteered about this contact, for the prompt of the turn below. They
+    // come from the check THIS flush just made, so they are as fresh as the verdict that allowed it.
+    authContext = auth.context ?? null;
     // Allowed, and the attribution gate above ran BEFORE a round-trip that may have taken ten
     // seconds. A human who took the conversation during it would otherwise get the burst answered
     // over their shoulder: the post gate withholds the reply, but the tools have run by then. Same
@@ -490,6 +505,7 @@ export async function flushDebounceJob(
         // thread. `runLoadedTurn` asks it inside the `ingest:` lock, which is the boundary the
         // divider and the claim are written at, and again before each post.
         stillWanted: async (scoped) => !(await jobRetired(job, base, scoped)),
+        authContext,
         // Re-read, not the value captured before the authorization call: that call is a round-trip
         // to somebody else's endpoint with a ceiling of ten seconds, and a message that arrived and
         // was REFUSED inside that window has already had the watermark advanced past it by its own

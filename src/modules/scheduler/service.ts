@@ -7,6 +7,7 @@ import {
   type ScopedDb,
   type TenantContext,
 } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import {
   JOB_DELETE_ON_DONE,
   kindsInLane,
@@ -657,12 +658,12 @@ export async function failJob(
     db.schedulerJob.updateMany({
       where: { id, status: "CLAIMED", claimSeq },
       data: dead
-        ? { status: "DEAD", attempts: next, lastError: error.slice(0, 500) }
+        ? { status: "DEAD", attempts: next, lastError: clipText(error, 500) }
         : {
             status: "PENDING",
             attempts: next,
             runAt: new Date(now.getTime() + backoffMs(next)),
-            lastError: error.slice(0, 500),
+            lastError: clipText(error, 500),
           },
     }),
   );

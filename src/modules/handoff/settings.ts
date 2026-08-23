@@ -1,3 +1,4 @@
+import { clipText } from "@/lib/text";
 // Per-agent handoff targeting, read from `agent.settings.handoff`. Controls WHO receives the
 // conversation when the `handoff_to_human` native tool fires (the summary-note behavior stays on the
 // `Agent.transferWithSummary` column):
@@ -6,7 +7,7 @@
 //   * "pinned"       → assign to a fixed agent OR team the operator picked (targetAgentId/targetTeamId).
 //   * "agent_choice" → the model may pass a target NAME (agent or team), resolved against the live
 //                      Chatwoot list at call time; the operator lists the options in the prompt.
-import { clipText, TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
+import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 
 export type HandoffMode = "route" | "pinned" | "agent_choice";
 

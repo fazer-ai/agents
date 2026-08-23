@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
@@ -131,6 +132,87 @@ describe("shouldBotHandle with ourAgentBotId", () => {
       ),
     ).toBe(false);
   });
+});
+
+// The table above proves the FUNCTION. It cannot prove that the callers ask it the question they
+// think they are asking, and that is where this defect lived: `ourAgentBotId` alone does not buy the
+// strict gate, because the exclusion branch also needs `assigneeId` to compare against. Hand it only
+// half the pair and it degrades, silently, into the loose attribution-only gate — every AgentBot
+// reads as ours. Three call sites shipped that way (issue #210).
+//
+// So the rule is per call site, and it is read off the source rather than restated here: any call
+// that asks "is it OURS" must also supply the id that answers it. The other half — that the scoped
+// SELECT feeding the literal actually carries the column — needs no assertion, because a missing
+// `assigneeId` on a Prisma select makes the property access a type error.
+describe("every strict ownership check is given the id it compares", () => {
+  const FILES = [
+    "src/graph/nudge.ts",
+    "src/graph/runtime.ts",
+    "src/modules/chatwoot/webhook.ts",
+    "src/modules/conversations/reengage.ts",
+    "src/modules/debounce/handler.ts",
+    "src/modules/followups/eligibility.ts",
+  ];
+
+  // Walks the argument list instead of matching it: a regex over the call would read whichever
+  // `assigneeId` happens to sit nearby (the SELECT above it, the next call) and pass on a site that
+  // never received one.
+  function callsIn(src: string): Array<{ state: string; opts: string }> {
+    const out: Array<{ state: string; opts: string }> = [];
+    const NAME = "shouldBotHandle(";
+    for (
+      let at = src.indexOf(NAME);
+      at !== -1;
+      at = src.indexOf(NAME, at + 1)
+    ) {
+      // NOTE: An import or a mention in prose is not a call.
+      if (/[.\w]/.test(src[at - 1] ?? "")) continue;
+      let depth = 0;
+      let i = at + NAME.length - 1;
+      const args: string[] = [];
+      let start = i + 1;
+      for (; i < src.length; i++) {
+        const c = src[i];
+        if (c === "(" || c === "{" || c === "[") depth++;
+        else if (c === ")" || c === "}" || c === "]") {
+          depth--;
+          if (depth === 0) {
+            args.push(src.slice(start, i));
+            break;
+          }
+        } else if (c === "," && depth === 1) {
+          args.push(src.slice(start, i));
+          start = i + 1;
+        }
+      }
+      out.push({ state: args[0] ?? "", opts: args[1] ?? "" });
+    }
+    return out;
+  }
+
+  const sites = FILES.flatMap((file) =>
+    callsIn(readFileSync(file, "utf8")).map((c, i) => ({
+      ...c,
+      where: `${file} #${i + 1}`,
+    })),
+  );
+  const strict = sites.filter((c) => /\bourAgentBotId\b/.test(c.opts));
+
+  // NOTE: A parser that finds nothing would report every rule as satisfied, so pin the shape of
+  // what it found: the loose call in `eligibility.ts` is the one site that deliberately asks the
+  // other question, and it has to survive the filter as evidence that the filter discriminates.
+  test("the source walk finds the calls it is meant to police", () => {
+    expect(sites.length).toBeGreaterThanOrEqual(8);
+    expect(strict.length).toBeGreaterThanOrEqual(7);
+    expect(sites.length - strict.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test.each(strict.map((c) => [c.where, c.state] as const))(
+    "%s passes assigneeId",
+    (_where, state) => {
+      expect(state).toMatch(/\bassigneeId\b/);
+    },
+  );
 });
 
 // ── receiver pipeline (real DB) ──

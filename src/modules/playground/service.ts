@@ -41,6 +41,7 @@ import {
 } from "@/graph/trace";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import {
@@ -184,7 +185,7 @@ export function toPlaygroundInvokeError(e: unknown): AppError {
   const raw = e instanceof Error ? e.message : String(e);
   const embedded = raw.match(/"message"\s*:\s*"([^"]+)"/)?.[1];
   const firstLine = raw.split("\n", 1)[0] ?? raw;
-  const detail = (embedded || firstLine).slice(0, 300);
+  const detail = clipText(embedded || firstLine, 300);
   return new AppError(`model invocation failed: ${detail}`, 502);
 }
 
@@ -812,7 +813,7 @@ export async function runPlaygroundFollowup(
   // actions (label/resolve) are NOT applied here — there is no real conversation to act on.
   const firstStep = followUp.steps[0];
   const summary = params.context?.trim()
-    ? params.context.trim().slice(0, 500)
+    ? clipText(params.context.trim(), 500)
     : `The customer has been inactive for about ${
         firstStep ? stepDelayMinutes(firstStep) : 60
       } minutes.`;

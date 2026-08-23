@@ -2,6 +2,7 @@ import path, { join } from "node:path";
 import pino from "pino";
 import type { PrettyOptions } from "pino-pretty";
 import config from "@/config";
+import { clipText } from "@/lib/text";
 
 function omitKeys(obj: Record<string, unknown>, keys: string[]) {
   for (const key in obj) {
@@ -16,7 +17,7 @@ function sanitizeItem(
   options?: DeepSanitizeObjectOptions,
 ): unknown {
   if (typeof item === "string") {
-    return `${item.slice(0, 50)}${item.length > 50 ? "…" : ""}`;
+    return `${clipText(item, 50)}${item.length > 50 ? "…" : ""}`;
   }
   if (Array.isArray(item)) {
     return item.map((i) => sanitizeItem(i, options));

@@ -154,6 +154,41 @@ describe("classifyAuthorizationResponse", () => {
       });
     }
   });
+
+  test("the context bag travels only with a verdict that lets a turn happen", () => {
+    const ctx = '"context":{"plan":"premium"}';
+    expect(
+      classifyAuthorizationResponse(200, `{"authorized":true,${ctx}}`),
+    ).toMatchObject({
+      outcome: "allowed",
+      context: [{ key: "plan", value: "premium" }],
+    });
+    // A denial and an error end the turn, so context for them describes a prompt nobody will
+    // build. Read as a verdict field it would be dead weight; read as PII it would be stored and
+    // shipped to an alert channel for nothing.
+    expect(
+      classifyAuthorizationResponse(200, `{"authorized":false,${ctx}}`),
+    ).not.toHaveProperty("context");
+    expect(classifyAuthorizationResponse(403, `{${ctx}}`)).not.toHaveProperty(
+      "context",
+    );
+    expect(classifyAuthorizationResponse(500, `{${ctx}}`)).not.toHaveProperty(
+      "context",
+    );
+  });
+
+  test("a context that says nothing is absent, not empty", () => {
+    for (const body of [
+      '{"authorized":true}',
+      '{"authorized":true,"context":{}}',
+      '{"authorized":true,"context":"premium"}',
+      '{"authorized":true,"context":{"nested":{"a":1}}}',
+    ]) {
+      expect(classifyAuthorizationResponse(200, body)).not.toHaveProperty(
+        "context",
+      );
+    }
+  });
 });
 
 describe("reasonSlug", () => {

@@ -1,3 +1,5 @@
+import { clipText, replaceLoneSurrogates } from "@/lib/text";
+
 // Non-throwing secret redaction for human-facing debug surfaces (the agent playground trace and
 // the conversation `lastError` shown to the operator). This is the REPLACE-and-continue cousin of
 // n8n-export's `assertNoSecrets`, which THROWS as an export backstop; here we must never break the
@@ -30,7 +32,7 @@ const MAX_DEPTH = 6;
 
 // Truncates a string to `max` chars, appending a visible marker so a reader knows it was cut.
 export function truncate(s: string, max = MAX_STRING): string {
-  return s.length > max ? `${s.slice(0, max)}…[truncated]` : s;
+  return s.length > max ? `${clipText(s, max)}…[truncated]` : s;
 }
 
 // Scrubs concrete secret-shaped substrings from a string (the VALUE layer). Idempotent.
@@ -46,7 +48,9 @@ export function redactSecretsInText(input: string): string {
 export function redactSecretsDeep(value: unknown, depth = 0): unknown {
   if (depth > MAX_DEPTH) return "‹…›";
   if (value == null) return null;
-  if (typeof value === "string") return redactSecretsInText(truncate(value));
+  if (typeof value === "string") {
+    return replaceLoneSurrogates(redactSecretsInText(truncate(value)));
+  }
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "bigint") return value.toString();
   if (Array.isArray(value)) {
@@ -57,7 +61,10 @@ export function redactSecretsDeep(value: unknown, depth = 0): unknown {
   if (typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      out[k] = SECRET_KEY_RE.test(k)
+      // NOTE: The KEY gets the same repair as the values. A key is written by whoever produced the
+      // object — a model's tool-call arguments, a third party's JSON response — and one orphan half
+      // anywhere in the document is enough for Postgres to refuse the whole `jsonb` write.
+      out[replaceLoneSurrogates(k)] = SECRET_KEY_RE.test(k)
         ? REDACTED
         : redactSecretsDeep(v, depth + 1);
     }

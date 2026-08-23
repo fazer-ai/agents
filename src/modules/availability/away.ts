@@ -1,4 +1,5 @@
-import { clipText, TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
+import { clipText } from "@/lib/text";
+import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 import { formatNextOpen } from "@/modules/business-hours/announce";
 import {
   localDateKey,

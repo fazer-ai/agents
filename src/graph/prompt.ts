@@ -1,3 +1,4 @@
+import { clipText } from "@/lib/text";
 import {
   formatNextOpen,
   formatWindowsSummary,
@@ -79,7 +80,7 @@ export function sanitizePromptValue(
     const half = ch.length === 1 && code >= 0xd800 && code <= 0xdfff;
     out += control || half ? " " : ch;
   }
-  return out.replace(/\s+/g, " ").trim().slice(0, max);
+  return clipText(out.replace(/\s+/g, " ").trim(), max);
 }
 
 // Placeholder → value. English canonical names plus the common pt-BR aliases the audience writes.

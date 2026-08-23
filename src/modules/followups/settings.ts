@@ -1,3 +1,4 @@
+import { clipText } from "@/lib/text";
 // Per-agent follow-up configuration from agent.settings.followUp.
 // Same reader/default/clamp pattern as debounce/stt/tts/split/serviceWindow.
 //
@@ -7,7 +8,6 @@
 // default step (its pre-multi-step config is not read).
 
 import {
-  clipText,
   FOLLOW_UP_INSTRUCTIONS_MAX,
   FOLLOW_UP_MAX_STEPS,
 } from "@/modules/agents/text-caps";

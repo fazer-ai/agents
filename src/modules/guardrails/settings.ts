@@ -1,8 +1,8 @@
 import { MODEL_PROVIDERS, type ModelConfig } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import { clipText } from "@/lib/text";
 import {
   CUSTOM_POLICY_MAX,
-  clipText,
   GENERATION_PROMPT_MAX,
   TEMPLATE_MESSAGE_MAX,
 } from "@/modules/agents/text-caps";
@@ -160,7 +160,7 @@ function readCompetitors(v: unknown): string[] {
   const out: string[] = [];
   for (const item of v) {
     const s = str(item);
-    if (s) out.push(s.slice(0, MAX_COMPETITOR_LEN));
+    if (s) out.push(clipText(s, MAX_COMPETITOR_LEN));
     if (out.length >= MAX_COMPETITORS) break;
   }
   return out;

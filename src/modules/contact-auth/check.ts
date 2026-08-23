@@ -1,7 +1,8 @@
 import config from "@/config";
 import { sanitizePromptValue } from "@/graph/prompt";
 import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
-import { clipText } from "@/modules/agents/text-caps";
+import { clipText } from "@/lib/text";
+
 import type { InjectableCredential } from "@/modules/vault/injectable";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
 import type { ContactAuthConfig } from "./settings";
@@ -252,7 +253,7 @@ export function buildAuthorizationRequest(
   };
   const text =
     cfg.includeMessageText && identity.messageText?.trim()
-      ? identity.messageText.trim().slice(0, MESSAGE_TEXT_MAX)
+      ? clipText(identity.messageText.trim(), MESSAGE_TEXT_MAX)
       : null;
   // NOTE: The nesting IS the contract: `contact` is what Chatwoot mirrored (trusted context),
   // `message` is what the customer typed. An endpoint must never read identity out of `message`.

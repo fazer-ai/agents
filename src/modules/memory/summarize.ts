@@ -18,6 +18,7 @@ import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
 import { DATA_FENCE } from "@/graph/nudge";
 import { providerFailure } from "@/lib/provider-failure";
+import { clipText } from "@/lib/text";
 
 // Condenses the raw turns of a closed attendance into the memory the agent keeps of it.
 //
@@ -273,7 +274,7 @@ export async function summarizeAttendance(
     });
     const text = contentToText(res.content).trim();
     if (!text) return { summary: "", error: "empty completion" };
-    return { summary: text.slice(0, ATTENDANCE_SUMMARY_MAX) };
+    return { summary: clipText(text, ATTENDANCE_SUMMARY_MAX) };
   } catch (err) {
     logger.warn({ err }, "memory: attendance summary failed, thread untouched");
     return {

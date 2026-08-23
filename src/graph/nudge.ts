@@ -4,6 +4,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
@@ -190,16 +191,14 @@ export function isNudgeSilent(reply: string): boolean {
 // newlines to a single line (so it cannot forge multi-line "system" framing), drop the data fence
 // token, and bound the length. Never let this text read as instructions.
 function sanitizeFreeText(s: string, max: number): string {
-  return (
-    s
-      // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control chars is the point.
-      .replace(/[\u0000-\u001F\u007F]+/g, " ")
-      .split(DATA_FENCE)
-      .join(" ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, max)
-  );
+  const collapsed = s
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control chars is the point.
+    .replace(/[\u0000-\u001F\u007F]+/g, " ")
+    .split(DATA_FENCE)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clipText(collapsed, max);
 }
 
 // The system turn the agent sees: the AUTHORITATIVE directive first, then the untrusted event

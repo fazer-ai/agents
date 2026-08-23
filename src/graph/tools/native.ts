@@ -5,6 +5,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
 import type {
   ChatwootClient,
@@ -778,7 +779,7 @@ function resolveConversationTool(ctx: ToolCtx) {
 }
 
 function truncate(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+  return s.length > max ? `${clipText(s, max - 1)}…` : s;
 }
 
 // THIS card's funnel position as an XML block for kanban_move_card: the current step plus the

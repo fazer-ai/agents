@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { buildWidgetUrl, normalizeWebsiteUrl } from "./link";
 import {
@@ -170,7 +171,7 @@ export async function runRedirectGate(
     widgetInboxId,
     clonedMessage:
       cfg.cloneWaMessage && p.clonedMessage
-        ? p.clonedMessage.slice(0, MAX_CLONE_CHARS)
+        ? clipText(p.clonedMessage, MAX_CLONE_CHARS)
         : undefined,
     openWidget: cfg.openWidget,
     ttlSeconds: REDIRECT_LINK_TTL_SECONDS,

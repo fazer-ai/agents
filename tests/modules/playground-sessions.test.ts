@@ -267,6 +267,75 @@ describe("applyTurnNotes", () => {
     expect(out[1]?.trace).toHaveLength(1);
   });
 
+  // The agent answering with nothing is what makes an override's own message id unusable: the
+  // rebuild drops an empty AI message, so the note keyed to it matched no turn and the verdict
+  // vanished on reload. Same question the anchor asks ("does the transcript still show this id?"),
+  // asked at the other end, which is why both go through one placement now.
+  test("a note whose reply the rebuild dropped renders after the message it judged", () => {
+    const out = applyTurnNotes(
+      [
+        turn("user", "primeira", "h1"),
+        turn("user", "segunda", "h2"),
+        turn("assistant", "resposta", "a2"),
+      ],
+      [
+        note({
+          messageId: "a1",
+          userMessageId: "h1",
+          reply: "",
+          guardrails: [
+            {
+              type: "guardrail",
+              direction: "input",
+              outcome: "unavailable",
+            },
+          ],
+        }),
+      ],
+    );
+    expect(shape(out)).toEqual([
+      "user:primeira",
+      "assistant:",
+      "user:segunda",
+      "assistant:resposta",
+    ]);
+    expect(out[1]?.trace).toEqual([
+      { type: "guardrail", direction: "input", outcome: "unavailable" },
+    ]);
+    // The agent said nothing; the guardrail did not take anything away. Reading suppression off the
+    // empty text rather than off the verdict would report a moderation that never happened.
+    expect(out[1]?.suppressed).toBeUndefined();
+  });
+
+  test("...and reports suppression when that is what the verdict says", () => {
+    const out = applyTurnNotes(
+      [turn("user", "oi", "h1")],
+      [
+        note({
+          messageId: "a1",
+          userMessageId: "h1",
+          reply: "",
+          guardrails: [
+            {
+              type: "guardrail",
+              direction: "output",
+              outcome: "suppressed",
+            },
+          ],
+        }),
+      ],
+    );
+    expect(out[1]).toMatchObject({ role: "assistant", suppressed: true });
+  });
+
+  test("a dropped reply with no user message to follow lands at the end", () => {
+    const out = applyTurnNotes(
+      [turn("user", "oi", "h1"), turn("assistant", "r", "a1")],
+      [note({ messageId: "gone", userMessageId: null, reply: "T" })],
+    );
+    expect(shape(out)).toEqual(["user:oi", "assistant:r", "assistant:T"]);
+  });
+
   test("an unresolvable anchor still renders, at the end", () => {
     const out = applyTurnNotes(
       [turn("user", "oi"), turn("assistant", "r", "a1")],

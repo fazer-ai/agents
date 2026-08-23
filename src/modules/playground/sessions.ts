@@ -225,23 +225,97 @@ export function rebuildPlaygroundTurns(messages: BaseMessage[]): RebuiltTurn[] {
   return turns;
 }
 
-// Folds the transcript notes over the checkpointer-derived turns (issue #136). Two shapes, and the
-// second is why this is not a plain map: a note WITH a message id overrides the reply that message
-// produced, while a note without one is a whole turn the thread never received (the input block),
-// which has to be placed rather than matched. `anchorMessageId` is the message the thread ended on
-// when it happened, so the turn goes right after the one carrying it; a null anchor means the
-// thread was empty and it goes first. A note whose anchor no longer resolves still renders, at the
-// end, because losing the turn entirely is the failure this exists to prevent.
+// Folds the transcript notes over the checkpointer-derived turns (issue #136).
+//
+// A note WITH a message id overrides the reply that message produced. A note without one is a whole
+// turn the thread never received (the input block). And a third case joins them rather than forming
+// a mechanism of its own: an override whose message the rebuild DROPPED, which happens whenever the
+// agent's own reply was empty. Every one of those asks the same question of an id — does the
+// transcript still show it? — and the answer decides between overriding in place and being placed.
+//
+// Getting that question wrong in either direction loses a turn, so the placements share one loop
+// and one guarantee: a target that no longer resolves still renders, at the end. Losing the turn
+// entirely is the failure this whole store exists to prevent.
+// Where a placement goes, for both shapes that need placing. `after` is the message it follows;
+// `whenUnanchored` is what a NULL after means, and the two shapes mean opposite things by it: an
+// input block with no anchor happened on an empty thread and belongs first, while an annotation
+// whose user message was never recorded has no known home and belongs at the end. An `after` that
+// is set but never seen falls to the end either way.
+interface Placement {
+  after: string | null;
+  whenUnanchored: "start" | "end";
+  render: () => RebuiltTurn[];
+}
+
+// Direction IS position: the input screening ran before the graph and the output one after, so
+// appending both would report an execution sequence the turn never had.
+function verdictsAround(note: LoadedTurnNote, own: TraceEntry[]): TraceEntry[] {
+  const before = note.guardrails.filter((g) => g.direction === "input");
+  const after = note.guardrails.filter((g) => g.direction !== "input");
+  return [...before, ...own, ...after];
+}
+
+// A reply the guardrail EMPTIED, which is not the same as an agent that had nothing to say. Read
+// off the verdicts rather than off the text, or a turn the agent ended in silence would be
+// reported as moderated.
+function suppressedByGuardrail(note: LoadedTurnNote): boolean {
+  return note.guardrails.some((g) => g.outcome === "suppressed");
+}
+
+// The turn the operator should read, in place of the one the thread produced.
+function annotated(note: LoadedTurnNote, turn: RebuiltTurn): RebuiltTurn {
+  return {
+    ...turn,
+    text: note.reply,
+    ...(suppressedByGuardrail(note) ? { suppressed: true } : {}),
+    trace: verdictsAround(note, turn.trace),
+  };
+}
+
+// The same turn when the thread has none to override: the agent's reply was empty, so the rebuild
+// dropped it, and the verdict would go with it.
+function annotatedReply(note: LoadedTurnNote): RebuiltTurn {
+  return {
+    role: "assistant",
+    text: note.reply,
+    ...(suppressedByGuardrail(note) ? { suppressed: true } : {}),
+    trace: verdictsAround(note, []),
+    sources: [],
+  };
+}
+
 export function applyTurnNotes(
   turns: RebuiltTurn[],
   notes: LoadedTurnNote[],
 ): RebuiltTurn[] {
   if (notes.length === 0) return turns;
+  // What the transcript actually shows. An id the rebuild kept can be overridden in place; anything
+  // else has to be placed, however it was stored.
+  const shown = new Set(
+    turns.map((t) => t.messageId).filter((id): id is string => !!id),
+  );
   const overrides = new Map<string, LoadedTurnNote>();
-  const inserts: LoadedTurnNote[] = [];
+  const placements: Placement[] = [];
   for (const n of notes) {
-    if (n.messageId) overrides.set(n.messageId, n);
-    else inserts.push(n);
+    if (n.messageId && shown.has(n.messageId)) {
+      overrides.set(n.messageId, n);
+    } else if (n.messageId) {
+      // The reply this annotates was empty, so the rebuild dropped it (an AI message with no text
+      // adds no bubble). The verdict still has to reach the operator, next to the message it judged.
+      placements.push({
+        after: n.userMessageId,
+        whenUnanchored: "end",
+        render: () => [annotatedReply(n)],
+      });
+    } else {
+      // A turn the thread never received at all. A null anchor is a statement, not a failure: the
+      // thread was empty when it happened, so it goes first.
+      placements.push({
+        after: n.anchorMessageId,
+        whenUnanchored: "start",
+        render: () => blockedTurns(n),
+      });
+    }
   }
   // A turn the thread never received is rebuilt through the SAME renderer as every other turn, from
   // the two messages it would have been. Building it by hand is what lost the audio/file unwrapping
@@ -276,39 +350,24 @@ export function applyTurnNotes(
     return built;
   };
   const out: RebuiltTurn[] = [];
-  const placed = new Set<LoadedTurnNote>();
-  for (const n of inserts) {
-    if (n.anchorMessageId === null) {
-      out.push(...blockedTurns(n));
-      placed.add(n);
+  const placed = new Set<Placement>();
+  for (const pl of placements) {
+    if (pl.after === null && pl.whenUnanchored === "start") {
+      out.push(...pl.render());
+      placed.add(pl);
     }
   }
   for (const turn of turns) {
     const note = turn.messageId ? overrides.get(turn.messageId) : undefined;
-    if (note && turn.role === "assistant") {
-      // Direction IS position: the input screening ran before the graph and the output one after,
-      // so appending both would report an execution sequence the turn never had.
-      const before = note.guardrails.filter((g) => g.direction === "input");
-      const after = note.guardrails.filter((g) => g.direction !== "input");
-      out.push({
-        ...turn,
-        text: note.reply,
-        ...(note.guardrails.some((g) => g.outcome === "suppressed")
-          ? { suppressed: true }
-          : {}),
-        trace: [...before, ...turn.trace, ...after],
-      });
-    } else {
-      out.push(turn);
-    }
-    for (const n of inserts) {
-      if (!placed.has(n) && n.anchorMessageId === turn.messageId) {
-        out.push(...blockedTurns(n));
-        placed.add(n);
+    out.push(note && turn.role === "assistant" ? annotated(note, turn) : turn);
+    for (const pl of placements) {
+      if (!placed.has(pl) && pl.after !== null && pl.after === turn.messageId) {
+        out.push(...pl.render());
+        placed.add(pl);
       }
     }
   }
-  for (const n of inserts) if (!placed.has(n)) out.push(...blockedTurns(n));
+  for (const pl of placements) if (!placed.has(pl)) out.push(...pl.render());
   return out;
 }
 

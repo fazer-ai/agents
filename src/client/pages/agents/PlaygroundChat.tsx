@@ -1358,10 +1358,18 @@ function TraceRow({ entry }: { entry: TraceEntry }) {
             {entry.outcome === "clean"
               ? t("playground.trace.guardrailClean", "approved")
               : entry.outcome === "unavailable"
-                ? t(
-                    "playground.trace.guardrailUnavailable",
-                    "could not be checked, so the reply went out unscreened",
-                  )
+                ? // What went unscreened depends on the direction, and one sentence for both said
+                  // the reply did. On an input failure the reply may have been screened and
+                  // approved a line below, so the shared wording contradicted the very next row.
+                  entry.direction === "input"
+                  ? t(
+                      "playground.trace.guardrailUnavailableInput",
+                      "could not be checked, so the message reached the agent unchecked",
+                    )
+                  : t(
+                      "playground.trace.guardrailUnavailableOutput",
+                      "could not be checked, so the reply went out unscreened",
+                    )
                 : entry.outcome === "suppressed"
                   ? t(
                       "playground.trace.guardrailSuppressed",

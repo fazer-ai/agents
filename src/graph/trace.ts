@@ -1,6 +1,6 @@
 import type { BaseMessage } from "@langchain/core/messages";
 import { redactSecretsDeep, redactSecretsInText, truncate } from "@/lib/redact";
-import type { GuardrailAction } from "@/modules/guardrails/settings";
+import type { GuardrailReport } from "@/modules/guardrails/gate";
 
 // Builds a sanitized, human-readable execution trace from the graph's final message list, for the
 // agent playground (UI + the agent_playground MCP tool). It is a DEBUG view: the sequence of tool
@@ -72,17 +72,14 @@ export interface TraceMedia {
 // template reply is indistinguishable from an agent that answered badly (issue #136). `clean` and
 // `unavailable` are here for the reading the reply cannot give on its own: whether a guardrail ran
 // at all, which is what makes a misconfigured one visible where it is cheapest to notice.
-export interface TraceGuardrail {
+// It IS the gate's own report, tagged: the playground pushes one straight through. Re-declaring
+// the fields here would be the same union written twice, and the outcomes are exactly the decisions
+// the gate can reach minus the one that reports nothing. `action` is the action as it was CARRIED
+// OUT (a `generated` with no replacement in hand sends the template, and says template);
+// `categories` and `rationale` are model-written and present only on a trip, and are the operator's
+// whole explanation of why the reply they are reading is not the one the agent wrote.
+export interface TraceGuardrail extends GuardrailReport {
   type: "guardrail";
-  direction: "input" | "output";
-  outcome: "clean" | "unavailable" | "replaced" | "suppressed";
-  // The action as it was CARRIED OUT, absent when nothing tripped. `generated` with no replacement
-  // in hand sends the template, and this says template (see modules/guardrails/gate.ts).
-  action?: GuardrailAction;
-  // Both model-written, and present only on a trip. They are the operator's whole explanation of
-  // why the reply they are looking at is not the one the agent wrote.
-  categories?: string[];
-  rationale?: string;
 }
 
 export type TraceEntry =

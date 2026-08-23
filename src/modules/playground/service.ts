@@ -485,9 +485,12 @@ export async function runPlaygroundTurn(
   //
   // The human message id is minted BEFORE the screening, because a blocked turn needs it too: the
   // media is linked to it, and the input direction returns before the graph produces any message.
-  const humanId = params.userMedia ? crypto.randomUUID() : undefined;
+  // Minted for EVERY turn, not only the ones carrying media: it is also the id a transcript note
+  // points at, and the reload places the note next to the message it judged. Left to the reducer,
+  // the id exists but nothing here knows it, and the note ends up with nowhere to go.
+  const humanId = crypto.randomUUID();
   const saveInboundMedia = async (): Promise<string | undefined> =>
-    params.userMedia && humanId
+    params.userMedia
       ? ((await savePlaygroundMedia(base, {
           tenantId,
           agentId,
@@ -538,7 +541,7 @@ export async function runPlaygroundTurn(
       threadId,
       messageId: null,
       anchorMessageId: await lastRenderedMessageId(graph, threadId),
-      userMessageId: humanId ?? null,
+      userMessageId: humanId,
       // The RENDERED text, markers and all, because the rebuild unwraps them exactly as it does for
       // a turn that reached the thread. Storing the clean text would need a SECOND renderer, which
       // is what got the audio and file turns wrong to begin with.
@@ -558,9 +561,7 @@ export async function runPlaygroundTurn(
   // Everything screened before the graph belongs ahead of the graph's own entries in the trace.
   const beforeGraph = gTrace.length;
 
-  const human = humanId
-    ? new HumanMessage({ content: text, id: humanId })
-    : new HumanMessage(text);
+  const human = new HumanMessage({ content: text, id: humanId });
 
   let result: Awaited<ReturnType<typeof graph.invoke>>;
   try {
@@ -628,7 +629,10 @@ export async function runPlaygroundTurn(
       threadId,
       messageId: lastAiMessageId(result.messages) ?? null,
       anchorMessageId: null,
-      userMessageId: null,
+      // The reply this annotates can be empty (the agent said nothing), and the rebuild drops an
+      // empty AI message, so `messageId` alone is not always an id the transcript shows. The human
+      // message always is, and it is the one the verdict belongs next to.
+      userMessageId: humanId,
       userText: null,
       reply,
       guardrails: [...gTrace],
@@ -886,6 +890,9 @@ export async function runPlaygroundFollowup(
       threadId,
       messageId: lastAiMessageId(result.messages) ?? null,
       anchorMessageId: null,
+      // No user message to hang it on: a follow-up is a nudge, and the rebuild renders a nudge as
+      // an assistant turn alone. An annotation whose reply was empty therefore lands at the end,
+      // which for a follow-up is where it happened anyway.
       userMessageId: null,
       userText: null,
       reply,

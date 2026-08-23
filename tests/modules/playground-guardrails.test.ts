@@ -11,10 +11,12 @@ import {
   runPlaygroundTurn,
 } from "@/modules/playground/service";
 import {
+  applyTurnNotes,
   deletePlaygroundSession,
   getPlaygroundSessionTurns,
   rebuildPlaygroundTurns,
 } from "@/modules/playground/sessions";
+import { listThreadTurnNotes } from "@/modules/playground/turn-notes";
 import { guardrailModel } from "../utils/scripted-models";
 
 // Issue #136: the playground ran the agent's graph directly and never screened anything, so the
@@ -70,6 +72,9 @@ function models(opts: {
   // Emits a calculator call before replying, so the graph contributes trace entries the guardrail
   // entries have to sit around. Without one in the middle, every ordering looks the same.
   toolFirst?: boolean;
+  // The agent answers with nothing. The rebuild drops an empty AI message by design, so this is
+  // what makes an id the note points at absent from the transcript.
+  emptyReply?: boolean;
 }) {
   let judgeCalls = 0;
   let agentInvokes = 0;
@@ -120,7 +125,9 @@ function models(opts: {
     // Counts INVOCATIONS, not constructions. The graph is built before the input direction is
     // screened, so a counter on the factory reports one call for a turn that never ran the agent —
     // which is precisely the claim "the graph was skipped" is supposed to prove.
-    const base = new FakeListChatModel({ responses: [RAW_REPLY] });
+    const base = new FakeListChatModel({
+      responses: [opts.emptyReply ? "" : RAW_REPLY],
+    });
     const proxy: unknown = new Proxy(base, {
       get(t, prop, recv) {
         if (prop === "invoke") {
@@ -377,6 +384,28 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     ]);
     // No key, so nothing was asked and nothing was billed.
     expect(m.judgeCalls()).toBe(0);
+    // ...and the Logs page names it the way the rest of the fleet does. Six other features spell
+    // this exact condition `credential_not_found` (the speech normalizer, vision, STT, TTS, memory
+    // compaction, the OAuth controllers), and a seventh spelling is a filter that misses one.
+    // Scoped to THIS agent, not just the tenant: every test here shares one tenant, and the
+    // broken-model test a few lines up writes its own guardrail warn. Taking the newest row for the
+    // tenant would read that one whenever this one has not landed yet (the emit is fire-and-forget).
+    let detail: unknown;
+    for (let i = 0; i < 50 && !detail; i++) {
+      detail = (
+        await suDb.executionLog.findFirst({
+          where: {
+            tenantId,
+            agentId: agentDeadCredential,
+            stage: "guardrail",
+            level: "warn",
+          },
+          select: { detail: true },
+        })
+      )?.detail;
+      if (!detail) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(detail).toMatchObject({ outcome: "credential_not_found" });
   });
 
   // A screening that ran and approved is still worth a line: "the guardrail is on and let this
@@ -579,6 +608,59 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       deps: deps(m),
     });
     expect(r.suppressed).toBe(false);
+  });
+
+  // Same seam, the other end: the agent answers with nothing while the guardrail RAN. The note is
+  // keyed to an AI message the rebuild drops, so before this it matched no turn and the verdict was
+  // gone on reload. Asserted through the real checkpointer, because the defect lives between the
+  // two stores and each half looked correct on its own.
+  test("a screened turn the agent left empty keeps its verdict on reload", async () => {
+    const cp = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      tenantId,
+      agentId: agentInput,
+      message: "primeira",
+      base: appDb,
+      deps: {
+        makeModel: models({ violated: false, emptyReply: true }).make,
+        checkpointer: cp,
+      },
+    });
+    expect(r.trace.filter((e) => e.type === "guardrail")).toMatchObject([
+      { outcome: "clean", direction: "input" },
+    ]);
+    // A SECOND turn, and it is the whole point: with one turn, "after the message it judged" and
+    // "appended at the end" are the same position, so a test with one turn cannot tell a placed
+    // verdict from a lost one that happened to land right.
+    await runPlaygroundTurn({
+      tenantId,
+      agentId: agentInput,
+      message: "segunda",
+      threadId: r.threadId,
+      base: appDb,
+      deps: { makeModel: models({ violated: false }).make, checkpointer: cp },
+    });
+
+    const turns = applyTurnNotes(
+      rebuildPlaygroundTurns(
+        (
+          (await cp.getTuple({ configurable: { thread_id: r.threadId } }))
+            ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
+        )?.messages as BaseMessage[],
+      ),
+      await listThreadTurnNotes(appDb, tenantId, r.threadId),
+    );
+    expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
+      "user:primeira",
+      "assistant:",
+      "user:segunda",
+      `assistant:${RAW_REPLY}`,
+    ]);
+    expect(turns[1]?.trace).toMatchObject([
+      { type: "guardrail", outcome: "clean", direction: "input" },
+    ]);
+    // Nothing was taken away, so nothing claims it was.
+    expect(turns[1]?.suppressed).toBeUndefined();
   });
 
   // Reload, end to end and through the REAL checkpointer, because every other assertion here is on

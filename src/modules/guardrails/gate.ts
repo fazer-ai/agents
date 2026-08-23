@@ -147,7 +147,10 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         stage: "guardrail",
         status: "error",
         level: "warn",
-        detail: { direction, outcome: "credential_unresolved" },
+        // `credential_not_found` is the fleet's name for this, used by the speech normalizer,
+        // vision, STT, TTS and memory compaction. A seventh spelling of one condition is a filter
+        // that quietly misses a sixth of the fleet.
+        detail: { direction, outcome: "credential_not_found" },
       });
       return model;
     }

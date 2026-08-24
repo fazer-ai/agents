@@ -1001,19 +1001,15 @@ export async function deliverRedirectClosing(
     p.entryInboxId,
     base,
   );
-  // The second ask, and it is skipped once the chat has ALREADY been messaged and resolved. Standing
-  // down here would leave the episode half-closed — the widget said goodbye and is resolved, the
-  // WhatsApp side still open — and report `delivered` for it. A reset that lands mid-delivery cannot
-  // un-send the first half, so the honest completion of a started delivery is both halves; the ask
-  // is what stops one that has not started.
-  // NOTE: The fence covers the same stretch, which the watermark check does not: on the resolve path
-  // nothing has been delivered when the ask above runs, and the sibling lookup is a round trip in
-  // front of the only send that path makes (issue #246). Skipped once the chat has been messaged, for
-  // the reason stated right above: a started delivery is finished, not half-left.
   // NOTE: ONE watermark read and ONE fence, in that order, and nothing between the fence and the
   // send. Asking the watermark again after the fence — which is what a second `stillDelivering()`
   // here would be — puts a round trip behind the fence's answer and hands the last word back to the
   // question that was not supposed to have it.
+  //
+  // Both asks are skipped once the chat has ALREADY been messaged and resolved. Standing down there
+  // would leave the episode half-closed — the widget said goodbye and is resolved, the WhatsApp side
+  // still open — and report `delivered` for it. Nothing can un-send the first half, so the honest
+  // completion of a started delivery is both halves; the asks are what stop one that has not started.
   //
   // Which of the two gets that word is a real choice: a stale watermark costs a duplicate goodbye in
   // a race the claim CAS already makes rare, while a stale fence costs a message from an agent the

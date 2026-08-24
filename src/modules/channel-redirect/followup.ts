@@ -597,6 +597,11 @@ export async function redirectFollowUpHandler(
         // it and the post comes after that — so a switch flipped mid-turn would otherwise reach the
         // customer from an agent that is already off.
         //
+        // A stand-down here suppresses the send and leaves the generated turn in the thread's
+        // history, because the graph has already checkpointed it by the time any post-invoke gate
+        // answers. That is `runAgentNudge`'s shared behaviour — the ownership re-probe and a /reset
+        // land the same way — and it is #251, not this fence's to change.
+        //
         // The verdict is not carried out to the advance below, deliberately. `rescheduleTo` asks the
         // fence again, so an agent still off there ends the ladder anyway; what is left uncovered is
         // an operator switching OFF during the turn and back ON inside the milliseconds before that

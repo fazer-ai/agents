@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { unstorableProblem } from "@/lib/text";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
@@ -15,6 +16,7 @@ import {
   promptSet,
   resolveSecretRef,
   tenantUpdate,
+  truncForAudit,
 } from "@/modules/mcp/write";
 import { langfuseConnect } from "@/modules/mcp/write-settings";
 
@@ -41,6 +43,41 @@ describe("diffFields", () => {
   });
   test("empty when nothing changed (deep-equal via JSON)", () => {
     expect(diffFields({ x: { y: 1 } }, { x: { y: 1 } })).toEqual({});
+  });
+});
+
+// The audit projection's own walker, asserted directly: unlike the flow log, every current call
+// site projects fields that were already written to a column, so a value that would break the audit
+// write would have broken the write it audits first. The protection is a property of those call
+// sites and not of this function, and `agent.settings` is a genuinely open bag, so the rule belongs
+// here rather than in the callers.
+describe("truncForAudit", () => {
+  const NUL = String.fromCharCode(0);
+
+  test("returns a projection the jsonb column can hold", () => {
+    const out = truncForAudit({
+      name: `Agent${NUL}One`,
+      note: "half\ud800a character",
+    }) as Record<string, string>;
+    expect(unstorableProblem(out.name ?? "", "name")).toBeNull();
+    expect(unstorableProblem(out.note ?? "", "note")).toBeNull();
+    expect(out.name).toBe("AgentOne");
+  });
+
+  test("does not let a `__proto__` key become the prototype", () => {
+    // Assignment on that key invokes the legacy prototype setter, and Prisma's serialization
+    // enumerates inherited properties, so the contents would be written as top-level fields of the
+    // audit record: a field nobody wrote, in the row that says who changed what.
+    const out = truncForAudit(
+      JSON.parse('{"__proto__":{"leaked":1},"keep":"x"}'),
+    ) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(JSON.parse(JSON.stringify(out))).not.toHaveProperty("leaked");
+  });
+
+  test("leaves a whole astral character alone", () => {
+    const out = truncForAudit({ name: "Suporte 😀" }) as Record<string, string>;
+    expect(out.name).toBe("Suporte 😀");
   });
 });
 

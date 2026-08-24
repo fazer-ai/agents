@@ -66,7 +66,7 @@ function loneSurrogates(s: string): number {
   return n;
 }
 
-describe.skipIf(!dbUp)("execution_logs.detail survives astral text", () => {
+describe.skipIf(!dbUp)("execution_logs.detail survives bad characters", () => {
   beforeAll(async () => {
     tenantId = (
       await suDb.tenant.create({
@@ -100,7 +100,9 @@ describe.skipIf(!dbUp)("execution_logs.detail survives astral text", () => {
 
   test("a detail string that already holds an orphan half still produces a row", async () => {
     // Exactly what an HTTP tool's response body hands `JSON.parse`.
-    const parsed = JSON.parse('{"body":"pre\\ud800post"}') as { body: string };
+    const parsed = JSON.parse('{"body":"pre\\ud800post"}') as {
+      body: string;
+    };
     expect(loneSurrogates(parsed.body)).toBe(1);
     emitFlowEvent(flow("astral-orphan"), {
       stage: "tool",
@@ -125,6 +127,53 @@ describe.skipIf(!dbUp)("execution_logs.detail survives astral text", () => {
     expect(loneSurrogates(Object.keys(detail ?? {})[0] ?? "")).toBe(0);
   });
 
+  // ── the other two things the column refuses, and the one that CORRUPTS (#241) ──
+  // Same destination, same walker, and neither is covered by the surrogate repair above.
+
+  test("a NUL in a detail value still produces a row", async () => {
+    // A JSON body spells out a NUL as readily as an orphan half, and `jsonb` refuses it just as
+    // flatly (22P05). `emitFlowEvent` swallows the refusal, so the only symptom is the missing line.
+    const NUL = String.fromCharCode(0);
+    emitFlowEvent(flow("nul-value"), {
+      stage: "tool",
+      detail: { output: `pre${NUL}post` },
+    });
+    const detail = (await rowFor("nul-value")) as { output: string } | null;
+    expect(detail).not.toBeNull();
+    expect(detail?.output).toBe("prepost");
+  });
+
+  test("a NUL in a detail KEY still produces a row", async () => {
+    const parsed = JSON.parse('{"pre\\u0000post":1}') as Record<string, number>;
+    emitFlowEvent(flow("nul-key"), { stage: "tool", detail: parsed });
+    const detail = (await rowFor("nul-key")) as Record<string, number> | null;
+    expect(detail).not.toBeNull();
+    expect(Object.keys(detail ?? {})).toEqual(["prepost"]);
+  });
+
+  test("a `__proto__` key does not put a field nobody wrote into the record", async () => {
+    // The one case that is not a loss. `JSON.parse` yields `__proto__` as an ordinary own
+    // property, and assignment on that key invokes the legacy prototype setter instead of
+    // creating a field. Prisma's serialization then enumerates INHERITED properties, so the
+    // contents were written as top-level fields: measured before the fix, this row stored
+    // {"keep":"x","leaked":1}, a field nobody wrote in a record that reads as authoritative.
+    //
+    // What is asserted is the ABSENCE of `leaked`, not the presence of `__proto__`. Keeping it an
+    // own property is what this fixes, and Prisma drops that key on the way to the column either
+    // way (measured: the column holds `{"keep": "x"}`). Trading a corrupted record for a record
+    // missing one field is the whole of the win, and asserting the key would pin behaviour that
+    // belongs to the driver rather than to us.
+    const parsed = JSON.parse('{"__proto__":{"leaked":1},"keep":"x"}');
+    emitFlowEvent(flow("proto-key"), { stage: "tool", detail: parsed });
+    const detail = (await rowFor("proto-key")) as Record<
+      string,
+      unknown
+    > | null;
+    expect(detail).not.toBeNull();
+    expect(detail).not.toHaveProperty("leaked");
+    expect(detail).toEqual({ keep: "x" });
+  });
+
   test("a whole emoji still reaches the row intact", async () => {
     // The guard against fixing this by scrubbing every surrogate: an emoji in a tool result is
     // ordinary, and it must survive.
@@ -132,7 +181,9 @@ describe.skipIf(!dbUp)("execution_logs.detail survives astral text", () => {
       stage: "tool",
       detail: { output: "tudo certo 😀🎉" },
     });
-    const detail = (await rowFor("astral-intact")) as { output: string } | null;
+    const detail = (await rowFor("astral-intact")) as {
+      output: string;
+    } | null;
     expect(detail?.output).toBe("tudo certo 😀🎉");
   });
 });

@@ -1,4 +1,4 @@
-import { clipText, replaceLoneSurrogates } from "@/lib/text";
+import { clipText, makeStorable } from "@/lib/text";
 
 // Non-throwing secret redaction for human-facing debug surfaces (the agent playground trace and
 // the conversation `lastError` shown to the operator). This is the REPLACE-and-continue cousin of
@@ -49,7 +49,7 @@ export function redactSecretsDeep(value: unknown, depth = 0): unknown {
   if (depth > MAX_DEPTH) return "‹…›";
   if (value == null) return null;
   if (typeof value === "string") {
-    return replaceLoneSurrogates(redactSecretsInText(truncate(value)));
+    return makeStorable(redactSecretsInText(truncate(value)));
   }
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "bigint") return value.toString();
@@ -62,11 +62,21 @@ export function redactSecretsDeep(value: unknown, depth = 0): unknown {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       // NOTE: The KEY gets the same repair as the values. A key is written by whoever produced the
-      // object — a model's tool-call arguments, a third party's JSON response — and one orphan half
+      // object (a model's tool-call arguments, a third party's JSON response), and one orphan half
       // anywhere in the document is enough for Postgres to refuse the whole `jsonb` write.
-      out[replaceLoneSurrogates(k)] = SECRET_KEY_RE.test(k)
-        ? REDACTED
-        : redactSecretsDeep(v, depth + 1);
+      //
+      // NOTE: `defineProperty`, not assignment: `JSON.parse` yields `__proto__` as an ordinary own
+      // property, and assigning to that key invokes the legacy prototype setter instead. The
+      // serialization that reaches the column enumerates inherited properties, so the contents of
+      // `__proto__` would be written as top-level fields of the log record.
+      Object.defineProperty(out, makeStorable(k), {
+        value: SECRET_KEY_RE.test(k)
+          ? REDACTED
+          : redactSecretsDeep(v, depth + 1),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
     }
     return out;
   }

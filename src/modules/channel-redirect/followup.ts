@@ -475,8 +475,12 @@ export async function redirectFollowUpHandler(
   // the job row and nothing straddles it. For a test agent the two reads share the transaction but not
   // a snapshot (`runScopedOn` uses the default isolation), which leaves a gap of one statement with no
   // network in it — narrower than the window this whole fence exists to close.
-  const fence = async (): Promise<LadderVerdict> => {
-    const answer = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+  //
+  // Takes the caller's connection when there is one — the same rule `jobRetired` states and for the
+  // same reason: asked from inside the nudge's thread claim, a second connection would stall on an
+  // exhausted pool while the advisory lock is held, and `DB_POOL_MAX=1` is a supported setting.
+  const fence = async (scoped?: ScopedDb): Promise<LadderVerdict> => {
+    const read = async (db: ScopedDb) => {
       // NOTE: The retirement read goes LAST, and that ordering is the whole of what the transaction
       // can offer: the two statements share a connection but not a snapshot (default READ COMMITTED),
       // so whichever is asked last is the one observed closest to the send. Retirement gets it,
@@ -510,7 +514,11 @@ export async function redirectFollowUpHandler(
       });
       if (await jobRetired(job, base, db)) return "retired" as const;
       return live ? ("go" as const) : ("stood-down" as const);
-    }).catch((err: unknown) => {
+    };
+    const answer = await (scoped
+      ? read(scoped)
+      : runScopedOn(base, sysCtx(tenantId), read)
+    ).catch((err: unknown) => {
       logger.warn(
         "channel-redirect: could not re-read the ladder's fence (widget thread=%s): %s",
         payload.widgetThreadId,
@@ -553,7 +561,11 @@ export async function redirectFollowUpHandler(
         threadId: payload.widgetThreadId,
         nudge: chatFollowupNudge(cfg.chatFollowupInstructions),
         base,
-        stillWanted: async (scoped) => !(await retired(scoped)),
+        // NOTE: The composite fence, on the nudge's own connection. This stage's window is the widest
+        // in the ladder — the config load is fail-closed on `enabled`, but the model turn runs after
+        // it and the post comes after that — so a switch flipped mid-turn would otherwise reach the
+        // customer from an agent that is already off.
+        stillWanted: async (scoped) => (await fence(scoped)) === "go",
         deps,
       });
     }

@@ -1371,6 +1371,46 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(wire.some((u) => u.includes("/messages"))).toBe(true);
   });
 
+  // The widest window in the ladder: the nudge's config load is fail-closed on `enabled`, but the
+  // model turn runs after it and the post comes after that. A switch flipped mid-turn has to reach
+  // the send, or the chat follow-up goes out from an agent that is already off — and with no later
+  // stage enabled, nothing downstream would ever notice.
+  test("switched off during the model turn posts no chat follow-up", async () => {
+    const job = await claimed("chat");
+    const s = stubClient();
+    // The rendezvous is the nudge's own config load: it is the read that selects the prompt, and the
+    // model turn is what happens next.
+    const flipping = appDb.$extends({
+      query: {
+        agent: {
+          async findUnique({ args, query }) {
+            const res = await query(args);
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (sel?.systemPrompt === true) {
+              await suDb.agent.update({
+                where: { id: agentId },
+                data: { enabled: false },
+              });
+            }
+            return res;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    try {
+      await redirectFollowUpHandler(job, flipping, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { enabled: true },
+      });
+    }
+    expect(s.sent).toEqual([]);
+  });
+
   // Advancing is a decision too. A stage can end without ever reaching its own fence — the sibling
   // lookup finds nobody, the link cannot be minted, or the chat stage simply finishes — and arming
   // the next stage there points a closing at an episode the agent is no longer allowed to touch:

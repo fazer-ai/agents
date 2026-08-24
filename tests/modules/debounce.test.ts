@@ -33,6 +33,7 @@ import {
   guardrailModel,
   PromptCapturingModel,
   ResolveThenReplyModel,
+  SendImageThenReplyModel,
   SideEffectModel,
 } from "../utils/scripted-models";
 
@@ -1682,6 +1683,127 @@ describe.skipIf(!dbUp)("debounce", () => {
       // window answers after the CAS, so the burst is marked handled without having been answered.
       // The alternative is the send above.
       expect(await watermarkOf(862)).toBe(1);
+    });
+  });
+  // A turn that answers with BOTH an attachment and text, retired between the two. The image is with
+  // the customer and the words never arrive, so the burst is half answered — and "stale" would hand
+  // it to the next flush, which sends that attachment a second time. Same rule as the two branches
+  // that already read `images.sent`, and the third place it has to hold.
+  describe("with a turn that sends an image before its reply", () => {
+    const IMG_URL = "https://cdn.loja.com.br/produtos/camiseta.png";
+    const imageDeps = {
+      fetchImpl: (async () =>
+        new Response(
+          // A real PNG signature: the tool sniffs the bytes before it uploads.
+          new Uint8Array([
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00,
+            0x0d,
+          ]),
+          {
+            status: 200,
+            headers: { "content-type": "image/png" },
+          },
+        )) as unknown as typeof fetch,
+      assertSafe: async (u: string) => new URL(u),
+    };
+    let previousSettings: unknown = null;
+
+    beforeAll(async () => {
+      const before = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentDbId },
+        select: { settings: true },
+      });
+      previousSettings = before.settings;
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: {
+          settings: {
+            ...(before.settings as object),
+            sendImage: { allowedHosts: ["cdn.loja.com.br"] },
+          },
+        },
+      });
+    });
+
+    afterAll(async () => {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { settings: previousSettings as object },
+      });
+    });
+
+    test("a burst retired after the image still counts as answered", async () => {
+      await seedConversation(864);
+      // A failure the operator is looking at. Only a turn that DELIVERED takes it away, so this is
+      // what tells "posted" from "stale" here — the watermark cannot, because the post gate's CAS
+      // advanced it before either word was chosen.
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: 864 },
+        data: { lastError: "boom", lastErrorAt: new Date() },
+      });
+      const thread = threadOf(864);
+      const row = await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "DEBOUNCE",
+          dedupeKey: debounceDedupeKey(thread),
+          status: "CLAIMED",
+          runAt: new Date(),
+          payload: { threadId: thread, agentBotId: 9, burstStartedAt: 1 },
+        },
+        select: { id: true, claimSeq: true },
+      });
+      const sent: Array<[number, string]> = [];
+      const attachments: string[] = [];
+      const client = {
+        getMessages: async () => page([{ id: 1, content: "manda a foto" }]),
+        sendFileAttachment: async (
+          _c: number,
+          _b: ArrayBuffer,
+          name: string,
+        ) => {
+          attachments.push(name);
+          // The command lands with the picture already delivered and the words still owed.
+          await retireJobsByDedupeKey(
+            tenantId,
+            "DEBOUNCE",
+            debounceDedupeKey(thread),
+            suDb,
+          );
+          return {};
+        },
+        sendMessage: async (conversationId: number, content: string) => {
+          sent.push([conversationId, content]);
+          return {};
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+
+      const out = await flushDebounceJob({
+        job: { ...jobFor(864), id: row.id, claimSeq: row.claimSeq },
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new SendImageThenReplyModel(
+              "É essa aqui!",
+              IMG_URL,
+            ) as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+          imageDeps,
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      // The picture went out and the words did not.
+      expect(attachments).toHaveLength(1);
+      expect(sent).toEqual([]);
+      // And the turn counts as answered: the error cleared, which only a delivered turn does.
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 864 },
+        select: { lastError: true },
+      });
+      expect(conv.lastError).toBeNull();
     });
   });
 });

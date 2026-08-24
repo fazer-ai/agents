@@ -1132,7 +1132,14 @@ export async function runLoadedTurn(
     // Zero is the split loop standing down on its FIRST balloon: nothing reached the customer, so
     // this is a stale turn and not a delivered one. Treating every number as posted would advance
     // the handled watermark over a burst nobody answered, and the next flush starts after it.
-    if (delivered === "stale" || delivered === 0) return "stale";
+    //
+    // Unless an ATTACHMENT already went out, which is the same rule the two branches above follow
+    // and the third place it has to be written: the images were delivered before this line ran, so a
+    // command landing in the text send leaves a customer holding part of the answer. "stale" would
+    // hand the burst back to the next flush, which sends that attachment again.
+    if (delivered === "stale" || delivered === 0) {
+      return images.sent ? "posted" : "stale";
+    }
     deliveredBalloons = delivered;
     // Same rule as the branch above: the reply is out, the resolve is a separate write.
     if (await writeCalledOff()) return "posted";

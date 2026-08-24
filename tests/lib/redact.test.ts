@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { redactSecretsDeep } from "@/lib/redact";
+import { redactSecretsDeep, sanitizeErrorMessage } from "@/lib/redact";
 import { unstorableProblem } from "@/lib/text";
 
 // REPAIRING A VALUE CAN RECONSTRUCT WHAT THE REDACTOR JUST FAILED TO MATCH.
@@ -58,5 +58,35 @@ describe("redactSecretsDeep repairs before it decides", () => {
     });
     const json = JSON.stringify(out) ?? "";
     expect(unstorableProblem(json, "serialized")).toBeNull();
+  });
+});
+
+// The same ordering, in the other function that repairs and then decides. This one guards every
+// column that holds an error message (issue #243), and an exception message is exactly where a
+// provider's own answer, key included, ends up quoted verbatim.
+describe("sanitizeErrorMessage repairs before it decides", () => {
+  test("a NUL inside a token does not smuggle the token past the scrubber", () => {
+    const out = sanitizeErrorMessage(
+      new Error(`upstream rejected token sk-${NUL}abcdefghijklmnop`),
+    );
+    expect(out).not.toContain("sk-abcdefghijklmnop");
+    expect(out).toContain("\u2039redacted\u203a");
+  });
+
+  test("whatever it returns, the column can hold it", () => {
+    for (const raw of [
+      `boom${NUL}tail`,
+      "boom\ud800tail",
+      "boom\ud800",
+      `\ud800${NUL}\udc00`,
+    ]) {
+      expect(unstorableProblem(sanitizeErrorMessage(raw), "out")).toBeNull();
+    }
+  });
+
+  test("still bounds what it always bounded", () => {
+    const out = sanitizeErrorMessage("x".repeat(600));
+    expect(out.length).toBeLessThanOrEqual(500 + "\u2026[truncated]".length);
+    expect(out).toContain("[truncated]");
   });
 });

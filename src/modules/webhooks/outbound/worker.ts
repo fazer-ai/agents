@@ -2,9 +2,9 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { sanitizeErrorMessage } from "@/lib/redact";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { clipText } from "@/lib/text";
 import { tryResolveVaultSecret } from "@/modules/vault/service";
 import { nextBackoffMs } from "./service";
 import { outboundHeaders } from "./signing";
@@ -70,9 +70,11 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
+// `sanitizeErrorMessage` rather than a bare cut: this string is stored in `last_error`, and the
+// exceptions a delivery produces wrap what the remote endpoint answered. See issue #243 and the
+// function's own header for why a NUL or an orphan surrogate costs the whole write.
 function errMsg(err: unknown): string {
-  const m = err instanceof Error ? err.message : String(err);
-  return m.length > MAX_ERROR_LEN ? `${clipText(m, MAX_ERROR_LEN)}…` : m;
+  return sanitizeErrorMessage(err, MAX_ERROR_LEN);
 }
 
 async function mapWithConcurrency<T, R>(

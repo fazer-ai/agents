@@ -93,8 +93,24 @@ export function redactSecretsDeep(value: unknown, depth = 0): unknown {
 }
 
 // A short, safe one-line string for an error surfaced to the operator (conversation lastError):
-// the message only, secret-scrubbed and length-bounded — never a stack trace or raw provider body.
+// the message only, secret-scrubbed and length-bounded, never a stack trace or raw provider body.
+//
+// Also the ONE place the storability rule is applied to error text, because every column that holds
+// an error message is written through here. A `text` column refuses a NUL outright, and a lone
+// surrogate costs a character off the tail before it either lands corrupted or refuses. What the
+// refusal costs is not the string: `failJob`'s write IS the transition that schedules the retry or
+// dead-letters the job, so refused, the row stops moving. tests/lib/storable-write-sweep.test.ts is
+// the ledger of these columns, and carries how a third party's bytes reach one (issue #243).
+//
+// `makeStorable` runs BEFORE the scrub, never after. It DELETES the NUL rather than replacing it,
+// so a token the pattern missed only because a NUL sat inside it (`sk-<NUL>abcd…`) would be handed
+// back whole by a repair that ran second (issue #241 review). The cut stays last: it cannot
+// manufacture an orphan half for the repair to have to catch, and repairing first is what makes
+// the length it measures the length that gets stored.
 export function sanitizeErrorMessage(err: unknown, max = 500): string {
   const raw = err instanceof Error ? err.message : String(err);
-  return truncate(redactSecretsInText(raw.replace(/\s+/g, " ").trim()), max);
+  return truncate(
+    redactSecretsInText(makeStorable(raw.replace(/\s+/g, " ").trim())),
+    max,
+  );
 }

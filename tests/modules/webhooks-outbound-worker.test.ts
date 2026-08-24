@@ -233,6 +233,26 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     expect(row.lastError).toContain("500");
   });
 
+  // Issue #243. The remote endpoint's own error message is what lands in `last_error`, and a `text`
+  // column refuses a NUL outright. Refused, the whole retry write is refused with it: the row keeps
+  // its SENDING claim and its attempt count, so nothing re-drives it and nothing dead-letters it.
+  test("retries a transport failure whose message carries a NUL", async () => {
+    const id = await seedDelivery({ subscriptionId: unsignedSubId });
+    const fetchImpl = (async () => {
+      throw new Error(`socket hang up ${String.fromCharCode(0)} (ECONNRESET)`);
+    }) as unknown as typeof fetch;
+    await processOutboundBatch({
+      base: appDb,
+      tenantId,
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    const row = await readDelivery(id);
+    expect(row.status).toBe("PENDING");
+    expect(row.attempts).toBe(1);
+    expect(row.lastError).toContain("socket hang up");
+  });
+
   test("gives up after the maximum attempts (DEAD)", async () => {
     // attempts at MAX-1 (7); one more failure crosses the threshold.
     const id = await seedDelivery({

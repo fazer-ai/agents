@@ -3,8 +3,8 @@ import { broadcastDocumentEvent } from "@/api/features/realtime/realtime.service
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { clipText } from "@/lib/text";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
@@ -617,13 +617,15 @@ async function runIngestJobForTenant(
     return { outcome: "done" };
   } catch (err) {
     // Store the i18n key (a stable token) when the failure is a known AppError, so the UI can localize
-    // the reason (e.g. embedding credential missing); otherwise the raw message (diagnostic).
+    // the reason (e.g. embedding credential missing); otherwise the message itself (diagnostic).
+    //
+    // `sanitizeErrorMessage` rather than a cut: the diagnostic branch carries what the embedding
+    // provider answered, and `error` is a `text` column that refuses a NUL outright. It also bounds
+    // the non-Error branch, which `String(err)` left unbounded (issue #243).
     const message =
       err instanceof AppError && err.translationKey
         ? err.translationKey
-        : err instanceof Error
-          ? clipText(err.message, 500)
-          : String(err);
+        : sanitizeErrorMessage(err, 500);
     logger.error({ err, documentId: String(documentId) }, "RAG ingest failed");
     // NOTE: the same release, and for the same reason. A failure belongs to the content this run
     // read, so stamping it on a document that has since been edited both reports the wrong thing

@@ -1,13 +1,13 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { sanitizeErrorMessage } from "@/lib/redact";
 import {
   asSuperAdminOn,
   runScopedOn,
   type ScopedDb,
   type TenantContext,
 } from "@/lib/tenancy";
-import { clipText } from "@/lib/text";
 import {
   JOB_DELETE_ON_DONE,
   kindsInLane,
@@ -637,6 +637,13 @@ export async function rescheduleJob(
 }
 
 // Failure: attempts++; retry with backoff until the cap, then DEAD.
+//
+// `sanitizeErrorMessage`, not a bare cut: `error` is whatever a job handler threw, and THIS write is
+// the transition itself. A character Postgres refuses (a NUL, an orphan surrogate) takes the whole
+// statement with it, and then the row keeps its CLAIMED status and its old `attempts`: nothing
+// reclaims it and nothing reports it. What used to guard this column was every handler's own habit
+// of not quoting a third party, never anything stated here (issue #243). The same call is what keeps
+// a credential-shaped substring out of the column.
 // Returns whether this call is the one that DEAD-LETTERED the job — the attempt count alone does not
 // say so. The CAS is on `status = 'CLAIMED'` AND on the claim's own token, so a job re-armed mid-run
 // (`armDebounce` upserts the claimed row back to PENDING) fails to match on either count: the row
@@ -658,12 +665,16 @@ export async function failJob(
     db.schedulerJob.updateMany({
       where: { id, status: "CLAIMED", claimSeq },
       data: dead
-        ? { status: "DEAD", attempts: next, lastError: clipText(error, 500) }
+        ? {
+            status: "DEAD",
+            attempts: next,
+            lastError: sanitizeErrorMessage(error),
+          }
         : {
             status: "PENDING",
             attempts: next,
             runAt: new Date(now.getTime() + backoffMs(next)),
-            lastError: clipText(error, 500),
+            lastError: sanitizeErrorMessage(error),
           },
     }),
   );

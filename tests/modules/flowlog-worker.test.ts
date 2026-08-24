@@ -213,6 +213,32 @@ describe.skipIf(!dbUp)("alert worker", () => {
     expect(row?.nextAttemptAt?.getTime()).toBeGreaterThan(t);
   });
 
+  // Issue #243. The transport error's own message is what lands in `last_error`, a `text` column
+  // that refuses a NUL outright, and the refusal takes the whole retry write with it: the row keeps
+  // its SENDING claim and its attempt count, so nothing re-drives it and nothing dead-letters it.
+  test("retries a transport failure whose message carries a NUL", async () => {
+    const ch = await createAlertChannel(
+      ctx(tenantId),
+      { name: "nul", type: "webhook", url: outboundUrl("/nul") },
+      appDb,
+    );
+    const id = await makeDelivery(BigInt(ch.id));
+    const fetchImpl = (async () => {
+      throw new Error(`socket hang up ${String.fromCharCode(0)} (ECONNRESET)`);
+    }) as unknown as typeof fetch;
+    await processAlertBatch({
+      base: appDb,
+      tenantId,
+      coalesceWindowMs: 0,
+      fetchImpl,
+      assertSafe: async (u: string) => new URL(u),
+    });
+    const row = await suDb.alertDelivery.findUnique({ where: { id } });
+    expect(row?.status).toBe("PENDING");
+    expect(row?.attempts).toBe(1);
+    expect(row?.lastError).toContain("socket hang up");
+  });
+
   test("a blocked (SSRF) URL goes straight to DEAD", async () => {
     const ch = await createAlertChannel(
       ctx(tenantId),

@@ -808,6 +808,15 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     );
     expect(stub.calls.unassignConversation).toBe(1);
     expect(outcome).toBe("taken-over");
+    // And the ROW, which no return value reaches. The unversioned write already stored what this call
+    // ASKED for — pending, unassigned — so correcting only the answer leaves the durable copy saying
+    // the conversation is the bot's. That is the copy `shouldBotHandle` reads, so the agent would
+    // answer over the human until an assignment webhook happened to arrive.
+    const row = await suDb.conversation.findUnique({
+      where: { id: convId },
+      select: { assigneeType: true, assigneeId: true },
+    });
+    expect([row?.assigneeType, row?.assigneeId]).toEqual(["User", 4321]);
   });
 
   // The baseline is the LIVE holder, not the mirrored row. An assignment webhook that was late or

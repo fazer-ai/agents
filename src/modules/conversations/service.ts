@@ -1455,6 +1455,19 @@ export async function returnConversationToAgent(
     ? { assigneeType: state.assigneeType, assigneeId: state.assigneeId }
     : (holderOtherThan(observed) ??
       newHolder ?? { assigneeType: null, assigneeId: null });
+  // And the ROW, which is the half a return value cannot fix. Where `observed` is what corrected the
+  // answer, `mirrorConsoleWrite` has already written its fallback — status pending, no assignee —
+  // because that is what this call asked for before anybody claimed the conversation. Leaving it
+  // there makes the disagreement worse than the one just closed: the response and every open console
+  // name the human, while the row that `shouldBotHandle` reads says the conversation is the bot's,
+  // and the agent answers over them until an assignment webhook happens to arrive. It is the same
+  // fallback-is-not-nobody reasoning one layer down, applied to the durable copy.
+  if (state === null && finalHolder.assigneeType !== null) {
+    await updateMirror(ctx, base, id, {
+      assigneeType: finalHolder.assigneeType,
+      assigneeId: finalHolder.assigneeId,
+    });
+  }
   broadcastConversationEvent(tenantId, {
     conversationId: String(id),
     status: state?.status ?? "pending",

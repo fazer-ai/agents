@@ -44,16 +44,24 @@ describe("conversation actions report their outcome", () => {
 
   // The half a toast cannot fix. "Respond now" makes the agent post into the conversation, so
   // offering it after a takeover invites the operator to talk over the person who just claimed it.
-  test("a taken-over return does not offer to re-engage", () => {
+  //
+  // Asserted as PRESENCE of the false write, not as absence of the true one. The first version of
+  // this test checked only that the arm does not raise the offer, and it passed over the defect it
+  // was written for: the offer is page state that outlives the action that raised it, so "does not
+  // raise it" and "takes it down" are different facts and only the second one is safe. The server
+  // leaves the status at `pending` here, so the JSX gate that hides the button after a handoff does
+  // not close on this path.
+  test("a taken-over return takes the re-engage offer down", () => {
     const body = handlerBody("returnToAi");
     const takeover = body.indexOf('"taken-over"');
     expect(takeover).toBeGreaterThan(-1);
     const elseAt = body.indexOf("} else {", takeover);
     expect(elseAt).toBeGreaterThan(takeover);
-    // The offer lives on the other side of the branch, not before it and not inside the takeover arm.
-    expect(body.slice(takeover, elseAt)).not.toContain(
-      "setOfferReengage(true)",
-    );
+    const arm = body.slice(takeover, elseAt);
+    expect(arm).toContain("setOfferReengage(false)");
+    expect(arm).not.toContain("setOfferReengage(true)");
+    // And the ordinary return still raises it, so the assertion above is about the takeover rather
+    // than about an offer nobody makes any more.
     expect(body.slice(elseAt)).toContain("setOfferReengage(true)");
   });
 });

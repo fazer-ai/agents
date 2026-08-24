@@ -1456,8 +1456,11 @@ export function ConversationDetailPage() {
           ),
           "warning",
         );
-        // And no re-engage offer. It would invite the operator to make the agent speak into a
-        // conversation a person is working, which is worse than the wrong toast.
+        // Set FALSE, not merely left unset. The offer is page state that survives the action that
+        // raised it, so an earlier successful return leaves it standing and the button is still on
+        // screen — and the server does set the status to `pending` here, so nothing else takes it
+        // down. Omitting the write reads as "do not offer" and means "keep whatever was offered".
+        setOfferReengage(false);
       } else {
         showToast(successMsg, "success");
         setOfferReengage(true);

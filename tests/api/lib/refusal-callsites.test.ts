@@ -145,7 +145,22 @@ export function codeOnly(text: string): string {
   return out;
 }
 
-const NAMES_A_FIELD = /(?<![.\w])field(?![\w:])/;
+// The identifiers this codebase reaches for when the thing being interpolated is a value's NAME.
+// Measured across src/: `field`, `key`, `label` and `name` are the whole set. Keying on `field`
+// alone was a naming coincidence rather than the rule, and it missed `value.${key} must be a
+// non-empty string` in the vault, which is the same defect under another variable name.
+const INPUT_NAME_IDENTIFIERS = ["field", "key", "label", "name"];
+const NAMES_A_FIELD = new RegExp(
+  `(?<![.\\w])(${INPUT_NAME_IDENTIFIERS.join("|")})(?![\\w:])`,
+);
+
+// A refusal that interpolates one of those names without being ABOUT an input anyone can go and fix.
+// Listed with the reason rather than quietly excluded, and asserted in both directions: an entry
+// that stops matching is describing code that no longer exists.
+const NOT_ABOUT_AN_INPUT: Record<string, string> = {
+  "src/lib/db-id.ts":
+    'requireDbId\'s `label` is a human noun phrase ("template id"), and what it refuses is a URL path segment, not an input on a form.',
+};
 
 // A refusal that spells a field into its sentence must pass that field as the wire argument.
 export function fieldOffenders(src: string, classNames: Set<string>): string[] {
@@ -191,12 +206,17 @@ describe("a refusal that knows a field says so on the wire", () => {
     expect(classNames.has("SettingsTextTooLongError")).toBe(true);
     expect(classNames.has("NotFoundError")).toBe(true);
     const offenders: string[] = [];
+    const exemptWithNothingToExempt: string[] = [];
     for (const [path, src] of files) {
-      for (const problem of fieldOffenders(src, classNames)) {
-        offenders.push(`${path}: ${problem}`);
+      const problems = fieldOffenders(src, classNames);
+      if (path in NOT_ABOUT_AN_INPUT) {
+        if (problems.length === 0) exemptWithNothingToExempt.push(path);
+        continue;
       }
+      for (const problem of problems) offenders.push(`${path}: ${problem}`);
     }
     expect(offenders).toEqual([]);
+    expect(exemptWithNothingToExempt).toEqual([]);
   });
 
   // The predicate against a known positive and a known negative: a sweep that matches nothing
@@ -212,6 +232,19 @@ describe("a refusal that knows a field says so on the wire", () => {
     expect(
       fieldOffenders(
         "throw new AppError(`${field} is required`, 400, 'errors.x', undefined, field);",
+        names,
+      ),
+    ).toHaveLength(0);
+    // The vocabulary is live, not just `field`: this is the vault's shape, under another name.
+    expect(
+      fieldOffenders(
+        "throw new AppError(`value.${key} must be a non-empty string`, 400, 'errors.x');",
+        names,
+      ),
+    ).toHaveLength(1);
+    expect(
+      fieldOffenders(
+        "throw new AppError(`value.${key} must be a non-empty string`, 400, 'errors.x', undefined, key);",
         names,
       ),
     ).toHaveLength(0);

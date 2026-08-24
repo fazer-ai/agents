@@ -16,6 +16,18 @@ import type { AppError } from "@/lib/errors";
 // the FIRST oversized change (`const [first] = collectOversizedTextChanges(…)`) and every other site
 // that knows a field knows exactly one. A list would be a shape nothing fills.
 //
+// WHICH refusals name one: the ones where the operator can go and fix exactly one input, and the
+// server already knows which. That is a judgement about the refusal, not about the variable that
+// holds the name, so `requireDbId` does not qualify even though it interpolates a `label`: the label
+// is a noun phrase ("template id") and what it refuses is a URL segment, not an input on a form.
+// tests/api/lib/refusal-callsites.test.ts holds the sweep, and that exclusion, in writing.
+//
+// ONE transport, also deliberate. An MCP write refusal is `err(e.message)` (src/modules/mcp/write.ts)
+// rendered by `writeContent` as a text block with `isError: true`: there is no structured error
+// channel to carry a key in, and what reads that text is a model, which has no input to attach a
+// refusal to. What it can use is the sentence, and every refusal named here already spells the value
+// out in it. The same surface does not localize either, and for the same reason.
+//
 // ABSENT rather than null when nothing was named: most refusals are not about one input (a 403, a
 // 404, a conflict), and they must keep answering exactly the body they answer today. A `field: null`
 // would be a wire change for all of them and a second spelling of "nothing here" for every client.

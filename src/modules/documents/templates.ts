@@ -66,6 +66,11 @@ interface Refusal {
   message: string;
   key: string;
   params: Record<string, string>;
+  // Which of the two inputs the operator has to go and change. This module already decided it before
+  // the wire could carry it: `conflictTarget` reads which index fired, and `slugRefusal` re-points a
+  // derived-slug problem at the NAME because that is the only field the caller ever saw. Required so
+  // a refusal added later has to answer the same question. See src/api/lib/refusal.ts.
+  field: "name" | "slug";
 }
 
 // The two unique constraints this table carries, asked as one question. Separate rows can hold them
@@ -109,6 +114,7 @@ function nameAlreadyUsed(name: string): Refusal {
     message: `you already have a document template called "${name}"`,
     key: "errors.documentTemplateNameTaken",
     params: { name },
+    field: "name",
   };
 }
 
@@ -123,6 +129,7 @@ function nameTaken(
       message: `the slug "${slug}" is already taken by the template "${existingName}"`,
       key: "errors.documentTemplateSlugTaken",
       params: {},
+      field: "slug",
     };
   }
   // Same name, or merely the same normalisation ("Orçamento" vs "Orcamento"). The second is the one
@@ -133,6 +140,7 @@ function nameTaken(
         message: `"${name}" collides with the template "${existingName}": both produce the tool name ${tool}`,
         key: "errors.documentTemplateNameCollides",
         params: { name, existing: existingName, tool },
+        field: "name",
       };
 }
 
@@ -160,12 +168,14 @@ function writeConflict(slug: string, name?: string): (e: unknown) => never {
           409,
           "errors.documentTemplateNameTaken",
           { name },
+          "name",
         );
       }
       if (name === undefined) {
         throw new ConflictError(
           `a document template with the slug "${slug}" already exists`,
           "errors.documentTemplateSlugTaken",
+          "slug",
         );
       }
       throw new AppError(
@@ -173,6 +183,7 @@ function writeConflict(slug: string, name?: string): (e: unknown) => never {
         409,
         "errors.documentTemplateNameCollidesUnknown",
         { tool: documentToolName(slug) },
+        "name",
       );
     }
     throw e;
@@ -194,6 +205,7 @@ function slugRefusal(
       message: `slug: ${problem}.`,
       key: "errors.invalidDocumentSlug",
       params: {},
+      field: "slug",
     };
   }
   // The only rule a DERIVED slug can still break: the derivation guarantees the shape and the
@@ -203,6 +215,7 @@ function slugRefusal(
     message: `"${name}" would produce the tool ${documentToolName(slug)}, which is already a built-in. Pick another name.`,
     key: "errors.documentNameIsBuiltinTool",
     params: { name, tool: documentToolName(slug) },
+    field: "name",
   };
 }
 
@@ -553,7 +566,13 @@ export async function createDocumentTemplate(
   const problem = slugProblem(slug);
   if (problem) {
     const refusal = slugRefusal(problem, name, !derived, slug);
-    throw new AppError(refusal.message, 400, refusal.key, refusal.params);
+    throw new AppError(
+      refusal.message,
+      400,
+      refusal.key,
+      refusal.params,
+      refusal.field,
+    );
   }
   // Asked BEFORE the insert, so the refusal can name the template that is in the way. The unique
   // index is still the authority — it is what catches two creates racing — but all it can say is
@@ -563,7 +582,13 @@ export async function createDocumentTemplate(
   const holder = clash.byName ?? clash.bySlug;
   if (holder) {
     const refusal = nameTaken(holder.name, name, slug);
-    throw new AppError(refusal.message, 409, refusal.key, refusal.params);
+    throw new AppError(
+      refusal.message,
+      409,
+      refusal.key,
+      refusal.params,
+      refusal.field,
+    );
   }
   const row = await runScopedOn(base, ctx, (db) =>
     db.documentTemplate
@@ -852,7 +877,13 @@ async function patched(
         data.name,
         patch.slug ?? current.slug,
       );
-      throw new AppError(refusal.message, 409, refusal.key, refusal.params);
+      throw new AppError(
+        refusal.message,
+        409,
+        refusal.key,
+        refusal.params,
+        refusal.field,
+      );
     }
   }
   return (

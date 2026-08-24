@@ -57,8 +57,8 @@ export class ProEditionError extends AppError {
 
 // NOTE: a uniqueness/state conflict surfaced to the user (e.g. a duplicate tenant slug).
 export class ConflictError extends AppError {
-  constructor(message = "Conflict", translationKey?: string) {
-    super(message, 409, translationKey);
+  constructor(message = "Conflict", translationKey?: string, field?: string) {
+    super(message, 409, translationKey, undefined, field);
   }
 }
 

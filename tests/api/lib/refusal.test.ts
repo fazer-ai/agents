@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { refusalBody } from "@/api/lib/refusal";
-import { AppError } from "@/lib/errors";
+import { AppError, ConflictError } from "@/lib/errors";
 import { SettingsTextTooLongError } from "@/modules/agents/service";
 
 // What a refusal ANSWERS, as a table: the message the operator reads, and the name of the value that
@@ -61,6 +61,19 @@ const ROWS: Row[] = [
     error: new AppError("Forbidden", 403),
     acceptLanguage: "en",
     body: { error: "Forbidden" },
+  },
+  {
+    name: "a 409 names its input too: the status is not what decides this",
+    error: new ConflictError(
+      'a document template with the slug "orcamento" already exists',
+      "errors.documentTemplateSlugTaken",
+      "slug",
+    ),
+    acceptLanguage: "en",
+    body: {
+      error: "A document template with this identifier already exists",
+      field: "slug",
+    },
   },
   {
     name: "a blank name is not a name: omitted rather than sent empty",

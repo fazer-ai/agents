@@ -466,6 +466,71 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     expect(r.normalized?.conversationId).toBe(47);
   });
 
+  // The ack is already out when the detached half runs, so a throw in the ledger claim is not a
+  // delivery Chatwoot retries: the upstream ladder is spent and the event simply never existed. The
+  // failure it meets is the one this path is built around, a pool momentarily full, and that has to
+  // cost latency rather than the turn.
+  test("a pool blip on the ledger claim delays the delivery instead of losing it", async () => {
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 52,
+      inbox_id: 7,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+    const r = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, NOW, "uuid-blip"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+
+    // Two transactions fail the way an exhausted pool fails, then the pool recovers.
+    let blips = 2;
+    const wrap = (client: unknown): unknown =>
+      new Proxy(client as object, {
+        get(target, prop, recv) {
+          if (prop === "$transaction") {
+            const orig = Reflect.get(target, prop, recv) as (
+              ...a: unknown[]
+            ) => Promise<unknown>;
+            return async (...args: unknown[]) => {
+              if (blips-- > 0) {
+                throw new Error(
+                  "Timed out fetching a new connection from the connection pool",
+                );
+              }
+              return orig.apply(target, args);
+            };
+          }
+          if (prop === "$extends") {
+            const orig = Reflect.get(target, prop, recv) as (
+              ...a: unknown[]
+            ) => unknown;
+            return (...args: unknown[]) => wrap(orig.apply(target, args));
+          }
+          return Reflect.get(target, prop, recv);
+        },
+      });
+
+    expect(
+      await recordAndProcessChatwootDelivery({
+        tenantId,
+        instanceId: r.instanceId as bigint,
+        deliveryId: r.deliveryId as string,
+        agentBotId: r.agentBotId ?? null,
+        normalized: r.normalized as NonNullable<typeof r.normalized>,
+        base: wrap(appDb) as PrismaClient,
+      }),
+    ).toBe("processed");
+
+    const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+      where: { chatwootInstanceId: instanceId, deliveryId: "uuid-blip" },
+    });
+    expect(row.status).toBe("PROCESSED");
+  });
+
   test("a delivery stranded on PENDING is recovered by the redelivery", async () => {
     const body = JSON.stringify({
       event: "conversation_updated",

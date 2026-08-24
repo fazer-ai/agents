@@ -331,7 +331,7 @@ export async function recordAndProcessChatwootDelivery(
   params: RecordAndProcessChatwootParams,
 ): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
-  const { rowId } = await recordDelivery(
+  const { rowId } = await claimDelivery(
     base,
     { tenantId: params.tenantId, instanceId: params.instanceId },
     params.deliveryId,
@@ -346,6 +346,47 @@ export async function recordAndProcessChatwootDelivery(
     base,
     deps: params.deps,
   });
+}
+
+// THE 200 IS ALREADY OUT WHEN THIS RUNS, so a throw here is not a delivery that gets retried: it is
+// a message that never existed. Chatwoot was told we have the event, and the upstream retry ladder
+// that would otherwise redeliver it is spent. That makes the ledger claim the one step on this path
+// with nothing behind it, and the failure it actually meets is the one this whole design is about, a
+// pool momentarily full (`maxWait` is 2s). Retrying turns a blip into a delay instead of a lost turn.
+//
+// What this does NOT cover is the process dying between the ack and the claim, which takes the
+// in-memory payload with it. That is the durability the fast ack trades away, and closing it needs
+// the payload stored before the 200, not a longer retry here.
+const LEDGER_CLAIM_ATTEMPTS = 4;
+const LEDGER_CLAIM_BACKOFF_MS = 300;
+
+async function claimDelivery(
+  base: PrismaClient,
+  scope: { tenantId: bigint; instanceId: bigint },
+  deliveryId: string,
+  event: string,
+): Promise<{ rowId: bigint; duplicate: boolean }> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= LEDGER_CLAIM_ATTEMPTS; attempt++) {
+    try {
+      return await recordDelivery(base, scope, deliveryId, event);
+    } catch (err) {
+      lastErr = err;
+      logger.warn(
+        "chatwoot ledger claim attempt %d/%d failed (delivery %s): %s",
+        attempt,
+        LEDGER_CLAIM_ATTEMPTS,
+        deliveryId,
+        errMsg(err),
+      );
+      if (attempt < LEDGER_CLAIM_ATTEMPTS) {
+        await new Promise((r) =>
+          setTimeout(r, LEDGER_CLAIM_BACKOFF_MS * 2 ** (attempt - 1)),
+        );
+      }
+    }
+  }
+  throw lastErr;
 }
 
 // Idempotency ledger insert: create-then-catch across two transactions (a unique violation

@@ -966,22 +966,28 @@ export async function deliverRedirectClosing(
   // The fence goes FIRST and the watermark LAST, so the question this file has always asked
   // immediately before this send keeps that position, and what sits behind the fence's answer is one
   // database round trip rather than the lookup it was taken before.
+  // NOTE: ONE watermark read and ONE fence, in that order, and nothing between the fence and the
+  // send. Asking the watermark again after the fence — which is what a second `stillDelivering()`
+  // here would be — puts a round trip behind the fence's answer and hands the last word back to the
+  // question that was not supposed to have it.
+  //
+  // Which of the two gets that word is a real choice: a stale watermark costs a duplicate goodbye in
+  // a race the claim CAS already makes rare, while a stale fence costs a message from an agent the
+  // operator switched off, which is what this fence exists to prevent.
+  //
+  // The stand-down releases the claim; the watermark refusal does not, and that asymmetry is the
+  // point — a claim lost to another run is not ours to give back, while a stand-down leaves this run
+  // holding one over a goodbye nobody delivered.
+  let deliverToSibling = Boolean(sibling) && p.closeChat;
   if (sibling && !p.closeChat && (await stillDelivering())) {
-    // NOTE: Asked AFTER the watermark, so the fence is the last thing before the send rather than one
-    // round trip behind it. Which of the two takes that spot is a real choice: a stale watermark
-    // costs a duplicate goodbye in a race the CAS already makes rare, while a stale fence costs a
-    // message from an agent the operator switched off — the thing this fence exists to prevent.
-    //
-    // Released, unlike the watermark check itself. A claim lost to another run is not ours to give
-    // back, which is why nothing is released there; a stand-down leaves this run holding an anchor
-    // over a goodbye nobody delivered, and that is a funnel that can never close again.
     const beforeSibling = await ask();
     if (beforeSibling !== "go") {
       await releaseClaim();
       return beforeSibling === "retired" ? "already-closed" : "stood-down";
     }
+    deliverToSibling = true;
   }
-  if (sibling && (p.closeChat || (await stillDelivering()))) {
+  if (sibling && deliverToSibling) {
     const waMode = proactiveSendMode(sw, sibling.lastInboundAt, now, {
       channelType: sibling.channelType,
       provider: sibling.provider,

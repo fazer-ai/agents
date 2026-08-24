@@ -574,6 +574,51 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
   });
 
+  // The same window on the SCHEDULED closing, which messages the chat first. By the time the sibling
+  // lookup runs the customer has already been said goodbye to and the widget resolved, so standing
+  // down leaves the episode half-closed — one channel finished, the other open — and reports it as
+  // delivered. A reset landing mid-delivery cannot un-send the first half; the honest completion of
+  // a delivery that has started is both halves.
+  test("a scheduled closing finishes the WhatsApp side even if the anchor is cleared", async () => {
+    await restoreAnchor();
+    const s = stubClient();
+    let cleared = false;
+    const resetOnSiblingRead = suDb.$extends({
+      query: {
+        conversation: {
+          async findFirst({ args, query }) {
+            if (!cleared) {
+              cleared = true;
+              await restoreAnchor();
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    try {
+      const outcome = await deliverRedirectClosing({
+        tenantId,
+        instanceId,
+        widgetConversationId: WIDGET_CONV,
+        entryInboxId: 110,
+        closingMessage: "Vamos encerrar por aqui.",
+        closeChat: true,
+        base: resetOnSiblingRead,
+        deps: { makeClient: s.makeClient },
+      });
+
+      expect(cleared).toBe(true);
+      expect(outcome).toBe("delivered");
+      // Both channels, not just the one that went out before the command landed.
+      expect(s.sent.map(([c]) => c)).toEqual([WIDGET_CONV, ENTRY_CONV]);
+      expect(s.resolved).toContain(ENTRY_CONV);
+    } finally {
+      await restoreAnchor();
+    }
+  });
+
   // The control: the same call with nobody clearing the anchor still delivers. Without it, "sent
   // nothing" would also be satisfied by a check that refuses every closing.
   test("the same closing delivers when the anchor stays put", async () => {

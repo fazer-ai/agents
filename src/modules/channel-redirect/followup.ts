@@ -759,7 +759,12 @@ export async function deliverRedirectClosing(
     p.entryInboxId,
     base,
   );
-  if (sibling && (await stillDelivering())) {
+  // The second ask, and it is skipped once the chat has ALREADY been messaged and resolved. Standing
+  // down here would leave the episode half-closed — the widget said goodbye and is resolved, the
+  // WhatsApp side still open — and report `delivered` for it. A reset that lands mid-delivery cannot
+  // un-send the first half, so the honest completion of a started delivery is both halves; the ask
+  // is what stops one that has not started.
+  if (sibling && (p.closeChat || (await stillDelivering()))) {
     const waMode = proactiveSendMode(sw, sibling.lastInboundAt, now, {
       channelType: sibling.channelType,
       provider: sibling.provider,

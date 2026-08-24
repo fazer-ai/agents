@@ -1306,15 +1306,39 @@ export async function returnConversationToAgent(
     ...deps,
     base,
   });
+  // The BASELINE, read live and BEFORE the status call, because "who held it when this request
+  // started" is the only thing a takeover can be measured against. The mirrored row is not that: an
+  // assignment webhook can be late or lost, and then a human who was already there reads as somebody
+  // who arrived mid-request — the hand-back refuses, the caller is told "taken-over", and the
+  // conversation is not returned. /reset never saw it because it reconciles from live first; the
+  // console and MCP callers do not.
+  //
+  // Falls back to the mirror when the read fails, which is where this stood before: an unreadable
+  // baseline is not evidence that nobody was there.
+  const readHolder = async (): Promise<{
+    assigneeType: string | null;
+    assigneeId: number | null;
+  } | null> => {
+    const live = parseLiveConversation(
+      await client
+        .getConversation(conv.chatwootConversationId)
+        .catch(() => null),
+    );
+    return live === null
+      ? null
+      : { assigneeType: live.assigneeType, assigneeId: live.assigneeId };
+  };
+  const baseline = (await readHolder()) ?? {
+    assigneeType: conv.assigneeType,
+    assigneeId: conv.assigneeId,
+  };
   await client.toggleStatus(conv.chatwootConversationId, "pending", {
     asAdmin: true,
   });
   // Unreadable is NOT "nobody took it": a degraded payload with the holder unchanged is the common
   // case, and refusing to hand back on it would leave the conversation with a human who has already
   // walked away. The live read is the improvement over an unconditional unassign, not a new gate.
-  const live = parseLiveConversation(
-    await client.getConversation(conv.chatwootConversationId).catch(() => null),
-  );
+  const live = await readHolder();
   // The whole identity, not the id: "User" and "AgentBot" are separate id namespaces in Chatwoot, so
   // comparing numbers alone reads User 7 claiming a conversation held by AgentBot 7 as nobody having
   // moved — and unassigns the human. Any change of holder counts, in either field.
@@ -1325,8 +1349,8 @@ export async function returnConversationToAgent(
   const newHolder =
     live !== null &&
     live.assigneeId !== null &&
-    (live.assigneeType !== conv.assigneeType ||
-      live.assigneeId !== conv.assigneeId)
+    (live.assigneeType !== baseline.assigneeType ||
+      live.assigneeId !== baseline.assigneeId)
       ? { assigneeType: live.assigneeType, assigneeId: live.assigneeId }
       : null;
   if (newHolder === null) {

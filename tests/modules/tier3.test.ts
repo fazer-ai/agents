@@ -71,7 +71,11 @@ function makeStub(
   lateLive: {
     assigneeType: string;
     assigneeId: number;
-    updatedAt: number;
+    updatedAt?: number;
+    // Which live read it first appears on. The hand-back reads the conversation three times — the
+    // baseline before the status call, the check after it, and the mirror write's own — and the
+    // three windows between them are different defects.
+    fromRead?: number;
   } | null = null,
 ) {
   let liveReads = 0;
@@ -141,12 +145,15 @@ function makeStub(
     },
     getConversation: async (cid: number) => {
       liveReads += 1;
-      const late = lateLive !== null && liveReads > 1 ? lateLive : null;
+      const late =
+        lateLive !== null && liveReads >= (lateLive.fromRead ?? 2)
+          ? lateLive
+          : null;
       return late
         ? {
             id: cid,
             status: "pending",
-            updated_at: late.updatedAt,
+            ...(late.updatedAt != null ? { updated_at: late.updatedAt } : {}),
             meta: {
               assignee_type: late.assigneeType,
               assignee: { id: late.assigneeId, name: "Bea" },
@@ -722,8 +729,9 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       where: { id: convId },
       data: { assigneeType: "User", assigneeId: 7 },
     });
-    // Chatwoot now says somebody ELSE is holding it.
-    const stub = makeStub({ assigneeType: "User", assigneeId: 42 });
+    // Nobody is holding it when the request starts, and Chatwoot says somebody arrived by the read
+    // after the status call — which is the window this compare exists for.
+    const stub = makeStub({}, { assigneeType: "User", assigneeId: 42 });
     const outcome = await returnConversationToAgent(
       ctx(tenant),
       convId,
@@ -754,6 +762,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
         assigneeType: "User",
         assigneeId: 4321,
         updatedAt: Math.floor(Date.now() / 1000) + 60,
+        fromRead: 3,
       },
     );
     const outcome = await returnConversationToAgent(
@@ -773,6 +782,29 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect([row?.assigneeType, row?.assigneeId]).toEqual(["User", 4321]);
   });
 
+  // The baseline is the LIVE holder, not the mirrored row. An assignment webhook that was late or
+  // lost leaves the mirror naming somebody else, and against that a human who was already there
+  // before the request reads as a takeover — the hand-back refuses and the caller is told the
+  // conversation stayed with a person who never arrived. /reset never saw this because it reconciles
+  // from live first; the console and MCP callers do not.
+  test("a stale mirror does not turn the sitting holder into a takeover", async () => {
+    await suDb.conversation.update({
+      where: { id: convId },
+      // What the mirror believes, and it is wrong: nobody told us about this assignment.
+      data: { assigneeType: "User", assigneeId: 31 },
+    });
+    // What Chatwoot says, before and after the status call alike.
+    const stub = makeStub({ assigneeType: "User", assigneeId: 99 });
+    const outcome = await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(outcome).toBe("returned");
+    expect(stub.calls.unassignConversation).toBe(1);
+  });
+
   // "User" and "AgentBot" are separate id namespaces in Chatwoot, so the comparison is the whole
   // identity and not the number. Against the number alone, a human claiming a conversation a BOT of
   // the same id was holding reads as nobody having moved — and the hand-back removes them.
@@ -781,7 +813,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       where: { id: convId },
       data: { assigneeType: "AgentBot", assigneeId: 7 },
     });
-    const stub = makeStub({ assigneeType: "User", assigneeId: 7 });
+    const stub = makeStub(
+      { assigneeType: "AgentBot", assigneeId: 7 },
+      { assigneeType: "User", assigneeId: 7 },
+    );
     await returnConversationToAgent(
       ctx(tenant),
       convId,

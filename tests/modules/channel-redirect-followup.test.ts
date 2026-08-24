@@ -619,6 +619,84 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
   });
 
+  // The other ordering, and the one the anchor alone cannot see. Above, the reset lands AFTER the
+  // claim and the post-claim re-read catches it. Here it lands BEFORE: the resolve trigger reaches
+  // this function straight from a webhook, so it carries no `stillWanted`, and while it is loading
+  // the conversation, the agent, the bot and the client, /reset clears the anchor. The claim then
+  // SUCCEEDS -- `redirectClosedAt: null` reads the same whether nobody ever closed it or the command
+  // just wiped it -- and every check downstream is happy with the timestamp this run itself wrote.
+  // The customer gets a goodbye on an episode the operator was told had been erased.
+  test("a closing that claims a reset-cleared anchor sends nothing", async () => {
+    await restoreAnchor();
+    const s = stubClient();
+    let reset = false;
+    // Everything /reset writes to this row in one statement, which is how the command writes it too.
+    const landReset = async () => {
+      if (reset) return;
+      reset = true;
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        data: {
+          redirectClosedAt: null,
+          redirectLinkedAt: null,
+          redirectSentAt: null,
+          redirectCount: 0,
+          lastInboundAt: null,
+        },
+      });
+    };
+    const resetBeforeClaim = suDb.$extends({
+      query: {
+        conversation: {
+          // The claim itself: land the command immediately before it, from another connection, so
+          // this run reads the pre-reset episode and writes into the post-reset one.
+          async updateMany({ args, query }) {
+            const data =
+              (args as { data?: Record<string, unknown> }).data ?? {};
+            if (
+              Object.hasOwn(data, "redirectClosedAt") &&
+              data.redirectClosedAt
+            )
+              await landReset();
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    try {
+      const outcome = await deliverRedirectClosing({
+        tenantId,
+        instanceId,
+        widgetConversationId: WIDGET_CONV,
+        entryInboxId: 110,
+        closingMessage: "Vamos encerrar por aqui.",
+        // The resolve trigger's own shape: the widget is already being resolved by Chatwoot.
+        closeChat: false,
+        base: resetBeforeClaim,
+        deps: { makeClient: s.makeClient },
+      });
+
+      expect(reset).toBe(true);
+      expect(outcome).toBe("already-closed");
+      // Nothing reached the customer, and the sibling was not resolved either.
+      expect(s.sent).toEqual([]);
+      expect(s.resolved).not.toContain(ENTRY_CONV);
+      // And the anchor is still free, so the funnel the reset just re-armed can close later.
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: { redirectClosedAt: true },
+      });
+      expect(row.redirectClosedAt).toBeNull();
+    } finally {
+      await restoreAnchor();
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        data: { lastInboundAt: new Date() },
+      });
+    }
+  });
+
   // The control: the same call with nobody clearing the anchor still delivers. Without it, "sent
   // nothing" would also be satisfied by a check that refuses every closing.
   test("the same closing delivers when the anchor stays put", async () => {

@@ -639,7 +639,18 @@ export async function deliverRedirectClosing(
   // which is the cheaper side of the trade.
   if (p.stillWanted && !(await p.stillWanted())) return "already-closed";
 
-  // Claim the closing: set the watermark only if still unset. rowcount 1 ⇒ we own this delivery.
+  // Claim the closing: set the watermark only if still unset AND the episode is the one this run read.
+  //
+  // The second half is what the resolve trigger has instead of a job to ask about. `redirectClosedAt:
+  // null` cannot tell "never closed" from "was closed and /reset just cleared it" — the values are
+  // identical — so on its own the CAS is not a fence against the command at all: the reset OPENS it.
+  // `lastInboundAt` is read in the same snapshot above and is cleared by the same reset, in the same
+  // statement, so requiring it unchanged makes this a compare-and-swap on the EPISODE rather than on
+  // one nullable column. No new state: the value was already being read to pick the send mode.
+  //
+  // A genuine new inbound moves it too, and standing down there is correct rather than collateral:
+  // the trigger for this closing was a RESOLVE, and a customer who has written since is on a
+  // conversation that reopened. A goodbye over that is the thing the anchor exists to prevent.
   const won = await runScopedOn(base, sysCtx(p.tenantId), async (db) => {
     const res = await db.conversation.updateMany({
       where: {
@@ -647,6 +658,7 @@ export async function deliverRedirectClosing(
         chatwootInstanceId: p.instanceId,
         chatwootConversationId: p.widgetConversationId,
         redirectClosedAt: null,
+        lastInboundAt: cx.widget.lastInboundAt,
       },
       data: { redirectClosedAt: now },
     });

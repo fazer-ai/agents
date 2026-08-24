@@ -1041,6 +1041,55 @@ async function maybeConsumeCommandOrGate(params: {
     }
   };
 
+  // Pulls the mirror level with Chatwoot and, crucially, the in-memory snapshot with the mirror:
+  // `ctx.conv` is what `holderAtStart` and the hand-back's baseline read, so reconciling the row and
+  // leaving the snapshot behind would move the fence without moving what it fences.
+  //
+  // `reconcileMirrorFromLive` and not a plain write: it is the VERSIONED path, so a webhook that
+  // landed with something newer wins instead of being overwritten by this GET, and it is the same
+  // probe `runAgentNudge` runs before ITS irreversible act, for the same reason.
+  //
+  // Best-effort, and never collected into `failed`. Failing to refresh leaves every decision exactly
+  // where it stood without this call; it is not a step of the reset that the operator can be told
+  // succeeded or not. `have` lets a caller that already built a client reuse it.
+  const refreshFromLive = async (
+    guarding: string,
+    have: ChatwootClient | null,
+  ): Promise<void> => {
+    try {
+      const client = have ?? (await personaClient());
+      const live = parseLiveConversation(
+        await client.getConversation(conversationId),
+      );
+      if (!live) return;
+      await reconcileMirrorFromLive({
+        tenantId,
+        instanceId,
+        conversationId,
+        live,
+        base,
+      });
+      const fresh = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.conversation.findUnique({
+          where: { id: ctx.conv.id },
+          select: { assigneeType: true, assigneeId: true, status: true },
+        }),
+      );
+      if (fresh) {
+        ctx.conv.assigneeType = fresh.assigneeType;
+        ctx.conv.assigneeId = fresh.assigneeId;
+        ctx.conv.status = fresh.status;
+      }
+    } catch (err) {
+      logger.warn(
+        "chatwoot: /reset could not refresh the conversation before %s (conv=%s): %s",
+        guarding,
+        String(conversationId),
+        errMsg(err),
+      );
+    }
+  };
+
   const answerBlocker = async (): Promise<"none" | "ownership" | "disabled"> =>
     !(await agentStillEnabled())
       ? "disabled"
@@ -1233,6 +1282,18 @@ async function maybeConsumeCommandOrGate(params: {
     //
     // The ASSIGNEE is what is compared, not the whole row: status moves on its own (an inbound
     // message reopens a resolved conversation) and that is not a takeover.
+    // Asked BEFORE the two facts below are read, because they are read from the mirror and the mirror
+    // lags Chatwoot by one webhook. The command's own delivery normally carries the assignee and
+    // reconciles it, but a sparse payload carries none, and then a missed or delayed assignment
+    // webhook leaves the mirror saying "the bot owns this" about a conversation a human is holding.
+    // Both facts are then wrong in the direction that does nothing: `notOursAtStart` false skips the
+    // hand-back entirely, and /reset acknowledges a clean slate on a conversation the agent still
+    // cannot answer in — which is issue #198 itself, one layer further in.
+    //
+    // One GET on a command an operator types by hand. The same ask is repeated before the hand-back
+    // rather than carried down, because everything between the two is I/O and the answer decays over
+    // exactly that stretch.
+    await refreshFromLive("the command's own decisions", null);
     const notOursAtStart = !(await stillOursOrUnknown());
     const holderAtStart = `${ctx.conv.assigneeType ?? ""}:${ctx.conv.assigneeId ?? ""}`;
     const heldBySameParty = async (): Promise<boolean> => {
@@ -1657,28 +1718,7 @@ async function maybeConsumeCommandOrGate(params: {
     // Best-effort on purpose. Failing to refresh leaves the decision exactly where it stood before
     // this line, which is where it stood for every round of this PR; it does not warrant telling the
     // operator the assignment failed, so it is logged rather than collected into `failed`.
-    if (notOursAtStart && client !== null) {
-      try {
-        const live = parseLiveConversation(
-          await client.getConversation(conversationId),
-        );
-        if (live) {
-          await reconcileMirrorFromLive({
-            tenantId,
-            instanceId,
-            conversationId,
-            live,
-            base,
-          });
-        }
-      } catch (err) {
-        logger.warn(
-          "chatwoot: /reset could not refresh the conversation before the hand-back (conv=%s): %s",
-          String(conversationId),
-          errMsg(err),
-        );
-      }
-    }
+    if (notOursAtStart) await refreshFromLive("the hand-back", client);
     const resetBlocker = await answerBlocker();
     // `undefined` = never attempted, which is a third answer and not a quieter version of the other
     // two: the two guards below stand the hand-back down for reasons the acknowledgement has to

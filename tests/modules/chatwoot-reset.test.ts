@@ -2028,6 +2028,40 @@ describe.skipIf(!dbUp)(
       await suDb.agent.delete({ where: { id: otherAgentId } });
     });
 
+    // The mirror wrong in the direction that does nothing. A sparse payload says nothing about
+    // ownership, so a missed or delayed assignment webhook leaves the row reading "the bot owns
+    // this" about a conversation a human is holding — and every decision this command makes reads
+    // that row. The reset then finds nothing to undo and acknowledges a clean slate on exactly the
+    // conversation issue #198 is about.
+    test("a mirror that missed the assignment does not silence the hand-back", async () => {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { status: "pending", assigneeType: null, assigneeId: null },
+      });
+      // Chatwoot's answer from the FIRST live read on: the human was already there when the operator
+      // typed the command, which is what makes this a hand-back and not a takeover.
+      const cw = fakeChatwoot(null, { type: "User", id: 77, fromRead: 1 });
+      globalThis.fetch = cw.impl;
+      await sendReset("/reset", CONV_ID, {
+        status: "pending",
+        silentMeta: true,
+      });
+
+      expect(
+        cw.calls
+          .filter((c) =>
+            c.path.endsWith(`/conversations/${CONV_ID}/assignments`),
+          )
+          .map((c) => c.body),
+      ).toEqual([{ assignee_id: 0 }]);
+      // And the acknowledgement does not report a takeover: nobody arrived during the reset, the
+      // mirror was simply behind.
+      const ack = ackCalls(cw.calls)
+        .map((c) => (c.body as { content?: string })?.content ?? "")
+        .join(" ");
+      expect(ack).not.toContain("Alguém assumiu");
+    });
+
     // The agent switched off, restored afterwards: it is shared by every test in this file, so the
     // flag cannot leak.
     const withDisabledAgent = async (

@@ -1440,12 +1440,28 @@ export function ConversationDetailPage() {
   async function returnToAi(successMsg: string) {
     setBusy(true);
     try {
-      const { error: err } = await api.api.v1
+      const { data, error: err } = await api.api.v1
         .conversations({ id })
         .return.post();
-      if (err) throw err;
-      showToast(successMsg, "success");
-      setOfferReengage(true);
+      if (err || !data) throw err ?? new Error("return failed");
+      // The call succeeds either way — the status was set and the mirror corrected — so `error` alone
+      // cannot tell the two apart. "taken-over" means a human claimed the conversation during the
+      // request and still holds it, and the success toast would say the opposite of what the row now
+      // reads. `reengage` below already branches on its outcome for the same reason.
+      if (data.outcome === "taken-over") {
+        showToast(
+          t(
+            "conversation.returnTakenOver",
+            "Someone took the conversation while it was being returned, so it stays with them.",
+          ),
+          "warning",
+        );
+        // And no re-engage offer. It would invite the operator to make the agent speak into a
+        // conversation a person is working, which is worse than the wrong toast.
+      } else {
+        showToast(successMsg, "success");
+        setOfferReengage(true);
+      }
       void loadMeta();
       void loadMessages();
     } catch {

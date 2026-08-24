@@ -423,6 +423,7 @@
     "respondNow": "Respond now",
     "retry": "Retry",
     "returned": "Returned to the AI.",
+    "returnTakenOver": "Someone took the conversation while it was being returned, so it stays with them.",
     "returnToAi": "Return to AI",
     "trail": {
       "args": "Arguments",

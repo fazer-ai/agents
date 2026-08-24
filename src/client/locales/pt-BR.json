@@ -424,6 +424,7 @@
     "respondNow": "Responder agora",
     "retry": "Tentar novamente",
     "returned": "Devolvida para a IA.",
+    "returnTakenOver": "Alguém assumiu a conversa durante a devolução, então ela continua com essa pessoa.",
     "returnToAi": "Devolver para a IA",
     "trail": {
       "args": "Argumentos",

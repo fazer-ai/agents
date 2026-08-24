@@ -641,6 +641,21 @@ interface ConsoleWriteState {
 // The version is an improvement on the write, not a precondition for it: when the read fails or the
 // payload does not parse, fall back to the blind write so the console still reflects what the
 // operator just did — exactly the behavior that preceded this.
+// What the mirror write knows afterwards, and the two halves answer different questions. `state` is
+// what was STORED, and it is null whenever the live read could not be versioned — the unversioned
+// fallback writes only the fields the action meant to change, on purpose, so there is no trustworthy
+// full row to hand back.
+//
+// `observed` is what Chatwoot SAID, kept even when it could not be versioned. Discarding it is how a
+// caller comes to treat "I could not decide" as "nothing is there": the hand-back's final read is the
+// only look anybody takes after the unassign, and on a versionless Chatwoot a human who claimed the
+// conversation in that window was seen and then thrown away. Required rather than optional so a new
+// caller has to say what it does with an undecided read.
+interface ConsoleWriteMirror {
+  state: ConsoleWriteState | null;
+  observed: { assigneeType: string | null; assigneeId: number | null } | null;
+}
+
 async function mirrorConsoleWrite(
   ctx: TenantContext,
   base: PrismaClient,
@@ -652,7 +667,7 @@ async function mirrorConsoleWrite(
     assigneeId?: number | null;
     assigneeType?: string | null;
   },
-): Promise<ConsoleWriteState | null> {
+): Promise<ConsoleWriteMirror> {
   const tenantId = requireTenant(ctx);
   // NOTE: An operator commanding a non-resolved status ends the resolution, and that is decided HERE
   // rather than inside either write below. Deliberately NOT `clearsResolutionOrigin`: that function
@@ -670,10 +685,18 @@ async function mirrorConsoleWrite(
       }),
     );
   }
+  // Held outside the try so a throw after the read still hands back what was seen.
+  let observed: ConsoleWriteMirror["observed"] = null;
   try {
     const live = parseLiveConversation(
       await client.getConversation(conv.chatwootConversationId),
     );
+    if (live) {
+      observed = {
+        assigneeType: live.assigneeType,
+        assigneeId: live.assigneeId,
+      };
+    }
     // A snapshot with no version buys nothing here and can cost: without one, the reconcile applies
     // the WHOLE snapshot, so a status click could carry back an assignee that a webhook has since
     // changed. The fallback writes exactly the fields this action meant to change, which is what the
@@ -688,7 +711,8 @@ async function mirrorConsoleWrite(
       });
       // Applied, or beaten by a stored version: either way the row now holds the newest thing known,
       // and the caller must announce THAT rather than what the click asked for.
-      if (outcome.applied || outcome.outrankedByVersion) return outcome.state;
+      if (outcome.applied || outcome.outrankedByVersion)
+        return { state: outcome.state, observed };
       // Nothing landed and no version decided it — the coarse activity comparison rejected a
       // conversation this process just wrote to Chatwoot, which is not evidence of anything newer.
       // Falling through leaves the operator's action absent from the mirror, and the runtime's
@@ -710,7 +734,7 @@ async function mirrorConsoleWrite(
     );
   }
   await updateMirror(ctx, base, id, fallback);
-  return null;
+  return { state: null, observed };
 }
 
 // Metadata only — fast scoped DB read, NO network. The UI renders the shell from this immediately.
@@ -1252,7 +1276,7 @@ export async function handoffConversation(
   await client.toggleStatus(conv.chatwootConversationId, "open", {
     asAdmin: true,
   });
-  const state = await mirrorConsoleWrite(ctx, base, id, conv, client, {
+  const { state } = await mirrorConsoleWrite(ctx, base, id, conv, client, {
     status: "open",
     assigneeType: "User",
     ...(assigneeId !== null ? { assigneeId } : {}),
@@ -1368,15 +1392,22 @@ export async function returnConversationToAgent(
   // an unverifiable id would let another bot's conversation read as ours. Here the same shape says a
   // person is holding it and we cannot tell WHICH, and comparing a null id against the baseline
   // answered "nobody moved" and unassigned them. Unknown is not absent; it fails closed.
-  const occupied = live !== null && live.assigneeType !== null;
-  const newHolder =
-    occupied &&
-    live !== null &&
-    (live.assigneeId === null ||
-      live.assigneeType !== baseline.assigneeType ||
-      live.assigneeId !== baseline.assigneeId)
-      ? { assigneeType: live.assigneeType, assigneeId: live.assigneeId }
+  //
+  // Asked of two different reads below, so it is written once. Copying it was how the second reader
+  // came to answer "somebody is there" about the very party this call had just unassigned: a live
+  // read taken after the unassign can still name them, and only the comparison against the baseline
+  // tells that apart from a person who actually arrived.
+  const holderOtherThan = (
+    seen: { assigneeType: string | null; assigneeId: number | null } | null,
+  ): { assigneeType: string | null; assigneeId: number | null } | null =>
+    seen !== null &&
+    seen.assigneeType !== null &&
+    (seen.assigneeId === null ||
+      seen.assigneeType !== baseline.assigneeType ||
+      seen.assigneeId !== baseline.assigneeId)
+      ? { assigneeType: seen.assigneeType, assigneeId: seen.assigneeId }
       : null;
+  const newHolder = holderOtherThan(live);
   if (newHolder === null) {
     await client.unassignConversation(conv.chatwootConversationId, {
       asAdmin: true,
@@ -1389,22 +1420,41 @@ export async function returnConversationToAgent(
       String(newHolder.assigneeId ?? "none"),
     );
   }
-  const state = await mirrorConsoleWrite(ctx, base, id, conv, client, {
-    status: "pending",
-    ...(newHolder ?? { assigneeId: null, assigneeType: null }),
-  });
+  const { state, observed } = await mirrorConsoleWrite(
+    ctx,
+    base,
+    id,
+    conv,
+    client,
+    {
+      status: "pending",
+      ...(newHolder ?? { assigneeId: null, assigneeType: null }),
+    },
+  );
   // Who the mirror ends up naming, resolved ONCE and read by both the event and the return below.
   // It is the LAST thing that looked at the conversation, not the first: `mirrorConsoleWrite` does
   // its own live read AFTER the unassign, so a human who claimed it in that window is here and
   // nowhere in `newHolder` — and the row and the broadcast already say so.
   //
-  // The fallback names the holder that SURVIVED, not nobody: `mirrorConsoleWrite` returns null when
-  // its versioned read comes back empty, and it has already written this same holder to the row. A
-  // null here would tell every open console the conversation is unassigned while Chatwoot and the
-  // mirror both say a human has it.
+  // Three sources, most-decided first, and the middle one is the whole point of `observed`.
+  //
+  // `state` is the stored row after a versioned reconcile: decided, so it wins.
+  //
+  // `observed` is what Chatwoot said on that same read when it could not be versioned (a deployment
+  // older than 4.0.2 sends no `updated_at`). Falling straight past it to `newHolder` treats "I could
+  // not decide" as "nobody is there", and the window it hides is precisely the one this function
+  // cannot see any other way: a human who claimed the conversation AFTER the unassign went out.
+  // `newHolder` is null there by construction — it was read before the unassign — so the answer
+  // would be "returned" while a person holds it, which is the one answer the caller acts on.
+  //
+  // `newHolder` last: the holder read BEFORE the unassign, which is right when the live read failed
+  // outright and `mirrorConsoleWrite` has already written that same holder to the row. A null here
+  // would tell every open console the conversation is unassigned while Chatwoot and the mirror both
+  // say a human has it.
   const finalHolder = state
     ? { assigneeType: state.assigneeType, assigneeId: state.assigneeId }
-    : (newHolder ?? { assigneeType: null, assigneeId: null });
+    : (holderOtherThan(observed) ??
+      newHolder ?? { assigneeType: null, assigneeId: null });
   broadcastConversationEvent(tenantId, {
     conversationId: String(id),
     status: state?.status ?? "pending",
@@ -1464,7 +1514,7 @@ export async function setConversationStatus(
       base,
     });
   }
-  const state = await mirrorConsoleWrite(ctx, base, id, conv, client, {
+  const { state } = await mirrorConsoleWrite(ctx, base, id, conv, client, {
     status,
   });
   broadcastConversationEvent(tenantId, {

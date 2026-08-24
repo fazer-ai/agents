@@ -67,7 +67,9 @@ function makeStub(
   // twice — once to decide whether the unassign is aimed at somebody who is still there, once inside
   // the mirror write — and a takeover landing between them is visible only to the second. It carries
   // `updated_at` because that is what makes the mirror write take the versioned path and return a
-  // state at all; without a version the write is unversioned and the caller learns nothing from it.
+  // stored row at all. Omitting it is a case in its own right rather than a broken fixture: the write
+  // then goes unversioned, and what the caller has left is the OBSERVATION, which is the half that
+  // must survive not being versionable.
   lateLive: {
     assigneeType: string;
     // Null renders the payload shape Chatwoot can send and `parseLiveConversation` accepts: a type
@@ -785,6 +787,27 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       select: { assigneeType: true, assigneeId: true },
     });
     expect([row?.assigneeType, row?.assigneeId]).toEqual(["User", 4321]);
+  });
+
+  // The same takeover, seen through a Chatwoot that sends no `updated_at` (anything older than
+  // 4.0.2). The mirror write cannot version that read, so it writes the unversioned fallback and has
+  // no stored row to hand back — and the holder read BEFORE the unassign is null by construction,
+  // because at that moment nobody was there. Falling straight to it treats "I could not decide" as
+  // "nobody is there" and answers "returned" while a person holds the conversation, which is the one
+  // answer every caller acts on. The observation survives the failure to version it.
+  test("a takeover seen on a versionless read is still reported", async () => {
+    const stub = makeStub(
+      {},
+      { assigneeType: "User", assigneeId: 4321, fromRead: 3 },
+    );
+    const outcome = await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.unassignConversation).toBe(1);
+    expect(outcome).toBe("taken-over");
   });
 
   // The baseline is the LIVE holder, not the mirrored row. An assignment webhook that was late or

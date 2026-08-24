@@ -5,6 +5,7 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { DEFAULT_MODEL_CONFIG, modelConfigSchema } from "@/graph/model-config";
 import { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } from "@/graph/tools/catalog";
+import { parseDbId } from "@/lib/db-id";
 import {
   AppError,
   NotFoundError,
@@ -14,6 +15,8 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
+import { documentToolName } from "@/modules/documents/slug";
+import { parseTemplateContent } from "@/modules/documents/validate";
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
@@ -659,6 +662,7 @@ export async function cloneAgent(
         toolDefinitionId: true,
         mcpServerConnectionId: true,
         integrationInstanceId: true,
+        documentTemplateId: true,
         knowledgeBaseIds: true,
         enabledTools: true,
       },
@@ -687,6 +691,7 @@ export async function cloneAgent(
           toolDefinitionId: g.toolDefinitionId,
           mcpServerConnectionId: g.mcpServerConnectionId,
           integrationInstanceId: g.integrationInstanceId,
+          documentTemplateId: g.documentTemplateId,
           knowledgeBaseIds: g.knowledgeBaseIds,
           enabledTools: g.enabledTools,
         })),
@@ -704,6 +709,7 @@ const AGENT_TOOL_SOURCES = [
   "HTTP",
   "MCP",
   "INTEGRATION",
+  "DOCUMENT",
 ] as const;
 type AgentToolSourceLit = (typeof AGENT_TOOL_SOURCES)[number];
 
@@ -712,6 +718,7 @@ export interface ToolGrantInput {
   toolDefinitionId?: string | null;
   mcpServerConnectionId?: string | null;
   integrationInstanceId?: string | null;
+  documentTemplateId?: string | null;
   knowledgeBaseIds?: string[];
   enabledTools?: string[];
 }
@@ -721,6 +728,7 @@ export interface ToolGrantDto {
   toolDefinitionId: string | null;
   mcpServerConnectionId: string | null;
   integrationInstanceId: string | null;
+  documentTemplateId: string | null;
   knowledgeBaseIds: string[];
   enabledTools: string[];
 }
@@ -748,6 +756,22 @@ export interface ToolSelectionView {
         args: { name: string; description?: string; required: boolean }[];
       }[];
     }[];
+    documentTemplates: {
+      id: string;
+      name: string;
+      // The tool name the agent will see (send_<slug>), so the editor shows WHAT it grants rather
+      // than making the operator derive it from the template name.
+      toolName: string;
+      description: string | null;
+      enabled: boolean;
+      // Whether the RUNTIME would actually expose this tool, which is a different question from the
+      // stored flag: assembly also skips a template whose content this build cannot parse — one
+      // written by a newer version, after a downgrade — because a tool with an empty argument list
+      // that renders a blank document is worse for the customer than a tool the agent does not
+      // have. A screen that answers "what can this agent call" has to ask the same question the
+      // assembly does, or it draws a tool that is not in the graph.
+      available: boolean;
+    }[];
     knowledgeBases: {
       id: string;
       name: string;
@@ -768,23 +792,29 @@ interface NormalizedGrant {
   toolDefinitionId: bigint | null;
   mcpServerConnectionId: bigint | null;
   integrationInstanceId: bigint | null;
+  documentTemplateId: bigint | null;
   knowledgeBaseIds: bigint[];
   enabledTools: string[];
 }
 
+// Every grant's id, from REST and from MCP alike, and both halves of "is this an id?" matter here.
+// `BigInt` accepts spellings a column does not (`0x11` is 17n), so a request that never named the
+// template it got could be handed one — and it accepts values past 2^63-1, which reach the database
+// as a bind error and answer 500 on a path that advertises a validation error. `parseDbId` holds
+// both; see lib/db-id.ts.
 function bigOrThrow(v: string | null | undefined, field: string): bigint {
   if (v == null) {
     throw new AppError(`${field} is required`, 400, "errors.invalidToolGrant");
   }
-  try {
-    return BigInt(v);
-  } catch {
+  const id = parseDbId(v);
+  if (id === null) {
     throw new AppError(
       `${field} must be a numeric id`,
       400,
       "errors.invalidToolGrant",
     );
   }
+  return id;
 }
 
 // Shape + enum-membership validation (no DB). Ownership of referenced ids and the integration
@@ -796,6 +826,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
   const httpSeen = new Set<string>();
   const mcpSeen = new Set<string>();
   const intSeen = new Set<string>();
+  const docSeen = new Set<string>();
   const nativeSet = new Set<string>(NATIVE_TOOL_NAMES);
   const ragSet = new Set<string>(RAG_TOOL_NAMES);
   for (const g of input) {
@@ -825,6 +856,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           toolDefinitionId: null,
           mcpServerConnectionId: null,
           integrationInstanceId: null,
+          documentTemplateId: null,
           knowledgeBaseIds: [],
           enabledTools,
         });
@@ -863,6 +895,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           toolDefinitionId: null,
           mcpServerConnectionId: null,
           integrationInstanceId: null,
+          documentTemplateId: null,
           knowledgeBaseIds,
           enabledTools: ragTools,
         });
@@ -883,6 +916,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           toolDefinitionId: id,
           mcpServerConnectionId: null,
           integrationInstanceId: null,
+          documentTemplateId: null,
           knowledgeBaseIds: [],
           enabledTools: [],
         });
@@ -903,6 +937,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           toolDefinitionId: null,
           mcpServerConnectionId: id,
           integrationInstanceId: null,
+          documentTemplateId: null,
           knowledgeBaseIds: [],
           enabledTools,
         });
@@ -923,8 +958,33 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           toolDefinitionId: null,
           mcpServerConnectionId: null,
           integrationInstanceId: id,
+          documentTemplateId: null,
           knowledgeBaseIds: [],
           enabledTools,
+        });
+        break;
+      }
+      case "DOCUMENT": {
+        const id = bigOrThrow(g.documentTemplateId, "documentTemplateId");
+        if (docSeen.has(String(id))) {
+          throw new AppError(
+            "duplicate DOCUMENT grant",
+            400,
+            "errors.invalidToolGrant",
+          );
+        }
+        docSeen.add(String(id));
+        out.push({
+          source: "DOCUMENT",
+          toolDefinitionId: null,
+          mcpServerConnectionId: null,
+          integrationInstanceId: null,
+          documentTemplateId: id,
+          // NOTE: no enabledTools. A template grant exposes exactly one tool — the one derived from
+          // that template — so there is nothing to narrow, and an allowlist here would be a second
+          // switch for the grant itself.
+          knowledgeBaseIds: [],
+          enabledTools: [],
         });
         break;
       }
@@ -944,6 +1004,7 @@ function toGrantDto(g: {
   toolDefinitionId: bigint | null;
   mcpServerConnectionId: bigint | null;
   integrationInstanceId: bigint | null;
+  documentTemplateId: bigint | null;
   knowledgeBaseIds: bigint[];
   enabledTools: string[];
 }): ToolGrantDto {
@@ -955,6 +1016,8 @@ function toGrantDto(g: {
       g.mcpServerConnectionId === null ? null : String(g.mcpServerConnectionId),
     integrationInstanceId:
       g.integrationInstanceId === null ? null : String(g.integrationInstanceId),
+    documentTemplateId:
+      g.documentTemplateId === null ? null : String(g.documentTemplateId),
     knowledgeBaseIds: g.knowledgeBaseIds.map((k) => String(k)),
     enabledTools: g.enabledTools,
   };
@@ -971,6 +1034,7 @@ async function buildToolSelectionView(
       toolDefinitionId: true,
       mcpServerConnectionId: true,
       integrationInstanceId: true,
+      documentTemplateId: true,
       knowledgeBaseIds: true,
       enabledTools: true,
     },
@@ -995,6 +1059,20 @@ async function buildToolSelectionView(
   });
   const knowledgeBases = await db.knowledgeBase.findMany({
     select: { id: true, name: true, description: true },
+    orderBy: { name: "asc" },
+  });
+  const documentTemplates = await db.documentTemplate.findMany({
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      description: true,
+      enabled: true,
+      // Selected to answer `available` below, the same way the toolset assembly answers it.
+      blocks: true,
+      fields: true,
+      style: true,
+    },
     orderBy: { name: "asc" },
   });
   // Per-KB count of documents imported but not yet indexed (an agent import that bundled the source
@@ -1044,6 +1122,17 @@ async function buildToolSelectionView(
         name: k.name,
         description: k.description,
         unindexedCount: unindexedByKb.get(k.id) ?? 0,
+      })),
+      documentTemplates: documentTemplates.map((d) => ({
+        id: String(d.id),
+        name: d.name,
+        // The tool name the agent will see, so the editor can show WHAT it is granting rather than
+        // making the operator derive it from the template name.
+        toolName: documentToolName(d.slug),
+        description: d.description,
+        enabled: d.enabled,
+        available:
+          d.enabled && parseTemplateContent(d.blocks, d.fields, d.style).ok,
       })),
     },
   };
@@ -1119,6 +1208,13 @@ export async function replaceAgentToolSelections(
           .map((g) => g.integrationInstanceId as bigint),
       ),
     ];
+    const docIds = [
+      ...new Set(
+        grants
+          .filter((g) => g.source === "DOCUMENT")
+          .map((g) => g.documentTemplateId as bigint),
+      ),
+    ];
     const kbIds = [...new Set(grants.flatMap((g) => g.knowledgeBaseIds))];
 
     if (tdIds.length > 0) {
@@ -1140,6 +1236,17 @@ export async function replaceAgentToolSelections(
         throw new NotFoundError(
           "mcp connection not found",
           "errors.mcpConnectionNotFound",
+        );
+      }
+    }
+    if (docIds.length > 0) {
+      const found = await db.documentTemplate.count({
+        where: { id: { in: docIds } },
+      });
+      if (found !== docIds.length) {
+        throw new NotFoundError(
+          "document template not found",
+          "errors.documentTemplateNotFound",
         );
       }
     }
@@ -1195,6 +1302,7 @@ export async function replaceAgentToolSelections(
           toolDefinitionId: g.toolDefinitionId,
           mcpServerConnectionId: g.mcpServerConnectionId,
           integrationInstanceId: g.integrationInstanceId,
+          documentTemplateId: g.documentTemplateId,
           knowledgeBaseIds: g.knowledgeBaseIds,
           enabledTools: g.enabledTools,
         })),

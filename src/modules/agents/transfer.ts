@@ -32,6 +32,13 @@ import {
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
 import { clampOversizedTextInPlace } from "@/modules/agents/text-caps";
+import { parseDocumentStyle } from "@/modules/documents/blocks";
+import {
+  slugProblem,
+  templateMetadataProblem,
+  templateNameSchema,
+} from "@/modules/documents/templates";
+import { parseAuthoredTemplate } from "@/modules/documents/validate";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
 import { assertNoSecrets } from "@/modules/n8n-export/n8n";
@@ -82,6 +89,39 @@ const exportedGrantSchema = z.discriminatedUnion("source", [
     integration: z.string(),
     enabledTools: z.array(z.string()),
   }),
+  // NOTE: by SLUG, not by name and not by id. The id is local to one instance, and the slug is what
+  // the grant is about, since it IS the agent's tool name. It does not survive a rename on the
+  // destination — the slug follows the name there too — so a renamed template no longer answers to
+  // the slug the bundle asks for, and the grant lands as a `documentGrantNotFound` warning naming
+  // it. No enabledTools: a template grant exposes exactly one tool.
+  z.object({ source: z.literal("DOCUMENT"), documentTemplate: z.string() }),
+]);
+
+// A grant whose SOURCE this build does not know — one a newer release added — is dropped with a
+// warning instead of failing the whole bundle. A discriminated union refuses the entire array on one
+// unknown arm, so without this a single grant of a kind we have not heard of makes an otherwise
+// importable agent unimportable, and the operator is told nothing about which part was the problem.
+//
+// This does NOT help an OLDER instance read a bundle written here — nothing in this file can, and
+// bumping the format version would only trade a confusing refusal for a clean one while making every
+// bundle without a document grant refusable too, which is the trade `riskTier` above already
+// rejected for the same reason. What it does is stop the next arm from breaking this direction.
+//
+// Restricted to sources this build has never HEARD of. Without that restriction the fallback also
+// swallowed a malformed grant from a source we do know — `{source:"DOCUMENT"}` with no template —
+// dropping it silently and blaming a newer version for it, when the honest answer is that the
+// bundle is broken and the import should say so.
+const KNOWN_GRANT_SOURCES = new Set(
+  exportedGrantSchema.options.map((o) => o.shape.source.value as string),
+);
+const importedGrantSchema = z.union([
+  exportedGrantSchema,
+  z
+    .object({ source: z.string() })
+    .refine((g) => !KNOWN_GRANT_SOURCES.has(g.source), {
+      message: "malformed grant for a known source",
+    })
+    .transform(() => null),
 ]);
 
 // Full component definitions (opt-in via ?components=true). Each references its credential BY NAME
@@ -139,6 +179,18 @@ const exportedIntegrationSchema = z.object({
   config: z.record(z.string(), z.unknown()),
   credentialRef: z.string().nullable().optional(),
 });
+const exportedDocumentTemplateSchema = z.object({
+  name: z.string(),
+  slug: z.string(),
+  description: z.string().nullable().optional(),
+  blocks: z.array(z.unknown()),
+  fields: z.array(z.unknown()),
+  style: z.record(z.string(), z.unknown()).optional(),
+  numberPrefix: z.string().nullable().optional(),
+  // Optional so a bundle from before this field still imports; absent means enabled, which is the
+  // column default and what every such bundle described.
+  enabled: z.boolean().optional(),
+});
 // One source document of a knowledge base. Only the extracted TEXT travels (content); the destination
 // re-chunks + re-embeds. `sourceType` is a plain string (matches the DB column) so a future source kind
 // does not break import of older/newer exports.
@@ -176,9 +228,19 @@ const exportedComponentsSchema = z.object({
   httpTools: z.array(exportedHttpToolSchema),
   mcpServers: z.array(exportedMcpServerSchema),
   integrations: z.array(exportedIntegrationSchema),
+  // Optional for back-compat: an export written before document templates existed simply has none.
+  documentTemplates: z.array(exportedDocumentTemplateSchema).optional(),
   knowledgeBases: z.array(exportedKnowledgeBaseSchema),
   businessHours: z.array(exportedBusinessHoursSchema).optional(),
 });
+
+// Every component array a bundle can carry, named once. A dry run has to disclose all of them — the
+// apply creates or reuses each before it assigns the grants — and "the preview forgot the array that
+// was just added" is a hole nobody sees, because a preview that omits something looks like a preview
+// of a smaller change. Read from the schema so the list cannot drift from the bundle.
+export const EXPORTED_COMPONENT_KEYS = Object.keys(
+  exportedComponentsSchema.shape,
+) as (keyof z.infer<typeof exportedComponentsSchema>)[];
 
 export const agentExportSchema = z.object({
   version: z.literal(AGENT_EXPORT_VERSION),
@@ -200,7 +262,9 @@ export const agentExportSchema = z.object({
     transferWithSummary: z.boolean(),
     businessHours: z.string().nullable(),
     followUpHours: z.string().nullable(),
-    tools: z.array(exportedGrantSchema),
+    // Tolerant on the way IN: a grant of a source this build does not know is dropped rather than
+    // taking the bundle with it (see importedGrantSchema). Nulls are filtered where they are read.
+    tools: z.array(importedGrantSchema),
     // Metadata for unambiguous import: every credential name referenced in modelConfig/settings
     // (and in the component definitions) carries its kind here, so import resolves by (name, kind)
     // — never by bare name.
@@ -231,6 +295,7 @@ export type ImportWarningTarget =
   | { kind: "tool"; name: string }
   | { kind: "mcp"; name: string }
   | { kind: "integration"; catalogType: string; name: string }
+  | { kind: "document"; name: string }
   | { kind: "knowledge"; name: string };
 
 export interface ImportWarning {
@@ -350,6 +415,25 @@ function blankDocumentContent(data: AgentExport): AgentExport {
       for (const d of kb.documents) d.content = "";
     }
   }
+  // A document template's blocks and style are TENANT PROSE, exactly like a knowledge-base
+  // document's text, and the scanner cannot tell an operator writing "api_key=abcdef" in a quote's
+  // terms from a leaked credential. Left in, that quote makes its own agent unexportable — the
+  // scanner refusing the export it exists to protect. Blanked in the CLONE only; what is returned
+  // still carries the prose.
+  for (const tpl of clone.components?.documentTemplates ?? []) {
+    tpl.blocks = [];
+    tpl.style = {};
+    tpl.description = null;
+    // A field's LABEL and DESCRIPTION are prose too — the description is what the operator writes to
+    // tell the model what to put in the field ("o CNPJ do cliente, ex: 12.345.678/0001-90"), which
+    // is exactly the shape a secret regex reads as a credential. The `name` and `type` stay
+    // scanned: they are the tool contract, identifiers, and no place to hide anything.
+    tpl.fields = (tpl.fields as Record<string, unknown>[]).map((f) => ({
+      ...f,
+      label: "",
+      description: null,
+    }));
+  }
   return clone;
 }
 
@@ -404,9 +488,11 @@ export async function exportAgent(
         toolDefinitionId: true,
         mcpServerConnectionId: true,
         integrationInstanceId: true,
+        documentTemplateId: true,
         toolDefinition: { select: { name: true } },
         mcpServerConnection: { select: { name: true } },
         integrationInstance: { select: { catalogType: true, name: true } },
+        documentTemplate: { select: { slug: true } },
       },
     });
 
@@ -473,6 +559,14 @@ export async function exportAgent(
             });
           }
           break;
+        case "DOCUMENT":
+          if (g.documentTemplate) {
+            tools.push({
+              source: "DOCUMENT",
+              documentTemplate: g.documentTemplate.slug,
+            });
+          }
+          break;
       }
     }
 
@@ -512,6 +606,19 @@ export async function exportAgent(
       const mcpRows = mcpIds.length
         ? await db.mcpServerConnection.findMany({
             where: { id: { in: mcpIds } },
+          })
+        : [];
+      const documentTemplateIds = [
+        ...new Set(
+          grants
+            .filter((g) => g.source === "DOCUMENT")
+            .map((g) => g.documentTemplateId)
+            .filter((x): x is bigint => x != null),
+        ),
+      ];
+      const documentTemplateRows = documentTemplateIds.length
+        ? await db.documentTemplate.findMany({
+            where: { id: { in: documentTemplateIds } },
           })
         : [];
       const integrationRows = integrationIds.length
@@ -620,6 +727,21 @@ export async function exportAgent(
           ),
           credentialRef: r.credentialRef,
         })),
+        // No credential of any kind travels here, which is what makes a document template the
+        // simplest component: blocks, fields and style are plain JSON the destination re-validates.
+        documentTemplates: documentTemplateRows.map((r) => ({
+          name: r.name,
+          slug: r.slug,
+          description: r.description,
+          blocks: (r.blocks ?? []) as unknown[],
+          fields: (r.fields ?? []) as unknown[],
+          style: (r.style ?? {}) as Record<string, unknown>,
+          numberPrefix: r.numberPrefix,
+          // A template the operator turned OFF is off for a reason. Omitted, the import recreates it
+          // with the column default — enabled — and the destination agent can issue a document the
+          // source instance had deliberately made unavailable.
+          enabled: r.enabled,
+        })),
         knowledgeBases: kbRows.map((r) => ({
           name: r.name,
           description: r.description,
@@ -692,6 +814,10 @@ export async function exportAgent(
             credentialRef: refToName(i.credentialRef ?? null),
           })),
           knowledgeBases: componentsRaw.knowledgeBases,
+          // Carried through explicitly, like every other list here: this object is REBUILT rather
+          // than spread, so a component the rebuild forgets is exported as a grant pointing at
+          // nothing and the import can only drop it with a warning.
+          documentTemplates: componentsRaw.documentTemplates,
           businessHours: componentsRaw.businessHours,
         }
       : undefined;
@@ -961,11 +1087,24 @@ export async function importAgent(
       );
     }
 
+    // Grants of a source this build does not know arrive as null (see importedGrantSchema) and are
+    // dropped here, with a warning naming how many — the bundle imports, and the operator learns
+    // that something in it did not.
+    const knownGrants = exp.tools.filter(
+      (g): g is Exclude<typeof g, null> => g !== null,
+    );
+    const unknownGrants = exp.tools.length - knownGrants.length;
+    if (unknownGrants > 0) {
+      warnings.push({
+        code: "unknownGrantSourceSkipped",
+        params: { n: unknownGrants },
+      });
+    }
     const grantRows = await buildGrantRows(
       db,
       tenantId,
       created.id,
-      exp.tools,
+      knownGrants,
       warnings,
     );
     if (grantRows.length > 0) {
@@ -1244,6 +1383,124 @@ async function createMissingComponents(
     // any time on the integration page; for a clone the operator wires the external webhook from scratch.
   }
 
+  for (const tpl of components.documentTemplates ?? []) {
+    const existing = await db.documentTemplate.findFirst({
+      where: { slug: tpl.slug },
+      select: { id: true },
+    });
+    if (existing) {
+      warnings.push({
+        code: "documentTemplateReused",
+        params: { name: tpl.name },
+        target: { kind: "document", name: tpl.slug },
+      });
+      continue;
+    }
+    // Re-validated on the way IN, never trusted as exported: a template written by a newer build can
+    // carry a block this one does not know how to render, and a warning that names the reason is a
+    // better import than a document that renders wrong in front of a customer.
+    //
+    // The SLUG goes through the same gate as a hand-written one. A bundle is user-supplied, and the
+    // slug becomes a tool name: one reading `image` produces `send_image`, which the assembly then
+    // drops as a duplicate of the built-in — the operator would see a granted template whose tool
+    // never appears, with nothing anywhere saying why.
+    // A bundle is hand-editable, and this path writes to the table directly rather than through
+    // createDocumentTemplate — so every rule that write applies has to be applied here too. The
+    // description is the one that bites: it is appended verbatim to the agent's tool description on
+    // every turn, and an oversized one arriving in a bundle would do that on the destination.
+    const metaFault =
+      templateMetadataProblem({
+        name: tpl.name,
+        description: tpl.description ?? null,
+        numberPrefix: tpl.numberPrefix ?? null,
+      }) ?? (slugProblem(tpl.slug) ? `slug: ${slugProblem(tpl.slug)}.` : null);
+    const content = metaFault
+      ? ({ ok: false, reason: metaFault } as const)
+      : parseAuthoredTemplate(tpl.blocks, tpl.fields, tpl.style);
+    if (!content.ok) {
+      warnings.push({
+        code: "documentTemplateInvalid",
+        params: { name: tpl.name, reason: content.reason },
+      });
+      continue;
+    }
+    // The NAME is unique per tenant too, and separately from the slug — so a bundle can arrive with a
+    // free slug and a name this account already uses. Not reused like a slug match: the grant below
+    // resolves by SLUG, so binding it to the template that holds the name would hand the agent a
+    // tool with a different name than the bundle asked for. Skipped and said out loud instead, which
+    // leaves the operator one rename away on either side.
+    //
+    // Asked AFTER the validity gate, and the order is the message: a bundle carrying a template that
+    // is both unreadable and named like an existing one is more usefully told about the first.
+    const approvedName = templateNameSchema.parse(tpl.name);
+    const nameHolder = await db.documentTemplate.findFirst({
+      where: { name: approvedName },
+      select: { slug: true },
+    });
+    if (nameHolder) {
+      warnings.push({
+        code: "documentTemplateNameTaken",
+        params: { name: approvedName, existing: nameHolder.slug },
+        target: { kind: "document", name: tpl.slug },
+      });
+      continue;
+    }
+    // `createMany({ skipDuplicates })` rather than `create`, and the enclosing transaction is the
+    // whole reason. Both pre-checks above can answer "free" and a writer commit before this insert
+    // — a second import, or someone saving a template in the console. A P2002 here does not cost one
+    // template: `importAgent` runs the ENTIRE import inside one `runScopedOn` transaction, so it
+    // aborts that transaction, every statement after it fails with "current transaction is aborted",
+    // and the operator loses the agent, the tools and the knowledge bases to a race over a name.
+    //
+    // A `catch` around the insert is the trap, not the remedy: by the time it runs the transaction
+    // is already dead, so it swallows the one legible error and replaces it with a confusing one.
+    // Only NOT RAISING works, and `ON CONFLICT DO NOTHING` covers BOTH unique indexes on this table,
+    // which is what the two pre-checks were separately trying to do.
+    const { count } = await db.documentTemplate.createMany({
+      data: [
+        {
+          tenantId,
+          // The value the gate APPROVED, not the one it was handed: `templateNameSchema` trims
+          // before it measures, so a name padded with whitespace passes a bound the raw string
+          // fails. The name becomes the tool's title, carried by every granted agent on every turn.
+          name: approvedName,
+          slug: tpl.slug,
+          description: tpl.description ?? null,
+          blocks: content.content.blocks as unknown as Prisma.InputJsonValue,
+          fields: content.content.fields as unknown as Prisma.InputJsonValue,
+          style: parseDocumentStyle(
+            tpl.style,
+          ) as unknown as Prisma.InputJsonValue,
+          numberPrefix: tpl.numberPrefix ?? null,
+          enabled: tpl.enabled ?? true,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    if (count === 0) {
+      // Lost the race. WHICH warning is right depends on which index refused, so it is re-asked
+      // rather than guessed — the row is committed by now, and each statement in a READ COMMITTED
+      // transaction takes a fresh snapshot, so this read sees it.
+      const holder = await db.documentTemplate.findFirst({
+        where: { name: approvedName },
+        select: { slug: true },
+      });
+      warnings.push(
+        holder
+          ? {
+              code: "documentTemplateNameTaken",
+              params: { name: approvedName, existing: holder.slug },
+              target: { kind: "document", name: tpl.slug },
+            }
+          : {
+              code: "documentTemplateReused",
+              params: { name: tpl.name },
+              target: { kind: "document", name: tpl.slug },
+            },
+      );
+    }
+  }
+
   for (const kb of components.knowledgeBases) {
     const existing = await db.knowledgeBase.findFirst({
       where: { name: kb.name },
@@ -1384,6 +1641,29 @@ async function buildGrantRows(
           source: "MCP",
           mcpServerConnectionId: conn.id,
           enabledTools: g.enabledTools,
+          knowledgeBaseIds: [],
+        });
+        break;
+      }
+      case "DOCUMENT": {
+        const tpl = await db.documentTemplate.findFirst({
+          where: { slug: g.documentTemplate },
+          select: { id: true },
+        });
+        if (!tpl) {
+          warnings.push({
+            code: "documentGrantNotFound",
+            params: { name: g.documentTemplate },
+            target: { kind: "document", name: g.documentTemplate },
+          });
+          break;
+        }
+        rows.push({
+          tenantId,
+          agentId,
+          source: "DOCUMENT",
+          documentTemplateId: tpl.id,
+          enabledTools: [],
           knowledgeBaseIds: [],
         });
         break;

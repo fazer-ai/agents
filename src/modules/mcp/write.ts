@@ -13,6 +13,7 @@ import {
 import basePrisma from "@/api/lib/prisma";
 import { updateTenant } from "@/api/v1/tenants.admin.service";
 import { getTenant } from "@/api/v1/tenants.service";
+import { parseDbId } from "@/lib/db-id";
 import { AppError } from "@/lib/errors";
 import {
   asSuperAdminOn,
@@ -70,6 +71,23 @@ export const err = (error: string): WriteResult => ({ ok: false, error });
 
 export interface WriteDeps {
   base?: PrismaClient;
+}
+
+// The one id parser for every MCP surface, read and write alike.
+//
+// The pattern, not just the throw. `BigInt("")` is 0n and `BigInt(" 17 ")` is 17n, so an id a caller
+// typed wrong does not fail — it becomes a VALID id for some other row, and a write with dry_run
+// false then edits or deletes that one. An id is a run of digits or a mistake worth reporting.
+//
+// One function because it was eight, byte for byte, and a defect fixed in one of eight copies is a
+// defect fixed nowhere: the round that added this rule to the READ parser left the seven writes
+// exactly as they were.
+export function parseMcpId(raw: string, label: string): bigint | WriteResult {
+  // Range as well as spelling. `BigInt` is arbitrary precision, so an id past 2^63-1 parses here and
+  // is refused by POSTGRES when the query binds it — a tool call that answers with a database error
+  // instead of "invalid <label>". `parseDbId` holds both halves; see lib/db-id.ts.
+  const id = parseDbId(raw);
+  return id === null ? err(`invalid ${label}`) : id;
 }
 
 // Field-level diff: only keys whose JSON projection changed appear (before → after).
@@ -364,12 +382,8 @@ export async function promptSet(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
 
-  let agentId: bigint;
-  try {
-    agentId = BigInt(args.agent_id);
-  } catch {
-    return err("invalid agent_id");
-  }
+  const agentId = parseMcpId(args.agent_id, "agent_id");
+  if (typeof agentId !== "bigint") return agentId;
 
   try {
     // NOTE: checked here (not only inside updateAgent) so the DRY-RUN path enforces the cap too —
@@ -449,12 +463,8 @@ export async function agentSettingsGet(
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
 
-  let agentId: bigint;
-  try {
-    agentId = BigInt(args.agent_id);
-  } catch {
-    return err("invalid agent_id");
-  }
+  const agentId = parseMcpId(args.agent_id, "agent_id");
+  if (typeof agentId !== "bigint") return agentId;
 
   try {
     const agent = await getAgent(ctx, agentId, base);
@@ -498,12 +508,8 @@ export async function agentSettingsSet(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
 
-  let agentId: bigint;
-  try {
-    agentId = BigInt(args.agent_id);
-  } catch {
-    return err("invalid agent_id");
-  }
+  const agentId = parseMcpId(args.agent_id, "agent_id");
+  if (typeof agentId !== "bigint") return agentId;
 
   const patch: BehaviorSettingsPatch = {};
   if (args.debounce !== undefined) patch.debounce = args.debounce;

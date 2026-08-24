@@ -49,6 +49,46 @@ async function descriptions(): Promise<Map<string, string>> {
   return new Map([...(await listed())].map(([n, t]) => [n, t.description]));
 }
 
+async function listedFor(scopes: string[]): Promise<Set<string>> {
+  const principal: VerifiedToken = {
+    userId: 1n,
+    tenantId: 1n,
+    role: "TENANT_ADMIN",
+    scopes,
+    clientId: "c",
+    jti: "j",
+  };
+  const server = buildMcpServer(principal);
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverT);
+  const client = new Client({ name: "scope-check", version: "0" });
+  await client.connect(clientT);
+  const { tools } = await client.listTools();
+  await client.close();
+  return new Set(tools.map((t) => t.name));
+}
+
+// The scope contract from docs/mcp.md, as a sweep rather than a list of names: everything that only
+// READS is visible to a read-only token. Stated this way it also catches the next read tool that
+// gets registered in the write block by being pasted next to its siblings — which is exactly how
+// the four document reads ended up invisible to an AGENT-role token.
+describe("scope contract", () => {
+  test("every *_list / *_get / *_schema tool is visible to mcp:read alone", async () => {
+    const all = await listedFor(["mcp:read", "mcp:write"]);
+    const readOnly = await listedFor(["mcp:read"]);
+    const reads = [...all].filter((n) => /(_list|_get|_schema)$/.test(n));
+    expect(reads.length).toBeGreaterThan(5);
+    expect(reads.filter((n) => !readOnly.has(n))).toEqual([]);
+  });
+
+  test("a read-only token sees no write tool", async () => {
+    const readOnly = await listedFor(["mcp:read"]);
+    expect(
+      [...readOnly].filter((n) => /(_set|_create|_update|_delete)$/.test(n)),
+    ).toEqual([]);
+  });
+});
+
 // NOTE: headroom over the current 1,931 for an ordinary edit, the same slack the 3,800 carried over
 // 3,534. Issue #142 spent 166 of that slack and the ceiling is deliberately NOT moving for it: what
 // went into the prose is only the half a caller cannot read off the schema (a summariser override
@@ -156,6 +196,53 @@ describe("MCP tool descriptions", () => {
       .filter((f) => /[a-z][A-Z]/.test(f) && !namedByARule.has(f))
       .filter((f) => d.includes(f));
     expect(restated).toEqual([]);
+  });
+
+  // The instrument the ceiling above did NOT have. It guards the schema of exactly one tool, so a
+  // second heavy schema could land anywhere else and pass green — and the schema half is the larger
+  // one: 38k characters against 25k of prose, published in full on every tools/list of every
+  // session, before a client knows whether any of it will be used.
+  //
+  // Measured with the document tools in: 103 tools, 25,738 characters of description and 39,726 of
+  // schema. The headroom below is deliberately smaller than one substantial tool, so the next
+  // addition is a decision — raising these is a legitimate outcome of that decision, and not
+  // noticing is not.
+  //
+  // The schema figure was 38,379 when this test was written and the cap 39,500. It moved because the
+  // `contactAuth` block landed on the base while this branch was open, costing 1,347 characters of
+  // agent_settings_set — the same addition that raised SETTINGS_SCHEMA_CEILING above. Re-measured
+  // rather than trimmed: nothing here grew, the total simply now includes a block that was not in it
+  // when the number was taken, and cutting a document description to fit an unrelated arrival is
+  // cutting what is easiest rather than what is cheapest.
+  test("the whole tools/list payload stays under its ceiling", async () => {
+    const all = await listed();
+    let desc = 0;
+    let schema = 0;
+    for (const t of all.values()) {
+      desc += t.description.length;
+      schema += t.schema.length;
+    }
+    expect(desc).toBeLessThanOrEqual(26_500);
+    expect(schema).toBeLessThanOrEqual(40_850);
+  });
+
+  // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in
+  // document_template_schema instead: a six-variant discriminated union publishes as JSON Schema by
+  // inlining every variant, measured at ~3.2k characters PER TOOL against the ~700 below, on both
+  // the create and the update. That trade is the reason the totals above are where they are, so it
+  // is asserted rather than left as a claim in a comment.
+  test("the document write tools keep their schemas compact", async () => {
+    const all = await listed();
+    for (const name of [
+      "document_template_create",
+      "document_template_update",
+    ]) {
+      const t = all.get(name);
+      expect(t).toBeDefined();
+      expect((t as { schema: string }).schema.length).toBeLessThanOrEqual(
+        1_000,
+      );
+    }
   });
 
   // NOTE: the norm is about WHERE content lives, not about length, so the check that matters for the

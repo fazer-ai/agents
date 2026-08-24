@@ -40,6 +40,7 @@ import {
   err,
   gate,
   ok,
+  parseMcpId,
   recordMcpAudit,
   resolveSecretRef,
   truncForAudit,
@@ -56,14 +57,6 @@ import {
 function failOf(e: unknown): WriteResult {
   if (e instanceof AppError) return err(e.message);
   throw e;
-}
-
-function parseId(raw: string, label: string): bigint | WriteResult {
-  try {
-    return BigInt(raw);
-  } catch {
-    return err(`invalid ${label}`);
-  }
 }
 
 // If a free-form config record carries a credentialRef NAME, resolve it to a stable vault:<id> ref
@@ -173,7 +166,7 @@ export async function agentUpdate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.agent_id, "agent_id");
+  const id = parseMcpId(args.agent_id, "agent_id");
   if (typeof id !== "bigint") return id;
 
   const cred = await resolveConfigCredential(ctx, args.model_config, base);
@@ -244,7 +237,7 @@ export async function agentClone(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.agent_id, "agent_id");
+  const id = parseMcpId(args.agent_id, "agent_id");
   if (typeof id !== "bigint") return id;
   try {
     const source = await getAgent(ctx, id, base);
@@ -310,11 +303,16 @@ export async function agentImport(
         name: c.name,
         kind: c.kind,
       })),
+      // Every component array the apply can CREATE, counted. A preview that omits one approves a
+      // write the operator was never shown: the apply reuses or creates the templates before it
+      // assigns the grants, so leaving them out here is the dry run answering about a different
+      // operation than the one it is standing in for.
       components: {
         httpTools: comps?.httpTools.length ?? 0,
         mcpServers: comps?.mcpServers.length ?? 0,
         integrations: comps?.integrations.length ?? 0,
         knowledgeBases: comps?.knowledgeBases.length ?? 0,
+        documentTemplates: comps?.documentTemplates?.length ?? 0,
         businessHours: comps?.businessHours?.length ?? 0,
       },
     });
@@ -350,7 +348,7 @@ export async function agentDelete(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.agent_id, "agent_id");
+  const id = parseMcpId(args.agent_id, "agent_id");
   if (typeof id !== "bigint") return id;
   try {
     const current = await getAgent(ctx, id, base);
@@ -386,6 +384,10 @@ export interface AgentToolsSetArgs {
     toolDefinitionId?: string | null;
     mcpServerConnectionId?: string | null;
     integrationInstanceId?: string | null;
+    // The template a DOCUMENT grant points at. Without it this surface could CREATE a document
+    // template over MCP and then had no way to grant it to an agent — the operator ended one step
+    // short of a working document tool, in the transport the whole feature is authored from.
+    documentTemplateId?: string | null;
     knowledgeBaseIds?: string[];
     enabledTools?: string[];
   }>;
@@ -400,13 +402,14 @@ export async function agentToolsSet(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.agent_id, "agent_id");
+  const id = parseMcpId(args.agent_id, "agent_id");
   if (typeof id !== "bigint") return id;
   const grants: ToolGrantInput[] = args.grants.map((g) => ({
     source: g.source,
     toolDefinitionId: g.toolDefinitionId ?? null,
     mcpServerConnectionId: g.mcpServerConnectionId ?? null,
     integrationInstanceId: g.integrationInstanceId ?? null,
+    documentTemplateId: g.documentTemplateId ?? null,
     knowledgeBaseIds: g.knowledgeBaseIds ?? [],
     enabledTools: g.enabledTools ?? [],
   }));
@@ -573,7 +576,7 @@ export async function toolUpdate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.tool_id, "tool_id");
+  const id = parseMcpId(args.tool_id, "tool_id");
   if (typeof id !== "bigint") return id;
   const built = await buildToolPatch(ctx, args, base);
   if ("fail" in built) return built.fail;
@@ -654,7 +657,7 @@ export async function toolDelete(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.tool_id, "tool_id");
+  const id = parseMcpId(args.tool_id, "tool_id");
   if (typeof id !== "bigint") return id;
   try {
     const current = await getToolDefinition(ctx, id, base);
@@ -767,7 +770,7 @@ export async function mcpConnectionUpdate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.connection_id, "connection_id");
+  const id = parseMcpId(args.connection_id, "connection_id");
   if (typeof id !== "bigint") return id;
   const built = await buildConnectionPatch(ctx, args, base);
   if ("fail" in built) return built.fail;
@@ -822,7 +825,7 @@ export async function mcpConnectionDelete(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.connection_id, "connection_id");
+  const id = parseMcpId(args.connection_id, "connection_id");
   if (typeof id !== "bigint") return id;
   try {
     const current = await getMcpConnection(ctx, id, base);
@@ -862,7 +865,7 @@ export async function mcpConnectionDiscover(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.connection_id, "connection_id");
+  const id = parseMcpId(args.connection_id, "connection_id");
   if (typeof id !== "bigint") return id;
   try {
     const discovered = await discoverMcpTools(ctx, id, base);

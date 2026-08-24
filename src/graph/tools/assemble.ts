@@ -1,5 +1,7 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { ScopedDb } from "@/lib/tenancy";
+import type { DocumentField } from "@/modules/documents/blocks";
+import { parseTemplateContent } from "@/modules/documents/validate";
 import type { IntegrationSelection } from "@/modules/integrations/toolpacks";
 import { isManagedOAuthKind } from "@/modules/vault/secret-types";
 import {
@@ -7,6 +9,7 @@ import {
   tryResolveVaultEntry,
   VAULT_REF_PREFIX,
 } from "@/modules/vault/service";
+import type { DocumentSelection } from "./documents";
 import { buildHttpTool, type HttpToolDef } from "./http";
 import type { McpSelection } from "./mcp";
 
@@ -72,6 +75,9 @@ export interface AgentToolSelections {
   httpToolDefs: LoadedHttpToolDef[];
   mcpSelections: McpSelection[];
   integrationSelections: IntegrationSelection[];
+  // Fail-closed like HTTP/MCP/integration/RAG: a document template the agent was not granted is
+  // never exposed, so no agent gains a tool that hands out priced paperwork on upgrade.
+  documentSelections: DocumentSelection[];
 }
 
 // Loads every tool grant for an agent in one scoped read (DB only — no network; MCP connect/
@@ -126,6 +132,21 @@ export async function loadToolSelections(
           enabled: true,
         },
       },
+      documentTemplate: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+          description: true,
+          blocks: true,
+          fields: true,
+          // Selected only so the content check sees the whole template: the footer's tokens are
+          // validated with the blocks' (see parseTemplateContent), and the tool itself renders
+          // nothing — issuance loads the template again for that.
+          style: true,
+          enabled: true,
+        },
+      },
     },
   });
 
@@ -133,6 +154,7 @@ export async function loadToolSelections(
     httpToolDefs: [],
     mcpSelections: [],
     integrationSelections: [],
+    documentSelections: [],
   };
 
   for (const row of rows) {
@@ -221,6 +243,23 @@ export async function loadToolSelections(
           config: (inst.config ?? {}) as Record<string, unknown>,
           credentialRef: inst.credentialRef,
           enabledTools: row.enabledTools,
+        });
+        break;
+      }
+      case "DOCUMENT": {
+        const tpl = row.documentTemplate;
+        if (!tpl?.enabled) break;
+        // A template whose content no longer parses is SKIPPED rather than exposed with an empty
+        // argument list: a tool that accepts nothing and renders a blank document is worse for the
+        // customer than a tool the agent does not have.
+        const content = parseTemplateContent(tpl.blocks, tpl.fields, tpl.style);
+        if (!content.ok) break;
+        result.documentSelections.push({
+          templateId: tpl.id,
+          name: tpl.name,
+          slug: tpl.slug,
+          description: tpl.description,
+          fields: content.content.fields as DocumentField[],
         });
         break;
       }

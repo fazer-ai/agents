@@ -23,13 +23,16 @@ Use o `templates/docker-compose.coolify.yml` do repo via `scripts/coolify.py cre
 - `SERVICE_USER_APPDBUSER` / `SERVICE_PASSWORD_64_APPDBPASSWORD` → **app role** (não-superuser) → `DATABASE_URL` + `LANGGRAPH_DATABASE_URL`.
 - `SERVICE_PASSWORD_64_JWTSECRET` → `JWT_SECRET`; `SERVICE_PASSWORD_64_ENCRYPTIONKEY` → `ENCRYPTION_KEY`.
 
-## Persistência de branding/quotes (fix: já no compose)
+## Persistência de branding/documentos (fix: já no compose)
 
 ```
 BRANDING_STORAGE_DIR=/app/storage/branding
+DOCUMENTS_STORAGE_DIR=/app/storage/documents
 QUOTES_STORAGE_DIR=/app/storage/quotes
 ```
-Sem isso caem em `./data/*` (FS efêmero do container) e logo/favicon (+ PDFs de quote) somem no redeploy. Já corrigido no `templates/docker-compose.coolify.yml`; **confira que está lá** (branding é refino manual opcional depois, em `/admin/branding`, mas a persistência precisa já estar no lugar).
+Sem isso caem em `./data/*` (FS efêmero do container) e logo/favicon (+ PDFs de documento) somem no redeploy. Já corrigido no `templates/docker-compose.coolify.yml`; **confira que está lá** (branding é refino manual opcional depois, em `/admin/branding`, mas a persistência precisa já estar no lugar).
+
+`QUOTES_STORAGE_DIR` é o nome antigo de `DOCUMENTS_STORAGE_DIR` e continua sendo lido como fallback: numa instalação **existente** o valor foi congelado na criação e nunca recebe o nome novo, então tirar a linha manda os PDFs para o FS efêmero, em silêncio. Instalação nova pode ficar só com `DOCUMENTS_STORAGE_DIR`.
 
 ## Boot = CMD da imagem (NÃO sobrescrever `command`)
 

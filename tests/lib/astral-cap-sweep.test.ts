@@ -220,6 +220,33 @@ const CAPS: {
       return toPlaygroundInvokeError(new Error(s)).message;
     },
   },
+  {
+    // Every value a document prints: the fields the model fills in on issuance, and the contact and
+    // company values the token resolver splices in. It ends up in `issued_documents.snapshot`, which
+    // is `jsonb` — so this one FAILS the issuance rather than degrading the PDF.
+    name: "documents: sanitizeDocumentValue",
+    cap: 2_000,
+    run: async (s) => {
+      const { sanitizeDocumentValue } = await import(
+        "@/modules/documents/tokens"
+      );
+      return sanitizeDocumentValue(s);
+    },
+  },
+  {
+    // The window quoted back at whoever authored a template with an unreadable {{token}}. The start
+    // is a computed index (the offending braces), but the 40 that follows is a cap on the author's
+    // own text, and the refusal travels through the API and to the model.
+    // 38, not 40: the two braces the window opens on are themselves inside it, so the emoji has to
+    // start two units earlier than the cap to straddle the cut. Measured, not reasoned — at 40 the
+    // probe swept right past the boundary and the entry passed with the cut left bare.
+    name: "documents: malformed-token window",
+    cap: 38,
+    run: async (s) => {
+      const { malformedTokenIn } = await import("@/modules/documents/tokens");
+      return malformedTokenIn(`{{${s}`) ?? "";
+    },
+  },
 ];
 
 describe("no text cap ever cuts an astral character in half", () => {
@@ -314,6 +341,8 @@ const BARE_SLICES: Record<
   "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
   "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
   "src/client/pages/resources/ToolEditModal.tsx": [1, "index"],
+  // The idempotency key's tail is a hex digest.
+  "src/graph/tools/documents.ts": [1, "ascii"],
   "src/graph/tools/mcp.ts": [4, "ascii"],
   "src/graph/tools/native.ts": [4, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
@@ -331,6 +360,16 @@ const BARE_SLICES: Record<
   "src/modules/chatwoot/attributes.ts": [1, "array"],
   "src/modules/conversations/service.ts": [1, "array"],
   "src/modules/debounce/handler.ts": [1, "array"],
+  // The logo's one-shot download token is hex from randomUUID.
+  "src/modules/documents/company.ts": [1, "ascii"],
+  // The legacy date fallback reads a fixed ISO prefix; the file name was already reduced to
+  // [a-zA-Z0-9-] before it is bounded, because it travels through a Content-Disposition header.
+  "src/modules/documents/issue.ts": [2, "fixed-format + ascii"],
+  "src/modules/documents/sample.ts": [1, "fixed-format"],
+  // The tool name a template derives to, after the name was reduced to [a-z0-9_]. The two cuts moved
+  // here from templates.ts when the slug rules were split out for the console to import; this ledger
+  // is keyed by PATH, so a move reads exactly like an unaccounted cut appearing from nowhere.
+  "src/modules/documents/slug.ts": [2, "ascii"],
   "src/modules/flowlog/export.ts": [2, "fixed-format + array"],
   "src/modules/flowlog/read.ts": [1, "array"],
   "src/modules/followups/settings.ts": [1, "array"],

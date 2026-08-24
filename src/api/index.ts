@@ -14,6 +14,8 @@ import { auditController } from "@/api/v1/audit.controller";
 import { businessHoursController } from "@/api/v1/business-hours.controller";
 import { chatwootController } from "@/api/v1/chatwoot.controller";
 import { chatwootAdminController } from "@/api/v1/chatwoot-admin.controller";
+import { documentTemplatesController } from "@/api/v1/document-templates.controller";
+import { documentsController } from "@/api/v1/documents.controller";
 import { experimentsController } from "@/api/v1/experiments.controller";
 import { integrationsController } from "@/api/v1/integrations.controller";
 import { integrationsAdminController } from "@/api/v1/integrations-admin.controller";
@@ -33,7 +35,6 @@ import {
   oauthMcpCallbackController,
   oauthMcpVaultController,
 } from "@/api/v1/oauth-mcp.controller";
-import { quotesController } from "@/api/v1/quotes.controller";
 import { tenantSettingsController } from "@/api/v1/tenant-settings.controller";
 import { toolsController } from "@/api/v1/tools.controller";
 import { v1Controller } from "@/api/v1/v1.controller";
@@ -177,7 +178,7 @@ const api = new Elysia()
           {
             name: "Resources",
             description:
-              "Tools, knowledge bases, schedules, vault credentials, experiments, quotes.",
+              "Tools, knowledge bases, document templates, schedules, vault credentials, experiments.",
           },
           {
             name: "Channels",
@@ -243,7 +244,8 @@ const api = new Elysia()
   .use(integrationsAdminController)
   .use(knowledgeController)
   .use(n8nExportController)
-  .use(quotesController)
+  .use(documentTemplatesController)
+  .use(documentsController)
   .use(mcpOAuthController)
   .use(mcpController)
   .use(mcpMeController)

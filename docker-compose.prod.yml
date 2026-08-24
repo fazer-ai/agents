@@ -71,10 +71,15 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       # Checkpointer pool — MUST be the runtime (non-superuser) role, never the migration URL.
       - LANGGRAPH_DATABASE_URL=${LANGGRAPH_DATABASE_URL}
-      # Persist uploaded branding (logo/favicon) + generated quote PDFs on the `storage` volume
+      # Persist uploaded branding (logo/favicon) + issued document PDFs on the `storage` volume
       # (mounted below). The defaults (./data/*) live on the ephemeral container FS and vanish on
       # every redeploy.
       - BRANDING_STORAGE_DIR=/app/storage/branding
+      - DOCUMENTS_STORAGE_DIR=/app/storage/documents
+      # NOTE: kept for installations created before the rename. Platforms that FREEZE a compose
+      # value at install time (Coolify) never deliver the new name to an existing install, so
+      # dropping this line would send its PDFs to the container filesystem, where a redeploy
+      # erases them without a word. config.ts reads DOCUMENTS_STORAGE_DIR first, then this.
       - QUOTES_STORAGE_DIR=/app/storage/quotes
     ports:
       # Host:container. Put a TLS-terminating reverse proxy in front; in untrusted networks bind to

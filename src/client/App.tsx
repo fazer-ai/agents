@@ -35,6 +35,7 @@ import { McpPage } from "@/client/pages/McpPage";
 import { OAuthConsentPage } from "@/client/pages/OAuthConsentPage";
 import { AdvancedPanel } from "@/client/pages/resources/AdvancedPanel";
 import { BusinessHoursPanel } from "@/client/pages/resources/BusinessHoursPanel";
+import { DocumentsPanel } from "@/client/pages/resources/documents/DocumentsPanel";
 import { IntegrationsPanel } from "@/client/pages/resources/IntegrationsPanel";
 import { KnowledgePanel } from "@/client/pages/resources/KnowledgePanel";
 import { McpPanel } from "@/client/pages/resources/McpPanel";
@@ -127,6 +128,10 @@ export function App() {
                                 <Route
                                   path="knowledge"
                                   element={<KnowledgePanel />}
+                                />
+                                <Route
+                                  path="documents"
+                                  element={<DocumentsPanel />}
                                 />
                                 <Route
                                   path="hours"

@@ -13,6 +13,7 @@ import {
   err,
   gate,
   ok,
+  parseMcpId,
   recordMcpAudit,
   truncForAudit,
   type WriteDeps,
@@ -29,14 +30,6 @@ function failOf(e: unknown): WriteResult {
   throw e;
 }
 
-function parseId(raw: string, label: string): bigint | WriteResult {
-  try {
-    return BigInt(raw);
-  } catch {
-    return err(`invalid ${label}`);
-  }
-}
-
 export async function conversationReply(
   principal: VerifiedToken,
   args: {
@@ -50,7 +43,7 @@ export async function conversationReply(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.conversation_id, "conversation_id");
+  const id = parseMcpId(args.conversation_id, "conversation_id");
   if (typeof id !== "bigint") return id;
   const isPrivate = args.private ?? false;
   const target = `conversation:${id}`;
@@ -96,7 +89,7 @@ export async function conversationHandoff(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.conversation_id, "conversation_id");
+  const id = parseMcpId(args.conversation_id, "conversation_id");
   if (typeof id !== "bigint") return id;
   const assigneeId = args.assignee_id ?? null;
   const target = `conversation:${id}`;
@@ -139,7 +132,7 @@ export async function conversationReturn(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.conversation_id, "conversation_id");
+  const id = parseMcpId(args.conversation_id, "conversation_id");
   if (typeof id !== "bigint") return id;
   const target = `conversation:${id}`;
   try {
@@ -182,7 +175,7 @@ export async function conversationStatus(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.conversation_id, "conversation_id");
+  const id = parseMcpId(args.conversation_id, "conversation_id");
   if (typeof id !== "bigint") return id;
   const target = `conversation:${id}`;
   try {
@@ -220,7 +213,7 @@ export async function conversationReengage(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.conversation_id, "conversation_id");
+  const id = parseMcpId(args.conversation_id, "conversation_id");
   if (typeof id !== "bigint") return id;
   const target = `conversation:${id}`;
   try {

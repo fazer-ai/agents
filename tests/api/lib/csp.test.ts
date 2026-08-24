@@ -62,7 +62,10 @@ describe("buildCspDirectives", () => {
     expect(d.fontSrc).toEqual(["'self'", "data:", "https://fonts.gstatic.com"]);
     expect(d.mediaSrc).toEqual(["'self'", "blob:"]);
     expect(d.connectSrc).toEqual(["'self'"]);
-    expect(d.frameSrc).toEqual(["'none'"]);
+    // blob: lets the console embed a PDF it rendered itself (the document-template preview) in an
+    // <iframe>. Without it the frame is blocked and the only trace is a line in the browser console,
+    // so the preview reads as "renders blank" rather than as a policy refusal.
+    expect(d.frameSrc).toEqual(["'self'", "blob:"]);
   });
 
   test("inline script hashes appear only in scriptSrc", () => {
@@ -125,14 +128,23 @@ describe("buildCspDirectives", () => {
     expect(d.scriptSrc).toContain("https://accounts.google.com");
     expect(d.styleSrc).toContain("https://accounts.google.com");
     expect(d.connectSrc).toContain("https://accounts.google.com");
-    expect(d.frameSrc).toEqual(["https://accounts.google.com"]);
+    expect(d.frameSrc).toEqual([
+      "'self'",
+      "blob:",
+      "https://accounts.google.com",
+    ]);
     // NOTE: GSI does not load images/fonts; keep those directives lean.
     expect(d.imgSrc).not.toContain("https://accounts.google.com");
     expect(d.fontSrc).not.toContain("https://accounts.google.com");
   });
 
-  test("googleOAuth disabled keeps frame-src as 'none'", () => {
+  // The document preview needs `'self'`/`blob:` in frame-src whether or not GSI is on, and the GSI
+  // origin is ADDED to that rather than replacing it. Asserting the disabled case separately is what
+  // catches a future edit that makes the two branches disagree — which is how the preview would work
+  // only on instances with Google login configured.
+  test("googleOAuth disabled keeps frame-src at self/blob:", () => {
     const d = buildCspDirectives({ ...baseOpts, googleOAuthEnabled: false });
-    expect(d.frameSrc).toEqual(["'none'"]);
+    expect(d.frameSrc).toEqual(["'self'", "blob:"]);
+    expect(d.frameSrc).not.toContain("https://accounts.google.com");
   });
 });

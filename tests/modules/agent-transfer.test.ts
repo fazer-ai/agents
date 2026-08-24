@@ -10,6 +10,8 @@ import {
   exportAgent,
   importAgent,
 } from "@/modules/agents/transfer";
+import { documentStarter } from "@/modules/documents/starters";
+import { createDocumentTemplate } from "@/modules/documents/templates";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -153,9 +155,9 @@ describe.skipIf(!dbUp)("agent export/import", () => {
     expect(exp.agent.name).toBe("Vendedora");
     // credentialRef is a NAME, not a secret
     expect(exp.agent.modelConfig.credentialRef).toBe("llm-key");
-    const http = exp.agent.tools.find((g) => g.source === "HTTP");
+    const http = exp.agent.tools.find((g) => g?.source === "HTTP");
     expect(http && "tool" in http && http.tool).toBe("lookup_order");
-    const rag = exp.agent.tools.find((g) => g.source === "RAG");
+    const rag = exp.agent.tools.find((g) => g?.source === "RAG");
     expect(rag && "knowledgeBases" in rag && rag.knowledgeBases).toEqual([
       "FAQ",
     ]);
@@ -577,6 +579,19 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
         ],
       },
     });
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const tpl = await createDocumentTemplate(
+      srcCtx(),
+      {
+        name: "Orçamento",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+        numberPrefix: "ORC-",
+      },
+      appDb,
+    );
     const agent = await suDb.agent.create({
       data: {
         tenantId: srcTenant,
@@ -588,6 +603,18 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       },
     });
     srcAgentId = agent.id;
+    const offTpl = await createDocumentTemplate(
+      srcCtx(),
+      {
+        name: "Desativado",
+        slug: "desativado",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+        enabled: false,
+      },
+      appDb,
+    );
     await suDb.agentToolSelection.createMany({
       data: [
         {
@@ -621,6 +648,22 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
           enabledTools: ["search_knowledge"],
           knowledgeBaseIds: [kb.id],
         },
+        {
+          tenantId: srcTenant,
+          agentId: srcAgentId,
+          source: "DOCUMENT",
+          documentTemplateId: BigInt(tpl.id),
+          enabledTools: [],
+          knowledgeBaseIds: [],
+        },
+        {
+          tenantId: srcTenant,
+          agentId: srcAgentId,
+          source: "DOCUMENT",
+          documentTemplateId: BigInt(offTpl.id),
+          enabledTools: [],
+          knowledgeBaseIds: [],
+        },
       ],
     });
   });
@@ -635,6 +678,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
         "mcp_server_connections",
         "integration_instances",
         "knowledge_bases",
+        "document_templates",
         "business_hours",
         "vault_entries",
       ]) {
@@ -660,6 +704,19 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(c?.mcpServers.find((m) => m.name === "tools-server")).toBeDefined();
     expect(c?.integrations.find((i) => i.name === "Pagamentos")).toBeDefined();
     expect(c?.knowledgeBases.find((k) => k.name === "Catálogo")).toBeDefined();
+    // A DOCUMENT grant names a template by SLUG, so the template itself has to travel with it —
+    // otherwise the import has a grant pointing at a component the destination never heard of, and
+    // the only thing it can do is drop the grant with a warning.
+    expect(
+      c?.documentTemplates?.find((tpl) => tpl.slug === "orcamento")?.blocks
+        ?.length,
+    ).toBeGreaterThan(0);
+    // A template the operator turned OFF is off for a reason: omitted from the bundle, the import
+    // recreates it with the column default and the destination agent can issue a document the
+    // source instance had deliberately made unavailable.
+    expect(
+      c?.documentTemplates?.find((tpl) => tpl.slug === "desativado")?.enabled,
+    ).toBe(false);
     // Business hours are bundled so the import can recreate them.
     expect(c?.businessHours?.some((h) => h.name === "Comercial")).toBe(true);
     expect(
@@ -673,6 +730,74 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(json).not.toContain("routeTokenHash");
     // meta block present (item 2).
     expect(exp.meta?.appVersion).toBeDefined();
+  });
+
+  // A template's prose is TENANT CONTENT, like a knowledge-base document's text. The scanner cannot
+  // tell an operator writing "api_key=abcdef" into a quote's terms from a leaked credential, and
+  // refusing there would make that operator's own agent unexportable — the guard blocking the thing
+  // it exists to protect.
+  test("exports a template whose prose looks like a secret", async () => {
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const tpl = await createDocumentTemplate(
+      srcCtx(),
+      {
+        name: "Termos técnicos",
+        slug: "termos_tecnicos",
+        blocks: [
+          {
+            id: "t",
+            type: "text",
+            text: "Configure o webhook com api_key=abcdef0123456789abcdef e avise o time.",
+          },
+        ],
+        // A field's DESCRIPTION is prose for the same reason: it is what the operator writes to tell
+        // the model what belongs in the field, and an example is exactly where a credential-shaped
+        // string appears. Its `name` and `type` are the tool contract and stay scanned.
+        fields: [
+          {
+            name: "chave",
+            label: "Chave",
+            type: "text",
+            description:
+              "a chave do cliente, ex: api_key=abcdef0123456789abcdef",
+          },
+        ],
+        style: starter.style,
+      },
+      appDb,
+    );
+    const agent = await suDb.agent.findUnique({ where: { id: srcAgentId } });
+    if (!agent) throw new Error("no agent");
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId: srcTenant,
+        agentId: srcAgentId,
+        source: "DOCUMENT",
+        documentTemplateId: BigInt(tpl.id),
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    try {
+      const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+        includeComponents: true,
+      });
+      const exported = exp.components?.documentTemplates?.find(
+        (t) => t.slug === "termos_tecnicos",
+      );
+      // …and the prose is still THERE, in both halves: blanking happens on the scan clone, not on
+      // the bundle a destination has to be able to import.
+      expect(JSON.stringify(exported?.blocks)).toContain("api_key=");
+      expect(JSON.stringify(exported?.fields)).toContain("api_key=");
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM agent_tool_selections WHERE document_template_id = ${BigInt(tpl.id)}`,
+      );
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM document_templates WHERE id = ${BigInt(tpl.id)}`,
+      );
+    }
   });
 
   test("import into a fresh tenant creates the missing components (fresh token, empty KB) then grants", async () => {
@@ -738,11 +863,299 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       select: { source: true },
     });
     expect(grants.map((g) => g.source).sort()).toEqual([
+      "DOCUMENT",
+      "DOCUMENT",
       "HTTP",
       "INTEGRATION",
       "MCP",
       "RAG",
     ]);
+    // The template itself was recreated on the destination, and the grant points at THAT row —
+    // a DOCUMENT grant carrying the source tenant's id would reach across the fence or resolve to
+    // nothing at all.
+    const dstTemplate = await suDb.documentTemplate.findFirst({
+      where: { tenantId: dstTenant, slug: "orcamento" },
+      select: { id: true, numberPrefix: true },
+    });
+    expect(dstTemplate?.numberPrefix).toBe("ORC-");
+    // …and the disabled one arrives disabled.
+    const dstOff = await suDb.documentTemplate.findFirst({
+      where: { tenantId: dstTenant, slug: "desativado" },
+      select: { enabled: true },
+    });
+    expect(dstOff?.enabled).toBe(false);
+    const docGrant = await suDb.agentToolSelection.findFirst({
+      where: { agentId: BigInt(agent.id), source: "DOCUMENT" },
+      select: { documentTemplateId: true },
+    });
+    expect(docGrant?.documentTemplateId).toBe(dstTemplate?.id as bigint);
+  });
+
+  // A bundle is user-supplied, and a template's slug becomes a TOOL NAME. One reading `image`
+  // produces `send_image`, which the assembly then drops as a duplicate of the built-in: the
+  // operator would see a granted template whose tool never shows up, with nothing saying why. The
+  // import applies the same slug gate a hand-written template passes.
+  test("refuses an imported template whose slug would collide with a built-in", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const tampered = structuredClone(exp);
+    const tpl = tampered.components?.documentTemplates?.find(
+      (t) => t.slug === "orcamento",
+    );
+    if (!tpl) throw new Error("bundle missing the document template");
+    tpl.slug = "image";
+    const { agent, warnings } = await importAgent(dstCtx(), tampered, appDb);
+    expect(warnings.some((w) => w.code === "documentTemplateInvalid")).toBe(
+      true,
+    );
+    expect(
+      await suDb.documentTemplate.count({
+        where: { tenantId: dstTenant, slug: "image" },
+      }),
+    ).toBe(0);
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agents WHERE id = ${BigInt(agent.id)}`,
+    );
+  });
+
+  // A bundle is hand-editable and this import writes to the table directly, so every rule the normal
+  // write applies has to be applied here too. The description is the one that bites: it is appended
+  // verbatim to the agent's tool description on every turn of the DESTINATION.
+  test("refuses an imported template whose metadata breaks the write's own rules", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const tampered = structuredClone(exp);
+    const tpl = tampered.components?.documentTemplates?.find(
+      (t) => t.slug === "orcamento",
+    );
+    if (!tpl) throw new Error("bundle missing the document template");
+    tpl.slug = "orcamento_importado";
+    tpl.description = "x".repeat(2_001);
+    const { agent, warnings } = await importAgent(dstCtx(), tampered, appDb);
+    expect(warnings.some((w) => w.code === "documentTemplateInvalid")).toBe(
+      true,
+    );
+    expect(
+      await suDb.documentTemplate.count({
+        where: { tenantId: dstTenant, slug: "orcamento_importado" },
+      }),
+    ).toBe(0);
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agents WHERE id = ${BigInt(agent.id)}`,
+    );
+  });
+
+  // The gate and the WRITE have to agree on what the value is. `templateNameSchema` trims before it
+  // measures, so a name padded with whitespace passes a check the raw string would fail — and this
+  // path wrote the raw string. The name becomes the tool's title, which every granted agent carries
+  // on every turn, so a hand-edited bundle could plant a huge one past a bound that had just
+  // approved it.
+  test("stores the name the metadata gate approved, not the raw one", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const tampered = structuredClone(exp);
+    const tpl = tampered.components?.documentTemplates?.find(
+      (t) => t.slug === "orcamento",
+    );
+    if (!tpl) throw new Error("bundle missing the document template");
+    tpl.slug = "orcamento_espacado";
+    // Under the 120-character bound once trimmed, far past it as written. The name is also distinct
+    // from every template this destination holds: names are unique per tenant, so reusing "Orçamento"
+    // here would be testing that constraint instead of the trim.
+    tpl.name = `${" ".repeat(500)}Orçamento espaçado${" ".repeat(500)}`;
+    const { agent, warnings } = await importAgent(dstCtx(), tampered, appDb);
+    expect(warnings.some((w) => w.code === "documentTemplateInvalid")).toBe(
+      false,
+    );
+    const row = await suDb.documentTemplate.findFirst({
+      where: { tenantId: dstTenant, slug: "orcamento_espacado" },
+      select: { name: true },
+    });
+    expect(row?.name).toBe("Orçamento espaçado");
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM document_templates WHERE tenant_id = ${dstTenant} AND slug = 'orcamento_espacado'`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agents WHERE id = ${BigInt(agent.id)}`,
+    );
+  });
+
+  // Names are unique per tenant, so a bundle can arrive with a free slug and a name this account
+  // already uses. That has to be a WARNING: it used to reach the unique index and come back as a
+  // driver error, which fails the whole import over one component.
+  test("warns instead of failing when the bundle's template name is taken here", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const tampered = structuredClone(exp);
+    const tpl = tampered.components?.documentTemplates?.find(
+      (t) => t.slug === "orcamento",
+    );
+    if (!tpl) throw new Error("bundle missing the document template");
+    const taken = await suDb.documentTemplate.findFirst({
+      where: { tenantId: dstTenant },
+      select: { name: true },
+    });
+    if (!taken) throw new Error("destination has no template to collide with");
+    tpl.slug = "orcamento_outro_slug";
+    tpl.name = taken.name;
+    const { agent, warnings } = await importAgent(dstCtx(), tampered, appDb);
+    expect(warnings.some((w) => w.code === "documentTemplateNameTaken")).toBe(
+      true,
+    );
+    // Nothing was written under the free slug, and the import still produced an agent.
+    const row = await suDb.documentTemplate.findFirst({
+      where: { tenantId: dstTenant, slug: "orcamento_outro_slug" },
+      select: { id: true },
+    });
+    expect(row).toBeNull();
+    expect(agent.id).toBeTruthy();
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agents WHERE id = ${BigInt(agent.id)}`,
+    );
+  });
+
+  // The pre-check above answers "free", and the whole import runs inside ONE transaction. So a writer
+  // that commits in the window between that answer and the insert does not cost one template: the
+  // P2002 aborts the transaction, every statement after it fails with "current transaction is
+  // aborted", and the operator loses the entire import — agent, tools, knowledge bases — to a race.
+  //
+  // A `catch` around the insert cannot fix that, which is the trap here: it looks like the remedy and
+  // makes the failure less legible, because the transaction is already dead when it runs. Only NOT
+  // RAISING works, which is what `ON CONFLICT DO NOTHING` does.
+  //
+  // The race is produced rather than waited for: the interceptor below commits the colliding row on
+  // the SUPERUSER connection — a different transaction — at the moment the pre-check answers.
+  test("survives a writer that takes the name between the check and the insert", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const tampered = structuredClone(exp);
+    const tpl = tampered.components?.documentTemplates?.find(
+      (t) => t.slug === "orcamento",
+    );
+    if (!tpl) throw new Error("bundle missing the document template");
+    tpl.slug = `corrida_${process.pid}`;
+    tpl.name = `Corrida ${process.pid}`;
+
+    let raced = false;
+    const racing = appDb.$extends({
+      query: {
+        documentTemplate: {
+          async findFirst({ args, query }) {
+            const answer = await query(args);
+            // Fired on the NAME pre-check specifically, and measured rather than assumed: the first
+            // version fired on the SLUG one, so the name check that runs next found the row and took
+            // the ordinary warning path. The test passed against the unfixed code — a race test that
+            // never reaches the race, which is worse than no test.
+            const asksByName =
+              (args as { where?: { name?: unknown } }).where?.name !==
+              undefined;
+            if (!raced && asksByName && answer === null) {
+              raced = true;
+              await suDb.documentTemplate.create({
+                data: {
+                  tenantId: dstTenant,
+                  name: tpl.name,
+                  slug: `outro_${process.pid}`,
+                  blocks: [],
+                  fields: [],
+                  style: {},
+                },
+              });
+            }
+            return answer;
+          },
+        },
+      },
+    });
+
+    const { agent, warnings } = await importAgent(
+      dstCtx(),
+      tampered,
+      racing as unknown as typeof appDb,
+    );
+    // The rendezvous actually happened. Without this the test passes just as well when the
+    // interceptor never fired and no race was ever created.
+    expect(raced).toBe(true);
+    // The import completed, which is the whole point: an agent came back.
+    expect(agent.id).toBeTruthy();
+    expect(warnings.some((w) => w.code === "documentTemplateNameTaken")).toBe(
+      true,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agents WHERE id = ${BigInt(agent.id)}`,
+    );
+    await suDb.documentTemplate.deleteMany({
+      where: { tenantId: dstTenant, name: tpl.name },
+    });
+  });
+
+  // A discriminated union refuses the WHOLE array on one unknown arm, so a grant of a source a newer
+  // release added would make an otherwise importable agent unimportable — and say nothing about
+  // which part was the problem. Dropped with a count instead.
+  test("skips a grant whose source this build does not know", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const tampered = structuredClone(exp) as unknown as {
+      agent: { tools: unknown[] };
+    };
+    tampered.agent.tools.push({ source: "HOLOGRAM", projector: "x" });
+    const { agent, warnings } = await importAgent(
+      dstCtx(),
+      tampered as never,
+      appDb,
+    );
+    expect(warnings.some((w) => w.code === "unknownGrantSourceSkipped")).toBe(
+      true,
+    );
+    // …and everything else still arrived.
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id) },
+      select: { source: true },
+    });
+    expect(grants.length).toBeGreaterThan(3);
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agents WHERE id = ${BigInt(agent.id)}`,
+    );
+  });
+
+  // The other side of the tolerant fallback: a grant from a source we DO know, missing its required
+  // field, is a broken bundle — not a newer version's doing. Swallowing it would drop the grant in
+  // silence and blame the wrong thing.
+  test("refuses a malformed grant from a source it knows", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const tampered = structuredClone(exp) as unknown as {
+      agent: { tools: unknown[] };
+    };
+    tampered.agent.tools.push({ source: "DOCUMENT" });
+    await expect(
+      importAgent(dstCtx(), tampered as never, appDb),
+    ).rejects.toThrow();
   });
 
   test("import canonicalizes legacy authoring shapes (JSON-Schema inputSchema, single-brace {var})", async () => {
@@ -763,7 +1176,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       properties: { order_id: { type: "string" } },
     };
     const grant = legacy.agent.tools.find(
-      (g) => g.source === "HTTP" && g.tool === "lookup_order",
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
     );
     if (grant?.source === "HTTP") grant.tool = "legacy_lookup";
     await importAgent(dstCtx(), legacy, appDb);
@@ -811,7 +1224,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     tool.name = "retired_tier_lookup";
     (tool as unknown as Record<string, unknown>).riskTier = "high";
     const grant = dated.agent.tools.find(
-      (g) => g.source === "HTTP" && g.tool === "lookup_order",
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
     );
     if (grant?.source === "HTTP") grant.tool = "retired_tier_lookup";
     await importAgent(dstCtx(), dated, appDb);

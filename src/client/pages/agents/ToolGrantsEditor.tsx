@@ -1,6 +1,8 @@
 import {
   Check,
   ChevronDown,
+  FileText,
+  Loader2,
   type LucideIcon,
   Pencil,
   Plug,
@@ -10,7 +12,7 @@ import {
   Webhook,
   Wrench,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Badge,
@@ -37,6 +39,10 @@ import {
   withToolpackArgNotes,
 } from "@/client/lib/toolpackTools";
 import { cn } from "@/client/lib/utils";
+import {
+  DocumentTemplateModal,
+  type TemplateModalPayload,
+} from "@/client/pages/resources/documents/DocumentTemplateModal";
 import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditModal";
 import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
@@ -263,10 +269,15 @@ function CreateButton({
 function EditableCard({
   onEdit,
   editLabel,
+  busy,
   children,
 }: {
   onEdit: () => void;
   editLabel: string;
+  // Set while opening costs a round trip (the document modal has to fetch the full template). The
+  // button is disabled rather than merely spinning: a second click starts a second fetch, and the
+  // one that lands last decides which modal the operator gets.
+  busy?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -276,14 +287,19 @@ function EditableCard({
           h-5 button put both centers at the same y. */}
       <button
         type="button"
+        disabled={busy}
         onClick={(e) => {
           e.stopPropagation();
           onEdit();
         }}
         aria-label={editLabel}
-        className="absolute top-3.5 right-9 flex h-5 w-5 items-center justify-center rounded text-text-muted hover:text-text-primary"
+        className="absolute top-3.5 right-9 flex h-5 w-5 items-center justify-center rounded text-text-muted hover:text-text-primary disabled:opacity-50"
       >
-        <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+        {busy ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+        ) : (
+          <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+        )}
       </button>
     </div>
   );
@@ -454,6 +470,12 @@ export function ToolGrantsEditor({
   const toolModal = useModalController<{ id?: string }>();
   const mcpModal = useModalController<{ id?: string }>();
   const integrationModal = useModalController<{ id?: string }>();
+  // Documents are the one grant whose target has a PICTURE, and the row alone (name, tool name, one
+  // line of description) does not answer the question the operator is actually asking here: what
+  // does this print? The same modal Components uses, so the preview and the wording are editable
+  // from where the decision is being made.
+  const documentModal = useModalController<TemplateModalPayload>();
+  const [openingDocument, setOpeningDocument] = useState<string | null>(null);
   // A just-created integration is auto-granted with ALL its tools (matching the manual toggle), but
   // its tool list only arrives once the catalog refetches — defer the grant until the instance shows
   // up in the refreshed catalog (the effect below applies it then).
@@ -675,6 +697,46 @@ export function ToolGrantsEditor({
     if (isNew) setPendingIntegrationId(saved.id);
   }
 
+  // The catalog row is a projection (name, tool name, description); the modal edits the whole
+  // template, so it has to be fetched. A session token because the fetch is slow enough for an
+  // operator to click a second template before the first answers, and an unconditional open then
+  // shows template A's blocks under B's name — the same hazard the Components panel's reference
+  // lookup carries (docs/modals.md).
+  const documentSession = useRef(0);
+
+  async function openDocument(id: string) {
+    const session = ++documentSession.current;
+    setOpeningDocument(id);
+    try {
+      const { data, error: err } = await api.api.v1["document-templates"]({
+        id,
+      }).get();
+      if (session !== documentSession.current) return;
+      if (err || !data) {
+        showToast(
+          t("editor.tools.documentOpenError", "Could not open this template."),
+          "error",
+        );
+        return;
+      }
+      documentModal.open({ template: data.template });
+    } catch {
+      // MEASURED, because the usual note here is wrong for this call: a `fetch` that throws comes
+      // back through Eden as `{ error }`, so the branch above is what an offline click hits. This is
+      // the net for everything else that can throw between here and the open, and it is what keeps
+      // the `finally` reachable — without it a throw leaves the spinner turning forever. No test
+      // reaches it.
+      if (session === documentSession.current) {
+        showToast(
+          t("editor.tools.documentOpenError", "Could not open this template."),
+          "error",
+        );
+      }
+    } finally {
+      if (session === documentSession.current) setOpeningDocument(null);
+    }
+  }
+
   function toggleMcp(id: string) {
     const exists = nonRag.some(
       (g) => g.source === "MCP" && g.mcpServerConnectionId === id,
@@ -742,6 +804,21 @@ export function ToolGrantsEditor({
     } finally {
       setDiscovering(null);
     }
+  }
+
+  // A template grant exposes exactly one tool, so there is nothing to narrow: the card is the whole
+  // switch, unlike the MCP and integration cards below it.
+  function toggleDocument(id: string) {
+    const exists = nonRag.some(
+      (g) => g.source === "DOCUMENT" && g.documentTemplateId === id,
+    );
+    emit(
+      exists
+        ? nonRag.filter(
+            (g) => !(g.source === "DOCUMENT" && g.documentTemplateId === id),
+          )
+        : [...nonRag, { source: "DOCUMENT", documentTemplateId: id }],
+    );
   }
 
   function toggleIntegration(id: string, allTools: string[]) {
@@ -1129,6 +1206,69 @@ export function ToolGrantsEditor({
         )}
       </Section>
 
+      <Section
+        id="tools-documents"
+        icon={FileText}
+        title={t("editor.tools.documents", "Documents")}
+        description={t(
+          "editor.tools.documentsDesc",
+          "Templates this agent may issue and attach to a reply. Each one becomes a tool of its own.",
+        )}
+      >
+        {catalog.documentTemplates.length === 0 ? (
+          <p className="text-text-muted text-xs">
+            {t(
+              "editor.tools.noDocuments",
+              "No document templates yet. Create one under Components.",
+            )}
+          </p>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {catalog.documentTemplates.map((tpl) => (
+              <EditableCard
+                key={tpl.id}
+                editLabel={t(
+                  "editor.tools.documentPreview",
+                  "Preview and edit this template",
+                )}
+                onEdit={() => void openDocument(tpl.id)}
+                busy={openingDocument === tpl.id}
+              >
+                <SelectableCard
+                  selected={nonRag.some(
+                    (g) =>
+                      g.source === "DOCUMENT" &&
+                      g.documentTemplateId === tpl.id,
+                  )}
+                  onToggle={() => toggleDocument(tpl.id)}
+                  icon={FileText}
+                  title={tpl.name}
+                  badge={<Badge variant="secondary">{tpl.toolName}</Badge>}
+                  // AVAILABLE, not merely enabled. Assembly skips a template for two reasons, and an
+                  // operator who cannot see the second one grants a tool, saves, and gets no tool —
+                  // with the row saying nothing about why. The two are separate messages because the
+                  // remedies are: one is a switch on this template, the other is content this build
+                  // cannot read and has to be edited from the client that wrote it.
+                  description={
+                    tpl.available
+                      ? (tpl.description ?? undefined)
+                      : tpl.enabled
+                        ? t(
+                            "editor.tools.documentUnreadable",
+                            "Written by a newer version, so the agent will not see this tool until it is edited from there.",
+                          )
+                        : t(
+                            "editor.tools.documentDisabled",
+                            "Disabled: the agent will not see this tool.",
+                          )
+                  }
+                />
+              </EditableCard>
+            ))}
+          </div>
+        )}
+      </Section>
+
       <CollapsibleSection
         id="tools-native"
         icon={Wrench}
@@ -1462,6 +1602,12 @@ export function ToolGrantsEditor({
         modal={integrationModal}
         sharedNotice
         onSaved={onIntegrationSaved}
+      />
+      {/* A save here changes the tool the agent sees — its name, its wording, whether it is
+          available at all — so the catalog has to be refetched, exactly like the other three. */}
+      <DocumentTemplateModal
+        modal={documentModal}
+        onSaved={() => void onCatalogChange()}
       />
     </div>
   );

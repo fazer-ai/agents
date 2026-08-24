@@ -83,17 +83,13 @@ enum ApprovalStatus {
   REJECTED
 }
 
-enum QuoteStatus {
-  PENDING
-  READY
-}
-
 enum AgentToolSource {
   NATIVE
   RAG
   HTTP
   MCP
   INTEGRATION
+  DOCUMENT
 }
 
 // ──────────────────────────────────────────────────────── identity ──
@@ -138,7 +134,8 @@ model Tenant {
   webhookSubscriptions          WebhookSubscription[]
   outboundWebhookDeliveries     OutboundWebhookDelivery[]
   schedulerJobs                 SchedulerJob[]
-  quotes                        Quote[]
+  documentTemplates             DocumentTemplate[]
+  issuedDocuments               IssuedDocument[]
   experiments                   Experiment[]
   promptVariantAssignments      PromptVariantAssignment[]
   llmUsages                     LlmUsage[]
@@ -1030,6 +1027,7 @@ model AgentToolSelection {
   toolDefinitionId      BigInt?         @map("tool_definition_id")
   mcpServerConnectionId BigInt?         @map("mcp_server_connection_id")
   integrationInstanceId BigInt?         @map("integration_instance_id")
+  documentTemplateId    BigInt?         @map("document_template_id")
   knowledgeBaseIds      BigInt[]        @map("knowledge_base_ids")
   enabledTools          String[]        @map("enabled_tools")
   createdAt             DateTime        @default(now()) @map("created_at")
@@ -1040,6 +1038,7 @@ model AgentToolSelection {
   toolDefinition      ToolDefinition?      @relation(fields: [toolDefinitionId], references: [id], onDelete: Cascade)
   mcpServerConnection McpServerConnection? @relation(fields: [mcpServerConnectionId], references: [id], onDelete: Cascade)
   integrationInstance IntegrationInstance? @relation(fields: [integrationInstanceId], references: [id], onDelete: Cascade)
+  documentTemplate    DocumentTemplate?    @relation(fields: [documentTemplateId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
   @@index([agentId])
@@ -1180,29 +1179,88 @@ model SchedulerJob {
   @@map("scheduler_jobs")
 }
 
-// ──────────────────────────────────────────────────────── quotes ──
+// ───────────────────────────────────────────────────── documents ──
 
-// NOTE: accessTokenHash is the SHA-256 of the public-link token (constant-time lookup).
-model Quote {
-  id              BigInt      @id @default(autoincrement())
-  tenantId        BigInt      @map("tenant_id")
-  conversationId  BigInt?     @map("conversation_id")
-  threadId        String?     @map("thread_id")
-  idempotencyKey  String      @map("idempotency_key")
-  status          QuoteStatus @default(PENDING)
-  snapshot        Json        @default("{}")
-  pdfStorageKey   String?     @map("pdf_storage_key")
-  accessTokenHash String?     @unique @map("access_token_hash")
-  expiresAt       DateTime?   @map("expires_at")
-  revoked         Boolean     @default(false)
-  createdAt       DateTime    @default(now()) @map("created_at")
-  updatedAt       DateTime    @updatedAt @map("updated_at")
+// A tenant-authored document (quote, proposal, receipt, service order): the ordered `blocks` that
+// lay it out, the `fields` an agent fills at issue time, and the `style` it renders with. All three
+// are validated by modules/documents/blocks.ts, not by Prisma — the shapes are unions, and a JSON
+// column is what lets the vocabulary grow without a migration per block type.
+model DocumentTemplate {
+  id          BigInt   @id @default(autoincrement())
+  tenantId    BigInt   @map("tenant_id")
+  // UNIQUE per tenant, and not for tidiness: the name is what the MODEL reads to choose between the
+  // document tools an agent was granted. Two templates called "Orçamento" publish two tools with the
+  // same description and nothing to pick between them, so the agent sends whichever it happens to
+  // choose. Enforced separately from the slug because a caller can supply its own slug, which would
+  // otherwise let the same name through twice.
+  name        String
+  // Tool-name-safe identifier. UNIQUE per tenant because it becomes the agent's tool name
+  // (send_<slug>) and two tools with one name is a grant the operator cannot tell apart.
+  slug        String
+  description String?
+  blocks      Json     @default("[]")
+  fields      Json     @default("[]")
+  style       Json     @default("{}")
+  // Per-template document counter, bumped once per issued row. Monotonic, not gapless: a crash
+  // between the insert and the bump leaves the row unnumbered and the heal takes the next value.
+  lastNumber  Int      @default(0) @map("last_number")
+  numberPrefix String? @map("number_prefix")
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant          Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issuedDocuments IssuedDocument[]
+  toolSelections  AgentToolSelection[]
+
+  @@unique([tenantId, slug])
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("document_templates")
+}
+
+// One rendered document. `snapshot` freezes the blocks, style, company profile and values AS
+// RENDERED, so editing the template afterwards cannot change a PDF the customer already holds —
+// which is also why templateId is nullable and SetNull: the row renders from itself, and the
+// foreign key is provenance, not a dependency. Restrict would make a template with one issued
+// document undeletable forever.
+model IssuedDocument {
+  id                 BigInt   @id @default(autoincrement())
+  tenantId           BigInt   @map("tenant_id")
+  templateId         BigInt?  @map("template_id")
+  title              String
+  // Set once, from the template's counter. Rendered as {{doc_number}}; null only while the row is
+  // still being written.
+  number             Int?
+  // The template's prefix as it stood at issuance, frozen here rather than joined when the number is
+  // printed. The number is how this document identifies itself to the customer holding it: renaming
+  // the template's prefix must not rewrite it, and deleting the template (which nulls templateId,
+  // by design) must not erase it.
+  numberPrefix       String?  @map("number_prefix")
+  // The conversation this document belongs to, as the thread key (tenant:instance:conversation).
+  // Chatwoot conversation ids repeat across a tenant's accounts, so the conversation id alone
+  // cannot address a conversation — the same trap PR #204 hit from the other side.
+  threadId           String?  @map("thread_id")
+  chatwootInstanceId BigInt?  @map("chatwoot_instance_id")
+  conversationId     BigInt?  @map("conversation_id")
+  idempotencyKey     String   @map("idempotency_key")
+  // "PENDING" | "READY". A String rather than a Prisma enum so a later state is a code deploy
+  // instead of an ALTER TYPE (same call as IntegrationInstance.catalogType).
+  status             String   @default("PENDING")
+  snapshot           Json     @default("{}")
+  pdfStorageKey      String?  @map("pdf_storage_key")
+  revoked            Boolean  @default(false)
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  template DocumentTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, idempotencyKey])
   @@index([tenantId])
-  @@map("quotes")
+  @@index([tenantId, threadId])
+  @@index([tenantId, templateId])
+  @@map("issued_documents")
 }
 
 // ───────────────────────────────────────────────── A/B testing ──

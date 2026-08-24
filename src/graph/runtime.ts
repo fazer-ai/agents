@@ -127,6 +127,8 @@ export interface RuntimeDeps {
   contactAuthFetch?: typeof fetch;
   // Injectable download + SSRF assertion for send_image (tests); the real ones in production.
   imageDeps?: ImageFetchDeps;
+  // Injectable for tests: where a document tool writes and reads its rendered PDF.
+  documentsStorageDir?: string;
   // Injectable LLM speech normalizer (tests); production builds one from the agent's model when the
   // agent enables tts.normalize. Best-effort — synthesizeReply falls back to raw text on failure.
   normalizeSpeech?: (text: string) => Promise<string>;
@@ -250,32 +252,122 @@ async function applyDeferredResolve(
   }
 }
 
-// Delivers the images the agent queued this turn, AFTER the same gates the reply passes. Best-effort
-// per image: one failed attachment must not cost the customer the reply that follows it. Invariant:
-// called only on the "posted" and "empty" outcomes — a superseded, taken-over or blocked turn drops
-// the queue, exactly like the deferred resolve intent. Returns whether the customer actually received
-// something, which is what makes an image-only turn count as answered.
-async function deliverPendingImages(
+// Delivers the files the agent queued this turn (an image, a document), AFTER the same gates the
+// reply passes. Best-effort per file: one failed attachment must not cost the customer the reply that
+// follows it. Invariant: called only on the "posted" and "empty" outcomes — a superseded, taken-over
+// or blocked turn drops the queue, exactly like the deferred resolve intent.
+//
+// THREE answers, not one bit. "Did the customer receive something?" is what makes an
+// attachment-only turn count as answered — but the caller also has to know WHY nothing arrived, and
+// those are different events: a delivery that failed is a turn error the operator has to be told
+// about (private note, lastError, alert), a document they revoked while the model was still writing
+// is their own decision landing, and a run called off mid-batch is the operator clearing the
+// conversation out from under it. One flag answered all three, so an attachment-only turn whose
+// document the operator withdrew alerted them about their own click, and a /reset that landed
+// between two pictures put `lastError` back on the conversation it had just cleared.
+interface AttachmentDelivery {
+  // Something reached the customer.
+  sent: boolean;
+  // At least one attachment was attempted and did not get through. Neither a revocation nor a
+  // called-off run is a failure: nothing was attempted for either.
+  failed: boolean;
+  // The run was retired part-way through the batch, so the rest was never attempted. Read together
+  // with `sent`, because what already left decides the turn's word: a batch stopped after its second
+  // picture has delivered one, and reporting "stale" would hand the burst back to the next flush,
+  // which would send that picture again.
+  calledOff: boolean;
+}
+
+async function deliverPendingAttachments(
   client: ChatwootClient,
   conversationId: number,
   turnState: TurnState,
   flow: FlowContext,
+  document?: { tenantId: bigint; base: PrismaClient },
   // Asked before EACH attachment, not once before the batch: every send here is a separate write
-  // separated from the last by a Chatwoot round trip, so a run called off after the second picture
+  // separated from the last by a Chatwoot round trip, so a run called off after the second file
   // would go on posting the third into a conversation the operator was told had been cleared.
   calledOff: () => Promise<boolean> = async () => false,
-): Promise<{ sent: boolean; calledOff: boolean }> {
+): Promise<AttachmentDelivery> {
   // NOTE: Sorted by the model's tool-call order, not by the order the downloads finished in — the
   // batch runs concurrently, and a caption only makes sense next to the picture it was written for.
-  const queued = turnState.pendingImages
+  const queued = turnState.pendingAttachments
     .splice(0)
     .sort((a, b) => a.order - b.order);
   let sent = false;
+  let failed = false;
   let stopped = false;
-  for (const img of queued) {
-    // Reported back, not folded into `sent`. "Nothing was delivered" answers two different questions
-    // — every attachment failed, or the run was called off — and the image-only branch throws on the
-    // first, which would put `lastError` back on a conversation /reset had just cleared.
+  for (const file of queued) {
+    // A document is queued as BYTES, and bytes cannot say whether the row is still deliverable. The
+    // operator can revoke between the tool issuing it and this loop running — the model still had a
+    // response to finish — and that window is seconds wide, which is where a revocation realistically
+    // lands. Asked here, immediately before the send, because anywhere earlier widens it.
+    //
+    // WHAT IS NOT CLOSED, deliberately: the instant between this read and the HTTP request. The send
+    // is a call to Chatwoot, not a write in our transaction, so no lock makes the two atomic — and a
+    // lock held across it would make revocation, the operator's stop button, wait behind the very
+    // system it is trying to stop. A revoke committing inside that instant delivers, and the document
+    // is revoked from that moment on: the link stops serving it, which is the part that lasts.
+    if (file.documentId && document) {
+      // Fails CLOSED and, just as importantly, fails LOCALLY: a transient database error here must
+      // not throw out of the loop, because the loop is also what delivers the model's text reply.
+      // Losing an answer the customer was owed, over a lookup about an attachment, would be a worse
+      // outcome than the one this check exists to prevent.
+      const live = await runScopedOn(
+        document.base,
+        { tenantId: document.tenantId, userId: null, role: "TENANT_ADMIN" },
+        (db) =>
+          db.issuedDocument.findUnique({
+            where: { id: file.documentId as bigint },
+            select: { revoked: true },
+          }),
+      ).catch((e: unknown) => {
+        logger.warn(
+          "document %s: revocation recheck failed before delivery — not sending: %s",
+          String(file.documentId),
+          e instanceof Error ? e.message : String(e),
+        );
+        return null;
+      });
+      if (live?.revoked !== false) {
+        // Two events wearing one shape. From here they look identical — nothing was delivered — and
+        // they are not the same thing: `revoked` is the operator's own click arriving, and anything
+        // else is this check being unable to answer (the lookup failed, or the row is gone). Only
+        // the first is a decision.
+        //
+        // The bit the caller reads and the line the operator reads are decided HERE, together. They
+        // were written as two statements once, and drifted: the turn counted the failure while the
+        // trail reported an intentional revocation, so the one place an operator would look to find
+        // out why the file never arrived told them somebody meant it.
+        const revoked = live?.revoked === true;
+        if (!revoked) failed = true;
+        emitFlowEvent(flow, {
+          stage: "tool",
+          ...(revoked
+            ? {
+                status: "skipped" as const,
+                detail: { tool: file.tool, outcome: "revoked_before_delivery" },
+              }
+            : {
+                level: "warn" as const,
+                status: "error" as const,
+                detail: { tool: file.tool, outcome: "revocation_unknown" },
+                errorMessage:
+                  "could not confirm whether this document was revoked; it was not sent",
+              }),
+        });
+        continue;
+      }
+    }
+    // ASKED LAST, after the revocation lookup rather than before it. THE RULE these asks follow
+    // (./nudge.ts) is one ask per stretch of I/O that precedes a write, and never any I/O between an
+    // ask and the write it guards — and the lookup above is I/O. Asking first and reading second
+    // would put a database round trip inside the very window this exists to close.
+    //
+    // Reported back rather than folded into `sent`, because "nothing was delivered" now answers
+    // three different questions: every attachment failed, the operator revoked one, or the run was
+    // called off. The attachment-only branch throws on the first, which would put `lastError` back
+    // on a conversation /reset had just cleared.
     if (await calledOff()) {
       stopped = true;
       break;
@@ -283,21 +375,25 @@ async function deliverPendingImages(
     try {
       await client.sendFileAttachment(
         conversationId,
-        img.bytes,
-        img.fileName,
-        img.mime,
-        { caption: img.caption },
+        file.bytes,
+        file.fileName,
+        file.mime,
+        { caption: file.caption },
       );
       sent = true;
       emitFlowEvent(flow, {
         stage: "tool",
         status: "ok",
-        detail: { tool: "send_image", outcome: "sent" },
+        // NOTE: the queueing tool, not a constant. An operator filtering the trail for the tool they
+        // granted has to find the line it produced, and a document reported as send_image sends them
+        // to the image host allowlist to debug a PDF read off our own disk.
+        detail: { tool: file.tool, outcome: "sent" },
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       logger.warn(
-        "send_image delivery failed (conv=%s): %s",
+        "%s delivery failed (conv=%s): %s",
+        file.tool,
         String(conversationId),
         msg,
       );
@@ -305,12 +401,13 @@ async function deliverPendingImages(
         stage: "tool",
         level: "warn",
         status: "error",
-        detail: { tool: "send_image", outcome: "failed" },
+        detail: { tool: file.tool, outcome: "failed" },
         errorMessage: msg,
       });
+      failed = true;
     }
   }
-  return { sent, calledOff: stopped };
+  return { sent, failed, calledOff: stopped };
 }
 
 // Builds the client + tools + graph from an already-loaded AgentConfig, invokes the thread, re-checks
@@ -387,9 +484,10 @@ export async function runLoadedTurn(
   // Per-turn mutable state shared with the native tools (deferred resolve intent).
   const turnState: TurnState = {
     resolveRequested: false,
-    pendingImages: [],
+    pendingAttachments: [],
     imagesInFlight: 0,
-    imagesSeq: 0,
+    documentsInFlight: 0,
+    attachmentsSeq: 0,
   };
   const handoffState = {
     customerMessage: null as string | null,
@@ -406,6 +504,7 @@ export async function runLoadedTurn(
       threadId,
       messageId: params.messageId,
       imageDeps: params.deps?.imageDeps,
+      documentsStorageDir: params.deps?.documentsStorageDir,
       turnState,
       handoffState,
     },
@@ -642,7 +741,7 @@ export async function runLoadedTurn(
       // customer-facing text means the same thing wherever it is reached: a `silent` action that
       // suppressed the goodbye and then let a photo through would be the operator's policy applied
       // to one artefact and not the other.
-      if (guardrailTripped(guarded)) turnState.pendingImages.length = 0;
+      if (guardrailTripped(guarded)) turnState.pendingAttachments.length = 0;
       const screened = screenedText(guarded, line);
       if (screened === null) return;
       const delivered = await deliverText(screened, await currentVoiceReply());
@@ -1042,21 +1141,24 @@ export async function runLoadedTurn(
     // template / a guardrails-generated safe reply, or suppress the send entirely ("silent"). A
     // suppressed send also discards the deferred resolve intent — resolving a conversation whose
     // goodbye was blocked would strand the customer with no reply and no human.
-    // NOTE: The captions ride along into the screening: they are model-written text the customer
-    // reads, so moderating the reply while a caption goes out unread would be a hole. A trip drops
-    // the queue — the safe reply replaces what the model wrote, images included. This sits ABOVE the
-    // empty-reply branch because a caption is customer-facing text even when the model produced no
-    // final message of its own (skip_reply with an image is a legitimate shape).
-    const captions = turnState.pendingImages
-      .map((i) => i.caption?.trim())
-      .filter((c): c is string => !!c);
-    const screened = [reply, ...captions].filter(Boolean).join("\n");
+    // NOTE: Everything the MODEL wrote for the customer rides along into the screening, not just the
+    // reply: a caption, and the values a model put inside a document (its field text and line-item
+    // descriptions). All of it is text the customer reads, so moderating the reply while the rest
+    // goes out unread would be a hole — and the document version of that hole is worse, because it
+    // reaches them as a numbered PDF they keep. A trip drops the queue — the safe reply replaces what
+    // the model wrote, attachments included. This sits ABOVE the empty-reply branch because a caption
+    // is customer-facing text even when the model produced no final message of its own (skip_reply
+    // with an image is a legitimate shape).
+    const modelWritten = turnState.pendingAttachments.flatMap((i) =>
+      [i.caption?.trim(), i.screenText?.trim()].filter((c): c is string => !!c),
+    );
+    const screened = [reply, ...modelWritten].filter(Boolean).join("\n");
     const outGuard = screened ? await runGuardrail("output", screened) : null;
     // Same wait, same reason: `postBlocked` answered before this model call, and the suppressed
     // branch below returns "blocked" without passing any later ask.
     if (await writeCalledOff()) return "stale";
     if (outGuard && guardrailTripped(outGuard)) {
-      turnState.pendingImages.length = 0;
+      turnState.pendingAttachments.length = 0;
       const replacement = screenedText(outGuard, screened);
       if (replacement === null) return "blocked";
       reply = replacement;
@@ -1073,31 +1175,44 @@ export async function runLoadedTurn(
     if (!reply) {
       // Nothing has left this turn yet on this branch, so the whole thing stands down.
       if (await writeCalledOff()) return "stale";
-      const queued = turnState.pendingImages.length;
-      const images = await deliverPendingImages(
+      const queued = turnState.pendingAttachments.length;
+      const {
+        sent,
+        failed,
+        calledOff: attachmentsCalledOff,
+      } = await deliverPendingAttachments(
         client,
         conversationId,
         turnState,
         flow,
+        { tenantId: params.tenantId, base },
         writeCalledOff,
       );
-      // Only when NOTHING left. A batch that was called off after its second attachment already
-      // reached the customer, and "stale" would leave the watermark where it is — handing the same
-      // burst to the next flush, which would send that attachment again. What was delivered decides
-      // the word, the same rule the reply below follows.
-      if (images.calledOff && !images.sent) return "stale";
-      const sent = images.sent;
-      // NOTE: The images WERE the turn and none of them reached the customer. That is a failed turn,
-      // not a silent one: returning "empty" here would let the deferred resolve close a conversation
-      // nobody answered, and the callers only record a turn error (private note, lastError, alert)
-      // when the turn THROWS. Best-effort per image still holds where a reply carries the turn.
-      // NOTE: ...unless a handoff already answered. Then the images were NOT the turn, and a throw
+      // Only when NOTHING left. A batch called off after its second attachment already reached the
+      // customer, and "stale" would leave the watermark where it is — handing the same burst to the
+      // next flush, which would send that attachment again. What was delivered decides the word, the
+      // same rule the reply below follows.
+      if (attachmentsCalledOff && !sent) return "stale";
+      // NOTE: The attachments WERE the turn and none of them reached the customer. That is a failed
+      // turn, not a silent one: returning "empty" here would let the deferred resolve close a
+      // conversation nobody answered, and the callers only record a turn error (private note,
+      // lastError, alert) when the turn THROWS. Best-effort per file still holds where a reply
+      // carries the turn.
+      // NOTE: ...unless a handoff already answered. Then the files were NOT the turn, and a throw
       // would record a turn error (private note, lastError, alert) on a conversation that was both
       // answered and correctly handed to a human.
+      // NOTE: ...or unless nothing FAILED. A document the operator revoked while the model was
+      // still writing held itself back on purpose, and reporting their own decision as a turn error
+      // alerts them about their own click. Nothing was delivered either way, so the turn is empty —
+      // and the deferred resolve is skipped with it, because a conversation the customer never
+      // heard back on must not close.
       if (queued > 0 && !sent && !handedOff) {
-        throw new Error(
-          "send_image: nenhuma imagem foi entregue e o turno não tinha resposta em texto",
-        );
+        if (failed) {
+          throw new Error(
+            "envio de anexo: nada foi entregue e o turno não tinha resposta em texto",
+          );
+        }
+        return "empty";
       }
       // Skipped, not returned on: closing a conversation the operator has just cleared is a write
       // of its own, and by here something may already have reached the customer — the outcome still
@@ -1116,17 +1231,18 @@ export async function runLoadedTurn(
     // The image lands before the text that talks about it, and before the TTS branch: an audio
     // reply must not swallow the attachment.
     if (await writeCalledOff()) return "stale";
-    const images = await deliverPendingImages(
+    const attachments = await deliverPendingAttachments(
       client,
       conversationId,
       turnState,
       flow,
+      { tenantId: params.tenantId, base },
       writeCalledOff,
     );
     // Called off mid-batch with something already out: the text below would stand down anyway, and
     // returning "stale" from there would replay a burst whose attachment the customer has. The turn
     // reports what it delivered and stops here.
-    if (images.calledOff) return images.sent ? "posted" : "stale";
+    if (attachments.calledOff) return attachments.sent ? "posted" : "stale";
 
     const delivered = await deliverText(reply, recheck.voiceReply);
     // Zero is the split loop standing down on its FIRST balloon: nothing reached the customer, so
@@ -1138,7 +1254,7 @@ export async function runLoadedTurn(
     // command landing in the text send leaves a customer holding part of the answer. "stale" would
     // hand the burst back to the next flush, which sends that attachment again.
     if (delivered === "stale" || delivered === 0) {
-      return images.sent ? "posted" : "stale";
+      return attachments.sent ? "posted" : "stale";
     }
     deliveredBalloons = delivered;
     // Same rule as the branch above: the reply is out, the resolve is a separate write.

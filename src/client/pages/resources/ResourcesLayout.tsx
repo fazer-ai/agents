@@ -3,6 +3,7 @@ import {
   Blocks,
   BookOpen,
   Clock,
+  FileText,
   KeyRound,
   LibraryBig,
   Plug,
@@ -19,6 +20,7 @@ import { ResourcesContext } from "./ResourcesContext";
 // t('resources.tabs.tools', 'Tools')
 // t('resources.tabs.mcp', 'MCP servers')
 // t('resources.tabs.knowledge', 'Knowledge')
+// t('resources.tabs.documents', 'Document templates')
 // t('resources.tabs.hours', 'Hours')
 // t('resources.tabs.integrations', 'Integrations')
 // t('resources.tabs.vault', 'Vault')
@@ -32,6 +34,11 @@ const TABS: { to: string; labelKey: string; icon: LucideIcon; badge?: true }[] =
       labelKey: "resources.tabs.knowledge",
       icon: BookOpen,
       badge: true,
+    },
+    {
+      to: "/resources/documents",
+      labelKey: "resources.tabs.documents",
+      icon: FileText,
     },
     { to: "/resources/hours", labelKey: "resources.tabs.hours", icon: Clock },
     {

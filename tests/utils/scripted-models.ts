@@ -474,3 +474,42 @@ export const guardrailModel = (
       },
     }),
   }) as unknown as BaseChatModel;
+
+// Issues a document, then answers. The reply does not repeat the prices, which is what the tool's
+// own description asks for — so the assertion is about ORDER: the customer receives the PDF and then
+// the sentence about it, never the other way round.
+export class SendDocumentThenReplyModel {
+  constructor(
+    private reply: string,
+    private toolName: string,
+    private args: Record<string, unknown>,
+    // Runs between the tool call and the final message — the window in which a document has been
+    // issued and queued but not yet delivered. Lets a test act inside it.
+    private betweenTurns?: () => Promise<void>,
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(this.reply);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 2) await self.betweenTurns?.();
+        return n === 1
+          ? new AIMessage({
+              content: "",
+              tool_calls: [
+                {
+                  name: self.toolName,
+                  args: self.args,
+                  id: "call_send_document",
+                },
+              ],
+            })
+          : new AIMessage(self.reply);
+      },
+    };
+  }
+}

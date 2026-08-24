@@ -55,3 +55,37 @@ export function replaceLoneSurrogates(value: string): string {
     ? value.replace(LONE_SURROGATE_RE, "�")
     : value;
 }
+
+// What PostgreSQL refuses to STORE, which is a different question from what anything can draw.
+//
+// Two characters, one reason each. A NUL is not representable in `text` or in `jsonb`. An unpaired
+// surrogate is refused by a `jsonb` write outright (`22P02`, the same refusal `clipText` exists to
+// avoid producing). Neither needs truncation to arrive: any JSON body that spells one out
+// (`"\u0000"`, `"\ud800"`) hands `JSON.parse` the character directly, which an HTTP or MCP client can
+// send at any time.
+//
+// The consequence is what makes this worth a check rather than a catch: the value passes every
+// bound the API advertises and then fails at the INSERT — a 500 for a REST caller, or, inside a
+// transaction wrapping several writes, the loss of all of them. A refusal names what to change.
+//
+// SEPARATE from the documents module's `unprintableProblem`, and deliberately narrower: a string can
+// be perfectly storable and impossible to print (an emoji in a tool description a model reads and
+// nobody draws). A caller that only needs the value to survive its column asks this one.
+export function unstorableProblem(value: string, what: string): string | null {
+  const bad: string[] = [];
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    // `for...of` yields a well-formed pair as ONE two-unit string, so a single-unit string in the
+    // surrogate range never had its other half.
+    const lone = ch.length === 1 && code >= 0xd800 && code <= 0xdfff;
+    if ((code === 0 || lone) && !bad.includes(ch)) bad.push(ch);
+  }
+  if (bad.length === 0) return null;
+  // Named by code point, never pasted: quoting the character itself would put a NUL into a log line
+  // and an API response, and half a character into a JSON body.
+  const named = bad.map(
+    (ch) =>
+      `U+${(ch.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`,
+  );
+  return `${what} contains characters the database cannot store (${named.join(" ")}) — a NUL or half of a character, which PostgreSQL refuses in text and JSON columns alike.`;
+}

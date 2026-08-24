@@ -19,6 +19,18 @@ import {
   getConversationDetail,
   getConversationMessages,
 } from "@/modules/conversations/service";
+import { documentAuthoringSchema } from "@/modules/documents/blocks";
+import { listIssuedDocuments } from "@/modules/documents/issue";
+import { documentStarters } from "@/modules/documents/starters";
+import {
+  getDocumentTemplate,
+  listDocumentTemplates,
+} from "@/modules/documents/templates";
+import {
+  COMPANY_TOKEN_ALIASES,
+  DOCUMENT_TOKEN_ALIASES,
+  RESERVED_TOKEN_PREFIXES,
+} from "@/modules/documents/tokens";
 import {
   experimentResults,
   getExperiment,
@@ -52,7 +64,14 @@ import {
 import { OUTBOUND_EVENTS } from "@/modules/webhooks/outbound/events";
 import { listWebhookSubscriptions } from "@/modules/webhooks/outbound/subscriptions";
 import type { VerifiedToken } from "./oauth/tokens";
-import { err, ok, readGate, type WriteDeps, type WriteResult } from "./write";
+import {
+  err,
+  ok,
+  parseMcpId,
+  readGate,
+  type WriteDeps,
+  type WriteResult,
+} from "./write";
 
 // MCP READ tools — the read half of the expanded admin surface, all gated by the same fence as
 // write reads (mcp:read scope + a tenant target). Each tool projects a tenant-scoped service and
@@ -65,13 +84,6 @@ const sidn = (v: bigint | null): string | null =>
   v === null ? null : String(v);
 
 // Parse a bigint id arg, mapping a bad value to a uniform error.
-function asBigInt(raw: string, label: string): bigint | WriteResult {
-  try {
-    return BigInt(raw);
-  } catch {
-    return err(`invalid ${label}`);
-  }
-}
 
 function failOf(e: unknown): WriteResult {
   if (e instanceof AppError) return err(e.message);
@@ -88,7 +100,7 @@ export async function agentGet(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const id = asBigInt(args.agent_id, "agent_id");
+  const id = parseMcpId(args.agent_id, "agent_id");
   if (typeof id !== "bigint") return id;
   try {
     return ok({ agent: await getAgent(ctx, id, base) });
@@ -105,7 +117,7 @@ export async function agentToolsGet(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const id = asBigInt(args.agent_id, "agent_id");
+  const id = parseMcpId(args.agent_id, "agent_id");
   if (typeof id !== "bigint") return id;
   try {
     const view = await getAgentToolSelections(ctx, id, base);
@@ -139,10 +151,137 @@ export async function toolGet(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const id = asBigInt(args.tool_id, "tool_id");
+  const id = parseMcpId(args.tool_id, "tool_id");
   if (typeof id !== "bigint") return id;
   try {
     return ok({ tool: await getToolDefinition(ctx, id, base) });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// ── document templates ──
+
+export async function documentTemplateList(
+  principal: VerifiedToken,
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  try {
+    const templates = await listDocumentTemplates(ctx, base);
+    // Blocks are dropped from the LIST: they are the bulk of a template and nobody browsing the list
+    // reads them. document_template_get returns the whole thing.
+    return ok({
+      templates: templates.map((t) => ({
+        id: t.id,
+        name: t.name,
+        slug: t.slug,
+        toolName: t.toolName,
+        description: t.description,
+        blocks: t.blocks.length,
+        fields: t.fields.map(
+          (f) => `${f.name}:${f.type}${f.required ? "*" : ""}`,
+        ),
+        numberPrefix: t.numberPrefix,
+        lastNumber: t.lastNumber,
+        enabled: t.enabled,
+      })),
+    });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+export async function documentTemplateGet(
+  principal: VerifiedToken,
+  args: { document_template_id: string },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.document_template_id, "document_template_id");
+  if (typeof id !== "bigint") return id;
+  try {
+    return ok({ template: await getDocumentTemplate(ctx, id, base) });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// The block/field/style shapes, as JSON Schema generated from the validator itself, plus the token
+// names. Served on demand because publishing it in every tools/list would cost thousands of
+// characters per session for a contract only a caller authoring a template needs.
+export async function documentTemplateSchema(
+  principal: VerifiedToken,
+): Promise<WriteResult> {
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  return ok({
+    ...documentAuthoringSchema(),
+    tokens: {
+      company: Object.entries(COMPANY_TOKEN_ALIASES).map(
+        ([canonical, alias]) => `{{${canonical}}} / {{${alias}}}`,
+      ),
+      document: Object.entries(DOCUMENT_TOKEN_ALIASES).map(
+        ([canonical, alias]) => `{{${canonical}}} / {{${alias}}}`,
+      ),
+      fields:
+        "Any declared field by its own name, e.g. {{validade}}. A token naming neither a declared field nor a reserved name is refused.",
+      reservedPrefixes: [...RESERVED_TOKEN_PREFIXES],
+    },
+  });
+}
+
+export async function documentStarterList(
+  principal: VerifiedToken,
+  args: { locale?: string } = {},
+): Promise<WriteResult> {
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  const starters = documentStarters(
+    args.locale === "en-US" ? "en-US" : "pt-BR",
+  );
+  return ok({
+    starters: starters.map((s) => ({
+      key: s.key,
+      name: s.name,
+      description: s.description,
+      blocks: s.blocks.length,
+      fields: s.fields.map(
+        (f) => `${f.name}:${f.type}${f.required ? "*" : ""}`,
+      ),
+    })),
+  });
+}
+
+export async function issuedDocumentList(
+  principal: VerifiedToken,
+  args: { template_id?: string; thread_id?: string; limit?: number } = {},
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  let templateId: bigint | undefined;
+  // `!== undefined`, not truthiness: an explicitly empty template_id is a malformed NARROWING
+  // filter, and treating it as absent answers the tenant's whole recent list — the widest possible
+  // answer to the narrowest possible question. Parsed and refused instead.
+  if (args.template_id !== undefined) {
+    const parsed = parseMcpId(args.template_id, "template_id");
+    if (typeof parsed !== "bigint") return parsed;
+    templateId = parsed;
+  }
+  try {
+    return ok({
+      documents: await listIssuedDocuments(
+        ctx,
+        { templateId, threadId: args.thread_id, limit: args.limit },
+        base,
+      ),
+    });
   } catch (e) {
     return failOf(e);
   }
@@ -220,7 +359,13 @@ export async function knowledgeSearch(
   let kbIds: bigint[] | undefined;
   if (args.knowledge_base_ids?.length) {
     try {
-      kbIds = args.knowledge_base_ids.map((s) => BigInt(s));
+      // Through the same parser as every other id: `BigInt(" 7 ")` is 7n, so a padded entry here
+      // silently narrows to a knowledge base the caller did not name.
+      kbIds = args.knowledge_base_ids.map((raw) => {
+        const parsed = parseMcpId(raw, "knowledge_base_ids");
+        if (typeof parsed !== "bigint") throw new Error("invalid");
+        return parsed;
+      });
     } catch {
       return err("invalid knowledge_base_ids");
     }
@@ -255,7 +400,7 @@ export async function knowledgeDocumentsList(
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const kbId = asBigInt(args.knowledge_base_id, "knowledge_base_id");
+  const kbId = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof kbId !== "bigint") return kbId;
   try {
     const docs = await listDocuments(tenantId, kbId, base);
@@ -304,7 +449,7 @@ export async function instanceGet(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const id = asBigInt(args.instance_id, "instance_id");
+  const id = parseMcpId(args.instance_id, "instance_id");
   if (typeof id !== "bigint") return id;
   try {
     return ok({ instance: await getChatwootInstance(ctx, id, base) });
@@ -424,7 +569,7 @@ export async function experimentGet(
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const id = asBigInt(args.experiment_id, "experiment_id");
+  const id = parseMcpId(args.experiment_id, "experiment_id");
   if (typeof id !== "bigint") return id;
   try {
     const r = await getExperiment(tenantId, id, base);
@@ -445,7 +590,7 @@ export async function experimentResultsGet(
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const id = asBigInt(args.experiment_id, "experiment_id");
+  const id = parseMcpId(args.experiment_id, "experiment_id");
   if (typeof id !== "bigint") return id;
   try {
     return ok({ results: await experimentResults(tenantId, id, base) });
@@ -507,7 +652,7 @@ export async function vaultReferencesGet(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const id = asBigInt(args.vault_id, "vault_id");
+  const id = parseMcpId(args.vault_id, "vault_id");
   if (typeof id !== "bigint") return id;
   try {
     return ok({ references: await vaultReferences(ctx, id, base) });
@@ -589,17 +734,17 @@ export async function logsQuery(
   if (args.search) opts.search = args.search;
   if (args.limit !== undefined) opts.limit = args.limit;
   if (args.agent_id) {
-    const v = asBigInt(args.agent_id, "agent_id");
+    const v = parseMcpId(args.agent_id, "agent_id");
     if (typeof v !== "bigint") return v;
     opts.agentId = v;
   }
   if (args.conversation_id) {
-    const v = asBigInt(args.conversation_id, "conversation_id");
+    const v = parseMcpId(args.conversation_id, "conversation_id");
     if (typeof v !== "bigint") return v;
     opts.conversationId = v;
   }
   if (args.cursor) {
-    const v = asBigInt(args.cursor, "cursor");
+    const v = parseMcpId(args.cursor, "cursor");
     if (typeof v !== "bigint") return v;
     opts.cursor = v;
   }
@@ -650,12 +795,12 @@ export async function logsExport(
   if (args.source) opts.source = args.source;
   if (args.search) opts.search = args.search;
   if (args.agent_id) {
-    const v = asBigInt(args.agent_id, "agent_id");
+    const v = parseMcpId(args.agent_id, "agent_id");
     if (typeof v !== "bigint") return v;
     opts.agentId = v;
   }
   if (args.conversation_id) {
-    const v = asBigInt(args.conversation_id, "conversation_id");
+    const v = parseMcpId(args.conversation_id, "conversation_id");
     if (typeof v !== "bigint") return v;
     opts.conversationId = v;
   }
@@ -731,7 +876,7 @@ export async function conversationGet(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const id = asBigInt(args.conversation_id, "conversation_id");
+  const id = parseMcpId(args.conversation_id, "conversation_id");
   if (typeof id !== "bigint") return id;
   try {
     return ok({ conversation: await getConversationDetail(ctx, id, base) });
@@ -748,7 +893,7 @@ export async function conversationMessages(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const id = asBigInt(args.conversation_id, "conversation_id");
+  const id = parseMcpId(args.conversation_id, "conversation_id");
   if (typeof id !== "bigint") return id;
   try {
     return ok({ ...(await getConversationMessages(ctx, id, {}, base)) });

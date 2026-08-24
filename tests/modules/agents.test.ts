@@ -476,6 +476,68 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
     ]);
   });
 
+  // The catalog is what the editor and the capability map read to answer "what can this agent
+  // call". Assembly skips a document template for TWO reasons — the operator disabled it, or this
+  // build cannot parse its content — and a catalog that reports only the stored flag makes the map
+  // draw a tool that is not in the graph. `available` is the question the assembly asks.
+  test("catalog reports a template the runtime would skip as unavailable", async () => {
+    const a = await createAgent(
+      ctx(tenantC),
+      { name: "Disponibilidade" },
+      appDb,
+    );
+    const id = BigInt(a.id);
+    const ok = await suDb.documentTemplate.create({
+      data: {
+        tenantId: tenantC,
+        name: "Legível",
+        slug: `legivel_${process.pid}`,
+        blocks: [{ id: "t", type: "text", text: "Olá." }],
+        fields: [],
+        style: {},
+      },
+      select: { id: true },
+    });
+    // ENABLED, and unreadable: a block type a newer version wrote, seen after a downgrade.
+    const future = await suDb.documentTemplate.create({
+      data: {
+        tenantId: tenantC,
+        name: "Do futuro",
+        slug: `do_futuro_${process.pid}`,
+        blocks: [{ id: "a", type: "signature", label: "Assine" }],
+        fields: [],
+        style: {},
+      },
+      select: { id: true },
+    });
+    const off = await suDb.documentTemplate.create({
+      data: {
+        tenantId: tenantC,
+        name: "Desligado",
+        slug: `desligado_${process.pid}`,
+        blocks: [{ id: "t", type: "text", text: "Olá." }],
+        fields: [],
+        style: {},
+        enabled: false,
+      },
+      select: { id: true },
+    });
+    try {
+      const got = await getAgentToolSelections(ctx(tenantC), id, appDb);
+      const by = (tid: bigint) =>
+        got.catalog.documentTemplates.find((d) => d.id === String(tid));
+      expect(by(ok.id)?.available).toBe(true);
+      // Both skipped, and only one of them by the stored flag — which is the whole reason this is
+      // not just `enabled`.
+      expect(by(future.id)).toMatchObject({ enabled: true, available: false });
+      expect(by(off.id)).toMatchObject({ enabled: false, available: false });
+    } finally {
+      await suDb.documentTemplate.deleteMany({
+        where: { id: { in: [ok.id, future.id, off.id] } },
+      });
+    }
+  });
+
   test("catalog knowledgeBases carry the unindexed document count", async () => {
     const a = await createAgent(ctx(tenantC), { name: "KbCount" }, appDb);
     const id = BigInt(a.id);

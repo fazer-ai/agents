@@ -1,3 +1,5 @@
+import { AppError } from "@/lib/errors";
+
 // A caller-supplied string as a database id, or nothing.
 //
 // `BigInt` is arbitrary precision and lenient, and both halves of that bite. It accepts spellings a
@@ -17,4 +19,19 @@ export function parseDbId(raw: string | null | undefined): bigint | null {
   if (!raw || !DIGITS.test(raw)) return null;
   const id = BigInt(raw);
   return id > MAX_DB_ID ? null : id;
+}
+
+// The same parse for a caller whose only answer to a bad id is to refuse: a route handler, where
+// `null` has nowhere to go. Kept beside the parse so the two cannot drift, and so a route reaches
+// for this instead of writing `BigInt(params.id)` — which is the spelling that skips the range and
+// turns a malformed field into a 500 raised by Postgres when the query binds it.
+export function requireDbId(
+  raw: string | null | undefined,
+  label = "id",
+): bigint {
+  const id = parseDbId(raw);
+  if (id === null) {
+    throw new AppError(`invalid ${label}`, 400, "errors.invalidId");
+  }
+  return id;
 }

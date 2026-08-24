@@ -29,6 +29,7 @@ import {
   err,
   gate,
   ok,
+  parseMcpId,
   recordMcpAudit,
   resolveSecretRef,
   resolveSecretValue,
@@ -46,14 +47,6 @@ import {
 function failOf(e: unknown): WriteResult {
   if (e instanceof AppError) return err(e.message);
   throw e;
-}
-
-function parseId(raw: string, label: string): bigint | WriteResult {
-  try {
-    return BigInt(raw);
-  } catch {
-    return err(`invalid ${label}`);
-  }
 }
 
 // ── outbound webhooks ──
@@ -141,7 +134,7 @@ export async function webhookUpdate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.webhook_id, "webhook_id");
+  const id = parseMcpId(args.webhook_id, "webhook_id");
   if (typeof id !== "bigint") return id;
   if (args.events) {
     const bad = args.events.filter((e) => !isOutboundEvent(e));
@@ -215,7 +208,7 @@ export async function webhookDelete(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.webhook_id, "webhook_id");
+  const id = parseMcpId(args.webhook_id, "webhook_id");
   if (typeof id !== "bigint") return id;
   try {
     const all = await listWebhookSubscriptions(ctx, base);
@@ -260,7 +253,7 @@ export async function webhookTest(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.webhook_id, "webhook_id");
+  const id = parseMcpId(args.webhook_id, "webhook_id");
   if (typeof id !== "bigint") return id;
   try {
     return ok({ result: await sendWebhookTest(ctx, id, base) });
@@ -380,7 +373,7 @@ export async function alertChannelUpdate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.channel_id, "channel_id");
+  const id = parseMcpId(args.channel_id, "channel_id");
   if (typeof id !== "bigint") return id;
   if (args.url_ref !== undefined) {
     const refCheck = await resolveSecretRef(ctx, args.url_ref, base);
@@ -462,7 +455,7 @@ export async function alertChannelDelete(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.channel_id, "channel_id");
+  const id = parseMcpId(args.channel_id, "channel_id");
   if (typeof id !== "bigint") return id;
   try {
     const all = await listAlertChannels(ctx, base);
@@ -611,7 +604,7 @@ export async function integrationUpdate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.integration_id, "integration_id");
+  const id = parseMcpId(args.integration_id, "integration_id");
   if (typeof id !== "bigint") return id;
   const patch: {
     name?: string;
@@ -700,7 +693,7 @@ export async function integrationDelete(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.integration_id, "integration_id");
+  const id = parseMcpId(args.integration_id, "integration_id");
   if (typeof id !== "bigint") return id;
   try {
     const current = await getIntegrationInstance(ctx, id, base);

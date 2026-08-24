@@ -107,7 +107,14 @@ export function buildCspDirectives(
     // NOTE: Same-origin WebSocket upgrades (`ws:` in dev, `wss:` in prod)
     // are covered by `'self'` per CSP3 in all evergreen browsers.
     connectSrc: ["'self'", ...cdn, ...gsi],
-    frameSrc: opts.googleOAuthEnabled ? [GSI_ORIGIN] : ["'none'"],
+    // NOTE: `blob:` is what lets the console show a rendered PDF (the document-template preview) in
+    // an <iframe> built from bytes the page fetched itself. Without it the frame is blocked and the
+    // only trace is a line in the browser console — the preview simply appears blank. It widens what
+    // this page may EMBED, not what it may load or send: `object-src` stays at helmet's `'none'`, and
+    // a blob URL is same-origin by construction, minted by our own JS from a response we fetched.
+    frameSrc: opts.googleOAuthEnabled
+      ? ["'self'", "blob:", GSI_ORIGIN]
+      : ["'self'", "blob:"],
   };
 }
 

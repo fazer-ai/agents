@@ -65,7 +65,7 @@
     },
     {
       "name": "Resources",
-      "description": "Tools, knowledge bases, schedules, vault credentials, experiments, quotes."
+      "description": "Tools, knowledge bases, document templates, schedules, vault credentials, experiments."
     },
     {
       "name": "Channels",
@@ -6749,7 +6749,8 @@
                             "RAG",
                             "HTTP",
                             "MCP",
-                            "INTEGRATION"
+                            "INTEGRATION",
+                            "DOCUMENT"
                           ]
                         },
                         "toolDefinitionId": {
@@ -6776,6 +6777,17 @@
                         },
                         "integrationInstanceId": {
                           "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "documentTemplateId": {
+                          "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
                           "anyOf": [
                             {
                               "type": "string"
@@ -6831,7 +6843,8 @@
                             "RAG",
                             "HTTP",
                             "MCP",
-                            "INTEGRATION"
+                            "INTEGRATION",
+                            "DOCUMENT"
                           ]
                         },
                         "toolDefinitionId": {
@@ -6858,6 +6871,17 @@
                         },
                         "integrationInstanceId": {
                           "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "documentTemplateId": {
+                          "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
                           "anyOf": [
                             {
                               "type": "string"
@@ -6913,7 +6937,8 @@
                             "RAG",
                             "HTTP",
                             "MCP",
-                            "INTEGRATION"
+                            "INTEGRATION",
+                            "DOCUMENT"
                           ]
                         },
                         "toolDefinitionId": {
@@ -6940,6 +6965,17 @@
                         },
                         "integrationInstanceId": {
                           "description": "Integration instance id (BigInt string) for INTEGRATION grants, or null.",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "documentTemplateId": {
+                          "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
                           "anyOf": [
                             {
                               "type": "string"
@@ -16616,7 +16652,7 @@
           "Settings"
         ],
         "summary": "Get tenant settings",
-        "description": "Returns the tenant's embedding and Langfuse settings.",
+        "description": "Returns the tenant's embedding, Langfuse and company-profile settings.",
         "responses": {
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
@@ -17231,6 +17267,480 @@
           }
         },
         "operationId": "postV1Tenant-settingsLangfuseTest",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/tenant-settings/company": {
+      "put": {
+        "tags": [
+          "Settings"
+        ],
+        "summary": "Update company profile",
+        "description": "Updates the letterhead the tenant's issued documents carry.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "maxLength": 200,
+                    "description": "Legal or trading name printed on issued documents.",
+                    "type": "string"
+                  },
+                  "document": {
+                    "maxLength": 40,
+                    "description": "Tax id printed on issued documents (CNPJ/CPF/VAT).",
+                    "type": "string"
+                  },
+                  "address": {
+                    "maxLength": 300,
+                    "description": "Postal address.",
+                    "type": "string"
+                  },
+                  "phone": {
+                    "maxLength": 40,
+                    "description": "Contact phone.",
+                    "type": "string"
+                  },
+                  "email": {
+                    "maxLength": 200,
+                    "description": "Contact email.",
+                    "type": "string"
+                  },
+                  "website": {
+                    "maxLength": 200,
+                    "description": "Website.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "maxLength": 200,
+                    "description": "Legal or trading name printed on issued documents.",
+                    "type": "string"
+                  },
+                  "document": {
+                    "maxLength": 40,
+                    "description": "Tax id printed on issued documents (CNPJ/CPF/VAT).",
+                    "type": "string"
+                  },
+                  "address": {
+                    "maxLength": 300,
+                    "description": "Postal address.",
+                    "type": "string"
+                  },
+                  "phone": {
+                    "maxLength": 40,
+                    "description": "Contact phone.",
+                    "type": "string"
+                  },
+                  "email": {
+                    "maxLength": 200,
+                    "description": "Contact email.",
+                    "type": "string"
+                  },
+                  "website": {
+                    "maxLength": 200,
+                    "description": "Website.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "maxLength": 200,
+                    "description": "Legal or trading name printed on issued documents.",
+                    "type": "string"
+                  },
+                  "document": {
+                    "maxLength": 40,
+                    "description": "Tax id printed on issued documents (CNPJ/CPF/VAT).",
+                    "type": "string"
+                  },
+                  "address": {
+                    "maxLength": 300,
+                    "description": "Postal address.",
+                    "type": "string"
+                  },
+                  "phone": {
+                    "maxLength": 40,
+                    "description": "Contact phone.",
+                    "type": "string"
+                  },
+                  "email": {
+                    "maxLength": 200,
+                    "description": "Contact email.",
+                    "type": "string"
+                  },
+                  "website": {
+                    "maxLength": 200,
+                    "description": "Website.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putV1Tenant-settingsCompany",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/tenant-settings/company/logo": {
+      "post": {
+        "tags": [
+          "Settings"
+        ],
+        "summary": "Upload company logo",
+        "description": "Stores the letterhead logo used by document templates whose header shows one.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "default": "File",
+                    "description": "Letterhead logo. PNG or JPEG only — the PDF renderer decodes neither WebP nor SVG.",
+                    "type": "string",
+                    "format": "binary"
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "default": "File",
+                    "description": "Letterhead logo. PNG or JPEG only — the PDF renderer decodes neither WebP nor SVG.",
+                    "type": "string",
+                    "format": "binary"
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "default": "File",
+                    "description": "Letterhead logo. PNG or JPEG only — the PDF renderer decodes neither WebP nor SVG.",
+                    "type": "string",
+                    "format": "binary"
+                  }
+                },
+                "required": [
+                  "file"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1Tenant-settingsCompanyLogo",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Settings"
+        ],
+        "summary": "Remove company logo",
+        "description": "Clears the letterhead logo; documents fall back to a typographic header.",
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteV1Tenant-settingsCompanyLogo",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      },
+      "get": {
+        "tags": [
+          "Settings"
+        ],
+        "summary": "Download company logo",
+        "description": "Streams the tenant's letterhead logo.",
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1Tenant-settingsCompanyLogo",
         "parameters": [
           {
             "name": "x-tenant-id",
@@ -23757,35 +24267,13 @@
         "operationId": "getV1N8n-exportToolsById"
       }
     },
-    "/v1/quotes": {
+    "/v1/document-templates": {
       "get": {
         "tags": [
           "Resources"
         ],
-        "summary": "List quotes",
-        "description": "Lists the tenant's generated quotes.",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "description": "Max rows to return (positive integer string).",
-              "type": "string"
-            }
-          },
-          {
-            "name": "x-tenant-id",
-            "in": "header",
-            "required": true,
-            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
-            "schema": {
-              "type": "string",
-              "default": "1"
-            },
-            "example": "1"
-          }
-        ],
+        "summary": "List document templates",
+        "description": "Lists the tenant's document templates.",
         "responses": {
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
@@ -23826,14 +24314,27 @@
             }
           }
         },
-        "operationId": "getV1Quotes"
+        "operationId": "getV1Document-templates",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
       },
       "post": {
         "tags": [
           "Resources"
         ],
-        "summary": "Generate quote",
-        "description": "Idempotently generates a quote and renders its PDF.",
+        "summary": "Create document template",
+        "description": "Creates a document template from blocks, fields and style.",
         "requestBody": {
           "required": true,
           "content": {
@@ -23841,300 +24342,237 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "idempotencyKey": {
-                    "minLength": 1,
-                    "maxLength": 200,
-                    "description": "Idempotency key (same key returns the same quote, no re-render).",
+                  "name": {
+                    "maxLength": 120,
+                    "description": "Template name.",
                     "type": "string"
                   },
-                  "conversationId": {
-                    "description": "Conversation id to attach the quote to (BigInt string).",
+                  "slug": {
+                    "maxLength": 40,
+                    "description": "Identifier used for the agent tool name (send_<slug>); derived from the name when omitted.",
                     "type": "string"
                   },
-                  "snapshot": {
-                    "description": "Immutable quote content snapshot.",
+                  "description": {
+                    "description": "What this template is for, for the operator.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "blocks": {
+                    "description": "Ordered blocks. Each is {\"id\":\"…\",\"type\":…} plus its own fields: header {title?,subtitle?,showLogo?,showCompany?,meta?:[{label,value}]}, text {text,align?,variant?}, fields {rows:[{label,value}],columns?}, lineItems {field,columns?,showHeader?}, totals {field,rows?,discountField?,taxField?}, divider {}. Every block also takes spaceAfter (\"none\"|\"sm\"|\"md\"|\"lg\"). Text carries {{tokens}}: a declared field by name, or a reserved name (company_name, company_document, company_address, company_phone, company_email, company_website, doc_number, doc_date, doc_title — each with a pt-BR alias: empresa_nome, documento_numero, …). A token that names neither is refused.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "blockText": {
+                    "description": "Replace the text of `text` blocks BY ID, leaving the rest of the layout as it stands. Prefer this over sending `blocks` when only the wording changes: a whole-array write makes the caller authoritative over blocks another client may have added or reordered meanwhile.",
                     "type": "object",
-                    "properties": {
-                      "title": {
-                        "minLength": 1,
-                        "maxLength": 200,
-                        "description": "Quote title.",
-                        "type": "string"
-                      },
-                      "customerName": {
-                        "description": "Customer name (optional).",
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "currency": {
-                        "minLength": 1,
-                        "maxLength": 8,
-                        "description": "Currency code (e.g. BRL, USD).",
-                        "type": "string"
-                      },
-                      "items": {
-                        "minItems": 1,
-                        "maxItems": 100,
-                        "description": "Quote line items.",
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "description": {
-                              "minLength": 1,
-                              "maxLength": 500,
-                              "description": "Line item description.",
-                              "type": "string"
-                            },
-                            "quantity": {
-                              "description": "Line item quantity.",
-                              "type": "number"
-                            },
-                            "unitPrice": {
-                              "description": "Line item unit price.",
-                              "type": "number"
-                            }
-                          },
-                          "required": [
-                            "description",
-                            "quantity",
-                            "unitPrice"
-                          ]
-                        }
-                      },
-                      "notes": {
-                        "description": "Free-form notes (optional).",
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "issuedAt": {
-                        "description": "Issue date (ISO string); defaults to now.",
+                    "patternProperties": {
+                      "^(.*)$": {
                         "type": "string"
                       }
-                    },
-                    "required": [
-                      "title",
-                      "currency",
-                      "items"
+                    }
+                  },
+                  "fields": {
+                    "description": "Fields an agent fills when it issues this document: [{\"name\":\"…\",\"label\":\"…\",\"type\":\"text\"|\"number\"|\"date\"|\"currency\"|\"lineItems\",\"required\"?,\"description\"?}]. `name` is lowercase letters, digits and underscores, and may not start with company_, empresa_, doc_ or documento_ (those already resolve to the letterhead or the document itself). A lineItems value is [{\"description\",\"quantity\",\"unitPrice\"}] and is the only field a lineItems or totals block may point at.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "style": {
+                    "description": "Rendering style: {\"font\":\"sans\"|\"serif\"|\"mono\",\"baseFontSize\":8-14,\"accentColor\":\"#rrggbb\",\"margin\":\"narrow\"|\"normal\"|\"wide\",\"pageSize\":\"A4\"|\"LETTER\",\"locale\":\"pt-BR\"|\"en-US\",\"currency\":\"BRL\",\"footerText\"?,\"showPageNumbers\":bool}. baseFontSize outside 8-14 is clamped, not refused.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "numberPrefix": {
+                    "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
+                  },
+                  "enabled": {
+                    "description": "Whether agents may issue this document.",
+                    "type": "boolean"
                   }
-                },
-                "required": [
-                  "idempotencyKey",
-                  "snapshot"
-                ]
+                }
               }
             },
             "application/x-www-form-urlencoded": {
               "schema": {
                 "type": "object",
                 "properties": {
-                  "idempotencyKey": {
-                    "minLength": 1,
-                    "maxLength": 200,
-                    "description": "Idempotency key (same key returns the same quote, no re-render).",
+                  "name": {
+                    "maxLength": 120,
+                    "description": "Template name.",
                     "type": "string"
                   },
-                  "conversationId": {
-                    "description": "Conversation id to attach the quote to (BigInt string).",
+                  "slug": {
+                    "maxLength": 40,
+                    "description": "Identifier used for the agent tool name (send_<slug>); derived from the name when omitted.",
                     "type": "string"
                   },
-                  "snapshot": {
-                    "description": "Immutable quote content snapshot.",
+                  "description": {
+                    "description": "What this template is for, for the operator.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "blocks": {
+                    "description": "Ordered blocks. Each is {\"id\":\"…\",\"type\":…} plus its own fields: header {title?,subtitle?,showLogo?,showCompany?,meta?:[{label,value}]}, text {text,align?,variant?}, fields {rows:[{label,value}],columns?}, lineItems {field,columns?,showHeader?}, totals {field,rows?,discountField?,taxField?}, divider {}. Every block also takes spaceAfter (\"none\"|\"sm\"|\"md\"|\"lg\"). Text carries {{tokens}}: a declared field by name, or a reserved name (company_name, company_document, company_address, company_phone, company_email, company_website, doc_number, doc_date, doc_title — each with a pt-BR alias: empresa_nome, documento_numero, …). A token that names neither is refused.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "blockText": {
+                    "description": "Replace the text of `text` blocks BY ID, leaving the rest of the layout as it stands. Prefer this over sending `blocks` when only the wording changes: a whole-array write makes the caller authoritative over blocks another client may have added or reordered meanwhile.",
                     "type": "object",
-                    "properties": {
-                      "title": {
-                        "minLength": 1,
-                        "maxLength": 200,
-                        "description": "Quote title.",
-                        "type": "string"
-                      },
-                      "customerName": {
-                        "description": "Customer name (optional).",
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "currency": {
-                        "minLength": 1,
-                        "maxLength": 8,
-                        "description": "Currency code (e.g. BRL, USD).",
-                        "type": "string"
-                      },
-                      "items": {
-                        "minItems": 1,
-                        "maxItems": 100,
-                        "description": "Quote line items.",
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "description": {
-                              "minLength": 1,
-                              "maxLength": 500,
-                              "description": "Line item description.",
-                              "type": "string"
-                            },
-                            "quantity": {
-                              "description": "Line item quantity.",
-                              "type": "number"
-                            },
-                            "unitPrice": {
-                              "description": "Line item unit price.",
-                              "type": "number"
-                            }
-                          },
-                          "required": [
-                            "description",
-                            "quantity",
-                            "unitPrice"
-                          ]
-                        }
-                      },
-                      "notes": {
-                        "description": "Free-form notes (optional).",
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "issuedAt": {
-                        "description": "Issue date (ISO string); defaults to now.",
+                    "patternProperties": {
+                      "^(.*)$": {
                         "type": "string"
                       }
-                    },
-                    "required": [
-                      "title",
-                      "currency",
-                      "items"
+                    }
+                  },
+                  "fields": {
+                    "description": "Fields an agent fills when it issues this document: [{\"name\":\"…\",\"label\":\"…\",\"type\":\"text\"|\"number\"|\"date\"|\"currency\"|\"lineItems\",\"required\"?,\"description\"?}]. `name` is lowercase letters, digits and underscores, and may not start with company_, empresa_, doc_ or documento_ (those already resolve to the letterhead or the document itself). A lineItems value is [{\"description\",\"quantity\",\"unitPrice\"}] and is the only field a lineItems or totals block may point at.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "style": {
+                    "description": "Rendering style: {\"font\":\"sans\"|\"serif\"|\"mono\",\"baseFontSize\":8-14,\"accentColor\":\"#rrggbb\",\"margin\":\"narrow\"|\"normal\"|\"wide\",\"pageSize\":\"A4\"|\"LETTER\",\"locale\":\"pt-BR\"|\"en-US\",\"currency\":\"BRL\",\"footerText\"?,\"showPageNumbers\":bool}. baseFontSize outside 8-14 is clamped, not refused.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "numberPrefix": {
+                    "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
+                  },
+                  "enabled": {
+                    "description": "Whether agents may issue this document.",
+                    "type": "boolean"
                   }
-                },
-                "required": [
-                  "idempotencyKey",
-                  "snapshot"
-                ]
+                }
               }
             },
             "multipart/form-data": {
               "schema": {
                 "type": "object",
                 "properties": {
-                  "idempotencyKey": {
-                    "minLength": 1,
-                    "maxLength": 200,
-                    "description": "Idempotency key (same key returns the same quote, no re-render).",
+                  "name": {
+                    "maxLength": 120,
+                    "description": "Template name.",
                     "type": "string"
                   },
-                  "conversationId": {
-                    "description": "Conversation id to attach the quote to (BigInt string).",
+                  "slug": {
+                    "maxLength": 40,
+                    "description": "Identifier used for the agent tool name (send_<slug>); derived from the name when omitted.",
                     "type": "string"
                   },
-                  "snapshot": {
-                    "description": "Immutable quote content snapshot.",
+                  "description": {
+                    "description": "What this template is for, for the operator.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "blocks": {
+                    "description": "Ordered blocks. Each is {\"id\":\"…\",\"type\":…} plus its own fields: header {title?,subtitle?,showLogo?,showCompany?,meta?:[{label,value}]}, text {text,align?,variant?}, fields {rows:[{label,value}],columns?}, lineItems {field,columns?,showHeader?}, totals {field,rows?,discountField?,taxField?}, divider {}. Every block also takes spaceAfter (\"none\"|\"sm\"|\"md\"|\"lg\"). Text carries {{tokens}}: a declared field by name, or a reserved name (company_name, company_document, company_address, company_phone, company_email, company_website, doc_number, doc_date, doc_title — each with a pt-BR alias: empresa_nome, documento_numero, …). A token that names neither is refused.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "blockText": {
+                    "description": "Replace the text of `text` blocks BY ID, leaving the rest of the layout as it stands. Prefer this over sending `blocks` when only the wording changes: a whole-array write makes the caller authoritative over blocks another client may have added or reordered meanwhile.",
                     "type": "object",
-                    "properties": {
-                      "title": {
-                        "minLength": 1,
-                        "maxLength": 200,
-                        "description": "Quote title.",
-                        "type": "string"
-                      },
-                      "customerName": {
-                        "description": "Customer name (optional).",
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "currency": {
-                        "minLength": 1,
-                        "maxLength": 8,
-                        "description": "Currency code (e.g. BRL, USD).",
-                        "type": "string"
-                      },
-                      "items": {
-                        "minItems": 1,
-                        "maxItems": 100,
-                        "description": "Quote line items.",
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "description": {
-                              "minLength": 1,
-                              "maxLength": 500,
-                              "description": "Line item description.",
-                              "type": "string"
-                            },
-                            "quantity": {
-                              "description": "Line item quantity.",
-                              "type": "number"
-                            },
-                            "unitPrice": {
-                              "description": "Line item unit price.",
-                              "type": "number"
-                            }
-                          },
-                          "required": [
-                            "description",
-                            "quantity",
-                            "unitPrice"
-                          ]
-                        }
-                      },
-                      "notes": {
-                        "description": "Free-form notes (optional).",
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "issuedAt": {
-                        "description": "Issue date (ISO string); defaults to now.",
+                    "patternProperties": {
+                      "^(.*)$": {
                         "type": "string"
                       }
-                    },
-                    "required": [
-                      "title",
-                      "currency",
-                      "items"
+                    }
+                  },
+                  "fields": {
+                    "description": "Fields an agent fills when it issues this document: [{\"name\":\"…\",\"label\":\"…\",\"type\":\"text\"|\"number\"|\"date\"|\"currency\"|\"lineItems\",\"required\"?,\"description\"?}]. `name` is lowercase letters, digits and underscores, and may not start with company_, empresa_, doc_ or documento_ (those already resolve to the letterhead or the document itself). A lineItems value is [{\"description\",\"quantity\",\"unitPrice\"}] and is the only field a lineItems or totals block may point at.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "style": {
+                    "description": "Rendering style: {\"font\":\"sans\"|\"serif\"|\"mono\",\"baseFontSize\":8-14,\"accentColor\":\"#rrggbb\",\"margin\":\"narrow\"|\"normal\"|\"wide\",\"pageSize\":\"A4\"|\"LETTER\",\"locale\":\"pt-BR\"|\"en-US\",\"currency\":\"BRL\",\"footerText\"?,\"showPageNumbers\":bool}. baseFontSize outside 8-14 is clamped, not refused.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "numberPrefix": {
+                    "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
+                  },
+                  "enabled": {
+                    "description": "Whether agents may issue this document.",
+                    "type": "boolean"
                   }
-                },
-                "required": [
-                  "idempotencyKey",
-                  "snapshot"
-                ]
+                }
               }
             }
           }
@@ -24196,9 +24634,28 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict — a duplicate or a state conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Conflict — a duplicate or a state conflict.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
           }
         },
-        "operationId": "postV1Quotes",
+        "operationId": "postV1Document-templates",
         "parameters": [
           {
             "name": "x-tenant-id",
@@ -24214,130 +24671,425 @@
         ]
       }
     },
-    "/v1/quotes/{id}/revoke": {
-      "post": {
-        "tags": [
-          "Resources"
-        ],
-        "summary": "Revoke quote",
-        "description": "Revokes a generated quote by id.",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "description": "Quote id (BigInt string).",
-              "type": "string"
-            }
-          },
-          {
-            "name": "x-tenant-id",
-            "in": "header",
-            "required": true,
-            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
-            "schema": {
-              "type": "string",
-              "default": "1"
-            },
-            "example": "1"
-          }
-        ],
-        "responses": {
-          "400": {
-            "description": "Bad request — validation failed or the input was malformed.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Bad request — validation failed or the input was malformed.",
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized — missing or invalid credentials.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unauthorized — missing or invalid credentials.",
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Not found.",
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ]
-                }
-              }
-            }
-          }
-        },
-        "operationId": "postV1QuotesByIdRevoke"
-      }
-    },
-    "/v1/quotes/{id}/pdf": {
+    "/v1/document-templates/starters": {
       "get": {
         "tags": [
           "Resources"
         ],
-        "summary": "Download quote PDF",
-        "description": "Streams the rendered quote PDF for inline viewing.",
+        "summary": "List starter templates",
+        "description": "Ready-made templates (quote, proposal, receipt) to create one from.",
+        "parameters": [
+          {
+            "name": "locale",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Starter language: \"pt-BR\" or \"en-US\".",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1Document-templatesStarters"
+      }
+    },
+    "/v1/document-templates/preview": {
+      "post": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Preview document template",
+        "description": "Renders a saved template or an unsaved draft to PDF, without issuing anything.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "pattern": "^[0-9]+$",
+                    "description": "Saved template to preview, or to inherit style/name from when previewing a draft.",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Title shown on the page.",
+                    "type": "string"
+                  },
+                  "blocks": {
+                    "description": "Ordered blocks. Each is {\"id\":\"…\",\"type\":…} plus its own fields: header {title?,subtitle?,showLogo?,showCompany?,meta?:[{label,value}]}, text {text,align?,variant?}, fields {rows:[{label,value}],columns?}, lineItems {field,columns?,showHeader?}, totals {field,rows?,discountField?,taxField?}, divider {}. Every block also takes spaceAfter (\"none\"|\"sm\"|\"md\"|\"lg\"). Text carries {{tokens}}: a declared field by name, or a reserved name (company_name, company_document, company_address, company_phone, company_email, company_website, doc_number, doc_date, doc_title — each with a pt-BR alias: empresa_nome, documento_numero, …). A token that names neither is refused.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "blockText": {
+                    "description": "Replace the text of `text` blocks BY ID, over the saved template's layout. The same shape the PATCH takes, so a preview shows what the save will produce.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "fields": {
+                    "description": "Fields an agent fills when it issues this document: [{\"name\":\"…\",\"label\":\"…\",\"type\":\"text\"|\"number\"|\"date\"|\"currency\"|\"lineItems\",\"required\"?,\"description\"?}]. `name` is lowercase letters, digits and underscores, and may not start with company_, empresa_, doc_ or documento_ (those already resolve to the letterhead or the document itself). A lineItems value is [{\"description\",\"quantity\",\"unitPrice\"}] and is the only field a lineItems or totals block may point at.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "style": {
+                    "description": "Rendering style: {\"font\":\"sans\"|\"serif\"|\"mono\",\"baseFontSize\":8-14,\"accentColor\":\"#rrggbb\",\"margin\":\"narrow\"|\"normal\"|\"wide\",\"pageSize\":\"A4\"|\"LETTER\",\"locale\":\"pt-BR\"|\"en-US\",\"currency\":\"BRL\",\"footerText\"?,\"showPageNumbers\":bool}. baseFontSize outside 8-14 is clamped, not refused.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "numberPrefix": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "values": {
+                    "description": "Values keyed by field name. Omitted, the preview invents plausible ones from the declared fields.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "pattern": "^[0-9]+$",
+                    "description": "Saved template to preview, or to inherit style/name from when previewing a draft.",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Title shown on the page.",
+                    "type": "string"
+                  },
+                  "blocks": {
+                    "description": "Ordered blocks. Each is {\"id\":\"…\",\"type\":…} plus its own fields: header {title?,subtitle?,showLogo?,showCompany?,meta?:[{label,value}]}, text {text,align?,variant?}, fields {rows:[{label,value}],columns?}, lineItems {field,columns?,showHeader?}, totals {field,rows?,discountField?,taxField?}, divider {}. Every block also takes spaceAfter (\"none\"|\"sm\"|\"md\"|\"lg\"). Text carries {{tokens}}: a declared field by name, or a reserved name (company_name, company_document, company_address, company_phone, company_email, company_website, doc_number, doc_date, doc_title — each with a pt-BR alias: empresa_nome, documento_numero, …). A token that names neither is refused.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "blockText": {
+                    "description": "Replace the text of `text` blocks BY ID, over the saved template's layout. The same shape the PATCH takes, so a preview shows what the save will produce.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "fields": {
+                    "description": "Fields an agent fills when it issues this document: [{\"name\":\"…\",\"label\":\"…\",\"type\":\"text\"|\"number\"|\"date\"|\"currency\"|\"lineItems\",\"required\"?,\"description\"?}]. `name` is lowercase letters, digits and underscores, and may not start with company_, empresa_, doc_ or documento_ (those already resolve to the letterhead or the document itself). A lineItems value is [{\"description\",\"quantity\",\"unitPrice\"}] and is the only field a lineItems or totals block may point at.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "style": {
+                    "description": "Rendering style: {\"font\":\"sans\"|\"serif\"|\"mono\",\"baseFontSize\":8-14,\"accentColor\":\"#rrggbb\",\"margin\":\"narrow\"|\"normal\"|\"wide\",\"pageSize\":\"A4\"|\"LETTER\",\"locale\":\"pt-BR\"|\"en-US\",\"currency\":\"BRL\",\"footerText\"?,\"showPageNumbers\":bool}. baseFontSize outside 8-14 is clamped, not refused.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "numberPrefix": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "values": {
+                    "description": "Values keyed by field name. Omitted, the preview invents plausible ones from the declared fields.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "pattern": "^[0-9]+$",
+                    "description": "Saved template to preview, or to inherit style/name from when previewing a draft.",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Title shown on the page.",
+                    "type": "string"
+                  },
+                  "blocks": {
+                    "description": "Ordered blocks. Each is {\"id\":\"…\",\"type\":…} plus its own fields: header {title?,subtitle?,showLogo?,showCompany?,meta?:[{label,value}]}, text {text,align?,variant?}, fields {rows:[{label,value}],columns?}, lineItems {field,columns?,showHeader?}, totals {field,rows?,discountField?,taxField?}, divider {}. Every block also takes spaceAfter (\"none\"|\"sm\"|\"md\"|\"lg\"). Text carries {{tokens}}: a declared field by name, or a reserved name (company_name, company_document, company_address, company_phone, company_email, company_website, doc_number, doc_date, doc_title — each with a pt-BR alias: empresa_nome, documento_numero, …). A token that names neither is refused.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "blockText": {
+                    "description": "Replace the text of `text` blocks BY ID, over the saved template's layout. The same shape the PATCH takes, so a preview shows what the save will produce.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "fields": {
+                    "description": "Fields an agent fills when it issues this document: [{\"name\":\"…\",\"label\":\"…\",\"type\":\"text\"|\"number\"|\"date\"|\"currency\"|\"lineItems\",\"required\"?,\"description\"?}]. `name` is lowercase letters, digits and underscores, and may not start with company_, empresa_, doc_ or documento_ (those already resolve to the letterhead or the document itself). A lineItems value is [{\"description\",\"quantity\",\"unitPrice\"}] and is the only field a lineItems or totals block may point at.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "style": {
+                    "description": "Rendering style: {\"font\":\"sans\"|\"serif\"|\"mono\",\"baseFontSize\":8-14,\"accentColor\":\"#rrggbb\",\"margin\":\"narrow\"|\"normal\"|\"wide\",\"pageSize\":\"A4\"|\"LETTER\",\"locale\":\"pt-BR\"|\"en-US\",\"currency\":\"BRL\",\"footerText\"?,\"showPageNumbers\":bool}. baseFontSize outside 8-14 is clamped, not refused.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "numberPrefix": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "values": {
+                    "description": "Values keyed by field name. Omitted, the preview invents plausible ones from the declared fields.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — a duplicate or a state conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Conflict — a duplicate or a state conflict.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1Document-templatesPreview",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/document-templates/{id}": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Get document template",
+        "description": "Returns one document template.",
         "parameters": [
           {
             "name": "id",
             "in": "path",
             "required": true,
             "schema": {
-              "description": "Quote id (BigInt string).",
+              "pattern": "^[0-9]+$",
+              "description": "Template id (BigInt string).",
               "type": "string"
             }
           },
@@ -24431,7 +25183,1154 @@
             }
           }
         },
-        "operationId": "getV1QuotesByIdPdf"
+        "operationId": "getV1Document-templatesById"
+      },
+      "patch": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Update document template",
+        "description": "Patches a document template; omitted fields keep their value.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "description": "Template id (BigInt string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "maxLength": 120,
+                    "description": "Template name.",
+                    "type": "string"
+                  },
+                  "slug": {
+                    "maxLength": 40,
+                    "description": "Identifier used for the agent tool name (send_<slug>); derived from the name when omitted.",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "What this template is for, for the operator.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "blocks": {
+                    "description": "Ordered blocks. Each is {\"id\":\"…\",\"type\":…} plus its own fields: header {title?,subtitle?,showLogo?,showCompany?,meta?:[{label,value}]}, text {text,align?,variant?}, fields {rows:[{label,value}],columns?}, lineItems {field,columns?,showHeader?}, totals {field,rows?,discountField?,taxField?}, divider {}. Every block also takes spaceAfter (\"none\"|\"sm\"|\"md\"|\"lg\"). Text carries {{tokens}}: a declared field by name, or a reserved name (company_name, company_document, company_address, company_phone, company_email, company_website, doc_number, doc_date, doc_title — each with a pt-BR alias: empresa_nome, documento_numero, …). A token that names neither is refused.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "blockText": {
+                    "description": "Replace the text of `text` blocks BY ID, leaving the rest of the layout as it stands. Prefer this over sending `blocks` when only the wording changes: a whole-array write makes the caller authoritative over blocks another client may have added or reordered meanwhile.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "fields": {
+                    "description": "Fields an agent fills when it issues this document: [{\"name\":\"…\",\"label\":\"…\",\"type\":\"text\"|\"number\"|\"date\"|\"currency\"|\"lineItems\",\"required\"?,\"description\"?}]. `name` is lowercase letters, digits and underscores, and may not start with company_, empresa_, doc_ or documento_ (those already resolve to the letterhead or the document itself). A lineItems value is [{\"description\",\"quantity\",\"unitPrice\"}] and is the only field a lineItems or totals block may point at.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "style": {
+                    "description": "Rendering style: {\"font\":\"sans\"|\"serif\"|\"mono\",\"baseFontSize\":8-14,\"accentColor\":\"#rrggbb\",\"margin\":\"narrow\"|\"normal\"|\"wide\",\"pageSize\":\"A4\"|\"LETTER\",\"locale\":\"pt-BR\"|\"en-US\",\"currency\":\"BRL\",\"footerText\"?,\"showPageNumbers\":bool}. baseFontSize outside 8-14 is clamped, not refused.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "numberPrefix": {
+                    "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "enabled": {
+                    "description": "Whether agents may issue this document.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "maxLength": 120,
+                    "description": "Template name.",
+                    "type": "string"
+                  },
+                  "slug": {
+                    "maxLength": 40,
+                    "description": "Identifier used for the agent tool name (send_<slug>); derived from the name when omitted.",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "What this template is for, for the operator.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "blocks": {
+                    "description": "Ordered blocks. Each is {\"id\":\"…\",\"type\":…} plus its own fields: header {title?,subtitle?,showLogo?,showCompany?,meta?:[{label,value}]}, text {text,align?,variant?}, fields {rows:[{label,value}],columns?}, lineItems {field,columns?,showHeader?}, totals {field,rows?,discountField?,taxField?}, divider {}. Every block also takes spaceAfter (\"none\"|\"sm\"|\"md\"|\"lg\"). Text carries {{tokens}}: a declared field by name, or a reserved name (company_name, company_document, company_address, company_phone, company_email, company_website, doc_number, doc_date, doc_title — each with a pt-BR alias: empresa_nome, documento_numero, …). A token that names neither is refused.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "blockText": {
+                    "description": "Replace the text of `text` blocks BY ID, leaving the rest of the layout as it stands. Prefer this over sending `blocks` when only the wording changes: a whole-array write makes the caller authoritative over blocks another client may have added or reordered meanwhile.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "fields": {
+                    "description": "Fields an agent fills when it issues this document: [{\"name\":\"…\",\"label\":\"…\",\"type\":\"text\"|\"number\"|\"date\"|\"currency\"|\"lineItems\",\"required\"?,\"description\"?}]. `name` is lowercase letters, digits and underscores, and may not start with company_, empresa_, doc_ or documento_ (those already resolve to the letterhead or the document itself). A lineItems value is [{\"description\",\"quantity\",\"unitPrice\"}] and is the only field a lineItems or totals block may point at.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "style": {
+                    "description": "Rendering style: {\"font\":\"sans\"|\"serif\"|\"mono\",\"baseFontSize\":8-14,\"accentColor\":\"#rrggbb\",\"margin\":\"narrow\"|\"normal\"|\"wide\",\"pageSize\":\"A4\"|\"LETTER\",\"locale\":\"pt-BR\"|\"en-US\",\"currency\":\"BRL\",\"footerText\"?,\"showPageNumbers\":bool}. baseFontSize outside 8-14 is clamped, not refused.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "numberPrefix": {
+                    "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "enabled": {
+                    "description": "Whether agents may issue this document.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "maxLength": 120,
+                    "description": "Template name.",
+                    "type": "string"
+                  },
+                  "slug": {
+                    "maxLength": 40,
+                    "description": "Identifier used for the agent tool name (send_<slug>); derived from the name when omitted.",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "What this template is for, for the operator.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "blocks": {
+                    "description": "Ordered blocks. Each is {\"id\":\"…\",\"type\":…} plus its own fields: header {title?,subtitle?,showLogo?,showCompany?,meta?:[{label,value}]}, text {text,align?,variant?}, fields {rows:[{label,value}],columns?}, lineItems {field,columns?,showHeader?}, totals {field,rows?,discountField?,taxField?}, divider {}. Every block also takes spaceAfter (\"none\"|\"sm\"|\"md\"|\"lg\"). Text carries {{tokens}}: a declared field by name, or a reserved name (company_name, company_document, company_address, company_phone, company_email, company_website, doc_number, doc_date, doc_title — each with a pt-BR alias: empresa_nome, documento_numero, …). A token that names neither is refused.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "blockText": {
+                    "description": "Replace the text of `text` blocks BY ID, leaving the rest of the layout as it stands. Prefer this over sending `blocks` when only the wording changes: a whole-array write makes the caller authoritative over blocks another client may have added or reordered meanwhile.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "fields": {
+                    "description": "Fields an agent fills when it issues this document: [{\"name\":\"…\",\"label\":\"…\",\"type\":\"text\"|\"number\"|\"date\"|\"currency\"|\"lineItems\",\"required\"?,\"description\"?}]. `name` is lowercase letters, digits and underscores, and may not start with company_, empresa_, doc_ or documento_ (those already resolve to the letterhead or the document itself). A lineItems value is [{\"description\",\"quantity\",\"unitPrice\"}] and is the only field a lineItems or totals block may point at.",
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "patternProperties": {
+                        "^(.*)$": {}
+                      }
+                    }
+                  },
+                  "style": {
+                    "description": "Rendering style: {\"font\":\"sans\"|\"serif\"|\"mono\",\"baseFontSize\":8-14,\"accentColor\":\"#rrggbb\",\"margin\":\"narrow\"|\"normal\"|\"wide\",\"pageSize\":\"A4\"|\"LETTER\",\"locale\":\"pt-BR\"|\"en-US\",\"currency\":\"BRL\",\"footerText\"?,\"showPageNumbers\":bool}. baseFontSize outside 8-14 is clamped, not refused.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "numberPrefix": {
+                    "description": "Prefix for the document number, e.g. \"ORC-\" produces ORC-0001.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "enabled": {
+                    "description": "Whether agents may issue this document.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — a duplicate or a state conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Conflict — a duplicate or a state conflict.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patchV1Document-templatesById"
+      },
+      "delete": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Delete document template",
+        "description": "Deletes a document template. Documents already issued from it keep their own copy.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "description": "Template id (BigInt string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteV1Document-templatesById"
+      }
+    },
+    "/v1/document-templates/{id}/references": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "List template references",
+        "description": "Agents that were granted this template, so deletion can warn first.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "description": "Template id (BigInt string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1Document-templatesByIdReferences"
+      }
+    },
+    "/v1/documents": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "List issued documents",
+        "description": "Lists the documents the tenant has issued.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "pattern": "^[1-9][0-9]*$",
+              "description": "Max rows to return (positive integer).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "templateId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "description": "Only documents from this template.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "threadId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Only documents issued on this thread.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1Documents"
+      },
+      "post": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Issue document",
+        "description": "Idempotently issues a document from a template and renders its PDF.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "templateId": {
+                    "pattern": "^[0-9]+$",
+                    "description": "Template to issue from (BigInt string).",
+                    "type": "string"
+                  },
+                  "idempotencyKey": {
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Same key returns the same document — no re-render, no second number.",
+                    "type": "string"
+                  },
+                  "values": {
+                    "description": "Values keyed by the template's declared field names. A lineItems field takes [{\"description\",\"quantity\",\"unitPrice\"}].",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "threadId": {
+                    "pattern": "^[0-9]{1,20}:[0-9]{1,20}:[0-9]{1,20}$",
+                    "maxLength": 64,
+                    "description": "Conversation thread key (tenant:instance:conversation) this document belongs to.",
+                    "type": "string"
+                  },
+                  "conversationId": {
+                    "pattern": "^[0-9]+$",
+                    "description": "Conversation row id (BigInt string).",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "templateId",
+                  "idempotencyKey"
+                ]
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "templateId": {
+                    "pattern": "^[0-9]+$",
+                    "description": "Template to issue from (BigInt string).",
+                    "type": "string"
+                  },
+                  "idempotencyKey": {
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Same key returns the same document — no re-render, no second number.",
+                    "type": "string"
+                  },
+                  "values": {
+                    "description": "Values keyed by the template's declared field names. A lineItems field takes [{\"description\",\"quantity\",\"unitPrice\"}].",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "threadId": {
+                    "pattern": "^[0-9]{1,20}:[0-9]{1,20}:[0-9]{1,20}$",
+                    "maxLength": 64,
+                    "description": "Conversation thread key (tenant:instance:conversation) this document belongs to.",
+                    "type": "string"
+                  },
+                  "conversationId": {
+                    "pattern": "^[0-9]+$",
+                    "description": "Conversation row id (BigInt string).",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "templateId",
+                  "idempotencyKey"
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "templateId": {
+                    "pattern": "^[0-9]+$",
+                    "description": "Template to issue from (BigInt string).",
+                    "type": "string"
+                  },
+                  "idempotencyKey": {
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "description": "Same key returns the same document — no re-render, no second number.",
+                    "type": "string"
+                  },
+                  "values": {
+                    "description": "Values keyed by the template's declared field names. A lineItems field takes [{\"description\",\"quantity\",\"unitPrice\"}].",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "threadId": {
+                    "pattern": "^[0-9]{1,20}:[0-9]{1,20}:[0-9]{1,20}$",
+                    "maxLength": 64,
+                    "description": "Conversation thread key (tenant:instance:conversation) this document belongs to.",
+                    "type": "string"
+                  },
+                  "conversationId": {
+                    "pattern": "^[0-9]+$",
+                    "description": "Conversation row id (BigInt string).",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "templateId",
+                  "idempotencyKey"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — a duplicate or a state conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Conflict — a duplicate or a state conflict.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1Documents",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/documents/{id}/revoke": {
+      "post": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Revoke document",
+        "description": "Revokes an issued document; its PDF stops being served.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "description": "Document id (BigInt string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1DocumentsByIdRevoke"
+      }
+    },
+    "/v1/documents/{id}/pdf": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Download document PDF",
+        "description": "Streams the rendered PDF for inline viewing.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9]+$",
+              "description": "Document id (BigInt string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1DocumentsByIdPdf"
       }
     },
     "/v1/mcp/oauth/register": {

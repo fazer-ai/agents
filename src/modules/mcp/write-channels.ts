@@ -20,6 +20,7 @@ import {
   err,
   gate,
   ok,
+  parseMcpId,
   recordMcpAudit,
   truncForAudit,
   type WriteDeps,
@@ -35,14 +36,6 @@ import {
 function failOf(e: unknown): WriteResult {
   if (e instanceof AppError) return err(e.message);
   throw e;
-}
-
-function parseId(raw: string, label: string): bigint | WriteResult {
-  try {
-    return BigInt(raw);
-  } catch {
-    return err(`invalid ${label}`);
-  }
 }
 
 // ── Chatwoot deployment + accounts ──
@@ -214,7 +207,7 @@ export async function instanceDisconnect(
   const base = deps.base ?? basePrisma;
   const ctx = adminGate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.instance_id, "instance_id");
+  const id = parseMcpId(args.instance_id, "instance_id");
   if (typeof id !== "bigint") return id;
   try {
     const current = await getChatwootInstance(ctx, id, base);
@@ -272,7 +265,7 @@ export async function instanceSyncInboxes(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const id = parseId(args.instance_id, "instance_id");
+  const id = parseMcpId(args.instance_id, "instance_id");
   if (typeof id !== "bigint") return id;
   try {
     const current = await getChatwootInstance(ctx, id, base);
@@ -311,11 +304,11 @@ export async function inboxBind(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const inboxId = parseId(args.inbox_id, "inbox_id");
+  const inboxId = parseMcpId(args.inbox_id, "inbox_id");
   if (typeof inboxId !== "bigint") return inboxId;
   let agentId: bigint | null = null;
   if (args.agent_id !== undefined && args.agent_id !== null) {
-    const parsed = parseId(args.agent_id, "agent_id");
+    const parsed = parseMcpId(args.agent_id, "agent_id");
     if (typeof parsed !== "bigint") return parsed;
     agentId = parsed;
   }
@@ -357,7 +350,7 @@ export async function inboxReconnect(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const inboxId = parseId(args.inbox_id, "inbox_id");
+  const inboxId = parseMcpId(args.inbox_id, "inbox_id");
   if (typeof inboxId !== "bigint") return inboxId;
   const target = `inbox:${inboxId}`;
   if (args.dry_run !== false) {

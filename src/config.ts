@@ -32,6 +32,7 @@ const {
   HEARTBEAT_INTERVAL_MS,
   MCP_STDIO_ENABLED,
   ALLOW_SUPERUSER_RUNTIME,
+  DOCUMENTS_STORAGE_DIR,
   QUOTES_STORAGE_DIR,
   BRANDING_STORAGE_DIR,
   MCP_JWT_SECRET,
@@ -204,9 +205,20 @@ const config = {
   // Boot fails fast if the runtime role is superuser/bypassrls (RLS would be a no-op) UNLESS
   // this is true AND env !== production. NEVER set in production.
   allowSuperuserRuntime: ALLOW_SUPERUSER_RUNTIME === "true",
-  // NOTE: filesystem root for generated quote PDFs (`<dir>/<tenantId>/<quoteId>.pdf`). Served
-  // ONLY via the authenticated, tenant-scoped /v1/quotes/:id/pdf route — never under staticPlugin.
-  quotesStorageDir: QUOTES_STORAGE_DIR || "./data/quotes",
+  // NOTE: filesystem root for issued document PDFs (`<dir>/<tenantId>/documents/<documentId>.pdf`)
+  // and the tenant's letterhead logo (`<dir>/company/<tenantId>-logo.<ext>`). Served ONLY via the
+  // authenticated, tenant-scoped /v1/documents routes — never under staticPlugin. The `documents/`
+  // segment keeps them clear of the `<tenantId>/<quoteId>.pdf` an upgraded install already has in
+  // this directory (see storageKey).
+  //
+  // The QUOTES_STORAGE_DIR fallback is NOT tidiness, it is the upgrade path, and dropping it loses
+  // files. Coolify FREEZES a compose `environment:` value when the installation is created, so an
+  // existing install keeps the QUOTES_STORAGE_DIR it was created with and never learns the new name
+  // no matter what the compose says today. Without this chain, that install falls through to the
+  // default — which is inside the container, not on the volume — and every PDF it writes disappears
+  // on the next redeploy, silently.
+  documentsStorageDir:
+    DOCUMENTS_STORAGE_DIR || QUOTES_STORAGE_DIR || "./data/documents",
   // NOTE: filesystem root for the GLOBAL identity assets (logo/favicon, at most 4 files:
   // `<kind>-<variant>.<ext>`). Served via the public /v1/branding/asset/:kind/:variant route
   // (the binaries are public by nature) — never under staticPlugin.

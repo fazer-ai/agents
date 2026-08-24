@@ -5,7 +5,10 @@ import { encryptJson } from "@/api/lib/crypto";
 import {
   AGENT_EXPORT_KIND,
   AGENT_EXPORT_VERSION,
+  EXPORTED_COMPONENT_KEYS,
 } from "@/modules/agents/transfer";
+import { documentStarter } from "@/modules/documents/starters";
+import { createDocumentTemplate } from "@/modules/documents/templates";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   agentCreate,
@@ -95,6 +98,53 @@ describe("MCP agent-builder gate (no DB)", () => {
         { name: "OpenAI", kind: "openai" },
       ]);
     }
+  });
+
+  // The preview has to disclose EVERY component array the apply can create — the apply reuses or
+  // creates each of them before it assigns the grants, so an omitted one is the dry run standing in
+  // for a different operation than the one that will run.
+  //
+  // Compared against the export schema's own keys rather than a list written here: the way this
+  // broke was a component array being added to the bundle and not to the preview, and a hand-written
+  // list in the test would have been the same omission a second time.
+  test("the preview counts every component array a bundle can carry", async () => {
+    const exp = {
+      version: AGENT_EXPORT_VERSION,
+      kind: AGENT_EXPORT_KIND,
+      agent: {
+        name: "Com componentes",
+        systemPrompt: "hi",
+        modelConfig: {},
+        settings: {},
+        transferWithSummary: false,
+        businessHours: null,
+        followUpHours: null,
+        tools: [],
+        credentials: [],
+      },
+      components: {
+        httpTools: [],
+        mcpServers: [],
+        integrations: [],
+        knowledgeBases: [],
+        documentTemplates: [
+          {
+            name: "Orçamento",
+            slug: "orcamento_importado",
+            blocks: [{ id: "t", type: "text", text: "Olá." }],
+            fields: [],
+          },
+        ],
+      },
+    };
+    const r = await agentImport(principal({}), { export: exp });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const components = r.data.components as Record<string, number>;
+    expect(Object.keys(components).sort()).toEqual(
+      [...EXPORTED_COMPONENT_KEYS].sort(),
+    );
+    expect(components.documentTemplates).toBe(1);
   });
 });
 
@@ -341,6 +391,71 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
       where: { tenantId: tenantA, action: "mcp.agent_tools_set" },
     });
     expect(audits).toBe(1);
+  });
+
+  // A grant's id is caller-supplied, and `BigInt` accepts more than a column does. `0x11` is 17n, so
+  // a request that never named a template could be handed one; a value past 2^63-1 converts here and
+  // is refused by POSTGRES when the query binds it, answering 500 on a path that advertises a
+  // validation error. Both spellings, for the grant path the document tool introduced.
+  test("a grant id that is not a plain in-range number is refused, not converted", async () => {
+    const p = principal({ tenantId: tenantA });
+    for (const bad of ["0x11", "9223372036854775808", " 7 ", "1e3"]) {
+      const r = await agentToolsSet(
+        p,
+        {
+          agent_id: String(agentA),
+          grants: [{ source: "DOCUMENT", documentTemplateId: bad }],
+          dry_run: false,
+        },
+        { base: appDb },
+      );
+      expect(r.ok).toBe(false);
+    }
+    expect(
+      await suDb.agentToolSelection.count({
+        where: { agentId: agentA, source: "DOCUMENT" },
+      }),
+    ).toBe(0);
+  });
+
+  // The step that closed the MCP loop: this surface could CREATE a document template and had no way
+  // to GRANT it, so an operator authoring over MCP ended one move short of a working document tool.
+  test("agent_tools_set can grant a document template", async () => {
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const tpl = await createDocumentTemplate(
+      { tenantId: tenantA, userId: null, role: "TENANT_ADMIN" },
+      {
+        name: "Orçamento MCP",
+        slug: "orcamento_mcp",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+      },
+      appDb,
+    );
+    const p = principal({ tenantId: tenantA });
+    const r = await agentToolsSet(
+      p,
+      {
+        agent_id: String(agentA),
+        grants: [{ source: "DOCUMENT", documentTemplateId: tpl.id }],
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    const grant = await suDb.agentToolSelection.findFirst({
+      where: { agentId: agentA, source: "DOCUMENT" },
+      select: { documentTemplateId: true },
+    });
+    expect(grant?.documentTemplateId).toBe(BigInt(tpl.id));
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${agentA}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM document_templates WHERE id = ${BigInt(tpl.id)}`,
+    );
   });
 
   test("agent_update cross-tenant agent_id → not found, no write", async () => {

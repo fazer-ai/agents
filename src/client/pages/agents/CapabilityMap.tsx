@@ -118,6 +118,30 @@ export function buildGroups(
     });
   }
 
+  // Document templates: one item per granted template, named by the TOOL the agent will call. A
+  // grant whose template was deleted, or which is disabled, still resolves to nothing here for the
+  // same reason a stale MCP or integration grant does — the map shows what the agent can call.
+  const documentNames = grants
+    .filter((g) => g.source === "DOCUMENT")
+    .map(
+      (g) =>
+        catalog.documentTemplates.find(
+          // AVAILABLE, not merely enabled: assembly also skips a template whose content this build
+          // cannot parse. The map is the operator's answer to "what can this agent call", and
+          // drawing a tool that is not in the graph is worse than drawing nothing, since the
+          // picture reads as complete. One question, asked of the catalog that answers it.
+          (d) => d.id === g.documentTemplateId && d.available,
+        )?.toolName,
+    )
+    .filter((n): n is string => !!n);
+  if (documentNames.length > 0) {
+    groups.push({
+      key: "document",
+      label: t("editor.capabilities.documents", "Documents"),
+      items: documentNames,
+    });
+  }
+
   return groups;
 }
 

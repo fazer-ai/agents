@@ -293,9 +293,10 @@ describe("the send_image tool", () => {
     const host = fakeHost(PNG);
     const turnState: TurnState = {
       resolveRequested: false,
-      pendingImages: [],
+      pendingAttachments: [],
       imagesInFlight: 0,
-      imagesSeq: 0,
+      documentsInFlight: 0,
+      attachmentsSeq: 0,
     };
     const tools = buildNativeTools(
       {
@@ -314,13 +315,20 @@ describe("the send_image tool", () => {
     });
     expect(String(out)).toContain("Imagem pronta para envio");
     expect(sent).toEqual([]);
-    expect(turnState.pendingImages).toHaveLength(1);
-    expect(turnState.pendingImages[0]).toMatchObject({
+    expect(turnState.pendingAttachments).toHaveLength(1);
+    expect(turnState.pendingAttachments[0]).toMatchObject({
       fileName: "imagem.png",
       mime: "image/png",
       caption: "Essa é a azul",
+      // The queue is shared with the document tools, so what an entry is has to travel with it: the
+      // delivery loop reads `tool` for the flow line and `kind` for the quota, and an image that
+      // arrives untagged would be counted against neither.
+      tool: "send_image",
+      kind: "image",
     });
-    expect(turnState.pendingImages[0]?.bytes.byteLength).toBe(PNG.byteLength);
+    expect(turnState.pendingAttachments[0]?.bytes.byteLength).toBe(
+      PNG.byteLength,
+    );
   });
 
   // A proactive nudge has no turn to queue into, and its own gate (the 24h service window) decides
@@ -355,9 +363,10 @@ describe("the send_image tool", () => {
     const host = fakeHost(PNG);
     const turnState: TurnState = {
       resolveRequested: false,
-      pendingImages: [],
+      pendingAttachments: [],
       imagesInFlight: 0,
-      imagesSeq: 0,
+      documentsInFlight: 0,
+      attachmentsSeq: 0,
     };
     const tools = buildNativeTools(
       {
@@ -380,7 +389,7 @@ describe("the send_image tool", () => {
         ),
       );
     }
-    expect(turnState.pendingImages).toHaveLength(SEND_IMAGE_MAX_PER_TURN);
+    expect(turnState.pendingAttachments).toHaveLength(SEND_IMAGE_MAX_PER_TURN);
     expect(host.calls).toHaveLength(SEND_IMAGE_MAX_PER_TURN);
     expect(outs[SEND_IMAGE_MAX_PER_TURN]).toContain("Limite de imagens");
     expect(sent).toEqual([]);
@@ -394,9 +403,10 @@ describe("the send_image tool", () => {
     const host = fakeHost(PNG);
     const turnState: TurnState = {
       resolveRequested: false,
-      pendingImages: [],
+      pendingAttachments: [],
       imagesInFlight: 0,
-      imagesSeq: 0,
+      documentsInFlight: 0,
+      attachmentsSeq: 0,
     };
     const tools = buildNativeTools(
       {
@@ -416,7 +426,7 @@ describe("the send_image tool", () => {
           .then(String),
       ),
     );
-    expect(turnState.pendingImages).toHaveLength(SEND_IMAGE_MAX_PER_TURN);
+    expect(turnState.pendingAttachments).toHaveLength(SEND_IMAGE_MAX_PER_TURN);
     expect(host.calls.length).toBeLessThanOrEqual(SEND_IMAGE_MAX_PER_TURN);
     expect(outs.filter((o) => o?.includes("Limite de imagens"))).toHaveLength(
       12 - SEND_IMAGE_MAX_PER_TURN,
@@ -457,9 +467,10 @@ describe("the send_image tool", () => {
     const host = fakeHost(PNG);
     const turnState: TurnState = {
       resolveRequested: false,
-      pendingImages: [],
+      pendingAttachments: [],
       imagesInFlight: 0,
-      imagesSeq: 0,
+      documentsInFlight: 0,
+      attachmentsSeq: 0,
     };
     const tools = buildNativeTools(
       {
@@ -479,7 +490,7 @@ describe("the send_image tool", () => {
       })
       .catch((e: unknown) => String(e));
     expect(String(out)).toMatch(/too_big|at most|500/i);
-    expect(turnState.pendingImages).toHaveLength(0);
+    expect(turnState.pendingAttachments).toHaveLength(0);
   });
 
   // The batch runs concurrently, so the queue fills in COMPLETION order: the ticket is what remembers
@@ -489,9 +500,10 @@ describe("the send_image tool", () => {
     const sent: Sent[] = [];
     const turnState: TurnState = {
       resolveRequested: false,
-      pendingImages: [],
+      pendingAttachments: [],
       imagesInFlight: 0,
-      imagesSeq: 0,
+      documentsInFlight: 0,
+      attachmentsSeq: 0,
     };
     // The image the model asked for FIRST is the slow one.
     const unevenHost = (async (input: string | URL) => {
@@ -525,12 +537,12 @@ describe("the send_image tool", () => {
       }),
     ]);
     // The queue really is in completion order — which is why sorting on delivery is not decoration.
-    expect(turnState.pendingImages.map((i) => i.caption)).toEqual([
+    expect(turnState.pendingAttachments.map((i) => i.caption)).toEqual([
       "Segunda",
       "Primeira",
     ]);
     expect(
-      [...turnState.pendingImages]
+      [...turnState.pendingAttachments]
         .sort((a, b) => a.order - b.order)
         .map((i) => i.caption),
     ).toEqual(["Primeira", "Segunda"]);
@@ -545,9 +557,10 @@ describe("the send_image tool", () => {
     const host = fakeHost(big, { chunkSize: 256 * 1024 });
     const turnState: TurnState = {
       resolveRequested: false,
-      pendingImages: [],
+      pendingAttachments: [],
       imagesInFlight: 0,
-      imagesSeq: 0,
+      documentsInFlight: 0,
+      attachmentsSeq: 0,
     };
     const tools = buildNativeTools(
       {
@@ -570,7 +583,7 @@ describe("the send_image tool", () => {
         ),
       );
     }
-    const queued = turnState.pendingImages.reduce(
+    const queued = turnState.pendingAttachments.reduce(
       (n, i) => n + i.bytes.byteLength,
       0,
     );
@@ -585,9 +598,10 @@ describe("the send_image tool", () => {
     const host = fakeHost(PNG);
     const turnState: TurnState = {
       resolveRequested: false,
-      pendingImages: [],
+      pendingAttachments: [],
       imagesInFlight: 0,
-      imagesSeq: 0,
+      documentsInFlight: 0,
+      attachmentsSeq: 0,
     };
     const tools = buildNativeTools(
       {
@@ -610,7 +624,7 @@ describe("the send_image tool", () => {
     expect(String(out)).not.toContain("exfiltra.example.com");
     expect(String(out)).not.toContain("segredo");
     expect(sent).toEqual([]);
-    expect(turnState.pendingImages).toEqual([]);
+    expect(turnState.pendingAttachments).toEqual([]);
     expect(host.calls).toEqual([]);
   });
 
@@ -619,9 +633,10 @@ describe("the send_image tool", () => {
     const host = fakeHost(PNG);
     const turnState: TurnState = {
       resolveRequested: false,
-      pendingImages: [],
+      pendingAttachments: [],
       imagesInFlight: 0,
-      imagesSeq: 0,
+      documentsInFlight: 0,
+      attachmentsSeq: 0,
     };
     const tools = buildNativeTools(
       {

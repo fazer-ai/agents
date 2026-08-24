@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { rm } from "node:fs/promises";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
@@ -22,6 +23,9 @@ import { runAgentTurn } from "@/graph/runtime";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { storageKey } from "@/modules/documents/issue";
+import { documentStarter } from "@/modules/documents/starters";
+import { createDocumentTemplate } from "@/modules/documents/templates";
 import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -32,6 +36,7 @@ import {
   HandoffThenReplyModel,
   HandoffThenThrowModel,
   ResolveThenReplyModel,
+  SendDocumentThenReplyModel,
   SendImageAndResolveModel,
   SendImageBatchModel,
   SendImageOnlyModel,
@@ -2052,6 +2057,491 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
+  // The whole feature, end to end and to the OBSERVABLE effect: a template the operator authored, a
+  // grant, a model that calls the tool it produced, and a customer who receives the PDF before the
+  // sentence about it. Anything short of the attachment landing on the conversation is a proxy for
+  // this, and the last mile is exactly where the previous attempt at this feature stopped.
+  test("a granted document template becomes a tool whose PDF reaches the customer first", async () => {
+    await allowImageHost();
+    await seedConversation(941, null);
+    const dir = `/tmp/fazerai-runtime-doc-${process.pid}`;
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const agent = await suDb.agent.findFirst({
+      where: { tenantId },
+      select: { id: true },
+    });
+    const tpl = await createDocumentTemplate(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      {
+        name: "Orçamento",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+        numberPrefix: "ORC-",
+      },
+      appDb,
+    );
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent?.id as bigint,
+        source: "DOCUMENT",
+        documentTemplateId: BigInt(tpl.id),
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    const calls: Array<[string, number, string]> = [];
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 941 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new SendDocumentThenReplyModel(
+              "Segue o orçamento!",
+              "send_orcamento",
+              {
+                cliente: "Ana Ribeiro",
+                itens: [
+                  { description: "Consultoria", quantity: 2, unitPrice: 450 },
+                ],
+                validade: "2026-09-05",
+              },
+            ) as unknown as BaseChatModel,
+          makeClient: makeImageClient(calls),
+          checkpointer: new MemorySaver(),
+          documentsStorageDir: dir,
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(calls).toEqual([
+        ["sendFileAttachment", 941, "Orcamento-ORC-0001.pdf"],
+        ["sendMessage", 941, "Segue o orçamento!"],
+      ]);
+      // The document is a row, not only a file: it is numbered, READY, and bound to this
+      // conversation's thread key.
+      const row = await suDb.issuedDocument.findFirst({
+        where: { tenantId, threadId: `${tenantId}:${instanceId}:941` },
+        select: { id: true, status: true, number: true },
+      });
+      expect(row).toMatchObject({ status: "READY", number: 1 });
+      // And the bytes really went to the injected directory. Asserting this is not ceremony: the
+      // first version of this test passed a dir the runtime did not plumb through, so the PDF was
+      // written to the configured one and nothing said so.
+      expect(
+        await Bun.file(
+          `${dir}/${storageKey(tenantId, row?.id ?? 0n)}`,
+        ).exists(),
+      ).toBe(true);
+      // And the trail names the tool the operator granted, not a constant: an operator filtering for
+      // it has to find the line it produced.
+      const flow = await suDb.executionLog.findMany({
+        where: { tenantId, stage: "tool" },
+        select: { detail: true },
+      });
+      const details = flow.map((f) => JSON.stringify(f.detail));
+      expect(
+        details.some(
+          (d) => d.includes("send_orcamento") && d.includes('"outcome":"sent"'),
+        ),
+      ).toBe(true);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM agent_tool_selections WHERE tenant_id = ${tenantId}`,
+      );
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Revocation has to win the last race it can be in. The tool issues and queues BYTES, and the
+  // model still has a response to finish — an operator watching the conversation can revoke in that
+  // window, and bytes cannot say they were voided. Asked again immediately before the send.
+  test("a document revoked while the turn finishes is not delivered", async () => {
+    await seedConversation(944, null);
+    const dir = `/tmp/fazerai-runtime-revoked-${process.pid}`;
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const agent = await suDb.agent.findFirst({
+      where: { tenantId },
+      select: { id: true },
+    });
+    const tpl = await createDocumentTemplate(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      {
+        name: "Orçamento revogado",
+        slug: "orcamento_revogado",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+      },
+      appDb,
+    );
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent?.id as bigint,
+        source: "DOCUMENT",
+        documentTemplateId: BigInt(tpl.id),
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    const calls: Array<[string, number, string]> = [];
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 944 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new SendDocumentThenReplyModel(
+              "Segue o orçamento!",
+              "send_orcamento_revogado",
+              {
+                cliente: "Ana Ribeiro",
+                itens: [
+                  { description: "Consultoria", quantity: 1, unitPrice: 100 },
+                ],
+                validade: "2026-09-05",
+              },
+              // Runs after the tool queued the document and before the runtime delivers it: the
+              // operator's revoke, in the only window where it can land.
+              async () => {
+                await suDb.issuedDocument.updateMany({
+                  where: { tenantId, templateId: BigInt(tpl.id) },
+                  data: { revoked: true },
+                });
+              },
+            ) as unknown as BaseChatModel,
+          makeClient: makeImageClient(calls),
+          checkpointer: new MemorySaver(),
+          documentsStorageDir: dir,
+        },
+      });
+      expect(outcome).toBe("posted");
+      // The reply still goes out; the voided document does not ride along with it.
+      expect(calls).toEqual([["sendMessage", 944, "Segue o orçamento!"]]);
+      // …and the trail reads as the DECISION it was. Scoped to THIS conversation: the file's other
+      // document tests write tool rows for the same tenant, and an unscoped read would let one of
+      // them satisfy the assertion.
+      // Polled, because emitFlowEvent is fire-and-forget: asserting on the first read passes or
+      // fails on timing, which is a test that reports the wrong thing.
+      let skipLogged = false;
+      for (let i = 0; i < 30 && !skipLogged; i++) {
+        const flow = await suDb.executionLog.findMany({
+          where: {
+            tenantId,
+            stage: "tool",
+            threadId: `${tenantId}:${instanceId}:944`,
+          },
+          select: { detail: true, status: true },
+        });
+        skipLogged = flow.some(
+          (f) =>
+            JSON.stringify(f.detail).includes("revoked_before_delivery") &&
+            f.status === "skipped",
+        );
+        if (!skipLogged) await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(skipLogged).toBe(true);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM agent_tool_selections WHERE tenant_id = ${tenantId}`,
+      );
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The same revoke, on a turn whose ONLY output was the document. Nothing reaches the customer
+  // either way, but the two reasons for that are not the same event: a delivery that FAILED is a
+  // turn error the operator has to see (private note, lastError, alert), and a document the operator
+  // themselves pulled back is their own decision arriving. Reporting the decision as a failure
+  // alerts them about their own click.
+  test("an attachment-only turn whose document was revoked does not fail the turn", async () => {
+    await seedConversation(946, null);
+    const dir = `/tmp/fazerai-runtime-revoked-only-${process.pid}`;
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const agent = await suDb.agent.findFirst({
+      where: { tenantId },
+      select: { id: true },
+    });
+    const tpl = await createDocumentTemplate(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      {
+        name: "Orçamento só anexo",
+        slug: "orcamento_so_anexo",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+      },
+      appDb,
+    );
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent?.id as bigint,
+        source: "DOCUMENT",
+        documentTemplateId: BigInt(tpl.id),
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    const calls: Array<[string, number, string]> = [];
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 946 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new SendDocumentThenReplyModel(
+              // No text at all: the document WAS the turn.
+              "",
+              "send_orcamento_so_anexo",
+              {
+                cliente: "Ana Ribeiro",
+                itens: [
+                  { description: "Consultoria", quantity: 1, unitPrice: 100 },
+                ],
+                validade: "2026-09-05",
+              },
+              async () => {
+                await suDb.issuedDocument.updateMany({
+                  where: { tenantId, templateId: BigInt(tpl.id) },
+                  data: { revoked: true },
+                });
+              },
+            ) as unknown as BaseChatModel,
+          makeClient: makeImageClient(calls),
+          checkpointer: new MemorySaver(),
+          documentsStorageDir: dir,
+        },
+      });
+      // Nothing was sent and nothing failed: an empty turn, not a broken one.
+      expect(outcome).toBe("empty");
+      expect(calls).toEqual([]);
+      // …and no deferred resolve closed a conversation the customer never heard back on.
+      expect((await mirroredStatus(946)) === "resolved").toBe(false);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM agent_tool_selections WHERE tenant_id = ${tenantId}`,
+      );
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // …and the other half of THAT rule, on the attachment-only turn. A lookup that could not be made
+  // is not the operator deciding anything: the file was held back by an outage, and nothing reached
+  // the customer. That is the turn error the alert exists for — reading it as a decision would leave
+  // an unanswered conversation with nothing on it saying why.
+  test("an attachment-only turn whose revocation lookup fails still fails loudly", async () => {
+    await seedConversation(947, null);
+    const dir = `/tmp/fazerai-runtime-lookupfail-only-${process.pid}`;
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const agent = await suDb.agent.findFirst({
+      where: { tenantId },
+      select: { id: true },
+    });
+    const tpl = await createDocumentTemplate(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      {
+        name: "Orçamento instável só anexo",
+        slug: "orcamento_instavel_so_anexo",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+      },
+      appDb,
+    );
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent?.id as bigint,
+        source: "DOCUMENT",
+        documentTemplateId: BigInt(tpl.id),
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    const flaky = appDb.$extends({
+      query: {
+        issuedDocument: {
+          async findUnique({ args, query }) {
+            const select = args.select as Record<string, unknown> | undefined;
+            if (
+              select &&
+              Object.keys(select).length === 1 &&
+              select.revoked === true
+            ) {
+              throw new Error("connection lost");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const calls: Array<[string, number, string]> = [];
+    try {
+      await expect(
+        runAgentTurn({
+          tenantId,
+          instanceId,
+          agentBotId: 9,
+          event: incoming({ conversationId: 947 }),
+          base: flaky,
+          deps: {
+            makeModel: () =>
+              new SendDocumentThenReplyModel(
+                "",
+                "send_orcamento_instavel_so_anexo",
+                {
+                  cliente: "Ana Ribeiro",
+                  itens: [
+                    { description: "Consultoria", quantity: 1, unitPrice: 100 },
+                  ],
+                  validade: "2026-09-05",
+                },
+              ) as unknown as BaseChatModel,
+            makeClient: makeImageClient(calls),
+            checkpointer: new MemorySaver(),
+            documentsStorageDir: dir,
+          },
+        }),
+      ).rejects.toThrow(/anexo: nada foi entregue/);
+      expect(calls).toEqual([]);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM agent_tool_selections WHERE tenant_id = ${tenantId}`,
+      );
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The recheck fails CLOSED and, just as importantly, LOCALLY. It runs inside the loop that also
+  // delivers the model's text, so an exception escaping it would cost the customer an answer they
+  // were owed — over a lookup about an attachment. The document is held back; the reply is not.
+  test("a failing revocation lookup holds the document and still sends the reply", async () => {
+    await seedConversation(945, null);
+    const dir = `/tmp/fazerai-runtime-lookupfail-${process.pid}`;
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const agent = await suDb.agent.findFirst({
+      where: { tenantId },
+      select: { id: true },
+    });
+    const tpl = await createDocumentTemplate(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      {
+        name: "Orçamento instável",
+        slug: "orcamento_instavel",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+      },
+      appDb,
+    );
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent?.id as bigint,
+        source: "DOCUMENT",
+        documentTemplateId: BigInt(tpl.id),
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+    // Only the delivery recheck is broken: it is the one read that selects `revoked` alone, so the
+    // issuance path (which reads the whole row) is untouched and the document really is queued.
+    const flaky = appDb.$extends({
+      query: {
+        issuedDocument: {
+          async findUnique({ args, query }) {
+            const select = args.select as Record<string, unknown> | undefined;
+            if (
+              select &&
+              Object.keys(select).length === 1 &&
+              select.revoked === true
+            ) {
+              throw new Error("connection lost");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const calls: Array<[string, number, string]> = [];
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 945 }),
+        base: flaky,
+        deps: {
+          makeModel: () =>
+            new SendDocumentThenReplyModel(
+              "Segue o orçamento!",
+              "send_orcamento_instavel",
+              {
+                cliente: "Ana Ribeiro",
+                itens: [
+                  { description: "Consultoria", quantity: 1, unitPrice: 100 },
+                ],
+                validade: "2026-09-05",
+              },
+            ) as unknown as BaseChatModel,
+          makeClient: makeImageClient(calls),
+          checkpointer: new MemorySaver(),
+          documentsStorageDir: dir,
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(calls).toEqual([["sendMessage", 945, "Segue o orçamento!"]]);
+      // And the trail says so. A lookup that could not be made is not the operator revoking
+      // anything: logging it as an intentional skip makes the one place they would look to find out
+      // why the file never arrived tell them somebody meant it.
+      let flow: { detail: unknown; status: string | null }[] = [];
+      let unknown: typeof flow = [];
+      for (let i = 0; i < 30 && unknown.length === 0; i++) {
+        flow = await suDb.executionLog.findMany({
+          where: {
+            tenantId,
+            stage: "tool",
+            threadId: `${tenantId}:${instanceId}:945`,
+          },
+          select: { detail: true, status: true },
+        });
+        unknown = flow.filter((f) =>
+          JSON.stringify(f.detail).includes("revocation_unknown"),
+        );
+        if (unknown.length === 0) await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(unknown.length).toBeGreaterThan(0);
+      expect(unknown.every((f) => f.status === "error")).toBe(true);
+      expect(
+        flow.some((f) =>
+          JSON.stringify(f.detail).includes("revoked_before_delivery"),
+        ),
+      ).toBe(false);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM agent_tool_selections WHERE tenant_id = ${tenantId}`,
+      );
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   // "Show me the three colours" is one response with three tool calls, which LangGraph runs with
   // Promise.all. Whoever answers first would otherwise be first in the conversation, and the customer
   // would read "a azul é essa" under the green one.
@@ -2133,9 +2623,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls).toEqual([["sendFileAttachment", 932, "imagem.png"]]);
   });
 
-  // The other half of that rule: when the images were the whole turn and NONE of them got through,
-  // nothing reached the customer. Reporting "empty" would let the deferred resolve close an
+  // The other half of that rule: when the attachments were the whole turn and NONE of them got
+  // through, nothing reached the customer. Reporting "empty" would let the deferred resolve close an
   // unanswered conversation, and the callers only record a turn error when the turn throws.
+  //
+  // NOTE: the assertion matches the GENERAL wording, not "no image was delivered". The queue is
+  // shared with the document tools now, and a turn whose only artefact was a quote fails through
+  // exactly this branch — a message naming images would send the operator to the image allowlist to
+  // debug a PDF read off our own disk.
   test("an image-only turn whose delivery fails does not resolve, and fails loudly", async () => {
     await allowImageHost();
     await seedConversation(933, null);
@@ -2155,7 +2650,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           imageDeps,
         },
       }),
-    ).rejects.toThrow(/nenhuma imagem foi entregue/);
+    ).rejects.toThrow(/anexo: nada foi entregue/);
     expect(calls).toEqual([["sendFileAttachment", 933, "imagem.png"]]);
     expect((await mirroredStatus(933)) === "resolved").toBe(false);
   });
@@ -2535,6 +3030,29 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           agentId: agent.id,
         },
       });
+      const starter = documentStarter("quote", "pt-BR");
+      if (!starter) throw new Error("no starter");
+      const tpl = await createDocumentTemplate(
+        { tenantId: gTenantId, userId: null, role: "TENANT_ADMIN" },
+        {
+          name: "Orçamento",
+          blocks: starter.blocks,
+          fields: starter.fields,
+          style: starter.style,
+          numberPrefix: "ORC-",
+        },
+        appDb,
+      );
+      await suDb.agentToolSelection.create({
+        data: {
+          tenantId: gTenantId,
+          agentId: agent.id,
+          source: "DOCUMENT",
+          documentTemplateId: BigInt(tpl.id),
+          enabledTools: [],
+          knowledgeBaseIds: [],
+        },
+      });
     });
 
     afterAll(async () => {
@@ -2547,6 +3065,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         "contacts",
         "inboxes",
         "chatwoot_agent_bots",
+        "agent_tool_selections",
+        "issued_documents",
+        "document_templates",
         "agents",
         "vault_entries",
         "chatwoot_instances",
@@ -2690,6 +3211,83 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(outcome).toBe("posted");
       expect(sent).toEqual([[946, "GEN-OUT-REPLY"]]);
       expect(attachments).toEqual([]);
+    });
+
+    // The same rule, on the surface where getting it wrong costs the most. A caption is a line under
+    // a picture; a document's field values and line-item descriptions are text the model wrote that
+    // the customer keeps as a numbered PDF. Screening the reply while that goes out unread is the
+    // same hole, one degree worse — so the values have to REACH the screening (asserted on what the
+    // guardrail model was actually given, not on the outcome alone, which a wholly unrelated block
+    // would also produce).
+    test("a document's model-written values are screened, and a trip stops the file", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-OUT",
+        },
+      });
+      await seedConv(949);
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const attachments: Array<[number, string]> = [];
+      const screened: string[] = [];
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "line item",
+      });
+      const dir = `/tmp/fazerai-guard-doc-${process.pid}`;
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 949, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+            cfg.model === GUARD_MODEL
+              ? guardrailModel(async (messages) => {
+                  screened.push(JSON.stringify(messages));
+                  return { content: verdict };
+                })
+              : (new SendDocumentThenReplyModel(
+                  "Segue o orçamento!",
+                  "send_orcamento",
+                  {
+                    cliente: "Ana Ribeiro",
+                    itens: [
+                      {
+                        description: "DESCRICAO PROIBIDA",
+                        quantity: 1,
+                        unitPrice: 10,
+                      },
+                    ],
+                    validade: "2026-09-05",
+                  },
+                ) as unknown as BaseChatModel),
+          makeClient: guardStub(sent, notes, [], attachments),
+          checkpointer: new MemorySaver(),
+          documentsStorageDir: dir,
+        },
+      });
+      expect(outcome).toBe("blocked");
+      expect(attachments).toEqual([]);
+      expect(sent).toEqual([]);
+      // The value the model put ON the document reached the screening — which is the half that a
+      // "blocked" outcome on its own does not prove.
+      expect(screened.join("\n")).toContain("DESCRICAO PROIBIDA");
     });
 
     // Same rule with no reply to hide behind: when the caption is the ONLY customer-facing text the

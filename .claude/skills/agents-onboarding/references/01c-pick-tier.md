@@ -33,7 +33,7 @@ Qualquer que seja o tier, o segmento de deploy termina quando **entrega exatamen
 2. **agents subida com as duas roles de DB** (superuser p/ bootstrap+migrate, runtime **não-superuser**) e o
    env mínimo: `PUBLIC_URL`, `JWT_SECRET`, `ENCRYPTION_KEY`, os dois pares de URL
    (`MIGRATION_DATABASE_URL` = superuser; `DATABASE_URL` + `LANGGRAPH_DATABASE_URL` = runtime),
-   `BRANDING_STORAGE_DIR`/`QUOTES_STORAGE_DIR` no volume persistente, **réplica única**. O
+   `BRANDING_STORAGE_DIR`/`DOCUMENTS_STORAGE_DIR` no volume persistente, **réplica única**. O
    `scripts/gen-onboarding-env.ts` gera os secrets + URLs; os composes
    do repo já trazem o resto.
 3. **agents acessível + `/setup` alcançável** em `${PUBLIC_URL}/setup` (o onboarding sobe com `SETUP_TOKEN_REQUIRED=false`, então o `/setup` **não pede token**; ver [`06-setup-and-mcp.md`](06-setup-and-mcp.md)).

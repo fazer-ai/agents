@@ -18,6 +18,7 @@ import {
 import { NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
+import { documentToolName } from "@/modules/documents/templates";
 import { listThreadMedia } from "./media";
 import { isValidPlaygroundThread } from "./thread";
 import { type LoadedTurnNote, listThreadTurnNotes } from "./turn-notes";
@@ -145,7 +146,17 @@ export interface RebuiltTurn {
 // user turn + the agent reply) or a system message (an injected follow-up nudge → a proactive
 // assistant turn; silent follow-ups produce nothing and are skipped). Per-turn traces are rebuilt
 // from each slice. Intermediate tool/AI messages belong to the turn's trace, never a separate bubble.
-export function rebuildPlaygroundTurns(messages: BaseMessage[]): RebuiltTurn[] {
+export function rebuildPlaygroundTurns(
+  messages: BaseMessage[],
+  // Tool names simulated for THIS agent beyond the fixed conversation set — the document tools its
+  // granted templates produce. The live trace labels them; without them here the same result loses
+  // its badge on reopen and reads as a document that was really issued.
+  extraSimulated: Iterable<string> = [],
+): RebuiltTurn[] {
+  const simulated = new Set<string>([
+    ...SIMULATED_TOOL_NAMES,
+    ...extraSimulated,
+  ]);
   const turns: RebuiltTurn[] = [];
   const n = messages.length;
   let i = 0;
@@ -163,7 +174,7 @@ export function rebuildPlaygroundTurns(messages: BaseMessage[]): RebuiltTurn[] {
     }
     const slice = messages.slice(i, j);
     const trace = buildPlaygroundTrace(slice, {
-      simulatedNames: SIMULATED_TOOL_NAMES,
+      simulatedNames: simulated,
     });
     const sources = collectTraceSources(trace);
     const reply = lastAi(slice);
@@ -455,8 +466,28 @@ export async function getPlaygroundSessionTurns(
   const messages = Array.isArray(channel?.messages)
     ? (channel.messages as BaseMessage[])
     : [];
+  // The agent's own document tools, so a simulated issuance keeps its badge on reopen.
+  //
+  // Derived from the grants as they stand NOW, which is a known limit rather than an oversight: a
+  // template whose grant was removed, renamed or deleted since the turn loses its badge when the
+  // session is reopened, and the call then reads as a live external action. Fixing it properly means
+  // persisting the simulated names WITH each turn — a column, a migration and a write on every
+  // playground turn, for a badge on a historical session whose tool no longer exists. The trade is
+  // not worth it; the limit is written here so the next reader knows it was weighed.
+  const documentTools = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.agentToolSelection.findMany({
+      where: { agentId, source: "DOCUMENT" },
+      select: { documentTemplate: { select: { slug: true } } },
+    }),
+  );
   const turns = applyTurnNotes(
-    rebuildPlaygroundTurns(messages),
+    rebuildPlaygroundTurns(
+      messages,
+      documentTools
+        .map((g) => g.documentTemplate?.slug)
+        .filter((slug): slug is string => !!slug)
+        .map(documentToolName),
+    ),
     await listThreadTurnNotes(base, tenantId, threadId),
   );
 

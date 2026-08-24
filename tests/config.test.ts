@@ -242,3 +242,36 @@ describe("the minimum", () => {
     ).toThrow(/between 0 and/);
   });
 });
+
+// The storage-directory fallback chain, read off config.ts rather than driven with an environment.
+// Same reason as above: `@/config` is evaluated once per worker, so a test that set the variables
+// would be asserting whatever the environment held when the first file in the worker imported it.
+describe("documentsStorageDir fallback chain", () => {
+  const source = readFileSync("src/config.ts", "utf8");
+
+  // The ORDER is the whole point, and getting it backwards loses files rather than erroring. Coolify
+  // freezes a compose `environment:` value when the installation is created, so an existing install
+  // keeps QUOTES_STORAGE_DIR forever and never learns the new name. With the fallback, that install
+  // keeps writing inside its volume; without it, it falls through to a default that lives in the
+  // container and every PDF disappears on the next redeploy, silently.
+  test("prefers the new name, then the frozen old one, then the default", () => {
+    expect(source).toContain(
+      'DOCUMENTS_STORAGE_DIR || QUOTES_STORAGE_DIR || "./data/documents"',
+    );
+  });
+
+  // A variable the composes do not declare lands on that in-container default, which is the same
+  // silent loss from the other direction — this time for a NEW installation.
+  test("every deploy compose declares the storage directory", () => {
+    for (const file of [
+      "docker-compose.prod.yml",
+      "docker-compose.coolify.yml",
+      "docker-compose.portainer.yml",
+    ]) {
+      const compose = readFileSync(file, "utf8");
+      expect(compose).toContain("DOCUMENTS_STORAGE_DIR=/app/storage/documents");
+      // The old name stays declared too, for installations created before the rename.
+      expect(compose).toContain("QUOTES_STORAGE_DIR=");
+    }
+  });
+});

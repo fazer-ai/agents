@@ -47,9 +47,14 @@ services:
       # `registration_endpoint`. Also the app default — pinned here so the stack works on an older
       # image too, since without it both clients abort before any login screen (docs/mcp.md).
       - MCP_DCR_ENABLED=${MCP_DCR_ENABLED:-true}
-      # Persist uploaded branding (logo/favicon) + generated quote PDFs on the `storage` volume.
+      # Persist uploaded branding (logo/favicon) + issued document PDFs on the `storage` volume.
       # The defaults (./data/*) live on the ephemeral container FS and vanish on every redeploy.
       - BRANDING_STORAGE_DIR=/app/storage/branding
+      - DOCUMENTS_STORAGE_DIR=/app/storage/documents
+      # NOTE: kept for installations created before the rename. Platforms that FREEZE a compose
+      # value at install time (Coolify) never deliver the new name to an existing install, so
+      # dropping this line would send its PDFs to the container filesystem, where a redeploy
+      # erases them without a word. config.ts reads DOCUMENTS_STORAGE_DIR first, then this.
       - QUOTES_STORAGE_DIR=/app/storage/quotes
       # NOTE: TWO roles by design. The superuser (SERVICE_USER_DBUSER, also the postgres
       # container's owner) runs migrations + bootstrap. The app role (SERVICE_USER_APPDBUSER,

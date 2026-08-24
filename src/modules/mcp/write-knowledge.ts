@@ -25,6 +25,7 @@ import {
   err,
   gate,
   ok,
+  parseMcpId,
   recordMcpAudit,
   truncForAudit,
   type WriteDeps,
@@ -38,14 +39,6 @@ import {
 function failOf(e: unknown): WriteResult {
   if (e instanceof AppError) return err(e.message);
   throw e;
-}
-
-function parseId(raw: string, label: string): bigint | WriteResult {
-  try {
-    return BigInt(raw);
-  } catch {
-    return err(`invalid ${label}`);
-  }
 }
 
 // What an MCP caller is told to do about each embedding block, one entry per reason. A Record rather
@@ -128,7 +121,7 @@ export async function knowledgeUpdate(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const id = parseId(args.knowledge_base_id, "knowledge_base_id");
+  const id = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof id !== "bigint") return id;
   const patch: {
     name?: string;
@@ -194,7 +187,7 @@ export async function knowledgeDelete(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const id = parseId(args.knowledge_base_id, "knowledge_base_id");
+  const id = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof id !== "bigint") return id;
   try {
     const current = await getKnowledgeBase({ tenantId, id, base });
@@ -239,7 +232,7 @@ export async function knowledgeDocumentCreate(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const kbId = parseId(args.knowledge_base_id, "knowledge_base_id");
+  const kbId = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof kbId !== "bigint") return kbId;
   try {
     if (args.dry_run !== false) {
@@ -296,7 +289,7 @@ export async function knowledgeDocumentDelete(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const id = parseId(args.document_id, "document_id");
+  const id = parseMcpId(args.document_id, "document_id");
   if (typeof id !== "bigint") return id;
   try {
     const current = await getDocument(tenantId, id, base);
@@ -334,7 +327,7 @@ export async function knowledgeDocumentRetry(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const id = parseId(args.document_id, "document_id");
+  const id = parseMcpId(args.document_id, "document_id");
   if (typeof id !== "bigint") return id;
   try {
     const current = await getDocument(tenantId, id, base);
@@ -380,7 +373,7 @@ export async function knowledgeReindex(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const id = parseId(args.knowledge_base_id, "knowledge_base_id");
+  const id = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof id !== "bigint") return id;
   const target = `knowledge_base:${id}`;
   try {
@@ -450,7 +443,7 @@ export async function knowledgeApprove(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const id = parseId(args.approval_id, "approval_id");
+  const id = parseMcpId(args.approval_id, "approval_id");
   if (typeof id !== "bigint") return id;
   const target = `approval:${id}`;
   try {
@@ -494,7 +487,7 @@ export async function knowledgeReject(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const id = parseId(args.approval_id, "approval_id");
+  const id = parseMcpId(args.approval_id, "approval_id");
   if (typeof id !== "bigint") return id;
   const target = `approval:${id}`;
   try {
@@ -540,7 +533,7 @@ export async function knowledgeEdit(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
-  const id = parseId(args.approval_id, "approval_id");
+  const id = parseMcpId(args.approval_id, "approval_id");
   if (typeof id !== "bigint") return id;
   if (
     args.title === undefined &&

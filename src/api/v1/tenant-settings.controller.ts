@@ -1,12 +1,25 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
-import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
+import {
+  ForbiddenError,
+  NotFoundError,
+  TenantTargetRequiredError,
+} from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { testLangfuseConnection } from "@/modules/analytics/langfuse-test";
 import {
+  clearCompanyLogo,
+  LOGO_CONTENT_TYPE,
+  LOGO_MAX_BYTES,
+  logoExtOf,
+  readCompanyLogo,
+  setCompanyLogo,
+} from "@/modules/documents/company";
+import {
   getTenantSettings,
+  updateCompanySettings,
   updateEmbeddingSettings,
   updateLangfuse,
 } from "@/modules/tenant-settings/service";
@@ -30,12 +43,13 @@ export const tenantSettingsController = new Elysia({
   .get(
     "/",
     async ({ tenantContext }) => {
-      const { embedding, langfuse } = await getTenantSettings(
+      const { embedding, langfuse, company } = await getTenantSettings(
         ctxOrThrow(tenantContext),
       );
       return {
         instance: instanceIdentity,
         embedding,
+        company,
         langfuse: {
           enabled: langfuse.enabled,
           credentialRef: langfuse.credentialRef,
@@ -48,7 +62,7 @@ export const tenantSettingsController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Get tenant settings",
-        "Returns the tenant's embedding and Langfuse settings.",
+        "Returns the tenant's embedding, Langfuse and company-profile settings.",
       ),
       response: errors(401, 403),
     },
@@ -178,5 +192,121 @@ export const tenantSettingsController = new Elysia({
         "Probes the Langfuse instance with the supplied keys without saving them.",
       ),
       response: errors(400, 401, 403),
+    },
+  )
+  .put(
+    "/company",
+    async ({ tenantContext, body }) => ({
+      instance: instanceIdentity,
+      company: await updateCompanySettings(ctxOrThrow(tenantContext), body),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      body: t.Object({
+        name: t.Optional(
+          t.String({
+            maxLength: 200,
+            description: "Legal or trading name printed on issued documents.",
+          }),
+        ),
+        document: t.Optional(
+          t.String({
+            maxLength: 40,
+            description: "Tax id printed on issued documents (CNPJ/CPF/VAT).",
+          }),
+        ),
+        address: t.Optional(
+          t.String({ maxLength: 300, description: "Postal address." }),
+        ),
+        phone: t.Optional(
+          t.String({ maxLength: 40, description: "Contact phone." }),
+        ),
+        email: t.Optional(
+          t.String({ maxLength: 200, description: "Contact email." }),
+        ),
+        website: t.Optional(
+          t.String({ maxLength: 200, description: "Website." }),
+        ),
+      }),
+      detail: doc(
+        "Update company profile",
+        "Updates the letterhead the tenant's issued documents carry.",
+      ),
+      response: errors(400, 401, 403),
+    },
+  )
+  .post(
+    "/company/logo",
+    async ({ tenantContext, body }) => ({
+      instance: instanceIdentity,
+      company: await setCompanyLogo(ctxOrThrow(tenantContext), body.file),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      body: t.Object({
+        file: t.File({
+          maxSize: LOGO_MAX_BYTES,
+          description:
+            "Letterhead logo. PNG or JPEG only — the PDF renderer decodes neither WebP nor SVG.",
+        }),
+      }),
+      detail: doc(
+        "Upload company logo",
+        "Stores the letterhead logo used by document templates whose header shows one.",
+      ),
+      response: errors(400, 401, 403),
+    },
+  )
+  .delete(
+    "/company/logo",
+    async ({ tenantContext }) => ({
+      instance: instanceIdentity,
+      company: await clearCompanyLogo(ctxOrThrow(tenantContext)),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Remove company logo",
+        "Clears the letterhead logo; documents fall back to a typographic header.",
+      ),
+      response: errors(401, 403),
+    },
+  )
+  .get(
+    "/company/logo",
+    async ({ tenantContext, set }) => {
+      const ctx = ctxOrThrow(tenantContext);
+      const { company } = await getTenantSettings(ctx);
+      const logo = await readCompanyLogo(company);
+      if (!logo) {
+        set.status = 404;
+        throw new NotFoundError("logo not found", "errors.logoNotFound");
+      }
+      const ext = logoExtOf(company.logoKey ?? "") ?? "png";
+      return new Response(new Uint8Array(logo.data), {
+        headers: {
+          "Content-Type": LOGO_CONTENT_TYPE[ext],
+          // NOT STORED AT ALL, which is the only answer that holds for every principal.
+          //
+          // The URL carries just `logoVersion`, a millisecond timestamp, so two tenants uploading in
+          // the same millisecond share it. `private` keeps proxies out but not the ONE browser that
+          // saw both tenants, and `Vary: X-Tenant-Id` — the first fix here — only discriminates for
+          // a SUPER_ADMIN: that header selects a tenant for nobody else, so it is absent on both
+          // requests when a browser signs out of tenant A and into tenant B, and the cache replays
+          // A's letterhead without B's scoped read ever running.
+          //
+          // What the cache bought was one small image per remount inside a minute. That is not a
+          // trade worth making against a tenant seeing another tenant's asset.
+          "Cache-Control": "private, no-store",
+        },
+      });
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Download company logo",
+        "Streams the tenant's letterhead logo.",
+      ),
+      response: errors(401, 403, 404),
     },
   );

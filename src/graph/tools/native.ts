@@ -70,21 +70,29 @@ function sysCtx(tenantId: bigint): TenantContext {
 // takeover and discard the reply — and the reply would reopen the conversation anyway).
 export interface TurnState {
   resolveRequested: boolean;
-  // Images the agent asked to send this turn, fetched and validated but NOT yet delivered. They ride
+  // Files the agent asked to send this turn, loaded and validated but NOT yet delivered. They ride
   // the same post-time pipeline as the reply (ownership recheck, supersede gate, output guardrail),
   // because a tool that posts from inside the graph invocation can message a customer whose turn is
   // then discarded — the same reason resolve_conversation is deferred.
-  pendingImages: PendingImage[];
+  //
+  // ONE queue for every tool that attaches something (send_image, a document tool): the gates a file
+  // has to pass to reach a customer are a property of the TURN, not of what the file is, and a second
+  // queue would be a second place to remember them.
+  pendingAttachments: PendingAttachment[];
   // Downloads accepted but not yet queued. LangGraph's ToolNode runs one response's tool calls with
   // Promise.all, so a batch of send_image calls all reach the ceiling check before any of them has
   // queued anything: without a reservation taken BEFORE the await, every call in the batch reads the
   // same empty queue, passes, and the ceiling means nothing.
   imagesInFlight: number;
+  // Documents issued but not yet queued. Same reservation as imagesInFlight and for the same reason,
+  // with a ceiling of one: without it a batch of document calls all read an empty queue, all issue a
+  // numbered document, and all but one of those rows is discarded unsent.
+  documentsInFlight: number;
   // Monotonic ticket, taken before the download for the same reason: the batch runs concurrently, so
   // the queue fills in COMPLETION order and the customer would receive the pictures — and the
   // captions written for them — in whatever order the hosts happened to answer. The order the model
   // asked for is the one that matches the words around them.
-  imagesSeq: number;
+  attachmentsSeq: number;
 }
 
 // Isolated from TurnState on purpose: reactive turns and proactive nudges share handoff delivery,
@@ -119,13 +127,33 @@ export function handoffAnsweredTheTurn(
   return !!state && !!state.customerMessage && state.completed;
 }
 
-export interface PendingImage {
+export interface PendingAttachment {
   bytes: ArrayBuffer;
   mime: string;
   fileName: string;
   caption?: string;
   // Position in the model's tool-call order, not in download-completion order.
   order: number;
+  // Which tool queued it. Read by the delivery loop for the flow line and for the failure message:
+  // an operator reading "send_image failed" about a document goes to check the image host allowlist
+  // to debug a PDF we read off our own disk.
+  tool: string;
+  // Which quota it counts against. A SECOND field rather than a read of `tool`, because the two
+  // answer different questions: `tool` says which tool produced this line in the trail, and a
+  // tenant-named document tool makes "everything that is not send_image" the wrong way to ask the
+  // other one. Reading one bit for two questions is how the next attachment source lands in the
+  // image budget without anyone noticing.
+  kind: "image" | "document";
+  // Text the MODEL wrote that is inside the file itself, joined into the output guardrail alongside
+  // the captions. A caption rides along because it is model-written text the customer reads; the
+  // values a model put into a document's fields and line-item descriptions are exactly that too, and
+  // they reach the customer on paper. Operator-authored block text is NOT here: screening a
+  // template the operator wrote is moderating the operator, not the model.
+  screenText?: string;
+  // The issued document this file IS, when it is one. Carried so delivery can ask the row whether it
+  // is still deliverable: an operator can revoke between the tool queueing the bytes and the runtime
+  // sending them, and bytes alone cannot answer that.
+  documentId?: bigint;
 }
 
 export interface ToolCtx {
@@ -1096,6 +1124,11 @@ function skipReplyTool(_ctx: ToolCtx) {
 // in the agent's config, never in a tool argument: a prompt injection can write any URL it likes and
 // still not reach a host the operator did not list. See modules/images/fetch for the rest of the
 // fence (SSRF assertion, no redirects, byte cap on the body, type read from the file's signature).
+// The image half of the shared attachment queue, which is what both send_image ceilings are about.
+export function queuedImages(turnState: TurnState): PendingAttachment[] {
+  return turnState.pendingAttachments.filter((a) => a.kind === "image");
+}
+
 // The model-facing refusal when a turn has already taken all the images it may carry. Same wording
 // for the count and the byte budget: from the model's side both mean "not this turn".
 function limitReached(): string {
@@ -1134,14 +1167,18 @@ function sendImageTool(ctx: ToolCtx) {
       // BEFORE the await, because the batch runs concurrently — a check that spans the download
       // would be read by every call while the queue is still empty. Bytes are enforced at the other
       // end, where the real size is known; the count keeps the in-flight total bounded meanwhile.
+      // NOTE: counts IMAGES, not the queue. The queue also carries documents, which are our own
+      // rendered files bounded by their own rule — one per turn. Letting one eat an image slot would
+      // make a ceiling the operator reads as "images per message" mean something else depending on
+      // whether a document went out with them.
       const tooManyQueued =
-        turnState.pendingImages.length + turnState.imagesInFlight >=
+        queuedImages(turnState).length + turnState.imagesInFlight >=
         SEND_IMAGE_MAX_PER_TURN;
       if (tooManyQueued) {
         return limitReached();
       }
       turnState.imagesInFlight++;
-      const order = turnState.imagesSeq++;
+      const order = turnState.attachmentsSeq++;
       try {
         const res = await fetchImageForDelivery(url, cfg, {
           fetchImpl: ctx.fetchImpl,
@@ -1160,19 +1197,21 @@ function sendImageTool(ctx: ToolCtx) {
         // while this one downloaded, and a budget that excludes the candidate lets the last accepted
         // image carry the total past the ceiling. No await between the read and the push, so the
         // pair is atomic.
-        const queuedBytes = turnState.pendingImages.reduce(
+        const queuedBytes = queuedImages(turnState).reduce(
           (n, i) => n + i.bytes.byteLength,
           0,
         );
         if (queuedBytes + res.bytes.byteLength > SEND_IMAGE_MAX_TURN_BYTES) {
           return limitReached();
         }
-        turnState.pendingImages.push({
+        turnState.pendingAttachments.push({
           bytes: res.bytes,
           mime: res.mime,
           fileName: res.fileName,
           caption: caption?.trim() || undefined,
           order,
+          tool: "send_image",
+          kind: "image",
         });
         // NOTE: No file name here. This string is the tool's OUTPUT, and `ToolFlowLogger` stores tool
         // outputs verbatim in `ExecutionLog.detail` — a name derived from the URL path would put back

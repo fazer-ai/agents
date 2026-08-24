@@ -1813,6 +1813,36 @@ function AgentEditor() {
           'MCP server "{{name}}" was not found, so its grant was skipped.',
           p,
         );
+      case "unknownGrantSourceSkipped":
+        return t(
+          "editor.importWarning.unknownGrantSourceSkipped",
+          "{{n}} tool grant(s) came from a newer version and were skipped.",
+          p,
+        );
+      case "documentGrantNotFound":
+        return t(
+          "editor.importWarning.documentGrantNotFound",
+          'Document template "{{name}}" was not found, so its grant was skipped.',
+          p,
+        );
+      case "documentTemplateReused":
+        return t(
+          "editor.importWarning.documentTemplateReused",
+          'Document template "{{name}}" already existed and was reused; check it is right.',
+          p,
+        );
+      case "documentTemplateNameTaken":
+        return t(
+          "editor.importWarning.documentTemplateNameTaken",
+          'Document template "{{name}}" was not imported: this account already has a template with that name ({{existing}}). Names have to be unique, because the agent picks between documents by name.',
+          p,
+        );
+      case "documentTemplateInvalid":
+        return t(
+          "editor.importWarning.documentTemplateInvalid",
+          'Document template "{{name}}" could not be imported: {{reason}}',
+          p,
+        );
       case "integrationGrantNotFound":
         return t(
           "editor.importWarning.integrationGrantNotFound",
@@ -1895,6 +1925,12 @@ function AgentEditor() {
           else navigate("/resources/knowledge");
           break;
         }
+        // The panel rather than a modal, unlike tools and MCP above: a document template's editor
+        // opens from its own row and needs the loaded template, which this page does not carry.
+        // Without an arm here the Review action only dismissed the warning and went nowhere.
+        case "document":
+          navigate("/resources/documents");
+          break;
       }
     }
     const key = `${w.code}:${JSON.stringify(w.params ?? {})}`;

@@ -154,3 +154,96 @@ describe("buildHttpTools — credentialParamName propagation", () => {
     expect(tools[0]?.name).toBe("test_tool");
   });
 });
+
+// Document grants are FAIL-CLOSED, like HTTP/MCP/integration/RAG and unlike NATIVE. NATIVE defaults
+// to everything when there is no row, and a document tool inheriting that default would hand every
+// existing agent, on upgrade, a tool that issues priced paperwork nobody granted.
+function documentDb(rows: unknown[]): ScopedDb {
+  return {
+    agentToolSelection: { findMany: async () => rows },
+    vaultEntry: { findMany: async () => [] },
+    knowledgeBase: { findMany: async () => [] },
+  } as unknown as ScopedDb;
+}
+
+const TEMPLATE = {
+  id: 7n,
+  name: "Orçamento",
+  slug: "orcamento",
+  description: null,
+  blocks: [{ id: "t", type: "text", text: "Olá {{cliente}}" }],
+  fields: [{ name: "cliente", label: "Cliente", type: "text" }],
+  enabled: true,
+};
+
+describe("loadToolSelections: DOCUMENT grants", () => {
+  test("an agent with no document grant gets no document tool", async () => {
+    const sel = await loadToolSelections(documentDb([]), 1n);
+    expect(sel.documentSelections).toEqual([]);
+  });
+
+  test("a granted template becomes one selection", async () => {
+    const sel = await loadToolSelections(
+      documentDb([
+        {
+          source: "DOCUMENT",
+          enabledTools: [],
+          knowledgeBaseIds: [],
+          toolDefinition: null,
+          mcpServerConnection: null,
+          integrationInstance: null,
+          documentTemplate: TEMPLATE,
+        },
+      ]),
+      1n,
+    );
+    expect(sel.documentSelections).toHaveLength(1);
+    expect(sel.documentSelections[0]).toMatchObject({
+      templateId: 7n,
+      slug: "orcamento",
+    });
+    expect(sel.documentSelections[0]?.fields).toHaveLength(1);
+  });
+
+  test("a disabled template is skipped, like a disabled tool or connection", async () => {
+    const sel = await loadToolSelections(
+      documentDb([
+        {
+          source: "DOCUMENT",
+          enabledTools: [],
+          knowledgeBaseIds: [],
+          toolDefinition: null,
+          mcpServerConnection: null,
+          integrationInstance: null,
+          documentTemplate: { ...TEMPLATE, enabled: false },
+        },
+      ]),
+      1n,
+    );
+    expect(sel.documentSelections).toEqual([]);
+  });
+
+  // A template written by a newer build can carry a block this one cannot render. Exposing it with
+  // an empty argument list would give the model a tool that produces a blank document — worse for
+  // the customer than a tool the agent does not have.
+  test("a template whose content no longer parses is skipped, not exposed empty", async () => {
+    const sel = await loadToolSelections(
+      documentDb([
+        {
+          source: "DOCUMENT",
+          enabledTools: [],
+          knowledgeBaseIds: [],
+          toolDefinition: null,
+          mcpServerConnection: null,
+          integrationInstance: null,
+          documentTemplate: {
+            ...TEMPLATE,
+            blocks: [{ id: "x", type: "signature" }],
+          },
+        },
+      ]),
+      1n,
+    );
+    expect(sel.documentSelections).toEqual([]);
+  });
+});

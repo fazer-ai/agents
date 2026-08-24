@@ -3,6 +3,7 @@ import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { unprintableProblem } from "@/modules/documents/printable";
 import { tryResolveVaultEntry } from "@/modules/vault/service";
 
 // Per-tenant settings live in the Tenant.settings JSON column. RLS scopes the row to the active
@@ -51,6 +52,48 @@ export const LANGFUSE_DEFAULTS: LangfuseSettings = {
   debug: false,
 };
 
+// The tenant's own identity as it appears on a document it issues: the letterhead. Lives here
+// rather than in a table of its own because it is a singleton per tenant — the exact shape
+// Tenant.settings exists for — and because the render path already reads the tenant row, so a
+// letterhead costs no extra query. It holds no secret, so the vault rule above does not apply.
+//
+// The logo is the one part that is NOT here: bytes do not belong in a JSON column, so this keeps the
+// file name and the bytes live on disk. Same split as branding.
+export const companySettingsSchema = z.object({
+  name: z.string().max(200),
+  document: z.string().max(40),
+  address: z.string().max(300),
+  phone: z.string().max(40),
+  email: z.string().max(200),
+  website: z.string().max(200),
+  logoKey: z.string().max(200).nullable(),
+  // Bumped on every logo write. The key alone cannot say the logo CHANGED: it is derived from the
+  // tenant id and the file extension, so replacing a PNG with another PNG produces the same key —
+  // and everything downstream that keys off it (the console's blob, the browser's own cache of a
+  // response served with max-age) goes on showing the old letterhead while new documents render the
+  // new one.
+  logoVersion: z.number().int().nonnegative(),
+});
+export type CompanySettings = z.infer<typeof companySettingsSchema>;
+
+export const COMPANY_DEFAULTS: CompanySettings = {
+  name: "",
+  document: "",
+  address: "",
+  phone: "",
+  email: "",
+  website: "",
+  logoKey: null,
+  logoVersion: 0,
+};
+
+export function parseCompanySettings(settings: unknown): CompanySettings {
+  const block = (settings as Record<string, unknown> | null | undefined)
+    ?.company;
+  const parsed = companySettingsSchema.partial().safeParse(block ?? {});
+  return { ...COMPANY_DEFAULTS, ...(parsed.success ? parsed.data : {}) };
+}
+
 export function parseEmbeddingSettings(settings: unknown): EmbeddingSettings {
   const block = (settings as Record<string, unknown> | null | undefined)
     ?.embedding;
@@ -97,11 +140,19 @@ export async function readLangfuseSettings(
   return parseLangfuseSettings(await readRawSettings(db, tenantId));
 }
 
+export async function readCompanySettings(
+  db: ScopedDb,
+  tenantId: bigint,
+): Promise<CompanySettings> {
+  return parseCompanySettings(await readRawSettings(db, tenantId));
+}
+
 // ── ctx-based REST surface (TENANT_ADMIN) ──
 
 export interface TenantSettingsDto {
   embedding: EmbeddingSettings;
   langfuse: LangfuseSettings;
+  company: CompanySettings;
 }
 
 export async function getTenantSettings(
@@ -114,24 +165,43 @@ export async function getTenantSettings(
     return {
       embedding: parseEmbeddingSettings(raw),
       langfuse: parseLangfuseSettings(raw),
+      company: parseCompanySettings(raw),
     };
   });
 }
 
-async function writeBlock(
+// Read, merge and write in ONE transaction, with the tenant row locked.
+//
+// Every settings block lives in a single JSON column, so this is a read-modify-write of a value
+// several writers share — the two halves of the company profile most visibly, since the console
+// edits its text fields and uploads its logo through different routes. Reading in one transaction
+// and writing in another lets two writers each merge into the value they read and the later commit
+// discard the earlier one: a profile save that erases the logo which finished uploading a moment
+// before, with both requests answering success.
+//
+// The merge runs INSIDE the lock and is handed the raw settings, so what it merges into is what is
+// about to be written and never a snapshot from before someone else's write.
+async function patchBlock<
+  T extends EmbeddingSettings | LangfuseSettings | CompanySettings,
+>(
   ctx: TenantContext,
   base: PrismaClient,
-  key: "embedding" | "langfuse",
-  value: EmbeddingSettings | LangfuseSettings,
-): Promise<void> {
+  key: "embedding" | "langfuse" | "company",
+  // May be async, so a caller that has to read or do something UNDER THE LOCK, before the commit,
+  // can do it here. The logo upload is the one: it needs the key it is about to supersede, and the
+  // block it reads outside the lock is already stale by the time it writes.
+  merge: (raw: Record<string, unknown>) => T | Promise<T>,
+): Promise<T> {
   const tenantId = requireTenantId(ctx);
-  await runScopedOn(base, ctx, async (db) => {
+  return runScopedOn(base, ctx, async (db) => {
+    await db.$queryRaw`SELECT 1 FROM "tenants" WHERE "id" = ${tenantId} FOR UPDATE`;
     const raw = await readRawSettings(db, tenantId);
-    const next = { ...raw, [key]: value };
+    const value = await merge(raw);
     await db.tenant.update({
       where: { id: tenantId },
-      data: { settings: next as Prisma.InputJsonValue },
+      data: { settings: { ...raw, [key]: value } as Prisma.InputJsonValue },
     });
+    return value;
   });
 }
 
@@ -140,23 +210,20 @@ export async function updateEmbeddingSettings(
   patch: Partial<EmbeddingSettings>,
   base: PrismaClient = basePrisma,
 ): Promise<EmbeddingSettings> {
-  const tenantId = requireTenantId(ctx);
-  const current = await runScopedOn(base, ctx, (db) =>
-    readEmbeddingSettings(db, tenantId),
-  );
-  // LOCKED to EMBEDDING_DEFAULTS (OpenAI + text-embedding-3-small) until the flexible-embeddings
-  // feature ships (configurable dimension + provider registry). Only the
-  // credential is honored; provider/model/baseURL from the patch are ignored. Unlocking = restore
-  // the `{ ...current, ...patch }` merge.
-  const merged = embeddingSettingsSchema.parse({
-    ...EMBEDDING_DEFAULTS,
-    credentialRef:
-      patch.credentialRef !== undefined
-        ? patch.credentialRef
-        : current.credentialRef,
+  return patchBlock(ctx, base, "embedding", (raw) => {
+    const current = parseEmbeddingSettings(raw);
+    // LOCKED to EMBEDDING_DEFAULTS (OpenAI + text-embedding-3-small) until the flexible-embeddings
+    // feature ships (configurable dimension + provider registry). Only the
+    // credential is honored; provider/model/baseURL from the patch are ignored. Unlocking = restore
+    // the `{ ...current, ...patch }` merge.
+    return embeddingSettingsSchema.parse({
+      ...EMBEDDING_DEFAULTS,
+      credentialRef:
+        patch.credentialRef !== undefined
+          ? patch.credentialRef
+          : current.credentialRef,
+    });
   });
-  await writeBlock(ctx, base, "embedding", merged);
-  return merged;
 }
 
 export interface LangfuseUpdateInput {
@@ -175,12 +242,12 @@ export async function updateLangfuse(
   input: LangfuseUpdateInput,
   base: PrismaClient = basePrisma,
 ): Promise<LangfuseSettings> {
-  const tenantId = requireTenantId(ctx);
-  const current = await runScopedOn(base, ctx, (db) =>
-    readLangfuseSettings(db, tenantId),
-  );
-
-  let credentialRef = current.credentialRef;
+  requireTenantId(ctx);
+  // Only to VALIDATE the incoming ref; the value that gets written is chosen inside the lock below.
+  // Read here and written back, an omitted credentialRef would carry a pre-lock snapshot over a
+  // credential someone else changed in between — undoing a successful update with a request that
+  // never mentioned it.
+  let credentialRef: string | null = null;
   if (input.credentialRef !== undefined) {
     if (input.credentialRef === null) {
       credentialRef = null;
@@ -207,12 +274,89 @@ export async function updateLangfuse(
     }
   }
 
-  const merged = langfuseSettingsSchema.parse({
-    enabled: input.enabled ?? current.enabled,
-    credentialRef,
-    sendContent: input.sendContent ?? current.sendContent,
-    debug: input.debug ?? current.debug,
+  return patchBlock(ctx, base, "langfuse", (raw) => {
+    const live = parseLangfuseSettings(raw);
+    return langfuseSettingsSchema.parse({
+      enabled: input.enabled ?? live.enabled,
+      // The live value when this request did not mention one, like every other field here.
+      credentialRef:
+        input.credentialRef !== undefined ? credentialRef : live.credentialRef,
+      sendContent: input.sendContent ?? live.sendContent,
+      debug: input.debug ?? live.debug,
+    });
   });
-  await writeBlock(ctx, base, "langfuse", merged);
-  return merged;
+}
+
+export type CompanyUpdateInput = Partial<
+  Omit<CompanySettings, "logoKey" | "logoVersion">
+>;
+
+// Patch-merged, never replaced: the console edits one field at a time and the MCP write sends only
+// what changed. logoKey is deliberately not settable here — it is written by the upload path, which
+// is the only place that knows a file with that name actually exists.
+export async function updateCompanySettings(
+  ctx: TenantContext,
+  patch: CompanyUpdateInput,
+  base: PrismaClient = basePrisma,
+): Promise<CompanySettings> {
+  // This block is the letterhead every issued document carries — it exists for no other purpose —
+  // so it is held to what a document can print. The PDF fonts cover Latin text, and a character
+  // outside that comes out as a DIFFERENT one (see documents/printable.ts): a trade name would be
+  // misspelled on every document the tenant ever issues, and nobody would see it happen.
+  for (const [field, value] of Object.entries(patch)) {
+    if (typeof value !== "string") continue;
+    const problem = unprintableProblem(value, field);
+    if (problem)
+      throw new AppError(problem, 400, "errors.invalidCompanyField", {
+        reason: problem,
+      });
+  }
+  return patchBlock(ctx, base, "company", (raw) =>
+    companySettingsSchema.parse({ ...parseCompanySettings(raw), ...patch }),
+  );
+}
+
+// Run work under the same per-tenant lock the writers take, with the current company block in hand.
+//
+// For DELETING A LOGO FILE, which is the one thing that happens after its own transaction is over:
+// by then the lock is gone and the key that looked unreferenced may have been re-adopted — two
+// cross-format uploads racing, or a clear followed immediately by an upload. Under this lock, the
+// committed block answers "is anything pointing at this file?" without a write landing between the
+// answer and the delete.
+export async function withCompanyLock<T>(
+  ctx: TenantContext,
+  base: PrismaClient,
+  fn: (current: CompanySettings) => Promise<T>,
+): Promise<T> {
+  const tenantId = requireTenantId(ctx);
+  return runScopedOn(base, ctx, async (db) => {
+    await db.$queryRaw`SELECT 1 FROM "tenants" WHERE "id" = ${tenantId} FOR UPDATE`;
+    return fn(await readCompanySettings(db, tenantId));
+  });
+}
+
+// Written only by the logo upload/clear path, after the bytes are on disk (or gone from it). The
+// version moves with every write, including a replacement that lands on the same key.
+export async function setCompanyLogoKey(
+  ctx: TenantContext,
+  logoKey: string | null,
+  base: PrismaClient = basePrisma,
+  now: number = Date.now(),
+  // Runs INSIDE the per-tenant lock, before the row is written, and is handed the block as it stands
+  // there — the only reading of it that is not already stale. The logo upload uses it to learn which
+  // file this write supersedes, so it can drop that file once the row commits. Throwing from it
+  // aborts the write.
+  publish?: (current: CompanySettings) => Promise<void>,
+): Promise<CompanySettings> {
+  return patchBlock(ctx, base, "company", async (raw) => {
+    const current = parseCompanySettings(raw);
+    await publish?.(current);
+    return companySettingsSchema.parse({
+      ...current,
+      logoKey,
+      // Strictly increasing even if two writes land in the same millisecond, which is what a cache
+      // buster has to be to mean anything.
+      logoVersion: Math.max(now, current.logoVersion + 1),
+    });
+  });
 }

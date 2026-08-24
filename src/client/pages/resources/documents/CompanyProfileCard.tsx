@@ -35,7 +35,8 @@ export function CompanyProfileCard({
   // Fired only by a PROFILE save, which is what the modal closes on. Deliberately not `onChanged`:
   // that one also fires for a logo upload, and closing the letterhead editor because a picture
   // finished uploading takes the form away mid-edit.
-  onSaved?: () => void;
+  // Carries the OPENING it belongs to, because only the parent can judge that (see `session`).
+  onSaved?: (session?: number) => void;
   // Reported out so the modal can guard its own close with the same answer the nav guard uses. One
   // definition of "unsaved", or the dialog warns about edits the save would not send.
   onDirtyChange?: (dirty: boolean) => void;
@@ -43,6 +44,13 @@ export function CompanyProfileCard({
   // and reopen it while the request is out, and `onSaved` closes whatever is open when it lands — so
   // without this an older save closes a modal the operator has just reopened and is typing into.
   // A number, like the preview's, so a template id cannot be passed here by mistake.
+  //
+  // Handed back on `onSaved` rather than compared here, and that is the whole point of it being a
+  // prop: this component is the modal's BODY, so closing the editor unmounts it and reopening mounts
+  // a new one. A guard this component owns freezes with the instance — the replaced card compares a
+  // stale session against a stale ref of its own, finds them equal, and announces a save into the
+  // editor the operator has just reopened. The parent stays mounted, so it is the only one that can
+  // answer "is this still the opening on screen?".
   session?: number;
 }) {
   const { t } = useTranslation();
@@ -54,11 +62,6 @@ export function CompanyProfileCard({
   // render rather than only where it is read, so it can never be one keystroke behind.
   const formRef = useRef(form);
   formRef.current = form;
-  // Read at RESPONSE time, so it has to be a ref: the `session` in scope when the request started is
-  // the one this save belongs to, and the current one is what decides whether it still owns the
-  // screen.
-  const sessionRef = useRef(session);
-  sessionRef.current = session;
   const draft = form.draft;
   // The letterhead is the one form on this tab that is not a modal, so nothing else stands between
   // an unsaved edit and a click on another tab — or a tenant switch, which is a full reload. The
@@ -146,7 +149,9 @@ export function CompanyProfileCard({
       // during the request, and the parent closes the modal on this callback — so announcing the
       // save unconditionally threw those edits away, which is the one thing the preservation exists
       // to prevent.
-      if (clean && session === sessionRef.current) onSaved?.();
+      // `session` as captured when the request STARTED: it is the opening this save belongs to, and
+      // the parent decides whether that opening is still the one on screen.
+      if (clean) onSaved?.(session);
     } catch {
       // Eden RESOLVES an HTTP error as `{ error }` and REJECTS on a transport failure — offline, a
       // reset connection. Only the first half was handled, so the second left the operator with a

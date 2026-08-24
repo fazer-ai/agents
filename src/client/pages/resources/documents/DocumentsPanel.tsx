@@ -105,6 +105,12 @@ export function DocumentsPanel() {
   // One per opening of the letterhead editor, so a save that lands after the operator closed and
   // reopened it does not close the modal they are typing into now.
   const [companySession, setCompanySession] = useState(0);
+  // The same number, in a ref, and the ref is the half that works. The card is the modal's body, so
+  // it unmounts on close and a new one mounts on reopen — and the stale card also holds a stale copy
+  // of the callback below, closed over the OLD `companySession`. Reading the generation off a ref
+  // instead means the stale closure still reaches the current value, because the ref OBJECT is what
+  // it captured.
+  const companySessionRef = useRef(0);
 
   const editModal = useModalController<{ template: DocumentTemplate }>();
   const companyModal = useModalController();
@@ -463,7 +469,8 @@ export function DocumentsPanel() {
                 variant="secondary"
                 size="sm"
                 onClick={() => {
-                  setCompanySession((n) => n + 1);
+                  companySessionRef.current += 1;
+                  setCompanySession(companySessionRef.current);
                   companyModal.open();
                 }}
               >
@@ -667,7 +674,12 @@ export function DocumentsPanel() {
           onChanged={applyCompany}
           // Closed by a PROFILE save only. A logo upload also answers with the whole block, and
           // closing the editor because a picture finished uploading takes the form away mid-edit.
-          onSaved={() => {
+          onSaved={(from) => {
+            // A save that belongs to an earlier OPENING of this editor announces itself after the
+            // operator has already closed and reopened it. Closing on that would take away the form
+            // they are typing into now.
+            if (from !== undefined && from !== companySessionRef.current)
+              return;
             setCompanyDirty(false);
             companyModal.close();
           }}

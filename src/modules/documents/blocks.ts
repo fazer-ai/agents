@@ -260,6 +260,20 @@ export function blockCanDraw(block: DocumentBlock): boolean {
       return false;
     case "text":
       return block.text.trim() !== "";
+    case "header":
+      // A header has five sources of content and two of them are value questions: a logo the tenant
+      // may or may not have uploaded, and a company profile they may or may not have filled in. Both
+      // are left to `documentDraws`, which asks them with the values in hand.
+      //
+      // What is unconditional is switching those two OFF. `showLogo === false` and
+      // `showCompany === false` are read as `!== false` by the renderer, so an explicit false is the
+      // only way to reach "the logo and the profile are not on this page" from the template alone —
+      // and with a title, a subtitle and the meta rows all absent, nothing is left for any value to
+      // rescue. Trimmed, because the renderer draws no glyph for whitespace.
+      if (block.showLogo !== false || block.showCompany !== false) return true;
+      return Boolean(
+        block.title?.trim() || block.subtitle?.trim() || block.meta?.length,
+      );
     default:
       return true;
   }

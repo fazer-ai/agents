@@ -8,6 +8,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { useRef, useState } from "react";
 import { MemoryRouter } from "react-router";
 
 // The letterhead form used to live on the page, where a save that finished was simply a save. It is
@@ -44,7 +45,7 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-function mount(opts: { session?: number; onSaved: () => void }) {
+function mount(opts: { session?: number; onSaved: (from?: number) => void }) {
   return render(
     <MemoryRouter>
       <NavGuardProvider>
@@ -133,10 +134,15 @@ test("a save with nothing typed after it does announce itself", async () => {
   });
 });
 
-test("a save that lands after the editor was reopened does not close it", async () => {
+// The card's half of the rule: it does not JUDGE the opening, it reports which one the save belongs
+// to. The judgement moved to the parent, because this component unmounts with the modal (see the
+// last test in this file) — but the parent can only judge with a number to judge, and the number has
+// to be the one from when the request STARTED. A card that reported whatever session it happened to
+// hold at response time would hand the parent the new one and pass every guard.
+test("announces the opening the save belongs to, not the one on screen when it lands", async () => {
   const held = heldFetch();
-  let saved = 0;
-  const view = mount({ session: 1, onSaved: () => saved++ });
+  const reported: (number | undefined)[] = [];
+  const view = mount({ session: 1, onSaved: (from) => reported.push(from) });
 
   fireEvent.change(nameField(), { target: { value: "ACME Nova" } });
   save();
@@ -144,8 +150,8 @@ test("a save that lands after the editor was reopened does not close it", async 
     expect(held.calls()).toBe(1);
   });
 
-  // Closed and reopened: same card, new opening. The panel counts those, and this save belongs to
-  // the previous one.
+  // The prop moves on while the request is out. Same card, so this is the in-place half; the
+  // unmount half is the last test in this file.
   view.rerender(
     <MemoryRouter>
       <NavGuardProvider>
@@ -153,7 +159,7 @@ test("a save that lands after the editor was reopened does not close it", async 
           <CompanyProfileCard
             company={COMPANY as never}
             onChanged={() => undefined}
-            onSaved={() => saved++}
+            onSaved={(from) => reported.push(from)}
             session={2}
           />
         </ToastProvider>
@@ -161,7 +167,82 @@ test("a save that lands after the editor was reopened does not close it", async 
     </MemoryRouter>,
   );
   held.release();
+  await waitFor(() => {
+    expect(reported.length).toBe(1);
+  });
+  expect(reported[0]).toBe(1);
+});
+
+// THE SAME RULE, ACROSS AN UNMOUNT — which the test above does NOT cover, and the difference is the
+// whole finding. `rerender` keeps the component mounted, so its `sessionRef` follows the new prop.
+// The real modal is a Radix dialog: closing it unmounts the card and reopening MOUNTS A NEW ONE. The
+// old instance keeps running its request with a `session` and a `sessionRef` both frozen at the old
+// value, so a guard the card owns compares them and finds them equal — and announces a save that
+// belongs to a session nobody is looking at, closing the modal the operator just reopened.
+//
+// So the generation cannot be answered by the card. It is answered by the parent, which never
+// unmounts, through a ref whose identity survives the stale closure holding it.
+function CompanyHarness({ onClosed }: { onClosed: () => void }) {
+  const [session, setSession] = useState(1);
+  const sessionRef = useRef(1);
+  const [open, setOpen] = useState(true);
+  return (
+    <MemoryRouter>
+      <NavGuardProvider>
+        <ToastProvider>
+          <button
+            type="button"
+            data-testid="close"
+            onClick={() => setOpen(false)}
+          >
+            close
+          </button>
+          <button
+            type="button"
+            data-testid="reopen"
+            onClick={() => {
+              sessionRef.current += 1;
+              setSession(sessionRef.current);
+              setOpen(true);
+            }}
+          >
+            reopen
+          </button>
+          {open ? (
+            <CompanyProfileCard
+              company={COMPANY as never}
+              onChanged={() => undefined}
+              onSaved={(from?: number) => {
+                // The parent decides, reading the CURRENT generation off a ref rather than off a
+                // value its own closure captured — the stale card holds a stale callback too.
+                if (from !== undefined && from !== sessionRef.current) return;
+                onClosed();
+              }}
+              session={session}
+            />
+          ) : null}
+        </ToastProvider>
+      </NavGuardProvider>
+    </MemoryRouter>
+  );
+}
+
+test("a save from a card that has since been unmounted does not close the new one", async () => {
+  const held = heldFetch();
+  let closed = 0;
+  render(<CompanyHarness onClosed={() => closed++} />);
+
+  fireEvent.change(nameField(), { target: { value: "ACME Nova" } });
+  save();
+  await waitFor(() => {
+    expect(held.calls()).toBe(1);
+  });
+
+  // Discarded and reopened: a NEW card, and the old one's request is still out.
+  fireEvent.click(screen.getByTestId("close"));
+  fireEvent.click(screen.getByTestId("reopen"));
+  held.release();
   await new Promise((r) => setTimeout(r, 50));
 
-  expect(saved).toBe(0);
+  expect(closed).toBe(0);
 });

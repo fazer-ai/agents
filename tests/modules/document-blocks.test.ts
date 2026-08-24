@@ -831,6 +831,74 @@ describe("a layout has to print something", () => {
     ).toBe(false);
   });
 
+  // The second of the two the comment above names, which was named and never asserted — and never
+  // implemented either. A header whose logo and company are BOTH switched off and which carries no
+  // title, subtitle or meta rows has nothing left to draw from, whatever arrives at the turn. It
+  // saved, it could be granted, and then every preview and every issuance failed with
+  // `documentWouldBeBlank`: a tool the agent owns and can never use, refused at the moment of use
+  // rather than at the keyboard.
+  test("refuses a header with every source of content switched off", () => {
+    expect(
+      parseAuthoredTemplate(
+        [{ id: "h", type: "header", showLogo: false, showCompany: false }],
+        [field],
+        {},
+      ).ok,
+    ).toBe(false);
+    // Whitespace counts as nothing, the same way it does in the exact check at issuance: the
+    // renderer draws no glyph for it, so a title of one space is a blank page with extra steps.
+    expect(
+      parseAuthoredTemplate(
+        [
+          {
+            id: "h",
+            type: "header",
+            showLogo: false,
+            showCompany: false,
+            title: "   ",
+            subtitle: "",
+          },
+        ],
+        [field],
+        {},
+      ).ok,
+    ).toBe(false);
+  });
+
+  // The boundary, in all three directions, because each one is a value question and refusing it
+  // would be this gate guessing at a turn it cannot see: the logo may exist, the company profile may
+  // be filled in, and a title or a meta row prints on its own.
+  test("accepts a header that switched off only part of itself", () => {
+    const accepted = [
+      { id: "h", type: "header", showCompany: false },
+      { id: "h", type: "header", showLogo: false },
+      {
+        id: "h",
+        type: "header",
+        showLogo: false,
+        showCompany: false,
+        title: "Orçamento",
+      },
+      {
+        id: "h",
+        type: "header",
+        showLogo: false,
+        showCompany: false,
+        subtitle: "Proposta comercial",
+      },
+      {
+        id: "h",
+        type: "header",
+        showLogo: false,
+        showCompany: false,
+        meta: [{ label: "Validade", value: "7 dias" }],
+      },
+    ];
+    for (const block of accepted) {
+      expect(parseAuthoredTemplate([block], [field], {}).ok).toBe(true);
+    }
+  });
+
   // …and does NOT refuse the ones whose answer depends on values. A bare header is the letterhead
   // for a tenant that has one, a hidden table draws once an item arrives: refusing either here
   // would be this gate guessing at a turn it cannot see.

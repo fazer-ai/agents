@@ -41,7 +41,7 @@ import {
 // translate('errors.noExtractableText', 'No extractable text found in this file')
 // translate('errors.unsupportedFileType', 'Unsupported file type')
 // translate('errors.documentTooLarge', 'Document is too large to process')
-// translate('errors.unstorableText', 'This text cannot be stored: {{reason}}')
+// translate('errors.unstorableText', '{{field}} contains characters that cannot be stored ({{codePoints}})')
 
 function tenantId(ctx: TenantContext | null): bigint {
   if (!ctx) throw new ForbiddenError();

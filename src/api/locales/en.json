@@ -91,7 +91,7 @@
     "unknownFlowStage": "Unknown flow stage",
     "unknownProvider": "Unknown model provider.",
     "unknownWebhookEvent": "Unknown webhook event",
-    "unstorableText": "This text cannot be stored: {{reason}}",
+    "unstorableText": "{{field}} contains characters that cannot be stored ({{codePoints}})",
     "unsupportedAudioType": "Unsupported audio type",
     "unsupportedFileType": "Unsupported file type",
     "unsupportedImageType": "Unsupported image type",

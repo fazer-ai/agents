@@ -1,6 +1,6 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
-import { firstUnstorableProblem } from "@/lib/text";
+import { firstUnstorableField } from "@/lib/text";
 import {
   createDocument,
   deleteDocument,
@@ -45,8 +45,10 @@ import {
 function unstorable(
   fields: readonly (readonly [string, string | null | undefined])[],
 ): WriteResult | null {
-  const problem = firstUnstorableProblem(fields);
-  return problem ? err(problem) : null;
+  const bad = firstUnstorableField(fields);
+  // The sentence, not the parts: an MCP error is a single string an English-speaking client reads,
+  // with no place to interpolate and no language to negotiate.
+  return bad ? err(bad.message) : null;
 }
 
 function failOf(e: unknown): WriteResult {

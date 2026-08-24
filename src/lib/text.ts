@@ -132,11 +132,16 @@ export function makeStorableDeep<T>(value: T, depth = 0): T {
 // SEPARATE from the documents module's `unprintableProblem`, and deliberately narrower: a string can
 // be perfectly storable and impossible to print (an emoji in a tool description a model reads and
 // nobody draws). A caller that only needs the value to survive its column asks this one.
-export function unstorableProblem(value: string, what: string): string | null {
+// The offenders themselves, named by code point, or null when the value is storable. Separate from
+// the message because a REFUSAL that crosses a localized boundary needs the values, not a sentence:
+// interpolating an English sentence into a translated template answers a pt-BR caller in two
+// languages at once. The field name stays English on purpose, in both forms: it names the request
+// field the caller has to change, the way a schema path does.
+export function unstorableCodePoints(value: string): string[] | null {
   // A Set, not a scan of a growing array: the distinct offenders number 2049 (a NUL and every
   // surrogate code unit), so `includes` on the accumulator turns a long malformed value into
-  // quadratic work on a caller's behalf. Insertion order is preserved either way, and the message
-  // names them in the order they appear.
+  // quadratic work on a caller's behalf. Insertion order is preserved either way, so they are named
+  // in the order they appear.
   const bad = new Set<string>();
   for (const ch of value) {
     const code = ch.codePointAt(0) ?? 0;
@@ -148,27 +153,49 @@ export function unstorableProblem(value: string, what: string): string | null {
   if (bad.size === 0) return null;
   // Named by code point, never pasted: quoting the character itself would put a NUL into a log line
   // and an API response, and half a character into a JSON body.
-  const named = [...bad].map(
+  return [...bad].map(
     (ch) =>
       `U+${(ch.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`,
   );
+}
+
+export function unstorableProblem(value: string, what: string): string | null {
+  const named = unstorableCodePoints(value);
+  if (named === null) return null;
   return `${what} contains characters the database cannot store (${named.join(" ")}) — a NUL or half of a character, which PostgreSQL refuses in text and JSON columns alike.`;
+}
+
+export interface UnstorableField {
+  // The request field the caller has to change. English, like a schema path.
+  what: string;
+  // The offenders, e.g. ["U+0000"].
+  codePoints: string[];
+  // The same thing as one English sentence, for a caller with nowhere to put the parts: a log line,
+  // an MCP error, the untranslated fallback of a localized refusal.
+  message: string;
 }
 
 // The same question asked of a whole WRITE rather than one value: a row is refused as a unit, so
 // checking one field and not its neighbours only moves which value produces the 500. Returns the
-// first offender's message, or null. Undefined and null are skipped, so an optional column can be
-// listed unconditionally and a field added to the shape later joins by being listed here.
+// first offender, or null. Undefined and null are skipped, so an optional column can be listed
+// unconditionally and a field added to the shape later joins by being listed here.
 //
-// Pure on purpose. The caller throws, because what STATUS a refusal carries is the caller's
-// question: the same unstorable value is a 400 at a REST boundary and a tool failure to a model.
-export function firstUnstorableProblem(
+// Pure on purpose, and it returns the PARTS rather than only the sentence, because what a refusal
+// looks like is the caller's question. The same unstorable value is a 400 whose text a REST caller
+// reads in their own language, and an MCP tool failure a client reads in English.
+export function firstUnstorableField(
   fields: readonly (readonly [string, string | null | undefined])[],
-): string | null {
+): UnstorableField | null {
   for (const [what, value] of fields) {
     if (typeof value !== "string") continue;
-    const problem = unstorableProblem(value, what);
-    if (problem) return problem;
+    const codePoints = unstorableCodePoints(value);
+    if (codePoints) {
+      return {
+        what,
+        codePoints,
+        message: unstorableProblem(value, what) as string,
+      };
+    }
   }
   return null;
 }

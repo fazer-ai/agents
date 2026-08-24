@@ -91,7 +91,7 @@
     "unknownFlowStage": "Etapa de fluxo desconhecida",
     "unknownProvider": "Provedor de modelo desconhecido.",
     "unknownWebhookEvent": "Evento de webhook desconhecido",
-    "unstorableText": "Este texto não pode ser armazenado: {{reason}}",
+    "unstorableText": "{{field}} contém caracteres que não podem ser armazenados ({{codePoints}})",
     "unsupportedAudioType": "Tipo de áudio não suportado",
     "unsupportedFileType": "Tipo de arquivo não suportado",
     "unsupportedImageType": "Tipo de imagem não suportado",

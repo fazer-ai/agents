@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { translateWithLocale } from "@/api/lib/i18n";
 import { AppError } from "@/lib/errors";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
@@ -264,6 +265,57 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
     );
     expect(r.status).toBe(400);
     expect(r.message).toContain("U+0000");
+  });
+});
+
+// What the refusal actually reads like, at the layer that renders it. `translationKey` is translated
+// per the request's Accept-Language while `message` is only the untranslated fallback, so a refusal
+// that interpolates an ENGLISH SENTENCE answers a pt-BR caller in two languages at once (review
+// round 2). Passing the parts instead is what closes it; the field name stays English in both, the
+// way a schema path does.
+describe("the refusal answers in the caller's language", () => {
+  async function render(locale: "en" | "pt-BR"): Promise<string> {
+    let caught: unknown = null;
+    try {
+      await createDocument({
+        tenantId: 0n,
+        knowledgeBaseId: 0n,
+        title: "t",
+        text: `a${NUL}b`,
+        sourceType: "text",
+      });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(AppError);
+    const err = caught as AppError;
+    return translateWithLocale(
+      locale,
+      err.translationKey as string,
+      err.message,
+      err.translationParams,
+    );
+  }
+
+  test("pt-BR carries no English prose", async () => {
+    const out = await render("pt-BR");
+    expect(out).toContain("não podem ser armazenados");
+    expect(out).toContain("U+0000");
+    // The sentence the old shape interpolated, in the language it was stuck in.
+    expect(out).not.toContain("the database cannot store");
+    expect(out).not.toContain("PostgreSQL");
+  });
+
+  test("en says the same thing", async () => {
+    const out = await render("en");
+    expect(out).toContain("cannot be stored");
+    expect(out).toContain("U+0000");
+  });
+
+  test("the field is named, so the caller knows which one to fix", async () => {
+    for (const locale of ["en", "pt-BR"] as const) {
+      expect(await render(locale)).toContain("text");
+    }
   });
 });
 

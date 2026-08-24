@@ -5,7 +5,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { firstUnstorableProblem } from "@/lib/text";
+import { firstUnstorableField } from "@/lib/text";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
@@ -126,10 +126,15 @@ export function validateChunkParams(
 export function refuseUnstorable(
   fields: readonly (readonly [string, string | null | undefined])[],
 ): void {
-  const problem = firstUnstorableProblem(fields);
-  if (problem) {
-    throw new AppError(problem, 400, "errors.unstorableText", {
-      reason: problem,
+  const bad = firstUnstorableField(fields);
+  if (bad) {
+    // The PARTS, not the sentence. `translationKey` is translated per the request's Accept-Language
+    // and `message` is only the untranslated fallback, so interpolating an English sentence into a
+    // pt-BR template would answer in two languages at once. What stays English either way is the
+    // field name, which names the request field to change the way a schema path does.
+    throw new AppError(bad.message, 400, "errors.unstorableText", {
+      field: bad.what,
+      codePoints: bad.codePoints.join(" "),
     });
   }
 }

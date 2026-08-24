@@ -465,6 +465,28 @@ describe("parseDocumentValues", () => {
     expect(optional.ok).toBe(true);
   });
 
+  // WHAT IS VALIDATED AND WHAT IS STORED HAVE TO BE THE SAME STRING.
+  //
+  // The printability check runs on a SANITISED copy — deliberately, because that is the form the
+  // renderer receives — and a line item's description is then stored in that form. A scalar was
+  // stored RAW, so the snapshot held a character the check had already normalised away. The snapshot
+  // is a `jsonb` column and an unpaired surrogate is refused there outright (`22P02`), so the
+  // disagreement did not print oddly: it made the whole issuance fail at the INSERT, after the
+  // number was taken.
+  test("stores the sanitised text, not the string it was handed", () => {
+    const r = parseDocumentValues(FIELDS as never, {
+      cliente: `Ana\ud800\tMaria`,
+      itens: [],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const stored = r.values.cliente as string;
+    // Serialised before the assertion, so half a character cannot ride into the diff of a failure.
+    expect(JSON.stringify(stored)).not.toContain("\\ud8");
+    // …and the tab became a space, which is what the renderer would have drawn anyway.
+    expect(stored).toBe("Ana Maria");
+  });
+
   // A key the template never declared is refused rather than ignored: silently dropping it is how a
   // model believes it sent a value that never reaches the page.
   test("refuses a key the template does not declare", () => {

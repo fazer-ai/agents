@@ -5,6 +5,7 @@ import config from "@/config";
 import { DEFAULT_TIMEZONE, partsInTimezone } from "@/graph/time";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { unstorableProblem } from "@/lib/text";
 import type { CompanySettings } from "@/modules/tenant-settings/service";
 import {
   type DocumentBlock,
@@ -143,6 +144,18 @@ export async function issueDocument(
   const tenantId = params.tenantId;
   const ctx = sysCtx(tenantId);
   const now = params.now ?? new Date();
+
+  // Checked before the key is BOUND, not after: the very first thing done with it is a comparison
+  // against a `text` column, and Postgres refuses a NUL there. So a key the REST schema accepts on
+  // its length alone produced a 500 from the lookup — before the template, before the render, before
+  // anything a caller could be told about. In the core rather than in the controller, because the
+  // agent tool and MCP reach this by their own roads.
+  const unstorable = unstorableProblem(params.idempotencyKey, "idempotencyKey");
+  if (unstorable) {
+    throw new AppError(unstorable, 400, "errors.invalidIdempotencyKey", {
+      reason: unstorable,
+    });
+  }
 
   // The idempotency check comes FIRST, before the template is even read. Validating the caller's
   // values against the CURRENT template up front would make a retry fail the moment the template

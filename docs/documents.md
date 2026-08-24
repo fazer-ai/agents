@@ -116,12 +116,18 @@ in the half the patch did not send.
 `issueDocument` is one core with two callers (`POST /v1/documents` and the agent's tool), two-phase
 and idempotent:
 
-1. **The idempotency key is checked first**, before the template is even read. The key means the
+1. **The idempotency key is checked first**, before the template is even read (and before that, the
+   key itself is checked for what the `text` column refuses — it is the first value bound, so a NUL
+   in it would answer a caller with a 500 from the lookup instead of a refusal they can act on). The key means the
    document already exists and its content was frozen when it was issued — validating the caller's
    values against the template as it stands *today* would make a retry fail the moment the template
    changed.
 2. Otherwise: load the template, validate the values, freeze a **snapshot** (blocks, fields, style,
-   company profile and values as resolved), insert the PENDING row, take a number.
+   company profile and values as resolved), insert the PENDING row, take a number. "As resolved" is
+   literal and load-bearing: every string in the snapshot is the SANITISED one, so what is frozen is
+   what the renderer will print. It is also what the column will accept — the snapshot is `jsonb`,
+   where an unpaired surrogate is refused outright, so a raw value stored beside a sanitised check
+   fails the issuance rather than printing oddly.
 3. Render the STORED snapshot outside any transaction, write it to a path derived from numeric ids,
    CAS to READY.
 

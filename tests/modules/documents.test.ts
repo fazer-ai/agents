@@ -354,6 +354,39 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     expect("slug" in (wheres[0] as object)).toBe(false);
   });
 
+  // A description is read by the MODEL and drawn by nobody, so it is deliberately NOT held to the
+  // printability rule the name and the number prefix are: an emoji in it is fine. What is not fine
+  // is a character the COLUMN refuses. The length check passed, the value reached
+  // `document_templates.description`, and Postgres answered with a 500 — or, from a bundle import,
+  // by aborting the transaction the whole import runs in.
+  test("refuses a description the column cannot hold, and keeps accepting an emoji", async () => {
+    await expect(
+      createDocumentTemplate(
+        ctx(tenantA),
+        {
+          name: "Com NUL",
+          description: `antes\u0000depois`,
+          blocks: MINIMAL_BLOCKS,
+          fields: [],
+        },
+        appDb,
+      ),
+    ).rejects.toThrow(/U\+0000/);
+    // The other direction, and it is the reason this is not `unprintableProblem`: a description the
+    // fonts cannot draw is still a description the model reads.
+    const ok = await createDocumentTemplate(
+      ctx(tenantA),
+      {
+        name: "Com emoji",
+        description: "Emite o orçamento 😀",
+        blocks: MINIMAL_BLOCKS,
+        fields: [],
+      },
+      appDb,
+    );
+    expect(ok.description).toContain("😀");
+  });
+
   // The dry run and the apply have to agree: both refuse, and both say it about the name.
   test("the dry run refuses the same duplicate the apply refuses", async () => {
     await createDocumentTemplate(
@@ -442,6 +475,29 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     expect(after.length).toBe(before.length);
     // The preview must not consume the template's counter either.
     const row = await suDb.documentTemplate.findUnique({
+      where: { id: templateId },
+      select: { lastNumber: true },
+    });
+    expect(row?.lastNumber).toBe(0);
+  });
+
+  // The key is the FIRST thing bound, into a `text` comparison, before the template is even read. So
+  // a key the REST schema accepts on its length alone reached Postgres and came back as a 500 —
+  // ahead of any refusal a caller could act on. Checked in the CORE, so the agent tool and MCP get
+  // the same answer as REST.
+  test("refuses an idempotency key the column cannot hold", async () => {
+    await expect(
+      issueDocument({
+        tenantId: tenantA,
+        templateId,
+        idempotencyKey: `a\u0000b`,
+        values: VALUES,
+        base: appDb,
+        storageDir: DIR,
+      }),
+    ).rejects.toThrow(/U\+0000/);
+    // Nothing was taken from the template's sequence on the way out.
+    const row = await suDb.documentTemplate.findFirst({
       where: { id: templateId },
       select: { lastNumber: true },
     });

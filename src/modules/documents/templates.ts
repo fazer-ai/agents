@@ -5,6 +5,7 @@ import { DEFAULT_TIMEZONE } from "@/graph/time";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { unstorableProblem } from "@/lib/text";
 import {
   type CompanySettings,
   readCompanySettings,
@@ -422,6 +423,15 @@ export function templateMetadataProblem(input: {
     !templateDescriptionSchema.safeParse(input.description ?? null).success
   ) {
     return "description: must be at most 2000 characters.";
+  }
+  // NOT `unprintableProblem`, and the difference is the point: the description is read by the MODEL
+  // and drawn by nobody, so an emoji in it is fine and refusing one would be a rule with no reason
+  // behind it. What is not fine is a character the COLUMN refuses — the length check passed, the
+  // value reached `document_templates.description`, and Postgres answered with a 500 for REST and
+  // MCP, or by aborting the whole transaction an agent import runs in.
+  if (typeof input.description === "string") {
+    const problem = unstorableProblem(input.description, "description");
+    if (problem) return problem;
   }
   if (
     input.numberPrefix !== undefined &&

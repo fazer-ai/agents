@@ -43,6 +43,7 @@ import {
 // translate('errors.invalidDocumentTemplateDescription', 'The document template description is too long')
 // translate('errors.documentTemplateUnreadable', 'This template contains content a newer version wrote, so it cannot be saved from here')
 // translate('errors.invalidDocumentNumberPrefix', 'The document number prefix is too long')
+// translate('errors.invalidIdempotencyKey', 'This idempotency key is not valid: {{reason}}')
 // translate('errors.documentNotStored', 'This document could not be stored')
 // translate('errors.documentWouldBeBlank', 'This document would be blank')
 // translate('errors.logoNotFound', 'Logo not found')

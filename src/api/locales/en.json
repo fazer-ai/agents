@@ -50,6 +50,7 @@
     "invalidDocumentTemplateReason": "This document template is not valid: {{reason}}",
     "invalidDocumentValues": "The values do not match what this template declares",
     "invalidId": "This id is not valid",
+    "invalidIdempotencyKey": "This idempotency key is not valid: {{reason}}",
     "invalidPassword": "Incorrect password",
     "invalidSetupToken": "Invalid or missing setup token",
     "invalidSiteUrl": "Invalid website URL",

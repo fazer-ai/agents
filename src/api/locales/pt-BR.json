@@ -50,6 +50,7 @@
     "invalidDocumentTemplateReason": "Este modelo de documento não é válido: {{reason}}",
     "invalidDocumentValues": "Os valores não correspondem ao que este modelo declara",
     "invalidId": "Este id não é válido",
+    "invalidIdempotencyKey": "Esta chave de idempotência não é válida: {{reason}}",
     "invalidPassword": "Senha incorreta",
     "invalidSetupToken": "Token de configuração inválido ou ausente",
     "invalidSiteUrl": "URL do site inválida",

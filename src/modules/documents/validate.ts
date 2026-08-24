@@ -700,7 +700,14 @@ export function parseDocumentValues(
               ...item,
               description: sanitizeDocumentValue(item.description),
             })) as DocumentValue)
-        : (value as DocumentValue);
+        : // Text is stored SANITISED too, for the same reason line items are: the snapshot has to hold
+          // exactly what the renderer prints. Storing the raw string made the two disagree about a
+          // character the check above had already normalised away — and since the snapshot is a
+          // `jsonb` column, a lone surrogate in it does not print oddly, it makes Postgres refuse the
+          // whole issuance.
+          typeof value === "string"
+          ? (sanitizeDocumentValue(value) as DocumentValue)
+          : (value as DocumentValue);
   }
   return { ok: true, values };
 }

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { clipText, clipTextEnd, replaceLoneSurrogates } from "@/lib/text";
+import {
+  clipText,
+  clipTextEnd,
+  replaceLoneSurrogates,
+  unstorableProblem,
+} from "@/lib/text";
 
 // An unpaired surrogate is the failure both functions exist to prevent, so every assertion below is
 // ultimately this predicate. `for...of` yields a well-formed pair as ONE two-unit string, so a
@@ -111,5 +116,34 @@ describe("replaceLoneSurrogates", () => {
   test("is idempotent", () => {
     const once = replaceLoneSurrogates(HIGH);
     expect(replaceLoneSurrogates(once)).toBe(once);
+  });
+});
+
+// The DATABASE's rule, which is not the renderer's and not the model's: what a `text` or `jsonb`
+// column physically refuses. Narrow on purpose — a value can be perfectly storable and impossible to
+// draw (an emoji in a tool description nobody prints), and conflating the two puts a rule with no
+// reason behind it in front of an operator.
+describe("unstorableProblem", () => {
+  test("names a NUL and half a character, by code point", () => {
+    const nul = unstorableProblem(`a\u0000b`, "key");
+    expect(nul).toContain("U+0000");
+    expect(nul).toContain("key");
+    // The character itself is never pasted into the message: a NUL would ride into a log line and an
+    // API response, and half a character into a JSON body.
+    expect(JSON.stringify(nul)).not.toContain("\u0000");
+
+    const orphan = unstorableProblem(`a\ud800b`, "description");
+    expect(orphan).toContain("U+D800");
+    expect(JSON.stringify(orphan)).not.toContain("\\ud8");
+    // Either half, because a JSON body can spell out either one.
+    expect(unstorableProblem(`a\udc00b`, "x")).toContain("U+DC00");
+  });
+
+  test("accepts everything a column can actually hold", () => {
+    // Including the two that a printability check would refuse and this one must not: a WELL-FORMED
+    // astral character, and a control that is not NUL. Postgres stores both.
+    for (const value of ["Ana", "😀", "a\tb", "a\nb", "Orçamento", ""]) {
+      expect(unstorableProblem(value, "x")).toBeNull();
+    }
   });
 });

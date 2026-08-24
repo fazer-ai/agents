@@ -49,7 +49,12 @@ export function redactSecretsDeep(value: unknown, depth = 0): unknown {
   if (depth > MAX_DEPTH) return "‹…›";
   if (value == null) return null;
   if (typeof value === "string") {
-    return makeStorable(redactSecretsInText(truncate(value)));
+    // NOTE: The repair runs BEFORE the scrub, and the order is the rule. A NUL inside a token breaks
+    // the pattern, so a scrub that ran first would find nothing, and the repair would then DELETE
+    // that NUL and store the token whole: `sk-<NUL>abcdefghijklmnop` came back as
+    // `sk-abcdefghijklmnop`. The cut stays first because it is the cheap bound, and `clipText`
+    // cannot manufacture an orphan half for the repair to have to catch.
+    return redactSecretsInText(makeStorable(truncate(value)));
   }
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "bigint") return value.toString();
@@ -65,12 +70,16 @@ export function redactSecretsDeep(value: unknown, depth = 0): unknown {
       // object (a model's tool-call arguments, a third party's JSON response), and one orphan half
       // anywhere in the document is enough for Postgres to refuse the whole `jsonb` write.
       //
+      // NOTE: The credential rule reads the REPAIRED key, for the same reason the value is repaired
+      // before it is scrubbed: `pass<NUL>word` does not match, and the repair then stores it as
+      // `password` with its value intact. Testing the stored name is what closes that.
+      const key = makeStorable(k);
       // NOTE: `defineProperty`, not assignment: `JSON.parse` yields `__proto__` as an ordinary own
       // property, and assigning to that key invokes the legacy prototype setter instead. The
       // serialization that reaches the column enumerates inherited properties, so the contents of
       // `__proto__` would be written as top-level fields of the log record.
-      Object.defineProperty(out, makeStorable(k), {
-        value: SECRET_KEY_RE.test(k)
+      Object.defineProperty(out, key, {
+        value: SECRET_KEY_RE.test(key)
           ? REDACTED
           : redactSecretsDeep(v, depth + 1),
         writable: true,

@@ -693,7 +693,7 @@ export async function deliverRedirectClosing(
   // Deliberately NOT asked again between the two channel deliveries below: once the first goodbye
   // has left, the closing has happened, and stopping halfway leaves the episode half-closed rather
   // than clean.
-  if (p.stillWanted && !(await p.stillWanted())) {
+  const releaseClaim = async (): Promise<void> => {
     await runScopedOn(base, sysCtx(p.tenantId), (db) =>
       db.conversation.updateMany({
         where: {
@@ -711,6 +711,9 @@ export async function deliverRedirectClosing(
         err instanceof Error ? err.message : String(err),
       );
     });
+  };
+  if (p.stillWanted && !(await p.stillWanted())) {
+    await releaseClaim();
     return "already-closed";
   }
 
@@ -747,6 +750,23 @@ export async function deliverRedirectClosing(
     return false;
   };
   if (!(await stillDelivering())) return "already-closed";
+
+  // AND THE JOB, ASKED AGAIN AND ASKED LAST. The ask above answered about a moment before the claim
+  // read, and that read is a database round trip — which is exactly the gap THE RULE names (one ask
+  // per stretch of I/O that precedes a write, and never any I/O between an ask and the write it
+  // guards). A /reset landing in it retires this job while the claim check, which asks about the
+  // ANCHOR and not about the job, still says the run is the one delivering: the goodbye then goes
+  // out and both conversations are resolved, on an episode the operator was told had been erased.
+  //
+  // The claim question cannot also be last, and this is the honest ordering rather than a complete
+  // one: what stays open is a concurrent closing run taking the anchor inside this final round trip,
+  // which the claim CAS already makes rare and which costs a duplicate goodbye. What closes is the
+  // reset, which is what this whole change is about and which costs the operator a conversation they
+  // were told was clean.
+  if (p.stillWanted && !(await p.stillWanted())) {
+    await releaseClaim();
+    return "already-closed";
+  }
 
   // Chat (website widget): post the goodbye + resolve. Skipped on the resolve-path, where the chat is
   // already being resolved by the trigger. A web widget has no 24h window → proactiveSendMode → freeform.

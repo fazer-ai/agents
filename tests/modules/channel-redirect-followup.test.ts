@@ -799,6 +799,74 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
   });
 
+  // THE JOB IS ASKED AGAIN AFTER THE CLAIM READ, and that read is a database round trip. THE RULE
+  // (../../src/graph/nudge.ts) is one ask per stretch of I/O that precedes a write, and never any I/O
+  // between an ask and the write it guards. A /reset landing inside that round trip retires this job
+  // while the claim check — which asks about the ANCHOR, not about the job — still reports this run
+  // as the one delivering: the goodbye goes out and both conversations are resolved, on an episode
+  // the operator was told had been erased.
+  //
+  // The reset is committed FROM INSIDE the claim read, through the same `$extends` query seam the
+  // jobless test above uses, so the window is the real one rather than a stub flipping on a call
+  // count. That is what makes this pin the ORDER: an ask moved back above the read would answer
+  // before the retirement lands and send anyway.
+  test("a reset landing inside the claim read stops the closing", async () => {
+    await restoreAnchor();
+    const s = stubClient();
+    let retired = false;
+    let asks = 0;
+    const resetInsideClaimRead = suDb.$extends({
+      query: {
+        conversation: {
+          async count({ args, query }) {
+            // Only the claim read: it is the one that asks for a conversation still stamped with
+            // this run's exact instant.
+            const where =
+              (args as { where?: Record<string, unknown> }).where ?? {};
+            if (where.redirectClosedAt instanceof Date) retired = true;
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    try {
+      const outcome = await deliverRedirectClosing({
+        stillWanted: async () => {
+          asks += 1;
+          return !retired;
+        },
+        tenantId,
+        instanceId,
+        widgetConversationId: WIDGET_CONV,
+        entryInboxId: 110,
+        closingMessage: "Vamos encerrar por aqui.",
+        closeChat: true,
+        base: resetInsideClaimRead,
+        deps: { makeClient: s.makeClient },
+      });
+
+      // The retirement really landed in the window, so the test is not passing on a claim it never
+      // reached.
+      expect(retired).toBe(true);
+      expect(outcome).toBe("already-closed");
+      // Nothing reached either conversation: this is the assertion the P1 was about.
+      expect(s.sent).toEqual([]);
+      expect(s.resolved).toEqual([]);
+      // Asked once more than the two fences that precede the read, which is the ask this pins.
+      expect(asks).toBe(3);
+      // And the claim was handed back, so a later legitimate closing is not blocked by this run's
+      // abandoned watermark.
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: { redirectClosedAt: true },
+      });
+      expect(row.redirectClosedAt).toBeNull();
+    } finally {
+      await restoreAnchor();
+    }
+  });
+
   // The control: the same call with nobody clearing the anchor still delivers. Without it, "sent
   // nothing" would also be satisfied by a check that refuses every closing.
   test("the same closing delivers when the anchor stays put", async () => {

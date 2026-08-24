@@ -288,7 +288,7 @@ export async function followUpHandler(
         // runs with `requireLiveBotOwnership`, which GETs the real conversation, reconciles the
         // stale assignee and refuses to send before any model spend. Answering from the mirror here
         // would drop a follow-up the probe was about to allow (issue #214).
-        mirrorHolder: "unverified",
+        mirrorHolder: "not-asked",
       })
     ) {
       return null;

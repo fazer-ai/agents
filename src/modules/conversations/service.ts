@@ -864,13 +864,24 @@ export async function getConversationDetail(
       // The strict ownership answer, which this reader is the one that needs: nothing runs after the
       // indicator to correct it, so a conversation another persona's bot is holding must not be
       // counted down (issue #214). The bot id is already in hand — the same one the header's
-      // "held by another party" line is drawn from, so the two cannot disagree on the page.
-      mirrorHolder: heldByAnotherParty(
-        { assigneeType: conv.assigneeType, assigneeId: conv.assigneeId },
-        { ourAgentBotId },
-      )
-        ? "another-party"
-        : "us",
+      // "held by another party" line is drawn from.
+      //
+      // `heldByAnotherParty` alone is not the whole answer here: it leaves an AgentBot it cannot
+      // identify UNCOUNTED, which is right for the hand-back offer it was written for (there is
+      // nobody named to hand back to) and wrong for a promise, because the unidentified bot may be
+      // the foreign one. Unverifiable is therefore not ours — the same call the live payload's own
+      // parser makes when it refuses an "AgentBot" with no numeric id.
+      mirrorHolder: (() => {
+        const holder = {
+          assigneeType: conv.assigneeType,
+          assigneeId: conv.assigneeId,
+        };
+        if (heldByAnotherParty(holder, { ourAgentBotId })) return "not-ours";
+        const unverifiableBot =
+          conv.assigneeType === "AgentBot" &&
+          (conv.assigneeId == null || ourAgentBotId == null);
+        return unverifiableBot ? "not-ours" : "ours";
+      })(),
     });
     const isRedirectWidgetConv =
       redirectCfg.enabled &&

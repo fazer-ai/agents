@@ -18,7 +18,7 @@ const LIVE: FollowUpLiveness = {
   testActivatedAt: null,
   status: "pending",
   assigneeType: null,
-  mirrorHolder: "us",
+  mirrorHolder: "ours",
 };
 
 const cases: Array<{
@@ -78,29 +78,29 @@ const cases: Array<{
   //    READER can say about the holder, which is the divergence the predicate now carries explicitly
   //    instead of leaving each reader to build its own gate.
   {
-    name: "the mirror names another party's bot",
-    patch: { assigneeType: "AgentBot", mirrorHolder: "another-party" },
+    name: "the mirror names another party's bot, or one it cannot identify",
+    patch: { assigneeType: "AgentBot", mirrorHolder: "not-ours" },
     live: false,
   },
   {
     // The handler's value: it re-asks Chatwoot before sending, so refusing on a stale assignee here
     // would drop a follow-up the probe was about to allow.
     name: "the reader does not decide ownership from the mirror",
-    patch: { assigneeType: "AgentBot", mirrorHolder: "unverified" },
+    patch: { assigneeType: "AgentBot", mirrorHolder: "not-asked" },
     live: true,
   },
   {
-    // "another-party" never RESCUES a row the other terms already refuse, and never overrides them:
+    // "not-ours" never RESCUES a row the other terms already refuse, and never overrides them:
     // every other reason to be dead stays dead whatever the holder is.
-    name: "another party's bot holds it AND the agent is disabled",
-    patch: { agentEnabled: false, mirrorHolder: "another-party" },
+    name: "somebody else holds it AND the agent is disabled",
+    patch: { agentEnabled: false, mirrorHolder: "not-ours" },
     live: false,
   },
   {
     // The human case answered on the ownership axis instead of the assignee one: still dead, and by
     // two independent terms, so neither reader depends on the other being right.
     name: "a human holds it, reported on the holder axis too",
-    patch: { assigneeType: "User", mirrorHolder: "another-party" },
+    patch: { assigneeType: "User", mirrorHolder: "not-ours" },
     live: false,
   },
 ];
@@ -113,15 +113,15 @@ describe("isFollowUpLive", () => {
   }
 });
 
-// `mirrorHolder: "unverified"` reads as live, so it is only sound for a reader that re-asks Chatwoot
+// `mirrorHolder: "not-asked"` reads as live, so it is only sound for a reader that re-asks Chatwoot
 // before it sends. The decision table above proves what the predicate DOES with each value; it cannot
-// prove that the readers pass the value they are entitled to, and picking "unverified" is what a new
+// prove that the readers pass the value they are entitled to, and picking "not-asked" is what a new
 // reader does when the strict answer is inconvenient — which is issue #214 all over again, silently.
 //
 // A file-scoped check, and deliberately no stronger: it says the abstaining file also arms the live
 // probe, not that the two are on the same branch. That is enough to make a copy-paste into a reader
 // with no probe fail here and be read about.
-describe('mirrorHolder: "unverified" — who may say it', () => {
+describe('mirrorHolder: "not-asked" — who may say it', () => {
   function sourceFiles(dir: string): string[] {
     const out: string[] = [];
     for (const entry of readdirSync(dir)) {
@@ -134,7 +134,7 @@ describe('mirrorHolder: "unverified" — who may say it', () => {
 
   test("every reader that abstains re-asks Chatwoot before sending", () => {
     const abstaining = sourceFiles("src").filter((f) =>
-      readFileSync(f, "utf8").includes('mirrorHolder: "unverified"'),
+      readFileSync(f, "utf8").includes('mirrorHolder: "not-asked"'),
     );
     // The handler is the one reader entitled to it today; zero matches would mean the check went
     // stale (the string moved or was renamed) rather than that the rule holds.

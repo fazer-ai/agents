@@ -59,6 +59,8 @@ let convForeignBotArmed = 0n;
 let convOurBotArmed = 0n;
 let convForeignBotEstimate = 0n;
 let convOurBotEstimate = 0n;
+let convUnidentifiedBotArmed = 0n;
+let convNoBotRowArmed = 0n;
 
 // The redirect follow-up job's run time, asserted verbatim as the widget conversation's redirectNext.
 const REDIRECT_JOB_RUN_AT = new Date("2026-06-18T23:30:00Z");
@@ -614,6 +616,27 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     });
     convFinishedByResolve = finished.id;
 
+    // A persona with the same follow-up settings and NO Agent Bot row of its own.
+    const noBotAgent = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "FU No Bot",
+        systemPrompt: "x",
+        followUpArmedAt: new Date("2026-01-01T00:00:00Z"),
+        mode: "production",
+        settings: twoStepSettings,
+      },
+    });
+    const noBotInbox = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        chatwootInboxId: 93,
+        name: "Sup sem bot",
+        agentId: noBotAgent.id,
+      },
+    });
+
     // ── The armed persona's own Agent Bot on this account, which is what makes "another bot is
     //    holding this" answerable at all: without the row every AgentBot assignee looks like ours.
     await suDb.chatwootAgentBot.create({
@@ -659,6 +682,18 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       });
       return c.id;
     }
+    // The mirror knows A bot has it and not WHICH: `meta.assignee_type` arrives without a readable
+    // `meta.assignee.id`, and the webhook normalizer stores exactly that. Nothing here can rule out
+    // the foreign bot, and the live payload's own parser refuses this same shape.
+    convUnidentifiedBotArmed = await seedArmedConv(328, armedInbox.id, {
+      assigneeType: "AgentBot",
+    });
+    // The other way to have no id to compare with: a persona with no ChatwootAgentBot row of its own
+    // (never provisioned, or not yet synced) — every AgentBot assignee is then unidentifiable.
+    convNoBotRowArmed = await seedArmedConv(329, noBotInbox.id, {
+      assigneeType: "AgentBot",
+      assigneeId: FOREIGN_BOT_ID,
+    });
     convForeignBotEstimate = await seedEstimateConv(326, {
       assigneeType: "AgentBot",
       assigneeId: FOREIGN_BOT_ID,
@@ -1012,6 +1047,29 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     );
     expect(d.followUp?.nextStep).toBeNull();
     expect(d.followUp?.nextRunAt).toBeNull();
+  });
+
+  // Unverifiable ownership is not ours: with no id to compare, a conversation another bot owns reads
+  // as ours, and the countdown would promise a send the live probe refuses. Same call
+  // `parseLiveConversation` makes when it drops an "AgentBot" with no numeric id.
+  test("the mirror cannot say WHICH bot holds it → no countdown", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convUnidentifiedBotArmed,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.abandoned).toBe(true);
+  });
+
+  test("a persona with no Agent Bot row of its own → no countdown", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convNoBotRowArmed,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.abandoned).toBe(true);
   });
 
   // The other direction, and the reason the gate is the bot IDENTITY rather than "an AgentBot holds

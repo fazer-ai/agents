@@ -995,10 +995,6 @@ export async function deliverRedirectClosing(
   // nothing has been delivered when the ask above runs, and the sibling lookup is a round trip in
   // front of the only send that path makes (issue #246). Skipped once the chat has been messaged, for
   // the reason stated right above: a started delivery is finished, not half-left.
-  //
-  // The fence goes FIRST and the watermark LAST, so the question this file has always asked
-  // immediately before this send keeps that position, and what sits behind the fence's answer is one
-  // database round trip rather than the lookup it was taken before.
   // NOTE: ONE watermark read and ONE fence, in that order, and nothing between the fence and the
   // send. Asking the watermark again after the fence — which is what a second `stillDelivering()`
   // here would be — puts a round trip behind the fence's answer and hands the last word back to the

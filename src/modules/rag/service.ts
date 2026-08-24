@@ -165,9 +165,13 @@ export async function createSuggestion(
   params: SuggestParams,
 ): Promise<{ id: bigint }> {
   const base = params.base ?? basePrisma;
+  // Labelled by the names the CALLER sends, not by the columns they land in: both roads here (the
+  // REST body and the agent's suggestion tool) spell these `title` / `content` / `rationale`, so a
+  // refusal naming `proposedContent` would tell a caller to fix a field they never sent (review
+  // round 3).
   refuseUnstorable([
-    ["proposedTitle", params.proposedTitle],
-    ["proposedContent", params.proposedContent],
+    ["title", params.proposedTitle],
+    ["content", params.proposedContent],
     ["rationale", params.rationale],
   ]);
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
@@ -348,9 +352,10 @@ export async function editApprovalItem(
   params: EditApprovalParams,
 ): Promise<"updated" | "not-pending"> {
   const base = params.base ?? basePrisma;
+  // The caller's names, as in createSuggestion above.
   refuseUnstorable([
-    ["proposedTitle", params.proposedTitle],
-    ["proposedContent", params.proposedContent],
+    ["title", params.proposedTitle],
+    ["content", params.proposedContent],
     ["rationale", params.rationale],
   ]);
   const data: Record<string, unknown> = { status: "EDITED" };

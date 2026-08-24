@@ -37,6 +37,8 @@ interface DocsPayload {
 let docsQueue: DocsPayload[] = [];
 let docsCalls = 0;
 let reindexResponse: Record<string, unknown> = {};
+// What the add-a-text-document POST answers. Null means it is not being exercised.
+let addDocResponse: { status: number; body: unknown } | null = null;
 let onKnowledgeDocument:
   | ((e: {
       knowledgeBaseId: string;
@@ -120,6 +122,12 @@ function installFetchStub() {
     }
     if (url.includes("/documents") && method === "GET") {
       return json(await nextDocs());
+    }
+    if (url.includes("/documents") && method === "POST" && addDocResponse) {
+      return new Response(JSON.stringify(addDocResponse.body), {
+        status: addDocResponse.status,
+        headers: { "content-type": "application/json" },
+      });
     }
     return realFetch(input as RequestInfo | URL, init);
   }) as typeof fetch;
@@ -235,6 +243,7 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     gateOnCall = null;
     gatedDocsCalls = [];
     docsReleasers.clear();
+    addDocResponse = null;
     installFetchStub();
   });
 
@@ -621,5 +630,95 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     });
     await waitFor(() => expect(shows("Doc")).toBe(true));
     expect(blockCalls).toBe(0);
+  });
+});
+
+// Issue #247. The API refusal names the field and the offending code point, which is the whole
+// difference between an answer an operator can act on and a 500. The console used to collapse every
+// 4xx into "Could not add document", so the reported scenario (someone uploads a file, gets nothing
+// they can act on) survived the API being fixed. What is asserted here is the SERVER's sentence on
+// screen, not a status the client re-phrased.
+describe("knowledge: a refusal the server phrased reaches the operator", () => {
+  beforeEach(() => {
+    docsCalls = 0;
+    docsQueue = [{ documents: [doc()], embeddingBlock: null }];
+    blockCalls = 0;
+    blockQueue = [];
+    blockThrows = false;
+    addDocResponse = null;
+    onKnowledgeDocument = null;
+    gateOnCall = null;
+    gatedDocsCalls = [];
+    docsReleasers.clear();
+    installFetchStub();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  async function addText(body: unknown, status: number) {
+    addDocResponse = { status, body };
+    await openModal();
+    fireEvent.click(screen.getByRole("button", { name: /adicionar/i }));
+    fireEvent.change(await screen.findByRole("textbox", { name: /text/i }), {
+      target: { value: "some text" },
+    });
+    const buttons = screen.getAllByRole("button", { name: /adicionar/i });
+    fireEvent.click(buttons[buttons.length - 1] as HTMLElement);
+  }
+
+  test("the refusal's own words are what the toast shows", async () => {
+    await addText(
+      { error: "text contains characters that cannot be stored (U+0000)" },
+      400,
+    );
+    await waitFor(() => expect(shows(/U\+0000/)).toBe(true));
+    expect(shows(/Could not add document/i)).toBe(false);
+  });
+
+  test("a refusal with no body of its own still says something", async () => {
+    await addText({}, 500);
+    await waitFor(() => expect(shows(/Could not add document/i)).toBe(true));
+  });
+
+  // The other road to the same column, and the one the issue actually reported: a file, refused
+  // per-row rather than by a toast. The three statuses this screen phrases better than the API can
+  // (unsupported type, too large, nothing extractable) still win; everything else the API already
+  // phrased in this operator's language.
+  async function uploadFile(body: unknown, status: number) {
+    addDocResponse = { status, body };
+    await openModal();
+    fireEvent.click(screen.getByRole("button", { name: /adicionar/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /arquivo/i }));
+    const input = document.querySelector(
+      'input[type="file"]',
+    ) as HTMLInputElement;
+    const file = new File(["policy"], "policy.txt", { type: "text/plain" });
+    Object.defineProperty(input, "files", { value: [file], writable: false });
+    fireEvent.change(input);
+    const buttons = screen.getAllByRole("button", { name: /adicionar/i });
+    fireEvent.click(buttons[buttons.length - 1] as HTMLElement);
+  }
+
+  test("an upload row carries the refusal's own words", async () => {
+    await uploadFile(
+      { error: "text contains characters that cannot be stored (U+0000)" },
+      400,
+    );
+    // Exact "Failed": the toast beside it says "1 failed.", so a loose match picks the wrong node.
+    const chip = await screen.findByText("Failed");
+    fireEvent.pointerEnter(chip);
+    fireEvent.focus(chip);
+    await waitFor(() => expect(shows(/U\+0000/)).toBe(true));
+  });
+
+  test("a status this screen phrases better still wins", async () => {
+    await uploadFile({ error: "whatever the API said" }, 415);
+    const chip = await screen.findByText("Failed");
+    fireEvent.pointerEnter(chip);
+    fireEvent.focus(chip);
+    await waitFor(() => expect(shows(/Unsupported file type/i)).toBe(true));
+    expect(shows(/whatever the API said/)).toBe(false);
   });
 });

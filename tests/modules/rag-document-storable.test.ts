@@ -265,6 +265,11 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
     );
     expect(r.status).toBe(400);
     expect(r.message).toContain("U+0000");
+    // Named by what the CALLER sent, not by the column it lands in. The REST body and the agent's
+    // suggestion tool both spell this `content`; `proposedContent` is a field nobody can change
+    // because nobody sent it (review round 3).
+    expect(r.message).toContain("content ");
+    expect(r.message).not.toContain("proposedContent");
   });
 });
 

@@ -326,13 +326,19 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
 //   guarded     sanitizeErrorMessage applied right here, at the write
 //   cleared     writes null (a row leaving the state the error described)
 //   read        reads the column back out: a select, a filter, a DTO field
-type ErrorSite = "flow-event" | "guarded" | "cleared" | "read";
+//   unrelated   the name, and none of the meaning: a field of a client-side shape that happens to
+//               be called this. The scan cannot tell them apart, which is the honest limit of
+//               keying on a name rather than on a write, and is why they are listed rather than
+//               filtered out by a path rule that would also hide a real one.
+type ErrorSite = "flow-event" | "guarded" | "cleared" | "read" | "unrelated";
 
 const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/graph/nudge.ts": [1, "flow-event"],
   "src/graph/prepare.ts": [2, "flow-event"],
   "src/graph/runtime.ts": [4, "flow-event"],
   "src/graph/tool-flowlog.ts": [2, "flow-event"],
+  // An upload row's own failure in the console, which never reaches a column.
+  "src/client/pages/resources/useKnowledgeManager.tsx": [1, "unrelated"],
   "src/modules/chatwoot/webhook.ts": [1, "cleared"],
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],

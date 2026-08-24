@@ -34,6 +34,7 @@ import {
 import { Tooltip } from "@/client/components/Tooltip";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { mergeDocumentEvent } from "@/client/lib/knowledgeDocs";
 import { cn } from "@/client/lib/utils";
 
@@ -75,6 +76,7 @@ interface PickedFile {
   status: UploadStatus;
   // HTTP status of the failed upload (set when status === "error"); 0 for a thrown/network error.
   errorStatus?: number;
+  errorMessage?: string;
 }
 
 // Run `worker` over `items` with at most `limit` in flight (bounded concurrency for batch uploads,
@@ -503,15 +505,27 @@ export function useKnowledgeManager(opts: {
       addContentModal.close();
       if (docsModal.payload) await reloadDocs(docsModal.payload.id);
       void onChanged();
-    } catch {
-      showToast(t("knowledge.addError", "Could not add document."), "error");
+    } catch (e) {
+      // The server's own message when it sent one: a refusal that names the field and the character
+      // is the whole answer, and collapsing it into "Could not add document" throws away the only
+      // part the operator can act on (issue #247).
+      showToast(
+        apiErrorMessage(e) ??
+          t("knowledge.addError", "Could not add document."),
+        "error",
+      );
     } finally {
       setBusy(false);
     }
   }
 
-  // Localized failure reason for a per-file upload error (static keys: extractor-friendly).
-  function uploadErrorMessage(status: number | undefined): string {
+  // Localized failure reason for a per-file upload error (static keys: extractor-friendly). The
+  // server's own message wins when it sent one: the statuses below are the ones we can phrase better
+  // than the API can, and everything else the API already phrased for this operator's language.
+  function uploadErrorMessage(
+    status: number | undefined,
+    message: string | undefined,
+  ): string {
     if (status === 422) {
       return t(
         "knowledge.fileNotExtractable",
@@ -524,7 +538,7 @@ export function useKnowledgeManager(opts: {
     if (status === 413) {
       return t("knowledge.fileTooLarge", "The file exceeds the size limit.");
     }
-    return t("knowledge.addError", "Could not add document.");
+    return message ?? t("knowledge.addError", "Could not add document.");
   }
 
   // Upload one staged file, returning the failing HTTP status (undefined on success, 0 on a thrown
@@ -534,7 +548,7 @@ export function useKnowledgeManager(opts: {
     baseId: string,
     pf: PickedFile,
     useTitle: boolean,
-  ): Promise<number | undefined> {
+  ): Promise<{ status: number; message?: string } | undefined> {
     try {
       // NOTE: the treaty serializes a File body as multipart AND injects the
       // X-Tenant-Id header (SUPER_ADMIN target tenant); a raw fetch here 500s
@@ -545,9 +559,11 @@ export function useKnowledgeManager(opts: {
           file: pf.file,
           ...(useTitle && docTitle.trim() ? { title: docTitle.trim() } : {}),
         });
-      return err ? err.status : undefined;
+      return err
+        ? { status: err.status, message: apiErrorMessage(err) ?? undefined }
+        : undefined;
     } catch {
-      return 0;
+      return { status: 0 };
     }
   }
 
@@ -567,17 +583,21 @@ export function useKnowledgeManager(opts: {
           : { ...p, status: "uploading", errorKey: undefined },
       ),
     );
-    const results = new Map<string, number | undefined>();
+    const results = new Map<
+      string,
+      { status: number; message?: string } | undefined
+    >();
     await runPool(toUpload, 3, async (pf) => {
-      const errorStatus = await uploadOne(payload.id, pf, useTitle);
-      results.set(pf.id, errorStatus);
+      const failure = await uploadOne(payload.id, pf, useTitle);
+      results.set(pf.id, failure);
       setPicked((prev) =>
         prev.map((p) =>
           p.id === pf.id
             ? {
                 ...p,
-                status: errorStatus === undefined ? "done" : "error",
-                errorStatus,
+                status: failure === undefined ? "done" : "error",
+                errorStatus: failure?.status,
+                errorMessage: failure?.message,
               }
             : p,
         ),
@@ -1252,7 +1272,10 @@ export function useKnowledgeManager(opts: {
                       )}
                       {p.status === "error" && (
                         <Tooltip
-                          content={uploadErrorMessage(p.errorStatus)}
+                          content={uploadErrorMessage(
+                            p.errorStatus,
+                            p.errorMessage,
+                          )}
                           side="top"
                         >
                           <span className="shrink-0 cursor-help rounded-full bg-error/10 px-2 py-0.5 text-error text-xs">

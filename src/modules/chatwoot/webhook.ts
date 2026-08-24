@@ -103,6 +103,7 @@ import {
   shouldBotHandle,
 } from "./normalize";
 import { renderAttendantMessage, renderInboundMessage } from "./render";
+import { readRouteTokenCache, writeRouteTokenCache } from "./route-token-cache";
 import {
   CHATWOOT_DELIVERY_HEADER,
   CHATWOOT_SIGNATURE_HEADER,
@@ -194,7 +195,11 @@ async function resolveBotByRouteToken(
   token: string,
   base: PrismaClient,
 ): Promise<ResolvedChatwootBot | null> {
+  // Cached in process: see route-token-cache.ts for why the ack path cannot afford this query.
   const webhookRouteTokenHash = hashRouteToken(token);
+  const cached = readRouteTokenCache(webhookRouteTokenHash);
+  if (cached !== undefined) return cached;
+
   const row = await asSuperAdminOn(base, (db) =>
     db.chatwootAgentBot.findUnique({
       where: { webhookRouteTokenHash },
@@ -203,33 +208,38 @@ async function resolveBotByRouteToken(
         tenantId: true,
         chatwootAgentBotId: true,
         webhookSecret: true,
+        // Ignore a soft-disconnected account: the bot's webhook route may still exist in Chatwoot
+        // until the unbind propagates, but we must stop handling its traffic (the rows are kept only
+        // for history). Read through the relation: as a second findUnique it was a second
+        // transaction on the one path that cannot afford one.
+        instance: { select: { disconnectedAt: true } },
       },
     }),
   );
-  if (!row) return null;
-  // Ignore a soft-disconnected account: the bot's webhook route may still exist in Chatwoot until the
-  // unbind propagates, but we must stop handling its traffic (the rows are kept only for history).
-  const inst = await asSuperAdminOn(base, (db) =>
-    db.chatwootInstance.findUnique({
-      where: { id: row.chatwootInstanceId },
-      select: { disconnectedAt: true },
-    }),
-  );
-  if (!inst || inst.disconnectedAt !== null) return null;
-  return {
-    instanceId: row.chatwootInstanceId,
-    tenantId: row.tenantId,
-    agentBotId: row.chatwootAgentBotId,
-    webhookSecret: row.webhookSecret,
-  };
+  const bot: ResolvedChatwootBot | null =
+    !row?.instance || row.instance.disconnectedAt !== null
+      ? null
+      : {
+          instanceId: row.chatwootInstanceId,
+          tenantId: row.tenantId,
+          agentBotId: row.chatwootAgentBotId,
+          webhookSecret: row.webhookSecret,
+        };
+  writeRouteTokenCache(webhookRouteTokenHash, bot);
+  return bot;
 }
 
 export interface ReceiveChatwootResult {
   ack: true;
-  outcome: "queued" | "duplicate" | "ignored";
+  // NOTE: no "duplicate" here any more. Deduping is a property of PROCESSING, not of acking, and it
+  // now happens where the work does (recordAndProcessChatwootDelivery). Whether this exact delivery
+  // was seen before does not change the answer Chatwoot needs, which is only "received".
+  outcome: "queued" | "ignored";
   tenantId?: bigint;
   instanceId?: bigint;
-  deliveryRowId?: bigint;
+  // The idempotency KEY (the X-Chatwoot-Delivery header, or a body digest when it is absent), not a
+  // row id: the ledger row is written on the detached path now.
+  deliveryId?: string;
   agentBotId?: number | null;
   normalized?: NormalizedChatwootEvent;
 }
@@ -280,38 +290,78 @@ export async function receiveChatwootWebhook(
     headerDelivery ??
     `body:${createHash("sha256").update(params.rawBody).digest("hex")}`;
 
-  const { rowId, duplicate } = await recordDelivery(
-    base,
-    bot,
-    deliveryId,
-    normalized.event,
-  );
-
+  // NOTHING IS WRITTEN HERE. The ledger insert used to sit on this path, which made the ack wait on
+  // an interactive transaction and therefore on the health of a pool it shares with every turn,
+  // ingest and compaction in the process. Chatwoot escalates the conversation when the ack is slow,
+  // so a busy pool anywhere in the system could take the bot off a conversation it had nothing to do
+  // with. The insert moved to the detached path (`recordAndProcessChatwootDelivery`), where being
+  // slow costs latency instead of the turn.
   return {
     ack: true,
-    outcome: duplicate ? "duplicate" : "queued",
+    outcome: "queued",
     tenantId: bot.tenantId,
     instanceId: bot.instanceId,
-    deliveryRowId: rowId,
+    deliveryId,
     agentBotId: bot.agentBotId,
     normalized,
   };
+}
+
+export interface RecordAndProcessChatwootParams {
+  tenantId: bigint;
+  instanceId: bigint;
+  deliveryId: string;
+  agentBotId: number | null;
+  normalized: NormalizedChatwootEvent;
+  base?: PrismaClient;
+  deps?: RuntimeDeps;
+}
+
+// The detached half of a delivery: claim it in the ledger, then process it. Runs AFTER the ack, so
+// everything expensive or fragile belongs here rather than upstream of the 5s budget.
+//
+// A redelivery is not dropped on the strength of the ledger row alone. `recordDelivery` reports the
+// row as a duplicate the moment it exists, but the row existing is not the same as the work having
+// been done: this path is detached and a process that dies right after the insert (deploy, OOM,
+// restart) strands the row on PENDING with nothing running. Since Chatwoot already has its 200, that
+// message would never come back. So both branches go on to `processChatwootDelivery`, whose CAS on
+// `status: "PENDING"` is the real gate: a row already PROCESSING or PROCESSED matches nothing and the
+// call returns "skipped".
+export async function recordAndProcessChatwootDelivery(
+  params: RecordAndProcessChatwootParams,
+): Promise<"processed" | "skipped"> {
+  const base = params.base ?? basePrisma;
+  const { rowId } = await recordDelivery(
+    base,
+    { tenantId: params.tenantId, instanceId: params.instanceId },
+    params.deliveryId,
+    params.normalized.event,
+  );
+  return processChatwootDelivery({
+    tenantId: params.tenantId,
+    instanceId: params.instanceId,
+    deliveryRowId: rowId,
+    agentBotId: params.agentBotId,
+    normalized: params.normalized,
+    base,
+    deps: params.deps,
+  });
 }
 
 // Idempotency ledger insert: create-then-catch across two transactions (a unique violation
 // aborts its own transaction). Unique on (chatwoot_instance_id, delivery_id).
 async function recordDelivery(
   base: PrismaClient,
-  bot: ResolvedChatwootBot,
+  scope: { tenantId: bigint; instanceId: bigint },
   deliveryId: string,
   event: string,
 ): Promise<{ rowId: bigint; duplicate: boolean }> {
   try {
-    const row = await runScopedOn(base, sysCtx(bot.tenantId), (db) =>
+    const row = await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
       db.chatwootWebhookDelivery.create({
         data: {
-          tenantId: bot.tenantId,
-          chatwootInstanceId: bot.instanceId,
+          tenantId: scope.tenantId,
+          chatwootInstanceId: scope.instanceId,
           deliveryId,
           event,
           status: "PENDING",
@@ -322,9 +372,9 @@ async function recordDelivery(
     return { rowId: row.id, duplicate: false };
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
-    const existing = await runScopedOn(base, sysCtx(bot.tenantId), (db) =>
+    const existing = await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
       db.chatwootWebhookDelivery.findFirst({
-        where: { chatwootInstanceId: bot.instanceId, deliveryId },
+        where: { chatwootInstanceId: scope.instanceId, deliveryId },
         select: { id: true },
       }),
     );

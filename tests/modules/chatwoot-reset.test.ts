@@ -15,8 +15,8 @@ import { contactInboxThreadId, getCheckpointer } from "@/graph/checkpointer";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 import {
-  processChatwootDelivery,
   receiveChatwootWebhook,
+  recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -149,10 +149,10 @@ async function sendReset(content = "/reset", convId = CONV_ID): Promise<void> {
     nowSeconds,
     base: appDb,
   });
-  await processChatwootDelivery({
+  await recordAndProcessChatwootDelivery({
     tenantId,
     instanceId: r.instanceId as bigint,
-    deliveryRowId: r.deliveryRowId as bigint,
+    deliveryId: r.deliveryId as string,
     agentBotId: r.agentBotId ?? null,
     normalized: r.normalized as NonNullable<typeof r.normalized>,
     base: appDb,
@@ -568,10 +568,10 @@ describe.skipIf(!dbUp)(
           nowSeconds,
           base: appDb,
         });
-        await processChatwootDelivery({
+        await recordAndProcessChatwootDelivery({
           tenantId: other.id,
           instanceId: r.instanceId as bigint,
-          deliveryRowId: r.deliveryRowId as bigint,
+          deliveryId: r.deliveryId as string,
           agentBotId: r.agentBotId ?? null,
           normalized: r.normalized as NonNullable<typeof r.normalized>,
           base: appDb,

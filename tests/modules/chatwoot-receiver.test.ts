@@ -12,11 +12,12 @@ import {
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { ensureAgentBot } from "@/modules/chatwoot/provisioning";
+import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import {
   outOfHoursGate,
-  processChatwootDelivery,
   receiveChatwootWebhook,
+  recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
 import {
   CHATWOOT_WEBHOOK_MOUNT,
@@ -343,18 +344,18 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     expect(r.agentBotId).toBe(9);
     expect(r.normalized?.conversationId).toBe(42);
 
-    const proc = await processChatwootDelivery({
+    const proc = await recordAndProcessChatwootDelivery({
       tenantId,
       instanceId: r.instanceId as bigint,
-      deliveryRowId: r.deliveryRowId as bigint,
+      deliveryId: r.deliveryId as string,
       agentBotId: r.agentBotId ?? null,
       normalized: r.normalized as NonNullable<typeof r.normalized>,
       base: appDb,
     });
     expect(proc).toBe("processed");
 
-    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
-      where: { id: r.deliveryRowId as bigint },
+    const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+      where: { chatwootInstanceId: instanceId, deliveryId: "uuid-ok" },
     });
     expect(row.status).toBe("PROCESSED");
     expect(row.processedAt).not.toBeNull();
@@ -393,33 +394,160 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
       nowSeconds: NOW,
       base: appDb,
     });
+    // The ack writes nothing now, so BOTH deliveries are simply "received". Idempotency is asserted
+    // where it actually lives: on the detached path, which every redelivery runs.
     expect(first.outcome).toBe("queued");
-    expect(second.outcome).toBe("duplicate");
-    expect(second.deliveryRowId).toBe(first.deliveryRowId as bigint);
+    expect(second.outcome).toBe("queued");
+    expect(second.deliveryId).toBe(first.deliveryId as string);
 
-    const count = await suDb.chatwootWebhookDelivery.count({
-      where: { chatwootInstanceId: instanceId, deliveryId: "uuid-dup" },
-    });
-    expect(count).toBe(1);
-
-    await processChatwootDelivery({
-      tenantId,
-      instanceId: first.instanceId as bigint,
-      deliveryRowId: first.deliveryRowId as bigint,
-      agentBotId: first.agentBotId ?? null,
-      normalized: first.normalized as NonNullable<typeof first.normalized>,
-      base: appDb,
-    });
     expect(
-      await processChatwootDelivery({
+      await recordAndProcessChatwootDelivery({
         tenantId,
         instanceId: first.instanceId as bigint,
-        deliveryRowId: first.deliveryRowId as bigint,
+        deliveryId: first.deliveryId as string,
         agentBotId: first.agentBotId ?? null,
         normalized: first.normalized as NonNullable<typeof first.normalized>,
         base: appDb,
       }),
+    ).toBe("processed");
+
+    // Second run of the SAME delivery: the unique keeps one row and the CAS refuses the reprocess.
+    expect(
+      await recordAndProcessChatwootDelivery({
+        tenantId,
+        instanceId: second.instanceId as bigint,
+        deliveryId: second.deliveryId as string,
+        agentBotId: second.agentBotId ?? null,
+        normalized: second.normalized as NonNullable<typeof second.normalized>,
+        base: appDb,
+      }),
     ).toBe("skipped");
+  });
+
+  // ── the ack's own budget (issue #225) ──
+
+  test("the ack asks Postgres nothing once the route token is resolved", async () => {
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 47,
+      inbox_id: 7,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+    // Warm the resolution the way real traffic does.
+    await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, NOW, "uuid-warm"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+
+    // Chatwoot escalates the conversation when the ack is slow, and every query on this path is an
+    // interactive transaction competing for a pool shared with turns, ingest and compaction. A base
+    // that refuses to open one is the only assertion that actually pins "the ack does not wait on
+    // the database": counting queries would still pass if they merely got faster.
+    const refuses = {
+      $transaction: () => {
+        throw new Error("the ack path opened a transaction");
+      },
+      $extends: () => refuses,
+    } as unknown as PrismaClient;
+
+    const r = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, NOW, "uuid-nodb"),
+      nowSeconds: NOW,
+      base: refuses,
+    });
+    expect(r.outcome).toBe("queued");
+    expect(r.deliveryId).toBe("uuid-nodb");
+    expect(r.normalized?.conversationId).toBe(47);
+  });
+
+  test("a delivery stranded on PENDING is recovered by the redelivery", async () => {
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 48,
+      inbox_id: 7,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+    const r = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, NOW, "uuid-stranded"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+
+    // The shape of a process that died after acking: the ledger row exists, nothing ran. Every
+    // redelivery from here on reads as a duplicate, so dropping duplicates would lose this message
+    // for good, since Chatwoot already has its 200 and will not send it again.
+    await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: "uuid-stranded",
+        event: "conversation_updated",
+        status: "PENDING",
+      },
+    });
+
+    expect(
+      await recordAndProcessChatwootDelivery({
+        tenantId,
+        instanceId: r.instanceId as bigint,
+        deliveryId: r.deliveryId as string,
+        agentBotId: r.agentBotId ?? null,
+        normalized: r.normalized as NonNullable<typeof r.normalized>,
+        base: appDb,
+      }),
+    ).toBe("processed");
+
+    const row = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+      where: { chatwootInstanceId: instanceId, deliveryId: "uuid-stranded" },
+    });
+    expect(row.status).toBe("PROCESSED");
+  });
+
+  test("disconnecting the instance takes the route token out of the cache", async () => {
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 49,
+      inbox_id: 7,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+    const send = (uuid: string) =>
+      receiveChatwootWebhook({
+        routeToken,
+        rawBody: body,
+        getHeader: signedHeaders(body, NOW, uuid),
+        nowSeconds: NOW,
+        base: appDb,
+      });
+
+    expect((await send("uuid-live")).outcome).toBe("queued");
+
+    await suDb.chatwootInstance.update({
+      where: { id: instanceId },
+      data: { disconnectedAt: new Date() },
+    });
+    // Written straight to the row here, so the cache still holds the live answer. The production
+    // writers call invalidateRouteTokenCache themselves; this pins that the invalidation is what
+    // makes the change land, rather than the TTL quietly doing it later.
+    invalidateRouteTokenCache();
+
+    await expect(send("uuid-dead")).rejects.toThrow();
+
+    await suDb.chatwootInstance.update({
+      where: { id: instanceId },
+      data: { disconnectedAt: null },
+    });
+    invalidateRouteTokenCache();
+    expect((await send("uuid-again")).outcome).toBe("queued");
   });
 
   test("ignores a payload with no event field", async () => {
@@ -432,7 +560,7 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
       base: appDb,
     });
     expect(r.outcome).toBe("ignored");
-    expect(r.deliveryRowId).toBeUndefined();
+    expect(r.deliveryId).toBeUndefined();
   });
 
   test("issue #8: an inbound message during a human-owned period advances the handled watermark", async () => {
@@ -460,10 +588,10 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
       base: appDb,
     });
     expect(r.outcome).toBe("queued");
-    const proc = await processChatwootDelivery({
+    const proc = await recordAndProcessChatwootDelivery({
       tenantId,
       instanceId: r.instanceId as bigint,
-      deliveryRowId: r.deliveryRowId as bigint,
+      deliveryId: r.deliveryId as string,
       agentBotId: r.agentBotId ?? null,
       normalized: r.normalized as NonNullable<typeof r.normalized>,
       base: appDb,
@@ -490,10 +618,10 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
         base: appDb,
       });
       expect(r.outcome).toBe("queued");
-      const proc = await processChatwootDelivery({
+      const proc = await recordAndProcessChatwootDelivery({
         tenantId,
         instanceId: r.instanceId as bigint,
-        deliveryRowId: r.deliveryRowId as bigint,
+        deliveryId: r.deliveryId as string,
         agentBotId: r.agentBotId ?? null,
         normalized: r.normalized as NonNullable<typeof r.normalized>,
         base: appDb,

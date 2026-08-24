@@ -8,6 +8,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import type { ChatwootClient } from "./client";
+import { invalidateRouteTokenCache } from "./route-token-cache";
 import { chatwootOutgoingUrl } from "./webhook-mount";
 
 // Agent Bot provisioning: ONE Chatwoot Agent Bot per (instance, our Agent persona) — the bot is the
@@ -132,6 +133,11 @@ export async function ensureAgentBot(
         },
       }),
     );
+    // The row's route-token hash just changed, so the PREVIOUS hash is now orphaned. The receiver
+    // caches resolutions by hash, and a stale entry would keep accepting the retired token for the
+    // length of its TTL. The old hash is not in hand here, so drop the whole cache: re-provisioning
+    // is rare and the cache refills on the next event.
+    invalidateRouteTokenCache();
     logger.info(
       "chatwoot: re-provisioned agent bot %d for instance %s / agent %s (old bot was deleted)",
       created.id,

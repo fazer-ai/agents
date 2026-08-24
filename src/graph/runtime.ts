@@ -984,6 +984,9 @@ export async function runLoadedTurn(
       return {
         ours,
         voiceReply,
+        // Carried out so the discard below can say WHY ownership was lost. Read here rather than
+        // re-read there: a second query would answer about a different moment.
+        assigneeType: conv?.assigneeType ?? null,
         observed: {
           status: conv?.status ?? null,
           statusAt: conv?.chatwootStatusAt ?? null,
@@ -996,10 +999,23 @@ export async function runLoadedTurn(
     // what it has no special claim to: a queued photo is not something the transfer promised, and
     // over a human who is already answering it is exactly what should not land.
     if (!recheck.ours) {
+      // TWO different events wear this one exit, and calling both "taken_over" is what sent an
+      // incident investigation to the wrong half of the system (issue #225). A human assignee is a
+      // real handoff and the answer is correctly dropped. Anything else means the gate closed with
+      // nobody on the other side, most often Chatwoot auto-escalating `pending` to `open` because our
+      // webhook ack was slow, which discards a reply that was already written and correct. The
+      // operator has to be able to tell those apart in the log, so the detail names the status that
+      // closed the gate.
+      const humanTookOver = recheck.assigneeType === "User";
       emitFlowEvent(flow, {
         stage: "handoff",
         status: "ok",
-        detail: { outcome: "taken_over" },
+        detail: humanTookOver
+          ? { outcome: "taken_over" }
+          : {
+              outcome: "ownership_lost",
+              status: recheck.observed.status ?? "unknown",
+            },
       });
       return "taken-over";
     }

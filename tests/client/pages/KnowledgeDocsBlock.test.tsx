@@ -657,6 +657,16 @@ describe("knowledge: a refusal the server phrased reaches the operator", () => {
     cleanup();
   });
 
+  // This describe reinstalls the stub in its own beforeEach, AFTER the describe above already
+  // handed `fetch` back in its afterAll. Without this, the last case leaves both the stub and a 415
+  // `addDocResponse` installed for whatever else shares this Bun worker, and a POST whose URL
+  // happens to contain `/documents` is answered by a test that already finished. The failure would
+  // land in another file and depend on execution order (review round 4).
+  afterAll(() => {
+    globalThis.fetch = realFetch;
+    addDocResponse = null;
+  });
+
   async function addText(body: unknown, status: number) {
     addDocResponse = { status, body };
     await openModal();

@@ -1058,6 +1058,51 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     expect(pdfHeader(bytes)).toBe("%PDF-");
   });
 
+  // WHO CHOSE THE SLUG decides which input the refusal is about, and getting it wrong sends the
+  // operator to change something that cannot clear the clash: a slug they typed themselves stays
+  // exactly where it is no matter what they rename the template to. Issue #231.
+  test("a taken slug names the slug when it was typed, and the name when it was derived", async () => {
+    const starter = documentStarter("receipt", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const body = {
+      blocks: starter.blocks,
+      fields: starter.fields,
+      style: starter.style,
+    };
+    await createDocumentTemplate(
+      ctx(tenantA),
+      { name: "Contrato de servico", slug: "contrato_de_servico", ...body },
+      appDb,
+    );
+    const typed = await createDocumentTemplate(
+      ctx(tenantA),
+      {
+        name: "Nome completamente outro",
+        slug: "contrato_de_servico",
+        ...body,
+      },
+      appDb,
+    ).then(
+      () => null,
+      (e: unknown) => e as AppError,
+    );
+    // No slug in the write at all: the name is the only thing this caller ever chose, and it is what
+    // the derivation turned into the clashing slug.
+    const derived = await createDocumentTemplate(
+      ctx(tenantA),
+      { name: "Contrato de serviço", ...body },
+      appDb,
+    ).then(
+      () => null,
+      (e: unknown) => e as AppError,
+    );
+    expect(typed?.field).toBe("slug");
+    expect(derived?.field).toBe("name");
+    // The sentence is the same one in both, and it is the one that was already there.
+    expect(typed?.translationKey).toBe("errors.documentTemplateNameCollides");
+    expect(derived?.translationKey).toBe("errors.documentTemplateNameCollides");
+  });
+
   // Which INPUT a refusal is about cannot depend on the HTTP method that carried the write. The
   // patch path had a hand-written copy of the create path's refusal (same sentence, same key) that
   // named no field, so the console would have had somewhere to put the message on create and nowhere

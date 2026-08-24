@@ -133,10 +133,15 @@ function nameAlreadyUsed(name: string): Refusal {
   };
 }
 
+// `slugExplicit` is what decides WHICH input the refusal is about, and it is not cosmetic: a caller
+// who typed the slug cannot clear a slug clash by renaming, so a refusal that points at the name
+// sends them to change something that will not help. A DERIVED slug is the opposite case: the caller
+// never saw a slug, and the name is the only thing they can change.
 function nameTaken(
   existingName: string,
   name: string | undefined,
   slug: string,
+  slugExplicit: boolean,
 ): Refusal {
   const tool = documentToolName(slug);
   if (name === undefined) {
@@ -149,14 +154,16 @@ function nameTaken(
   }
   // Same name, or merely the same normalisation ("Orçamento" vs "Orcamento"). The second is the one
   // that would otherwise read as a false refusal, so its message names both templates.
-  return existingName === name
-    ? nameAlreadyUsed(name)
-    : {
-        message: `"${name}" collides with the template "${existingName}": both produce the tool name ${tool}`,
-        key: "errors.documentTemplateNameCollides",
-        params: { name, existing: existingName, tool },
-        field: "name",
-      };
+  if (existingName === name) return nameAlreadyUsed(name);
+  return {
+    // The SENTENCE stays the tool-name explanation in both cases, because the tool name is what is
+    // actually in the way and #208 chose that wording for an authoring client on purpose. Only the
+    // input it is attached to depends on who chose the slug.
+    message: `"${name}" collides with the template "${existingName}": both produce the tool name ${tool}`,
+    key: "errors.documentTemplateNameCollides",
+    params: { name, existing: existingName, tool },
+    field: slugExplicit ? "slug" : "name",
+  };
 }
 
 // The same constraint arriving from the database instead of the pre-check, which is the concurrent
@@ -174,7 +181,11 @@ function conflictTarget(e: unknown): "name" | "slug" {
 
 // The unique indexes deciding what the pre-check could not: the concurrent case, and every write
 // that does not pass through the console (MCP, an imported bundle).
-function writeConflict(slug: string, name?: string): (e: unknown) => never {
+function writeConflict(
+  slug: string,
+  name: string | undefined,
+  slugExplicit: boolean,
+): (e: unknown) => never {
   return (e: unknown) => {
     if (e instanceof Error && (e as { code?: string }).code === "P2002") {
       if (name !== undefined && conflictTarget(e) === "name") {
@@ -198,7 +209,7 @@ function writeConflict(slug: string, name?: string): (e: unknown) => never {
         409,
         "errors.documentTemplateNameCollidesUnknown",
         { tool: documentToolName(slug) },
-        "name",
+        slugExplicit ? "slug" : "name",
       );
     }
     throw e;
@@ -286,7 +297,7 @@ export async function documentTemplateWriteProblem(
   // never returns `byName` without one.
   if (clash.byName && name !== undefined) return nameAlreadyUsed(name).message;
   return clash.bySlug && slug !== undefined
-    ? nameTaken(clash.bySlug.name, name, slug).message
+    ? nameTaken(clash.bySlug.name, name, slug, input.slug !== undefined).message
     : null;
 }
 
@@ -590,13 +601,13 @@ export async function createDocumentTemplate(
   const clash = await existingClash(ctx, base, slug, name);
   const holder = clash.byName ?? clash.bySlug;
   if (holder) {
-    const refusal = nameTaken(holder.name, name, slug);
+    const refusal = nameTaken(holder.name, name, slug, !derived);
     refuse(refusal, 409);
   }
   const row = await runScopedOn(base, ctx, (db) =>
     db.documentTemplate
       .create({ data: { ...data, slug }, select: SELECT })
-      .catch(writeConflict(slug, name)),
+      .catch(writeConflict(slug, name, !derived)),
   );
   return toDto(row);
 }
@@ -873,17 +884,14 @@ async function patched(
       select: { name: true },
     });
     if (taken) {
-      const refusal = nameTaken(
-        taken.name,
-        data.name,
-        patch.slug ?? current.slug,
-      );
-      throw new AppError(
-        refusal.message,
+      refuse(
+        nameTaken(
+          taken.name,
+          data.name,
+          patch.slug ?? current.slug,
+          patch.slug !== undefined,
+        ),
         409,
-        refusal.key,
-        refusal.params,
-        refusal.field,
       );
     }
   }
@@ -896,6 +904,7 @@ async function patched(
         writeConflict(
           patch.slug ?? current.slug,
           typeof data.name === "string" ? data.name : undefined,
+          patch.slug !== undefined,
         ),
       )
   );

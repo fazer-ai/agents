@@ -39,7 +39,6 @@ import {
   armRedirectChatFollowUp,
   deliverRedirectClosing,
   followUpDedupeKey,
-  resolveRedirectEpisode,
   retireRedirectFollowUp,
 } from "@/modules/channel-redirect/followup";
 import { runRedirectGate } from "@/modules/channel-redirect/gate";
@@ -1272,54 +1271,18 @@ async function maybeConsumeCommandOrGate(params: {
       }
     };
 
-    // The redirect episode this conversation belongs to, resolved ONCE for the two steps that need
-    // it. The funnel spans a PAIR — the entry conversation holds `redirectSentAt`/`redirectCount`,
-    // the widget one holds `redirectLinkedAt`/`redirectClosedAt`, and the ladder job is keyed by the
-    // widget thread while its stages act on both — so a command that only names this conversation
-    // reaches half of it. Which half depends on where the operator typed it, and the entry side is
-    // the one the funnel is re-run from.
+    // NOTE: Scoped to the conversation the command was typed on, which is the scoping it already
+    // uses for memory. The redirect funnel spans a PAIR — the entry conversation holds
+    // `redirectSentAt`/`redirectCount`, the widget one holds `redirectLinkedAt`/`redirectClosedAt`,
+    // and the ladder job is keyed by the widget thread — so a /reset typed on one side leaves the
+    // other side's anchors and ladder standing, and the funnel can be re-run but not re-closed. The
+    // operator resets the other side to finish the job.
     //
-    // Resolved from the CONFIG rather than from the contact: contact ids are account-wide, so "every
-    // ladder this contact is in" also cancels another agent's live funnel. `sibling` stays null when
-    // the redirect is off, when the contact is unmirrored, when this conversation is not one of the
-    // two sides, and when it is a side but no conversation is RECORDED as the other one — and then
-    // every step below falls back to naming this conversation alone, which is all it can honestly
-    // claim.
-    let redirectSiblings: number[] = [];
-    let ladderConversationIds: number[] = [conversationId];
-    if (ctx.conv.contactId !== null && ctx.agentSettings != null) {
-      const contactDbId = ctx.conv.contactId;
-      const redirectCfg = readChannelRedirectConfig(ctx.agentSettings);
-      await step(
-        "resolve the redirect episode",
-        "episódio de redirecionamento",
-        async () => {
-          const ep = await resolveRedirectEpisode(
-            tenantId,
-            instanceId,
-            contactDbId,
-            conversationId,
-            redirectCfg,
-            base,
-          );
-          // Only a NAMED pair is widened to. Without one the sibling would be the contact's latest
-          // conversation on the other inbox, which for a contact starting a new funnel is last
-          // month's — and this command tombstones that conversation's appointment reminders.
-          redirectSiblings = ep.siblingConversationIds;
-          // The ladder is keyed by the WIDGET thread. Typed on the widget it is this conversation,
-          // linked or not; typed on the entry it is only reachable through the pair — and there the
-          // pair can be several chats, each with its own armed ladder. The fallback to this
-          // conversation keeps the unpaired entry side asking about its own key, which was never
-          // enqueued and answers zero.
-          ladderConversationIds =
-            ep.side === "widget"
-              ? [conversationId]
-              : ep.siblingConversationIds.length > 0
-                ? ep.siblingConversationIds
-                : [conversationId];
-        },
-      );
-    }
+    // Reaching across needs to know WHICH widget chat opened from this entry, and that is not
+    // derivable here: the merge happens inside Chatwoot's token resolve and what comes back names
+    // the CONTACT, not the conversation the token was minted on. Every predicate over the mirrored
+    // rows is a guess, and this command cancels appointment reminders — issue #222 carries the fork
+    // change that would make the pair a fact.
 
     // FIRST among the mutations, and the ordering is the whole fence. Two races pull in opposite
     // directions and only this position settles both.
@@ -1361,18 +1324,16 @@ async function maybeConsumeCommandOrGate(params: {
         base,
       ),
     );
-    for (const ladderConvId of ladderConversationIds) {
-      await step(
-        "cancel redirect follow-up",
-        "follow-up de redirecionamento",
-        () =>
-          retireRedirectFollowUp(
-            tenantId,
-            chatwootThreadId(tenantId, instanceId, ladderConvId),
-            base,
-          ),
-      );
-    }
+    await step(
+      "cancel redirect follow-up",
+      "follow-up de redirecionamento",
+      () =>
+        retireRedirectFollowUp(
+          tenantId,
+          chatwootThreadId(tenantId, instanceId, conversationId),
+          base,
+        ),
+    );
     // NOTE: Every side of the pair, for the same reason the ladder is retired by the widget's key: in a
     // redirect episode the AI does not serve the entry conversation at all — the gate answers there
     // with a fixed message and no model, and every turn (so every booking) happens in the widget
@@ -1381,7 +1342,7 @@ async function maybeConsumeCommandOrGate(params: {
     // customer about an episode the operator was told had been erased. Every widget chat of this
     // entry and not just the live one, on the same reasoning as the ladder: what is being cancelled
     // is SCHEDULED work, so the question is what is still armed, not which chat the lead is in.
-    for (const convId of [conversationId, ...redirectSiblings]) {
+    for (const convId of [conversationId]) {
       await step(
         "cancel appointment reminders",
         "lembretes de agendamento",
@@ -1601,12 +1562,11 @@ async function maybeConsumeCommandOrGate(params: {
     // `failureNoticeSentAt` is the coalescing anchor for the "a human has to take over" note, so
     // without clearing it a fresh failure after a reset cannot announce itself — the same reasoning
     // that already clears `testNoticeSentAt`.
-    // The redirect anchors go to BOTH sides, and everything else stays on this one. The split is the
-    // whole point: `lastInboundAt`, the three notice watermarks and the failure state describe THIS
-    // conversation and mean nothing about its sibling, while the five redirect anchors describe the
-    // EPISODE and happen to be stored one pair of columns per side. Clearing only this row left
-    // `redirectClosedAt` set on the widget conversation, so the re-armed ladder's closing returned
-    // `already-closed` and the funnel could be run again but never finished again.
+    // The redirect anchors describe the EPISODE and happen to be stored one pair of columns per
+    // side, so clearing this row releases only the half the operator typed into: a /reset on the
+    // entry conversation leaves `redirectClosedAt` on the widget, and the funnel can be run again
+    // but not closed again until the widget side is reset too. Named in the acknowledgement's own
+    // scope rather than worked around — see the NOTE above the job cancellations.
     const redirectAnchors = {
       redirectSentAt: null,
       // A counter, so it goes back to zero rather than to null.
@@ -1614,21 +1574,6 @@ async function maybeConsumeCommandOrGate(params: {
       redirectLinkedAt: null,
       redirectClosedAt: null,
     };
-    // NOT `redirectEntryConversationId`, which used to be in that list and was the only member that
-    // is not a one-shot. The others are anchors this command exists to release so the funnel can run
-    // again; that one is a FACT — which entry conversation this chat opened from — and it does not
-    // stop being true because an operator started the conversation over.
-    //
-    // Clearing it broke the ladder this command deliberately lets live. A widget message arriving
-    // during the cleanup re-arms REDIRECT_FOLLOWUP after the retirement above, and a re-armed ladder
-    // is a NEW episode that is meant to survive; the clear then took its sibling away, so its
-    // WhatsApp and closing stages resolved nothing and the episode was silently dead. It does not
-    // heal on its own either: a follow-up ladder fires precisely when the lead has gone quiet, so
-    // the "next inbound re-links it" that the clear leaned on is the one thing that will not happen.
-    //
-    // What stops a ladder from the OLD episode is the tombstone, which is the mechanism built for
-    // it and reaches a row the worker has already claimed. The identity clear was a second guard
-    // against the same thing, and the only case it could still decide was the one it broke.
     await step("clear the conversation's watermarks", "marcadores", () =>
       runScopedOn(base, sysCtx(tenantId), (db) =>
         db.conversation.update({
@@ -1647,20 +1592,6 @@ async function maybeConsumeCommandOrGate(params: {
         }),
       ),
     );
-    if (redirectSiblings.length > 0) {
-      const siblingIds = redirectSiblings;
-      await step("clear the paired conversation's anchors", "marcadores", () =>
-        runScopedOn(base, sysCtx(tenantId), (db) =>
-          db.conversation.updateMany({
-            where: {
-              chatwootInstanceId: instanceId,
-              chatwootConversationId: { in: siblingIds },
-            },
-            data: redirectAnchors,
-          }),
-        ),
-      );
-    }
     // LAST, and that ordering is the point. The state that decides whether the agent may speak AT
     // ALL — `shouldBotHandle` needs both `status === "pending"` and an assignee that is not a human
     // — is also the state that makes the NEXT delivery actionable. Returned first, a customer

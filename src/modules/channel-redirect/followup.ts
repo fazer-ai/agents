@@ -55,152 +55,6 @@ export function followUpDedupeKey(widgetThreadId: string): string {
   return `redirect-followup:${widgetThreadId}`;
 }
 
-// The two conversations one redirect episode spans, for a contact.
-//
-// The funnel is not a per-conversation thing and its state does not live in one row: the entry
-// (official WhatsApp) conversation carries `redirectSentAt`/`redirectCount`, the widget conversation
-// carries `redirectLinkedAt`/`redirectClosedAt`, and the ladder job is keyed by the WIDGET thread
-// while its stages message and resolve BOTH sides. So anything that wants to act on "this episode" —
-// /reset is the caller — has to name the pair, and neither this conversation's thread id nor the
-// contact alone can: the thread reaches one side, and the contact reaches every funnel the contact
-// was ever in, including another agent's active one (contact ids are account-wide, and a tenant can
-// run several agents on the same instance).
-//
-// The pair is named by IDENTITY, and it is asked FROM one conversation: the widget row records which
-// entry conversation it opened from (`redirectEntryConversationId`, written by the cross-link at the
-// moment the two are known to belong together), so the question is a lookup in whichever direction
-// the asking conversation sits. Nothing here is chosen by recency, which is the point.
-//
-// It used to be inferred instead. Each side was picked as the contact's most recently active
-// conversation on its inbox, and the two were then accepted as one episode when the widget was
-// linked at or after the entry sent its redirect. That ordering is one-sided: it rejects a widget
-// OLDER than the entry and accepts everything else, including every LATER episode's widget, since
-// those were necessarily linked after this entry redirected. And /reset is itself activity — the
-// command's own message advances `lastEventAt` on the conversation it is typed on, the mirror
-// running before the gate — so a reset typed on an old entry conversation made that conversation the
-// latest on its inbox while the widget side stayed the live episode's. The pair was accepted, and
-// the command cleared the live widget's anchors and tombstoned its ladder, its debounce and its
-// appointment reminders: the exact harm the check had been added to prevent, reached from the other
-// side.
-//
-// Identity fails CLOSED and stays cheap to reason about: an unlinked widget, a widget linked when
-// the contact had no conversation on the entry inbox, and an id that belongs to another funnel's
-// inbox pair all read as no pair, because every lookup is constrained to the configured inbox. The
-// cost of not clearing a sibling is a ladder that outlives a reset; the cost of clearing the wrong
-// one is a real appointment going unremembered.
-//
-// It also doubles as the generation /reset invalidates, which is the whole reason the closing can
-// trust it: the command clears the identity along with the anchors, so a run that read the pair
-// before the command and acts after it finds no pair to act on. That is what stands in for a
-// retirement check on the resolve-webhook trigger, which has no job to ask about.
-export interface RedirectEpisode {
-  // Which side of the funnel the conversation asked about sits on, read off its INBOX alone. Null
-  // means it is neither, and then it is not part of any episode. Independent of the sibling below:
-  // a widget conversation nobody ever linked is still the widget side, and the ladder is still keyed
-  // by its thread.
-  side: "entry" | "widget" | null;
-  // EVERY conversation on the other side of this one, empty when there is none.
-  //
-  // A LIST, because the two sides are not symmetric. A widget chat records exactly one entry, so
-  // from there it holds at most one id. From the ENTRY side it can hold several: the funnel resumes
-  // the contact's widget conversation on re-entry, but only while one is open, so a lead who comes
-  // back after the chat was resolved opens a NEW one — and every one of them recorded this same
-  // entry. Answering with only the newest left the older ones armed, and this ladder's terminal
-  // stage messages and RESOLVES both sides, so an old ladder could say goodbye to and close the very
-  // conversation a /reset had just reported clean.
-  siblingConversationIds: number[];
-}
-
-export async function resolveRedirectEpisode(
-  tenantId: bigint,
-  instanceId: bigint,
-  contactId: bigint,
-  conversationId: number,
-  cfg: ChannelRedirectConfig,
-  base: PrismaClient = basePrisma,
-): Promise<RedirectEpisode> {
-  // A funnel that is switched off has no episode, even when its inbox ids are still configured. The
-  // caller acts on the pair — it cancels the sibling's ladder and its appointment reminders — and
-  // that is scheduled work belonging to another conversation: with the redirect off, the two are not
-  // a pair, they are two conversations of the same contact.
-  //
-  // An earlier round dropped this check to heal a stuck `redirectClosedAt` on a funnel someone had
-  // turned off. That reasoning covered the anchors alone, and it does not survive the heavier
-  // consumers added since. It also loses nothing: with the redirect off nothing tries to close
-  // anything, so the stale anchor is inert, and a /reset after re-enabling clears it — which is the
-  // moment it starts to matter.
-  if (!cfg.enabled) return { side: null, siblingConversationIds: [] };
-  return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const me = await db.conversation.findUnique({
-      where: {
-        tenantId_chatwootInstanceId_chatwootConversationId: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          chatwootConversationId: conversationId,
-        },
-      },
-      select: {
-        redirectEntryConversationId: true,
-        inbox: { select: { chatwootInboxId: true } },
-      },
-    });
-    const inboxId = me?.inbox?.chatwootInboxId ?? null;
-    const side =
-      inboxId === null
-        ? null
-        : inboxId === cfg.entryInboxId
-          ? "entry"
-          : inboxId === cfg.widgetInboxId
-            ? "widget"
-            : null;
-    if (side === null) return { side: null, siblingConversationIds: [] };
-    // Asked from the widget side, the answer is already on the row. Constrained to the CONFIGURED
-    // entry inbox anyway, so a stored id belonging to another funnel's pair — which is what a
-    // backfilled row can hold, the migration having no access to the agent's config — matches no row
-    // and reads as no pair rather than as this one's sibling.
-    if (side === "widget") {
-      const entryId = me?.redirectEntryConversationId ?? null;
-      const entry =
-        entryId === null || cfg.entryInboxId === null
-          ? null
-          : await db.conversation.findFirst({
-              where: {
-                contactId,
-                chatwootInstanceId: instanceId,
-                chatwootConversationId: entryId,
-                inbox: { chatwootInboxId: cfg.entryInboxId },
-              },
-              select: { chatwootConversationId: true },
-            });
-      return {
-        side,
-        siblingConversationIds:
-          entry === null ? [] : [entry.chatwootConversationId],
-      };
-    }
-    // And from the entry side it is the same question read the other way: the widget chats that
-    // recorded THIS conversation as the one they opened from. ALL of them, not the newest: they each
-    // carry a ladder keyed by their own thread, and the caller is cancelling scheduled work, which
-    // is a question about what is still armed rather than about which chat is live. Ordered newest
-    // first only so the answer is stable.
-    if (cfg.widgetInboxId === null) return { side, siblingConversationIds: [] };
-    const widgets = await db.conversation.findMany({
-      where: {
-        contactId,
-        chatwootInstanceId: instanceId,
-        redirectEntryConversationId: conversationId,
-        inbox: { chatwootInboxId: cfg.widgetInboxId },
-      },
-      select: { chatwootConversationId: true },
-      orderBy: { redirectLinkedAt: { sort: "desc", nulls: "last" } },
-    });
-    return {
-      side,
-      siblingConversationIds: widgets.map((w) => w.chatwootConversationId),
-    };
-  });
-}
-
 // Retire the ladder armed for a widget thread: the pending row cancelled, and EVERY row of the key
 // stamped so an in-flight handler can see it.
 //
@@ -397,28 +251,13 @@ async function resolveWhatsAppSibling(
           chatwootConversationId: widgetConversationId,
         },
       },
-      select: { contactId: true, redirectEntryConversationId: true },
+      select: { contactId: true },
     });
     if (!widgetConv?.contactId) return null;
-    // Named, not searched for. "The contact's latest conversation on the entry inbox" is not this
-    // episode's sibling, it is whichever WhatsApp conversation that contact touched last — and
-    // saying goodbye into the wrong one, then RESOLVING it, is worse than not saying goodbye at all.
-    //
-    // It is also this path's only fence against /reset. The resolve trigger arrives straight from a
-    // webhook with no job to ask about, so every retirement check in this function is one it skips;
-    // the command clears the identity, and a run that read it before the command finds none after.
-    if (widgetConv.redirectEntryConversationId === null) {
-      logger.info(
-        "channel-redirect: no paired WhatsApp sibling for the widget conversation (conv=%d)",
-        widgetConversationId,
-      );
-      return null;
-    }
     const sibling = await db.conversation.findFirst({
       where: {
         contactId: widgetConv.contactId,
         chatwootInstanceId: instanceId,
-        chatwootConversationId: widgetConv.redirectEntryConversationId,
         inbox: { chatwootInboxId: entryInboxId },
       },
       select: {
@@ -429,14 +268,9 @@ async function resolveWhatsAppSibling(
         contact: { select: { chatwootContactId: true } },
         inbox: { select: { channelType: true, provider: true } },
       },
+      orderBy: { lastEventAt: "desc" },
     });
-    if (!sibling?.contact?.chatwootContactId) {
-      logger.info(
-        "channel-redirect: no paired WhatsApp sibling for the widget conversation (conv=%d)",
-        widgetConversationId,
-      );
-      return null;
-    }
+    if (!sibling?.contact?.chatwootContactId) return null;
     return {
       chatwootConversationId: sibling.chatwootConversationId,
       status: sibling.status,

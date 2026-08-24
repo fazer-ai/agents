@@ -538,20 +538,6 @@ model Conversation {
   // to the WhatsApp sibling: test-mode activation propagated + the cross-link private notes posted. NULL
   // = not yet linked; a non-null value stops the one-shot from re-running / re-spamming.
   redirectLinkedAt       DateTime? @map("redirect_linked_at")
-  // WHICH entry conversation this widget chat opened from (only on the widget conversation), captured
-  // at link time. It is the episode's identity, and the reason it is stored rather than inferred: the
-  // two anchors above only say "this widget was linked after that entry redirected", which is true of
-  // every LATER episode's widget too — so a /reset typed on an old entry conversation would pair with
-  // the live episode's widget and tombstone its ladder and its appointment reminders.
-  // Written only where the origin is PROVABLE, which is a contact with a single conversation on the
-  // entry inbox: every token is minted on one of those, so with one there is nothing else the chat
-  // could have opened from. NULL everywhere else — linked before this column existed, no entry
-  // conversation, or more than one. Counting CONVERSATIONS and not redirect anchors is the point: a
-  // link is a single-use token with a 24h TTL and every anchor here is cleared by /reset on purpose,
-  // so an anchor can be gone while its link is still live. Unknown pair = the callers act on one
-  // conversation alone, as they did before this column; a wrong pair would be a goodbye and a
-  // RESOLVE on somebody else's chat.
-  redirectEntryConversationId Int? @map("redirect_entry_conversation_id")
   // Closing watermark (only on the widget conversation). Set once, via a CAS, by whichever fires first:
   // the follow-up ladder's terminal "closing" stage OR the widget conversation being resolved. Guarantees
   // the closing message + resolve is delivered at most once per redirect episode. NULL = not yet closed.

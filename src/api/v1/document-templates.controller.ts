@@ -223,7 +223,13 @@ export const documentTemplatesController = new Elysia({
       // nothing in this tenant answers the same way a GET does. Leaving it out publishes a union
       // the endpoint does not honour, and an Eden caller narrowing on the declared statuses is
       // handed a status its types say cannot happen.
-      response: errors(400, 401, 403, 404),
+      //
+      // 409 for the same reason, and it is the one this rule was stated for and then missed: a
+      // preview by id alone authored neither blocks nor fields, so it takes the same refusal the
+      // write takes for a template a newer build wrote (`documentTemplateUnreadable`). Create and
+      // patch both declared it; nothing at runtime told anyone this one did not, because Elysia
+      // answers the 409 either way and only the generated client is left holding the wrong union.
+      response: errors(400, 401, 403, 404, 409),
     },
   )
   .get(

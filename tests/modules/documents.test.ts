@@ -459,6 +459,33 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     ).rejects.toThrow(/blank/);
   });
 
+  // THE 409 THE PREVIEW CAN ANSWER, so the contract test above it is not asserting a status nothing
+  // produces. A template written by a newer build is READ tolerantly everywhere else; the write path
+  // refuses it instead of silently dropping the half it cannot parse, and previewing by id alone
+  // takes that same path, because a caller who sent no blocks and no fields authored neither.
+  test("previewing a saved template this build cannot read answers 409", async () => {
+    const future = await suDb.documentTemplate.create({
+      data: {
+        tenantId: tenantA,
+        name: `Do futuro ${process.pid}`,
+        slug: `do_futuro_prev_${process.pid}`,
+        blocks: [{ id: "a", type: "signature", label: "Assine" }],
+        fields: [],
+        style: {},
+      },
+      select: { id: true },
+    });
+    const thrown = await previewDocumentTemplate(
+      ctx(tenantA),
+      { id: future.id },
+      appDb,
+    ).then(
+      () => null,
+      (e: unknown) => e as { statusCode?: number },
+    );
+    expect(thrown?.statusCode).toBe(409);
+  });
+
   test("previews an unsaved draft without issuing anything", async () => {
     const before = await listIssuedDocuments(ctx(tenantA), {}, appDb);
     const bytes = await previewDocumentTemplate(

@@ -1,0 +1,18 @@
+(local notes, not read by the publisher)
+
+"Add 404 to every scoped route's response contract" — declined, with the reason recorded in the PR
+body. The 404 raised here is a BOUNDARY refusal, not a route outcome, and this repo already does not
+enumerate boundary refusals per route:
+
+- `TenantTargetRequiredError` (400) is thrown by this same `runScopedOn` for the neighbouring case (a
+  super admin with no target) and by 53 controller guards. `src/api/v1/tenant-settings.controller.ts`
+  line 34 throws it, and the GET on line 67 declares `errors(401, 403)`: 400 is reachable and
+  undeclared, in the very controller this issue is about.
+- `ServiceUnavailableError` (503) from `getAuthUser` can end ANY authenticated request, and 503 is not
+  even in `STATUS_DESCRIPTION`, so no route can declare it.
+- Before this PR the same condition answered 500, which is likewise undeclared everywhere.
+
+So the finding proposes a convention the codebase does not hold. Applying it to 404 alone, in this PR,
+would make the contract inconsistent in a new way rather than complete; applying it to every boundary
+status across ~20 v1 controllers is a sweep of its own, and several of those controllers are being
+edited by other sessions right now.

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getActiveTenantId,
   reconcileActiveTenantId,
@@ -31,18 +31,25 @@ export function useTenantList(enabled: boolean): TenantList {
   const [activeId, setActiveId] = useState<string | null>(() =>
     getActiveTenantId(),
   );
+  // Reads overlap: the one on mount and the one a tenant creation triggers are the same request to
+  // the same URL, and nothing orders their answers. An older answer landing last describes a fleet
+  // that no longer exists, and acting on it here is destructive in a way a stale label never was: it
+  // would clear a selection the newer answer had just confirmed, and reload on top of that. Same
+  // guard, and for the same reason, as TenantDeepLink.
+  const readId = useRef(0);
 
   useEffect(() => {
     if (!enabled) return;
     let on = true;
     const fetchTenants = () => {
+      const id = ++readId.current;
       api.api.v1.tenants
         .get()
         .then(({ data, error }) => {
           // NOTE: a read that failed is not the empty list. Reconciling against it would clear a
           // perfectly good selection on any server blip, and the operator would lose the tenant they
           // were working in every time the connection hiccuped.
-          if (!on || error || !data) return;
+          if (!on || id !== readId.current || error || !data) return;
           setTenants(data.tenants);
           const { activeId: surviving, cleared } = reconcileActiveTenantId(
             data.tenants.map((tn) => tn.id),

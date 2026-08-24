@@ -14,6 +14,7 @@ import { TenantSwitcher } from "@/client/components/TenantSwitcher";
 import {
   getActiveTenantId,
   setActiveTenantId,
+  TENANTS_CHANGED_EVENT,
 } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
 
@@ -27,6 +28,13 @@ import { api } from "@/client/lib/api";
 
 let tenantsPayload: Array<{ id: string; name: string }> = [];
 let tenantsFails = false;
+// When set, each /v1/tenants call takes the next entry instead of `tenantsPayload`, so a test can
+// choose which read answers first. `release` resolves that call's response.
+let scripted: Array<{
+  payload: Array<{ id: string; name: string }>;
+  gate: Promise<void>;
+  release: () => void;
+}> = [];
 const sentTenantHeaders: Array<string | null> = [];
 const reloads: number[] = [];
 const realFetch = globalThis.fetch;
@@ -58,6 +66,14 @@ function installFetchStub() {
             status: 500,
           });
         }
+        const step = scripted.shift();
+        if (step) {
+          await step.gate;
+          return new Response(JSON.stringify({ tenants: step.payload }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
         return new Response(JSON.stringify({ tenants: tenantsPayload }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -85,6 +101,7 @@ beforeEach(() => {
   tenantsFails = false;
   sentTenantHeaders.length = 0;
   reloads.length = 0;
+  scripted = [];
   setActiveTenantId(null);
   installFetchStub();
   Object.defineProperty(window, "location", {
@@ -142,6 +159,42 @@ describe("a stored tenant the fleet no longer has", () => {
     });
     expect(getActiveTenantId()).toBe("1");
     // Nothing was dropped, so nothing is reloaded: the ordinary load must not cost a second one.
+    expect(reloads.length).toBe(0);
+  });
+
+  test("an answer that arrived late does not undo the one that arrived first", async () => {
+    // Two reads of the same URL overlap: the one on mount, and the one a tenant creation triggers.
+    // Nothing orders their answers, and the older one describes a fleet that no longer exists.
+    // Acting on it would clear a selection the newer answer had just confirmed, and reload on top.
+    const step = (payload: Array<{ id: string; name: string }>) => {
+      let release = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      return { payload, gate, release };
+    };
+    const first = step([{ id: "1", name: "Acme" }]);
+    const second = step([
+      { id: "1", name: "Acme" },
+      { id: "9", name: "New" },
+    ]);
+    scripted = [first, second];
+
+    setActiveTenantId("9");
+    mount();
+    // The creation's read is the second one out, and it answers first, confirming the selection.
+    window.dispatchEvent(new Event(TENANTS_CHANGED_EVENT));
+    await waitFor(() => {
+      expect(scripted.length).toBe(0);
+    });
+    second.release();
+    await waitFor(() => {
+      expect(getActiveTenantId()).toBe("9");
+    });
+    // Then the mount's read lands, carrying the older fleet.
+    first.release();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(getActiveTenantId()).toBe("9");
     expect(reloads.length).toBe(0);
   });
 

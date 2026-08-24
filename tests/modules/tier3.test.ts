@@ -980,6 +980,93 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect([row?.assigneeType, row?.assigneeId]).toEqual(["User", 4321]);
   });
 
+  // The same column, the other direction, and the one the primitive answers on its own: a hand-back
+  // that SUCCEEDS empties the holder, and a name left behind reads as the person still having the
+  // conversation on the very screen that just said it went back to the agent.
+  test("a successful hand-back clears the name with the holder", async () => {
+    const namedConv = (
+      await suDb.conversation.create({
+        data: {
+          tenantId: tenant,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 564,
+          status: "pending",
+          threadId: `${tenant}:${instanceId}:564`,
+          assigneeType: "User",
+          assigneeId: 7,
+          assigneeName: "Ana",
+        },
+      })
+    ).id;
+    try {
+      // No `lateLive`, so the read after the unassign reports the conversation as free — the shape a
+      // hand-back that worked leaves behind.
+      const stub = makeStub({ assigneeType: "User", assigneeId: 7 });
+      expect(
+        await returnConversationToAgent(
+          ctx(tenant),
+          namedConv,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).toBe("returned");
+      const row = await suDb.conversation.findUnique({
+        where: { id: namedConv },
+        select: { assigneeType: true, assigneeName: true },
+      });
+      expect([row?.assigneeType, row?.assigneeName]).toEqual([null, null]);
+    } finally {
+      await suDb.conversation.delete({ where: { id: namedConv } });
+    }
+  });
+
+  // The NAME is a column of its own, and the takeover write above moves the id without it. The
+  // console renders the two together, so a row carrying the new holder's id under the previous
+  // holder's name tells an operator, on the screen they use to decide who is handling a
+  // conversation, that the wrong person has it — and it stays that way until some later webhook
+  // happens to repair the row.
+  test("the takeover's name lands with the takeover, not the name it replaced", async () => {
+    const namedConv = (
+      await suDb.conversation.create({
+        data: {
+          tenantId: tenant,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 563,
+          status: "pending",
+          threadId: `${tenant}:${instanceId}:563`,
+          assigneeType: "User",
+          assigneeId: 7,
+          assigneeName: "Ana",
+        },
+      })
+    ).id;
+    try {
+      // Versionless on purpose: that is the path that writes the fallback by hand instead of letting
+      // the reconcile carry the whole live snapshot, and it is the one that moved the id alone.
+      const stub = makeStub(
+        { assigneeType: "User", assigneeId: 7 },
+        { assigneeType: "User", assigneeId: 4321, fromRead: 3 },
+      );
+      expect(
+        await returnConversationToAgent(
+          ctx(tenant),
+          namedConv,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).toBe("taken-over");
+      const row = await suDb.conversation.findUnique({
+        where: { id: namedConv },
+        select: { assigneeId: true, assigneeName: true },
+      });
+      // Bea is who the stub's late read names. Ana is who the row said before, and reading Ana next
+      // to 4321 is the defect.
+      expect([row?.assigneeId, row?.assigneeName]).toEqual([4321, "Bea"]);
+    } finally {
+      await suDb.conversation.delete({ where: { id: namedConv } });
+    }
+  });
+
   // The window the compare above cannot see, because the write it guards is what destroys the
   // evidence. The read after the status call says nobody is holding the conversation, so the unassign
   // is aimed at NOBODY — and a human who claims it in the round trip that follows is removed by a

@@ -613,6 +613,7 @@ async function updateMirror(
     status?: string;
     assigneeId?: number | null;
     assigneeType?: string | null;
+    assigneeName?: string | null;
   },
 ): Promise<void> {
   await runScopedOn(base, ctx, (db) =>
@@ -663,14 +664,23 @@ interface ConsoleWriteState {
 // caller has to say what it does with an undecided read.
 interface ConsoleWriteMirror {
   state: ConsoleWriteState | null;
-  observed: { assigneeType: string | null; assigneeId: number | null } | null;
+  observed: {
+    assigneeType: string | null;
+    assigneeId: number | null;
+    assigneeName: string | null;
+  } | null;
 }
 
 async function mirrorConsoleWrite(
   ctx: TenantContext,
   base: PrismaClient,
   id: bigint,
-  conv: { chatwootInstanceId: bigint; chatwootConversationId: number },
+  conv: {
+    chatwootInstanceId: bigint;
+    chatwootConversationId: number;
+    assigneeType: string | null;
+    assigneeId: number | null;
+  },
   client: ChatwootClient,
   fallback: {
     status?: string;
@@ -705,6 +715,7 @@ async function mirrorConsoleWrite(
       observed = {
         assigneeType: live.assigneeType,
         assigneeId: live.assigneeId,
+        assigneeName: live.assigneeName,
       };
     }
     // A snapshot with no version buys nothing here and can cost: without one, the reconcile applies
@@ -743,7 +754,35 @@ async function mirrorConsoleWrite(
       "conversations: live read after a console write failed — writing unversioned",
     );
   }
-  await updateMirror(ctx, base, id, fallback);
+  // THE NAME FOLLOWS THE HOLDER, and that is decided HERE rather than at each call site because
+  // every caller that writes an assignee has this problem and none of them holds the answer.
+  // `assigneeName` is a column of its own, rendered next to the assignee, so a fallback that moves
+  // the id and leaves the name shows the NEW holder's id under the PREVIOUS holder's name until some
+  // later webhook happens to repair it. That is worse than showing no name: it names the wrong
+  // person, confidently, on the screen an operator uses to decide who is handling a conversation.
+  //
+  // Three cases, and only the last is a guess:
+  //   - the holder is not moving: leave the name alone, the row already has the right one;
+  //   - the holder is the one the live read just saw: take that read's name, which is the true one;
+  //   - anything else: null. The name is genuinely unknown here, and unknown is written as unknown.
+  const nextType =
+    fallback.assigneeType === undefined
+      ? conv.assigneeType
+      : fallback.assigneeType;
+  const nextId =
+    fallback.assigneeId === undefined ? conv.assigneeId : fallback.assigneeId;
+  const named =
+    nextType === conv.assigneeType && nextId === conv.assigneeId
+      ? {}
+      : {
+          assigneeName:
+            observed !== null &&
+            observed.assigneeType === nextType &&
+            observed.assigneeId === nextId
+              ? observed.assigneeName
+              : null,
+        };
+  await updateMirror(ctx, base, id, { ...fallback, ...named });
   return { state: null, observed };
 }
 
@@ -1510,6 +1549,17 @@ export async function returnConversationToAgent(
     await updateMirror(ctx, base, id, {
       assigneeType: finalHolder.assigneeType,
       assigneeId: finalHolder.assigneeId,
+      // Same rule as the fallback inside `mirrorConsoleWrite`, for the same reason: this write moves
+      // the holder, so the name has to move with it. Only the live read that SAW this holder can
+      // name them — `newHolder`, the other source `finalHolder` can come from, was read before the
+      // unassign and carries no name — and anything else is written as unknown rather than left
+      // reading as the person who was here before.
+      assigneeName:
+        observed !== null &&
+        observed.assigneeType === finalHolder.assigneeType &&
+        observed.assigneeId === finalHolder.assigneeId
+          ? observed.assigneeName
+          : null,
     });
   }
   broadcastConversationEvent(tenantId, {

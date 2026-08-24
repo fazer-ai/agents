@@ -302,6 +302,10 @@ async function resolveWhatsAppSibling(
 
 export type WhatsAppFollowUpOutcome =
   | "retired"
+  // The agent stopped being live while this stage did its own I/O. Distinct from "retired" because
+  // the CALLER answers them differently: a retired ladder is gone, a stood-down one must not be
+  // advanced to a closing that a re-enabled agent would then deliver (issue #246).
+  | "stood-down"
   | "sent"
   | "no-sibling"
   | "misconfigured";
@@ -310,6 +314,11 @@ export interface SendWhatsAppFollowUpParams {
   // Asked immediately before the send, after the sibling lookup and the token mint — both of which
   // are round trips a /reset can land inside. Absent, the answer is yes.
   stillWanted?: () => Promise<boolean>;
+  // The same question for the agent's own switch, asked in the same place and answered separately
+  // (issue #246). Its own callback rather than a term inside `stillWanted`: the caller reads a false
+  // `stillWanted` as "retired" and still advances the ladder, which is wrong for this one. Absent,
+  // the answer is yes.
+  stillLive?: () => Promise<boolean>;
   tenantId: bigint;
   instanceId: bigint;
   agentId: bigint;
@@ -361,6 +370,7 @@ export async function sendWhatsAppFollowUp(
   // NOTE: The link mint above is an HTTP round trip to Chatwoot, so the answer the caller had is older than
   // this line. Nothing has left yet, which makes this the last free place to stop.
   if (p.stillWanted && !(await p.stillWanted())) return "retired";
+  if (p.stillLive && !(await p.stillLive())) return "stood-down";
   const sw = readServiceWindowConfig(p.settings);
   const mode = proactiveSendMode(sw, sibling.lastInboundAt, p.now, {
     channelType: sibling.channelType,
@@ -448,6 +458,51 @@ export async function redirectFollowUpHandler(
   ) {
     return { outcome: "done" };
   }
+  // The same question, re-asked from inside the stages, because the answer above is taken before a
+  // sibling lookup, a link mint (an HTTP round trip) and a client build — and an operator reaching
+  // for the switch is likeliest to do it WHILE the agent is chasing somebody (issue #246).
+  //
+  // Fail OPEN on a read that fails, which is the same call `jobRetired` makes and for the same
+  // reason: an unknown answer must not silently drop work that was legitimately armed. A DELETED
+  // agent is an answer, and it is no.
+  const stillLive = async (): Promise<boolean> => {
+    const now = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const a = await db.agent.findUnique({
+        where: { id: agentId },
+        select: { enabled: true, mode: true },
+      });
+      if (!a) return { deleted: true as const };
+      const c = await db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: parsed.instanceId,
+            chatwootConversationId: parsed.conversationId,
+          },
+        },
+        select: { testActivatedAt: true },
+      });
+      return {
+        deleted: false as const,
+        a,
+        testActivatedAt: c?.testActivatedAt ?? null,
+      };
+    }).catch((err: unknown) => {
+      logger.warn(
+        "channel-redirect: could not re-read the agent's liveness (widget thread=%s): %s",
+        payload.widgetThreadId,
+        err instanceof Error ? err.message : String(err),
+      );
+      return null;
+    });
+    if (now === null) return true;
+    if (now.deleted) return false;
+    return isRedirectFollowUpLive({
+      agentEnabled: now.a.enabled,
+      agentMode: now.a.mode,
+      testActivatedAt: now.testActivatedAt,
+    });
+  };
   const entryInboxId = cfg.entryInboxId ?? payload.entryInboxId;
 
   // Reschedule this same job to the next stage after its configured delay. The payload is authoritative
@@ -511,6 +566,7 @@ export async function redirectFollowUpHandler(
     if (cfg.waFollowupEnabled && entryInboxId !== null) {
       const outcome = await sendWhatsAppFollowUp({
         stillWanted: async () => !(await retired()),
+        stillLive,
         tenantId,
         instanceId: parsed.instanceId,
         agentId,
@@ -528,6 +584,11 @@ export async function redirectFollowUpHandler(
           payload.widgetThreadId,
         );
       }
+      // The ladder ENDS on a stand-down instead of advancing. Arming the closing here would leave it
+      // pointed at an episode nobody is chasing any more: re-enable the agent before that delay
+      // expires and the closing messages and resolves BOTH conversations, with no fresh inbound
+      // behind it. A customer message re-arms the ladder from stage "chat" the normal way.
+      if (outcome === "stood-down") return { outcome: "done" };
     }
     if (cfg.closingEnabled) {
       return await rescheduleTo(
@@ -544,6 +605,7 @@ export async function redirectFollowUpHandler(
   if (cfg.closingEnabled && entryInboxId !== null) {
     await deliverRedirectClosing({
       stillWanted: async () => !(await retired()),
+      stillLive,
       tenantId,
       instanceId: parsed.instanceId,
       widgetConversationId: parsed.conversationId,
@@ -608,6 +670,11 @@ export interface DeliverRedirectClosingParams {
   // at-most-once anchor) and again before the sends, after the reads and the client build. Absent,
   // the answer is yes — the resolve-transition caller has no job to retire.
   stillWanted?: () => Promise<boolean>;
+  // Whether the AGENT is still live, asked at the same two points and for the same reason: this
+  // function reads, builds a client and looks up a sibling before it says anything, and the caller's
+  // answer is older than all of it (issue #246). Separate from `stillWanted` because a false there
+  // means "retired", which its callers act on differently. Absent, the answer is yes.
+  stillLive?: () => Promise<boolean>;
   tenantId: bigint;
   instanceId: bigint;
   // The WIDGET conversation's chatwootConversationId. The closing watermark lives on this row; the agent
@@ -625,7 +692,12 @@ export interface DeliverRedirectClosingParams {
   deps?: RuntimeDeps;
 }
 
-export type DeliverRedirectClosingOutcome = "delivered" | "already-closed";
+export type DeliverRedirectClosingOutcome =
+  | "delivered"
+  | "already-closed"
+  // The agent stopped being live while this run did its reads. Told apart from "already-closed" so
+  // the log line names the switch rather than a race that did not happen (issue #246).
+  | "stood-down";
 
 // The single closing entry point, shared by the ladder's terminal "closing" stage and the webhook's
 // widget-resolve detection. The closing is a FIXED message posted on BOTH channels — the website chat and
@@ -760,6 +832,10 @@ export async function deliverRedirectClosing(
     await releaseClaim();
     return "already-closed";
   }
+  if (p.stillLive && !(await p.stillLive())) {
+    await releaseClaim();
+    return "stood-down";
+  }
 
   // And the fence for the caller that has no job to ask about. The resolve trigger reaches here
   // straight from a webhook, so `stillWanted` is undefined for it and every check above is one this
@@ -810,6 +886,10 @@ export async function deliverRedirectClosing(
   if (p.stillWanted && !(await p.stillWanted())) {
     await releaseClaim();
     return "already-closed";
+  }
+  if (p.stillLive && !(await p.stillLive())) {
+    await releaseClaim();
+    return "stood-down";
   }
 
   // Chat (website widget): post the goodbye + resolve. Skipped on the resolve-path, where the chat is

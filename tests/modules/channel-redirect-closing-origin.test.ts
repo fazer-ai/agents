@@ -333,7 +333,7 @@ describe.skipIf(!dbUp)(
     });
 
     // The widget conversation transitions pending -> resolved, which is the trigger the receiver reads.
-    const resolveWidget = async () => {
+    const resolveWidget = async (db: PrismaClient = appDb) => {
       seq += 1;
       const n = normalizeChatwootEvent({
         event: "conversation_resolved",
@@ -366,7 +366,7 @@ describe.skipIf(!dbUp)(
           deliveryRowId: delivery.id,
           agentBotId: 12,
           normalized: n,
-          base: appDb,
+          base: db,
         });
       } finally {
         globalThis.fetch = originalFetch;
@@ -421,6 +421,54 @@ describe.skipIf(!dbUp)(
         await suDb.agent.update({
           where: { id: agent },
           data: { mode: "production" },
+        });
+      }
+    });
+
+    // Issue #246: the runtime is read, and then compaction arming, the ladder cancel and the closing's
+    // own reads all run before anything is posted. The switch is re-asked from inside for that window.
+    test("switched off while the closing reads posts nothing", async () => {
+      await suDb.agent.update({
+        where: { id: agent },
+        data: { enabled: true },
+      });
+      await rearm();
+      // The rendezvous is the receiver's OWN agent read — the one that answers the gate. The switch
+      // flips the instant after it returns, so the gate sees a live agent and everything the closing
+      // does afterwards (the sibling lookup, the client build, its own reads) happens under an answer
+      // that is already false.
+      let reads = 0;
+      const flipping = appDb.$extends({
+        query: {
+          agent: {
+            async findUnique({ args, query }) {
+              const res = await query(args);
+              reads += 1;
+              if (reads === 1) {
+                await suDb.agent.update({
+                  where: { id: agent },
+                  data: { enabled: false },
+                });
+              }
+              return res;
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      try {
+        await resolveWidget(flipping);
+        expect(wire.filter((u) => u.includes("/messages"))).toEqual([]);
+        const widget = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId: tid, chatwootConversationId: WIDGET },
+          select: { redirectClosedAt: true },
+        });
+        // Released rather than burned: the anchor is what makes the closing at-most-once, and a
+        // stand-down is not a delivery.
+        expect(widget.redirectClosedAt).toBeNull();
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent },
+          data: { enabled: true },
         });
       }
     });

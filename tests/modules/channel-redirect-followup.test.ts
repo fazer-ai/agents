@@ -1238,6 +1238,139 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     });
   });
 
+  // ── Issue #246: the gate answers at handler entry and the stages send later, across I/O of their
+  //    own. These pin what the ladder does when the switch flips INSIDE that window, which is the
+  //    moment an operator watching a lead being chased is likeliest to reach for it.
+  test("switched off during the link mint sends nothing AND does not advance", async () => {
+    const job = await claimed("whatsapp");
+    const s = stubClient();
+    wire.length = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      wire.push(url);
+      if (url.includes("/redirect_tokens")) {
+        await suDb.agent.update({
+          where: { id: agentId },
+          data: { enabled: false },
+        });
+      }
+      const body = url.includes("/redirect_tokens")
+        ? { token: "tok-246", website_url: "https://loja.example" }
+        : url.includes("/inboxes")
+          ? { id: 111, website_url: "https://loja.example" }
+          : { id: 1, payload: {} };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    let result: Awaited<ReturnType<typeof redirectFollowUpHandler>>;
+    try {
+      result = await redirectFollowUpHandler(job, appDb, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { enabled: true },
+      });
+    }
+    // The mint happened, so this is the window and not a stage that stopped earlier.
+    expect(wire.some((u) => u.includes("/redirect_tokens"))).toBe(true);
+    expect(wire.filter((u) => u.includes("/messages"))).toEqual([]);
+    // And the ladder ENDS. Rescheduling would arm the closing on a stood-down episode: re-enable the
+    // agent before that delay expires and it messages and resolves both conversations, with no fresh
+    // inbound behind it.
+    expect(result).toEqual({ outcome: "done" });
+  });
+
+  test("switched off while the closing reads sends nothing and frees the anchor", async () => {
+    const job = await claimed("closing");
+    const s = stubClient();
+    // The rendezvous is the closing's own first read: everything after it — the bot, the client, the
+    // sibling — is I/O this run does while holding an answer it took before.
+    let reads = 0;
+    const flipping = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const res = await query(args);
+            reads += 1;
+            if (reads === 1) {
+              await suDb.agent.update({
+                where: { id: agentId },
+                data: { enabled: false },
+              });
+            }
+            return res;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    try {
+      await redirectFollowUpHandler(job, flipping, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { enabled: true },
+      });
+    }
+    expect(s.sent).toEqual([]);
+    expect(s.resolved).toEqual([]);
+    // Released, not burned: the at-most-once anchor left set on a closing nobody delivered is a
+    // funnel that can never close.
+    const widget = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: WIDGET_CONV },
+      select: { redirectClosedAt: true },
+    });
+    expect(widget.redirectClosedAt).toBeNull();
+  });
+
+  // The other half of the rule, and the one a fence gets wrong silently: an answer that could not be
+  // READ is not a refusal. `jobRetired` makes the same call for the same reason — an unknown answer
+  // must not drop work that was legitimately armed — so a database blip during the mint costs a
+  // follow-up the customer should have received.
+  test("a liveness read that fails does not stand the ladder down", async () => {
+    const job = await claimed("whatsapp");
+    const s = stubClient();
+    wire.length = 0;
+    globalThis.fetch = httpDouble;
+    // Only the liveness re-read fails: it asks for `enabled` + `mode` alone, while the handler's own
+    // load at the top takes `settings` with them. A blanket failure would prove nothing, since every
+    // read on the path would be down — including the one that decides whether to run at all.
+    const failing = appDb.$extends({
+      query: {
+        agent: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (
+              sel?.enabled === true &&
+              sel?.mode === true &&
+              sel?.settings === undefined
+            ) {
+              throw new Error("liveness read is down");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    try {
+      await redirectFollowUpHandler(job, failing, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(wire.some((u) => u.includes("/messages"))).toBe(true);
+  });
+
   test("a retire mid-stage stops the closing, and the resolve with it", async () => {
     const job = await claimed("closing");
     const s = stubClient();

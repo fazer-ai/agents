@@ -2584,6 +2584,33 @@ export async function processChatwootDelivery(
             });
           if (closingLive && redirectCfg.entryInboxId !== null) {
             const outcome = await deliverRedirectClosing({
+              // The answer above is older than the sibling lookup, the client build and this
+              // function's own reads, and this path has no job to ask about — so the switch is
+              // re-asked from inside, at the same points (issue #246). Fail OPEN on a read that
+              // fails: a conversation resolves once, so a transient error must not cost the closing.
+              stillLive: async () => {
+                const rt = await inboxAgentRuntime(
+                  params.tenantId,
+                  params.instanceId,
+                  closingInboxId,
+                  base,
+                ).catch(() => undefined);
+                if (rt === undefined) return true;
+                if (rt === null) return false;
+                return isRedirectFollowUpLive({
+                  agentEnabled: rt.enabled,
+                  agentMode: rt.mode,
+                  testActivatedAt:
+                    rt.mode === "test"
+                      ? await widgetTestActivatedAt(
+                          params.tenantId,
+                          params.instanceId,
+                          conversationId,
+                          base,
+                        ).catch(() => new Date())
+                      : null,
+                });
+              },
               tenantId: params.tenantId,
               instanceId: params.instanceId,
               widgetConversationId: conversationId,

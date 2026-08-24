@@ -219,6 +219,24 @@ describe("makeStorableDeep", () => {
     expect(residue(out)).toBe(0);
   });
 
+  test("keeps a `__proto__` key as a field instead of feeding it to the prototype setter", () => {
+    // `JSON.parse` produces `__proto__` as an ordinary own property, so a third party's body can
+    // carry one, and a malformed key can repair INTO one. Plain assignment would invoke the legacy
+    // setter: the field disappears from what gets persisted and the copy's prototype changes.
+    const raw = JSON.parse(`{"__pro${"\\u0000"}to__": {"a": 1}, "keep": "x"}`);
+    const out = makeStorableDeep(raw) as Record<string, unknown>;
+    expect(Object.getOwnPropertyNames(out).sort()).toEqual([
+      "__proto__",
+      "keep",
+    ]);
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    // What actually reaches the column is the serialization, which is where the loss shows up.
+    expect(JSON.parse(JSON.stringify(out))).toEqual({
+      __proto__: { a: 1 },
+      keep: "x",
+    });
+  });
+
   test("leaves a clean document, its non-strings, and its Dates alone", () => {
     const date = new Date("2026-08-24T00:00:00.000Z");
     const input = { s: "Ana", n: 1, b: true, nul: null, date, list: [1, "x"] };

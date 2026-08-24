@@ -103,7 +103,16 @@ export function makeStorableDeep<T>(value: T, depth = 0): T {
   if (proto !== null && proto !== Object.prototype) return value;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value)) {
-    out[makeStorable(k)] = makeStorableDeep(v, depth + 1);
+    // `defineProperty`, not assignment: `JSON.parse` gives `__proto__` as an ORDINARY own property
+    // (a key a third party's body can carry, and one a malformed key can repair INTO), while
+    // assignment on that same key invokes the legacy prototype setter instead. The field would
+    // vanish from what gets persisted and the copy would come back with a different prototype.
+    Object.defineProperty(out, makeStorable(k), {
+      value: makeStorableDeep(v, depth + 1),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
   }
   return out as T;
 }

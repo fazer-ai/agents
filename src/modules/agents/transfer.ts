@@ -89,9 +89,11 @@ const exportedGrantSchema = z.discriminatedUnion("source", [
     integration: z.string(),
     enabledTools: z.array(z.string()),
   }),
-  // NOTE: by SLUG, not by name. The slug is what the agent's tool name is derived from, so it is the
-  // half that has to survive the trip — a destination that renamed the template still grants the
-  // same tool. No enabledTools: a template grant exposes exactly one tool.
+  // NOTE: by SLUG, not by name and not by id. The id is local to one instance, and the slug is what
+  // the grant is about, since it IS the agent's tool name. It does not survive a rename on the
+  // destination — the slug follows the name there too — so a renamed template no longer answers to
+  // the slug the bundle asks for, and the grant lands as a `documentGrantNotFound` warning naming
+  // it. No enabledTools: a template grant exposes exactly one tool.
   z.object({ source: z.literal("DOCUMENT"), documentTemplate: z.string() }),
 ]);
 

@@ -2588,28 +2588,36 @@ export async function processChatwootDelivery(
               // function's own reads, and this path has no job to ask about — so the switch is
               // re-asked from inside, at the same points (issue #246). Fail OPEN on a read that
               // fails: a conversation resolves once, so a transient error must not cost the closing.
-              stillLive: async () => {
+              // The gate above is older than the sibling lookup, the client build and this
+              // function's own reads, and this path has no job to ask about — so the switch is
+              // re-asked from inside, at the same points the ladder asks (issue #246). One read, and
+              // it fails OPEN: a conversation resolves once, so a transient error must not cost the
+              // closing. A production agent needs no stamp lookup at all.
+              fence: async () => {
                 const rt = await inboxAgentRuntime(
                   params.tenantId,
                   params.instanceId,
                   closingInboxId,
                   base,
                 ).catch(() => undefined);
-                if (rt === undefined) return true;
-                if (rt === null) return false;
+                if (rt === undefined) return "go" as const;
+                if (rt === null) return "stood-down" as const;
+                const testActivatedAt =
+                  rt.mode === "test"
+                    ? await widgetTestActivatedAt(
+                        params.tenantId,
+                        params.instanceId,
+                        conversationId,
+                        base,
+                      ).catch(() => new Date())
+                    : null;
                 return isRedirectFollowUpLive({
                   agentEnabled: rt.enabled,
                   agentMode: rt.mode,
-                  testActivatedAt:
-                    rt.mode === "test"
-                      ? await widgetTestActivatedAt(
-                          params.tenantId,
-                          params.instanceId,
-                          conversationId,
-                          base,
-                        ).catch(() => new Date())
-                      : null,
-                });
+                  testActivatedAt,
+                })
+                  ? ("go" as const)
+                  : ("stood-down" as const);
               },
               tenantId: params.tenantId,
               instanceId: params.instanceId,

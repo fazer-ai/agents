@@ -302,23 +302,26 @@ async function resolveWhatsAppSibling(
 
 export type WhatsAppFollowUpOutcome =
   | "retired"
-  // The agent stopped being live while this stage did its own I/O. Distinct from "retired" because
-  // the CALLER answers them differently: a retired ladder is gone, a stood-down one must not be
-  // advanced to a closing that a re-enabled agent would then deliver (issue #246).
+  // The agent stopped being live while this stage did its own I/O. Distinct from "retired"
+  // because the CALLER answers them differently: a retired ladder is gone, a stood-down one must not
+  // be advanced to a closing that a re-enabled agent would then deliver (issue #246).
   | "stood-down"
   | "sent"
   | "no-sibling"
   | "misconfigured";
 
+// Whether a stage that is about to say something to the customer may still say it. ONE ask covering
+// BOTH reasons it may not — the ladder was retired (/reset, a new inbound), or the agent stopped
+// being live — because each ask is a round trip, and a second one placed after the first puts I/O
+// between that first answer and the write it guards. THE RULE the file states for the retirement
+// question ("one ask per stretch of I/O that precedes a write, and never any I/O between an ask and
+// the write it guards") is only satisfiable for both questions if they are one ask.
+export type LadderVerdict = "go" | "retired" | "stood-down";
+
 export interface SendWhatsAppFollowUpParams {
   // Asked immediately before the send, after the sibling lookup and the token mint — both of which
-  // are round trips a /reset can land inside. Absent, the answer is yes.
-  stillWanted?: () => Promise<boolean>;
-  // The same question for the agent's own switch, asked in the same place and answered separately
-  // (issue #246). Its own callback rather than a term inside `stillWanted`: the caller reads a false
-  // `stillWanted` as "retired" and still advances the ladder, which is wrong for this one. Absent,
-  // the answer is yes.
-  stillLive?: () => Promise<boolean>;
+  // are round trips a /reset or an operator's switch can land inside. Absent, the answer is "go".
+  fence?: () => Promise<LadderVerdict>;
   tenantId: bigint;
   instanceId: bigint;
   agentId: bigint;
@@ -369,8 +372,8 @@ export async function sendWhatsAppFollowUp(
   });
   // NOTE: The link mint above is an HTTP round trip to Chatwoot, so the answer the caller had is older than
   // this line. Nothing has left yet, which makes this the last free place to stop.
-  if (p.stillWanted && !(await p.stillWanted())) return "retired";
-  if (p.stillLive && !(await p.stillLive())) return "stood-down";
+  const verdict = p.fence ? await p.fence() : "go";
+  if (verdict !== "go") return verdict;
   const sw = readServiceWindowConfig(p.settings);
   const mode = proactiveSendMode(sw, sibling.lastInboundAt, p.now, {
     channelType: sibling.channelType,
@@ -458,50 +461,59 @@ export async function redirectFollowUpHandler(
   ) {
     return { outcome: "done" };
   }
-  // The same question, re-asked from inside the stages, because the answer above is taken before a
-  // sibling lookup, a link mint (an HTTP round trip) and a client build — and an operator reaching
-  // for the switch is likeliest to do it WHILE the agent is chasing somebody (issue #246).
+  // Both questions, re-asked from inside the stages in ONE round trip, because the answer at
+  // the top of this handler is taken before a sibling lookup, a link mint (an HTTP round trip) and a
+  // client build — and an operator reaching for the switch is likeliest to do it WHILE the agent is
+  // chasing somebody (issue #246). Asking them separately would put one round trip between the other
+  // answer and the write it guards, which is THE RULE this file states for the retirement half.
   //
-  // Fail OPEN on a read that fails, which is the same call `jobRetired` makes and for the same
-  // reason: an unknown answer must not silently drop work that was legitimately armed. A DELETED
-  // agent is an answer, and it is no.
-  const stillLive = async (): Promise<boolean> => {
-    const now = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+  // Fail OPEN on a read that fails, the same call `jobRetired` makes and for the same reason: an
+  // unknown answer must not silently drop work that was legitimately armed. A DELETED agent is an
+  // answer, and it is no.
+  //
+  // The activation stamp is read only for a test agent, so the common path is a single row read after
+  // the job row and nothing straddles it. For a test agent the two reads share the transaction but not
+  // a snapshot (`runScopedOn` uses the default isolation), which leaves a gap of one statement with no
+  // network in it — narrower than the window this whole fence exists to close.
+  const fence = async (): Promise<LadderVerdict> => {
+    const answer = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      if (await jobRetired(job, base, db)) return "retired" as const;
       const a = await db.agent.findUnique({
         where: { id: agentId },
         select: { enabled: true, mode: true },
       });
-      if (!a) return { deleted: true as const };
-      const c = await db.conversation.findUnique({
-        where: {
-          tenantId_chatwootInstanceId_chatwootConversationId: {
-            tenantId,
-            chatwootInstanceId: parsed.instanceId,
-            chatwootConversationId: parsed.conversationId,
-          },
-        },
-        select: { testActivatedAt: true },
-      });
-      return {
-        deleted: false as const,
-        a,
-        testActivatedAt: c?.testActivatedAt ?? null,
-      };
+      if (!a) return "stood-down" as const;
+      const testActivatedAt =
+        a.mode === "test"
+          ? ((
+              await db.conversation.findUnique({
+                where: {
+                  tenantId_chatwootInstanceId_chatwootConversationId: {
+                    tenantId,
+                    chatwootInstanceId: parsed.instanceId,
+                    chatwootConversationId: parsed.conversationId,
+                  },
+                },
+                select: { testActivatedAt: true },
+              })
+            )?.testActivatedAt ?? null)
+          : null;
+      return isRedirectFollowUpLive({
+        agentEnabled: a.enabled,
+        agentMode: a.mode,
+        testActivatedAt,
+      })
+        ? ("go" as const)
+        : ("stood-down" as const);
     }).catch((err: unknown) => {
       logger.warn(
-        "channel-redirect: could not re-read the agent's liveness (widget thread=%s): %s",
+        "channel-redirect: could not re-read the ladder's fence (widget thread=%s): %s",
         payload.widgetThreadId,
         err instanceof Error ? err.message : String(err),
       );
-      return null;
+      return "go" as const;
     });
-    if (now === null) return true;
-    if (now.deleted) return false;
-    return isRedirectFollowUpLive({
-      agentEnabled: now.a.enabled,
-      agentMode: now.a.mode,
-      testActivatedAt: now.testActivatedAt,
-    });
+    return answer;
   };
   const entryInboxId = cfg.entryInboxId ?? payload.entryInboxId;
 
@@ -565,8 +577,7 @@ export async function redirectFollowUpHandler(
     if (await retired()) return { outcome: "done" };
     if (cfg.waFollowupEnabled && entryInboxId !== null) {
       const outcome = await sendWhatsAppFollowUp({
-        stillWanted: async () => !(await retired()),
-        stillLive,
+        fence,
         tenantId,
         instanceId: parsed.instanceId,
         agentId,
@@ -605,7 +616,7 @@ export async function redirectFollowUpHandler(
   if (cfg.closingEnabled && entryInboxId !== null) {
     await deliverRedirectClosing({
       stillWanted: async () => !(await retired()),
-      stillLive,
+      fence,
       tenantId,
       instanceId: parsed.instanceId,
       widgetConversationId: parsed.conversationId,
@@ -670,11 +681,11 @@ export interface DeliverRedirectClosingParams {
   // at-most-once anchor) and again before the sends, after the reads and the client build. Absent,
   // the answer is yes — the resolve-transition caller has no job to retire.
   stillWanted?: () => Promise<boolean>;
-  // Whether the AGENT is still live, asked at the same two points and for the same reason: this
-  // function reads, builds a client and looks up a sibling before it says anything, and the caller's
-  // answer is older than all of it (issue #246). Separate from `stillWanted` because a false there
-  // means "retired", which its callers act on differently. Absent, the answer is yes.
-  stillLive?: () => Promise<boolean>;
+  // The post-claim asks, covering retirement AND the agent's switch in one round trip (issue #246).
+  // `stillWanted` stays for the pre-claim ask because its PRESENCE is also a signal — it means the
+  // caller holds a job token, which the /reset rule below reads — and the resolve-transition caller
+  // has no job while still needing the liveness half. Absent, the answer is "go".
+  fence?: () => Promise<LadderVerdict>;
   tenantId: bigint;
   instanceId: bigint;
   // The WIDGET conversation's chatwootConversationId. The closing watermark lives on this row; the agent
@@ -748,12 +759,25 @@ export async function deliverRedirectClosing(
   });
   const sw = readServiceWindowConfig(cx.settings);
 
+  // ONE ask per fence site, and the fence is the composite one when the caller has it: asking
+  // the two questions separately would put a round trip between the first answer and the write it
+  // guards, which is the rule stated below. A caller that passes only `stillWanted` — no agent to ask
+  // about, or a direct call — keeps every fence it always had, answered by the retirement half alone.
+  const ask = async (): Promise<LadderVerdict> => {
+    if (p.fence) return p.fence();
+    if (p.stillWanted && !(await p.stillWanted())) return "retired";
+    return "go";
+  };
+
   // NOTE: The retirement fence and the CLAIM sit together, here rather than at the top, and the ordering is
   // the point: everything above is a read, and claiming before them meant a ladder retired mid-read
   // burned the at-most-once anchor on a closing it then refused to deliver — leaving a funnel that
   // could never close again. Claiming last costs a loser of the race a few reads it will discard,
   // which is the cheaper side of the trade.
-  if (p.stillWanted && !(await p.stillWanted())) return "already-closed";
+  const beforeClaim = await ask();
+  if (beforeClaim !== "go") {
+    return beforeClaim === "retired" ? "already-closed" : "stood-down";
+  }
 
   // What the resolve trigger has instead of a job to ask about — and the reason it needs anything at
   // all. `redirectClosedAt: null` cannot tell "never closed" from "was closed and /reset just cleared
@@ -828,13 +852,10 @@ export async function deliverRedirectClosing(
       );
     });
   };
-  if (p.stillWanted && !(await p.stillWanted())) {
+  const afterClaim = await ask();
+  if (afterClaim !== "go") {
     await releaseClaim();
-    return "already-closed";
-  }
-  if (p.stillLive && !(await p.stillLive())) {
-    await releaseClaim();
-    return "stood-down";
+    return afterClaim === "retired" ? "already-closed" : "stood-down";
   }
 
   // And the fence for the caller that has no job to ask about. The resolve trigger reaches here
@@ -883,13 +904,10 @@ export async function deliverRedirectClosing(
   // which the claim CAS already makes rare and which costs a duplicate goodbye. What closes is the
   // reset, which is what this whole change is about and which costs the operator a conversation they
   // were told was clean.
-  if (p.stillWanted && !(await p.stillWanted())) {
+  const beforeSends = await ask();
+  if (beforeSends !== "go") {
     await releaseClaim();
-    return "already-closed";
-  }
-  if (p.stillLive && !(await p.stillLive())) {
-    await releaseClaim();
-    return "stood-down";
+    return beforeSends === "retired" ? "already-closed" : "stood-down";
   }
 
   // Chat (website widget): post the goodbye + resolve. Skipped on the resolve-path, where the chat is
@@ -935,7 +953,18 @@ export async function deliverRedirectClosing(
   // WhatsApp side still open — and report `delivered` for it. A reset that lands mid-delivery cannot
   // un-send the first half, so the honest completion of a started delivery is both halves; the ask
   // is what stops one that has not started.
-  if (sibling && (p.closeChat || (await stillDelivering()))) {
+  // NOTE: The fence covers the same stretch, which the watermark check does not: on the resolve path
+  // nothing has been delivered when the ask above runs, and the sibling lookup is a round trip in
+  // front of the only send that path makes (issue #246). Skipped once the chat has been messaged, for
+  // the reason stated right above: a started delivery is finished, not half-left.
+  //
+  // The fence goes FIRST and the watermark LAST, so the question this file has always asked
+  // immediately before this send keeps that position, and what sits behind the fence's answer is one
+  // database round trip rather than the lookup it was taken before.
+  if (
+    sibling &&
+    (p.closeChat || ((await ask()) === "go" && (await stillDelivering())))
+  ) {
     const waMode = proactiveSendMode(sw, sibling.lastInboundAt, now, {
       channelType: sibling.channelType,
       provider: sibling.provider,

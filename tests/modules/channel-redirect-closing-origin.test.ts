@@ -473,6 +473,46 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    // The stretch the gate at the top cannot cover on this path: with `closeChat: false` nothing has
+    // been said when the fence answers, and the sibling lookup is a round trip in front of the only
+    // send the resolve trigger makes.
+    test("switched off during the sibling lookup posts nothing", async () => {
+      await suDb.agent.update({
+        where: { id: agent },
+        data: { enabled: true },
+      });
+      await rearm();
+      let flipped = false;
+      const flipping = appDb.$extends({
+        query: {
+          conversation: {
+            async findFirst({ args, query }) {
+              const res = await query(args);
+              if (!flipped) {
+                flipped = true;
+                await suDb.agent.update({
+                  where: { id: agent },
+                  data: { enabled: false },
+                });
+              }
+              return res;
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      try {
+        await resolveWidget(flipping);
+        // The lookup really ran, so this is the window and not a path that stopped earlier.
+        expect(flipped).toBe(true);
+        expect(wire.filter((u) => u.includes("/messages"))).toEqual([]);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent },
+          data: { enabled: true },
+        });
+      }
+    });
+
     // The control: the same resolve, agent on, does reach the customer — otherwise the assertion above
     // would pass on a path that never delivers anything.
     test("the same resolve with the agent on does post it", async () => {

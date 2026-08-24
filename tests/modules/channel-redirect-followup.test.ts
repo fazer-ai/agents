@@ -1371,6 +1371,56 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(wire.some((u) => u.includes("/messages"))).toBe(true);
   });
 
+  // Advancing is a decision too. A stage can end without ever reaching its own fence — the sibling
+  // lookup finds nobody, the link cannot be minted, or the chat stage simply finishes — and arming
+  // the next stage there points a closing at an episode the agent is no longer allowed to touch:
+  // re-enable it before that delay expires and it messages and resolves BOTH conversations.
+  test("switched off mid-stage does not arm the next stage", async () => {
+    const job = await claimed("chat");
+    // The rendezvous is the chat stage's own send: the follow-up goes out, and the operator switches
+    // the agent off right after reading it. Everything the ladder does from there — arming the next
+    // stage included — happens under an answer that is already false.
+    const flipOnSend = () => {
+      const sent: Array<[number, string]> = [];
+      const client = {
+        getConversation: async (c: number) => ({
+          id: c,
+          status: "pending",
+          meta: {},
+        }),
+        sendMessage: async (c: number, t: string) => {
+          sent.push([c, t]);
+          await suDb.agent.update({
+            where: { id: agentId },
+            data: { enabled: false },
+          });
+          return {};
+        },
+        sendPrivateNote: async () => ({}),
+        getConversationLabels: async () => [],
+        setConversationLabels: async () => ({}),
+        toggleStatus: async () => ({}),
+      } as unknown as ChatwootClient;
+      return { sent, makeClient: async () => client };
+    };
+    const s2 = flipOnSend();
+    let result: Awaited<ReturnType<typeof redirectFollowUpHandler>>;
+    try {
+      result = await redirectFollowUpHandler(job, appDb, {
+        ...deps(),
+        makeClient: s2.makeClient,
+      });
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { enabled: true },
+      });
+    }
+    // The stage really ran, so this is the advance being fenced and not a handler that stopped early.
+    expect(s2.sent).toHaveLength(1);
+    expect(result).toEqual({ outcome: "done" });
+  });
+
   test("a retire mid-stage stops the closing, and the resolve with it", async () => {
     const job = await claimed("closing");
     const s = stubClient();

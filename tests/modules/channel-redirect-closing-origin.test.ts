@@ -520,6 +520,59 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    // Which of the two questions is asked LAST is a decision, and this is the case that shows it: the
+    // switch flips from inside the watermark count itself, so a fence asked before it would answer
+    // "go" and the goodbye would go out. A stale watermark costs a duplicate goodbye in a race the
+    // CAS already makes rare; a stale fence costs a message from an agent the operator switched off.
+    test("switched off from inside the watermark check posts nothing", async () => {
+      await suDb.agent.update({
+        where: { id: agent },
+        data: { enabled: true },
+      });
+      await rearm();
+      let claimReads = 0;
+      const flipping = appDb.$extends({
+        query: {
+          conversation: {
+            async count({ args, query }) {
+              const where =
+                (args as { where?: Record<string, unknown> }).where ?? {};
+              const res = await query(args);
+              // The SECOND claim read: this function checks the watermark once before its sends and
+              // again inside the sibling branch, and only the second one is the round trip the fence
+              // is being ordered against. Flipping on the first would be caught by the fence that
+              // follows it, and the ordering would go untested.
+              if (where.redirectClosedAt instanceof Date) {
+                claimReads += 1;
+              }
+              if (claimReads === 2) {
+                await suDb.agent.update({
+                  where: { id: agent },
+                  data: { enabled: false },
+                });
+              }
+              return res;
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      try {
+        await resolveWidget(flipping);
+        expect(claimReads).toBeGreaterThanOrEqual(2);
+        expect(wire.filter((u) => u.includes("/messages"))).toEqual([]);
+        const widget = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId: tid, chatwootConversationId: WIDGET },
+          select: { redirectClosedAt: true },
+        });
+        expect(widget.redirectClosedAt).toBeNull();
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent },
+          data: { enabled: true },
+        });
+      }
+    });
+
     // The control: the same resolve, agent on, does reach the customer — otherwise the assertion above
     // would pass on a path that never delivers anything.
     test("the same resolve with the agent on does post it", async () => {

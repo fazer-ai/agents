@@ -477,7 +477,12 @@ export async function redirectFollowUpHandler(
   // network in it — narrower than the window this whole fence exists to close.
   const fence = async (): Promise<LadderVerdict> => {
     const answer = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      if (await jobRetired(job, base, db)) return "retired" as const;
+      // NOTE: The retirement read goes LAST, and that ordering is the whole of what the transaction
+      // can offer: the two statements share a connection but not a snapshot (default READ COMMITTED),
+      // so whichever is asked last is the one observed closest to the send. Retirement gets it,
+      // because that is the position it held before this fence existed — a /reset must not be
+      // overtaken by a question added on top of it — and the liveness answer carries the residual,
+      // which is one statement wide rather than the round trip this fence exists to close.
       const a = await db.agent.findUnique({
         where: { id: agentId },
         select: { enabled: true, mode: true },
@@ -498,13 +503,13 @@ export async function redirectFollowUpHandler(
               })
             )?.testActivatedAt ?? null)
           : null;
-      return isRedirectFollowUpLive({
+      const live = isRedirectFollowUpLive({
         agentEnabled: a.enabled,
         agentMode: a.mode,
         testActivatedAt,
-      })
-        ? ("go" as const)
-        : ("stood-down" as const);
+      });
+      if (await jobRetired(job, base, db)) return "retired" as const;
+      return live ? ("go" as const) : ("stood-down" as const);
     }).catch((err: unknown) => {
       logger.warn(
         "channel-redirect: could not re-read the ladder's fence (widget thread=%s): %s",
@@ -528,7 +533,7 @@ export async function redirectFollowUpHandler(
     value: number,
     unit: RedirectDelayUnit,
   ): Promise<JobResult> =>
-    (await retired())
+    (await fence()) !== "go"
       ? { outcome: "done" }
       : {
           outcome: "reschedule",
@@ -961,12 +966,17 @@ export async function deliverRedirectClosing(
   // The fence goes FIRST and the watermark LAST, so the question this file has always asked
   // immediately before this send keeps that position, and what sits behind the fence's answer is one
   // database round trip rather than the lookup it was taken before.
-  if (sibling && !p.closeChat) {
+  if (sibling && !p.closeChat && (await stillDelivering())) {
+    // NOTE: Asked AFTER the watermark, so the fence is the last thing before the send rather than one
+    // round trip behind it. Which of the two takes that spot is a real choice: a stale watermark
+    // costs a duplicate goodbye in a race the CAS already makes rare, while a stale fence costs a
+    // message from an agent the operator switched off — the thing this fence exists to prevent.
+    //
+    // Released, unlike the watermark check itself. A claim lost to another run is not ours to give
+    // back, which is why nothing is released there; a stand-down leaves this run holding an anchor
+    // over a goodbye nobody delivered, and that is a funnel that can never close again.
     const beforeSibling = await ask();
     if (beforeSibling !== "go") {
-      // NOTE: Released, unlike the watermark check below. A claim lost to another run is not ours to
-      // give back — that is why nothing is released there — but a stand-down leaves this run holding
-      // an anchor over a goodbye nobody delivered, which is a funnel that can never close again.
       await releaseClaim();
       return beforeSibling === "retired" ? "already-closed" : "stood-down";
     }

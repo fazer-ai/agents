@@ -2602,15 +2602,22 @@ export async function processChatwootDelivery(
                 ).catch(() => undefined);
                 if (rt === undefined) return "go" as const;
                 if (rt === null) return "stood-down" as const;
-                const testActivatedAt =
-                  rt.mode === "test"
-                    ? await widgetTestActivatedAt(
-                        params.tenantId,
-                        params.instanceId,
-                        conversationId,
-                        base,
-                      ).catch(() => new Date())
-                    : null;
+                // The switch is conclusive on its own, and it is read here — before the stamp, which
+                // is fallible and which only a test agent needs at all.
+                if (!rt.enabled) return "stood-down" as const;
+                if (rt.mode !== "test") return "go" as const;
+                // A test agent's answer takes a second read, and the two do not share a snapshot: the
+                // switch could flip inside it. Left as a residual rather than closed, because closing
+                // it needs the agent and the stamp in ONE statement and `Inbox` has no `agent`
+                // relation to select through — so it would take raw SQL or a schema change, for a
+                // window one query wide on a test agent, on the path where the operator has just
+                // resolved the conversation by hand.
+                const testActivatedAt = await widgetTestActivatedAt(
+                  params.tenantId,
+                  params.instanceId,
+                  conversationId,
+                  base,
+                ).catch(() => new Date());
                 return isRedirectFollowUpLive({
                   agentEnabled: rt.enabled,
                   agentMode: rt.mode,

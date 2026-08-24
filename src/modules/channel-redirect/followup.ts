@@ -496,26 +496,36 @@ export async function redirectFollowUpHandler(
       // and the catch around this whole read turns a failure into "go" — which is right for an answer
       // nobody could read, and wrong for one already in hand.
       if (!a.enabled) return "stood-down" as const;
-      const testActivatedAt =
-        a.mode === "test"
-          ? ((
-              await db.conversation.findUnique({
-                where: {
-                  tenantId_chatwootInstanceId_chatwootConversationId: {
-                    tenantId,
-                    chatwootInstanceId: parsed.instanceId,
-                    chatwootConversationId: parsed.conversationId,
-                  },
-                },
-                select: { testActivatedAt: true },
-              })
-            )?.testActivatedAt ?? null)
-          : null;
-      const live = isRedirectFollowUpLive({
-        agentEnabled: a.enabled,
-        agentMode: a.mode,
-        testActivatedAt,
-      });
+      // NOTE: The stamp lookup fails open ON ITS OWN, not through the catch around the whole read:
+      // that one would answer "go" without ever asking about retirement, so a blip on a test agent's
+      // activation would carry a /reset past the tombstone that exists to stop it. Unknown liveness
+      // is live; unknown retirement is a different question and is still asked below.
+      let live = true;
+      if (a.mode === "test") {
+        try {
+          const c = await db.conversation.findUnique({
+            where: {
+              tenantId_chatwootInstanceId_chatwootConversationId: {
+                tenantId,
+                chatwootInstanceId: parsed.instanceId,
+                chatwootConversationId: parsed.conversationId,
+              },
+            },
+            select: { testActivatedAt: true },
+          });
+          live = isRedirectFollowUpLive({
+            agentEnabled: a.enabled,
+            agentMode: a.mode,
+            testActivatedAt: c?.testActivatedAt ?? null,
+          });
+        } catch (err) {
+          logger.warn(
+            "channel-redirect: could not read the activation stamp (widget thread=%s): %s",
+            payload.widgetThreadId,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      }
       if (await jobRetired(job, base, db)) return "retired" as const;
       return live ? ("go" as const) : ("stood-down" as const);
     };

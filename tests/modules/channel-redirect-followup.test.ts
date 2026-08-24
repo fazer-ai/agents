@@ -1472,6 +1472,68 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(s.sent).toEqual([]);
   });
 
+  // The two questions fail differently on purpose. A stamp read nobody could complete means unknown
+  // LIVENESS, which is live — but it must not swallow the retirement question with it. The closing is
+  // where that matters: its stage-level check runs once at the top, and every fence after it is the
+  // composite one, so if a failed stamp read answered "go" a /reset landing mid-run would be carried
+  // straight past the tombstone.
+  test("a failed stamp read does not carry a retired closing past the tombstone", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { enabled: true, mode: "test" },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: WIDGET_CONV },
+      data: { testActivatedAt: new Date(), redirectClosedAt: null },
+    });
+    const job = await claimed("closing");
+    const s = stubClient();
+    // The /reset lands on the closing's OWN first read — past the stage's retirement check, so the
+    // fence is the only thing left that can see it — and the fence's stamp read is the one that fails.
+    let stampReads = 0;
+    let retiredMidRun = false;
+    const retiringThenFailing = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (sel?.testActivatedAt === true) {
+              stampReads += 1;
+              if (stampReads > 1) throw new Error("activation lookup is down");
+              return query(args);
+            }
+            const res = await query(args);
+            if (sel?.lastInboundAt === true && !retiredMidRun) {
+              retiredMidRun = true;
+              await retireRedirectFollowUp(tenantId, widgetThread, appDb);
+            }
+            return res;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    try {
+      await redirectFollowUpHandler(job, retiringThenFailing, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { mode: "production" },
+      });
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        data: { testActivatedAt: null },
+      });
+    }
+    // Both rendezvous really happened, so this is the window and not a run that stopped earlier.
+    expect(retiredMidRun).toBe(true);
+    expect(stampReads).toBeGreaterThan(1);
+    expect(s.sent).toEqual([]);
+    expect(s.resolved).toEqual([]);
+  });
+
   // Advancing is a decision too. A stage can end without ever reaching its own fence — the sibling
   // lookup finds nobody, the link cannot be minted, or the chat stage simply finishes — and arming
   // the next stage there points a closing at an episode the agent is no longer allowed to touch:

@@ -496,38 +496,45 @@ export async function redirectFollowUpHandler(
       // and the catch around this whole read turns a failure into "go" — which is right for an answer
       // nobody could read, and wrong for one already in hand.
       if (!a.enabled) return "stood-down" as const;
-      // NOTE: The stamp lookup fails open ON ITS OWN, not through the catch around the whole read:
-      // that one would answer "go" without ever asking about retirement, so a blip on a test agent's
-      // activation would carry a /reset past the tombstone that exists to stop it. Unknown liveness
-      // is live; unknown retirement is a different question and is still asked below.
-      let live = true;
-      if (a.mode === "test") {
-        try {
-          const c = await db.conversation.findUnique({
-            where: {
-              tenantId_chatwootInstanceId_chatwootConversationId: {
-                tenantId,
-                chatwootInstanceId: parsed.instanceId,
-                chatwootConversationId: parsed.conversationId,
-              },
-            },
-            select: { testActivatedAt: true },
-          });
-          live = isRedirectFollowUpLive({
-            agentEnabled: a.enabled,
-            agentMode: a.mode,
-            testActivatedAt: c?.testActivatedAt ?? null,
-          });
-        } catch (err) {
-          logger.warn(
-            "channel-redirect: could not read the activation stamp (widget thread=%s): %s",
-            payload.widgetThreadId,
-            err instanceof Error ? err.message : String(err),
-          );
-        }
-      }
+      // NOTE: Retirement is answered BEFORE the fallible read, not after it, and that ordering is
+      // what a `catch` alone cannot buy: a query PostgreSQL rejects leaves the transaction aborted,
+      // so every later statement in it fails too — the retirement read included, and the outer catch
+      // would then answer "go" on a ladder a /reset had already retired. Taken first, that answer is
+      // already in hand when the stamp read can go wrong.
+      //
+      // The cost is that for a TEST agent the retirement answer is one statement older than the send
+      // instead of the last thing read. For every other agent nothing moves: the stamp is not read at
+      // all, so retirement stays last.
       if (await jobRetired(job, base, db)) return "retired" as const;
-      return live ? ("go" as const) : ("stood-down" as const);
+      if (a.mode !== "test") return "go" as const;
+      // NOTE: The stamp lookup fails open ON ITS OWN: unknown liveness is live, and the answer that
+      // matters more — retirement — is already decided above.
+      try {
+        const c = await db.conversation.findUnique({
+          where: {
+            tenantId_chatwootInstanceId_chatwootConversationId: {
+              tenantId,
+              chatwootInstanceId: parsed.instanceId,
+              chatwootConversationId: parsed.conversationId,
+            },
+          },
+          select: { testActivatedAt: true },
+        });
+        return isRedirectFollowUpLive({
+          agentEnabled: a.enabled,
+          agentMode: a.mode,
+          testActivatedAt: c?.testActivatedAt ?? null,
+        })
+          ? ("go" as const)
+          : ("stood-down" as const);
+      } catch (err) {
+        logger.warn(
+          "channel-redirect: could not read the activation stamp (widget thread=%s): %s",
+          payload.widgetThreadId,
+          err instanceof Error ? err.message : String(err),
+        );
+        return "go" as const;
+      }
     };
     const answer = await (scoped
       ? read(scoped)

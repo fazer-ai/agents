@@ -1527,9 +1527,17 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
         data: { testActivatedAt: null },
       });
     }
-    // Both rendezvous really happened, so this is the window and not a run that stopped earlier.
+    // The reset really landed mid-run, so this is the window and not a run that stopped earlier.
+    // `stampReads` stays at 1: the fence answers "retired" before it ever reaches the fallible read,
+    // which is the ordering this pins. Move the retirement read back after the stamp read and the
+    // double's throw reaches the outer catch, the fence answers "go", and the closing goes out.
+    //
+    // What the double CANNOT reproduce is a query PostgreSQL rejects: it throws in JS before any SQL
+    // runs, so the transaction is never left aborted. That case is why the ordering exists rather
+    // than a catch — with a real abort, every later statement in the transaction fails too — and it
+    // is argued in the code, not covered here.
     expect(retiredMidRun).toBe(true);
-    expect(stampReads).toBeGreaterThan(1);
+    expect(stampReads).toBe(1);
     expect(s.sent).toEqual([]);
     expect(s.resolved).toEqual([]);
   });

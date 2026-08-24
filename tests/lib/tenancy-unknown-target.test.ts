@@ -48,6 +48,14 @@ if (appUrl && suUrl) {
 const suDb = su as PrismaClient;
 const appDb = app as PrismaClient;
 
+// Outside the describe on purpose. Both clients are opened while probing, and a probe that gets the
+// first one up and fails on the second never runs a hook inside a skipped describe, so the pool it
+// did open would stay open for the rest of the suite.
+afterAll(async () => {
+  await su?.$disconnect();
+  await app?.$disconnect();
+});
+
 let liveId = 0n;
 let deadId = 0n;
 
@@ -93,7 +101,7 @@ describe.skipIf(!dbUp)("a tenant selector that names no tenant", () => {
   });
 
   afterAll(async () => {
-    await suDb.tenant.deleteMany({ where: { id: liveId } });
+    if (liveId) await suDb.tenant.deleteMany({ where: { id: liveId } });
   });
 
   test("runScopedOn refuses it, and the callback never runs", async () => {

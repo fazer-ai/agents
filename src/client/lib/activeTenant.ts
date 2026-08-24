@@ -25,8 +25,8 @@ export function notifyTenantsChanged(): void {
   window.dispatchEvent(new Event(TENANTS_CHANGED_EVENT));
 }
 
-// Reconcile the stored selection against the AUTHORITATIVE list of tenants, returning the id that
-// survives (null when nothing is selected any more).
+// Reconcile the stored selection against the AUTHORITATIVE list of tenants, reporting the id that
+// survives and whether a selection was dropped.
 //
 // The stored id is the one piece of tenant state that lives in the browser, so it outlives the
 // tenant it names: delete that tenant, or point the console at another database, and every request
@@ -34,14 +34,23 @@ export function notifyTenantsChanged(): void {
 // answered the question and neither acted on it: the header switcher fell back to its "Select
 // tenant" label, which reads exactly like "you have not picked one yet", the one state it is not.
 //
+// `cleared` is separate from a null `activeId` because the two mean different things to a caller. A
+// null id is also the ordinary state of a fleet operator who has not picked a tenant yet; `cleared`
+// is an event, and it is the only one that says the pages currently on screen were built against a
+// tenant that is not there.
+//
 // Only ever called with a list that was actually READ. A failed fetch must not reach here, because
 // an empty list is the claim "there are no tenants", and treating a read we could not make as that
 // claim would drop a perfectly good selection on any server blip.
-export function reconcileActiveTenantId(tenantIds: string[]): string | null {
+export function reconcileActiveTenantId(tenantIds: string[]): {
+  activeId: string | null;
+  cleared: boolean;
+} {
   // Read at call time, not captured when the request went out: a deep link may have switched the
   // selection while the list was in flight, and that newer choice is not this answer's to discard.
   const active = getActiveTenantId();
-  if (!active || tenantIds.includes(active)) return active;
+  if (!active || tenantIds.includes(active))
+    return { activeId: active, cleared: false };
   setActiveTenantId(null);
-  return null;
+  return { activeId: null, cleared: true };
 }

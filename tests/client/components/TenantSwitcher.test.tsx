@@ -28,7 +28,9 @@ import { api } from "@/client/lib/api";
 let tenantsPayload: Array<{ id: string; name: string }> = [];
 let tenantsFails = false;
 const sentTenantHeaders: Array<string | null> = [];
+const reloads: number[] = [];
 const realFetch = globalThis.fetch;
+const realLocation = window.location;
 
 function headerOf(input: RequestInfo | URL, init?: RequestInit): string | null {
   if (input instanceof Request) return input.headers.get("X-Tenant-Id");
@@ -82,8 +84,13 @@ beforeEach(() => {
   tenantsPayload = [];
   tenantsFails = false;
   sentTenantHeaders.length = 0;
+  reloads.length = 0;
   setActiveTenantId(null);
   installFetchStub();
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: { ...realLocation, reload: () => reloads.push(1) },
+  });
 });
 
 afterEach(() => {
@@ -92,6 +99,10 @@ afterEach(() => {
 
 afterAll(() => {
   globalThis.fetch = realFetch;
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: realLocation,
+  });
   setActiveTenantId(null);
 });
 
@@ -110,6 +121,18 @@ describe("a stored tenant the fleet no longer has", () => {
     expect(sentTenantHeaders).toEqual([null]);
   });
 
+  test("takes the page with it, because the page was built on the dead id", async () => {
+    // This hook lives in the header, so the routed page mounted alongside it and already sent its own
+    // requests with the dead selector. Clearing storage does not remount or retry those, so without
+    // the reload a one-shot loader sits in its error state until someone retries it by hand.
+    setActiveTenantId("999");
+    tenantsPayload = [{ id: "1", name: "Acme" }];
+    mount();
+    await waitFor(() => {
+      expect(reloads.length).toBe(1);
+    });
+  });
+
   test("a stored tenant the fleet still has is left alone", async () => {
     setActiveTenantId("1");
     tenantsPayload = [{ id: "1", name: "Acme" }];
@@ -118,6 +141,8 @@ describe("a stored tenant the fleet no longer has", () => {
       expect(sentTenantHeaders.length).toBeGreaterThan(0);
     });
     expect(getActiveTenantId()).toBe("1");
+    // Nothing was dropped, so nothing is reloaded: the ordinary load must not cost a second one.
+    expect(reloads.length).toBe(0);
   });
 
   test("a list we could not read decides nothing", async () => {
@@ -130,5 +155,6 @@ describe("a stored tenant the fleet no longer has", () => {
       expect(sentTenantHeaders.length).toBeGreaterThan(0);
     });
     expect(getActiveTenantId()).toBe("999");
+    expect(reloads.length).toBe(0);
   });
 });

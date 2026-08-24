@@ -5,6 +5,7 @@ import {
   TENANTS_CHANGED_EVENT,
 } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
+import { suppressUnloadPrompt } from "@/client/lib/unsavedGuard";
 
 // The SUPER_ADMIN's tenant list, plus the selection that survives it.
 //
@@ -43,7 +44,21 @@ export function useTenantList(enabled: boolean): TenantList {
           // were working in every time the connection hiccuped.
           if (!on || error || !data) return;
           setTenants(data.tenants);
-          setActiveId(reconcileActiveTenantId(data.tenants.map((tn) => tn.id)));
+          const { activeId: surviving, cleared } = reconcileActiveTenantId(
+            data.tenants.map((tn) => tn.id),
+          );
+          setActiveId(surviving);
+          // NOTE: this hook mounts in the header, alongside the routed page, so by the time the list
+          // comes back that page has already issued its own requests carrying the dead selector, and
+          // clearing storage neither remounts nor retries them: a one-shot loader stays in its error
+          // state until the operator retries it by hand. A full reload is what a tenant SWITCH
+          // already does for the same reason (see TenantSwitcher), and the effective tenant changing
+          // out from under the console is the same kind of event. It cannot loop: nothing is stored
+          // any more, so the next reconciliation returns early with cleared false.
+          if (cleared) {
+            suppressUnloadPrompt();
+            window.location.reload();
+          }
         })
         .catch(() => {});
     };

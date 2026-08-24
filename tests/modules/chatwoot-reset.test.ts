@@ -11,7 +11,11 @@ import { HumanMessage } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { contactInboxThreadId, getCheckpointer } from "@/graph/checkpointer";
+import {
+  chatwootThreadId,
+  contactInboxThreadId,
+  getCheckpointer,
+} from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
@@ -2103,6 +2107,41 @@ describe.skipIf(!dbUp)(
         ).toEqual([]);
       } finally {
         clearTurnInFlight(graphThreadId);
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    // The OTHER marker, and the reason one of them is not the question. A turn claims the
+    // per-conversation key at its very first step and the graph key only later, inside the ingest
+    // lock — so a turn caught between the two is invoking, and posting into this conversation, while
+    // the graph key still reads free. A follow-up nudge never claims the conversation key at all and
+    // still posts, which is the same gap from the other side.
+    test("a turn that has claimed only the conversation still holds the hand-back back", async () => {
+      const convThreadId = chatwootThreadId(tenantId, instanceId, CONV_ID);
+      markTurnInFlight(convThreadId);
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { status: "pending", assigneeType: null, assigneeId: null },
+      });
+      const cw = fakeChatwoot(null, { type: "User", id: 77, fromRead: 1 });
+      globalThis.fetch = cw.impl;
+      try {
+        await sendReset("/reset", CONV_ID, {
+          status: "pending",
+          silentMeta: true,
+        });
+
+        const ack = ackCalls(cw.calls)
+          .map((c) => (c.body as { content?: string })?.content ?? "")
+          .join(" ");
+        expect(ack).toContain("ainda está sendo gerada");
+        expect(
+          cw.calls.filter((c) =>
+            c.path.endsWith(`/conversations/${CONV_ID}/assignments`),
+          ),
+        ).toEqual([]);
+      } finally {
+        clearTurnInFlight(convThreadId);
         globalThis.fetch = originalFetch;
       }
     });

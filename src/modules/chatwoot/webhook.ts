@@ -1745,10 +1745,26 @@ async function maybeConsumeCommandOrGate(params: {
     // Standing down is the honest answer and not a lesser one — the conversation stays exactly where
     // the operator found it, the acknowledgement says so and why, and `/reset` typed again once the
     // turn lands finds nothing stale left to release.
+    //
+    // BOTH markers, because a turn sets two and they are not interchangeable. The per-conversation
+    // one is claimed at the top of the turn (../../graph/runtime.ts, at `status.started()`); the
+    // graph one only later, inside the ingest lock, after the checkpointer and the divider write. A
+    // turn caught between them is running and posting into this very conversation while the graph
+    // key still reads free. The conversation key also carries the case a contact-inbox id cannot:
+    // with `contactInboxId` null the graph thread IS the conversation thread, and a guard that gave
+    // up on the null asked nothing at all. And a follow-up nudge claims ONLY the graph key
+    // (../../graph/nudge.ts) while posting into the conversation, so neither key alone is the
+    // question. `resolveGraphThreadId` is the same resolution the turn marks with, rather than a
+    // second copy of the rule.
     const turnStillRunning =
-      ctx.conv.contactInboxId !== null &&
+      isTurnInFlight(chatwootThreadId(tenantId, instanceId, conversationId)) ||
       isTurnInFlight(
-        contactInboxThreadId(tenantId, instanceId, ctx.conv.contactInboxId),
+        resolveGraphThreadId(
+          tenantId,
+          instanceId,
+          conversationId,
+          ctx.conv.contactInboxId,
+        ),
       );
     if (
       notOursAtStart &&

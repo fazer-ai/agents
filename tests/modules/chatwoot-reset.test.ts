@@ -1526,6 +1526,45 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // The other half of that ordering, and the reason the clear sits where it does rather than at the
+    // end. On a conversation the agent still OWNS nothing closes the gate while the command runs (the
+    // hand-back is what closes it, and there is nothing to hand back), so every Chatwoot round trip
+    // in front of this update is time a customer message can arrive, run a turn, and have its
+    // watermarks wiped by it. The order between retirement and clear is fixed the other way round, so
+    // the clear cannot lead — what it can do is follow immediately, which is what this pins.
+    test("the watermarks are cleared before the command starts calling Chatwoot", async () => {
+      let callsByThen: string[] | null = null;
+      const cw = fakeChatwoot();
+      const watched = appDb.$extends({
+        query: {
+          $allOperations({ operation, args, query }) {
+            const isAnchorClear =
+              operation === "update" &&
+              Object.hasOwn(
+                ((args as { data?: object }).data ?? {}) as object,
+                "redirectClosedAt",
+              );
+            if (isAnchorClear && callsByThen === null) {
+              callsByThen = cw.calls.map((c) => c.path);
+            }
+            return query(args);
+          },
+        },
+      }) as unknown as PrismaClient;
+      globalThis.fetch = cw.impl;
+      await sendReset("/reset", CONV_ID, { status: "pending", base: watched });
+
+      // It ran at all — a null here would make every assertion below vacuously true.
+      expect(callsByThen).not.toBeNull();
+      const seen = (callsByThen ?? []).join(" ");
+      expect(seen).not.toContain("/custom_attributes");
+      expect(seen).not.toContain("/labels");
+      // And the same command DOES make those calls, so the assertions above are about ordering
+      // rather than about a reset that never reached them.
+      const all = cw.calls.map((c) => c.path).join(" ");
+      expect(all).toContain("/custom_attributes");
+    });
+
     // The conversation stays actionable while the command runs, so a customer message arriving in
     // that window runs a turn — and that turn can RESCHEDULE, which re-arms the very rows the reset
     // is about to reach. This is the case no age test can tell apart: enqueueJob upserts on

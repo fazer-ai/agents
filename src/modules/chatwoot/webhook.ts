@@ -1374,6 +1374,69 @@ async function maybeConsumeCommandOrGate(params: {
       );
     }
 
+    // IMMEDIATELY after the retirements, and that pairing is the point. The order between the two is
+    // fixed the other way round — clearing first opens a gap in which a ladder the worker has ALREADY
+    // claimed passes its own fence and runs to its closing, re-setting `redirectClosedAt` on the row
+    // the command just cleared — so the clear cannot lead. What it can do is follow immediately.
+    //
+    // It used to sit after the memory clear, the labels, the attributes and the kanban card: a dozen
+    // Chatwoot round trips. On a conversation the agent still OWNS the gate is open for every one of
+    // them (the hand-back below is what closes it, and there is nothing to hand back here), so a
+    // customer message arriving in that stretch runs a turn whose watermarks this update then wipes —
+    // a re-link posting its private note twice, or a fresh failure losing its banner. Adjacent to the
+    // retirement the window is two database writes wide instead.
+    //
+    // It does not CLOSE that race, and nothing here does: /reset is not atomic with a turn, by
+    // design. The remaining window is pinned as a named limit rather than papered over with a
+    // generation column through every writer (see .codex-review-waived).
+    //
+    // Clear the follow-up watermarks so the sweep does not immediately re-arm a follow-up: a reset is
+    // a clean slate, so no proactive nudge should fire until the CUSTOMER sends a genuine message
+    // again (which re-anchors lastInboundAt). Also clear the one-shot notice watermarks (test-mode +
+    // out-of-hours) so a fresh notice can be posted if this conversation is ever silenced again.
+    //
+    // The redirect anchors go with them, and used not to: same shape, same purpose (one-shot /
+    // cooldown), and skipping them meant the WhatsApp→chat redirect could not be tested twice — once
+    // it has fired, `redirectCount` is at its cap and the cooldown anchor is set, so the operator who
+    // resets to run the funnel again gets a conversation that will never redirect. Only the anchors
+    // on THIS conversation are cleared: each lives on one side of the pair (entry WhatsApp vs
+    // widget), which matches the scoping the command already uses for memory.
+    //
+    // And the previous run's failure. `lastError` self-heals on the next successful turn, but
+    // `failureNoticeSentAt` is the coalescing anchor for the "a human has to take over" note, so
+    // without clearing it a fresh failure after a reset cannot announce itself — the same reasoning
+    // that already clears `testNoticeSentAt`.
+    // The redirect anchors describe the EPISODE and happen to be stored one pair of columns per
+    // side, so clearing this row releases only the half the operator typed into: a /reset on the
+    // entry conversation leaves `redirectClosedAt` on the widget, and the funnel can be run again
+    // but not closed again until the widget side is reset too. Named in the acknowledgement's own
+    // scope rather than worked around — see the NOTE above the job cancellations.
+    const redirectAnchors = {
+      redirectSentAt: null,
+      // A counter, so it goes back to zero rather than to null.
+      redirectCount: 0,
+      redirectLinkedAt: null,
+      redirectClosedAt: null,
+    };
+    await step("clear the conversation's watermarks", "marcadores", () =>
+      runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.conversation.update({
+          where: { id: ctx.conv.id },
+          data: {
+            lastInboundAt: null,
+            lastFollowUpAt: null,
+            testNoticeSentAt: null,
+            outOfHoursNoticeSentAt: null,
+            awayMessageSentAt: null,
+            ...redirectAnchors,
+            lastError: null,
+            lastErrorAt: null,
+            failureNoticeSentAt: null,
+          },
+        }),
+      ),
+    );
+
     // Clear the agent's memory thread (per contact-inbox / channel), the AgentThread marker (the
     // divider's last-conversation + the ingestion watermark) AND the compacted memory of past
     // attendances, so a reset truly starts this channel's conversation over. Only THIS channel's memory is cleared (the contact's other channels keep
@@ -1546,52 +1609,6 @@ async function maybeConsumeCommandOrGate(params: {
     // NOTE: the agent still reads those attributes into its prompt after a reset, so a test run can
     // start over and skip a question it already has an answer for. Wanting them cleared is
     // legitimate; doing it safely needs provenance the schema does not carry today.
-    // Clear the follow-up watermarks so the sweep does not immediately re-arm a follow-up: a reset is
-    // a clean slate, so no proactive nudge should fire until the CUSTOMER sends a genuine message
-    // again (which re-anchors lastInboundAt). Also clear the one-shot notice watermarks (test-mode +
-    // out-of-hours) so a fresh notice can be posted if this conversation is ever silenced again.
-    //
-    // The redirect anchors go with them, and used not to: same shape, same purpose (one-shot /
-    // cooldown), and skipping them meant the WhatsApp→chat redirect could not be tested twice — once
-    // it has fired, `redirectCount` is at its cap and the cooldown anchor is set, so the operator who
-    // resets to run the funnel again gets a conversation that will never redirect. Only the anchors
-    // on THIS conversation are cleared: each lives on one side of the pair (entry WhatsApp vs
-    // widget), which matches the scoping the command already uses for memory.
-    //
-    // And the previous run's failure. `lastError` self-heals on the next successful turn, but
-    // `failureNoticeSentAt` is the coalescing anchor for the "a human has to take over" note, so
-    // without clearing it a fresh failure after a reset cannot announce itself — the same reasoning
-    // that already clears `testNoticeSentAt`.
-    // The redirect anchors describe the EPISODE and happen to be stored one pair of columns per
-    // side, so clearing this row releases only the half the operator typed into: a /reset on the
-    // entry conversation leaves `redirectClosedAt` on the widget, and the funnel can be run again
-    // but not closed again until the widget side is reset too. Named in the acknowledgement's own
-    // scope rather than worked around — see the NOTE above the job cancellations.
-    const redirectAnchors = {
-      redirectSentAt: null,
-      // A counter, so it goes back to zero rather than to null.
-      redirectCount: 0,
-      redirectLinkedAt: null,
-      redirectClosedAt: null,
-    };
-    await step("clear the conversation's watermarks", "marcadores", () =>
-      runScopedOn(base, sysCtx(tenantId), (db) =>
-        db.conversation.update({
-          where: { id: ctx.conv.id },
-          data: {
-            lastInboundAt: null,
-            lastFollowUpAt: null,
-            testNoticeSentAt: null,
-            outOfHoursNoticeSentAt: null,
-            awayMessageSentAt: null,
-            ...redirectAnchors,
-            lastError: null,
-            lastErrorAt: null,
-            failureNoticeSentAt: null,
-          },
-        }),
-      ),
-    );
     // LAST, and that ordering is the point. The state that decides whether the agent may speak AT
     // ALL — `shouldBotHandle` needs both `status === "pending"` and an assignee that is not a human
     // — is also the state that makes the NEXT delivery actionable. Returned first, a customer

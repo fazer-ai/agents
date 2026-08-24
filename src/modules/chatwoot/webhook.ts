@@ -1358,6 +1358,20 @@ async function maybeConsumeCommandOrGate(params: {
       // but here it is the START state that already said "not ours", so standing on it is standing
       // on the answer the command was given.
       if (!now) return true;
+      // NOBODY IS NOT A NEW HOLDER. This fence exists to stop the hand-back unassigning somebody who
+      // arrived while the command ran; a conversation the original party RELEASED has no such person,
+      // and comparing holder strings reads that release as a change and refuses.
+      //
+      // Refusing there produces issue #198's own symptom, one layer further in: the holder is gone but
+      // the status is whatever they left it as, and `open` with no assignee is precisely the state the
+      // agent cannot answer in — the hand-back's remaining half, putting the conversation back to
+      // `pending`, is exactly what is needed and is the half that gets skipped. The acknowledgement
+      // then blames a takeover, because "not answerable by us" is what it reads to decide that
+      // sentence, and it names a person who has in fact left.
+      //
+      // Safe on the other side too: the hand-back is handed the START holder as its baseline, so with
+      // nobody there it finds nothing to remove and sends no unassign at all.
+      if (now.assigneeType === null) return true;
       return (
         `${now.assigneeType ?? ""}:${now.assigneeId ?? ""}` === holderAtStart
       );

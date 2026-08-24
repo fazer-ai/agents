@@ -2146,6 +2146,77 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    // NOBODY IS NOT A NEW HOLDER. The fence before the hand-back compares who holds the conversation
+    // now against who held it when the command started, to avoid unassigning somebody who arrived
+    // meanwhile. A holder who LETS GO during the cleanup changes that comparison too, and refusing
+    // there reproduces issue #198 one layer further in: the person is gone, the status is still
+    // whatever they left it as, and `open` with no assignee is exactly the state the agent cannot
+    // answer in — while the half of the hand-back that fixes it, putting the conversation back to
+    // `pending`, is the half being skipped.
+    //
+    // Its own Chatwoot double: the shared one always renders an assignee, and "released" is the one
+    // shape this needs. The release lands on the kanban call, mid-cleanup, which is the same
+    // rendezvous the switch test above uses.
+    test("a holder who lets go during the cleanup still gets the conversation back", async () => {
+      const cw = fakeChatwoot();
+      const inner = cw.impl;
+      let released = false;
+      globalThis.fetch = (async (input, init) => {
+        const url = new URL(String(input));
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (!released && url.pathname.includes("/kanban/tasks/")) {
+          released = true;
+          await suDb.conversation.updateMany({
+            where: { tenantId, chatwootConversationId: CONV_ID },
+            data: { assigneeType: null, assigneeId: null },
+          });
+        }
+        if (
+          method === "GET" &&
+          url.pathname.endsWith(`/conversations/${CONV_ID}`)
+        ) {
+          return new Response(
+            JSON.stringify({
+              id: CONV_ID,
+              kanban_task: { id: KANBAN_TASK_ID },
+              status: "open",
+              // Before the release a person is holding it; after it, nobody is — which the fork
+              // renders by omitting `assignee_type` entirely.
+              meta: released
+                ? {}
+                : { assignee_type: "User", assignee: { id: 77, type: "User" } },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return inner(input, init);
+      }) as typeof fetch;
+      try {
+        await sendReset("/reset", CONV_ID, {
+          status: "open",
+          assigneeType: "User",
+        });
+
+        // The rendezvous really fired, so this is not passing on a cleanup that never got there.
+        expect(released).toBe(true);
+        // The hand-back RAN: the conversation is put back to `pending`, which is the whole point.
+        expect(
+          cw.calls
+            .filter((c) =>
+              c.path.endsWith(`/conversations/${CONV_ID}/toggle_status`),
+            )
+            .map((c) => (c.body as { status?: string })?.status),
+        ).toContain("pending");
+        // And nobody is blamed for a takeover that did not happen.
+        const ack = ackCalls(cw.calls)
+          .map((c) => (c.body as { content?: string })?.content ?? "")
+          .join(" ");
+        expect(ack).not.toContain("Alguém assumiu");
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
     // The agent switched off, restored afterwards: it is shared by every test in this file, so the
     // flag cannot leak.
     const withDisabledAgent = async (

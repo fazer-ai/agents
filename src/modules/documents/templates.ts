@@ -106,6 +106,21 @@ async function existingClash(
   return { byName: byName ?? undefined, bySlug: bySlug ?? undefined };
 }
 
+// The one way a Refusal becomes a thrown error. It exists because the field was the FOURTH thing a
+// throw site had to remember to carry, and the round that added it found a hand-written copy of
+// `slugRefusal`'s explicit branch on the patch path (same message, same key, no field), which had
+// made the wire contract depend on the HTTP method. One converter, and the producer is the only
+// place that decides.
+function refuse(refusal: Refusal, statusCode: number): never {
+  throw new AppError(
+    refusal.message,
+    statusCode,
+    refusal.key,
+    refusal.params,
+    refusal.field,
+  );
+}
+
 // `nameTaken`'s same-name branch, lifted out so it can be produced without a slug to interpolate.
 // The one clash reachable with no slug in play is this one: `existingClash` matches the name
 // exactly, so the row it finds is always holding precisely this name.
@@ -566,13 +581,7 @@ export async function createDocumentTemplate(
   const problem = slugProblem(slug);
   if (problem) {
     const refusal = slugRefusal(problem, name, !derived, slug);
-    throw new AppError(
-      refusal.message,
-      400,
-      refusal.key,
-      refusal.params,
-      refusal.field,
-    );
+    refuse(refusal, 400);
   }
   // Asked BEFORE the insert, so the refusal can name the template that is in the way. The unique
   // index is still the authority — it is what catches two creates racing — but all it can say is
@@ -582,13 +591,7 @@ export async function createDocumentTemplate(
   const holder = clash.byName ?? clash.bySlug;
   if (holder) {
     const refusal = nameTaken(holder.name, name, slug);
-    throw new AppError(
-      refusal.message,
-      409,
-      refusal.key,
-      refusal.params,
-      refusal.field,
-    );
+    refuse(refusal, 409);
   }
   const row = await runScopedOn(base, ctx, (db) =>
     db.documentTemplate
@@ -802,11 +805,9 @@ async function patched(
   if (patch.slug !== undefined) {
     const problem = slugProblem(patch.slug);
     if (problem) {
-      throw new AppError(
-        `slug: ${problem}.`,
-        400,
-        "errors.invalidDocumentSlug",
-      );
+      // A patch always writes the slug EXPLICITLY, so this is the producer's explicit branch. Calling
+      // it rather than restating it is what keeps POST and PATCH answering the same refusal.
+      refuse(slugRefusal(problem, undefined, true, patch.slug), 400);
     }
     data.slug = patch.slug;
   }

@@ -1058,6 +1058,53 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     expect(pdfHeader(bytes)).toBe("%PDF-");
   });
 
+  // Which INPUT a refusal is about cannot depend on the HTTP method that carried the write. The
+  // patch path had a hand-written copy of the create path's refusal (same sentence, same key) that
+  // named no field, so the console would have had somewhere to put the message on create and nowhere
+  // on rename. Issue #231.
+  test("a bad slug names the same input whether it was created or renamed", async () => {
+    const starter = documentStarter("receipt", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const bad = "2026_orcamento";
+    const created = await createDocumentTemplate(
+      ctx(tenantA),
+      {
+        name: "Recibo com slug ruim",
+        slug: "recibo_slug_ruim",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+      },
+      appDb,
+    );
+    const onCreate = await createDocumentTemplate(
+      ctx(tenantA),
+      {
+        name: "Outro",
+        slug: bad,
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+      },
+      appDb,
+    ).then(
+      () => null,
+      (e: unknown) => e as AppError,
+    );
+    const onRename = await updateDocumentTemplate(
+      ctx(tenantA),
+      BigInt(created.id),
+      { slug: bad },
+      appDb,
+    ).then(
+      () => null,
+      (e: unknown) => e as AppError,
+    );
+    expect(onCreate?.field).toBe("slug");
+    expect(onRename?.field).toBe("slug");
+    expect(onRename?.translationKey).toBe(onCreate?.translationKey);
+  });
+
   // Creation already answers a taken slug with a conflict; an update raising the same constraint has
   // to answer the same way, or the console shows an internal error for a name the operator can fix.
   test("answers a slug already taken on update with a conflict", async () => {

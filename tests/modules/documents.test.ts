@@ -315,6 +315,45 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     ).rejects.toThrow(/"Image" would produce the tool send_image/);
   });
 
+  // The uniqueness check asks two indexes, and a rename supplies only ONE of them: a name, with the
+  // slug deliberately left alone. Prisma reads `where: { slug: undefined }` as NO FILTER, so asking
+  // the slug side anyway does not return "nothing matched" — it returns whatever row comes first,
+  // which is a wrong answer that happens to be discarded by the caller's own narrowing.
+  //
+  // Asserted on the QUERY because the outcome cannot show it: with both guards in place and with
+  // only the caller's, the refusal is identical. What differs is that one of them computes an answer
+  // it has no right to.
+  test("a rename asks the name index and nothing else", async () => {
+    await createDocumentTemplate(
+      ctx(tenantA),
+      { name: "Única contagem", blocks: MINIMAL_BLOCKS, fields: [] },
+      appDb,
+    );
+    const wheres: unknown[] = [];
+    const counted = appDb.$extends({
+      query: {
+        documentTemplate: {
+          async findFirst({ args, query }) {
+            wheres.push((args as { where?: unknown }).where);
+            return query(args);
+          },
+        },
+      },
+    });
+    await documentTemplateWriteProblem(
+      ctx(tenantA),
+      { name: "Nome livre aqui" },
+      counted as unknown as typeof appDb,
+      { deriveSlugFromName: false },
+    );
+    // Exactly one lookup, and it is the one keyed on the name.
+    expect(wheres).toHaveLength(1);
+    expect((wheres[0] as { name?: unknown; slug?: unknown }).name).toBe(
+      "Nome livre aqui",
+    );
+    expect("slug" in (wheres[0] as object)).toBe(false);
+  });
+
   // The dry run and the apply have to agree: both refuse, and both say it about the name.
   test("the dry run refuses the same duplicate the apply refuses", async () => {
     await createDocumentTemplate(

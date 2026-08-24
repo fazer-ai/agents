@@ -324,12 +324,17 @@ describe.skipIf(!dbUp)("MCP document writes", () => {
   // A rename keeps the slug it already has, so a dry run must not judge a slug the write will never
   // use: deriving one from the new name could refuse a perfectly good rename — and only on the dry
   // run, which is the worst possible place to disagree with the apply.
+  //
+  // The new name has to be one the derived slug collides on and the NAME index does not, which is
+  // what isolates the rule. It used to reuse "Sem prefixo" verbatim, which is also the taken NAME —
+  // so once the dry run started asking the name index (as it must; see the rename test below) that
+  // fixture began failing for the right reason about the wrong rule.
   test("a name-only dry run does not judge a slug derived from the name", async () => {
     const [tpl] = await listDocumentTemplates(ctx(), appDb);
     const r = await documentTemplateUpdate(
       principal({ tenantId }),
-      // Slugifies to "sem_prefixo", which the test above just took.
-      { document_template_id: tpl?.id as string, name: "Sem prefixo" },
+      // Slugifies to "sem_prefixo", which the test above took — under a different NAME.
+      { document_template_id: tpl?.id as string, name: "Sem  prefixo!" },
       { base: appDb },
     );
     expect(r.ok).toBe(true);
@@ -482,6 +487,73 @@ describe.skipIf(!dbUp)("MCP document writes", () => {
     // …and the template is untouched.
     const after = await listDocumentTemplates(ctx(), appDb);
     expect(after.find((t) => t.id === tpl?.id)?.name).toBe(tpl?.name);
+  });
+
+  // THE DRY RUN'S ONE PROMISE: what it approves, the apply performs. A rename supplies a name and no
+  // slug — the slug is a tool name an agent may already be granted, so a rename deliberately keeps
+  // it — and the uniqueness pre-check was reached only when there was a slug to validate. So the
+  // dry run answered "no problem" to a rename onto a name this tenant already uses, and the same
+  // call with dry_run:false came back 409 from the name's unique index.
+  //
+  // Both halves are asserted, and in this order: the refusal is worth nothing if the apply would
+  // have succeeded, so the test first proves the apply really does refuse.
+  test("a rename onto a taken name is refused by the dry run, not only by the apply", async () => {
+    // Both created here rather than reused from the suite's state: which templates exist depends on
+    // the order the tests above ran in, and this one needs exactly two names it owns.
+    const taken = `Recibo ${process.pid}`;
+    const mine = `Proposta ${process.pid}`;
+    for (const name of [taken, mine]) {
+      const r = await documentTemplateCreate(
+        principal({ tenantId }),
+        { starter: "receipt", name, dry_run: false },
+        { base: appDb },
+      );
+      expect(r.ok).toBe(true);
+    }
+    const templates = await listDocumentTemplates(ctx(), appDb);
+    const target = templates.find((t) => t.name === taken);
+    const other = templates.find((t) => t.name === mine);
+    expect(target?.id).toBeTruthy();
+    expect(other?.id).toBeTruthy();
+
+    // The apply refuses, which is what makes approving it a broken promise rather than a nicety.
+    const applied = await documentTemplateUpdate(
+      principal({ tenantId }),
+      {
+        document_template_id: other?.id as string,
+        name: taken,
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(applied.ok).toBe(false);
+
+    // …and so does the dry run, naming the name rather than a slug the operator never typed.
+    const dry = await documentTemplateUpdate(
+      principal({ tenantId }),
+      {
+        document_template_id: other?.id as string,
+        name: taken,
+      },
+      { base: appDb },
+    );
+    expect(dry.ok).toBe(false);
+    if (!dry.ok) expect(dry.error).toContain(taken);
+
+    // Renaming a template to the name it already has is not a collision with itself.
+    const sameName = await documentTemplateUpdate(
+      principal({ tenantId }),
+      {
+        document_template_id: target?.id as string,
+        name: taken,
+      },
+      { base: appDb },
+    );
+    expect(sameName.ok).toBe(true);
+
+    await suDb.documentTemplate.deleteMany({
+      where: { tenantId, name: { in: [taken, mine] } },
+    });
   });
 
   // The tenant fence: a template belonging to tenant A is not addressable from tenant B's token,

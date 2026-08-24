@@ -111,7 +111,7 @@ interface Refusal {
 async function existingClash(
   ctx: TenantContext,
   base: PrismaClient,
-  slug: string,
+  slug: string | undefined,
   name: string | undefined,
   excludeId?: bigint,
 ): Promise<{ byName?: { name: string }; bySlug?: { name: string } }> {
@@ -124,13 +124,29 @@ async function existingClash(
             where: { name, ...not },
             select: { name: true },
           }),
-      db.documentTemplate.findFirst({
-        where: { slug, ...not },
-        select: { name: true },
-      }),
+      // Each side is asked only when there is something to ask WITH. A rename supplies a name and no
+      // slug — the slug is a tool name an agent may already be granted, so a rename keeps it — and
+      // the name index still applies to it.
+      slug === undefined
+        ? Promise.resolve(null)
+        : db.documentTemplate.findFirst({
+            where: { slug, ...not },
+            select: { name: true },
+          }),
     ]),
   );
   return { byName: byName ?? undefined, bySlug: bySlug ?? undefined };
+}
+
+// `nameTaken`'s same-name branch, lifted out so it can be produced without a slug to interpolate.
+// The one clash reachable with no slug in play is this one: `existingClash` matches the name
+// exactly, so the row it finds is always holding precisely this name.
+function nameAlreadyUsed(name: string): Refusal {
+  return {
+    message: `you already have a document template called "${name}"`,
+    key: "errors.documentTemplateNameTaken",
+    params: { name },
+  };
 }
 
 function nameTaken(
@@ -149,11 +165,7 @@ function nameTaken(
   // Same name, or merely the same normalisation ("Orçamento" vs "Orcamento"). The second is the one
   // that would otherwise read as a false refusal, so its message names both templates.
   return existingName === name
-    ? {
-        message: `you already have a document template called "${name}"`,
-        key: "errors.documentTemplateNameTaken",
-        params: { name },
-      }
+    ? nameAlreadyUsed(name)
     : {
         message: `"${name}" collides with the template "${existingName}": both produce the tool name ${tool}`,
         key: "errors.documentTemplateNameCollides",
@@ -266,14 +278,25 @@ export async function documentTemplateWriteProblem(
     (deriveSlugFromName && name !== undefined
       ? slugifyTemplateName(name)
       : undefined);
-  if (slug === undefined) return null;
-  const problem = slugProblem(slug);
-  if (problem) {
-    return slugRefusal(problem, name, input.slug !== undefined, slug).message;
+  if (slug !== undefined) {
+    const problem = slugProblem(slug);
+    if (problem) {
+      return slugRefusal(problem, name, input.slug !== undefined, slug).message;
+    }
   }
+  // A rename carries no slug, and gating the uniqueness question on having one is what let this
+  // approve a rename onto a name the tenant already uses — the apply then answered 409 from the name
+  // index, which breaks the one promise a dry run makes. Nothing to ask only when NEITHER is in play
+  // (a patch that touches only the description, say).
+  if (slug === undefined && name === undefined) return null;
   const clash = await existingClash(ctx, base, slug, name, excludeId);
-  if (clash.byName) return nameTaken(clash.byName.name, name, slug).message;
-  return clash.bySlug ? nameTaken(clash.bySlug.name, name, slug).message : null;
+  // Reported in terms of the NAME whenever that index is the one in the way, which is also the only
+  // clash reachable without a slug. `name !== undefined` narrows for the compiler; `existingClash`
+  // never returns `byName` without one.
+  if (clash.byName && name !== undefined) return nameAlreadyUsed(name).message;
+  return clash.bySlug && slug !== undefined
+    ? nameTaken(clash.bySlug.name, name, slug).message
+    : null;
 }
 
 export interface DocumentTemplateDto {

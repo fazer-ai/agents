@@ -1,5 +1,6 @@
 import { type ZodError, z } from "zod";
 import { AppError } from "@/lib/errors";
+import { unstorableProblem } from "@/lib/text";
 import {
   blockCanDraw,
   type DocumentBlock,
@@ -280,11 +281,18 @@ export function parseAuthoredTemplate(
   // Clamped, not refused: baseFontSize is a SIZE, and sizes are clamped by contract (docs/mcp.md).
   // The clamp changes a value, never a key, so it survives the check above.
   const style = parseDocumentStyle(styleIn);
-  for (const [label, text] of authoredText(
+  const { printed, structural } = authoredText(
     { ...shared.content, style },
     authored,
-  )) {
+  );
+  for (const [label, text] of printed) {
     const problem = unprintableProblem(text, label);
+    if (problem) return { ok: false, reason: problem };
+  }
+  // The other question, asked of the keys the loop above deliberately skips: printable and storable
+  // are different rules, and an id is held only to the second one.
+  for (const [label, text] of structural) {
+    const problem = unstorableProblem(text, label);
     if (problem) return { ok: false, reason: problem };
   }
 
@@ -318,6 +326,7 @@ function walkStrings(
   value: unknown,
   path: string,
   out: [string, string][],
+  structural?: [string, string][],
 ): void {
   if (typeof value === "string") {
     out.push([path, value]);
@@ -325,14 +334,31 @@ function walkStrings(
   }
   if (Array.isArray(value)) {
     value.forEach((item, i) => {
-      walkStrings(item, `${path}[${i}]`, out);
+      walkStrings(item, `${path}[${i}]`, out, structural);
     });
     return;
   }
   if (!value || typeof value !== "object") return;
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (NON_PRINTING_KEYS.has(key)) continue;
-    walkStrings(child, path ? `${path}.${key}` : key, out);
+    const here = path ? `${path}.${key}` : key;
+    if (NON_PRINTING_KEYS.has(key)) {
+      // COLLECTED, not skipped. Being unprintable is fine for a key that names something instead of
+      // drawing it; being unstorable is not, and these land in a `jsonb` column like every other
+      // half. Postgres refuses a NUL or a lone surrogate there, so the write that accepted the id
+      // fails at the INSERT with a driver error, and an imported bundle takes its whole transaction
+      // down with it — after the preview rendered happily, because a preview writes nothing.
+      //
+      // Only `id` actually reaches the column unchecked today. Four of these keys take an arbitrary
+      // string at the schema (`id`, `field`, `discountField`, `taxField`; the rest are enums or an
+      // identifier regex), but the three `*Field` ones are then pinned to a DECLARED field name,
+      // which is `[a-z][a-z0-9_]{0,39}` — measured: a NUL in any of them is refused as an undeclared
+      // reference before it gets here. Sweeping the whole deny-list anyway is the same bet the list
+      // itself makes: that check is a different rule and could move, and a structural key added
+      // later is covered without anyone remembering this paragraph.
+      if (typeof child === "string") structural?.push([here, child]);
+      continue;
+    }
+    walkStrings(child, here, out, structural);
   }
 }
 
@@ -343,23 +369,24 @@ function authoredText(
     style?: DocumentStyle;
   },
   authored: AuthoredHalves,
-): [string, string][] {
-  const out: [string, string][] = [];
+): { printed: [string, string][]; structural: [string, string][] } {
+  const printed: [string, string][] = [];
+  const structural: [string, string][] = [];
   if (authored.blocks) {
     for (const block of content.blocks) {
-      walkStrings(block, `blocks."${block.id}"`, out);
+      walkStrings(block, `blocks."${block.id}"`, printed, structural);
     }
   }
   if (authored.fields) {
     for (const field of content.fields) {
-      walkStrings(field, `fields."${field.name}"`, out);
+      walkStrings(field, `fields."${field.name}"`, printed, structural);
     }
   }
   const footer = content.style?.footerText;
   if (authored.style && footer) {
-    out.push(["style.footerText", footer]);
+    printed.push(["style.footerText", footer]);
   }
-  return out;
+  return { printed, structural };
 }
 
 export function parseTemplateContent(

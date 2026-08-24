@@ -1220,3 +1220,51 @@ describe("sampleValues", () => {
     expect(sampleValues(fields, at).pago_em).toBe("2026-09-06");
   });
 });
+
+// A STRUCTURAL KEY IS HELD TO A DIFFERENT RULE, NOT TO NONE.
+//
+// Block ids are excluded from the printable check on purpose: nothing draws them, so an emoji in one
+// is harmless and refusing it would be a wall in front of an ordinary name. Storable is the OTHER
+// question, and it was being asked of nothing here. The blocks land in a `jsonb` column and Postgres
+// refuses a NUL or a lone surrogate there (measured against the dev server: casting a JSON object
+// whose value spells the escape answers `unsupported Unicode escape sequence`). A preview writes
+// nothing, so it rendered happily while create/update failed at the INSERT with a driver error, and
+// an imported bundle took its whole transaction down with it.
+describe("storable structural keys", () => {
+  const text = { id: "corpo", type: "text", text: "Ola." };
+
+  test("a block id the database cannot store is refused, naming the code point", () => {
+    const r = parseAuthoredTemplate(
+      [text, { id: `d${String.fromCodePoint(0)}`, type: "divider" }],
+      [],
+      undefined as never,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.ok ? "" : r.reason).toContain("U+0000");
+  });
+
+  test("half a character in a block id is refused too", () => {
+    const r = parseAuthoredTemplate(
+      [text, { id: `d${String.fromCharCode(0xd800)}`, type: "divider" }],
+      [],
+      undefined as never,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.ok ? "" : r.reason).toContain("U+D800");
+  });
+
+  test("but an id in someone's own alphabet still passes", () => {
+    // The half that makes this a STORABILITY rule and not a character-set one. An id is a name, and
+    // an operator authoring through MCP writes it in the language they think in.
+    const r = parseAuthoredTemplate(
+      [
+        text,
+        { id: "secao", type: "divider" },
+        { id: "\u0440\u0430\u0437\u0434\u0435\u043b", type: "divider" },
+      ],
+      [],
+      undefined as never,
+    );
+    expect(r.ok).toBe(true);
+  });
+});

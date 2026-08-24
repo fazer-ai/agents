@@ -1041,7 +1041,22 @@ export async function previewDocumentTemplate(
     // calls the same helper — that is the whole of the assurance, and it is written down rather
     // than implied.
     date: formatDate(previewDay, style.locale),
-    title: input.name ?? saved?.name ?? "",
+    // NORMALIZED, like the write does, and `normalizeTemplateName`'s own comment lists this exact
+    // surface among the ones it serves.
+    //
+    // NO OBSERVABLE DIFFERENCE MEASURED, and that is written here so nobody restores the raw value
+    // believing they are removing dead weight, nor cites this line as a bug that was fixed. A review
+    // round reported it as the preview drawing padding the write would trim; measured against the
+    // renderer, "  Orcamento  " and "Orcamento" produce a byte-identical page — as a header title,
+    // where layout collapses the run, and inside body text as `[{{doc_title}}]`, where the value has
+    // already been through `sanitizeDocumentValue`. There is no `/Title` in the output at all. What
+    // remains is consistency with the sibling surfaces, which is worth one call and no more.
+    title:
+      (input.name !== undefined
+        ? normalizeTemplateName(input.name)
+        : undefined) ??
+      saved?.name ??
+      "",
   };
   // The same question the ISSUE path asks, with the same values in hand. Without it the preview is
   // the one surface that approves a document issuance then refuses: a template whose only visible

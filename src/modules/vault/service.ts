@@ -377,7 +377,7 @@ function validateVaultValue(kind: string, value: unknown): void {
           400,
           "errors.invalidVaultValue",
           undefined,
-          // The credential form renders one input per declared field and keys it by exactly this
+          // NOTE: the credential form renders one input per declared field and keys it by exactly this
           // (`fieldValues[f.key]`, src/client/components/CredentialForm.tsx), so the key IS the
           // console's name for the input that was refused.
           key,

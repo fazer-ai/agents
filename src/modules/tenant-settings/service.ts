@@ -312,7 +312,7 @@ export async function updateCompanySettings(
         400,
         "errors.invalidCompanyField",
         { reason: problem },
-        // The key of the patch, which is the name the console's company form uses for the input.
+        // NOTE: the key of the patch, which is the name the console's company form uses for the input.
         field,
       );
   }

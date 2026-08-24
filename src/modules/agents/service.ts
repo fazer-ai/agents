@@ -262,7 +262,7 @@ export class SettingsTextTooLongError extends AppError {
       400,
       "errors.settingsTextTooLong",
       { field, len: length, max },
-      // The dotted path collectOversizedTextChanges reports, which is the same string the console's
+      // NOTE: the dotted path collectOversizedTextChanges reports, which is the same string the console's
       // own text-cap warning already routes on (TEXT_CAP_TARGETS).
       field,
     );

@@ -48,7 +48,7 @@ export function refusalBody(
         error.translationParams,
       )
     : error.message;
-  // A blank name is not a name: it would put the key on the wire for a client to match against
+  // NOTE: a blank name is not a name: it would put the key on the wire for a client to match against
   // nothing, which is worse than the honest silence of not naming a field at all.
   const field = error.field?.trim();
   return field ? { error: message, field } : { error: message };

@@ -156,7 +156,7 @@ function nameTaken(
   // that would otherwise read as a false refusal, so its message names both templates.
   if (existingName === name) return nameAlreadyUsed(name);
   return {
-    // The SENTENCE stays the tool-name explanation in both cases, because the tool name is what is
+    // NOTE: the SENTENCE stays the tool-name explanation in both cases, because the tool name is what is
     // actually in the way and #208 chose that wording for an authoring client on purpose. Only the
     // input it is attached to depends on who chose the slug.
     message: `"${name}" collides with the template "${existingName}": both produce the tool name ${tool}`,
@@ -816,7 +816,7 @@ async function patched(
   if (patch.slug !== undefined) {
     const problem = slugProblem(patch.slug);
     if (problem) {
-      // A patch always writes the slug EXPLICITLY, so this is the producer's explicit branch. Calling
+      // NOTE: a patch always writes the slug EXPLICITLY, so this is the producer's explicit branch. Calling
       // it rather than restating it is what keeps POST and PATCH answering the same refusal.
       refuse(slugRefusal(problem, undefined, true, patch.slug), 400);
     }

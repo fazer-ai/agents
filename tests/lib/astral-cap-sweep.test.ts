@@ -366,8 +366,10 @@ const BARE_SLICES: Record<
   // [a-zA-Z0-9-] before it is bounded, because it travels through a Content-Disposition header.
   "src/modules/documents/issue.ts": [2, "fixed-format + ascii"],
   "src/modules/documents/sample.ts": [1, "fixed-format"],
-  // The tool name a template derives to, after the name was reduced to [a-z0-9_].
-  "src/modules/documents/templates.ts": [2, "ascii"],
+  // The tool name a template derives to, after the name was reduced to [a-z0-9_]. The two cuts moved
+  // here from templates.ts when the slug rules were split out for the console to import; this ledger
+  // is keyed by PATH, so a move reads exactly like an unaccounted cut appearing from nowhere.
+  "src/modules/documents/slug.ts": [2, "ascii"],
   "src/modules/flowlog/export.ts": [2, "fixed-format + array"],
   "src/modules/flowlog/read.ts": [1, "array"],
   "src/modules/followups/settings.ts": [1, "array"],

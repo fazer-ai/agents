@@ -1130,7 +1130,6 @@ export async function buildToolset(
       // cannot disagree by a day.
       timezone: cfg.timezone,
       simulate: deps.simulateDocuments,
-      toolInstructions,
     }),
     ...buildHttpTools(cfg.httpToolDefs, {
       resolveCredential,

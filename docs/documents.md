@@ -227,7 +227,23 @@ call arrives in the same turn, by which point the queue carries the claim instea
 HTTP/MCP/integration/RAG and unlike NATIVE: an agent with no grant has no document tool, so no
 existing agent gains one on upgrade.
 
-The tool's name is `send_<slug>`, and the slug is **derived from the template's name, never typed**.
+The tool's name is `send_<slug>`, and the slug is **derived from the template's name and stays
+derived while a name is being typed**. The console re-derives it on every keystroke in the name
+field, so renaming a template renames its tool: a template called "Contrato de prestação" behind a
+tool called `send_orcamento` is a thing the operator cannot see from the conversation and cannot
+explain from the console. The slug field is editable, and a slug typed by hand is overwritten by the
+next edit to the name — the name is the source, and a slug that outlived it would be a second name to
+keep in sync by hand.
+
+Renaming the tool has one cost worth knowing: the persisted conversation history holds the tool calls
+the agent already made, under the OLD name, and those travel to the provider on later turns until the
+history window slides past them. Whether any provider rejects a transcript naming a tool absent from
+the current list has not been measured.
+
+Both ends apply the same rules, from `modules/documents/slug.ts` — `slugifyTemplateName`,
+`slugProblem`, `documentToolName` — imported rather than restated, so the console cannot preview a
+tool name the write would not produce.
+
 Two consequences, and they pull in opposite directions.
 
 **Names are unique per account**, and that is not bookkeeping: the name is what the model reads to
@@ -240,14 +256,14 @@ creation for the same reason, prefilled from the starter.
 
 The constraint is its **own** unique index, `(tenant_id, name)`, separate from the slug's. Deriving
 uniqueness from the slug looks equivalent and is not: a caller can supply its own `slug`, and a
-rename keeps the slug it already has, so both roads reach two templates with one name. All four write
+write that carries only a name never derives one, so both roads reach two templates with one name. All four write
 paths are fenced — create, rename, the MCP dry run, and the bundle import, which **skips** a template
 whose name the destination already holds (`documentTemplateNameTaken`) rather than reusing it, since
 the grant resolves by slug and binding it to another template would hand the agent a tool the bundle
 never asked for.
 
 **But a derivation that cannot produce a usable identifier is a different thing**: a wall in front of
-an ordinary name, about something the operator did not choose and cannot see. "2026 Orçamento"
+an ordinary name, about something the operator did not choose. "2026 Orçamento"
 derived `2026_orcamento`, which a tool name may not start with, so `slugifyTemplateName` prefixes
 `doc_` rather than stripping the digits (dropping them makes "2026" and "2027" the same slug). What
 remains is a name that normalises onto a **built-in** tool — "Image" produces `send_image` — and that

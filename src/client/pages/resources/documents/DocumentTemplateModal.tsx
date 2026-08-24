@@ -15,6 +15,11 @@ import {
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import {
+  documentToolName,
+  slugifyTemplateName,
+  slugProblem,
+} from "@/modules/documents/slug";
 import { DocumentPreview } from "./DocumentPreview";
 import { useDocumentPreview } from "./useDocumentPreview";
 
@@ -52,6 +57,7 @@ export function DocumentTemplateModal({
   const { showToast } = useToast();
   const template = modal.payload?.template ?? null;
   const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
   const [description, setDescription] = useState("");
   const [numberPrefix, setNumberPrefix] = useState("");
   const [enabled, setEnabled] = useState(true);
@@ -83,6 +89,7 @@ export function DocumentTemplateModal({
         .map((b) => [b.id, b.text]),
     );
     setName(tpl.name);
+    setSlug(tpl.slug);
     setDescription(tpl.description ?? "");
     setNumberPrefix(tpl.numberPrefix ?? "");
     setEnabled(tpl.enabled);
@@ -90,6 +97,7 @@ export function DocumentTemplateModal({
     setTexts(initialTexts);
     baselineRef.current = JSON.stringify({
       name: tpl.name,
+      slug: tpl.slug,
       description: tpl.description ?? "",
       numberPrefix: tpl.numberPrefix ?? "",
       enabled: tpl.enabled,
@@ -103,6 +111,7 @@ export function DocumentTemplateModal({
     baselineRef.current !== null &&
     JSON.stringify({
       name,
+      slug,
       description,
       numberPrefix,
       enabled,
@@ -151,6 +160,7 @@ export function DocumentTemplateModal({
     if (!template || !style) return null;
     const patch: Record<string, unknown> = {};
     if (name !== template.name) patch.name = name;
+    if (slug !== template.slug) patch.slug = slug;
     if (description !== (template.description ?? "")) {
       patch.description = description || null;
     }
@@ -167,7 +177,16 @@ export function DocumentTemplateModal({
     );
     if (Object.keys(changedStyle).length > 0) patch.style = changedStyle;
     return patch;
-  }, [template, style, name, description, numberPrefix, enabled, blockText]);
+  }, [
+    template,
+    style,
+    name,
+    slug,
+    description,
+    numberPrefix,
+    enabled,
+    blockText,
+  ]);
 
   const draft = useMemo(() => {
     if (!template || !changes) return null;
@@ -240,6 +259,14 @@ export function DocumentTemplateModal({
     }
   }
 
+  // Answered here because the answer is a keystroke away, not because the write stopped checking:
+  // this is the SAME `slugProblem` the write runs, imported rather than restated.
+  //
+  // Guarded on `template`, not on the slug being non-empty. An operator who CLEARS the field has to
+  // be told something, and the modal keeps its payload after closing (Radix needs it for the exit
+  // animation), so this never flashes a refusal at a form nobody has opened.
+  const slugIssue = template ? slugProblem(slug) : null;
+
   const textBlocks = blocks.filter((b) => b.type === "text");
 
   return (
@@ -257,7 +284,9 @@ export function DocumentTemplateModal({
               guard by design. A footer Cancel is user-driven, so it funnels through the same guard
               as Esc and the X (docs/modals.md). */}
           <ModalCancelButton disabled={saving} />
-          <Button onClick={save} loading={saving}>
+          {/* Disabled on a refusal the FIELD is already explaining, in red, one line above the
+              button. Sending it anyway would spend a round trip to be told what is on screen. */}
+          <Button onClick={save} loading={saving} disabled={Boolean(slugIssue)}>
             {t("common.save", "Save")}
           </Button>
         </div>
@@ -273,7 +302,18 @@ export function DocumentTemplateModal({
       >
         <div className="flex flex-col gap-3">
           <FormField label={t("documents.name", "Name")}>
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
+            <Input
+              value={name}
+              // The name is the source of the slug, and it stays the source: every keystroke here
+              // re-derives it, so a rename renames the agent's tool instead of leaving a template
+              // called "Contrato" behind a tool called send_orcamento. A slug the operator typed by
+              // hand is overwritten by the next edit to the name, deliberately — a slug that
+              // survived it would be a second name to keep in sync by hand.
+              onChange={(e) => {
+                setName(e.target.value);
+                setSlug(slugifyTemplateName(e.target.value));
+              }}
+            />
           </FormField>
           <FormField label={t("documents.description", "Description")}>
             <Input
@@ -291,8 +331,19 @@ export function DocumentTemplateModal({
                 onChange={(e) => setNumberPrefix(e.target.value)}
               />
             </FormField>
-            <FormField label={t("documents.toolName", "Agent tool")}>
-              <Input value={template?.toolName ?? ""} readOnly disabled />
+            {/* The tool name the model will be offered, and the operator's to change. It was
+                read-only, which made the rename trap unfixable from the screen that caused it: the
+                field kept showing the tool derived from the ORIGINAL name with nothing saying why.
+                The refusal shows HERE rather than in a toast, because the only thing that answers
+                it is this input. */}
+            <FormField
+              label={t("documents.toolName", "Agent tool")}
+              hint={t("documents.toolNameHint", "The agent calls it {{tool}}", {
+                tool: documentToolName(slug),
+              })}
+              error={slugIssue}
+            >
+              <Input value={slug} onChange={(e) => setSlug(e.target.value)} />
             </FormField>
           </div>
 

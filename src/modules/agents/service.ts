@@ -15,6 +15,7 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
+import { documentToolName } from "@/modules/documents/slug";
 import { parseTemplateContent } from "@/modules/documents/validate";
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
@@ -1127,7 +1128,7 @@ async function buildToolSelectionView(
         name: d.name,
         // The tool name the agent will see, so the editor can show WHAT it is granting rather than
         // making the operator derive it from the template name.
-        toolName: `send_${d.slug}`,
+        toolName: documentToolName(d.slug),
         description: d.description,
         enabled: d.enabled,
         available:

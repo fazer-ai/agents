@@ -634,6 +634,7 @@
     "textBlocks": "Text",
     "textBlocksHint": "Only the wording is editable here. Adding, removing or reordering blocks is done through the API or MCP.",
     "toolName": "Agent tool",
+    "toolNameHint": "The agent calls it {{tool}}",
     "use": "Use"
   },
   "edition": {

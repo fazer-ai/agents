@@ -637,6 +637,7 @@
     "textBlocks": "Texto",
     "textBlocksHint": "Só o texto é editável aqui. Adicionar, remover ou reordenar blocos é feito pela API ou pelo MCP.",
     "toolName": "Ferramenta do agente",
+    "toolNameHint": "O agente chama de {{tool}}",
     "use": "Usar"
   },
   "edition": {

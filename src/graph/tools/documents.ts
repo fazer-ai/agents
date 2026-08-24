@@ -5,6 +5,7 @@ import { DEFAULT_TIMEZONE } from "@/graph/time";
 import { AppError } from "@/lib/errors";
 import type { DocumentField } from "@/modules/documents/blocks";
 import { calendarDay, issueDocument } from "@/modules/documents/issue";
+import { documentToolName } from "@/modules/documents/slug";
 import { failableTool, toolFailure } from "./failure";
 import type { TurnState } from "./native";
 
@@ -46,7 +47,6 @@ export interface DocumentToolDeps {
   // behaviour the production path never produces. Simulated, they see the agent CHOOSE it, which is
   // the thing the playground is for, and no number is consumed and no row is written.
   simulate?: boolean;
-  toolInstructions?: Record<string, string>;
 }
 
 const FIELD_HINT: Record<DocumentField["type"], string> = {
@@ -186,13 +186,14 @@ export function buildDocumentTools(
   deps: DocumentToolDeps,
 ): StructuredToolInterface[] {
   return selections.map((selection) => {
-    const name = `send_${selection.slug}`;
-    const guidance = deps.toolInstructions?.[name];
+    // Through documentToolName, never `send_` spelled again: the console derives the same string to
+    // show the operator which tool a template becomes, and a second copy of the rule here is how the
+    // two start disagreeing about what the model will actually be offered.
+    const name = documentToolName(selection.slug);
     const description =
       `Issue and send the customer a "${selection.name}" as a PDF attached to your reply.` +
       (selection.description ? ` ${selection.description}` : "") +
-      " The document is generated from the template the operator authored, numbered, and attached to this turn's answer — so say what you are sending, and do not restate the prices in text unless the customer asked for them there." +
-      (guidance ? `\n\n${guidance}` : "");
+      " The document is generated from the template the operator authored, numbered, and attached to this turn's answer — so say what you are sending, and do not restate the prices in text unless the customer asked for them there.";
 
     return failableTool(
       async (input: Record<string, unknown>) => {

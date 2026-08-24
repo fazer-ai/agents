@@ -218,6 +218,28 @@ export function parseLiveConversation(
 // events for a conversation OWNED by a DIFFERENT bot. When `ourAgentBotId` is provided we act
 // only if the conversation is unassigned (assignee_type null) or assigned to OUR bot, never to
 // another AgentBot. Omitting the option preserves the loose attribution-only gate.
+// The ASSIGNEE half of the question below, on its own because two different questions are built from
+// it and only one of them is about status. "Somebody else is holding this" is a human, or a bot that
+// is not ours — Chatwoot keeps User and AgentBot in separate id namespaces, so the comparison is the
+// whole identity and never the number alone.
+//
+// Split out rather than restated: the console asks it to decide which ownership action to offer, and
+// a conversation held by ANOTHER persona's bot is the case a "is the assignee a User?" test reads
+// backwards — the inbox's own agent cannot answer there either, so it needs the same hand-back the
+// human case needs. A second copy is how that case came to be missing in the first place.
+export function heldByAnotherParty(
+  e: { assigneeType: string | null; assigneeId?: number | null },
+  opts: { ourAgentBotId?: number | null } = {},
+): boolean {
+  if (e.assigneeType === "User") return true;
+  return (
+    e.assigneeType === "AgentBot" &&
+    opts.ourAgentBotId != null &&
+    e.assigneeId != null &&
+    e.assigneeId !== opts.ourAgentBotId
+  );
+}
+
 export function shouldBotHandle(
   e: {
     assigneeType: string | null;
@@ -227,16 +249,7 @@ export function shouldBotHandle(
   opts: { ourAgentBotId?: number | null } = {},
 ): boolean {
   if (e.status !== "pending") return false;
-  if (e.assigneeType === "User") return false;
-  if (
-    e.assigneeType === "AgentBot" &&
-    opts.ourAgentBotId != null &&
-    e.assigneeId != null &&
-    e.assigneeId !== opts.ourAgentBotId
-  ) {
-    return false;
-  }
-  return true;
+  return !heldByAnotherParty(e, opts);
 }
 
 export function isIncomingMessage(e: NormalizedChatwootEvent): boolean {

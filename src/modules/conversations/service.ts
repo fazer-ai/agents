@@ -20,7 +20,10 @@ import {
   loadAgentBot,
   loadChatwootClient,
 } from "@/modules/chatwoot/instance";
-import { parseLiveConversation } from "@/modules/chatwoot/normalize";
+import {
+  heldByAnotherParty,
+  parseLiveConversation,
+} from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
@@ -297,6 +300,13 @@ export interface ConversationDetail {
   assigneeType: string | null;
   // Human assignee display name (null when AI-handled / unassigned) — shown instead of "Human #id".
   assigneeName: string | null;
+  // Whether somebody OTHER than this inbox's persona is holding the conversation — a human, or another
+  // persona's agent bot. Derived here rather than in the console, because the comparison needs the
+  // bound bot's Chatwoot id and because it is the same rule `shouldBotHandle` applies: a browser
+  // asking "is the assignee a User?" reads the other-bot case backwards, and that agent cannot answer
+  // there either. Status is deliberately NOT part of it — the console asks who HOLDS the conversation,
+  // which is a different question from whether the agent may speak right now.
+  heldByAnotherParty: boolean;
   lastError: string | null;
   lastErrorAt: string | null;
   inbox: { id: string; name: string } | null;
@@ -766,6 +776,25 @@ export async function getConversationDetail(
         )
       : null;
 
+  // The bound persona's Chatwoot agent-bot id, which is what makes "another bot is holding this"
+  // answerable at all: without it every AgentBot assignee looks like ours. Same resolution the webhook
+  // gate does (Inbox.agentId -> ChatwootAgentBot).
+  const ourAgentBotId =
+    agentId != null
+      ? ((
+          await runScopedOn(base, ctx, (db) =>
+            db.chatwootAgentBot.findFirst({
+              where: {
+                tenantId,
+                chatwootInstanceId: conv.chatwootInstanceId,
+                agentId,
+              },
+              select: { chatwootAgentBotId: true },
+            }),
+          )
+        )?.chatwootAgentBotId ?? null)
+      : null;
+
   // Follow-up journey (item 17): the agent's configured step count + the next PENDING follow-up job
   // for this conversation's thread. The job's runAt is an ESTIMATE — it fires on a background worker.
   let followUp: ConversationDetail["followUp"] = null;
@@ -1120,6 +1149,10 @@ export async function getConversationDetail(
     assigneeId: conv.assigneeId,
     assigneeType: conv.assigneeType,
     assigneeName: conv.assigneeName,
+    heldByAnotherParty: heldByAnotherParty(
+      { assigneeType: conv.assigneeType, assigneeId: conv.assigneeId },
+      { ourAgentBotId },
+    ),
     lastError: conv.lastError,
     lastErrorAt: conv.lastErrorAt ? conv.lastErrorAt.toISOString() : null,
     inbox: conv.inbox

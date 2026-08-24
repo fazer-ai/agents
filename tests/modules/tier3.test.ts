@@ -576,6 +576,80 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(detail).not.toHaveProperty("messages");
   });
 
+  // The wiring behind that flag, which is the half a pure test cannot reach: the console gets one
+  // boolean, and it is only worth anything if the server actually resolved the bound persona's bot id
+  // to compare against. Driven with a DIFFERENT bot holding the conversation, because that is the
+  // case the browser cannot decide for itself and the one an `assigneeType === "User"` test calls
+  // "the AI has it".
+  test("detail names another persona's bot as an external holder", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 4242,
+        name: "Held",
+      },
+    });
+    const ours = await suDb.agent.create({
+      data: { tenantId: tenant, name: "Ours", systemPrompt: "x" },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: instanceId,
+        agentId: ours.id,
+        chatwootAgentBotId: 900,
+        accessToken: encryptJson("t"),
+        webhookSecret: encryptJson("s"),
+        webhookRouteTokenHash: `held-${process.pid}`,
+        name: "Ours",
+      },
+    });
+    await suDb.inbox.update({
+      where: { id: inbox.id },
+      data: { agentId: ours.id },
+    });
+    try {
+      await suDb.conversation.update({
+        where: { id: convId },
+        // Another persona's bot, and the status the AI's own conversations sit in — so status alone
+        // says "the AI has this" and only the id comparison disagrees.
+        data: {
+          inboxId: inbox.id,
+          status: "pending",
+          assigneeType: "AgentBot",
+          assigneeId: 901,
+        },
+      });
+      const held = await getConversationDetail(ctx(tenant), convId, appDb);
+      expect(held.heldByAnotherParty).toBe(true);
+
+      // And our own bot on the same row is not: without this the flag could be true for every
+      // AgentBot, which is the same wrong answer pointing the other way.
+      await suDb.conversation.update({
+        where: { id: convId },
+        data: { assigneeId: 900 },
+      });
+      const mine = await getConversationDetail(ctx(tenant), convId, appDb);
+      expect(mine.heldByAnotherParty).toBe(false);
+    } finally {
+      await suDb.conversation.update({
+        where: { id: convId },
+        data: {
+          inboxId: null,
+          assigneeType: null,
+          assigneeId: null,
+          status: "pending",
+        },
+      });
+      await suDb.chatwootAgentBot.deleteMany({
+        where: { tenantId: tenant, agentId: ours.id },
+      });
+      await suDb.inbox.delete({ where: { id: inbox.id } });
+      await suDb.agent.delete({ where: { id: ours.id } });
+    }
+  });
+
   test("messages fetches + normalizes the thread on demand", async () => {
     const stub = makeStub();
     const thread = await getConversationMessages(

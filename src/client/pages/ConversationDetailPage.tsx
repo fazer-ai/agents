@@ -1526,6 +1526,11 @@ export function ConversationDetailPage() {
     }
   }
 
+  // Who HOLDS the conversation, answered by the server. Not `assigneeType === "User"`: a conversation
+  // assigned to ANOTHER persona's agent bot is equally out of this agent's hands — the ownership gate
+  // compares the bot id — and the browser has no way to make that comparison. `isHuman` stays for the
+  // places that genuinely mean a person (the header's assignee line).
+  const heldByOther = conv?.heldByAnotherParty === true;
   const isHuman = conv?.assigneeType === "User";
   // Deep link to this conversation in the operator's Chatwoot (build from the instance origin/account).
   const chatwootUrl = conv
@@ -1655,7 +1660,7 @@ export function ConversationDetailPage() {
                       human" on a conversation a human already had, and hid "Return to AI" on the one
                       conversation that needed it. That is the shape of the bug this whole change is
                       about, reappearing in the console. */}
-                  {conv.status === "pending" && !isHuman && (
+                  {conv.status === "pending" && !heldByOther && (
                     <Button
                       variant="secondary"
                       size="sm"
@@ -1687,7 +1692,7 @@ export function ConversationDetailPage() {
                       {t("conversation.reopen", "Reopen")}
                     </Button>
                   )}
-                  {(isHuman ||
+                  {(heldByOther ||
                     (conv.status !== "pending" &&
                       conv.status !== "resolved")) && (
                     <Button
@@ -1704,17 +1709,19 @@ export function ConversationDetailPage() {
                       {t("conversation.returnToAi", "Return to AI")}
                     </Button>
                   )}
-                  {offerReengage && conv.status === "pending" && !isHuman && (
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      disabled={busy}
-                      onClick={reengage}
-                    >
-                      <Sparkles className="h-4 w-4" aria-hidden="true" />
-                      {t("conversation.respondNow", "Respond now")}
-                    </Button>
-                  )}
+                  {offerReengage &&
+                    conv.status === "pending" &&
+                    !heldByOther && (
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        disabled={busy}
+                        onClick={reengage}
+                      >
+                        <Sparkles className="h-4 w-4" aria-hidden="true" />
+                        {t("conversation.respondNow", "Respond now")}
+                      </Button>
+                    )}
                   {conv.status !== "resolved" && (
                     <Button
                       variant="secondary"

@@ -70,6 +70,11 @@ describe("conversation actions report their outcome", () => {
   // to key on status alone — so that state showed "Handoff to human" (to a conversation a human
   // already had) and hid "Return to AI" (the only action that helps). An operator with no way to act
   // on a conversation a human is holding is issue #198 itself, restated inside our own console.
+  //
+  // And the holder is the SERVER's answer, not `assigneeType === "User"`. A conversation assigned to
+  // another persona's agent bot is equally out of this agent's hands — the ownership gate compares the
+  // bot id, which the browser cannot do — so a User-only test reads that case backwards and offers
+  // exactly the wrong button on it.
   test("the ownership buttons key on the holder, not on the status", () => {
     // The gates live in JSX, so they are read as source for the same reason the handlers are.
     const handoff = SRC.indexOf(".handoff.post(");
@@ -77,18 +82,31 @@ describe("conversation actions report their outcome", () => {
     // Look back from the call to the condition that renders its button.
     const handoffGate = SRC.lastIndexOf("{conv.status ===", handoff);
     expect(handoffGate).toBeGreaterThan(-1);
-    expect(SRC.slice(handoffGate, handoff)).toContain("!isHuman");
+    expect(SRC.slice(handoffGate, handoff)).toContain("!heldByOther");
 
     // And the return is offered whenever a human holds it, whatever the status says.
     const returnCall = SRC.indexOf('"conversation.returned"');
     expect(returnCall).toBeGreaterThan(-1);
-    const returnGate = SRC.lastIndexOf("{(isHuman ||", returnCall);
+    const returnGate = SRC.lastIndexOf("{(heldByOther ||", returnCall);
     expect(returnGate).toBeGreaterThan(-1);
     expect(returnGate).toBeLessThan(returnCall);
 
     // "Respond now" asks the agent to speak, so it asks the same question.
     const reengageGate = SRC.indexOf("{offerReengage &&");
     expect(reengageGate).toBeGreaterThan(-1);
-    expect(SRC.slice(reengageGate, reengageGate + 120)).toContain("!isHuman");
+    expect(SRC.slice(reengageGate, reengageGate + 120)).toContain(
+      "!heldByOther",
+    );
+
+    // None of the three settles for the browser-side approximation. `isHuman` still exists for the
+    // header's assignee line, so its presence in the file is not the thing being forbidden — its
+    // presence in these three gates is.
+    for (const gate of [
+      SRC.slice(handoffGate, handoff),
+      SRC.slice(returnGate, returnCall),
+      SRC.slice(reengageGate, reengageGate + 120),
+    ]) {
+      expect(gate).not.toContain("isHuman");
+    }
   });
 });

@@ -8,6 +8,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import {
+  heldByAnotherParty,
   normalizeChatwootEvent,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
@@ -93,6 +94,53 @@ describe("outOfHoursGate", () => {
 });
 
 // ── attribution gate with bot identity (unit) ──
+// The assignee half on its own, because the console asks it WITHOUT the status clause: which
+// ownership action to offer is a question about who holds the conversation, and `pending` is both the
+// AI's own state and the state a takeover leaves behind.
+describe("heldByAnotherParty", () => {
+  test("nobody, or our own bot, is not another party", () => {
+    expect(
+      heldByAnotherParty({ assigneeType: null }, { ourAgentBotId: 9 }),
+    ).toBe(false);
+    expect(
+      heldByAnotherParty(
+        { assigneeType: "AgentBot", assigneeId: 9 },
+        { ourAgentBotId: 9 },
+      ),
+    ).toBe(false);
+  });
+  // The case a browser-side `assigneeType === "User"` test reads backwards, and the reason this is
+  // resolved server-side at all: the inbox's own agent cannot answer here either, so the console has
+  // to offer the hand-back rather than "handoff to human".
+  test("a DIFFERENT AgentBot is another party", () => {
+    expect(
+      heldByAnotherParty(
+        { assigneeType: "AgentBot", assigneeId: 7 },
+        { ourAgentBotId: 9 },
+      ),
+    ).toBe(true);
+  });
+  test("a human is another party, and an unknown bot id is not", () => {
+    expect(
+      heldByAnotherParty(
+        { assigneeType: "User", assigneeId: 1 },
+        { ourAgentBotId: 9 },
+      ),
+    ).toBe(true);
+    // Same direction shouldBotHandle takes: an id we cannot compare is not evidence of a stranger.
+    expect(
+      heldByAnotherParty(
+        { assigneeType: "AgentBot", assigneeId: null },
+        { ourAgentBotId: 9 },
+      ),
+    ).toBe(false);
+  });
+  // Status is deliberately absent: a resolved conversation nobody holds must not read as held.
+  test("a resolved conversation with no assignee is nobody's", () => {
+    expect(heldByAnotherParty({ assigneeType: null })).toBe(false);
+  });
+});
+
 describe("shouldBotHandle with ourAgentBotId", () => {
   test("acts when unassigned or assigned to our own bot", () => {
     expect(

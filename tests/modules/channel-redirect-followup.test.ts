@@ -697,6 +697,108 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
   });
 
+  // The hole the comparison alone leaves. If `lastInboundAt` was ALREADY null when this run read it,
+  // /reset writes null too and the predicate matches straight across the command it is fencing — the
+  // claim succeeds and the goodbye goes out exactly as before. Every other column the command touches
+  // goes to null or to zero, so none of them closes it either. A caller with no job AND no token to
+  // compare therefore does not get to claim at all.
+  test("a jobless closing with no episode token does not claim", async () => {
+    await restoreAnchor();
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: WIDGET_CONV },
+      data: { lastInboundAt: null },
+    });
+    const s = stubClient();
+    let reset = false;
+    const resetBeforeClaim = suDb.$extends({
+      query: {
+        conversation: {
+          async updateMany({ args, query }) {
+            const data =
+              (args as { data?: Record<string, unknown> }).data ?? {};
+            if (
+              Object.hasOwn(data, "redirectClosedAt") &&
+              data.redirectClosedAt &&
+              !reset
+            ) {
+              reset = true;
+              await suDb.conversation.updateMany({
+                where: { tenantId, chatwootConversationId: WIDGET_CONV },
+                data: { redirectClosedAt: null, lastInboundAt: null },
+              });
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    try {
+      const outcome = await deliverRedirectClosing({
+        tenantId,
+        instanceId,
+        widgetConversationId: WIDGET_CONV,
+        entryInboxId: 110,
+        closingMessage: "Vamos encerrar por aqui.",
+        closeChat: false,
+        base: resetBeforeClaim,
+        deps: { makeClient: s.makeClient },
+      });
+
+      expect(outcome).toBe("already-closed");
+      expect(s.sent).toEqual([]);
+      expect(s.resolved).not.toContain(ENTRY_CONV);
+      // It never even reached the claim, so the reset interceptor never fired — which is the point:
+      // the refusal is upstream of the write rather than a race it happens to lose.
+      expect(reset).toBe(false);
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: { redirectClosedAt: true },
+      });
+      expect(row.redirectClosedAt).toBeNull();
+    } finally {
+      await restoreAnchor();
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        data: { lastInboundAt: new Date() },
+      });
+    }
+  });
+
+  // And the ladder, which HAS a job to ask about, is not caught by that refusal even with the same
+  // null watermark: its `stillWanted` is the token. Without this the rule above could be passing by
+  // refusing every closing on a quiet widget conversation.
+  test("a ladder closing still delivers with no inbound watermark", async () => {
+    await restoreAnchor();
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: WIDGET_CONV },
+      data: { lastInboundAt: null },
+    });
+    const s = stubClient();
+    try {
+      const outcome = await deliverRedirectClosing({
+        stillWanted: async () => true,
+        tenantId,
+        instanceId,
+        widgetConversationId: WIDGET_CONV,
+        entryInboxId: 110,
+        closingMessage: "Vamos encerrar por aqui.",
+        closeChat: false,
+        base: suDb,
+        deps: { makeClient: s.makeClient },
+      });
+
+      expect(outcome).toBe("delivered");
+      expect(s.sent.length).toBeGreaterThan(0);
+    } finally {
+      await restoreAnchor();
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        data: { lastInboundAt: new Date() },
+      });
+    }
+  });
+
   // The control: the same call with nobody clearing the anchor still delivers. Without it, "sent
   // nothing" would also be satisfied by a check that refuses every closing.
   test("the same closing delivers when the anchor stays put", async () => {

@@ -639,18 +639,33 @@ export async function deliverRedirectClosing(
   // which is the cheaper side of the trade.
   if (p.stillWanted && !(await p.stillWanted())) return "already-closed";
 
+  // What the resolve trigger has instead of a job to ask about — and the reason it needs anything at
+  // all. `redirectClosedAt: null` cannot tell "never closed" from "was closed and /reset just cleared
+  // it": the values are identical, so on its own the CAS is not a fence against the command, it is a
+  // door the command OPENS. Something read BEFORE the command has to be compared after it.
+  //
+  // `lastInboundAt` is that something, when it is set: same snapshot above, cleared by the same reset
+  // in the same statement, and already read to pick the send mode, so comparing it costs no new
+  // state. A genuine new inbound moves it too, and standing down there is correct rather than
+  // collateral — the trigger was a RESOLVE, and a customer who has written since is on a conversation
+  // that reopened.
+  //
+  // Null is the case that comparison cannot cover, because /reset writes null as well and the
+  // predicate would match straight across the command it is fencing. There is no other column here
+  // that necessarily changes: every one the command touches goes TO null or to zero, so any of them
+  // can be null on both sides. So a caller with no job and no token does not get to claim — it is the
+  // one combination where nothing distinguishes the episode it read from the one after the reset, and
+  // the write it is holding is a goodbye to a customer. The ladder path is unaffected: its `stillWanted`
+  // IS the token, and it is armed by an inbound, so this watermark is set whenever it runs.
+  if (!p.stillWanted && cx.widget.lastInboundAt === null) {
+    logger.info(
+      "channel-redirect: closing stood down — no job to ask and no episode token to compare (widget conv=%d)",
+      p.widgetConversationId,
+    );
+    return "already-closed";
+  }
+
   // Claim the closing: set the watermark only if still unset AND the episode is the one this run read.
-  //
-  // The second half is what the resolve trigger has instead of a job to ask about. `redirectClosedAt:
-  // null` cannot tell "never closed" from "was closed and /reset just cleared it" — the values are
-  // identical — so on its own the CAS is not a fence against the command at all: the reset OPENS it.
-  // `lastInboundAt` is read in the same snapshot above and is cleared by the same reset, in the same
-  // statement, so requiring it unchanged makes this a compare-and-swap on the EPISODE rather than on
-  // one nullable column. No new state: the value was already being read to pick the send mode.
-  //
-  // A genuine new inbound moves it too, and standing down there is correct rather than collateral:
-  // the trigger for this closing was a RESOLVE, and a customer who has written since is on a
-  // conversation that reopened. A goodbye over that is the thing the anchor exists to prevent.
   const won = await runScopedOn(base, sysCtx(p.tenantId), async (db) => {
     const res = await db.conversation.updateMany({
       where: {

@@ -64,4 +64,31 @@ describe("conversation actions report their outcome", () => {
     // than about an offer nobody makes any more.
     expect(body.slice(elseAt)).toContain("setOfferReengage(true)");
   });
+
+  // Taking the offer down is not enough on its own: the operator still has to be able to RETRY. A
+  // takeover leaves the conversation `pending` with a human on it, and the two ownership buttons used
+  // to key on status alone — so that state showed "Handoff to human" (to a conversation a human
+  // already had) and hid "Return to AI" (the only action that helps). An operator with no way to act
+  // on a conversation a human is holding is issue #198 itself, restated inside our own console.
+  test("the ownership buttons key on the holder, not on the status", () => {
+    // The gates live in JSX, so they are read as source for the same reason the handlers are.
+    const handoff = SRC.indexOf(".handoff.post(");
+    expect(handoff).toBeGreaterThan(-1);
+    // Look back from the call to the condition that renders its button.
+    const handoffGate = SRC.lastIndexOf("{conv.status ===", handoff);
+    expect(handoffGate).toBeGreaterThan(-1);
+    expect(SRC.slice(handoffGate, handoff)).toContain("!isHuman");
+
+    // And the return is offered whenever a human holds it, whatever the status says.
+    const returnCall = SRC.indexOf('"conversation.returned"');
+    expect(returnCall).toBeGreaterThan(-1);
+    const returnGate = SRC.lastIndexOf("{(isHuman ||", returnCall);
+    expect(returnGate).toBeGreaterThan(-1);
+    expect(returnGate).toBeLessThan(returnCall);
+
+    // "Respond now" asks the agent to speak, so it asks the same question.
+    const reengageGate = SRC.indexOf("{offerReengage &&");
+    expect(reengageGate).toBeGreaterThan(-1);
+    expect(SRC.slice(reengageGate, reengageGate + 120)).toContain("!isHuman");
+  });
 });

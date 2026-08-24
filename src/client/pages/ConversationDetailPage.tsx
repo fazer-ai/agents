@@ -1649,7 +1649,13 @@ export function ConversationDetailPage() {
                   it, resolved = closed). "Configure agent" stays last so it sits at the right edge. */}
               <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end lg:flex-col lg:flex-nowrap lg:items-end lg:gap-2">
                 <div className="contents lg:flex lg:flex-row lg:flex-wrap lg:items-center lg:justify-end lg:gap-2">
-                  {conv.status === "pending" && (
+                  {/* Who HOLDS it, not what the status says. `pending` is the AI's state and also
+                      the state a takeover leaves behind — the hand-back sets it and then finds a
+                      person there — so keying these two buttons on status alone offered "handoff to
+                      human" on a conversation a human already had, and hid "Return to AI" on the one
+                      conversation that needed it. That is the shape of the bug this whole change is
+                      about, reappearing in the console. */}
+                  {conv.status === "pending" && !isHuman && (
                     <Button
                       variant="secondary"
                       size="sm"
@@ -1681,7 +1687,9 @@ export function ConversationDetailPage() {
                       {t("conversation.reopen", "Reopen")}
                     </Button>
                   )}
-                  {conv.status !== "pending" && conv.status !== "resolved" && (
+                  {(isHuman ||
+                    (conv.status !== "pending" &&
+                      conv.status !== "resolved")) && (
                     <Button
                       variant="secondary"
                       size="sm"
@@ -1696,7 +1704,7 @@ export function ConversationDetailPage() {
                       {t("conversation.returnToAi", "Return to AI")}
                     </Button>
                   )}
-                  {offerReengage && conv.status === "pending" && (
+                  {offerReengage && conv.status === "pending" && !isHuman && (
                     <Button
                       variant="primary"
                       size="sm"

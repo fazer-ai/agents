@@ -1362,10 +1362,18 @@ export async function returnConversationToAgent(
   // An EMPTY live assignee is not a competing holder: it means whoever was there has already gone,
   // and unassigning is then the no-op that also corrects the mirror. Only somebody actually holding
   // the conversation stops the hand-back.
+  //
+  // "Occupied" is read off the TYPE, not off the id. `parseLiveConversation` accepts a payload that
+  // names a "User" and carries no assignee object — it only rejects that shape for "AgentBot", where
+  // an unverifiable id would let another bot's conversation read as ours. Here the same shape says a
+  // person is holding it and we cannot tell WHICH, and comparing a null id against the baseline
+  // answered "nobody moved" and unassigned them. Unknown is not absent; it fails closed.
+  const occupied = live !== null && live.assigneeType !== null;
   const newHolder =
+    occupied &&
     live !== null &&
-    live.assigneeId !== null &&
-    (live.assigneeType !== baseline.assigneeType ||
+    (live.assigneeId === null ||
+      live.assigneeType !== baseline.assigneeType ||
       live.assigneeId !== baseline.assigneeId)
       ? { assigneeType: live.assigneeType, assigneeId: live.assigneeId }
       : null;
@@ -1412,8 +1420,10 @@ export async function returnConversationToAgent(
   //
   // Read off the same value the console just received, because the two answering differently is the
   // defect rather than a detail: a caller told "returned" while the row it triggered names a person
-  // has nothing to notice the disagreement with.
-  return finalHolder.assigneeId === null ? "returned" : "taken-over";
+  // has nothing to notice the disagreement with. And by the TYPE for the same reason the unassign
+  // is: a holder whose id never arrived is still a holder, and reporting "returned" for one would
+  // hand the caller the disagreement instead of the fact.
+  return finalHolder.assigneeType === null ? "returned" : "taken-over";
 }
 
 export async function setConversationStatus(

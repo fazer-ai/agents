@@ -70,7 +70,9 @@ function makeStub(
   // state at all; without a version the write is unversioned and the caller learns nothing from it.
   lateLive: {
     assigneeType: string;
-    assigneeId: number;
+    // Null renders the payload shape Chatwoot can send and `parseLiveConversation` accepts: a type
+    // naming a person, with no assignee object to identify them.
+    assigneeId: number | null;
     updatedAt?: number;
     // Which live read it first appears on. The hand-back reads the conversation three times — the
     // baseline before the status call, the check after it, and the mirror write's own — and the
@@ -156,7 +158,10 @@ function makeStub(
             ...(late.updatedAt != null ? { updated_at: late.updatedAt } : {}),
             meta: {
               assignee_type: late.assigneeType,
-              assignee: { id: late.assigneeId, name: "Bea" },
+              assignee:
+                late.assigneeId === null
+                  ? null
+                  : { id: late.assigneeId, name: "Bea" },
             },
           }
         : {
@@ -803,6 +808,22 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     );
     expect(outcome).toBe("returned");
     expect(stub.calls.unassignConversation).toBe(1);
+  });
+
+  // A payload that names a person and does not identify them. `parseLiveConversation` accepts that
+  // shape for "User" on purpose, so the compare has to read the TYPE: against a null id it answered
+  // "nobody moved" and unassigned the human who had just arrived.
+  test("a human whose live id never arrived is still left holding it", async () => {
+    const stub = makeStub({}, { assigneeType: "User", assigneeId: null });
+    const outcome = await returnConversationToAgent(
+      ctx(tenant),
+      convId,
+      { makeClient: stub.makeClient },
+      appDb,
+    );
+    expect(stub.calls.unassignConversation).toBe(0);
+    // And reported as such: "returned" would be the same disagreement one step later.
+    expect(outcome).toBe("taken-over");
   });
 
   // "User" and "AgentBot" are separate id namespaces in Chatwoot, so the comparison is the whole

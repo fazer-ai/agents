@@ -596,6 +596,11 @@ export async function redirectFollowUpHandler(
         // in the ladder — the config load is fail-closed on `enabled`, but the model turn runs after
         // it and the post comes after that — so a switch flipped mid-turn would otherwise reach the
         // customer from an agent that is already off.
+        //
+        // The verdict is not carried out to the advance below, deliberately. `rescheduleTo` asks the
+        // fence again, so an agent still off there ends the ladder anyway; what is left uncovered is
+        // an operator switching OFF during the turn and back ON inside the milliseconds before that
+        // ask, and an agent that is live again by then has a defensible claim to the next stage.
         stillWanted: async (scoped) => (await fence(scoped)) === "go",
         deps,
       });

@@ -1516,10 +1516,35 @@ export async function returnConversationToAgent(
   //
   // Read off the same value the console just received, because the two answering differently is the
   // defect rather than a detail: a caller told "returned" while the row it triggered names a person
-  // has nothing to notice the disagreement with. And by the TYPE for the same reason the unassign
-  // is: a holder whose id never arrived is still a holder, and reporting "returned" for one would
-  // hand the caller the disagreement instead of the fact.
-  return finalHolder.assigneeType === null ? "returned" : "taken-over";
+  // has nothing to notice the disagreement with.
+  //
+  // And asked with the OWNERSHIP rule rather than "is there a type here", because the success state
+  // of this very function can carry one: the pending transition, or a concurrent assignment, can
+  // leave the conversation on the inbox's own agent bot — which the gate reads as the AI holding it,
+  // exactly what the caller asked for. Answering "taken-over" there warns the operator that somebody
+  // claimed a conversation the intended agent owns, and takes away the re-engage offer with it.
+  //
+  // A holder whose id never arrived is still a holder: `heldByAnotherParty` keeps that direction for
+  // `User` (any human counts) while an unidentifiable AgentBot stays uncounted, which is the same
+  // answer the unassign above already gives.
+  const ourAgentBotId =
+    conv.inbox?.agentId != null
+      ? ((
+          await runScopedOn(base, ctx, (db) =>
+            db.chatwootAgentBot.findFirst({
+              where: {
+                tenantId,
+                chatwootInstanceId: conv.chatwootInstanceId,
+                agentId: conv.inbox?.agentId ?? 0n,
+              },
+              select: { chatwootAgentBotId: true },
+            }),
+          )
+        )?.chatwootAgentBotId ?? null)
+      : null;
+  return heldByAnotherParty(finalHolder, { ourAgentBotId })
+    ? "taken-over"
+    : "returned";
 }
 
 export async function setConversationStatus(

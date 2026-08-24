@@ -87,9 +87,17 @@ describe("conversation actions report their outcome", () => {
     // And the return is offered whenever a human holds it, whatever the status says.
     const returnCall = SRC.indexOf('"conversation.returned"');
     expect(returnCall).toBeGreaterThan(-1);
-    const returnGate = SRC.lastIndexOf("{(heldByOther ||", returnCall);
+    const returnGate = SRC.lastIndexOf(
+      '{conv.status !== "resolved" &&',
+      returnCall,
+    );
     expect(returnGate).toBeGreaterThan(-1);
     expect(returnGate).toBeLessThan(returnCall);
+
+    // And it does not overlap "Reopen", which runs the SAME operation: two differently labelled
+    // buttons for one action is what keying the holder clause on every status produced.
+    expect(SRC.slice(returnGate, returnCall)).toContain('!== "resolved"');
+    expect(SRC.slice(returnGate, returnCall)).toContain("heldByOther");
 
     // "Respond now" asks the agent to speak, so it asks the same question.
     const reengageGate = SRC.indexOf("{offerReengage &&");

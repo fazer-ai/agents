@@ -1692,23 +1692,26 @@ export function ConversationDetailPage() {
                       {t("conversation.reopen", "Reopen")}
                     </Button>
                   )}
-                  {(heldByOther ||
-                    (conv.status !== "pending" &&
-                      conv.status !== "resolved")) && (
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      disabled={busy}
-                      onClick={() =>
-                        returnToAi(
-                          t("conversation.returned", "Returned to the AI."),
-                        )
-                      }
-                    >
-                      <Bot className="h-4 w-4" aria-hidden="true" />
-                      {t("conversation.returnToAi", "Return to AI")}
-                    </Button>
-                  )}
+                  {/* `resolved` is excluded on BOTH sides: "Reopen" above already runs this exact
+                      operation, so letting the holder clause add "Return to AI" there rendered two
+                      differently labelled buttons for one action. Reopen is the right label for a
+                      closed conversation whoever holds it, so it keeps that state alone. */}
+                  {conv.status !== "resolved" &&
+                    (heldByOther || conv.status !== "pending") && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={busy}
+                        onClick={() =>
+                          returnToAi(
+                            t("conversation.returned", "Returned to the AI."),
+                          )
+                        }
+                      >
+                        <Bot className="h-4 w-4" aria-hidden="true" />
+                        {t("conversation.returnToAi", "Return to AI")}
+                      </Button>
+                    )}
                   {offerReengage &&
                     conv.status === "pending" &&
                     !heldByOther && (

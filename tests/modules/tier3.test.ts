@@ -576,6 +576,103 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(detail).not.toHaveProperty("messages");
   });
 
+  // The hand-back's own success state, which the type-only test called a takeover. `toggle_status ->
+  // pending` (or a concurrent assignment) can leave the conversation on the INBOX'S OWN agent bot,
+  // and that is precisely what the caller asked for — the gate reads it as the AI holding it. Reported
+  // as "taken-over", the console warns that somebody claimed a conversation the intended agent owns
+  // and takes the re-engage offer away with it.
+  test("landing on the inbox's own bot is a return, not a takeover", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 4343,
+        name: "Own",
+      },
+    });
+    const ours = await suDb.agent.create({
+      data: { tenantId: tenant, name: "OursBack", systemPrompt: "x" },
+    });
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: instanceId,
+        agentId: ours.id,
+        chatwootAgentBotId: 950,
+        accessToken: encryptJson("t"),
+        webhookSecret: encryptJson("s"),
+        webhookRouteTokenHash: `own-${process.pid}`,
+        name: "OursBack",
+      },
+    });
+    await suDb.inbox.update({
+      where: { id: inbox.id },
+      data: { agentId: ours.id },
+    });
+    // Its OWN row, not the shared `convId`. `reconcileMirrorFromLive` stores the version it wrote, so
+    // a test that leaves a future timestamp behind makes the next test's older read lose on version
+    // and its assertion fail for a reason that has nothing to do with the code.
+    const ownConv = (
+      await suDb.conversation.create({
+        data: {
+          tenantId: tenant,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: 561,
+          status: "pending",
+          inboxId: inbox.id,
+          threadId: `${tenant}:${instanceId}:561`,
+        },
+      })
+    ).id;
+    try {
+      // Chatwoot answers with our own bot on the read the mirror write makes, which is the shape a
+      // successful hand-back leaves behind.
+      const stub = makeStub(
+        {},
+        {
+          assigneeType: "AgentBot",
+          assigneeId: 950,
+          updatedAt: Math.floor(Date.now() / 1000) + 60,
+          fromRead: 3,
+        },
+      );
+      const outcome = await returnConversationToAgent(
+        ctx(tenant),
+        ownConv,
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      expect(outcome).toBe("returned");
+
+      // And a DIFFERENT bot on the same shape is still a takeover, so the rule above is the id
+      // comparison rather than "any AgentBot is fine".
+      const other = makeStub(
+        {},
+        {
+          assigneeType: "AgentBot",
+          assigneeId: 951,
+          updatedAt: Math.floor(Date.now() / 1000) + 120,
+          fromRead: 3,
+        },
+      );
+      expect(
+        await returnConversationToAgent(
+          ctx(tenant),
+          ownConv,
+          { makeClient: other.makeClient },
+          appDb,
+        ),
+      ).toBe("taken-over");
+    } finally {
+      await suDb.conversation.delete({ where: { id: ownConv } });
+      await suDb.chatwootAgentBot.deleteMany({
+        where: { tenantId: tenant, agentId: ours.id },
+      });
+      await suDb.inbox.delete({ where: { id: inbox.id } });
+      await suDb.agent.delete({ where: { id: ours.id } });
+    }
+  });
+
   // The wiring behind that flag, which is the half a pure test cannot reach: the console gets one
   // boolean, and it is only worth anything if the server actually resolved the bound persona's bot id
   // to compare against. Driven with a DIFFERENT bot holding the conversation, because that is the

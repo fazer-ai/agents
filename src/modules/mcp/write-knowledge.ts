@@ -1,5 +1,6 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { firstUnstorableProblem } from "@/lib/text";
 import {
   createDocument,
   deleteDocument,
@@ -36,6 +37,18 @@ import {
 // stays UI-only), and the suggestion-approval queue. Spine: gate (mcp:write + tenant) → dry-run
 // preview by default → apply + audit. No secrets here, so no credential resolution.
 
+// The storability rule, asked HERE and not left to the core, because a dry run never reaches the
+// core: it answers "this would work" off the arguments alone. A text the column cannot hold would
+// preview clean and then fail on apply, which is the one thing a dry run exists to prevent. The
+// pure form is used rather than the core's throwing wrapper, because what a refusal looks like is
+// the transport's question and here it is a WriteResult, not an exception (issue #247).
+function unstorable(
+  fields: readonly (readonly [string, string | null | undefined])[],
+): WriteResult | null {
+  const problem = firstUnstorableProblem(fields);
+  return problem ? err(problem) : null;
+}
+
 function failOf(e: unknown): WriteResult {
   if (e instanceof AppError) return err(e.message);
   throw e;
@@ -70,6 +83,12 @@ export async function knowledgeCreate(
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
   const tenantId = ctx.tenantId as bigint;
+  const bad = unstorable([
+    ["name", args.name],
+    ["description", args.description],
+    ["embedding_model", args.embedding_model],
+  ]);
+  if (bad) return bad;
   try {
     if (args.dry_run !== false) {
       return ok({
@@ -138,6 +157,11 @@ export async function knowledgeUpdate(
       "no updatable fields provided (name, description, chunk_size, chunk_overlap)",
     );
   }
+  const bad = unstorable([
+    ["name", args.name],
+    ["description", args.description],
+  ]);
+  if (bad) return bad;
   try {
     const current = await getKnowledgeBase({ tenantId, id, base });
     const target = `knowledge_base:${id}`;
@@ -234,6 +258,11 @@ export async function knowledgeDocumentCreate(
   const tenantId = ctx.tenantId as bigint;
   const kbId = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof kbId !== "bigint") return kbId;
+  const bad = unstorable([
+    ["title", args.title],
+    ["text", args.text],
+  ]);
+  if (bad) return bad;
   try {
     if (args.dry_run !== false) {
       return ok({
@@ -542,6 +571,12 @@ export async function knowledgeEdit(
   ) {
     return err("no updatable fields provided (title, content, rationale)");
   }
+  const bad = unstorable([
+    ["title", args.title],
+    ["content", args.content],
+    ["rationale", args.rationale],
+  ]);
+  if (bad) return bad;
   const target = `approval:${id}`;
   try {
     if (args.dry_run !== false) {

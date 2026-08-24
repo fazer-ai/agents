@@ -154,3 +154,21 @@ export function unstorableProblem(value: string, what: string): string | null {
   );
   return `${what} contains characters the database cannot store (${named.join(" ")}) — a NUL or half of a character, which PostgreSQL refuses in text and JSON columns alike.`;
 }
+
+// The same question asked of a whole WRITE rather than one value: a row is refused as a unit, so
+// checking one field and not its neighbours only moves which value produces the 500. Returns the
+// first offender's message, or null. Undefined and null are skipped, so an optional column can be
+// listed unconditionally and a field added to the shape later joins by being listed here.
+//
+// Pure on purpose. The caller throws, because what STATUS a refusal carries is the caller's
+// question: the same unstorable value is a 400 at a REST boundary and a tool failure to a model.
+export function firstUnstorableProblem(
+  fields: readonly (readonly [string, string | null | undefined])[],
+): string | null {
+  for (const [what, value] of fields) {
+    if (typeof value !== "string") continue;
+    const problem = unstorableProblem(value, what);
+    if (problem) return problem;
+  }
+  return null;
+}

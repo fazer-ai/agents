@@ -5,6 +5,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { firstUnstorableProblem } from "@/lib/text";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
@@ -118,6 +119,21 @@ export function validateChunkParams(
   }
 }
 
+// The refusal, in the core rather than at a transport, because three roads reach these writes: the
+// REST endpoints, the MCP write tool, and the agent's own suggestion being published. `unstorable`
+// carries the field and the offending code point, which is the whole difference between an answer a
+// caller can act on and the 500 this replaces.
+export function refuseUnstorable(
+  fields: readonly (readonly [string, string | null | undefined])[],
+): void {
+  const problem = firstUnstorableProblem(fields);
+  if (problem) {
+    throw new AppError(problem, 400, "errors.unstorableText", {
+      reason: problem,
+    });
+  }
+}
+
 export interface CreateDocumentParams {
   tenantId: bigint;
   knowledgeBaseId: bigint;
@@ -129,11 +145,28 @@ export interface CreateDocumentParams {
   base?: PrismaClient;
 }
 
+// The whole write is held to what the columns can store, before anything is read or enqueued. It is
+// not a hypothetical shape: `extractText` decodes an uploaded .txt with `TextDecoder("utf-8")`, so a
+// file carrying a 0x00 byte hands a NUL straight to `content`, and Postgres refuses one in a `text`
+// column (22021). Nothing caught it between the write and the transport, so an operator uploading a
+// file got a 500 naming neither the file nor the reason (issue #247).
+//
+// REFUSED, not repaired, which is the opposite of what #218 and #243 do with the same characters.
+// The rule is who can act on the answer: there the writer is a third party's webhook or an exception
+// message and nobody reads a rejection, so repairing keeps the event. Here it is a person who chose
+// this file, or a client calling an API that answers them, and silently deleting bytes out of a
+// document an agent is about to answer from is worse than saying it cannot be stored.
 export async function createDocument(
   params: CreateDocumentParams,
 ): Promise<{ id: bigint; status: string }> {
   const base = params.base ?? basePrisma;
   const { tenantId, knowledgeBaseId } = params;
+  refuseUnstorable([
+    ["title", params.title],
+    ["text", params.text],
+    ["fileName", params.fileName],
+    ["mimeType", params.mimeType],
+  ]);
 
   const doc = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const kb = await db.knowledgeBase.findUnique({
@@ -277,6 +310,12 @@ export async function updateDocument(
   const hasTitle = params.title !== undefined;
   const hasText = params.text !== undefined;
   if (!hasTitle && !hasText) throw new AppError("nothing to update", 400);
+  // Same rule as the create, and asked here too because an edit is a write of its own: the create's
+  // check says nothing about the text an update carries.
+  refuseUnstorable([
+    ["title", params.title],
+    ["text", params.text],
+  ]);
 
   const { doc, reingest } = await runScopedOn(
     base,

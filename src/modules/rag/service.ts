@@ -7,6 +7,7 @@ import {
   cancelPendingJob,
   createDocument,
   sysCtx as docsSysCtx,
+  refuseUnstorable,
   resolveEmbeddingConfig,
   validateChunkParams,
 } from "./documents";
@@ -107,6 +108,10 @@ export async function listKnowledgeBases(
   });
 }
 
+// Every text this module stores is held to what its column can hold, at the core rather than at a
+// transport, because three roads reach these writes: REST, the MCP write tools, and the agent's own
+// suggestion tool. Refused rather than repaired: the writer here reads the answer and can send the
+// value again without the character. See rag/documents.ts for the full reasoning (issue #247).
 export async function createKnowledgeBase(params: {
   tenantId: bigint;
   name: string;
@@ -115,6 +120,11 @@ export async function createKnowledgeBase(params: {
   base?: PrismaClient;
 }): Promise<{ id: bigint }> {
   const base = params.base ?? basePrisma;
+  refuseUnstorable([
+    ["name", params.name],
+    ["description", params.description],
+    ["embeddingModel", params.embeddingModel],
+  ]);
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
     // New bases inherit the tenant's default embedding model (so the tenant's one embedding config
     // applies uniformly) unless the caller pins one explicitly.
@@ -147,10 +157,19 @@ export interface SuggestParams {
   base?: PrismaClient;
 }
 
+// The same rule the document write applies (issue #247), asked one table earlier and of a different
+// writer: `proposedContent` and its siblings are `text` columns, and the agent's own suggestion tool
+// is what fills them, so the characters are a model's rather than a person's. A model reads a tool
+// failure and can write the fact again without them, so the answer is still a refusal.
 export async function createSuggestion(
   params: SuggestParams,
 ): Promise<{ id: bigint }> {
   const base = params.base ?? basePrisma;
+  refuseUnstorable([
+    ["proposedTitle", params.proposedTitle],
+    ["proposedContent", params.proposedContent],
+    ["rationale", params.rationale],
+  ]);
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
     const kb = await db.knowledgeBase.findUnique({
       where: { id: params.knowledgeBaseId },
@@ -329,6 +348,11 @@ export async function editApprovalItem(
   params: EditApprovalParams,
 ): Promise<"updated" | "not-pending"> {
   const base = params.base ?? basePrisma;
+  refuseUnstorable([
+    ["proposedTitle", params.proposedTitle],
+    ["proposedContent", params.proposedContent],
+    ["rationale", params.rationale],
+  ]);
   const data: Record<string, unknown> = { status: "EDITED" };
   if (params.proposedTitle !== undefined)
     data.proposedTitle = params.proposedTitle;
@@ -530,6 +554,10 @@ export async function updateKnowledgeBase(params: {
   base?: PrismaClient;
 }): Promise<void> {
   const base = params.base ?? basePrisma;
+  refuseUnstorable([
+    ["name", params.name],
+    ["description", params.description],
+  ]);
 
   if (params.chunkSize !== undefined && params.chunkOverlap !== undefined) {
     validateChunkParams(params.chunkSize, params.chunkOverlap);

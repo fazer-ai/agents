@@ -230,13 +230,14 @@ async function seedConversation(
   convId: number,
   assigneeType: string | null,
   assigneeId: number | null = null,
+  status = "pending",
 ) {
   await suDb.conversation.create({
     data: {
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootConversationId: convId,
-      status: "pending",
+      status,
       assigneeType,
       assigneeId,
       threadId: `${tenantId}:${instanceId}:${convId}`,
@@ -1065,6 +1066,61 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("taken-over");
     expect(sent).toEqual([]);
+  });
+
+  // NOTE: Both of these lose the ownership recheck and return the same "taken-over". What they must
+  // NOT share is the flow-log detail. A human assignee is a real handoff; a conversation that merely
+  // left `pending` with nobody assigned is Chatwoot auto-escalating (most often because our webhook
+  // ack was slow), which throws away a reply that was already written. Reporting both as
+  // `taken_over` is what sent an incident investigation to the wrong half of the system (#225).
+  async function handoffDetail(convId: number): Promise<unknown> {
+    const row = await suDb.executionLog.findFirstOrThrow({
+      where: { tenantId, stage: "handoff" },
+      orderBy: { id: "desc" },
+    });
+    void convId;
+    return row.detail;
+  }
+
+  test("a human assignee is reported as a real takeover", async () => {
+    await seedConversation(8801, "User", 5);
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 8801 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStubClient([]),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("taken-over");
+    expect(await handoffDetail(8801)).toMatchObject({ outcome: "taken_over" });
+  });
+
+  test("an auto-escalated conversation is reported as lost ownership, with the status", async () => {
+    // Exactly what Chatwoot's `handle_agent_bot_error` leaves behind: status moved off `pending`,
+    // no assignee. Nobody took this conversation; the gate simply closed under the turn.
+    await seedConversation(8802, null, null, "open");
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 8802 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStubClient([]),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("taken-over");
+    expect(await handoffDetail(8802)).toMatchObject({
+      outcome: "ownership_lost",
+      status: "open",
+    });
   });
 
   // NOTE: The payload says unassigned and the mirror knows better — the same window the

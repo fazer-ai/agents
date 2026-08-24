@@ -2,8 +2,8 @@ import { Elysia, t } from "elysia";
 import logger from "@/api/lib/logger";
 import { doc, errorResponse, jsonResponse } from "@/api/lib/openapi";
 import {
-  processChatwootDelivery,
   receiveChatwootWebhook,
+  recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
 
 // Public, JWT-less Chatwoot Agent Bot webhook receiver. Not behind tenancyPlugin/requireAuth:
@@ -27,32 +27,43 @@ export const chatwootController = new Elysia({
     });
 
     // Ack fast (<5s): a slow or non-2xx ack makes Chatwoot move the conversation pending→open
-    // (auto-escalate to a human). The dispatch runs detached; processChatwootDelivery is
-    // idempotent (status CAS), so re-firing on a duplicate that found a stranded PENDING is safe.
+    // (auto-escalate to a human). The dispatch runs detached.
+    //
+    // A DUPLICATE DISPATCHES TOO, and the CAS decides. `recordDelivery` calls every redelivery a
+    // duplicate the moment the ledger row exists, but the row existing is not the same as the work
+    // having been done: this dispatch is detached and fires AFTER the ack, so a process that dies in
+    // between (deploy, OOM, restart) strands the row on PENDING with nothing running. Dropping the
+    // redelivery there loses the message for good: Chatwoot, having been handed a 200, never sends
+    // it again. That is the one failure here that is not recoverable, and turning the retries
+    // back on upstream is what makes it reachable.
+    //
+    // Nothing double-processes: processChatwootDelivery opens with a CAS on `status: "PENDING"`, so
+    // a row already PROCESSING or PROCESSED matches zero rows and returns "skipped". The redelivery
+    // carries the same frozen payload, so a claim it wins reprocesses the same event.
     if (
       result.outcome === "queued" &&
       result.tenantId !== undefined &&
       result.instanceId !== undefined &&
-      result.deliveryRowId !== undefined &&
+      result.deliveryId !== undefined &&
       result.normalized !== undefined
     ) {
       const {
         tenantId,
         instanceId,
-        deliveryRowId,
+        deliveryId,
         agentBotId = null,
         normalized,
       } = result;
-      void processChatwootDelivery({
+      void recordAndProcessChatwootDelivery({
         tenantId,
         instanceId,
-        deliveryRowId,
+        deliveryId,
         agentBotId,
         normalized,
       }).catch((err) => {
         logger.error(
           "chatwoot async dispatch failed (delivery %s): %s",
-          String(deliveryRowId),
+          deliveryId,
           err instanceof Error ? err.message : String(err),
         );
       });

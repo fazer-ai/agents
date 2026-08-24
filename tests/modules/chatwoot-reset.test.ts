@@ -20,8 +20,8 @@ import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 import {
-  processChatwootDelivery,
   receiveChatwootWebhook,
+  recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
 import { enqueueJob } from "@/modules/scheduler/service";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
@@ -274,10 +274,10 @@ async function sendReset(
     nowSeconds,
     base: appDb,
   });
-  await processChatwootDelivery({
+  await recordAndProcessChatwootDelivery({
     tenantId,
     instanceId: r.instanceId as bigint,
-    deliveryRowId: r.deliveryRowId as bigint,
+    deliveryId: r.deliveryId as string,
     agentBotId: r.agentBotId ?? null,
     normalized: r.normalized as NonNullable<typeof r.normalized>,
     base: live.base ?? appDb,
@@ -702,10 +702,10 @@ describe.skipIf(!dbUp)(
           nowSeconds,
           base: appDb,
         });
-        await processChatwootDelivery({
+        await recordAndProcessChatwootDelivery({
           tenantId: other.id,
           instanceId: r.instanceId as bigint,
-          deliveryRowId: r.deliveryRowId as bigint,
+          deliveryId: r.deliveryId as string,
           agentBotId: r.agentBotId ?? null,
           normalized: r.normalized as NonNullable<typeof r.normalized>,
           base: appDb,

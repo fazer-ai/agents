@@ -14,6 +14,7 @@ import { type ChatwootClient, fetchChatwootProfile } from "./client";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
 import { chatwootAutoRepliesOutOfHours } from "./out-of-office";
 import { ensureAgentBot } from "./provisioning";
+import { invalidateRouteTokenCache } from "./route-token-cache";
 
 // Chatwoot deployment + account + inbox management (per-tenant). A DEPLOYMENT (base URL + shared admin
 // token, registered ONCE per tenant) holds the connection; ACCOUNTS (ChatwootInstance rows) hang off
@@ -385,6 +386,9 @@ async function connectAccount(
         where: { id: existing.id },
         data: { disconnectedAt: null, deploymentId, accountName, serverKey },
       });
+      // The receiver refuses events for a disconnected instance and caches that refusal by route
+      // token. Reconnecting has to take effect now, not at the end of the cache's TTL.
+      invalidateRouteTokenCache();
       return existing.id;
     }
     try {
@@ -555,6 +559,9 @@ export async function softDisconnectChatwootInstance(
       data: { disconnectedAt: new Date() },
     }),
   );
+  // The receiver caches "this route token resolves to a live bot" by hash. Without this, events for
+  // an account just disconnected would keep being processed until the entry expires.
+  invalidateRouteTokenCache();
 }
 
 // Reconnect a soft-disconnected account: clear disconnectedAt (reusing the stored admin token). The
@@ -582,6 +589,9 @@ export async function reconnectChatwootInstance(
       data: { disconnectedAt: null },
       select: SELECT,
     });
+    // Mirrors the disconnect: the receiver caches the refusal too, and reconnecting has to take
+    // effect now rather than at the end of the entry's TTL.
+    invalidateRouteTokenCache();
     return toDto(row);
   });
 }

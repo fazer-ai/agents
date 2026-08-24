@@ -240,7 +240,11 @@ export function CompanyProfileCard({
         </span>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      {/* ONE PER LINE, deliberately. This card lives in a `md` modal (max-w-md), so a second
+          column leaves each input under 200px — and the six fields are not the same length:
+          an address and a website need the room that a phone and a tax id do not. Paired,
+          they all get the short one's width. */}
+      <div className="grid gap-3">
         {FIELDS.map((field) => (
           <FormField key={field} label={label[field]}>
             <Input

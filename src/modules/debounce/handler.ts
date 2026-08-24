@@ -543,13 +543,24 @@ export async function flushDebounceJob(
     }
     return { outcome: "done" };
   } catch (e) {
-    await recordConversationError({
-      tenantId,
-      instanceId,
-      chatwootConversationId: conversationId,
-      error: e,
-      base,
-    });
+    // The same ask the clean paths make, on the branch that reaches this write without passing any of
+    // them: a throw from the invoke, the TTS call or a Chatwoot send unwinds past every `stillWanted`
+    // above and lands here. `lastError`/`lastErrorAt` are state /reset clears, so recording a retired
+    // run's failure puts back the failure banner the operator was just told had been cleared — and it
+    // is about a turn that will never be retried, because the claim token this run holds was bumped.
+    //
+    // Asked HERE and not carried down from the fence above: everything between them is I/O, which is
+    // exactly the stretch the answer decays over. Unreadable stays "not retired", the same direction
+    // `jobRetired` takes everywhere else — an unknown must not swallow a real failure silently.
+    if (!(await jobRetired(job, base))) {
+      await recordConversationError({
+        tenantId,
+        instanceId,
+        chatwootConversationId: conversationId,
+        error: e,
+        base,
+      });
+    }
     throw e;
   }
 }

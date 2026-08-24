@@ -1806,4 +1806,82 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(conv.lastError).toBeNull();
     });
   });
+
+  // The clean stale returns are fenced at every wait. This is the branch that reaches a write WITHOUT
+  // passing any of them: a throw unwinds straight past them into the handler's catch.
+  describe("with a turn that throws after the command retired it", () => {
+    // Retires the claim from inside the model call and then rejects, which is the shape the reviewer
+    // named: /reset lands while the invoke (or a TTS call, or a send) is in flight, and that call
+    // then fails.
+    const retireThenThrow = (thread: string) =>
+      new SideEffectModel(async () => {
+        await retireJobsByDedupeKey(
+          tenantId,
+          "DEBOUNCE",
+          debounceDedupeKey(thread),
+          suDb,
+        );
+        throw new Error("boom");
+      }) as unknown as BaseChatModel;
+
+    async function runThrowingFlush(convId: number, retire: boolean) {
+      await seedConversation(convId);
+      const thread = threadOf(convId);
+      const row = await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "DEBOUNCE",
+          dedupeKey: debounceDedupeKey(thread),
+          status: "CLAIMED",
+          runAt: new Date(),
+          payload: { threadId: thread, agentBotId: 9, burstStartedAt: 1 },
+        },
+        select: { id: true, claimSeq: true },
+      });
+      const model = retire
+        ? retireThenThrow(thread)
+        : (new SideEffectModel(async () => {
+            throw new Error("boom");
+          }) as unknown as BaseChatModel);
+      const sent: Array<[number, string]> = [];
+      const calls = { getMessages: 0 };
+      const err = await flushDebounceJob({
+        job: { ...jobFor(convId), id: row.id, claimSeq: row.claimSeq },
+        base: appDb,
+        deps: {
+          makeModel: () => model,
+          makeClient: makeStub({
+            pages: [page([{ id: 1, content: "oi" }])],
+            sent,
+            calls,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      // Rethrown either way: the scheduler still has to see the attempt fail. Only the bookkeeping
+      // changes, and asserting this keeps the fence from quietly swallowing the failure instead.
+      expect(err).toBeInstanceOf(Error);
+      return suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: convId },
+        select: { lastError: true, lastErrorAt: true },
+      });
+    }
+
+    test("a throw from a retired run does not put the failure back", async () => {
+      const conv = await runThrowingFlush(865, true);
+      // `lastError`/`lastErrorAt` are what /reset clears. Recording them here would raise the banner
+      // the operator was just told had been taken down, over a turn no retry is coming for.
+      expect(conv.lastError).toBeNull();
+      expect(conv.lastErrorAt).toBeNull();
+    });
+
+    test("a throw from a run nobody retired still records the failure", async () => {
+      const conv = await runThrowingFlush(866, false);
+      expect(conv.lastError).not.toBeNull();
+      expect(conv.lastErrorAt).not.toBeNull();
+    });
+  });
 });

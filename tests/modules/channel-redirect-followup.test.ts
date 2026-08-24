@@ -1542,6 +1542,52 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(s.resolved).toEqual([]);
   });
 
+  // The fence's own read can fail, and when it does the liveness half is unknown — which is live. The
+  // retirement half is not allowed to be unknown with it: an aborted transaction cannot answer it, so
+  // it is asked again on a fresh one. A /reset that landed mid-run must not be overtaken by a
+  // question added on top of it.
+  test("a failed fence read still sees a retired ladder", async () => {
+    const job = await claimed("whatsapp");
+    const s = stubClient();
+    wire.length = 0;
+    globalThis.fetch = httpDouble;
+    // The fence's agent read is the one that fails — it asks for `enabled` + `mode` alone, while the
+    // handler's own load at the top takes `settings` with them — and the /reset lands just before it.
+    let retiredMidRun = false;
+    const failingFence = appDb.$extends({
+      query: {
+        agent: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (
+              sel?.enabled === true &&
+              sel?.mode === true &&
+              sel?.settings === undefined
+            ) {
+              if (!retiredMidRun) {
+                retiredMidRun = true;
+                await retireRedirectFollowUp(tenantId, widgetThread, appDb);
+              }
+              throw new Error("fence read is down");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    try {
+      await redirectFollowUpHandler(job, failingFence, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(retiredMidRun).toBe(true);
+    expect(wire.filter((u) => u.includes("/messages"))).toEqual([]);
+    expect(s.sent).toEqual([]);
+  });
+
   // Advancing is a decision too. A stage can end without ever reaching its own fence — the sibling
   // lookup finds nobody, the link cannot be minted, or the chat stage simply finishes — and arming
   // the next stage there points a closing at an episode the agent is no longer allowed to touch:

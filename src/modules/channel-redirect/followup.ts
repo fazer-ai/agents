@@ -539,13 +539,23 @@ export async function redirectFollowUpHandler(
     const answer = await (scoped
       ? read(scoped)
       : runScopedOn(base, sysCtx(tenantId), read)
-    ).catch((err: unknown) => {
+    ).catch(async (err: unknown) => {
       logger.warn(
         "channel-redirect: could not re-read the ladder's fence (widget thread=%s): %s",
         payload.widgetThreadId,
         err instanceof Error ? err.message : String(err),
       );
-      return "go" as const;
+      // NOTE: The liveness half is unknown here, and unknown is live. Retirement is not allowed to be
+      // unknown by association: a statement the server rejects leaves the transaction aborted, so it
+      // cannot be asked in THAT one — it gets a fresh one. A /reset is the strongest fence in this
+      // file and it must not be overtaken by a question that was added on top of it.
+      //
+      // Not when the caller handed us its connection: opening a second one inside the nudge's
+      // advisory lock is the pool inversion `jobRetired` warns about, and that path keeps its own
+      // retirement fences either side of this one.
+      if (scoped) return "go" as const;
+      const stillRetired = await jobRetired(job, base).catch(() => false);
+      return stillRetired ? ("retired" as const) : ("go" as const);
     });
     return answer;
   };

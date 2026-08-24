@@ -68,9 +68,17 @@ function jsonResponse(body: unknown, status = 200): Response {
 // "unreadable, hand back anyway" path every other test here exercises.
 function fakeChatwoot(
   failing: RegExp | null = null,
-  takeoverAfterToggle: { type: string; id: number } | null = null,
+  takeoverAfterToggle: {
+    type: string;
+    id: number;
+    // Which live read it first shows up on, counting from the command's own refresh. Default is the
+    // one after the status call; an earlier number puts the takeover in the window between the
+    // command's holder check and the hand-back's first read.
+    fromRead?: number;
+  } | null = null,
 ): FakeChatwoot {
   let toggled = false;
+  let liveReads = 0;
   const calls: CwCall[] = [];
   const impl = (async (input, init) => {
     const url = new URL(String(input));
@@ -95,13 +103,18 @@ function fakeChatwoot(
       method === "GET" &&
       url.pathname.endsWith(`/conversations/${CONV_ID}`)
     ) {
+      liveReads += 1;
       return jsonResponse({
         id: CONV_ID,
         kanban_task: { id: KANBAN_TASK_ID },
         ...(takeoverAfterToggle
           ? {
               status: "pending",
-              meta: toggled
+              meta: (
+                takeoverAfterToggle.fromRead != null
+                  ? liveReads >= takeoverAfterToggle.fromRead
+                  : toggled
+              )
                 ? {
                     assignee_type: takeoverAfterToggle.type,
                     assignee: {
@@ -787,6 +800,44 @@ describe.skipIf(!dbUp)(
       // And not ALSO as a takeover. The conversation is still the human's, which is what the
       // takeover sentence reports too — saying both would read as two separate problems.
       expect(ack).not.toContain("Alguém assumiu");
+    });
+
+    // The window one step EARLIER, and the one the hand-back's own baseline opened: the command
+    // checks the holder, agrees it is the same party it started with, and somebody takes over while
+    // the hand-back loads its client and reads the conversation. Read there, that newcomer becomes
+    // the baseline, the post-status read finds nothing changed, and the unassign takes the
+    // conversation from the very person the guard exists to protect.
+    test("a takeover between the holder check and the hand-back is left alone", async () => {
+      const cw = fakeChatwoot(null, { type: "User", id: 888, fromRead: 3 });
+      globalThis.fetch = cw.impl;
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { status: "open", assigneeType: "User", assigneeId: 77 },
+      });
+      try {
+        await sendReset("/reset", CONV_ID, {
+          status: "open",
+          assigneeType: "User",
+        });
+
+        expect(
+          cw.calls.some(
+            (c) =>
+              c.method === "POST" &&
+              c.path.endsWith(`/conversations/${CONV_ID}/assignments`),
+          ),
+        ).toBe(false);
+        expect(
+          ackCalls(cw.calls)
+            .map((c) => (c.body as { content?: string })?.content ?? "")
+            .join(" "),
+        ).toContain("Alguém assumiu a conversa durante o reset");
+      } finally {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          data: { status: "pending", assigneeType: null, assigneeId: null },
+        });
+      }
     });
 
     // And the third way it ends with a human: somebody claimed the conversation between the status

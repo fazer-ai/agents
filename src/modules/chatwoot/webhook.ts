@@ -1676,7 +1676,13 @@ async function maybeConsumeCommandOrGate(params: {
         "return the conversation to the agent",
         "atribuição",
         () =>
-          returnConversationToAgent(sysCtx(tenantId), ctx.conv.id, {}, base),
+          returnConversationToAgent(sysCtx(tenantId), ctx.conv.id, {}, base, {
+            // The holder the two guards above just agreed on, carried in rather than re-read there:
+            // a re-read inside the hand-back would answer about a moment AFTER `heldBySameParty`,
+            // and somebody arriving in between would become the baseline and be unassigned.
+            assigneeType: ctx.conv.assigneeType,
+            assigneeId: ctx.conv.assigneeId,
+          }),
       );
     }
     // Best-effort is the design; announcing a full reset after a partial one is not. The operator

@@ -1293,11 +1293,26 @@ export async function handoffConversation(
 // a takeover should always win.
 export type ReturnToAgentOutcome = "returned" | "taken-over";
 
+export interface ReturnToAgentHolder {
+  assigneeType: string | null;
+  assigneeId: number | null;
+}
+
 export async function returnConversationToAgent(
   ctx: TenantContext,
   id: bigint,
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
+  // The holder this hand-back is FOR, when the caller already established one. /reset does: it reads
+  // the holder, decides the conversation is worth taking back from THAT person, and only then calls
+  // here — and between those two moments somebody else can arrive. Reading the baseline here would
+  // adopt the newcomer and hand the conversation away from them, which is the guard inverted.
+  //
+  // Optional because the other two callers have no such expectation: the console button and the MCP
+  // tool say "return this conversation", with no claim about who is holding it, and for them the
+  // only honest baseline is the live one read below. A caller that omits it can only ever refuse to
+  // unassign somebody, which is the safe direction for one that forgets.
+  expectedHolder?: ReturnToAgentHolder,
 ): Promise<ReturnToAgentOutcome> {
   const tenantId = requireTenant(ctx);
   const conv = await loadConvRef(ctx, id, base);
@@ -1328,10 +1343,11 @@ export async function returnConversationToAgent(
       ? null
       : { assigneeType: live.assigneeType, assigneeId: live.assigneeId };
   };
-  const baseline = (await readHolder()) ?? {
-    assigneeType: conv.assigneeType,
-    assigneeId: conv.assigneeId,
-  };
+  const baseline = expectedHolder ??
+    (await readHolder()) ?? {
+      assigneeType: conv.assigneeType,
+      assigneeId: conv.assigneeId,
+    };
   await client.toggleStatus(conv.chatwootConversationId, "pending", {
     asAdmin: true,
   });

@@ -2062,6 +2062,51 @@ describe.skipIf(!dbUp)(
       expect(ack).not.toContain("Alguém assumiu");
     });
 
+    // THE SECOND THING ONE IN-FLIGHT TURN BREAKS, and it breaks it in the opposite direction from the
+    // memory step. That turn is carrying a reply composed BEFORE the operator asked for a clean
+    // slate, and the human takeover is the only thing keeping it quiet: its ownership recheck reads
+    // the mirror for status `pending` and no assignee (../../src/graph/runtime.ts), which is exactly
+    // the state a successful hand-back writes. Returning the conversation therefore un-silences the
+    // stale reply and posts it over the person who claimed the conversation.
+    //
+    // The control for this one is the test above: same takeover, same command, no turn in flight, and
+    // the hand-back runs and sends the unassign.
+    test("a turn still invoking holds the hand-back back, and says so", async () => {
+      const graphThreadId = contactInboxThreadId(tenantId, instanceId, 301);
+      markTurnInFlight(graphThreadId);
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: { status: "pending", assigneeType: null, assigneeId: null },
+      });
+      const cw = fakeChatwoot(null, { type: "User", id: 77, fromRead: 1 });
+      globalThis.fetch = cw.impl;
+      try {
+        await sendReset("/reset", CONV_ID, {
+          status: "pending",
+          silentMeta: true,
+        });
+
+        // The operator is told WHY, and what to do about it: this is a retry, not a loss.
+        const ack = ackCalls(cw.calls)
+          .map((c) => (c.body as { content?: string })?.content ?? "")
+          .join(" ");
+        expect(ack).toContain("ainda está sendo gerada");
+        expect(ack).toContain("/reset de novo");
+        // And it is NOT reported as somebody arriving mid-reset: the conversation is with the same
+        // person it started with.
+        expect(ack).not.toContain("Alguém assumiu");
+        // The conversation stayed where the operator found it.
+        expect(
+          cw.calls.filter((c) =>
+            c.path.endsWith(`/conversations/${CONV_ID}/assignments`),
+          ),
+        ).toEqual([]);
+      } finally {
+        clearTurnInFlight(graphThreadId);
+        globalThis.fetch = originalFetch;
+      }
+    });
+
     // The agent switched off, restored afterwards: it is shared by every test in this file, so the
     // flag cannot leak.
     const withDisabledAgent = async (

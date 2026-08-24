@@ -1441,11 +1441,22 @@ export async function returnConversationToAgent(
       ? { assigneeType: seen.assigneeType, assigneeId: seen.assigneeId }
       : null;
   const newHolder = holderOtherThan(live);
-  if (newHolder === null) {
+  // NOBODY TO REMOVE MEANS NO REQUEST. `assignee_id: 0` on a conversation that already has no
+  // assignee changes nothing at Chatwoot, so the only thing this write can still accomplish is to
+  // arrive AFTER somebody claimed the conversation in the round trip and take it away from them.
+  // There is no conditional assignment to lean on — Chatwoot's assignments#create writes whatever it
+  // is handed, with no holder or version to compare against — so the window is closed by not
+  // spending a write on work that does not exist, rather than by guarding one that does.
+  //
+  // Only for a read that came back EMPTY. An unreadable read stays on the write, for the reason the
+  // baseline gives above: silence is not evidence that the conversation is free, and the caller
+  // asked for it back.
+  const nobodyToRemove = live !== null && live.assigneeType === null;
+  if (newHolder === null && !nobodyToRemove) {
     await client.unassignConversation(conv.chatwootConversationId, {
       asAdmin: true,
     });
-  } else {
+  } else if (newHolder !== null) {
     logger.info(
       "conversations: hand-back left the conversation with its new holder (conv=%d, %s=%s)",
       conv.chatwootConversationId,

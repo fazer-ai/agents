@@ -1724,9 +1724,36 @@ async function maybeConsumeCommandOrGate(params: {
     // two: the two guards below stand the hand-back down for reasons the acknowledgement has to
     // report differently from a hand-back that ran and answered.
     let handBack: ReturnToAgentOutcome | null | undefined;
+    // A TURN FROM BEFORE THE RESET IS STILL RUNNING, AND THE HAND-BACK IS WHAT WOULD LET IT SPEAK.
+    // The memory step above refuses on this same question for its own reason (the turn's save would
+    // restore what the clear deletes). This is the SECOND thing one in-flight turn breaks, and it
+    // breaks it in the opposite direction: that turn is carrying a reply composed BEFORE the operator
+    // asked for a clean slate, and the takeover is the only thing currently keeping it quiet. Its
+    // ownership recheck reads the mirror for exactly two fields (../../graph/runtime.ts, the
+    // `shouldBotHandle` recheck) — status `pending` and no assignee — which is precisely the state a
+    // successful hand-back writes. Returning the conversation therefore un-silences the stale reply
+    // and posts it over the human who had claimed the conversation.
+    //
+    // The direct webhook turn is the one that gets here: it passes `stillWanted: null`, so nothing
+    // can call it off once it is invoking. A debounced flush is retired through its own job and
+    // stands down by itself.
+    //
+    // Checked in memory and outside the memory step's lock, which is enough for the harm named: a
+    // turn that starts AFTER this line loads the memory the reset just cleared, so it is not the
+    // stale turn this guards against.
+    //
+    // Standing down is the honest answer and not a lesser one — the conversation stays exactly where
+    // the operator found it, the acknowledgement says so and why, and `/reset` typed again once the
+    // turn lands finds nothing stale left to release.
+    const turnStillRunning =
+      ctx.conv.contactInboxId !== null &&
+      isTurnInFlight(
+        contactInboxThreadId(tenantId, instanceId, ctx.conv.contactInboxId),
+      );
     if (
       notOursAtStart &&
       resetBlocker === "ownership" &&
+      !turnStillRunning &&
       (await heldBySameParty())
     ) {
       handBack = await step(
@@ -1770,11 +1797,16 @@ async function maybeConsumeCommandOrGate(params: {
           : " Este agente está desativado, então ele não vai responder."
         : !leftWithSomebodyElse
           ? ""
-          : handBack === null
-            ? // Attempted and threw. `failed` already names the assignment below, and explaining the
-              // same conversation twice reads as two separate problems.
-              ""
-            : " Alguém assumiu a conversa durante o reset, então ela continua com essa pessoa.";
+          : turnStillRunning
+            ? // Never attempted, and for a reason the operator can act on. Distinct from the arm
+              // below because nobody arrived during the reset: the conversation is with the same
+              // person it started with, and the hand-back is a retry away rather than lost.
+              " Uma resposta anterior ao reset ainda está sendo gerada, então a conversa continua com quem a atendia. Digite /reset de novo quando ela terminar."
+            : handBack === null
+              ? // Attempted and threw. `failed` already names the assignment below, and explaining
+                // the same conversation twice reads as two separate problems.
+                ""
+              : " Alguém assumiu a conversa durante o reset, então ela continua com essa pessoa.";
     await postAcknowledgement(
       distinctFailed.length === 0
         ? `🔄 Memória, preferência de áudio e etiquetas/atributos desta conversa foram limpos.${heldBack}`

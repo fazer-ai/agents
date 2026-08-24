@@ -6,7 +6,7 @@ import { type AgentNudge, runAgentNudge } from "@/graph/nudge";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { makeStorableDeep } from "@/lib/text";
+import { makeStorableDeep, unstorableProblem } from "@/lib/text";
 import { getMapper } from "@/modules/integrations/mappers";
 import {
   type ResolvedInboundRoute,
@@ -199,6 +199,37 @@ export async function receiveInbound(
     };
   }
 
+  // An identity field carrying a character the column refuses is NOT repaired: repairing is lossy,
+  // and lossy on an identity is how a payment lands in the wrong conversation. `ref\u0000` repaired
+  // to `ref` MATCHES the ref an unrelated conversation registered, and `dispatchConversion` would
+  // credit the conversion there and nudge that customer, the one outcome this module says it never
+  // produces. Two distinct provider ids that differ only by such a character would likewise collapse
+  // into one `dedupeKey` and silently drop a real delivery. So a malformed identity takes the
+  // fail-closed path that already exists for a payload we cannot process: a durable FAILED record
+  // and a 2xx, which is what stops the sender's retry loop. The payload itself is display and
+  // diagnostics, and IS repaired (below).
+  const badIdentity =
+    unstorableProblem(result.event.dedupeKey, "dedupeKey") ??
+    unstorableProblem(result.event.externalId, "externalId");
+  if (badIdentity) {
+    logger.warn(
+      "inbound: %s identity field is unstorable (instance %s): %s",
+      route.catalogType,
+      String(route.id),
+      badIdentity,
+    );
+    const failedId = await persistFailed(base, route, params.rawBody, {
+      reason: "unstorable-identity",
+      issues: badIdentity,
+    });
+    return {
+      ack: true,
+      deliveryId: failedId,
+      tenantId: route.tenantId,
+      outcome: "invalid",
+    };
+  }
+
   const { id, duplicate } = await persistInbound(base, route, result.event);
   return {
     ack: true,
@@ -251,20 +282,19 @@ async function persistFailed(
 // so the existence re-read must run in a fresh one). Handles concurrent identical deliveries.
 //
 // The mapper is pure and knows nothing about columns; this is where its output becomes a row, so it
-// is where a third party's characters have to survive the write. Measured against Postgres, BOTH
-// destinations of the event refuse the same two characters: the `jsonb` payload (`invalid input
-// syntax for type json`, and 22P05 for a NUL) and the `text` correlation columns (22021), and
-// `dedupeKey` is built from the provider's own id. That is why the repair takes the WHOLE event
-// rather than the payload, and why the re-read below looks for the REPAIRED key. A refusal here
-// escapes `receiveInbound`, which nothing above catches: a 500 with no delivery row and no FAILED
-// record either, and a sender retrying a body that can never succeed.
+// is where a third party's characters have to survive the write. Measured against Postgres, the
+// `jsonb` payload refuses a lone surrogate (`invalid input syntax for type json`) and a NUL (22P05),
+// and the refusal escapes `receiveInbound`, which nothing above catches: a 500 with no delivery row
+// and no FAILED record either, and a sender retrying a body that can never succeed. The payload is
+// display and diagnostics, so it is REPAIRED. The identity fields, which the `text` columns refuse
+// just as flatly (22021), are not repairable without changing what they identify, and the caller has
+// already turned those away.
 async function persistInbound(
   base: PrismaClient,
   route: ResolvedInboundRoute,
-  mapped: NormalizedInboundEvent,
+  n: NormalizedInboundEvent,
 ): Promise<{ id: bigint; duplicate: boolean }> {
-  const n = makeStorableDeep(mapped);
-  const payload = toStoredPayload(n);
+  const payload = makeStorableDeep(toStoredPayload(n));
   try {
     const row = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
       db.inboundDelivery.create({

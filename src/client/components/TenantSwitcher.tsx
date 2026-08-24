@@ -1,17 +1,12 @@
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { Building2, Check, ChevronDown, Plus } from "lucide-react";
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import { useModalController } from "@/client/components/Modal";
 import { ProGate } from "@/client/components/ProGate";
 import { useConfirmLeave } from "@/client/contexts/NavGuardContext";
-import {
-  getActiveTenantId,
-  setActiveTenantId,
-  TENANTS_CHANGED_EVENT,
-} from "@/client/lib/activeTenant";
-import { api } from "@/client/lib/api";
+import { useTenantList } from "@/client/hooks/useTenantList";
+import { setActiveTenantId } from "@/client/lib/activeTenant";
 import { IS_FREE } from "@/client/lib/env";
 import { tenantSwitchTarget } from "@/client/lib/tenantSwitch";
 import { suppressUnloadPrompt } from "@/client/lib/unsavedGuard";
@@ -21,9 +16,6 @@ import { cn } from "@/client/lib/utils";
 // Switching sets the persisted X-Tenant-Id and does a FULL reload — the simplest TOCTOU-safe
 // switch (a single source of truth after reload: the header, AuthContext, branding and every
 // cache are rebuilt for the new tenant, with no in-flight request capturing the old one).
-type TenantsData = Awaited<ReturnType<typeof api.api.v1.tenants.get>>["data"];
-type Tenant = NonNullable<TenantsData>["tenants"][number];
-
 const itemCls =
   "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary";
 
@@ -32,30 +24,12 @@ export function TenantSwitcher() {
   const navigate = useNavigate();
   const confirmLeave = useConfirmLeave();
   const upgrade = useModalController();
-  const [tenants, setTenants] = useState<Tenant[]>([]);
-  const active = getActiveTenantId() ?? "";
+  // Mounted only for a SUPER_ADMIN (TenantIndicator), so the list is always this component's to read.
+  const { tenants, activeId } = useTenantList(true);
+  const active = activeId ?? "";
 
-  useEffect(() => {
-    let on = true;
-    const fetchTenants = () => {
-      api.api.v1.tenants
-        .get()
-        .then(({ data, error }) => {
-          if (!on || error || !data) return;
-          setTenants(data.tenants);
-        })
-        .catch(() => {});
-    };
-    fetchTenants();
-    // Refetch when a tenant is created elsewhere (CreateTenantModal) so it becomes selectable
-    // without a full page reload.
-    window.addEventListener(TENANTS_CHANGED_EVENT, fetchTenants);
-    return () => {
-      on = false;
-      window.removeEventListener(TENANTS_CHANGED_EVENT, fetchTenants);
-    };
-  }, []);
-
+  // The fallback label now only ever means what it says. A stored id the list does not have is
+  // cleared by the hook, so "Select tenant" no longer doubles as the display for a dead selection.
   const activeName =
     tenants.find((tn) => tn.id === active)?.name ??
     t("tenant.select", "Select tenant");

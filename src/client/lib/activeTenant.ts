@@ -24,3 +24,24 @@ export function notifyTenantsChanged(): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new Event(TENANTS_CHANGED_EVENT));
 }
+
+// Reconcile the stored selection against the AUTHORITATIVE list of tenants, returning the id that
+// survives (null when nothing is selected any more).
+//
+// The stored id is the one piece of tenant state that lives in the browser, so it outlives the
+// tenant it names: delete that tenant, or point the console at another database, and every request
+// keeps carrying a selector for something that is not there. Before this, both readers of the list
+// answered the question and neither acted on it: the header switcher fell back to its "Select
+// tenant" label, which reads exactly like "you have not picked one yet", the one state it is not.
+//
+// Only ever called with a list that was actually READ. A failed fetch must not reach here, because
+// an empty list is the claim "there are no tenants", and treating a read we could not make as that
+// claim would drop a perfectly good selection on any server blip.
+export function reconcileActiveTenantId(tenantIds: string[]): string | null {
+  // Read at call time, not captured when the request went out: a deep link may have switched the
+  // selection while the list was in flight, and that newer choice is not this answer's to discard.
+  const active = getActiveTenantId();
+  if (!active || tenantIds.includes(active)) return active;
+  setActiveTenantId(null);
+  return null;
+}

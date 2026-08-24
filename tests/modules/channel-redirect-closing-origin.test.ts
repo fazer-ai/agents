@@ -505,6 +505,13 @@ describe.skipIf(!dbUp)(
         // The lookup really ran, so this is the window and not a path that stopped earlier.
         expect(flipped).toBe(true);
         expect(wire.filter((u) => u.includes("/messages"))).toEqual([]);
+        // And the anchor is handed back. A stand-down that keeps it burns the at-most-once mark on a
+        // goodbye nobody delivered, which is a funnel that can never close.
+        const widget = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId: tid, chatwootConversationId: WIDGET },
+          select: { redirectClosedAt: true },
+        });
+        expect(widget.redirectClosedAt).toBeNull();
       } finally {
         await suDb.agent.update({
           where: { id: agent },

@@ -961,10 +961,17 @@ export async function deliverRedirectClosing(
   // The fence goes FIRST and the watermark LAST, so the question this file has always asked
   // immediately before this send keeps that position, and what sits behind the fence's answer is one
   // database round trip rather than the lookup it was taken before.
-  if (
-    sibling &&
-    (p.closeChat || ((await ask()) === "go" && (await stillDelivering())))
-  ) {
+  if (sibling && !p.closeChat) {
+    const beforeSibling = await ask();
+    if (beforeSibling !== "go") {
+      // NOTE: Released, unlike the watermark check below. A claim lost to another run is not ours to
+      // give back — that is why nothing is released there — but a stand-down leaves this run holding
+      // an anchor over a goodbye nobody delivered, which is a funnel that can never close again.
+      await releaseClaim();
+      return beforeSibling === "retired" ? "already-closed" : "stood-down";
+    }
+  }
+  if (sibling && (p.closeChat || (await stillDelivering()))) {
     const waMode = proactiveSendMode(sw, sibling.lastInboundAt, now, {
       channelType: sibling.channelType,
       provider: sibling.provider,

@@ -1109,6 +1109,219 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
   });
 
+  // Same race, three more call sites (issue #221). Each of the loops below pre-checks a DIFFERENT
+  // unique index, so a note on the test above would prove nothing about them: `ON CONFLICT DO
+  // NOTHING` has to be reached through each loop's own data. What a lost race costs is not the
+  // component but the IMPORT — the P2002 aborts the enclosing transaction, every statement after it
+  // fails with "current transaction is aborted", and the operator loses the agent, the grants and
+  // the knowledge bases to a collision over one name.
+  //
+  // The component is renamed to a value unique to this run rather than reusing the fixture's: the
+  // fresh-tenant import test above already created `lookup_order`, `tools-server` and `Pagamentos`
+  // on the destination and left them there, so a pre-check against those answers "taken" and the
+  // race never happens. The grant still names the fixture, which is why the import warns
+  // `httpGrantNotFound` here and the assertions do not look at that one.
+  test("survives a writer that takes the HTTP tool name between the check and the insert", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const tampered = structuredClone(exp);
+    const tool = tampered.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing the http tool");
+    tool.name = `corrida_http_${process.pid}`;
+    // A body shape this version does not execute, so the loop has something to say about it. The
+    // assertion below is that it says nothing: the warning describes a row that was never written.
+    tool.body = { contact: { email: "{{email}}" } };
+
+    let raced = false;
+    const racing = appDb.$extends({
+      query: {
+        toolDefinition: {
+          async findFirst({ args, query }) {
+            const answer = await query(args);
+            // Matched against the name under test, not just "the first miss": the import asks this
+            // table again when it resolves the HTTP grant, and a looser guard would fire there
+            // instead — after the insert it is supposed to race.
+            const asksForIt =
+              (args as { where?: { name?: unknown } }).where?.name ===
+              tool.name;
+            if (!raced && asksForIt && answer === null) {
+              raced = true;
+              await suDb.toolDefinition.create({
+                data: {
+                  tenantId: dstTenant,
+                  name: tool.name,
+                  label: "Tomado por outro",
+                  method: "GET",
+                  urlTemplate: "https://api.example.com/x",
+                  allowedHosts: ["api.example.com"],
+                },
+              });
+            }
+            return answer;
+          },
+        },
+      },
+    });
+
+    const { agent, warnings } = await importAgent(
+      dstCtx(),
+      tampered,
+      racing as unknown as typeof appDb,
+    );
+    // The rendezvous actually happened. Without this the test passes just as well when the
+    // interceptor never fired and no race was ever created.
+    expect(raced).toBe(true);
+    expect(agent.id).toBeTruthy();
+    expect(warnings.some((w) => w.code === "httpToolReused")).toBe(true);
+    // The reuse the pre-check reports says nothing about the body, and neither does the reuse the
+    // insert reports — the tool that survived is the one already there, with its own body.
+    expect(warnings.some((w) => w.code === "httpToolBodyIgnored")).toBe(false);
+    // What the issue is actually about: the statements AFTER the losing insert still ran. The grants
+    // are written at the very end of the same transaction, so a count here is the proof that it was
+    // never aborted.
+    const grants = await suDb.agentToolSelection.count({
+      where: { agentId: BigInt(agent.id) },
+    });
+    expect(grants).toBeGreaterThan(0);
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agents WHERE id = ${BigInt(agent.id)}`,
+    );
+    await suDb.toolDefinition.deleteMany({
+      where: { tenantId: dstTenant, name: tool.name },
+    });
+  });
+
+  test("survives a writer that takes the MCP connection name between the check and the insert", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const tampered = structuredClone(exp);
+    const conn = tampered.components?.mcpServers.find(
+      (m) => m.name === "tools-server",
+    );
+    if (!conn) throw new Error("bundle missing the mcp connection");
+    conn.name = `corrida_mcp_${process.pid}`;
+
+    let raced = false;
+    const racing = appDb.$extends({
+      query: {
+        mcpServerConnection: {
+          async findFirst({ args, query }) {
+            const answer = await query(args);
+            const asksForIt =
+              (args as { where?: { name?: unknown } }).where?.name ===
+              conn.name;
+            if (!raced && asksForIt && answer === null) {
+              raced = true;
+              await suDb.mcpServerConnection.create({
+                data: {
+                  tenantId: dstTenant,
+                  name: conn.name,
+                  transport: "streamableHttp",
+                  url: "https://outro.example.com",
+                },
+              });
+            }
+            return answer;
+          },
+        },
+      },
+    });
+
+    const { agent, warnings } = await importAgent(
+      dstCtx(),
+      tampered,
+      racing as unknown as typeof appDb,
+    );
+    expect(raced).toBe(true);
+    expect(agent.id).toBeTruthy();
+    expect(warnings.some((w) => w.code === "mcpReused")).toBe(true);
+    const grants = await suDb.agentToolSelection.count({
+      where: { agentId: BigInt(agent.id) },
+    });
+    expect(grants).toBeGreaterThan(0);
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agents WHERE id = ${BigInt(agent.id)}`,
+    );
+    await suDb.mcpServerConnection.deleteMany({
+      where: { tenantId: dstTenant, name: conn.name },
+    });
+  });
+
+  test("survives a writer that takes the integration name between the check and the insert", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const tampered = structuredClone(exp);
+    const integ = tampered.components?.integrations.find(
+      (i) => i.name === "Pagamentos",
+    );
+    if (!integ) throw new Error("bundle missing the integration");
+    integ.name = `Corrida ${process.pid}`;
+    // A schedule reference this destination cannot resolve, for the same reason as the body above:
+    // it belongs to the config THIS iteration built, and that config is discarded on a reuse.
+    integ.config = { businessHoursId: `Agenda ausente ${process.pid}` };
+
+    let raced = false;
+    const racing = appDb.$extends({
+      query: {
+        integrationInstance: {
+          async findFirst({ args, query }) {
+            const answer = await query(args);
+            const asksForIt =
+              (args as { where?: { name?: unknown } }).where?.name ===
+              integ.name;
+            if (!raced && asksForIt && answer === null) {
+              raced = true;
+              await suDb.integrationInstance.create({
+                data: {
+                  tenantId: dstTenant,
+                  catalogType: integ.catalogType,
+                  name: integ.name,
+                  config: {},
+                  routeTokenHash: `corrida-hash-${process.pid}`,
+                },
+              });
+            }
+            return answer;
+          },
+        },
+      },
+    });
+
+    const { agent, warnings } = await importAgent(
+      dstCtx(),
+      tampered,
+      racing as unknown as typeof appDb,
+    );
+    expect(raced).toBe(true);
+    expect(agent.id).toBeTruthy();
+    expect(warnings.some((w) => w.code === "integrationReused")).toBe(true);
+    expect(warnings.some((w) => w.code === "hoursNotFound")).toBe(false);
+    const grants = await suDb.agentToolSelection.count({
+      where: { agentId: BigInt(agent.id) },
+    });
+    expect(grants).toBeGreaterThan(0);
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agents WHERE id = ${BigInt(agent.id)}`,
+    );
+    await suDb.integrationInstance.deleteMany({
+      where: { tenantId: dstTenant, name: integ.name },
+    });
+  });
+
   // A discriminated union refuses the WHOLE array on one unknown arm, so a grant of a source a newer
   // release added would make an otherwise importable agent unimportable — and say nothing about
   // which part was the problem. Dropped with a count instead.

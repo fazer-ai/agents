@@ -1246,13 +1246,6 @@ async function createMissingComponents(
     // for a body with no recognized mode, and would switch a `{mode:"raw", …, extra}` tool to the
     // fields assembly — changing what it sends (issue #150).
     const badBody = unsupportedBodyShape(tdef.body);
-    if (badBody) {
-      warnings.push({
-        code: "httpToolBodyIgnored",
-        params: { name: tdef.name },
-        target: { kind: "tool", name: tdef.name },
-      });
-    }
     const { shapes } = normalizeToolShapes({
       urlTemplate: tdef.urlTemplate,
       query: tdef.query ?? {},
@@ -1260,30 +1253,56 @@ async function createMissingComponents(
       body: badBody ? canonicalBodyShape(tdef.body) : tdef.body,
       inputSchema: tdef.inputSchema,
     });
-    await db.toolDefinition.create({
-      data: {
-        tenantId,
-        name: tdef.name,
-        // label is required now; legacy exports without one fall back to the identifier.
-        label: tdef.label ?? tdef.name,
-        description: tdef.description ?? null,
-        method: tdef.method,
-        urlTemplate: (shapes.urlTemplate ?? tdef.urlTemplate) as string,
-        allowedHosts: tdef.allowedHosts,
-        headers: shapes.headers as Prisma.InputJsonValue,
-        inputSchema: shapes.inputSchema as Prisma.InputJsonValue,
-        outputSchema: tdef.outputSchema as Prisma.InputJsonValue,
-        query: shapes.query as Prisma.InputJsonValue,
-        body: shapes.body as Prisma.InputJsonValue,
-        // Normalized like the shapes above, and for the same reason: the import writes straight to
-        // the DB, so a hand-edited bundle would otherwise store a list the service would refuse.
-        expectedStatuses: normalizeExpectedStatuses(tdef.expectedStatuses),
-        ackEnabled: tdef.ackEnabled,
-        ackMessage: tdef.ackMessage ?? null,
-        credentialRef: resolveCredName(tdef.credentialRef),
-        enabled: true,
-      },
+    // `createMany({ skipDuplicates })` rather than `create`, for the reason spelled out on the
+    // document-template loop below: the pre-check above can answer "free" and a concurrent writer
+    // commit before this insert, and a P2002 here does not cost one tool — the whole import runs
+    // inside ONE `runScopedOn` transaction, so it aborts that transaction and every statement after
+    // it fails with "current transaction is aborted" (issue #221).
+    const { count } = await db.toolDefinition.createMany({
+      data: [
+        {
+          tenantId,
+          name: tdef.name,
+          // label is required now; legacy exports without one fall back to the identifier.
+          label: tdef.label ?? tdef.name,
+          description: tdef.description ?? null,
+          method: tdef.method,
+          urlTemplate: (shapes.urlTemplate ?? tdef.urlTemplate) as string,
+          allowedHosts: tdef.allowedHosts,
+          headers: shapes.headers as Prisma.InputJsonValue,
+          inputSchema: shapes.inputSchema as Prisma.InputJsonValue,
+          outputSchema: tdef.outputSchema as Prisma.InputJsonValue,
+          query: shapes.query as Prisma.InputJsonValue,
+          body: shapes.body as Prisma.InputJsonValue,
+          // Normalized like the shapes above, and for the same reason: the import writes straight to
+          // the DB, so a hand-edited bundle would otherwise store a list the service would refuse.
+          expectedStatuses: normalizeExpectedStatuses(tdef.expectedStatuses),
+          ackEnabled: tdef.ackEnabled,
+          ackMessage: tdef.ackMessage ?? null,
+          credentialRef: resolveCredName(tdef.credentialRef),
+          enabled: true,
+        },
+      ],
+      skipDuplicates: true,
     });
+    if (count === 0) {
+      // Lost the race. The name is taken now, which is exactly the reuse the pre-check reports.
+      warnings.push({
+        code: "httpToolReused",
+        params: { name: tdef.name },
+        target: { kind: "tool", name: tdef.name },
+      });
+      continue;
+    }
+    // Both warnings below describe the row that was just written, so they wait for the insert to
+    // report one: the reuse path above says nothing about a body or a credential it did not store.
+    if (badBody) {
+      warnings.push({
+        code: "httpToolBodyIgnored",
+        params: { name: tdef.name },
+        target: { kind: "tool", name: tdef.name },
+      });
+    }
     if (tdef.credentialRef && !resolveCredName(tdef.credentialRef)) {
       warnings.push({
         code: "httpToolCredNotFound",
@@ -1320,17 +1339,30 @@ async function createMissingComponents(
         continue;
       }
     }
-    await db.mcpServerConnection.create({
-      data: {
-        tenantId,
-        name: m.name,
-        transport: m.transport,
-        url: m.url ?? null,
-        command: m.command ?? null,
-        credentialRef: resolveCredName(m.credentialRef),
-        enabled: true,
-      },
+    // `createMany({ skipDuplicates })` for the same reason as the loop above: a lost race on
+    // `@@unique([tenantId, name])` would abort the enclosing transaction and take the whole import
+    // with it (issue #221).
+    const { count } = await db.mcpServerConnection.createMany({
+      data: [
+        {
+          tenantId,
+          name: m.name,
+          transport: m.transport,
+          url: m.url ?? null,
+          command: m.command ?? null,
+          credentialRef: resolveCredName(m.credentialRef),
+          enabled: true,
+        },
+      ],
+      skipDuplicates: true,
     });
+    if (count === 0) {
+      warnings.push({
+        code: "mcpReused",
+        params: { name: m.name },
+        target: { kind: "mcp", name: m.name },
+      });
+    }
   }
 
   for (const i of components.integrations) {
@@ -1361,24 +1393,50 @@ async function createMissingComponents(
     const { hash } = generateRouteToken();
     // Resolve a business-hours reference carried by NAME in the config back to the local id (Google
     // Calendar's businessHoursId — the bundled schedule was recreated by createMissingBusinessHours).
+    //
+    // Collected aside rather than pushed straight through: what it reports is a reference inside the
+    // config THIS iteration built, and that config is discarded if the insert below turns out to be
+    // a reuse. The pre-check path never emitted it (it `continue`s first), and the race path is the
+    // same outcome reached later.
+    const configWarnings: ImportWarning[] = [];
     const config = await remapConfigBusinessHoursNameToId(
       db,
       i.config as Record<string, unknown>,
-      warnings,
+      configWarnings,
     );
-    await db.integrationInstance.create({
-      data: {
-        tenantId,
-        catalogType: i.catalogType,
-        name: i.name,
-        config: config as Prisma.InputJsonValue,
-        credentialRef: resolveCredName(i.credentialRef),
-        inboundAuthStrategy: "NONE",
-        inboundSecretRef: null,
-        routeTokenHash: hash,
-        enabled: true,
-      },
+    // `createMany({ skipDuplicates })` for the same reason as the loops above: a lost race on
+    // `@@unique([tenantId, catalogType, name])` would abort the enclosing transaction and take the
+    // whole import with it (issue #221). `routeTokenHash` is unique too and also covered by the
+    // ON CONFLICT, but it is 32 fresh random bytes hashed — a skip here is the name, in practice.
+    const { count } = await db.integrationInstance.createMany({
+      data: [
+        {
+          tenantId,
+          catalogType: i.catalogType,
+          name: i.name,
+          config: config as Prisma.InputJsonValue,
+          credentialRef: resolveCredName(i.credentialRef),
+          inboundAuthStrategy: "NONE",
+          inboundSecretRef: null,
+          routeTokenHash: hash,
+          enabled: true,
+        },
+      ],
+      skipDuplicates: true,
     });
+    if (count === 0) {
+      warnings.push({
+        code: "integrationReused",
+        params: { type: i.catalogType, name: i.name },
+        target: {
+          kind: "integration",
+          catalogType: i.catalogType,
+          name: i.name,
+        },
+      });
+      continue;
+    }
+    warnings.push(...configWarnings);
     // Created integrations are silent (only reused ones warn). The fresh inbound token is re-readable
     // any time on the integration page; for a clone the operator wires the external webhook from scratch.
   }

@@ -1411,6 +1411,67 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(s.sent).toEqual([]);
   });
 
+  // Fail-open covers an answer nobody could READ, never one already in hand. A disabled agent is
+  // conclusive before the activation lookup runs, and that lookup is the fallible part: let the fence
+  // reach it and a failed read turns a switched-off agent back into a send.
+  test("a disabled test agent stands down even if the stamp read fails", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { enabled: true, mode: "test" },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: WIDGET_CONV },
+      data: { testActivatedAt: new Date() },
+    });
+    const job = await claimed("whatsapp");
+    const s = stubClient();
+    wire.length = 0;
+    globalThis.fetch = httpDouble;
+    // Both rendezvous on the same column. The handler's own load reads it first — the switch flips
+    // right after, so the run gets past the entry gate — and the FENCE's read is the one that fails.
+    let stampReads = 0;
+    const failingStamp = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (sel?.testActivatedAt !== true) return query(args);
+            stampReads += 1;
+            if (stampReads > 1) throw new Error("activation lookup is down");
+            const res = await query(args);
+            await suDb.agent.update({
+              where: { id: agentId },
+              data: { enabled: false },
+            });
+            return res;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    try {
+      await redirectFollowUpHandler(job, failingStamp, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { enabled: true, mode: "production" },
+      });
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        data: { testActivatedAt: null },
+      });
+    }
+    // One read, the handler's own: the fence answered from `enabled` and never reached the fallible
+    // one. Drop the short-circuit and this becomes two — the read throws, the catch answers "go", and
+    // the link goes out from an agent that is already off.
+    expect(stampReads).toBe(1);
+    expect(wire.filter((u) => u.includes("/messages"))).toEqual([]);
+    expect(s.sent).toEqual([]);
+  });
+
   // Advancing is a decision too. A stage can end without ever reaching its own fence — the sibling
   // lookup finds nobody, the link cannot be minted, or the chat stage simply finishes — and arming
   // the next stage there points a closing at an episode the agent is no longer allowed to touch:

@@ -492,6 +492,10 @@ export async function redirectFollowUpHandler(
         select: { enabled: true, mode: true },
       });
       if (!a) return "stood-down" as const;
+      // NOTE: A conclusive answer, taken before the fallible one. The stamp lookup below can throw,
+      // and the catch around this whole read turns a failure into "go" — which is right for an answer
+      // nobody could read, and wrong for one already in hand.
+      if (!a.enabled) return "stood-down" as const;
       const testActivatedAt =
         a.mode === "test"
           ? ((

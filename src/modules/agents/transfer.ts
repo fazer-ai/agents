@@ -1255,7 +1255,7 @@ async function createMissingComponents(
     });
     // `createMany({ skipDuplicates })` rather than `create`, for the reason spelled out on the
     // document-template loop below: the pre-check above can answer "free" and a concurrent writer
-    // commit before this insert, and a P2002 here does not cost one tool — the whole import runs
+    // commit before this insert, and a P2002 here does not cost one tool: the whole import runs
     // inside ONE `runScopedOn` transaction, so it aborts that transaction and every statement after
     // it fails with "current transaction is aborted" (issue #221).
     const { count } = await db.toolDefinition.createMany({
@@ -1407,7 +1407,7 @@ async function createMissingComponents(
     // `createMany({ skipDuplicates })` for the same reason as the loops above: a lost race on
     // `@@unique([tenantId, catalogType, name])` would abort the enclosing transaction and take the
     // whole import with it (issue #221). `routeTokenHash` is unique too and also covered by the
-    // ON CONFLICT, but it is 32 fresh random bytes hashed — a skip here is the name, in practice.
+    // ON CONFLICT, but it is 32 fresh random bytes hashed, so a skip here is the name, in practice.
     const { count } = await db.integrationInstance.createMany({
       data: [
         {

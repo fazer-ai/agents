@@ -1112,7 +1112,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   // Same race, three more call sites (issue #221). Each of the loops below pre-checks a DIFFERENT
   // unique index, so a note on the test above would prove nothing about them: `ON CONFLICT DO
   // NOTHING` has to be reached through each loop's own data. What a lost race costs is not the
-  // component but the IMPORT — the P2002 aborts the enclosing transaction, every statement after it
+  // component but the IMPORT: the P2002 aborts the enclosing transaction, every statement after it
   // fails with "current transaction is aborted", and the operator loses the agent, the grants and
   // the knowledge bases to a collision over one name.
   //
@@ -1142,8 +1142,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
           async findFirst({ args, query }) {
             const answer = await query(args);
             // Matched against the name under test, not just "the first miss": the import asks this
-            // table again when it resolves the HTTP grant, and a looser guard would fire there
-            // instead — after the insert it is supposed to race.
+            // table again when it resolves the HTTP grant, and a looser guard would fire on that
+            // call instead, which happens after the insert it is supposed to race.
             const asksForIt =
               (args as { where?: { name?: unknown } }).where?.name ===
               tool.name;
@@ -1177,7 +1177,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(agent.id).toBeTruthy();
     expect(warnings.some((w) => w.code === "httpToolReused")).toBe(true);
     // The reuse the pre-check reports says nothing about the body, and neither does the reuse the
-    // insert reports — the tool that survived is the one already there, with its own body.
+    // insert reports: the tool that survived is the one already there, with its own body.
     expect(warnings.some((w) => w.code === "httpToolBodyIgnored")).toBe(false);
     // What the issue is actually about: the statements AFTER the losing insert still ran. The grants
     // are written at the very end of the same transaction, so a count here is the proof that it was

@@ -816,6 +816,50 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
     });
   }
 
+  test("records a durable FAILED delivery when the identity is too long for its own index", async () => {
+    const { routeToken } = await createIntegrationInstance(
+      tenantId,
+      {
+        catalogType: "ASAAS",
+        name: "asaas-identity-long",
+        inboundAuthStrategy: "NONE",
+        config: { notifyOnPayment: false },
+      },
+      appDb,
+    );
+    // Incompressible on purpose: a run of one character compresses inside the index and slips past
+    // the limit, so a probe built from `repeat("x", n)` would prove nothing. Measured on this
+    // database, an incompressible dedupe key fails its unique index at ~2704 bytes with "index row
+    // size 6432 exceeds btree version 4 maximum 2704", which is the same 500-with-no-record this
+    // PR exists to remove. The mapper puts `payment.id` straight into the key and its schema caps
+    // neither that nor `event`.
+    const longId = Array.from({ length: 3000 }, (_, i) =>
+      String.fromCharCode(97 + ((i * 7 + (i % 13)) % 26)),
+    ).join("");
+    const r = await receiveInbound({
+      routeToken: routeToken as string,
+      rawBody: JSON.stringify({
+        event: "PAYMENT_RECEIVED",
+        payment: {
+          id: longId,
+          value: 10,
+          status: "RECEIVED",
+          externalReference: "r-long",
+        },
+      }),
+      getHeader: () => null,
+      base: appDb,
+    });
+    expect(r.ack).toBe(true);
+    expect(r.outcome).toBe("invalid");
+
+    const delivery = await suDb.inboundDelivery.findUniqueOrThrow({
+      where: { id: r.deliveryId as bigint },
+    });
+    expect(delivery.status).toBe("FAILED");
+    expect(delivery.payload).toMatchObject({ reason: "unstorable-identity" });
+  });
+
   test("a malformed reference never correlates onto the conversation the clean one owns", async () => {
     const { id: instanceId, routeToken } = await createIntegrationInstance(
       tenantId,

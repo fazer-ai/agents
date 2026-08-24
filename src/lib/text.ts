@@ -68,10 +68,15 @@ export function replaceLoneSurrogates(value: string): string {
 // The two are not repaired the same way, because they do not mean the same thing. An unpaired
 // surrogate WAS half of a real character, so U+FFFD stands where that character was. A NUL never
 // stood for anything a reader would see, and is simply dropped.
+//
+// The ORDER carries a rule of its own: surrogates are repaired while the NULs are still in place.
+// Dropping the NUL out of `\ud800 \udc00` first would leave the two orphan halves adjacent, and
+// they would then read as the well-formed pair U+10000 and survive untouched, inventing a character
+// nobody wrote out of three defects. Repairing first keeps each defect represented by its own
+// U+FFFD.
 export function makeStorable(value: string): string {
-  return replaceLoneSurrogates(
-    value.includes(NUL) ? value.replaceAll(NUL, "") : value,
-  );
+  const repaired = replaceLoneSurrogates(value);
+  return repaired.includes(NUL) ? repaired.replaceAll(NUL, "") : repaired;
 }
 
 // A deeper document than any allowlisted projection has, which is the only shape this is called on.
@@ -119,18 +124,22 @@ export function makeStorableDeep<T>(value: T, depth = 0): T {
 // be perfectly storable and impossible to print (an emoji in a tool description a model reads and
 // nobody draws). A caller that only needs the value to survive its column asks this one.
 export function unstorableProblem(value: string, what: string): string | null {
-  const bad: string[] = [];
+  // A Set, not a scan of a growing array: the distinct offenders number 2049 (a NUL and every
+  // surrogate code unit), so `includes` on the accumulator turns a long malformed value into
+  // quadratic work on a caller's behalf. Insertion order is preserved either way, and the message
+  // names them in the order they appear.
+  const bad = new Set<string>();
   for (const ch of value) {
     const code = ch.codePointAt(0) ?? 0;
     // `for...of` yields a well-formed pair as ONE two-unit string, so a single-unit string in the
     // surrogate range never had its other half.
     const lone = ch.length === 1 && code >= 0xd800 && code <= 0xdfff;
-    if ((code === 0 || lone) && !bad.includes(ch)) bad.push(ch);
+    if (code === 0 || lone) bad.add(ch);
   }
-  if (bad.length === 0) return null;
+  if (bad.size === 0) return null;
   // Named by code point, never pasted: quoting the character itself would put a NUL into a log line
   // and an API response, and half a character into a JSON body.
-  const named = bad.map(
+  const named = [...bad].map(
     (ch) =>
       `U+${(ch.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`,
   );

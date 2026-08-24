@@ -169,6 +169,14 @@ describe("makeStorable", () => {
     expect(makeStorable(`a${NUL}b\ud800c`)).toBe("ab�c");
   });
 
+  test("does not let a dropped NUL join two orphan halves into a character", () => {
+    // Three defects, and dropping the NUL FIRST would leave `\ud800\udc00` adjacent, which is the
+    // well-formed pair U+10000: a character nobody wrote, surviving the repair intact.
+    const out = makeStorable(`\ud800${NUL}\udc00`);
+    expect(out).toBe("��");
+    expect([...out].map((c) => c.codePointAt(0))).toEqual([0xfffd, 0xfffd]);
+  });
+
   test("leaves everything a column can hold exactly as it was", () => {
     for (const value of ["Ana", "\u{1f600}", "a\tb", "a\nb", "Orcamento", ""]) {
       expect(makeStorable(value)).toBe(value);

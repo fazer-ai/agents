@@ -136,6 +136,7 @@ async function mirroredConv(convId: number) {
     select: {
       status: true,
       assigneeType: true,
+      assigneeId: true,
       lastInboundAt: true,
       lastFollowUpAt: true,
     },
@@ -180,6 +181,9 @@ async function seedConversation(
     lastEventAt: Date;
     lastInboundAt: Date;
     lastFollowUpAt?: Date | null;
+    // O que o ESPELHO diz sobre quem detém a conversa. Default: ninguém.
+    assigneeType?: string | null;
+    assigneeId?: number | null;
   },
 ) {
   await suDb.conversation.create({
@@ -189,7 +193,8 @@ async function seedConversation(
       chatwootConversationId: convId,
       inboxId: inboxDbId,
       status: over.status ?? "pending",
-      assigneeType: null,
+      assigneeType: over.assigneeType ?? null,
+      ...(over.assigneeId != null ? { assigneeId: over.assigneeId } : {}),
       threadId: threadOf(convId),
       lastEventAt: over.lastEventAt,
       lastInboundAt: over.lastInboundAt,
@@ -673,6 +678,35 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(s.sent).toEqual([]);
     expect(s.notes).toEqual([]);
     expect((await mirroredConv(CONV)).assigneeType).toBe("User");
+  });
+
+  // Issue #214: o espelho dizendo que OUTRO Agent Bot detém a conversa NÃO derruba o job antes da
+  // sonda. O assignee é justamente o campo que o `syncConversationState` conserta a partir do live
+  // (uma atribuição perdida ou entregue fora de ordem deixa o espelho apontando para o bot errado),
+  // então decidir posse pelo espelho aqui trocaria um countdown errado na tela por uma mensagem que
+  // o cliente nunca recebe. Quem decide é a sonda, e ela diz que o bot da inbox continua com ela.
+  test("(2h) live gate: espelho stale em OUTRO bot + live diz que é nosso → envia", async () => {
+    const CONV = 4311;
+    await seedConversation(CONV, inboxAId, {
+      lastEventAt: new Date(Date.now() - 2 * HOUR),
+      lastInboundAt: new Date(Date.now() - 2 * HOUR),
+      assigneeType: "AgentBot",
+      assigneeId: 999,
+    });
+    const s = stubClient(() => ({
+      id: CONV,
+      status: "pending",
+      meta: {
+        assignee_type: "AgentBot",
+        assignee: { id: INBOX_A, name: "Guard" },
+      },
+    }));
+    const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent.length).toBe(1);
+    expect(s.notes).toEqual([]);
+    // E o espelho sai consertado, que é como o countdown volta a ser verdade na tela.
+    expect((await mirroredConv(CONV)).assigneeId).toBe(INBOX_A);
   });
 
   test("(2c) live gate pós-invoke: resolve DURANTE o turno do modelo → nada postado, espelho reconciliado", async () => {

@@ -55,6 +55,10 @@ let convHandedOffMidSequence = 0n;
 let convDisabledAgentArmed = 0n;
 let convFollowUpOffArmed = 0n;
 let convFinishedByResolve = 0n;
+let convForeignBotArmed = 0n;
+let convOurBotArmed = 0n;
+let convForeignBotEstimate = 0n;
+let convOurBotEstimate = 0n;
 
 // The redirect follow-up job's run time, asserted verbatim as the widget conversation's redirectNext.
 const REDIRECT_JOB_RUN_AT = new Date("2026-06-18T23:30:00Z");
@@ -78,6 +82,12 @@ const BH_WINDOWS = Array.from({ length: 7 }, (_, day) => ({
 }));
 const BH_LAST_EVENT_AT = new Date("2026-06-15T20:00:00Z"); // dueAt = +2min = 20:02 UTC (closed)
 const BH_EXPECTED_RUN_AT = "2026-06-16T09:00:00.000Z";
+
+// One Chatwoot account can front several Agent Bots, so "an AgentBot holds this" and "OUR bot
+// holds this" are different questions. The armed persona owns OUR_BOT_ID; FOREIGN_BOT_ID is
+// another persona's bot on the same account.
+const OUR_BOT_ID = 4001;
+const FOREIGN_BOT_ID = 4002;
 
 // A step-1 job armed two days out — the window in which the ground can shift under it.
 const ARMED_STEP1_RUN_AT = new Date("2026-06-20T23:18:45Z");
@@ -603,6 +613,60 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       },
     });
     convFinishedByResolve = finished.id;
+
+    // ── The armed persona's own Agent Bot on this account, which is what makes "another bot is
+    //    holding this" answerable at all: without the row every AgentBot assignee looks like ours.
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        agentId: armedAgent.id,
+        chatwootAgentBotId: OUR_BOT_ID,
+        accessToken: "enc",
+        webhookSecret: "enc",
+        webhookRouteTokenHash: `fu-estimate-${process.pid}`,
+        name: "FU Armed bot",
+      },
+    });
+    convForeignBotArmed = await seedArmedConv(324, armedInbox.id, {
+      assigneeType: "AgentBot",
+      assigneeId: FOREIGN_BOT_ID,
+    });
+    convOurBotArmed = await seedArmedConv(325, armedInbox.id, {
+      assigneeType: "AgentBot",
+      assigneeId: OUR_BOT_ID,
+    });
+    // The same two holders on the OTHER branch — no job armed yet, so the indicator estimates step 1
+    // itself. A gate placed on the armed-job branch alone leaves this one promising the countdown.
+    async function seedEstimateConv(
+      chatwootId: number,
+      conv: { assigneeType: string; assigneeId: number },
+    ): Promise<bigint> {
+      const c = await suDb.conversation.create({
+        data: {
+          tenantId: tenant,
+          chatwootInstanceId: inst,
+          chatwootConversationId: chatwootId,
+          inboxId: armedInbox.id,
+          status: "pending",
+          assigneeType: conv.assigneeType,
+          assigneeId: conv.assigneeId,
+          threadId: `${tenant}:${inst}:${chatwootId}`,
+          lastEventAt: LAST_EVENT_AT,
+          lastInboundAt: REPLY_AT,
+          lastFollowUpAt: FOLLOW_UP_AT,
+        },
+      });
+      return c.id;
+    }
+    convForeignBotEstimate = await seedEstimateConv(326, {
+      assigneeType: "AgentBot",
+      assigneeId: FOREIGN_BOT_ID,
+    });
+    convOurBotEstimate = await seedEstimateConv(327, {
+      assigneeType: "AgentBot",
+      assigneeId: OUR_BOT_ID,
+    });
   });
 
   // A live appointment is the sweep's own fence (followUp.pauseWhileAppointment, on by default): it
@@ -923,6 +987,51 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     const d = await getConversationDetail(ctx(tenant), convNewEpisode, appDb);
     expect(d.followUp?.abandoned).toBe(false);
     expect(d.followUp?.nextStep).toBe(1);
+  });
+
+  // Issue #214: with a second Agent Bot on the same Chatwoot account holding the conversation, the
+  // handler still reaches its live probe (`requireLiveBotOwnership`) and refuses to send there. The
+  // indicator has nothing after it, so a countdown here promises a re-engagement that is refused —
+  // the shape of #72, on the axis #72 left out.
+  test("another persona's bot holds it, job armed → no countdown", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convForeignBotArmed,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.nextRunAt).toBeNull();
+    expect(d.followUp?.abandoned).toBe(true);
+  });
+
+  test("another persona's bot holds it, no job armed → no estimate", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convForeignBotEstimate,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.nextRunAt).toBeNull();
+  });
+
+  // The other direction, and the reason the gate is the bot IDENTITY rather than "an AgentBot holds
+  // it": the conversation assigned to the inbox's OWN bot is the normal state of every bot-owned
+  // conversation, and suppressing the countdown there would silence the indicator for everyone.
+  test("our own bot holds it, job armed → the countdown stands", async () => {
+    const d = await getConversationDetail(ctx(tenant), convOurBotArmed, appDb);
+    expect(d.followUp?.nextStep).toBe(2);
+    expect(d.followUp?.nextRunAt).toBe(ARMED_STEP1_RUN_AT.toISOString());
+    expect(d.followUp?.abandoned).toBe(false);
+  });
+
+  test("our own bot holds it, no job armed → the estimate stands", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convOurBotEstimate,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBe(1);
+    expect(d.followUp?.nextRunAt).not.toBeNull();
   });
 
   // The distinction the flag exists for: a sequence whose last step is configured to resolve the

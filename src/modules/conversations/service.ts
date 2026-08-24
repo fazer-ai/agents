@@ -861,6 +861,16 @@ export async function getConversationDetail(
       testActivatedAt: conv.testActivatedAt,
       status: conv.status,
       assigneeType: conv.assigneeType,
+      // The strict ownership answer, which this reader is the one that needs: nothing runs after the
+      // indicator to correct it, so a conversation another persona's bot is holding must not be
+      // counted down (issue #214). The bot id is already in hand — the same one the header's
+      // "held by another party" line is drawn from, so the two cannot disagree on the page.
+      mirrorHolder: heldByAnotherParty(
+        { assigneeType: conv.assigneeType, assigneeId: conv.assigneeId },
+        { ourAgentBotId },
+      )
+        ? "another-party"
+        : "us",
     });
     const isRedirectWidgetConv =
       redirectCfg.enabled &&

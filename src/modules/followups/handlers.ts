@@ -284,6 +284,11 @@ export async function followUpHandler(
         testActivatedAt: conv.testActivatedAt,
         status: conv.status,
         assigneeType: conv.assigneeType,
+        // This path never decides WHICH bot holds the conversation from the mirror: `agentNudge`
+        // runs with `requireLiveBotOwnership`, which GETs the real conversation, reconciles the
+        // stale assignee and refuses to send before any model spend. Answering from the mirror here
+        // would drop a follow-up the probe was about to allow (issue #214).
+        mirrorHolder: "unverified",
       })
     ) {
       return null;

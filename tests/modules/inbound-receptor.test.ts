@@ -689,6 +689,168 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
     expect(conv?.value?.toString()).toBe("500");
   });
 
+  // ── characters Postgres refuses to store (issue #218) ──
+  // A body that is valid JSON, passes the mapper's schema, and that the column then refuses. The
+  // two characters and BOTH destinations of the normalized event, measured against this database:
+  //   jsonb payload + lone surrogate → invalid input syntax for type json
+  //   jsonb payload + NUL            → 22P05 unsupported Unicode escape sequence
+  //   text  column  + lone surrogate → 22021 invalid byte sequence for encoding "UTF8": 0xef 0xbf
+  //   text  column  + NUL            → 22021 invalid byte sequence for encoding "UTF8": 0x00
+  // Each one used to throw out of `receiveInbound`, which nothing above catches: a 500 with no
+  // delivery row and no FAILED record either, and a sender retrying a body that can never succeed.
+  // The text columns are the half worth pinning: `dedupeKey` is built from the provider's own id,
+  // the field most likely to carry whatever the provider was handed.
+  const NUL = String.fromCharCode(0);
+  const unstorable: Array<{
+    name: string;
+    payment: Record<string, unknown>;
+    expect: { externalId: string; dedupeKey: string; payload: unknown };
+  }> = [
+    {
+      name: "a lone surrogate in metadata (jsonb)",
+      payment: { id: "u1", externalReference: "r1", paymentLink: "l\ud800k" },
+      expect: {
+        externalId: "r1",
+        dedupeKey: "PAYMENT_RECEIVED:u1",
+        payload: { paymentLink: "l�k" },
+      },
+    },
+    {
+      name: "a NUL in metadata (jsonb)",
+      payment: { id: "u2", externalReference: "r2", paymentLink: `l${NUL}k` },
+      expect: {
+        externalId: "r2",
+        dedupeKey: "PAYMENT_RECEIVED:u2",
+        payload: { paymentLink: "lk" },
+      },
+    },
+    {
+      name: "a lone surrogate in the provider's status (jsonb)",
+      payment: { id: "u3", externalReference: "r3", status: "RECEIVED\ud800" },
+      expect: {
+        externalId: "r3",
+        dedupeKey: "PAYMENT_RECEIVED:u3",
+        payload: undefined,
+      },
+    },
+    {
+      name: "a lone surrogate in the provider's id (text dedupe_key)",
+      payment: { id: "u4\ud800", externalReference: "r4" },
+      expect: {
+        externalId: "r4",
+        dedupeKey: "PAYMENT_RECEIVED:u4�",
+        payload: undefined,
+      },
+    },
+    {
+      name: "a NUL in the provider's id (text dedupe_key)",
+      payment: { id: `u5${NUL}x`, externalReference: "r5" },
+      expect: {
+        externalId: "r5",
+        dedupeKey: "PAYMENT_RECEIVED:u5x",
+        payload: undefined,
+      },
+    },
+    {
+      name: "a lone surrogate in the correlation reference (text external_id)",
+      payment: { id: "u6", externalReference: "r6\ud800" },
+      expect: {
+        externalId: "r6�",
+        dedupeKey: "PAYMENT_RECEIVED:u6",
+        payload: undefined,
+      },
+    },
+  ];
+
+  for (const [i, c] of unstorable.entries()) {
+    test(`records the delivery when the body carries ${c.name}`, async () => {
+      const { routeToken } = await createIntegrationInstance(
+        tenantId,
+        {
+          catalogType: "ASAAS",
+          name: `asaas-unstorable-${i}`,
+          inboundAuthStrategy: "NONE",
+          config: { notifyOnPayment: false },
+        },
+        appDb,
+      );
+      const r = await receiveInbound({
+        routeToken: routeToken as string,
+        rawBody: JSON.stringify({
+          event: "PAYMENT_RECEIVED",
+          payment: { value: 10, status: "RECEIVED", ...c.payment },
+        }),
+        getHeader: () => null,
+        base: appDb,
+      });
+      expect(r.outcome).toBe("queued");
+
+      const delivery = await suDb.inboundDelivery.findUniqueOrThrow({
+        where: { id: r.deliveryId as bigint },
+      });
+      expect(delivery.externalId).toBe(c.expect.externalId);
+      expect(delivery.dedupeKey).toBe(c.expect.dedupeKey);
+      const payload = delivery.payload as Record<string, unknown>;
+      expect(payload.status).toBe(
+        (c.payment.status as string | undefined) === "RECEIVED\ud800"
+          ? "RECEIVED�"
+          : "RECEIVED",
+      );
+      if (c.expect.payload) expect(payload.metadata).toEqual(c.expect.payload);
+    });
+  }
+
+  test("a repaired delivery still converts end to end (the payment is not lost)", async () => {
+    const { id: instanceId, routeToken } = await createIntegrationInstance(
+      tenantId,
+      {
+        catalogType: "ASAAS",
+        name: "asaas-unstorable-e2e",
+        inboundAuthStrategy: "NONE",
+        config: { notifyOnPayment: false },
+      },
+      appDb,
+    );
+    // The correlation reference is clean: the repair must not move a payment that was always
+    // correlatable into the uncorrelated pile just because another field was malformed.
+    await suDb.integrationExternalRef.create({
+      data: {
+        tenantId,
+        integrationInstanceId: instanceId,
+        externalId: "corr_repaired",
+        threadId: "1:1:218",
+        kind: "asaas_payment",
+      },
+    });
+    const r = await receiveInbound({
+      routeToken: routeToken as string,
+      rawBody: JSON.stringify({
+        event: "PAYMENT_RECEIVED",
+        payment: {
+          id: "pay_repaired",
+          value: 42,
+          status: "RECEIVED",
+          externalReference: "corr_repaired",
+          paymentLink: `link${NUL}\ud800abc`,
+        },
+      }),
+      getHeader: () => null,
+      base: appDb,
+    });
+    expect(r.outcome).toBe("queued");
+
+    const proc = await processInboundDelivery({
+      deliveryId: r.deliveryId as bigint,
+      tenantId,
+      base: appDb,
+    });
+    expect(proc).toBe("processed");
+    const conv = await suDb.conversionEvent.findFirst({
+      where: { tenantId, threadId: "1:1:218", source: "ASAAS" },
+    });
+    expect(conv?.value?.toString()).toBe("42");
+  });
+
   test("records an unparseable payload as invalid (durable FAILED delivery)", async () => {
     const { routeToken } = await createIntegrationInstance(
       tenantId,

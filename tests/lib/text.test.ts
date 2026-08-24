@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   clipText,
   clipTextEnd,
+  makeStorable,
+  makeStorableDeep,
   replaceLoneSurrogates,
   unstorableProblem,
 } from "@/lib/text";
@@ -145,5 +147,86 @@ describe("unstorableProblem", () => {
     for (const value of ["Ana", "😀", "a\tb", "a\nb", "Orçamento", ""]) {
       expect(unstorableProblem(value, "x")).toBeNull();
     }
+  });
+});
+
+// The REPAIR half of the same rule `unstorableProblem` reports: same predicate, opposite policy.
+// Refusing is right where the author reads the refusal and can fix the value (an operator's form);
+// repairing is right where the writer is a third party's webhook that will never read the refusal
+// and whose only recourse is to retry the identical body forever.
+describe("makeStorable", () => {
+  // Written as a code unit rather than pasted: a literal NUL in a source file is invisible in every
+  // diff and every review.
+  const NUL = String.fromCharCode(0);
+
+  test("drops a NUL and replaces half a character, in every position", () => {
+    expect(makeStorable(`a${NUL}b`)).toBe("ab");
+    expect(makeStorable(`${NUL}ab`)).toBe("ab");
+    expect(makeStorable(`ab${NUL}`)).toBe("ab");
+    expect(makeStorable("a\ud800b")).toBe("a�b");
+    expect(makeStorable("a\udc00b")).toBe("a�b");
+    // Both defects in one value, which is what a truncating upstream actually produces.
+    expect(makeStorable(`a${NUL}b\ud800c`)).toBe("ab�c");
+  });
+
+  test("leaves everything a column can hold exactly as it was", () => {
+    for (const value of ["Ana", "\u{1f600}", "a\tb", "a\nb", "Orcamento", ""]) {
+      expect(makeStorable(value)).toBe(value);
+    }
+  });
+
+  test("its output is what unstorableProblem accepts, which is the whole point", () => {
+    for (const value of [`a${NUL}b`, "a\ud800b", "a\udc00b", `${NUL}\ud800`]) {
+      expect(unstorableProblem(value, "x")).not.toBeNull();
+      expect(unstorableProblem(makeStorable(value), "x")).toBeNull();
+    }
+  });
+
+  test("is idempotent", () => {
+    const once = makeStorable(`a${NUL}b\ud800c`);
+    expect(makeStorable(once)).toBe(once);
+  });
+});
+
+// One orphan half ANYWHERE in a document is enough for Postgres to refuse the whole `jsonb` write,
+// so the unit that has to come back storable is the document, not the field.
+describe("makeStorableDeep", () => {
+  const NUL = String.fromCharCode(0);
+  // The predicate the whole function exists for: nothing a column refuses survives anywhere in the
+  // result. Asserted on the SERIALIZED document, so a value the test forgot to name still counts.
+  function residue(value: unknown): number {
+    const json = JSON.stringify(value) ?? "";
+    return (json.match(/\\u0000/g)?.length ?? 0) + loneSurrogates(json);
+  }
+
+  test("repairs values, keys, and everything nested inside either", () => {
+    const out = makeStorableDeep({
+      [`k${NUL}1`]: "clean",
+      k2: `v\ud800`,
+      nested: { [`k\ud800`]: [`a${NUL}b`, { deep: `c\udc00` }] },
+    }) as Record<string, unknown>;
+    expect(Object.keys(out)).toEqual(["k1", "k2", "nested"]);
+    expect(out.k2).toBe("v�");
+    expect(out.nested).toEqual({ "k�": ["ab", { deep: "c�" }] });
+    expect(residue(out)).toBe(0);
+  });
+
+  test("leaves a clean document, its non-strings, and its Dates alone", () => {
+    const date = new Date("2026-08-24T00:00:00.000Z");
+    const input = { s: "Ana", n: 1, b: true, nul: null, date, list: [1, "x"] };
+    const out = makeStorableDeep(input);
+    expect(out).toEqual(input);
+    // The Date is the reason a non-plain object is returned as it is: rebuilding it from its
+    // entries (there are none) would silently turn a timestamp into `{}`.
+    expect(out.date).toBe(date);
+  });
+
+  test("drops the branch below the depth cap rather than passing it through unrepaired", () => {
+    // 12 levels: deeper than any allowlisted projection, and deep enough to be past the cap.
+    let deep: unknown = `bottom\ud800`;
+    for (let i = 0; i < 12; i++) deep = { down: deep };
+    const out = makeStorableDeep(deep);
+    expect(residue(out)).toBe(0);
+    expect(JSON.stringify(out)).toContain("null");
   });
 });

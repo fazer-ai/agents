@@ -6,6 +6,7 @@ import { type AgentNudge, runAgentNudge } from "@/graph/nudge";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { makeStorableDeep } from "@/lib/text";
 import { getMapper } from "@/modules/integrations/mappers";
 import {
   type ResolvedInboundRoute,
@@ -248,11 +249,21 @@ async function persistFailed(
 
 // create-then-catch across two transactions (a unique violation aborts its own transaction,
 // so the existence re-read must run in a fresh one). Handles concurrent identical deliveries.
+//
+// The mapper is pure and knows nothing about columns; this is where its output becomes a row, so it
+// is where a third party's characters have to survive the write. Measured against Postgres, BOTH
+// destinations of the event refuse the same two characters: the `jsonb` payload (`invalid input
+// syntax for type json`, and 22P05 for a NUL) and the `text` correlation columns (22021), and
+// `dedupeKey` is built from the provider's own id. That is why the repair takes the WHOLE event
+// rather than the payload, and why the re-read below looks for the REPAIRED key. A refusal here
+// escapes `receiveInbound`, which nothing above catches: a 500 with no delivery row and no FAILED
+// record either, and a sender retrying a body that can never succeed.
 async function persistInbound(
   base: PrismaClient,
   route: ResolvedInboundRoute,
-  n: NormalizedInboundEvent,
+  mapped: NormalizedInboundEvent,
 ): Promise<{ id: bigint; duplicate: boolean }> {
+  const n = makeStorableDeep(mapped);
   const payload = toStoredPayload(n);
   try {
     const row = await runScopedOn(base, sysCtx(route.tenantId), (db) =>

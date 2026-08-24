@@ -235,6 +235,7 @@ export class PromptTooLongError extends AppError {
       400,
       "errors.promptTooLong",
       { len: length, max },
+      "systemPrompt",
     );
   }
 }
@@ -261,6 +262,9 @@ export class SettingsTextTooLongError extends AppError {
       400,
       "errors.settingsTextTooLong",
       { field, len: length, max },
+      // The dotted path collectOversizedTextChanges reports, which is the same string the console's
+      // own text-cap warning already routes on (TEXT_CAP_TARGETS).
+      field,
     );
   }
 }
@@ -804,7 +808,13 @@ interface NormalizedGrant {
 // both; see lib/db-id.ts.
 function bigOrThrow(v: string | null | undefined, field: string): bigint {
   if (v == null) {
-    throw new AppError(`${field} is required`, 400, "errors.invalidToolGrant");
+    throw new AppError(
+      `${field} is required`,
+      400,
+      "errors.invalidToolGrant",
+      undefined,
+      field,
+    );
   }
   const id = parseDbId(v);
   if (id === null) {
@@ -812,6 +822,8 @@ function bigOrThrow(v: string | null | undefined, field: string): bigint {
       `${field} must be a numeric id`,
       400,
       "errors.invalidToolGrant",
+      undefined,
+      field,
     );
   }
   return id;

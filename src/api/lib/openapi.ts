@@ -10,9 +10,18 @@ import { type DocumentDecoration, type TSchema, t } from "elysia";
 // does not run through response validation either — so these annotations are documentation-only and
 // carry no runtime-validation risk.
 
-// The canonical error body every endpoint returns on failure: `{ error: "<message>" }`.
+// The canonical error body every endpoint returns on failure: `{ error: "<message>" }`, plus the
+// name of the value the refusal is about when it is about one (see src/api/lib/refusal.ts).
 export const ErrorResponse = t.Object(
-  { error: t.String({ description: "Human-readable error message." }) },
+  {
+    error: t.String({ description: "Human-readable error message." }),
+    field: t.Optional(
+      t.String({
+        description:
+          "The value the refusal is about, by the server's name for it (a column, a patch key, or a dotted path into a settings bag). Absent when the refusal is not about one input. Never localized.",
+      }),
+    ),
+  },
   { description: "Error response." },
 );
 
@@ -43,7 +52,7 @@ const STATUS_DESCRIPTION: Record<number, string> = {
 // builders can never drift apart in the published spec.
 function errorSchema(status: number): typeof ErrorResponse {
   return t.Object(
-    { error: t.String() },
+    { error: t.String(), field: t.Optional(t.String()) },
     { description: STATUS_DESCRIPTION[status] ?? "Error." },
   );
 }

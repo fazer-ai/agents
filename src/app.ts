@@ -4,9 +4,9 @@ import Elysia from "elysia";
 import { helmet } from "elysia-helmet";
 import api from "@/api";
 import { cspDirectives } from "@/api/lib/csp";
-import { getLocaleFromHeader, translateWithLocale } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
 import { parseOrigins } from "@/api/lib/origin";
+import { refusalBody } from "@/api/lib/refusal";
 import { localeMiddleware } from "@/api/middlewares/locale";
 import {
   credentialRateLimitMiddleware,
@@ -107,18 +107,11 @@ const app = new Elysia({
   .onError(({ path, error, request, set }) => {
     if (!(error instanceof AppError)) return;
     logger.warn("%s %s", path, error.message);
-    const message = error.translationKey
-      ? translateWithLocale(
-          getLocaleFromHeader(request.headers.get("accept-language")),
-          error.translationKey,
-          error.message,
-          error.translationParams,
-        )
-      : error.message;
+    const body = refusalBody(error, request.headers.get("accept-language"));
     // NOTE: keep set.status in sync, because the access log in onAfterResponse reads it and a raw
     // Response alone would make a 4xx show up there as a 500.
     set.status = error.statusCode;
-    return Response.json({ error: message }, { status: error.statusCode });
+    return Response.json(body, { status: error.statusCode });
   })
   .use(rateLimitMiddleware())
   .use(mcpTransportRateLimitMiddleware())

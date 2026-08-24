@@ -307,9 +307,14 @@ export async function updateCompanySettings(
     if (typeof value !== "string") continue;
     const problem = unprintableProblem(value, field);
     if (problem)
-      throw new AppError(problem, 400, "errors.invalidCompanyField", {
-        reason: problem,
-      });
+      throw new AppError(
+        problem,
+        400,
+        "errors.invalidCompanyField",
+        { reason: problem },
+        // The key of the patch, which is the name the console's company form uses for the input.
+        field,
+      );
   }
   return patchBlock(ctx, base, "company", (raw) =>
     companySettingsSchema.parse({ ...parseCompanySettings(raw), ...patch }),

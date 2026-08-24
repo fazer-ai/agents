@@ -11,17 +11,31 @@ export class AppError extends Error {
   // NOTE: interpolation values for translationKey ({{placeholders}} in the locale entry).
   // `message` must arrive pre-interpolated: it is the log line and the untranslated fallback.
   readonly translationParams?: Record<string, string | number>;
+  // NOTE: optional. The value this refusal is ABOUT, by the name the SERVER uses for it: a column
+  // (`systemPrompt`), a key of a patch (`document`), or a dotted path into a bag the server owns
+  // (`guardrails.output.templateMessage`). Never a form path and never localized: it is a key the
+  // client keys on, and it must read the same in every language the sentence is written in.
+  //
+  // It is the server's vocabulary and not the caller's on purpose. The same service function is
+  // reached by REST and by MCP, which spell the same write differently, so a name taken from the
+  // request shape would be a different string depending on who called, and the console already
+  // maps these exact paths (TEXT_CAP_TARGETS, src/client/lib/configHealth.ts), which is the map a
+  // refusal wants to reuse. Absent whenever the refusal is not about one input: see
+  // src/api/lib/refusal.ts for what the wire then carries. Issue #231.
+  readonly field?: string;
   constructor(
     message: string,
     statusCode: number,
     translationKey?: string,
     translationParams?: Record<string, string | number>,
+    field?: string,
   ) {
     super(message);
     this.name = new.target.name;
     this.statusCode = statusCode;
     this.translationKey = translationKey;
     this.translationParams = translationParams;
+    this.field = field;
   }
 }
 

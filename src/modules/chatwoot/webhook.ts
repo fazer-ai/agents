@@ -1692,22 +1692,32 @@ async function maybeConsumeCommandOrGate(params: {
     // The assignment is the one thing the operator can SEE not happening, so silence about it would
     // read as the command failing. Only when it was actually withheld: a conversation the agent
     // already owned has nothing to explain.
-    // ONE question, asked once and at the END, because there are four ways to finish this command
-    // with somebody else holding the conversation and each was silent in its own way: the hand-back
-    // ran and found a new holder, the holder changed before it could run, the conversation was the
-    // bot's at the start and somebody claimed it during the cleanup, or the agent is switched off.
-    // They read the same to the operator, who typed /reset and is about to watch the agent not
-    // answer — so the sentence is chosen from the state at the END, not from which guard fired.
+    //
+    // TWO questions, because the operator is about to watch the agent not answer and there are two
+    // independent reasons for that. Ownership has four ways to arrive and each was silent in its own
+    // way — the hand-back ran and found a new holder, the holder changed before it could run, or the
+    // conversation was the bot's at the start and somebody claimed it during the cleanup — so that
+    // sentence is chosen from the state at the END, not from which guard fired.
+    //
+    // Being SWITCHED OFF is the other, and it is not a variety of the first: a disabled agent that
+    // still owns a pending conversation reads as a clean reset and answers nothing. Asking ownership
+    // first made this arm reachable only when somebody else held it, which is the one case where the
+    // agent being off is the LESS surprising half. The other two places that answer this question
+    // (the /teste acknowledgement and the activation notice) already keep the two apart; this was the
+    // third and it was the one that did not.
     const leftWithSomebodyElse = !(await stillOursOrUnknown());
-    const heldBack = !leftWithSomebodyElse
-      ? ""
-      : resetBlocker === "disabled"
-        ? " Este agente está desativado, então a conversa continua com quem a atendia."
-        : handBack === null
-          ? // Attempted and threw. `failed` already names the assignment below, and explaining the
-            // same conversation twice reads as two separate problems.
-            ""
-          : " Alguém assumiu a conversa durante o reset, então ela continua com essa pessoa.";
+    const heldBack =
+      resetBlocker === "disabled"
+        ? leftWithSomebodyElse
+          ? " Este agente está desativado, então ele não vai responder e a conversa continua com quem a atendia."
+          : " Este agente está desativado, então ele não vai responder."
+        : !leftWithSomebodyElse
+          ? ""
+          : handBack === null
+            ? // Attempted and threw. `failed` already names the assignment below, and explaining the
+              // same conversation twice reads as two separate problems.
+              ""
+            : " Alguém assumiu a conversa durante o reset, então ela continua com essa pessoa.";
     await postAcknowledgement(
       distinctFailed.length === 0
         ? `🔄 Memória, preferência de áudio e etiquetas/atributos desta conversa foram limpos.${heldBack}`

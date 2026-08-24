@@ -2274,6 +2274,32 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // The half the ownership question hides. On a conversation the agent already owns there is
+    // nobody to hand it back to, so every guard above is quiet and the reset reads as clean — while
+    // the operator who typed it is about to watch the agent answer nothing. Ownership is set to the
+    // bot explicitly, for the reason the /teste version of this test states: with it absent the two
+    // reasons agree and the assertion proves nothing about which one is asked.
+    test("a disabled agent is named even on a conversation it still owns", async () => {
+      await withDisabledAgent(async () => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          data: { status: "pending", assigneeType: null, assigneeId: null },
+        });
+        const cw = fakeChatwoot();
+        globalThis.fetch = cw.impl;
+        await sendReset("/reset", CONV_ID, { status: "pending" });
+
+        const ack = ackCalls(cw.calls)
+          .map((c) => (c.body as { content?: string })?.content ?? "")
+          .join(" ");
+        expect(ack).toContain("desativado");
+        // And not the ownership half of it: there is no "quem a atendia" here, so that clause would
+        // be a sentence about a person who does not exist.
+        expect(ack).not.toContain("continua com quem a atendia");
+        expect(ack).not.toContain("Alguém assumiu");
+      });
+    });
+
     // The same question in the two texts that answer it. Naming /reset to an operator whose agent is
     // switched off is the round-1 defect one layer deeper: the command runs and still cannot help.
     test("a disabled agent names no command it cannot honour", async () => {

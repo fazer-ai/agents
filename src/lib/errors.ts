@@ -87,7 +87,10 @@ export class ConflictError extends AppError {
 // either: the refusal is the class. Without it every one of them answered English to a pt-BR caller
 // while `errors.tenantTargetRequired` sat in both catalogs, translated, with nothing pointing at it.
 export class TenantTargetRequiredError extends AppError {
-  constructor(message = "A target tenant is required for this operation") {
+  // The default is the catalog sentence VERBATIM, and the admin surface's `translate` default is the
+  // same string: three producers of one refusal, saying one thing. They did not, and nothing noticed
+  // until the reader learned to read a subclass's own default (issue #299).
+  constructor(message = "A target tenant is required") {
     super(message, 400, "errors.tenantTargetRequired");
   }
 }

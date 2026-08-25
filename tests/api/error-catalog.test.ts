@@ -308,6 +308,50 @@ async function throwSiteRes(): Promise<RegExp[]> {
   ];
 }
 
+// THE SIXTH PRODUCER, and the only one that cannot be a regex over the tree: a subclass that
+// hard-codes BOTH its sentence and its key, so neither is written at any call site.
+// `throw new ProEditionError()` names nothing for a sweep to find.
+//
+// The pair is split across two lines of the class — a `message = "…"` default in the constructor
+// signature, the key in the `super(...)` call — so the file is read class by class rather than by
+// one expression, which is also what keeps a default from pairing with the NEXT class's key. That
+// happened while writing this: a single greedy regex reported `ForbiddenError`'s "Forbidden" as the
+// sentence of `errors.proEdition`.
+//
+// Found by review on #304, and by the right question: the `tenantTargetRequired` fix in this same PR
+// moved two refusals ONTO one of these classes, which silenced the rule instead of satisfying it.
+// A producer the reader cannot see is not a producer that agrees.
+async function subclassDefaults(into: Map<string, Set<string>>): Promise<void> {
+  const src = await readFile("src/lib/errors.ts", "utf8");
+  const bodies = src.split(/\nexport class /).slice(1);
+  expect(bodies.length).toBeGreaterThan(5);
+  for (const body of bodies) {
+    const message = body.match(
+      /constructor\([^)]*?message\s*=\s*("(?:[^"\\]|\\.)*")/,
+    )?.[1];
+    const key = body
+      .match(/super\(([^;]*?)\)\s*;/s)?.[1]
+      ?.match(/"errors\.([A-Za-z0-9_]+)"/)?.[1];
+    if (!message || !key) continue;
+    const set = into.get(key) ?? new Set<string>();
+    set.add(message.slice(1, -1));
+    into.set(key, set);
+  }
+}
+
+// Every producer in the tree, in one place: the three tests below asked the same question with the
+// same loop, and a spelling added to one of them and not the others is the shape of blind spot this
+// whole file exists to close.
+async function allSites(): Promise<Map<string, Set<string>>> {
+  const res = await throwSiteRes();
+  const sites = new Map<string, Set<string>>();
+  for (const f of await sourceFiles("src")) {
+    throwSites(await readFile(f, "utf8"), sites, res);
+  }
+  await subclassDefaults(sites);
+  return sites;
+}
+
 function throwSites(
   body: string,
   into: Map<string, Set<string>>,
@@ -685,6 +729,23 @@ describe("both languages answer, and answer differently", () => {
     expect(into.has("d")).toBe(false);
   });
 
+  test("a subclass that hard-codes its own refusal is read from the class", async () => {
+    const into = new Map<string, Set<string>>();
+    await subclassDefaults(into);
+    // The live pairs, which is what makes this a positive control rather than a shape test: a reader
+    // that stopped pairing the default with the key would answer with an empty map and pass any
+    // assertion written about "no bad pairs".
+    expect(into.get("proEdition")).toEqual(
+      new Set(["This feature requires the Pro edition"]),
+    );
+    expect(into.get("tenantTargetRequired")).toEqual(
+      new Set(["A target tenant is required"]),
+    );
+    // A class whose key is a PARAMETER pairs its default with nothing: `new NotFoundError("…")` can
+    // carry any key, so its "Not found" is not the sentence of any one of them.
+    expect(into.has("tenantNotFound")).toBe(false);
+  });
+
   // The regression this derivation exists for: a subclass the alternation forgot is a whole family of
   // refusals the rule cannot see. `ConflictError` was that subclass.
   test("the reader covers every error class the module exports", async () => {
@@ -704,14 +765,9 @@ describe("both languages answer, and answer differently", () => {
   });
 
   test("no key answers with less than its call sites already said", async () => {
-    const sites = new Map<string, Set<string>>();
-    const res = await throwSiteRes();
-    for (const f of await sourceFiles("src")) {
-      throwSites(await readFile(f, "utf8"), sites, res);
-    }
     expect(
       keysThatSayLess(
-        sites,
+        await allSites(),
         apiEn.errors as Record<string, string>,
         SAY_LESS_GRANDFATHERED,
       ),
@@ -749,16 +805,15 @@ describe("both languages answer, and answer differently", () => {
     "invalidDocumentValues",
     "invalidIdempotencyKey",
     "unstorableText",
-    // A SUBCLASS THAT HARD-CODES ITS OWN REFUSAL AND TAKES NO MESSAGE. `new ProEditionError()` names
-    // nothing at the call site, so there is no site to read; the rule that covers this shape is
-    // "a subclass is a throw site with no arguments", further down this file.
-    "proEdition",
+    // A third group stood here until review asked the obvious question: a subclass that hard-codes
+    // its own refusal names nothing at the call site, and `errors.proEdition` was waived for it.
+    // "Nothing to read at the call site" is not "nothing to read": the sentence is in the class, and
+    // `subclassDefaults` now reads it there. The group is empty, so it is gone.
   ];
 
   test("every key the reader cannot see is named, with the reason it may stay invisible", async () => {
-    const res = await throwSiteRes();
     const named = new Set<string>();
-    const seen = new Map<string, Set<string>>();
+    const seen = await allSites();
     for (const f of await sourceFiles("src")) {
       const body = await readFile(f, "utf8");
       // A ledger comment declares a key, it does not produce one, and it is spelled in single
@@ -768,9 +823,10 @@ describe("both languages answer, and answer differently", () => {
         for (const m of line.matchAll(/"errors\.([A-Za-z0-9_]+)"/g))
           named.add(m[1] as string);
       }
-      throwSites(body, seen, res);
     }
-    const unseenGiven = (visible: Set<string>): string[] =>
+    // Takes anything that can answer "do you have this key": the sweep hands back a Map of
+    // key -> messages, and the blinded control below is an empty Set.
+    const unseenGiven = (visible: { has: (k: string) => boolean }): string[] =>
       [...named].filter((k) => !visible.has(k)).sort();
     // NO FLOOR ON EITHER COUNT, and that is the whole lesson of this assertion. The first version
     // pinned both above 150, which is true on THIS tree and false on the one the public CI runs:
@@ -789,11 +845,7 @@ describe("both languages answer, and answer differently", () => {
   });
 
   test("the grandfathered list only names keys that still offend", async () => {
-    const sites = new Map<string, Set<string>>();
-    const res = await throwSiteRes();
-    for (const f of await sourceFiles("src")) {
-      throwSites(await readFile(f, "utf8"), sites, res);
-    }
+    const sites = await allSites();
     const stillOffends = new Set(
       keysThatSayLess(sites, apiEn.errors as Record<string, string>, []),
     );

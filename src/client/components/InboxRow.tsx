@@ -1,4 +1,4 @@
-import { ExternalLink, RefreshCw } from "lucide-react";
+import { ExternalLink, RefreshCw, Trash2 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
@@ -23,6 +23,8 @@ export function InboxRow({
   status,
   reconnecting = false,
   onReconnect,
+  removing = false,
+  onRemove,
   children,
 }: {
   name: string;
@@ -33,6 +35,13 @@ export function InboxRow({
   status: InboxRowStatus;
   reconnecting?: boolean;
   onReconnect?: () => void;
+  removing?: boolean;
+  // Remove this inbox's local mirror. Offered ONLY by the Channels page (the agent editor's tab
+  // binds agents and has no business destroying rows), and offered on EVERY inbox rather than only
+  // on ones we believe are orphaned: nothing in this page knows whether an inbox still exists in
+  // Chatwoot, and the server refuses a live one with a sentence that says so. Guessing here would
+  // mean hiding the button on an inbox that is genuinely gone.
+  onRemove?: () => void;
   children?: ReactNode;
 }) {
   const { t } = useTranslation();
@@ -93,6 +102,20 @@ export function InboxRow({
             <RefreshCw className="h-4 w-4" aria-hidden="true" />
             {t("channels.reconnect", "Reconnect")}
           </Button>
+        )}
+        {onRemove && (
+          <Tooltip content={t("channels.removeInbox", "Remove inbox mirror")}>
+            <Button
+              variant="secondary"
+              size="sm"
+              loading={removing}
+              onClick={onRemove}
+              aria-label={t("channels.removeInbox", "Remove inbox mirror")}
+              className="text-text-muted hover:text-danger"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          </Tooltip>
         )}
         {children}
       </div>

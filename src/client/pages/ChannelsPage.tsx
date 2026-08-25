@@ -21,6 +21,8 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDialog,
+  type ConfirmPayload,
   DataBoundary,
   EmptyState,
   FormField,
@@ -226,6 +228,7 @@ export function ChannelsPage() {
   // Strong confirmation (backup warning + re-typed name + password) for the two irreversible,
   // SUPER_ADMIN-only actions: tearing down the whole instance, and removing one account (to move it).
   const strongConfirm = useModalController<StrongConfirmPayload>();
+  const confirm = useModalController<ConfirmPayload>();
 
   // Connect form (base URL + admin token, entered once).
   const [baseUrl, setBaseUrl] = useState("");
@@ -250,6 +253,7 @@ export function ChannelsPage() {
     Record<string, "active" | "missing">
   >({});
   const [reconnecting, setReconnecting] = useState<string | null>(null);
+  const [removingInbox, setRemovingInbox] = useState<string | null>(null);
 
   const loadBotStatus = useCallback(async () => {
     try {
@@ -741,6 +745,52 @@ export function ChannelsPage() {
     }
   }
 
+  // Remove one inbox's local mirror. Only ever succeeds for an inbox that no longer exists in
+  // Chatwoot; a live one comes back 409 and the toast says so, which is the only place an operator
+  // learns why the row is still there. Kept out of the agent editor's Channels tab on purpose.
+  function removeInboxMirror(inbox: { id: string; name: string }) {
+    confirm.open({
+      title: t("channels.removeInboxTitle", "Remove inbox mirror"),
+      message: t(
+        "channels.removeInboxWarning",
+        "This removes the local copy of an inbox that was deleted in Chatwoot. Past conversations are kept and stop naming an inbox; past usage and log lines are kept. It cannot be undone, and only works once the inbox is gone from Chatwoot.",
+      ),
+      danger: true,
+      confirmLabel: t("channels.removeInboxAction", "Remove mirror"),
+      onConfirm: async () => {
+        setRemovingInbox(inbox.id);
+        try {
+          const { error: err } = await api.api.v1.chatwoot
+            .inboxes({ id: inbox.id })
+            .delete();
+          if (err) {
+            const status =
+              typeof err === "object" && err !== null && "status" in err
+                ? (err as { status?: number }).status
+                : undefined;
+            showToast(
+              status === 409
+                ? t(
+                    "channels.removeInboxStillExists",
+                    "This inbox still exists in Chatwoot. Delete it there first.",
+                  )
+                : t("channels.removeInboxError", "Could not remove the inbox."),
+              "error",
+            );
+            throw err;
+          }
+          setInboxes((prev) => prev.filter((i) => i.id !== inbox.id));
+          showToast(
+            t("channels.removedInbox", "Inbox mirror removed."),
+            "success",
+          );
+        } finally {
+          setRemovingInbox(null);
+        }
+      },
+    });
+  }
+
   const baseUrlInvalid = !isValidHttpUrl(baseUrl);
   const connectDirty = baseUrl.trim() !== "" || adminToken.trim() !== "";
 
@@ -1105,6 +1155,8 @@ export function ChannelsPage() {
                           }
                           reconnecting={reconnecting === ib.id}
                           onReconnect={() => reconnectBot(ib.id)}
+                          removing={removingInbox === ib.id}
+                          onRemove={() => removeInboxMirror(ib)}
                         >
                           {disconnected ? (
                             <span className="shrink-0 text-text-muted text-xs">
@@ -1366,6 +1418,7 @@ export function ChannelsPage() {
       </Modal>
 
       <StrongConfirmModal modal={strongConfirm} />
+      <ConfirmDialog modal={confirm} />
     </PageContainer>
   );
 }

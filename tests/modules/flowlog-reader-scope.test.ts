@@ -162,6 +162,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/tool-flowlog.test.ts": 1,
   "tests/modules/chatwoot-gate-trail.test.ts": 1,
+  "tests/modules/chatwoot-inbox-remove.test.ts": 1,
   "tests/modules/chatwoot-unbound-inbox.test.ts": 1,
   "tests/modules/contact-auth-gate-e2e.test.ts": 3,
   "tests/modules/debounce.test.ts": 2,

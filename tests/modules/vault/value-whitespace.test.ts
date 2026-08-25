@@ -6,6 +6,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import {
   createVaultEntry,
   normalizeVaultValue,
+  testVaultValue,
   updateVaultEntry,
 } from "@/modules/vault/service";
 
@@ -82,6 +83,32 @@ describe("normalizeVaultValue", () => {
       expect(normalizeVaultValue(kind, input)).toEqual(expected);
     });
   }
+});
+
+// Test-on-save probes the value the operator just typed, and the form ABORTS the save when the probe
+// fails. Before the write normalized, the two agreed by both taking the value raw; they have to keep
+// agreeing, or a credential this stores working is refused before it is ever stored.
+describe("test-on-save probes what a save would store", () => {
+  test("a typed value with whitespace is probed trimmed, not raw", async () => {
+    const seen: string[] = [];
+    const fetchImpl = (async (
+      _input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      const h = (init?.headers ?? {}) as Record<string, string>;
+      for (const [k, v] of Object.entries(h)) {
+        if (k.toLowerCase() === "authorization") seen.push(v);
+      }
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const r = await testVaultValue("openai", " sk-secret\n", null, {
+      fetchImpl,
+      assertSafe: async (u: string) => new URL(u),
+    });
+    expect(r).toEqual({ testable: true, ok: true });
+    expect(seen).toEqual(["Bearer sk-secret"]);
+  });
 });
 
 describe.skipIf(!dbUp)(

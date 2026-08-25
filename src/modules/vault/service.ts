@@ -367,8 +367,12 @@ function validateParamName(raw: string, kind: string): string {
 // It runs BEFORE validateVaultValue, so a value that is only whitespace becomes "" and is refused as
 // empty instead of being stored as a secret nothing can match. Anything this cannot narrow is
 // returned untouched, for validation to refuse by shape.
+export function normalizeVaultSecret(value: string): string {
+  return value.trim();
+}
+
 export function normalizeVaultValue(kind: string, value: unknown): unknown {
-  if (typeof value === "string") return value.trim();
+  if (typeof value === "string") return normalizeVaultSecret(value);
   // Managed-blob kinds hold a server-managed object with no operator-typed fields.
   if (secretTypeIsManagedBlob(kind)) return value;
   const fields = getSecretTypeFields(kind);
@@ -384,7 +388,7 @@ export function normalizeVaultValue(kind: string, value: unknown): unknown {
   const out: Record<string, unknown> = { ...rec };
   for (const { key } of fields) {
     const v = rec[key];
-    if (typeof v === "string") out[key] = v.trim();
+    if (typeof v === "string") out[key] = normalizeVaultSecret(v);
   }
   return out;
 }
@@ -870,7 +874,13 @@ export async function testVaultValue(
   if (kind && !isSecretTypeId(kind)) {
     throw new AppError("invalid secret type", 400, "errors.invalidSecretType");
   }
-  return runSecretTest({ kind, value, baseURL, paramName }, deps);
+  // The probe has to see exactly what a save would persist. They used to agree by both taking the
+  // typed value raw; now that the write normalizes, testing the raw value would fail the probe on a
+  // credential this would store working (" tok" probes as `Bearer  tok`) and abort the save with it.
+  return runSecretTest(
+    { kind, value: normalizeVaultSecret(value), baseURL, paramName },
+    deps,
+  );
 }
 
 // Tests an ALREADY-stored credential by its `vault:<id>` ref (decrypts server-side; the value is

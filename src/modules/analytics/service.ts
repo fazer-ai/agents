@@ -315,6 +315,8 @@ export async function getKpis(
         -- inbound watermark was cleared would otherwise contribute a negative "response time".
         AND first_human_reply_at >= first_inbound_at
         AND (${filter.since ?? null}::timestamptz IS NULL OR created_at >= ${filter.since ?? null})`);
+    // COUNT and the percentile come from ONE aggregate over the same rows, so they cannot
+    // disagree: no row in the sample means `sampled` is 0 and `median` is NULL together.
     const sampled = Number(responseRow?.sampled ?? 0);
 
     return {
@@ -324,9 +326,7 @@ export async function getKpis(
       handoff,
       resolvedBeforeTracking,
       firstResponseSeconds:
-        sampled > 0 && responseRow?.median != null
-          ? Number(responseRow.median)
-          : null,
+        responseRow?.median != null ? Number(responseRow.median) : null,
       firstResponseSampled: sampled,
       involvementRate:
         totalConversations > 0 ? involved / totalConversations : 0,

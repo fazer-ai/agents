@@ -497,10 +497,12 @@ model Conversation {
   // inbound watermark is (message_created, never message_updated), so the analytics side can ask
   // how long a customer waited without reading a message body or paying for a model.
   //
-  // firstInboundAt / firstHumanReplyAt are SET ONCE and never cleared: they anchor the
-  // conversation's first-response time, which is a property of the attendance and does not change
-  // because the dialogue continued. lastHumanReplyAt always advances, and is the human counterpart
-  // of lastInboundAt.
+  // firstInboundAt / firstHumanReplyAt anchor the conversation's first-response time, which is a
+  // property of the attendance and does not change because the dialogue continued. They are never
+  // cleared, and they move only DOWNWARD — a delivery that arrives late carrying an earlier clock
+  // corrects the anchor, which is the one revision an out-of-order retry has to be able to make.
+  // lastHumanReplyAt only advances, and is the human counterpart of lastInboundAt. The rule is one
+  // function, with the orderings as a table: src/modules/chatwoot/attendance-watermarks.ts.
   //
   // The author is `isNewHumanAgentMessage` (an outgoing, non-private, non-reaction message whose
   // sender is a `user`) — the SAME predicate the memory ingestion uses, so "the team answered" means
@@ -508,7 +510,10 @@ model Conversation {
   // counted through LlmUsage, and folding them in here would make an automated answer read as a
   // human response time.
   //
-  // NULL on any conversation whose first inbound / first human reply predates this column.
+  // firstInboundAt stays NULL FOREVER on a conversation that already carried customer traffic when
+  // these columns were added: its next message is not its first, and dating it as one would put a
+  // mid-conversation interval into the service level. That is what excludes those rows from the
+  // sample, since the KPI needs both ends.
   firstInboundAt         DateTime? @map("first_inbound_at")
   firstHumanReplyAt      DateTime? @map("first_human_reply_at")
   lastHumanReplyAt       DateTime? @map("last_human_reply_at")

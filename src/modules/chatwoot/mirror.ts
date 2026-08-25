@@ -5,6 +5,7 @@ import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
+import { decideAttendanceWatermarks } from "./attendance-watermarks";
 import { isNewHumanAgentMessage, isNewIncomingMessage } from "./normalize";
 import { decideConversationWrites, type StatePayload } from "./state-order";
 import type { NormalizedChatwootEvent } from "./types";
@@ -146,10 +147,13 @@ export async function mirrorChatwootEvent(
           status: true,
           resolvedBy: true,
           resolvedByAt: true,
-          // Read to keep the two "first" watermarks set-once: Prisma has no write-if-null, and a
-          // conditional UPDATE per event would serialize on a row this function already holds.
+          // Read so `decideAttendanceWatermarks` can order this event against what is stored: a
+          // "first" column is not simply write-if-null (an out-of-order delivery has to lower it,
+          // and a conversation older than the columns must never be anchored at all).
           firstInboundAt: true,
+          lastInboundAt: true,
           firstHumanReplyAt: true,
+          lastHumanReplyAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -192,10 +196,25 @@ export async function mirrorChatwootEvent(
         // `resolvedBy != null` is a write-avoidance guard, not part of the rule: this branch is
         // taken by every out-of-order delivery, and clearing a column that is already null would
         // add an UPDATE to each one.
-        if (dropsResolutionOrigin && existing.resolvedBy != null) {
+        // NOTE: And a second exception, for the same reason stated the other way round: the ORDER
+        // this event lost is about the conversation's state, not about the message it carries. A
+        // customer message or a team reply mentioned by a stale delivery still happened, and for a
+        // watermark that anchors an attendance the earliest reading has to win even when it arrives
+        // last. `decideAttendanceWatermarks` returns {} whenever this event teaches nothing, which
+        // is every other stale delivery — so this branch still writes nothing in the common case.
+        const staleWatermarks = decideAttendanceWatermarks(existing, {
+          inboundAt,
+          humanReplyAt,
+        });
+        const clearsOrigin =
+          dropsResolutionOrigin && existing.resolvedBy != null;
+        if (clearsOrigin || Object.keys(staleWatermarks).length > 0) {
           await db.conversation.update({
             where: { id: existing.id },
-            data: { resolvedBy: null, resolvedByAt: null },
+            data: {
+              ...(clearsOrigin ? { resolvedBy: null, resolvedByAt: null } : {}),
+              ...staleWatermarks,
+            },
           });
         }
         return {
@@ -231,9 +250,17 @@ export async function mirrorChatwootEvent(
             chatwootStatusAt: decision.statusAt,
             chatwootAssigneeAt: decision.assigneeAt,
             lastInboundAt: inboundAt,
-            firstInboundAt: inboundAt,
-            firstHumanReplyAt: humanReplyAt,
-            lastHumanReplyAt: humanReplyAt,
+            // The same rule as the two branches below, asked with nothing stored: a row we are
+            // creating has been observed from before its first message by construction.
+            ...decideAttendanceWatermarks(
+              {
+                firstInboundAt: null,
+                lastInboundAt: null,
+                firstHumanReplyAt: null,
+                lastHumanReplyAt: null,
+              },
+              { inboundAt, humanReplyAt },
+            ),
             ...(n.customAttributes
               ? {
                   customAttributes: n.customAttributes as Prisma.InputJsonValue,
@@ -307,13 +334,7 @@ export async function mirrorChatwootEvent(
             ? { chatwootAssigneeAt: decision.assigneeAt }
             : {}),
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
-          ...(inboundAt != null && existing.firstInboundAt == null
-            ? { firstInboundAt: inboundAt }
-            : {}),
-          ...(humanReplyAt != null ? { lastHumanReplyAt: humanReplyAt } : {}),
-          ...(humanReplyAt != null && existing.firstHumanReplyAt == null
-            ? { firstHumanReplyAt: humanReplyAt }
-            : {}),
+          ...decideAttendanceWatermarks(existing, { inboundAt, humanReplyAt }),
           // NOTE: The bags are ASSIGNED (the payload always ships the whole jsonb), but only when the
           // event carried one: a payload without them must not wipe the stored snapshot.
           ...(decision.unversioned && n.customAttributes

@@ -1,6 +1,6 @@
 import cors from "@elysiajs/cors";
 import { staticPlugin } from "@elysiajs/static";
-import Elysia, { type ValidationError } from "elysia";
+import Elysia, { NotFoundError, ValidationError } from "elysia";
 import { helmet } from "elysia-helmet";
 import api from "@/api";
 import { cspDirectives } from "@/api/lib/csp";
@@ -135,7 +135,7 @@ const app = new Elysia({
   // for it and the chain continues to the plugin regardless of order. VALIDATION is answered here
   // now (issue #255) and so DOES depend on this placement: the plugin has already charged it by the
   // time this handler returns.
-  .onError(({ path, error, code, request, set }) => {
+  .onError(({ path, error, request, set }) => {
     // NOTE: Handle BigInt parsing errors as 400 Bad Request
     if (error instanceof SyntaxError && error.message.includes("BigInt")) {
       set.status = 400;
@@ -149,9 +149,16 @@ const app = new Elysia({
     // before the plugin would hand back an uncharged budget to anyone willing to send a body the
     // schema refuses. Everything about the body and the log line is decided in api/lib/schema
     // -refusal.ts, including why the submitted value reaches neither.
-    if (code === "VALIDATION") {
+    //
+    // Keyed on IDENTITY, not on `code`. Elysia forwards the thrown value's own `code` property when
+    // it has one, so `code === "VALIDATION"` is also true of any plain error that happens to carry
+    // that string — measured: such an error was answered 422 in the app's schema vocabulary, and the
+    // `as ValidationError` cast this replaces was simply false about it. Issue #263 has the long
+    // version; the rule is that a branch deciding what a failure IS cannot read a property the
+    // failure sets.
+    if (error instanceof ValidationError) {
       const refusal = schemaRefusal(
-        error as ValidationError,
+        error,
         request.headers.get("accept-language"),
       );
       const line = "%s %s";
@@ -165,35 +172,35 @@ const app = new Elysia({
     }
 
     logger.error("%s\n%s", path, error);
-    switch (code) {
-      case "NOT_FOUND":
-        // NOTE: API endpoints respond with JSON 404. SPA paths normally
-        // don't reach here because the /* catch-all below serves
-        // index.html for any non-API, non-asset request.
-        if (path === "/api" || path.startsWith("/api/")) {
-          return Response.json({ error: "Not Found" }, { status: 404 });
-        }
-        return new Response("Not Found", { status: 404 });
-      default: {
-        // NOTE: everything that is not a refusal Elysia itself raised is an unhandled failure, and
-        // its text does not reach the client outside development. Stated by exclusion, and decided
-        // from the thrown VALUE rather than from `code`, because `code` is a property the value
-        // carries and any library can set it. The measurements behind both of those choices are in
-        // api/lib/unhandled-error.ts; the short version is that a redact-list keyed on `code` leaked
-        // twice, once through a string code and once through a numeric one.
-        if (isFrameworkRefusal(error)) return;
-        // NOTE: `set.status` too, not just the Response's. The access log in onAfterResponse reads
-        // `set.status`, and Elysia seeds it from the thrown value's own `status` property — so an
-        // error carrying `status: 401` is answered 500 here and LOGGED as 401 unless this line runs.
-        // Same reason the AppError arm above carries the same note; the BigInt arm needed it too.
-        set.status = 500;
-        const message =
-          config.env === "development"
-            ? errorDetail(error)
-            : "Something went wrong";
-        return new Response(message, { status: 500 });
+
+    if (error instanceof NotFoundError) {
+      // NOTE: API endpoints respond with JSON 404. SPA paths normally
+      // don't reach here because the /* catch-all below serves
+      // index.html for any non-API, non-asset request.
+      set.status = 404;
+      if (path === "/api" || path.startsWith("/api/")) {
+        return Response.json({ error: "Not Found" }, { status: 404 });
       }
+      return new Response("Not Found", { status: 404 });
     }
+
+    // NOTE: everything that is not a refusal Elysia itself raised is an unhandled failure, and
+    // its text does not reach the client outside development. Stated by exclusion, and decided
+    // from the thrown VALUE rather than from `code`, because `code` is a property the value
+    // carries and any library can set it. The measurements behind both of those choices are in
+    // api/lib/unhandled-error.ts; the short version is that a redact-list keyed on `code` leaked
+    // twice, once through a string code and once through a numeric one.
+    if (isFrameworkRefusal(error)) return;
+    // NOTE: `set.status` too, not just the Response's. The access log in onAfterResponse reads
+    // `set.status`, and Elysia seeds it from the thrown value's own `status` property — so an
+    // error carrying `status: 401` is answered 500 here and LOGGED as 401 unless this line runs.
+    // Same reason the AppError arm above carries the same note; the BigInt arm needed it too.
+    set.status = 500;
+    const message =
+      config.env === "development"
+        ? errorDetail(error)
+        : "Something went wrong";
+    return new Response(message, { status: 500 });
   })
   .use(
     await staticPlugin({

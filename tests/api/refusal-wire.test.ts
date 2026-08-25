@@ -1,4 +1,5 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { NotFoundError as ElysiaNotFoundError } from "elysia";
 import logger from "@/api/lib/logger";
 import { errors } from "@/api/lib/openapi";
 import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
@@ -216,6 +217,36 @@ app.get("/__logged/carries-status", () => {
 });
 // Not this PR's arm, but the same invariant, found by sweeping for it: the BigInt guard answers a
 // raw 400 and was logging 500.
+// An unhandled failure that CALLS ITSELF one of Elysia's refusals. Elysia forwards the thrown
+// value's own `code`, so each of these used to be routed by the branch that reads `code` — the
+// VALIDATION one was answered 422 in the app's schema vocabulary and the NOT_FOUND one 404, neither
+// of which is what they are.
+const IMPOSTOR = [
+  "VALIDATION",
+  "NOT_FOUND",
+  "PARSE",
+  "INVALID_COOKIE_SIGNATURE",
+  "INVALID_FILE_TYPE",
+  "INTERNAL_SERVER_ERROR",
+] as const;
+for (const code of IMPOSTOR) {
+  app.get(`/__impostor/${code}`, () => {
+    throw Object.assign(new Error(`connection failed: ${SECRET}`), { code });
+  });
+}
+// The genuine article, to prove the guard tells them apart rather than just answering 500 to
+// everything: this one MUST keep its 404.
+app.get("/__real/notfound", () => {
+  // NOTE: Elysia's, aliased — this file already imports the APP's NotFoundError for the #252 block,
+  // and that one is an AppError answered by an entirely different arm.
+  throw new ElysiaNotFoundError();
+});
+// A genuine NotFoundError carrying a `status` of its own. Elysia seeds `set.status` from that
+// property, so this is the 404 arm's version of the `status: 401` case below: the wire says 404 and
+// the access log says 418 unless that arm syncs `set.status` too.
+app.get("/__real/notfound-status", () => {
+  throw Object.assign(new ElysiaNotFoundError(), { status: 418 });
+});
 app.get("/__logged/bigint", () => {
   throw new SyntaxError("Cannot convert 9007199254740993x to a BigInt");
 });
@@ -283,6 +314,34 @@ app.get("/__chosen/teapot", ({ status }) => status(418, "deliberate"));
 // Moved down here when the #263 block arrived below it. Measured with it left in place: every route
 // registered after it was missing, and 19 of this file's tests failed running the file ALONE. The
 // note above already said "below the LAST route"; the call simply stopped being there.
+
+// Telling a refusal from something wearing its name. The table in tests/api/lib/unhandled-error
+// .test.ts states that an error calling itself VALIDATION is an unhandled failure; these assert the
+// app actually routes it that way, which is a different claim and the one that was false — every
+// branch that read `code` answered the impostor as though it were the real thing.
+describe("an error that calls itself a framework refusal", () => {
+  test.each([...IMPOSTOR])(
+    "code %s is still an unhandled failure",
+    async (code) => {
+      const res = await app.handle(
+        new Request(`http://localhost/__impostor/${code}`),
+      );
+      const body = await res.text();
+      expect(res.status).toBe(500);
+      expect(body).toBe("Something went wrong");
+      expect(body).not.toContain(SECRET);
+    },
+  );
+
+  test("while the real NotFoundError keeps its 404", async () => {
+    const res = await app.handle(
+      new Request("http://localhost/__real/notfound"),
+    );
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("Not Found");
+  });
+});
+
 app.compile();
 
 describe("a status the handler chose is not an unhandled failure", () => {
@@ -346,6 +405,11 @@ describe("the access log records the status actually answered", () => {
   test("an error carrying status: 401 is answered 500 and logged 500", async () => {
     expect(await wireStatusFor("/__logged/carries-status")).toBe(500);
     expect(await loggedStatusFor("/__logged/carries-status")).toBe("500");
+  });
+
+  test("the 404 arm logs 404 even when the error carries another status", async () => {
+    expect(await wireStatusFor("/__real/notfound-status")).toBe(404);
+    expect(await loggedStatusFor("/__real/notfound-status")).toBe("404");
   });
 
   test("the BigInt guard's raw 400 is logged as 400, not 500", async () => {

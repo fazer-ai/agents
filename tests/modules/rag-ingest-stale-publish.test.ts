@@ -12,6 +12,14 @@ import { EMBEDDING_DIM } from "@/modules/rag/embeddings";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import { updateEmbeddingSettings } from "@/modules/tenant-settings/service";
 
+// The context these calls take: the tenant id came from a row this test created, so it carries
+// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+const ctxOf = (tenantId: bigint): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
+
 // Issue #163: editing a document WHILE it is being indexed used to discard the edit, silently.
 //
 // Chunking and embedding run outside any transaction (they are network I/O), which is minutes of
@@ -259,7 +267,7 @@ describe.skipIf(!dbUp)(
     test("baseline: an uncontended ingest indexes the document", async () => {
       const { id, kb } = await seedTenant("rag-base");
       const doc = await createDocument({
-        tenantId: id,
+        ctx: ctxOf(id),
         knowledgeBaseId: kb,
         title: "policy",
         sourceType: "text",
@@ -280,7 +288,7 @@ describe.skipIf(!dbUp)(
     test("the edit lands in the index, not just in the row", async () => {
       const { id, kb } = await seedTenant("rag-edit");
       const doc = await createDocument({
-        tenantId: id,
+        ctx: ctxOf(id),
         knowledgeBaseId: kb,
         title: "policy",
         sourceType: "text",
@@ -289,7 +297,7 @@ describe.skipIf(!dbUp)(
       });
 
       duringEmbed = async () => {
-        await updateDocument(id, doc.id, { text: "EDITED TEXT" }, appDb);
+        await updateDocument(ctxOf(id), doc.id, { text: "EDITED TEXT" }, appDb);
       };
       await runIngest(id, doc.id);
 
@@ -312,7 +320,7 @@ describe.skipIf(!dbUp)(
     test("a stale run that fails does not stamp its failure on the edited document", async () => {
       const { id, kb } = await seedTenant("rag-fail");
       const doc = await createDocument({
-        tenantId: id,
+        ctx: ctxOf(id),
         knowledgeBaseId: kb,
         title: "policy",
         sourceType: "text",
@@ -322,7 +330,7 @@ describe.skipIf(!dbUp)(
 
       embedMode = "reject";
       duringEmbed = async () => {
-        await updateDocument(id, doc.id, { text: "EDITED TEXT" }, appDb);
+        await updateDocument(ctxOf(id), doc.id, { text: "EDITED TEXT" }, appDb);
       };
       await runIngest(id, doc.id);
       embedMode = "ok";
@@ -342,7 +350,7 @@ describe.skipIf(!dbUp)(
     test("a stale run leaves the previous index intact while the re-index runs", async () => {
       const { id, kb } = await seedTenant("rag-keep");
       const doc = await createDocument({
-        tenantId: id,
+        ctx: ctxOf(id),
         knowledgeBaseId: kb,
         title: "policy",
         sourceType: "text",
@@ -352,9 +360,9 @@ describe.skipIf(!dbUp)(
       await runIngest(id, doc.id);
       expect(await readChunks(id, doc.id)).toEqual(["FIRST TEXT"]);
 
-      await updateDocument(id, doc.id, { text: "SECOND TEXT" }, appDb);
+      await updateDocument(ctxOf(id), doc.id, { text: "SECOND TEXT" }, appDb);
       duringEmbed = async () => {
-        await updateDocument(id, doc.id, { text: "THIRD TEXT" }, appDb);
+        await updateDocument(ctxOf(id), doc.id, { text: "THIRD TEXT" }, appDb);
       };
       await runIngest(id, doc.id);
 
@@ -373,7 +381,7 @@ describe.skipIf(!dbUp)(
     test("what gets indexed is the text the claim froze, not the text read before it", async () => {
       const { id, kb } = await seedTenant("rag-claim");
       const doc = await createDocument({
-        tenantId: id,
+        ctx: ctxOf(id),
         knowledgeBaseId: kb,
         title: "policy",
         sourceType: "text",
@@ -391,7 +399,7 @@ describe.skipIf(!dbUp)(
               if (!fired) {
                 fired = true;
                 await updateDocument(
-                  id,
+                  ctxOf(id),
                   doc.id,
                   { text: "EDITED TEXT" },
                   editDb,

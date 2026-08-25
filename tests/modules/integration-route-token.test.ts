@@ -11,6 +11,14 @@ import {
   rotateIntegrationRouteToken,
 } from "@/modules/integrations/service";
 
+// The context these calls take: the tenant id came from a row this test created, so it carries
+// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+const ctxOf = (tenantId: bigint): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
+
 // NOTE: The inbound webhook URL is an ADDRESS the operator pastes into the provider's dashboard, so
 // it has to stay readable after creation. The token is therefore persisted twice — the SHA-256 hash
 // the hot inbound path probes, plus an encrypted copy for the editor — and rotation exists for the
@@ -69,7 +77,7 @@ describe.skipIf(!dbUp)("integration route token", () => {
 
   test("the created token is readable again, and only on the single-instance read", async () => {
     const created = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-read",
@@ -90,7 +98,7 @@ describe.skipIf(!dbUp)("integration route token", () => {
 
   test("the stored copy is encrypted, never the plaintext", async () => {
     const created = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-enc",
@@ -108,7 +116,7 @@ describe.skipIf(!dbUp)("integration route token", () => {
 
   test("rotating mints a new token and kills the old address", async () => {
     const created = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-rotate",
@@ -136,7 +144,7 @@ describe.skipIf(!dbUp)("integration route token", () => {
 
   test("an instance predating the stored copy reads null and recovers by rotating", async () => {
     const created = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-legacy",
@@ -165,7 +173,7 @@ describe.skipIf(!dbUp)("integration route token", () => {
 
   test("a blob the key cannot read is 'unreadable', never confused with 'absent'", async () => {
     const created = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       { catalogType: "ASAAS", name: "asaas-corrupt" },
       appDb,
     );
@@ -195,7 +203,7 @@ describe.skipIf(!dbUp)("integration route token", () => {
 
   test("an outbound-only integration has no URL and cannot be rotated", async () => {
     const created = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "GOOGLE_CALENDAR",
         name: "cal",

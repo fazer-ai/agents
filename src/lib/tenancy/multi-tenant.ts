@@ -100,6 +100,13 @@ function makeScopedExtension(tenantId: bigint) {
 // (`resolveTenantSelector`, answering "Tenant not found"). Same question, same answer, so the two
 // transports cannot diverge.
 //
+// They diverged anyway, twice, and both times the same way: a REST controller unwrapped the request
+// context down to `ctx.tenantId` and handed the bare id to a module that rebuilt a TENANT_ADMIN
+// context around it, so this check saw an internal id and skipped. #268 was the playground; #280 was
+// knowledge/RAG, experiments, integrations, documents and the n8n export. Nothing here can catch
+// that — the lie is well-formed by the time it arrives — so the fence is on the transport, where the
+// provenance is still known: `tests/modules/tenant-selector-entry-points.test.ts`.
+//
 // One statement, in a transaction that is already open, and only where the id is unverified. Asking
 // at the request boundary instead would cost a transaction of its own on every request the fleet
 // operator makes, and the first-run operator of EVERY installation is a SUPER_ADMIN.

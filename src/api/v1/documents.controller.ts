@@ -134,7 +134,7 @@ export const documentsController = new Elysia({
       return {
         instance: instanceIdentity,
         document: await issueDocument({
-          tenantId: ctx.tenantId as bigint,
+          ctx,
           templateId: requireDbId(body.templateId, "template id"),
           idempotencyKey: body.idempotencyKey,
           values: body.values ?? {},

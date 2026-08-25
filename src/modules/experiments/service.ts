@@ -10,10 +10,6 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 // resolvers converge on the one persisted variant. Conversions are the generic ConversionEvent
 // (keyed by thread+source); experiment analysis joins assignments↔conversions by threadId.
 
-function sysCtx(tenantId: bigint): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
 export const variantSchema = z.object({
   key: z.string().min(1),
   weight: z.number().nonnegative().optional(),
@@ -89,10 +85,10 @@ export async function resolveVariantOverride(
 // ── CRUD ──
 
 export async function listExperiments(
-  tenantId: bigint,
+  ctx: TenantContext,
   base: PrismaClient = basePrisma,
 ) {
-  return runScopedOn(base, sysCtx(tenantId), (db) =>
+  return runScopedOn(base, ctx, (db) =>
     db.experiment.findMany({
       orderBy: { createdAt: "desc" },
       select: {
@@ -108,7 +104,7 @@ export async function listExperiments(
 }
 
 export async function createExperiment(params: {
-  tenantId: bigint;
+  ctx: TenantContext;
   name: string;
   agentId?: bigint;
   variants: Variant[];
@@ -117,10 +113,10 @@ export async function createExperiment(params: {
 }): Promise<{ id: bigint }> {
   const base = params.base ?? basePrisma;
   const variants = z.array(variantSchema).parse(params.variants);
-  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+  return runScopedOn(base, params.ctx, async (db) => {
     const exp = await db.experiment.create({
       data: {
-        tenantId: params.tenantId,
+        tenantId: params.ctx.tenantId as bigint,
         name: params.name,
         agentId: params.agentId,
         variants: variants as unknown as object,
@@ -143,11 +139,11 @@ const EXPERIMENT_SELECT = {
 } as const;
 
 export async function getExperiment(
-  tenantId: bigint,
+  ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
 ) {
-  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+  const row = await runScopedOn(base, ctx, (db) =>
     db.experiment.findUnique({ where: { id }, select: EXPERIMENT_SELECT }),
   );
   if (!row) {
@@ -160,7 +156,7 @@ export async function getExperiment(
 }
 
 export async function updateExperiment(params: {
-  tenantId: bigint;
+  ctx: TenantContext;
   id: bigint;
   name?: string;
   agentId?: bigint | null;
@@ -173,7 +169,7 @@ export async function updateExperiment(params: {
     params.variants !== undefined
       ? z.array(variantSchema).parse(params.variants)
       : undefined;
-  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+  return runScopedOn(base, params.ctx, async (db) => {
     const current = await db.experiment.findUnique({
       where: { id: params.id },
       select: { id: true },
@@ -203,11 +199,11 @@ export async function updateExperiment(params: {
 }
 
 export async function deleteExperiment(
-  tenantId: bigint,
+  ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  await runScopedOn(base, sysCtx(tenantId), async (db) => {
+  await runScopedOn(base, ctx, async (db) => {
     const res = await db.experiment.deleteMany({ where: { id } });
     if (res.count === 0) {
       throw new NotFoundError(
@@ -228,11 +224,11 @@ export interface VariantResult {
 // A/B analysis: assignments per variant + how many of those threads produced a ConversionEvent
 // (any source). conversionRate is converted/assigned (0 when no assignments).
 export async function experimentResults(
-  tenantId: bigint,
+  ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<{ variants: VariantResult[]; totalAssigned: number }> {
-  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+  return runScopedOn(base, ctx, async (db) => {
     const exp = await db.experiment.findUnique({
       where: { id },
       select: { id: true, variants: true },

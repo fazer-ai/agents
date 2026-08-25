@@ -28,6 +28,14 @@ import {
   vaultReferences,
 } from "@/modules/vault/service";
 
+// The context these calls take: the tenant id came from a row this test created, so it carries
+// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+const ctxOf = (tenantId: bigint): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
+
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -273,13 +281,13 @@ describe.skipIf(!dbUp)("tier-1 pools CRUD", () => {
   test("integrations: routeToken once, unknown catalogType rejected, CRUD", async () => {
     expect(
       createIntegrationInstance(
-        tenant,
+        ctxOf(tenant),
         { catalogType: "NOPE", name: "x" },
         appDb,
       ),
     ).rejects.toThrow();
     const created = await createIntegrationInstance(
-      tenant,
+      ctxOf(tenant),
       {
         catalogType: "ASAAS",
         name: "Payments",

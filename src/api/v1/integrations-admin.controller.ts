@@ -187,10 +187,7 @@ export const integrationsAdminController = new Elysia({
         inboundSecretRef?: string | null;
         enabled?: boolean;
       };
-      const created = await createIntegrationInstance(
-        ctx.tenantId as bigint,
-        b,
-      );
+      const created = await createIntegrationInstance(ctx, b);
       return {
         instance: instanceIdentity,
         id: String(created.id),
@@ -238,7 +235,7 @@ export const integrationsAdminController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   .patch(

@@ -1,5 +1,6 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import type { TenantContext } from "@/lib/tenancy";
 import { firstUnstorableField } from "@/lib/text";
 import {
   createDocument,
@@ -84,7 +85,6 @@ export async function knowledgeCreate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const bad = unstorable([
     ["name", args.name],
     ["description", args.description],
@@ -105,7 +105,7 @@ export async function knowledgeCreate(
       });
     }
     const created = await createKnowledgeBase({
-      tenantId,
+      ctx,
       name: args.name,
       description: args.description,
       embeddingModel: args.embedding_model,
@@ -141,7 +141,6 @@ export async function knowledgeUpdate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof id !== "bigint") return id;
   const patch: {
@@ -165,7 +164,7 @@ export async function knowledgeUpdate(
   ]);
   if (bad) return bad;
   try {
-    const current = await getKnowledgeBase({ tenantId, id, base });
+    const current = await getKnowledgeBase({ ctx, id, base });
     const target = `knowledge_base:${id}`;
     const beforeProj = {
       name: current.name,
@@ -185,8 +184,8 @@ export async function knowledgeUpdate(
         diff: diffFields(beforeProj, previewAfter),
       });
     }
-    await updateKnowledgeBase({ tenantId, id, ...patch, base });
-    const after = await getKnowledgeBase({ tenantId, id, base });
+    await updateKnowledgeBase({ ctx, id, ...patch, base });
+    const after = await getKnowledgeBase({ ctx, id, base });
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
@@ -212,11 +211,10 @@ export async function knowledgeDelete(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof id !== "bigint") return id;
   try {
-    const current = await getKnowledgeBase({ tenantId, id, base });
+    const current = await getKnowledgeBase({ ctx, id, base });
     const target = `knowledge_base:${id}`;
     const beforeProj = { id: String(current.id), name: current.name };
     if (args.dry_run !== false) {
@@ -227,7 +225,7 @@ export async function knowledgeDelete(
         current: beforeProj,
       });
     }
-    await deleteKnowledgeBase({ tenantId, id, base });
+    await deleteKnowledgeBase({ ctx, id, base });
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
@@ -257,7 +255,6 @@ export async function knowledgeDocumentCreate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const kbId = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof kbId !== "bigint") return kbId;
   const bad = unstorable([
@@ -279,7 +276,7 @@ export async function knowledgeDocumentCreate(
       });
     }
     const created = await createDocument({
-      tenantId,
+      ctx,
       knowledgeBaseId: kbId,
       title: args.title,
       text: args.text,
@@ -319,11 +316,10 @@ export async function knowledgeDocumentDelete(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.document_id, "document_id");
   if (typeof id !== "bigint") return id;
   try {
-    const current = await getDocument(tenantId, id, base);
+    const current = await getDocument(ctx, id, base);
     const target = `knowledge_document:${id}`;
     const beforeProj = { id: String(current.id), title: current.title };
     if (args.dry_run !== false) {
@@ -334,7 +330,7 @@ export async function knowledgeDocumentDelete(
         current: beforeProj,
       });
     }
-    await deleteDocument(tenantId, id, base);
+    await deleteDocument(ctx, id, base);
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
@@ -357,11 +353,10 @@ export async function knowledgeDocumentRetry(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.document_id, "document_id");
   if (typeof id !== "bigint") return id;
   try {
-    const current = await getDocument(tenantId, id, base);
+    const current = await getDocument(ctx, id, base);
     const target = `knowledge_document:${id}`;
     if (args.dry_run !== false) {
       return ok({
@@ -372,7 +367,7 @@ export async function knowledgeDocumentRetry(
         note: "Re-queues a FAILED document for embedding.",
       });
     }
-    await retryDocument(tenantId, id, base);
+    await retryDocument(ctx, id, base);
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
@@ -409,7 +404,7 @@ export async function knowledgeReindex(
   const target = `knowledge_base:${id}`;
   try {
     const dryRun = args.dry_run !== false;
-    const result = await reindexKnowledgeBase(tenantId, id, base, {
+    const result = await reindexKnowledgeBase(ctx, id, base, {
       includeFailed: args.include_failed === true,
       dryRun,
     });
@@ -457,11 +452,11 @@ export async function knowledgeReindex(
 // ── suggestion approval queue ──
 
 async function findApproval(
-  tenantId: bigint,
+  ctx: TenantContext,
   id: bigint,
   base: Parameters<typeof listPendingApprovals>[1],
 ) {
-  const all = await listPendingApprovals(tenantId, base);
+  const all = await listPendingApprovals(ctx, base);
   return all.find((a) => a.id === String(id)) ?? null;
 }
 
@@ -473,13 +468,12 @@ export async function knowledgeApprove(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.approval_id, "approval_id");
   if (typeof id !== "bigint") return id;
   const target = `approval:${id}`;
   try {
     if (args.dry_run !== false) {
-      const item = await findApproval(tenantId, id, base);
+      const item = await findApproval(ctx, id, base);
       if (!item) return err("approval not found or not pending");
       return ok({
         dryRun: true,
@@ -489,7 +483,7 @@ export async function knowledgeApprove(
         knowledgeBaseId: item.knowledgeBaseId,
       });
     }
-    const result = await approveApprovalItem({ tenantId, id, base });
+    const result = await approveApprovalItem({ ctx, id, base });
     if (result.outcome === "approved") {
       await recordMcpAudit(ctx, base, {
         actorId: principal.userId,
@@ -517,13 +511,12 @@ export async function knowledgeReject(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.approval_id, "approval_id");
   if (typeof id !== "bigint") return id;
   const target = `approval:${id}`;
   try {
     if (args.dry_run !== false) {
-      const item = await findApproval(tenantId, id, base);
+      const item = await findApproval(ctx, id, base);
       if (!item) return err("approval not found or not pending");
       return ok({
         dryRun: true,
@@ -532,7 +525,7 @@ export async function knowledgeReject(
         proposedTitle: item.proposedTitle,
       });
     }
-    const outcome = await rejectApprovalItem({ tenantId, id, base });
+    const outcome = await rejectApprovalItem({ ctx, id, base });
     if (outcome === "rejected") {
       await recordMcpAudit(ctx, base, {
         actorId: principal.userId,
@@ -563,7 +556,6 @@ export async function knowledgeEdit(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.approval_id, "approval_id");
   if (typeof id !== "bigint") return id;
   if (
@@ -582,7 +574,7 @@ export async function knowledgeEdit(
   const target = `approval:${id}`;
   try {
     if (args.dry_run !== false) {
-      const item = await findApproval(tenantId, id, base);
+      const item = await findApproval(ctx, id, base);
       if (!item) return err("approval not found or not pending");
       return ok({
         dryRun: true,
@@ -595,7 +587,7 @@ export async function knowledgeEdit(
       });
     }
     const outcome = await editApprovalItem({
-      tenantId,
+      ctx,
       id,
       proposedTitle: args.title,
       proposedContent: args.content,

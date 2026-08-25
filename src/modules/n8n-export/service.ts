@@ -35,15 +35,11 @@ export async function exportToolWorkflow(
   return { workflow, credentialsNote: CREDENTIALS_NOTE };
 }
 
-function ctxFromTenant(tenantId: bigint): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
 // Convenience for callers that already resolved a tenantId (REST/MCP controllers).
 export async function exportToolWorkflowForTenant(
-  tenantId: bigint,
+  ctx: TenantContext,
   toolId: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<ToolWorkflowExport> {
-  return exportToolWorkflow(ctxFromTenant(tenantId), toolId, base);
+  return exportToolWorkflow(ctx, toolId, base);
 }

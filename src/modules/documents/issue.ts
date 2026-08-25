@@ -51,7 +51,7 @@ export interface DocumentSnapshot {
 }
 
 export interface IssueDocumentParams {
-  tenantId: bigint;
+  ctx: TenantContext;
   templateId: bigint;
   idempotencyKey: string;
   values: unknown;
@@ -96,7 +96,11 @@ export function calendarDay(at: Date, timezone: string): string {
   return `${parts.YYYY}-${parts.MM}-${parts.DD}`;
 }
 
-function sysCtx(tenantId: bigint): TenantContext {
+// The context for a tenant id this process read from a row, for the callers that HAVE one and no
+// request context: the agent's own document tool, whose tenant came off the thread it is answering.
+// `issueDocument` takes a TenantContext precisely so the id's provenance survives the call, and
+// TENANT_ADMIN is the honest answer for an id that never left the process (issue #280).
+export function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
@@ -141,8 +145,8 @@ export async function issueDocument(
 ): Promise<IssuedDocumentResult> {
   const base = params.base ?? basePrisma;
   const dir = params.storageDir ?? config.documentsStorageDir;
-  const tenantId = params.tenantId;
-  const ctx = sysCtx(tenantId);
+  const { ctx } = params;
+  const tenantId = ctx.tenantId as bigint;
   const now = params.now ?? new Date();
 
   // Checked before the key is BOUND, not after: the very first thing done with it is a comparison

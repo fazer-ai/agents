@@ -6,6 +6,7 @@ import {
   PrismaClient,
 } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import type { TenantContext } from "@/lib/tenancy";
 import { createIntegrationInstance } from "@/modules/integrations/service";
 import {
   DEFAULT_SIGNATURE_HEADER,
@@ -24,6 +25,14 @@ import {
   type ReceiveParams,
   receiveInbound,
 } from "@/modules/webhooks/inbound/service";
+
+// The context these calls take: the tenant id came from a row this test created, so it carries
+// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+const ctxOf = (tenantId: bigint): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
 
 // ── route token (unit) ──
 describe("inbound route token", () => {
@@ -341,7 +350,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
 
   test("queues, correlates and records a conversion end to end", async () => {
     const { id: instanceId, routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-conv",
@@ -403,7 +412,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
 
   test("notifies the customer on a confirmed payment (default on), on the SAME thread (no bleed)", async () => {
     const { id: instanceId, routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-notify-on",
@@ -472,7 +481,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
 
   test("does not notify when notifyOnPayment is false (silent conversion)", async () => {
     const { id: instanceId, routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-notify-off",
@@ -529,7 +538,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
 
   test("is idempotent on dedupeKey (no second delivery, safe reprocess)", async () => {
     const { id: instanceId, routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       { catalogType: "ASAAS", name: "asaas-idem", inboundAuthStrategy: "NONE" },
       appDb,
     );
@@ -584,7 +593,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
       select: { id: true },
     });
     const { routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-static",
@@ -631,7 +640,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
 
   test("queues and converts the real Asaas direct-charge payload (paymentLink null) end to end", async () => {
     const { id: instanceId, routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-direct",
@@ -730,7 +739,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
   for (const [i, c] of repaired.entries()) {
     test(`repairs and keeps the delivery when the body carries ${c.name}`, async () => {
       const { routeToken } = await createIntegrationInstance(
-        tenantId,
+        ctxOf(tenantId),
         {
           catalogType: "ASAAS",
           name: `asaas-repaired-${i}`,
@@ -783,7 +792,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
   for (const [i, c] of refused.entries()) {
     test(`records a durable FAILED delivery when the body carries ${c.name}`, async () => {
       const { routeToken } = await createIntegrationInstance(
-        tenantId,
+        ctxOf(tenantId),
         {
           catalogType: "ASAAS",
           name: `asaas-refused-${i}`,
@@ -818,7 +827,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
 
   test("records a durable FAILED delivery when the identity is too long for its own index", async () => {
     const { routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-identity-long",
@@ -862,7 +871,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
 
   test("a malformed reference never correlates onto the conversation the clean one owns", async () => {
     const { id: instanceId, routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-identity-bleed",
@@ -913,7 +922,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
 
   test("a repaired payload still converts end to end (the payment is not lost)", async () => {
     const { id: instanceId, routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-repaired-e2e",
@@ -962,7 +971,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
 
   test("records an unparseable payload as invalid (durable FAILED delivery)", async () => {
     const { routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       { catalogType: "ASAAS", name: "asaas-bad", inboundAuthStrategy: "NONE" },
       appDb,
     );
@@ -983,7 +992,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
 
   test("invalid deliveries dedupe on the raw-body hash", async () => {
     const { routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-bad-idem",
@@ -1011,7 +1020,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
 
   test("still ignores a parseable but unmapped lifecycle event (no delivery)", async () => {
     const { id: instanceId, routeToken } = await createIntegrationInstance(
-      tenantId,
+      ctxOf(tenantId),
       {
         catalogType: "ASAAS",
         name: "asaas-lifecycle",

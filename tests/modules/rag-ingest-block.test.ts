@@ -16,6 +16,14 @@ import {
   createVaultEntry,
 } from "@/modules/vault/service";
 
+// The context these calls take: the tenant id came from a row this test created, so it carries
+// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+const ctxOf = (tenantId: bigint): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
+
 // Issue #80: a document uploaded before the embedding credential exists lands UNINDEXED, and the
 // console showed the same neutral badge whether it was waiting for a click or would never index
 // until a credential was sorted out. The job knows which of the three reasons applies.
@@ -102,7 +110,7 @@ async function readDoc(tenantId: bigint, documentId: bigint) {
 
 async function seedDoc(tenantId: bigint, kb: bigint) {
   return createDocument({
-    tenantId,
+    ctx: ctxOf(tenantId),
     knowledgeBaseId: kb,
     title: "T",
     text: "conteudo",
@@ -147,7 +155,7 @@ describe.skipIf(!dbUp)(
 
     test("no credential at all reads as not configured", async () => {
       const { id } = await seedTenant("blk-unset");
-      expect(await readEmbeddingBlock(id, appDb)).toEqual({
+      expect(await readEmbeddingBlock(ctxOf(id), appDb)).toEqual({
         reason: "embedding_not_configured",
       });
     });
@@ -167,7 +175,7 @@ describe.skipIf(!dbUp)(
         { credentialRef: entry.ref },
         appDb,
       );
-      const block = await readEmbeddingBlock(id, appDb);
+      const block = await readEmbeddingBlock(ctxOf(id), appDb);
       expect(block?.reason).toBe("credential_pending");
       expect(block?.credentialRef).toBe(entry.ref);
       expect(block?.vaultId).toBe(entry.ref.slice("vault:".length));
@@ -192,7 +200,7 @@ describe.skipIf(!dbUp)(
         { credentialRef: `vault:${row.id}` },
         appDb,
       );
-      expect((await readEmbeddingBlock(id, appDb))?.reason).toBe(
+      expect((await readEmbeddingBlock(ctxOf(id), appDb))?.reason).toBe(
         "credential_empty",
       );
     });
@@ -215,7 +223,7 @@ describe.skipIf(!dbUp)(
       await suDb.$executeRawUnsafe(
         `DELETE FROM vault_entries WHERE tenant_id = ${id}`,
       );
-      expect((await readEmbeddingBlock(id, appDb))?.reason).toBe(
+      expect((await readEmbeddingBlock(ctxOf(id), appDb))?.reason).toBe(
         "embedding_not_configured",
       );
     });
@@ -227,7 +235,7 @@ describe.skipIf(!dbUp)(
       const { id, kb } = await seedTenant("blk-fixed");
       const doc = await seedDoc(id, kb);
       await runIngest(id, doc.id);
-      expect((await readEmbeddingBlock(id, appDb))?.reason).toBe(
+      expect((await readEmbeddingBlock(ctxOf(id), appDb))?.reason).toBe(
         "embedding_not_configured",
       );
       const entry = await createVaultEntry(
@@ -242,7 +250,7 @@ describe.skipIf(!dbUp)(
         { credentialRef: entry.ref },
         appDb,
       );
-      expect(await readEmbeddingBlock(id, appDb)).toBeNull();
+      expect(await readEmbeddingBlock(ctxOf(id), appDb)).toBeNull();
       // The document did not move — it is still waiting for someone to index it, which is exactly the
       // state the badge must now describe instead of "blocked".
       expect((await readDoc(id, doc.id))?.status).toBe("UNINDEXED");
@@ -263,7 +271,7 @@ describe.skipIf(!dbUp)(
         { credentialRef: entry.ref },
         appDb,
       );
-      const block = await readEmbeddingBlock(id, appDb);
+      const block = await readEmbeddingBlock(ctxOf(id), appDb);
       expect(block?.credentialRef).toBe(entry.ref);
     });
 

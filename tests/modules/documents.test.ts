@@ -450,7 +450,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     );
     await expect(
       issueDocument({
-        tenantId: tenantA,
+        ctx: ctx(tenantA),
         templateId: BigInt(tpl.id),
         idempotencyKey: `blank-${process.pid}`,
         values: {},
@@ -515,7 +515,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   test("refuses an idempotency key the column cannot hold", async () => {
     await expect(
       issueDocument({
-        tenantId: tenantA,
+        ctx: ctx(tenantA),
         templateId,
         idempotencyKey: `a\u0000b`,
         values: VALUES,
@@ -533,7 +533,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
 
   test("issues a READY document with a numbered, retrievable PDF", async () => {
     const doc = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: "k1",
       values: VALUES,
@@ -555,7 +555,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   test("refuses values the template did not declare", async () => {
     await expect(
       issueDocument({
-        tenantId: tenantA,
+        ctx: ctx(tenantA),
         templateId,
         idempotencyKey: "bad-values",
         values: { ...VALUES, inventado: "x" },
@@ -569,7 +569,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   // numbered documents in front of one customer.
   test("is idempotent: the same key returns the same document and consumes one number", async () => {
     const first = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: "k2",
       values: VALUES,
@@ -577,7 +577,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
       storageDir: DIR,
     });
     const second = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: "k2",
       values: VALUES,
@@ -604,7 +604,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     const issued = await Promise.all(
       Array.from({ length: 6 }, (_, i) =>
         issueDocument({
-          tenantId: tenantA,
+          ctx: ctx(tenantA),
           templateId,
           idempotencyKey: `race-${i}`,
           values: VALUES,
@@ -648,7 +648,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     );
     const ownId = BigInt(own.id);
     const first = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId: ownId,
       idempotencyKey: "frozen",
       values: VALUES,
@@ -666,7 +666,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
       appDb,
     );
     const again = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId: ownId,
       idempotencyKey: "frozen",
       values: VALUES,
@@ -688,7 +688,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
 
   test("a revoked document stops being served", async () => {
     const doc = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: "revoke-me",
       values: VALUES,
@@ -706,7 +706,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     // stop the operator's own link while the agent kept attaching the voided document.
     await expect(
       issueDocument({
-        tenantId: tenantA,
+        ctx: ctx(tenantA),
         templateId,
         idempotencyKey: "revoke-me",
         values: VALUES,
@@ -722,7 +722,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   // document the caller may not be entitled to know exists.
   test("a tenant cannot read another tenant's document, nor list it", async () => {
     const doc = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: "fenced",
       values: VALUES,
@@ -764,7 +764,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
       appDb,
     );
     const doc = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: "letterhead",
       values: VALUES,
@@ -796,7 +796,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
       appDb,
     );
     const doc = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId: BigInt(tpl.id),
       idempotencyKey: "orphan",
       values: {
@@ -865,7 +865,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     }) as unknown as PrismaClient;
 
     const doc = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: key,
       values: VALUES,
@@ -906,7 +906,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     );
     const tplId = BigInt(tpl.id);
     const doc = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId: tplId,
       idempotencyKey: `frozen-prefix-${process.pid}`,
       values: VALUES,
@@ -1304,7 +1304,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   test("two callers healing the same unnumbered document agree on one number", async () => {
     const key = `unnumbered-${process.pid}`;
     const seed = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: key,
       values: VALUES,
@@ -1324,7 +1324,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
 
     const [a, b] = await Promise.all([
       issueDocument({
-        tenantId: tenantA,
+        ctx: ctx(tenantA),
         templateId,
         idempotencyKey: key,
         values: VALUES,
@@ -1332,7 +1332,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
         storageDir: DIR,
       }),
       issueDocument({
-        tenantId: tenantA,
+        ctx: ctx(tenantA),
         templateId,
         idempotencyKey: key,
         values: VALUES,
@@ -1404,7 +1404,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
 
     await expect(
       issueDocument({
-        tenantId: tenantA,
+        ctx: ctx(tenantA),
         templateId,
         idempotencyKey: key,
         values: VALUES,
@@ -1440,7 +1440,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     );
     const key = `unnumberable-${process.pid}`;
     const doc = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId: BigInt(tpl.id),
       idempotencyKey: key,
       values: {
@@ -1460,7 +1460,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     await deleteDocumentTemplate(ctx(tenantA), BigInt(tpl.id), appDb);
     await expect(
       issueDocument({
-        tenantId: tenantA,
+        ctx: ctx(tenantA),
         templateId: BigInt(tpl.id),
         idempotencyKey: key,
         values: {
@@ -1558,7 +1558,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   test("dates the document by the issuing timezone, not by UTC", async () => {
     const at = new Date("2026-09-06T01:30:00.000Z"); // 22:30 on the 5th in São Paulo
     const doc = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: `tz-${process.pid}`,
       values: VALUES,
@@ -1578,7 +1578,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
 
     // And a tenant east of UTC lands on the other side of the same instant.
     const tokyo = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: `tz-tokyo-${process.pid}`,
       values: VALUES,
@@ -1955,7 +1955,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     });
     await expect(
       issueDocument({
-        tenantId: tenantA,
+        ctx: ctx(tenantA),
         templateId: id,
         idempotencyKey: `blank-${process.pid}`,
         values: {},
@@ -1975,7 +1975,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
 
     // …and the same template issues fine once the field has a value.
     const ok = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId: id,
       idempotencyKey: `blank-ok-${process.pid}`,
       values: { observacoes: "Sem juros para pagamento à vista." },
@@ -2030,7 +2030,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     const id = BigInt(tpl.id);
     const key = `letterhead-${process.pid}`;
     const first = await issueDocument({
-      tenantId: tenantB,
+      ctx: ctx(tenantB),
       templateId: id,
       idempotencyKey: key,
       values: {},
@@ -2051,7 +2051,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
 
     await expect(
       issueDocument({
-        tenantId: tenantB,
+        ctx: ctx(tenantB),
         templateId: id,
         idempotencyKey: key,
         values: {},
@@ -2073,7 +2073,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
 
     await uploadLogo();
     const healed = await issueDocument({
-      tenantId: tenantB,
+      ctx: ctx(tenantB),
       templateId: id,
       idempotencyKey: key,
       values: {},
@@ -2124,7 +2124,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     }) as unknown as PrismaClient;
 
     const failed = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId: id,
       idempotencyKey: `fk-race-${process.pid}`,
       values: {
@@ -2228,7 +2228,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   test("a render that publishes second adopts the first file, never replaces it", async () => {
     const key = `claim-loser-${process.pid}`;
     const seed = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: key,
       values: VALUES,
@@ -2272,7 +2272,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     // served another. This holds whether the claim was won or lost — what is on disk is the
     // document.
     const loser = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: key,
       values: VALUES,
@@ -2293,7 +2293,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   test("refuses when the claim was lost and nothing was published", async () => {
     const key = `claim-rollback-${process.pid}`;
     const seed = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: key,
       values: VALUES,
@@ -2342,7 +2342,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
 
     await expect(
       issueDocument({
-        tenantId: tenantA,
+        ctx: ctx(tenantA),
         templateId,
         idempotencyKey: key,
         values: VALUES,
@@ -2360,7 +2360,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   test("adopting an existing file returns that file, even when the claim is won", async () => {
     const key = `adopt-${process.pid}`;
     const seed = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: key,
       values: VALUES,
@@ -2377,7 +2377,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     await Bun.write(`${DIR}/${storageKey(tenantA, id)}`, "PUBLISHED-FIRST");
 
     const again = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: key,
       values: VALUES,
@@ -2400,7 +2400,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   test("never adopts a legacy quote PDF that happens to share its id", async () => {
     const key = `legacy-${process.pid}`;
     const seed = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: key,
       values: VALUES,
@@ -2419,7 +2419,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     await rm(`${DIR}/${storageKey(tenantA, id)}`, { force: true });
 
     const again = await issueDocument({
-      tenantId: tenantA,
+      ctx: ctx(tenantA),
       templateId,
       idempotencyKey: key,
       values: VALUES,

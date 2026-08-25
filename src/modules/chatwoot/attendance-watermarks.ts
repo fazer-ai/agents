@@ -25,6 +25,16 @@
 // "what was the first response" and the unanchored one answers "what is the earliest we saw"; the
 // KPI prefers the first and falls back to the second only when the second is itself after the
 // anchor, which is the condition that makes it an answer rather than an opener.
+//
+// WHERE THIS STOPS, and why it stops there. One shape survives both readings: a conversation the
+// business opened AND whose first customer message was delivered after a reply. The opener is then
+// the earliest team message, it is before the anchor, and the answer that followed it was never
+// stored as anything but the team's LAST word — so the attendance is left out of the sample.
+// Recovering it would mean keeping every team message reading until the anchor stops moving, and the
+// anchor never provably stops moving; two columns is where an approximation of an event log ends and
+// the event log itself begins. The failure is an omission and never a wrong duration, and it is
+// visible: `firstResponseSampled` is reported beside the median so a sample smaller than the
+// conversation count can be seen rather than assumed away.
 
 export interface StoredAttendance {
   firstInboundAt: Date | null;

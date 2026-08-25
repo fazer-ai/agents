@@ -1192,11 +1192,12 @@ export async function listInboxCustomAttributes(
 }
 
 // An unbind asks Chatwoot for ONE state: no agent bot connected to this inbox. A 404 from
-// set_agent_bot means the inbox is not there to carry one, which already IS that state — so there is
-// nothing left to desynchronize and the local binding may clear. Measured on the fork (4.16.0 and
-// 4.17.0): POST /api/v1/accounts/1/inboxes/<deleted>/set_agent_bot answers 404 {"error":"Resource
-// could not be found"} while the same call on a live inbox answers 200. Every other failure keeps the
-// fence, because it leaves a bot that may still be connected and delivering that inbox's events.
+// set_agent_bot means the inbox is not there to carry one, which already IS that state, so nothing is
+// left to desynchronize and the local binding may clear. Measured on the fork (4.16.0 and 4.17.0): a
+// deleted inbox answers 404 {"error":"Resource could not be found"}, a live one answers 200, and a
+// credential that lost access to the account answers 401 — so this route's only 404s are a missing
+// inbox and a missing account, and neither can be holding a bot of ours. Every other failure keeps
+// the fence, because it leaves a bot that may still be connected and delivering that inbox's events.
 export function unbindNeedsNothingRemote(err: unknown): boolean {
   return err instanceof ChatwootApiError && err.status === 404;
 }

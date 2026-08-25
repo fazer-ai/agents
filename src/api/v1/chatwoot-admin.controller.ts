@@ -538,7 +538,7 @@ export const chatwootAdminController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Bind inbox to agent",
-        "Set or clear which agent answers an inbox. Binding lazily provisions the instance's Agent Bot and connects it to the inbox on Chatwoot; unbinding disconnects it. 502 means Chatwoot was unreachable.",
+        "Set or clear which agent answers an inbox. Binding lazily provisions the instance's Agent Bot and connects it to the inbox on Chatwoot; unbinding disconnects it. Unbinding an inbox that was deleted in Chatwoot still succeeds: there is no bot left to disconnect. 502 means Chatwoot was unreachable.",
       ),
       params: t.Object({
         id: t.String({ description: "Inbox id (BigInt string)." }),

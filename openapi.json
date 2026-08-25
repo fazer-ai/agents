@@ -36005,7 +36005,7 @@
           "Channels"
         ],
         "summary": "Bind inbox to agent",
-        "description": "Set or clear which agent answers an inbox. Binding lazily provisions the instance's Agent Bot and connects it to the inbox on Chatwoot; unbinding disconnects it. 502 means Chatwoot was unreachable.",
+        "description": "Set or clear which agent answers an inbox. Binding lazily provisions the instance's Agent Bot and connects it to the inbox on Chatwoot; unbinding disconnects it. Unbinding an inbox that was deleted in Chatwoot still succeeds: there is no bot left to disconnect. 502 means Chatwoot was unreachable.",
         "parameters": [
           {
             "name": "id",

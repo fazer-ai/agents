@@ -11,7 +11,11 @@ import {
   type WidgetHealth,
   type WidgetHealthStatus,
 } from "@/modules/channel-redirect/link";
-import { type ChatwootClient, fetchChatwootProfile } from "./client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+  fetchChatwootProfile,
+} from "./client";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
 import { chatwootAutoRepliesOutOfHours } from "./out-of-office";
 import { ensureAgentBot } from "./provisioning";
@@ -1187,6 +1191,16 @@ export async function listInboxCustomAttributes(
   return { attributes: [...byKey.values()], accountCount };
 }
 
+// An unbind asks Chatwoot for ONE state: no agent bot connected to this inbox. A 404 from
+// set_agent_bot means the inbox is not there to carry one, which already IS that state — so there is
+// nothing left to desynchronize and the local binding may clear. Measured on the fork (4.16.0 and
+// 4.17.0): POST /api/v1/accounts/1/inboxes/<deleted>/set_agent_bot answers 404 {"error":"Resource
+// could not be found"} while the same call on a live inbox answers 200. Every other failure keeps the
+// fence, because it leaves a bot that may still be connected and delivering that inbox's events.
+export function unbindNeedsNothingRemote(err: unknown): boolean {
+  return err instanceof ChatwootApiError && err.status === 404;
+}
+
 // The load-bearing binding: which agent answers an inbox. This is the SINGLE operator action that
 // wires an inbox end-to-end — there is no separate "provision the bot" step. The bot is per-persona:
 //   - bind / switch (→ agent): lazily ensure THAT persona's Agent Bot exists, connect it to this
@@ -1274,7 +1288,11 @@ export async function bindInbox(
         inbox.chatwootInstanceId,
         { base, makeClient: deps.makeClient },
       );
-      await client.setInboxAgentBot(inbox.chatwootInboxId, null);
+      try {
+        await client.setInboxAgentBot(inbox.chatwootInboxId, null);
+      } catch (err) {
+        if (!unbindNeedsNothingRemote(err)) throw err;
+      }
     }
   } catch (err) {
     if (err instanceof AppError) throw err;

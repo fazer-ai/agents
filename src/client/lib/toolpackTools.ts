@@ -56,6 +56,18 @@ export function toolpackArgNote(
       "The agent only receives this argument when the integration allows several calendars; with a single one it is used automatically.",
     );
   }
+  // Same shape as calendarId: `slotDurationArgSchema` removes the argument whenever the appointment
+  // length is fixed, so the note is the only place the operator learns that "Let the AI choose" is
+  // what puts it back.
+  if (
+    argName === "slotDurationMinutes" &&
+    toolName === "calendar_check_availability"
+  ) {
+    return t(
+      "toolpackTools.argNote.slotDurationMinutes",
+      'The agent only receives this argument when the appointment length is set to "Let the AI choose"; a fixed length always applies and cannot be changed per conversation.',
+    );
+  }
   return null;
 }
 

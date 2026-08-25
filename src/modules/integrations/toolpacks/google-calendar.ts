@@ -179,6 +179,21 @@ function calendarArgSchema(
   return pinnedCalendarId(allowed) ? schema.omit({ calendarId: true }) : schema;
 }
 
+// The appointment length as the MODEL sees it, the same shape calendarArgSchema gives calendarId.
+// Pinned ⇒ slotDurationMinutes is REMOVED: the console's "Let the AI choose" is what delegates the
+// length, so a fixed one is a business rule the model must not restate per call — a 1h school visit
+// was offered at 14:15 because the arg was still there to send. Zod strips a residual key from an
+// older turn before the body runs, so the pinned length is used either way. Not pinned ⇒ the arg
+// stays and the model chooses (a clinic whose appointments genuinely vary).
+function slotDurationArgSchema(
+  schema: z.ZodObject<z.ZodRawShape>,
+  config: Record<string, unknown>,
+): z.ZodObject<z.ZodRawShape> {
+  return configuredSlotDuration(config) === null
+    ? schema
+    : schema.omit({ slotDurationMinutes: true });
+}
+
 // The configured appointment length as an XML element for calendar_check_availability: preset="true"
 // with the pinned minutes when the operator fixed a duration, otherwise preset="false" (the model
 // chooses per request via the slotDurationMinutes arg). Always non-empty.
@@ -322,23 +337,14 @@ function resolveSlotDuration(
   );
 }
 
-// The operator-pinned spacing between candidate start times, or null when the integration leaves it
-// open. Mirrors configuredSlotDuration: a pinned grid is a business rule, not a per-request choice.
-function configuredSlotGranularity(
-  config: Record<string, unknown>,
-): number | null {
-  const v = config.slotGranularityMinutes;
-  return typeof v === "number" && Number.isFinite(v) && v > 0
-    ? Math.round(v)
-    : null;
-}
-
-function resolveSlotGranularity(
-  config: Record<string, unknown>,
-  override?: number,
-): number {
+// The spacing between candidate start times is the OPERATOR's, always: it takes no argument, because
+// unlike the duration there is no "let the AI choose" for it in the console — a config without the key
+// means the operator never made the choice, not that they delegated it. A grid the model redefines per
+// call offers a start time the business does not sell (a school running 1h visits on the half hour had
+// 14:15 offered, and honoured, because the model sent granularityMinutes: 15).
+function resolveSlotGranularity(config: Record<string, unknown>): number {
   return clampMinutes(
-    override ?? config.slotGranularityMinutes,
+    config.slotGranularityMinutes,
     MIN_GRAIN_MINUTES,
     MAX_GRANULARITY_MINUTES,
     DEFAULT_GRANULARITY_MINUTES,
@@ -592,15 +598,7 @@ const CHECK_AVAILABILITY_SCHEMA = z.object({
     .positive()
     .optional()
     .describe(
-      "Appointment length in minutes. Only offered when the integration has NOT pinned one; when it is pinned this arg is absent and the pinned length always applies.",
-    ),
-  granularityMinutes: z
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .describe(
-      "Spacing between candidate start times, in minutes. Only offered when the integration has NOT pinned one; when it is pinned this arg is absent and the pinned spacing always applies.",
+      "Appointment length in minutes. Pick it per request (e.g. 30 for a standard appointment, 60 for a longer one).",
     ),
   calendarId: z.string().optional().describe(AVAILABILITY_CALENDAR_ID_DESC),
 });
@@ -741,24 +739,11 @@ function buildCheckAvailabilityTool(
   const businessHoursId = resolveBusinessHoursId(sel.config);
   const minLeadMinutes = resolveMinLead(sel.config);
   const blockingIds = resolveBlockingCalendarIds(sel.config);
-  // A pinned duration or spacing is the operator's business rule (a 1h visit offered on the half
-  // hour). Leaving the args on the schema let the model redefine that rule per call and offer a
-  // start time the business does not actually sell, so we drop them from what the model can send.
-  const pinnedDuration = configuredSlotDuration(sel.config);
-  const pinnedGranularity = configuredSlotGranularity(sel.config);
-  const pinnedArgs: { slotDurationMinutes?: true; granularityMinutes?: true } =
-    {};
-  if (pinnedDuration !== null) pinnedArgs.slotDurationMinutes = true;
-  if (pinnedGranularity !== null) pinnedArgs.granularityMinutes = true;
-  const schema = Object.keys(pinnedArgs).length
-    ? CHECK_AVAILABILITY_SCHEMA.omit(pinnedArgs)
-    : CHECK_AVAILABILITY_SCHEMA;
   return failableTool(
     async (input: {
       timeMin: string;
       timeMax: string;
       slotDurationMinutes?: number;
-      granularityMinutes?: number;
       calendarId?: string;
     }) => {
       const minMs = Date.parse(input.timeMin);
@@ -975,15 +960,8 @@ function buildCheckAvailabilityTool(
               .flatMap((b) => b.windows),
           ],
         })),
-        // A pinned value wins over anything the model sent.
-        slotMinutes: resolveSlotDuration(
-          sel.config,
-          pinnedDuration === null ? input.slotDurationMinutes : undefined,
-        ),
-        granularityMinutes: resolveSlotGranularity(
-          sel.config,
-          pinnedGranularity === null ? input.granularityMinutes : undefined,
-        ),
+        slotMinutes: resolveSlotDuration(sel.config, input.slotDurationMinutes),
+        granularityMinutes: resolveSlotGranularity(sel.config),
         minLeadMinutes,
         // NOTE: Only when aggregating. The multiplication this bounds does not exist with one calendar,
         // and what a single-calendar instance returns is not this change's to alter: capping it would
@@ -1008,7 +986,10 @@ function buildCheckAvailabilityTool(
         slotDurationXml(sel.config),
         calendarContextXml(allowed, labels),
       ),
-      schema: calendarArgSchema(schema, allowed),
+      schema: calendarArgSchema(
+        slotDurationArgSchema(CHECK_AVAILABILITY_SCHEMA, sel.config),
+        allowed,
+      ),
     },
   );
 }

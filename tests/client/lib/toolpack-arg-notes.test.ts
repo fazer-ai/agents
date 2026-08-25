@@ -25,19 +25,66 @@ const CALENDAR_TOOLS = [
   "calendar_confirm_appointment",
 ];
 
+// The phrases that say WHEN an argument is offered. Any argument carrying one is paying model tokens
+// to state a condition its own presence already guarantees.
+const APPEARANCE_PHRASES = [
+  "only appears",
+  "only offered",
+  "integration allows",
+  "is absent",
+  "has not pinned",
+  "has NOT pinned",
+];
+
 describe("the calendarId argument's two audiences", () => {
   // NOTE: the tautology, stated as a property rather than as a string match on the old sentence: the
   // model can only ever READ this text in the case where the condition it describes is already true,
   // because calendarArgSchema removes the argument whenever the integration has one calendar.
-  test("no calendar tool's schema explains when the argument appears", () => {
+  // Asked of EVERY argument, not just calendarId: the second conditional schema (slotDurationArgSchema)
+  // arrived with the same sentence on a different argument, and a test naming one argument would have
+  // let it through.
+  test("no calendar tool's schema explains when an argument appears", () => {
     const views = getToolpackToolViews("GOOGLE_CALENDAR");
     expect(views.length).toBeGreaterThan(0);
     for (const view of views) {
-      const arg = view.args.find((a) => a.name === "calendarId");
-      if (!arg?.description) continue;
-      expect(arg.description).not.toContain("only appears");
-      expect(arg.description).not.toContain("integration allows");
+      for (const arg of view.args) {
+        if (!arg.description) continue;
+        for (const phrase of APPEARANCE_PHRASES) {
+          expect(arg.description).not.toContain(phrase);
+        }
+      }
     }
+  });
+
+  // The other half of #118: every argument a conditional schema can REMOVE needs the note, or the
+  // operator sees an argument in the console that their agent never receives and cannot find out why.
+  test("every argument a conditional schema removes carries an operator note", () => {
+    for (const [tool, arg] of [
+      ["calendar_check_availability", "calendarId"],
+      ["calendar_check_availability", "slotDurationMinutes"],
+    ] as const) {
+      expect(toolpackArgNote(tool, arg, t)).toBeTruthy();
+    }
+  });
+
+  test("the appointment length note names the console setting that puts the arg back", () => {
+    const note = toolpackArgNote(
+      "calendar_check_availability",
+      "slotDurationMinutes",
+      t,
+    );
+    expect(note).toContain("Let the AI choose");
+    // The spacing has no such setting, so it has no argument and needs no note.
+    expect(
+      toolpackArgNote("calendar_check_availability", "granularityMinutes", t),
+    ).toBeNull();
+    const views = getToolpackToolViews("GOOGLE_CALENDAR");
+    const availability = views.find(
+      (v) => v.name === "calendar_check_availability",
+    );
+    expect(availability?.args.map((a) => a.name)).not.toContain(
+      "granularityMinutes",
+    );
   });
 
   test("every calendar tool that takes the argument still tells the model how to fill it", () => {

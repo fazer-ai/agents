@@ -253,6 +253,25 @@ async function flowRows(convId: number) {
   throw new Error(`no contact_auth flow line for conv ${convId}`);
 }
 
+// The gate line for a conversation, scoped by the INTERNAL id the Logs page filters on and polled,
+// because the emit is fire-and-forget.
+async function handoffDetail(convId: number): Promise<unknown> {
+  const conv = await suDb.conversation.findFirstOrThrow({
+    where: { tenantId, chatwootConversationId: convId },
+    select: { id: true },
+  });
+  for (let i = 0; i < 200; i++) {
+    const row = await suDb.executionLog.findFirst({
+      where: { tenantId, stage: "handoff", conversationId: conv.id },
+      select: { detail: true },
+      orderBy: { id: "desc" },
+    });
+    if (row) return row.detail;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`no handoff flow line for conv ${convId}`);
+}
+
 // The audited prompt of the turn that ran, from the row the Logs page serves.
 async function auditedPrompt(convId: number): Promise<string> {
   const threadId = `${tenantId}:${instanceId}:${convId}`;
@@ -600,6 +619,9 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(modelBuilds).toBe(0);
     expect(cw.publicOn(convId)).toEqual([]);
     expect(cw.statusToggles).toEqual([]);
+    // And it SAYS so: the fence that stopped the turn leaves the same line every other ownership
+    // gate leaves, so the silence has something behind it in the operator's log (issue #271).
+    expect(await handoffDetail(convId)).toEqual({ outcome: "taken_over" });
   });
 
   test("endpoint failure: silence to the customer, no handoff, note + warn line", async () => {

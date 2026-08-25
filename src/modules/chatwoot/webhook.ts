@@ -49,7 +49,10 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
-import { describeClosedGate } from "@/modules/chatwoot/gate-close";
+import {
+  describeClosedGate,
+  type GateCloseDetail,
+} from "@/modules/chatwoot/gate-close";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import {
   authorizeContact,
@@ -1166,7 +1169,14 @@ async function maybeConsumeCommandOrGate(params: {
   // events as they arrive, so a fresh read can see the handoff the payload could not. Same fence the
   // runtime puts before its own reply; it needs one because a model call is slow, this path needs one
   // because being fast is not being atomic.
-  const stillOurs = async (): Promise<boolean> => {
+  //
+  // `closed` is the same reading every other gate reports, and it is null on exactly one
+  // branch: an unresolvable persona. That answer comes from OUR side, not from the row, so labelling
+  // it with the row's state would be the #225 conflation in a third costume — and the caller that
+  // writes a line skips it rather than guessing.
+  const ownershipNow = async (): Promise<
+    { ours: true } | { ours: false; closed: GateCloseDetail | null }
+  > => {
     const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.conversation.findUnique({
         where: {
@@ -1191,8 +1201,10 @@ async function maybeConsumeCommandOrGate(params: {
     // line is here because the fence's answer must be right on its own terms — "we own this" is false
     // when there is no "we" — rather than right because a lookup two layers down happens to fail too.
     const ourBotId = (await persona())?.chatwootAgentBotId ?? null;
-    if (ourBotId === null && conv?.assigneeType === "AgentBot") return false;
-    return shouldBotHandle(
+    if (ourBotId === null && conv?.assigneeType === "AgentBot") {
+      return { ours: false, closed: null };
+    }
+    const ours = shouldBotHandle(
       {
         assigneeType: conv?.assigneeType ?? null,
         assigneeId: conv?.assigneeId ?? null,
@@ -1200,7 +1212,17 @@ async function maybeConsumeCommandOrGate(params: {
       },
       { ourAgentBotId: ourBotId },
     );
+    return ours
+      ? { ours: true }
+      : {
+          ours: false,
+          closed: describeClosedGate({
+            assigneeType: conv?.assigneeType ?? null,
+            status: conv?.status ?? null,
+          }),
+        };
   };
+  const stillOurs = async (): Promise<boolean> => (await ownershipNow()).ours;
 
   // Why the agent would not answer in this conversation right now. Two independent reasons, and the
   // three texts below have to name the right one: the conversation is not the agent's (a human or
@@ -2449,10 +2471,28 @@ async function maybeConsumeCommandOrGate(params: {
       // (it is the runtime's window, and every agent has it); what it does is not WIDEN it by the
       // length of an operator's network call. Asked against the mirror, the same source the first
       // gate read.
-      if (!(await stillOurs())) {
+      const now = await ownershipNow();
+      if (!now.ours) {
+        // NOTE: the same exit as the gate on the way in, so it leaves the same line. This is the one
+        // `stillOurs` caller where a customer message that WOULD have been answered stops being
+        // answered; the others guard a command or a handoff action, which have their own trail.
+        if (now.closed !== null) {
+          emitFlowEvent(
+            {
+              tenantId,
+              turnId: crypto.randomUUID(),
+              source: "inbox",
+              conversationId: ctx.conv.id,
+              agentId,
+              base,
+            },
+            { stage: "handoff", status: "ok", detail: now.closed },
+          );
+        }
         logger.info(
-          "chatwoot: contact-auth allowed but the conversation is no longer the bot's (conv=%s)",
+          "chatwoot: contact-auth allowed but the conversation is no longer the bot's (conv=%s reason=%s)",
           String(conversationId),
+          now.closed?.outcome ?? "identity_unresolved",
         );
         return true;
       }
@@ -2538,13 +2578,13 @@ export async function processChatwootDelivery(
   // (no meta), fall back to the mirror's EFFECTIVE state — it preserves the stored trio now, so a
   // degraded event on a human-owned conversation must not read as bot-owned.
   const assigneeKnown = n.assigneeType !== undefined;
-  // Named once, asked twice: by the gate, and — when the gate closes — by the line that says which
-  // of the two events closed it. Re-deriving it at the second question is how the two answers drift
-  // apart, and the second is the one an operator reads afterwards.
+  // NOTE: Named once, asked twice: by the gate, and — when the gate closes — by the line that says
+  // which of the two events closed it. Re-deriving it at the second question is how the two answers
+  // drift apart, and the second is the one an operator reads afterwards.
   //
-  // Only the assignee is lifted, and the literal below stays a literal on purpose: the per-call-site
-  // sweep for issue #210 reads the argument as written, so a call handed a named object no longer
-  // shows it the `assigneeId` that makes the gate strict.
+  // NOTE: only the assignee is lifted, and the literal below stays a literal on purpose: the
+  // per-call-site sweep for issue #210 reads the argument as written, so a call handed a named
+  // object no longer shows it the `assigneeId` that makes the gate strict.
   const effectiveAssigneeType = assigneeKnown
     ? (n.assigneeType ?? null)
     : mirror.assigneeType;
@@ -3053,10 +3093,10 @@ export async function processChatwootDelivery(
       closed.outcome,
       n.status ?? "unknown",
     );
-    // The operator's own trail, and it is deliberately narrower than this branch: ONE line per
-    // customer message the bot did not answer, never one per webhook event. This gate is the only
-    // one those messages reach — a refused event arms no flush and starts no turn — so without the
-    // line the silence an operator is investigating has nothing behind it (issue #271). The
+    // NOTE: The operator's own trail, and it is deliberately narrower than this branch: ONE line
+    // per customer message the bot did not answer, never one per webhook event. This gate is the
+    // only one those messages reach — a refused event arms no flush and starts no turn — so without
+    // the line the silence an operator is investigating has nothing behind it (issue #271). The
     // narrowing is what keeps it readable: `message_updated` here is usually our own media
     // write-back coming back around, and a switched-off agent was never going to answer, so a line
     // there would explain the silence with the wrong reason.

@@ -959,6 +959,44 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(calls.getMessages).toBe(0);
   });
 
+  // The bail that must not preempt the gate. Reading the inbox before the gate is what lets a closed
+  // gate name its agent, and moving the "no agent bound" exit up with it would silently change what
+  // the gate DOES: the burst would stop counting as handled, sit below the watermark, and be
+  // re-coalesced and answered after a later rebind. Attribution is worth a nullable id; it is not
+  // worth that.
+  test("a closed gate on an unbound inbox still consumes the burst", async () => {
+    await seedConversation(873, { assigneeType: "User" });
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 7301,
+        name: "Sem agente",
+        agentId: null,
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 873 },
+      data: { inboxId: inbox.id },
+    });
+    const out = await flushDebounceJob({
+      job: jobFor(873, { lastMessageId: 21 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 21, content: "oi" }])],
+          sent: [],
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(await watermarkOf(873)).toBe(21);
+  });
+
   // A gate that closes has to SAY why it closed, and this one said nothing at all: the burst counted
   // as handled and the flush returned, so the operator investigating an unanswered conversation
   // found no line anywhere (issue #271). The two cases below are the two events that wear this one
@@ -1148,6 +1186,48 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(model.systemPrompts[0] ?? "").toContain(
         '<campo chave="plan" valor="premium"/>',
       );
+    });
+
+    // The escalation lands INSIDE the authorization round-trip, which is what that fence exists for:
+    // ten seconds in somebody else's endpoint. The old line here asserted a human takeover, which is
+    // the reading #225 measured as wrong, and this is the state that proves it — nobody is on the
+    // conversation at all.
+    test("the conversation leaving mid-authorization is reported as what it was", async () => {
+      await seedConversation(872);
+      await seedContactOn(872, 72);
+      const sent: Array<[number, string]> = [];
+      const out = await flushDebounceJob({
+        job: jobFor(872, { lastMessageId: 11 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            pages: [page([{ id: 11, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: (async () => {
+            await suDb.conversation.updateMany({
+              where: {
+                tenantId,
+                chatwootInstanceId: instanceId,
+                chatwootConversationId: 872,
+              },
+              data: { status: "open" },
+            });
+            return new Response(JSON.stringify({ authorized: true }), {
+              status: 200,
+            });
+          }) as unknown as typeof fetch,
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(sent).toEqual([]);
+      expect(await handoffDetailOf(872)).toEqual({
+        outcome: "ownership_lost",
+        status: "open",
+      });
     });
 
     test("a refused contact drops the burst: no fetch, no post, watermark advanced", async () => {

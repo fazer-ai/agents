@@ -1151,10 +1151,10 @@ export async function runLoadedTurn(
     // what it has no special claim to: a queued photo is not something the transfer promised, and
     // over a human who is already answering it is exactly what should not land.
     if (!recheck.ours) {
-      // TWO different events wear this one exit, and calling both "taken_over" is what sent an
-      // incident investigation to the wrong half of the system (issue #225). The reading is the
-      // gates' shared one now (issue #271): this is the last of three that close on the same
-      // question, and an operator filtering the log for one outcome has to get all three.
+      // NOTE: TWO different events wear this one exit, and calling both "taken_over" is what sent
+      // an incident investigation to the wrong half of the system (issue #225). The reading is the
+      // gates' shared one now (issue #271): this is the last of the gates that close on the same
+      // question, and an operator filtering the log for one outcome has to get every one.
       emitFlowEvent(flow, {
         stage: "handoff",
         status: "ok",

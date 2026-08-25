@@ -312,14 +312,18 @@ export async function flushDebounceJob(
       },
     });
     if (!conv?.inboxId) return null;
-    // Read above the gate so a gate that CLOSES can still say whose conversation it was: the line it
-    // writes is filtered by agent on the Logs page, and one written without an agent id is invisible
-    // in exactly the view an operator investigating one agent is looking at.
+    // NOTE: Read above the gate so a gate that CLOSES can still say whose conversation it was: the
+    // line it writes is filtered by agent on the Logs page, and one written without an agent id is
+    // invisible in exactly the view an operator investigating one agent is looking at.
+    //
+    // NOTE: the unbound-inbox bail stays BELOW the gate, where it was. Above it, a closed gate on an
+    // inbox that lost its agent would leave without advancing the watermark, and the burst it was
+    // holding would be re-coalesced and answered after a later rebind. Attribution is worth a
+    // nullable id here; it is not worth changing what the gate does.
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
       select: { agentId: true, chatwootInboxId: true },
     });
-    if (!inbox?.agentId) return null;
     // Gate: only the bot still owns it (pending, no human / our bot).
     if (
       !shouldBotHandle(
@@ -332,17 +336,18 @@ export async function flushDebounceJob(
       )
     ) {
       return {
-        // Classified WITH the gate, not after it: a second read would answer about a different
-        // moment, and the whole point of the line is which state closed THIS gate.
+        // NOTE: Classified WITH the gate, not after it: a second read would answer about a
+        // different moment, and the whole point of the line is which state closed THIS gate.
         gateClosed: describeClosedGate({
           assigneeType: conv.assigneeType,
           status: conv.status,
         }),
         convDbId: conv.id,
         inboxDbId: conv.inboxId,
-        agentId: inbox.agentId,
+        agentId: inbox?.agentId ?? null,
       };
     }
+    if (!inbox?.agentId) return null;
     const agentRow = await db.agent.findUnique({
       where: { id: inbox.agentId },
       select: { settings: true },
@@ -365,15 +370,15 @@ export async function flushDebounceJob(
   });
   // No agent / unbound inbox → nothing to do (not a failure).
   if (ctx === null) return { outcome: "done" };
-  // The gate closed between the arm and this flush, and TWO different events wear that exit: a human
-  // took the conversation, or it left `pending` with nobody on the other side — most often Chatwoot
-  // escalating after a slow ack. Either way the burst counts as handled: the arm path kept its newest
-  // message id in the payload precisely so this advance needs no network fetch (issue #8), because
-  // without it the burst would sit below the watermark and the first flush after the human returns
-  // the conversation would re-answer it.
+  // NOTE: The gate closed between the arm and this flush, and TWO different events wear that exit:
+  // a human took the conversation, or it left `pending` with nobody on the other side — most often
+  // Chatwoot escalating after a slow ack. Either way the burst counts as handled: the arm path kept
+  // its newest message id in the payload precisely so this advance needs no network fetch (issue
+  // #8), because without it the burst would sit below the watermark and the first flush after the
+  // human returns the conversation would re-answer it.
   //
-  // The line is what this branch was missing (issue #271). The escalation closes THIS gate rather
-  // than the runtime's recheck — no turn ever starts — so without a line here the case the
+  // NOTE: the line is what this branch was missing (issue #271). The escalation closes THIS gate
+  // rather than the runtime's recheck — no turn ever starts — so without a line here the case the
   // distinction exists for is the one case nothing records.
   if ("gateClosed" in ctx) {
     emitFlowEvent(
@@ -476,7 +481,7 @@ export async function flushDebounceJob(
     // over their shoulder: the post gate withholds the reply, but the tools have run by then. Same
     // question as the gate above, asked again against the mirror; the burst still counts as handled,
     // exactly as it does when the gate was already closed on the way in.
-    const stillOurs = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const recheck = await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
         where: {
           tenantId_chatwootInstanceId_chatwootConversationId: {
@@ -485,24 +490,48 @@ export async function flushDebounceJob(
             chatwootConversationId: conversationId,
           },
         },
-        // assigneeId is part of the question, not decoration: without it shouldBotHandle cannot
-        // tell OUR bot from another one, and a conversation handed to a different bot during the
-        // authorization call would read as still ours.
+        // NOTE: assigneeId is part of the question, not decoration: without it shouldBotHandle
+        // cannot tell OUR bot from another one, and a conversation handed to a different bot during
+        // the authorization call would read as still ours.
         select: { status: true, assigneeType: true, assigneeId: true },
       });
-      return shouldBotHandle(
-        {
+      return {
+        ours: shouldBotHandle(
+          {
+            assigneeType: conv?.assigneeType ?? null,
+            assigneeId: conv?.assigneeId ?? null,
+            status: conv?.status ?? null,
+          },
+          { ourAgentBotId: agentBotId },
+        ),
+        closed: describeClosedGate({
           assigneeType: conv?.assigneeType ?? null,
-          assigneeId: conv?.assigneeId ?? null,
           status: conv?.status ?? null,
-        },
-        { ourAgentBotId: agentBotId },
-      );
+        }),
+      };
     });
-    if (!stillOurs) {
+    if (!recheck.ours) {
+      // NOTE: the same exit as the gate on the way in, so it says the same thing. The old line here
+      // asserted a human takeover, which is the reading issue #225 measured as wrong: the ten
+      // seconds this fence exists for are ten seconds in which Chatwoot can escalate the
+      // conversation out of `pending` with nobody on it.
+      emitFlowEvent(
+        {
+          tenantId,
+          turnId: crypto.randomUUID(),
+          source: "inbox",
+          conversationId: ctx.convDbId,
+          agentId: ctx.loaded.agentId,
+          inboxId: ctx.loaded.inboxDbId,
+          threadId,
+          base,
+        },
+        { stage: "handoff", status: "ok", detail: recheck.closed },
+      );
       logger.info(
-        "debounce flush: a human took the conversation during the authorization call (conv=%s)",
+        "debounce flush: the conversation left the bot during the authorization call (conv=%s reason=%s)",
         String(conversationId),
+        recheck.closed.outcome,
       );
       const last = readLastMessageId(job.payload);
       if (last !== null) {

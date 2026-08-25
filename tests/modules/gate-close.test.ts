@@ -104,9 +104,12 @@ describe("the gate-close vocabulary has one speller", () => {
     expect(offenders).toEqual([]);
   });
 
-  // Every gate that closes has to SAY it closed, and the three are the whole set: the webhook on
-  // each event, the flush before the turn, the recheck before posting.
-  test("all three ownership gates ask the shared unit", () => {
+  // Every gate that closes on a customer message the bot would have answered has to SAY so, and
+  // these are the files they live in: the webhook (on each event, and again after the contact-auth
+  // round-trip), the flush (before the turn, and again after that same round-trip), and the runtime
+  // (after the model answered). The proactive senders are deliberately not here — nothing was going
+  // to be answered there, which is a different question with its own issue.
+  test("every file that closes an ownership gate asks the shared unit", () => {
     const gates = [
       "src/modules/chatwoot/webhook.ts",
       "src/modules/debounce/handler.ts",

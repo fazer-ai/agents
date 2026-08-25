@@ -47,6 +47,9 @@ const UNBOUND_INBOX = 93;
 const PROD_INBOX = 92;
 const TEST_INBOX = 91;
 const NO_PERSONA_INBOX = 94;
+// An inbox whose persona row exists but whose stored token cannot be decrypted (a rotated key, a
+// corrupt blob). The line about the dropped command must not read it, and must not die trying.
+const BAD_TOKEN_INBOX = 95;
 // The bot whose webhook route the delivery arrived on, and one that belongs to nobody here.
 const OUR_BOT = 9;
 const OTHER_BOT = 8;
@@ -134,6 +137,22 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
     await bind(testAgentId, TEST_INBOX, "Teste");
     await bind(prodAgentId, PROD_INBOX, "Producao");
     await bind(orphanAgentId, NO_PERSONA_INBOX, "SemPersona");
+
+    const badTokenAgentId = await mkAgent("TokenPodre", "production");
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: badTokenAgentId,
+        chatwootAgentBotId: OUR_BOT,
+        // NOT an encryptJson blob: decrypting this throws.
+        accessToken: "nao-e-um-blob-cifrado",
+        webhookSecret: encryptJson("S"),
+        webhookRouteTokenHash: `cd-bad-${process.pid}`,
+        name: "bot",
+      },
+    });
+    await bind(badTokenAgentId, BAD_TOKEN_INBOX, "TokenPodre");
   });
 
   afterAll(async () => {
@@ -354,6 +373,25 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
       mode: "production",
       routeBot: OUR_BOT,
     });
+  });
+
+  // The line reports the delivery; it must not be able to drop it. The persona's token is
+  // undecryptable here, which is what `loadAgentBot` would have thrown on — after the mirror
+  // committed, leaving the ledger row on PROCESSING with nothing running and no upstream retry.
+  test("an unreadable persona still writes the line, and the delivery finishes", async () => {
+    await deliver(9501, BAD_TOKEN_INBOX, "/teste", OUR_BOT);
+    const rows = await commandRows(9501, 1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toMatchObject({
+      command: "teste",
+      reason: "inactive",
+      mode: "production",
+    });
+    const delivery = await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+      where: { tenantId, deliveryId: `cd-${process.pid}-${deliverySeq}` },
+      select: { status: true },
+    });
+    expect(delivery.status).toBe("PROCESSED");
   });
 
   test("a command that RUNS writes no dropped line", async () => {

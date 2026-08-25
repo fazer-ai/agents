@@ -108,6 +108,7 @@ import type { ChatwootClient } from "./client";
 import { type CommandRoute, commandRoute } from "./command-route";
 import {
   type AgentBotIdentity,
+  agentBotChatwootId,
   loadAgentBot,
   loadChatwootClient,
 } from "./instance";
@@ -2729,16 +2730,28 @@ export async function processChatwootDelivery(
     // nothing here separates two deliveries, and both report the mode: a row twice is the lesser
     // failure than a command nobody reports, and that state already has #318's `route` line per
     // delivery for the same reason.
+    //
+    // BEST-EFFORT, and the id ONLY: this reading exists to report the delivery, and the mirror has
+    // already committed by the time it runs. A rejection escaping here would leave the ledger row on
+    // PROCESSING with nothing running, skip the gate and the turn, and never be retried — Chatwoot
+    // was handed its 200 long before. A line about a dropped command must not be able to drop the
+    // message it is describing, so an unreadable persona degrades to `no_persona`, which reports the
+    // mode and loses only the route distinction.
     const personaBot =
       commandAgent !== null
-        ? ((
-            await loadAgentBot(
-              params.tenantId,
-              params.instanceId,
-              commandAgent.agentId,
-              base,
-            )
-          )?.chatwootAgentBotId ?? null)
+        ? await agentBotChatwootId(
+            params.tenantId,
+            params.instanceId,
+            commandAgent.agentId,
+            base,
+          ).catch((err) => {
+            logger.warn(
+              "chatwoot: persona unreadable for the dropped-command line (conv=%s): %s",
+              n.conversationId === null ? "?" : String(n.conversationId),
+              err instanceof Error ? err.message : String(err),
+            );
+            return null;
+          })
         : null;
     const route = commandRoute(personaBot, params.agentBotId);
     logger.info(

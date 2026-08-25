@@ -855,6 +855,12 @@ export async function testVaultValue(
   if (kind && !isSecretTypeId(kind)) {
     throw new AppError("invalid secret type", 400, "errors.invalidSecretType");
   }
+  // A value the write would refuse is not a connectivity question, and probing it answers the wrong
+  // one: fetch strips the padding out of a header, so a fixed-header kind reports "Connection OK"
+  // and the save then refuses the same bytes.
+  if (value !== value.trim()) {
+    return { testable: true, ok: false, code: "surrounding_whitespace" };
+  }
   return runSecretTest({ kind, value, baseURL, paramName }, deps);
 }
 

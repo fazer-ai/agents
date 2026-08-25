@@ -3,7 +3,11 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
-import { createVaultEntry, updateVaultEntry } from "@/modules/vault/service";
+import {
+  createVaultEntry,
+  testVaultValue,
+  updateVaultEntry,
+} from "@/modules/vault/service";
 
 // A credential is stored as its exact bytes, and a paste out of a provider's panel routinely carries
 // a newline or a space. An HTTP field value has its surrounding whitespace stripped before any
@@ -54,6 +58,40 @@ const refusal = async (run: () => Promise<unknown>): Promise<AppError> => {
   }
   throw new Error("expected the write to be refused, and it was not");
 };
+
+// Test-on-save answers about the same value the save would store, so the two have to agree. A header
+// kind is the trap: fetch strips the padding on the way out, so probing the raw value would report a
+// working connection for bytes the write refuses.
+describe("test-on-save agrees with the write", () => {
+  const neverCalled = (async () => {
+    throw new Error(
+      "the probe reached the network for a value the write refuses",
+    );
+  }) as unknown as typeof fetch;
+
+  test("a padded value answers with its own code, without probing", async () => {
+    expect(
+      await testVaultValue("asaas", "abc123TOKEN\n", null, {
+        fetchImpl: neverCalled,
+        assertSafe: async (u: string) => new URL(u),
+      }),
+    ).toEqual({ testable: true, ok: false, code: "surrounding_whitespace" });
+  });
+
+  test("a clean value still reaches the probe", async () => {
+    let reached = false;
+    const fetchImpl = (async () => {
+      reached = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const r = await testVaultValue("openai", "sk-secret", null, {
+      fetchImpl,
+      assertSafe: async (u: string) => new URL(u),
+    });
+    expect(reached).toBe(true);
+    expect(r).toEqual({ testable: true, ok: true });
+  });
+});
 
 describe.skipIf(!dbUp)(
   "vault: a value that begins or ends in whitespace",

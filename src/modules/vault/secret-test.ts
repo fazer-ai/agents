@@ -23,7 +23,12 @@ export type SecretTestFailCode =
   | "unreachable"
   | "timeout"
   | "blocked_url"
-  | "missing_base_url";
+  | "missing_base_url"
+  // Not a connectivity outcome: the value the operator typed would be refused by the write, so the
+  // probe answers with that instead of reporting on a credential nobody can store (#338). Sending it
+  // would report "Connection OK" for a header kind (fetch strips the padding on the way out) and
+  // then the save would refuse the same value.
+  | "surrounding_whitespace";
 
 export type SecretTestResult =
   | { testable: false }

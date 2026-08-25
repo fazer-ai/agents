@@ -286,7 +286,11 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect((await statusOf(id)).status).toBe("DONE");
   });
 
-  test("reschedule keeps attempts unchanged and re-pends", async () => {
+  // Issue #287. The failure budget bounds CONSECUTIVE failures, not the row's lifetime, so a pass
+  // that completed spends the budget it earned. Started from a NON-ZERO count on purpose: the first
+  // spelling of this test enqueued a fresh row and asserted `attempts === 0`, which is what the row
+  // already carried, so it passed either way and pinned nothing.
+  test("reschedule re-pends and clears the failure budget a completed pass earned", async () => {
     const id = await enqueueJob({
       tenantId,
       kind: "WEBHOOK_RETRY",
@@ -294,6 +298,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
       runAt: past(),
       base: appDb,
     });
+    await suDb.schedulerJob.update({ where: { id }, data: { attempts: 3 } });
     await claimDueJobs(10, appDb, new Date(), tenantId);
     await rescheduleJob(
       tenantId,
@@ -306,6 +311,116 @@ describe.skipIf(!dbUp)("scheduler", () => {
     const s = await statusOf(id);
     expect(s.status).toBe("PENDING");
     expect(s.attempts).toBe(0);
+  });
+
+  // `rescheduleJob` has TWO write paths — a Prisma update and a raw statement for the merging
+  // `payloadPatch` — and the budget has to mean the same thing on both, or the reset depends on
+  // whether the caller happened to carry a counter forward. Measured: removing it from the raw
+  // branch alone left the rest of this file green, which is how the two would have drifted.
+  // APPOINTMENT_REMINDER is the caller that takes it, and its own retry ladder (`nudgeRetries`) is
+  // what bounds that work, not the scheduler's budget.
+  test("the merging reschedule clears the budget too", async () => {
+    const id = await enqueueJob({
+      tenantId,
+      kind: "APPOINTMENT_REMINDER",
+      dedupeKey: "dk-resched-patch",
+      runAt: past(),
+      payload: { threadId: "1:2:3" },
+      base: appDb,
+    });
+    await suDb.schedulerJob.update({ where: { id }, data: { attempts: 4 } });
+    await claimDueJobs(10, appDb, new Date(), tenantId);
+    await rescheduleJob(
+      tenantId,
+      id,
+      await seqOf(id),
+      past(),
+      undefined,
+      appDb,
+      { nudgeRetries: 1 },
+    );
+    const row = await suDb.schedulerJob.findUniqueOrThrow({
+      where: { id },
+      select: { status: true, attempts: true, payload: true },
+    });
+    expect(row.status).toBe("PENDING");
+    expect(row.attempts).toBe(0);
+    // The patch still MERGES rather than replacing, which is the reason this branch exists.
+    expect(row.payload).toEqual({ threadId: "1:2:3", nudgeRetries: 1 });
+  });
+
+  // The defect this issue reports, in the shape that produces it: a job that reschedules itself
+  // forever (FLOWLOG_SWEEP, FOLLOWUP_SWEEP, HEARTBEAT) accumulates every failure it has ever had,
+  // across weeks of otherwise successful passes, and the fifth one dead-letters the row for good.
+  // Measured before the fix: DEAD after the fifth, with four healthy passes in between.
+  test("a perpetual job outlives more lifetime failures than the cap", async () => {
+    const id = await enqueueJob({
+      tenantId,
+      kind: "FLOWLOG_SWEEP",
+      dedupeKey: "dk-perpetual",
+      runAt: past(),
+      base: appDb,
+    });
+    for (let round = 0; round < 8; round++) {
+      await claimDueJobs(10, appDb, new Date(), tenantId);
+      const before = await statusOf(id);
+      await failJob(
+        tenantId,
+        id,
+        await seqOf(id),
+        before.attempts,
+        "blip",
+        appDb,
+      );
+      expect((await statusOf(id)).status).toBe("PENDING");
+      // The next pass succeeds, which is what a transient blip looks like.
+      await suDb.schedulerJob.update({
+        where: { id },
+        data: { runAt: past() },
+      });
+      await claimDueJobs(10, appDb, new Date(), tenantId);
+      await rescheduleJob(
+        tenantId,
+        id,
+        await seqOf(id),
+        past(),
+        undefined,
+        appDb,
+      );
+    }
+    expect((await statusOf(id)).status).toBe("PENDING");
+  });
+
+  // The control for the test above: the budget still bounds a unit of work that is genuinely broken,
+  // because consecutive failures are never interleaved with a completed pass — a failure re-pends
+  // with a backoff and the next claim fails again.
+  test("consecutive failures still dead-letter at the cap", async () => {
+    const id = await enqueueJob({
+      tenantId,
+      kind: "FLOWLOG_SWEEP",
+      dedupeKey: "dk-consecutive",
+      runAt: past(),
+      base: appDb,
+    });
+    let status = "";
+    for (let round = 0; round < 5; round++) {
+      await suDb.schedulerJob.update({
+        where: { id },
+        data: { runAt: past() },
+      });
+      await claimDueJobs(10, appDb, new Date(), tenantId);
+      const before = await statusOf(id);
+      await failJob(
+        tenantId,
+        id,
+        await seqOf(id),
+        before.attempts,
+        "broken",
+        appDb,
+      );
+      status = (await statusOf(id)).status;
+    }
+    expect(status).toBe("DEAD");
   });
 
   test("reschedule with a payload REPLACES the row payload (step advance)", async () => {

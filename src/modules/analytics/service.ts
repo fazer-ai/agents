@@ -305,15 +305,36 @@ export async function getKpis(
       { median: number | null; sampled: number }[]
     >(Prisma.sql`
       SELECT percentile_cont(0.5) WITHIN GROUP (
-               ORDER BY EXTRACT(EPOCH FROM (first_human_reply_at - first_inbound_at))
+               ORDER BY EXTRACT(EPOCH FROM (answered_at - first_inbound_at))
              )::float8 AS median,
              COUNT(*)::int AS sampled
-      FROM conversations
-      WHERE first_inbound_at IS NOT NULL
-        AND first_human_reply_at IS NOT NULL
-        -- A reply cannot precede the message it answers: a clock skew or a conversation whose
-        -- inbound watermark was cleared would otherwise contribute a negative "response time".
-        AND first_human_reply_at >= first_inbound_at
+      FROM (
+        SELECT first_inbound_at,
+               created_at,
+               -- The earlier of the two readings, with the unanchored one admitted ONLY when it is
+               -- itself after the anchor. That condition is what separates an answer whose question
+               -- was delivered late from the business opening the conversation: both leave
+               -- first_human_reply_at NULL, and only the first has a team message that comes AFTER
+               -- the customer's. See attendance-watermarks.ts.
+               --
+               -- LEAST and not COALESCE: Postgres's LEAST ignores NULLs, so this is still the
+               -- fallback when there is no anchored reading — and when there IS one, an earlier
+               -- message that only became an answer because the anchor was later lowered still wins,
+               -- which COALESCE would have skipped over.
+               LEAST(
+                 first_human_reply_at,
+                 CASE
+                   WHEN first_human_message_at >= first_inbound_at
+                     THEN first_human_message_at
+                 END
+               ) AS answered_at
+          FROM conversations
+         WHERE first_inbound_at IS NOT NULL
+      ) c
+      WHERE answered_at IS NOT NULL
+        -- A reply cannot precede the message it answers: a clock skew or a hand-written row would
+        -- otherwise contribute a negative "response time".
+        AND answered_at >= first_inbound_at
         AND (${filter.since ?? null}::timestamptz IS NULL OR created_at >= ${filter.since ?? null})`);
     // COUNT and the percentile come from ONE aggregate over the same rows, so they cannot
     // disagree: no row in the sample means `sampled` is 0 and `median` is NULL together.

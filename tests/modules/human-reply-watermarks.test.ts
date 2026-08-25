@@ -649,4 +649,78 @@ describe.skipIf(!dbUp)("the first-response KPI", () => {
     expect(kpis.firstResponseSampled).toBe(4);
     expect(kpis.firstResponseSeconds).toBe(90);
   });
+
+  // The ordering the fork's retry ladder makes reachable: the customer's first message fails its
+  // delivery and comes back minutes later, by which time the team has already answered. At the
+  // moment the answer is mirrored there is no anchor to measure it against, so it is recorded only
+  // as the earliest team message seen — and the KPI is where that becomes an answer again, because
+  // it is after the anchor that finally arrived. Without the fallback this attendance is simply
+  // absent from the service level, which is the complaint the whole feature exists to fix.
+  //
+  // Runs after the two tests above and adds to their population on purpose: a median is a property
+  // of a population, and a fifth sample is the cheapest way to show the fallback reached it.
+  test("counts an answer whose question was delivered late", async () => {
+    const late = 9906;
+    const base = Math.floor(Date.now() / 1000) - 86_400;
+    const lateConv = {
+      id: late,
+      inbox_id: CHATWOOT_INBOX_ID,
+      status: "open",
+      contact_inbox: { id: 80_000 + late },
+      meta: {
+        assignee_type: "User",
+        assignee: { id: 31, name: "Ana" },
+        sender: { id: 21, name: "Cliente" },
+      },
+      channel: "Channel::Api",
+    };
+    await deliver(
+      {
+        event: "message_created",
+        id: late * 10,
+        content: "respondendo",
+        message_type: "outgoing",
+        private: false,
+        sender: { id: 31, name: "Ana", type: "user" },
+        conversation: { ...lateConv, last_activity_at: base + 40 },
+      },
+      `agg-${late}-answer-first`,
+      on(),
+    );
+    const beforeAnchor = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId: aggTenantId, chatwootConversationId: late },
+    });
+    expect(beforeAnchor.firstHumanReplyAt).toBeNull();
+    expect(beforeAnchor.firstHumanMessageAt?.getTime()).toBe(
+      (base + 40) * 1000,
+    );
+
+    await deliver(
+      {
+        event: "message_created",
+        id: late * 10 + 1,
+        content: "a pergunta que demorou a chegar",
+        message_type: "incoming",
+        private: false,
+        conversation: { ...lateConv, last_activity_at: base + 10 },
+      },
+      `agg-${late}-question-late`,
+      on(),
+    );
+    const afterAnchor = await suDb.conversation.findFirstOrThrow({
+      where: { id: beforeAnchor.id },
+    });
+    expect(afterAnchor.firstInboundAt?.getTime()).toBe((base + 10) * 1000);
+    // Still null: nothing re-reads history, and that is exactly why the KPI has a fallback.
+    expect(afterAnchor.firstHumanReplyAt).toBeNull();
+
+    const kpis = await getKpis(
+      { tenantId: aggTenantId, userId: null, role: "TENANT_ADMIN" },
+      {},
+      appDb,
+    );
+    // 10, 30, 60, 120 and 3600 seconds.
+    expect(kpis.firstResponseSampled).toBe(5);
+    expect(kpis.firstResponseSeconds).toBe(60);
+  });
 });

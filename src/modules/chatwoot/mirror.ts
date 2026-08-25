@@ -154,6 +154,7 @@ export async function mirrorChatwootEvent(
           lastInboundAt: true,
           firstHumanReplyAt: true,
           lastHumanReplyAt: true,
+          firstHumanMessageAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -258,6 +259,7 @@ export async function mirrorChatwootEvent(
                 lastInboundAt: null,
                 firstHumanReplyAt: null,
                 lastHumanReplyAt: null,
+                firstHumanMessageAt: null,
               },
               { inboundAt, humanReplyAt },
             ),

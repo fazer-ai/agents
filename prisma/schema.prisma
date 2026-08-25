@@ -517,6 +517,12 @@ model Conversation {
   firstInboundAt         DateTime? @map("first_inbound_at")
   firstHumanReplyAt      DateTime? @map("first_human_reply_at")
   lastHumanReplyAt       DateTime? @map("last_human_reply_at")
+  // The earliest team message on the record, whatever it was an answer to. Kept BESIDE
+  // firstHumanReplyAt rather than instead of it because the two answer different questions and
+  // neither survives alone: the anchored one is empty when the deliveries arrived out of order, and
+  // the unanchored one cannot tell an answer from the business opening the conversation. The KPI
+  // takes the EARLIER of the two, admitting this one only when it is itself at or after the anchor.
+  firstHumanMessageAt    DateTime? @map("first_human_message_at")
   // Watermark for follow-up single-shot semantics: set after each follow-up (sent or silenced).
   // Another follow-up can only fire once the client speaks again (lastInboundAt > lastFollowUpAt).
   // NULL = no follow-up has ever been attempted for this conversation.

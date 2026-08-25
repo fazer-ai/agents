@@ -7,3 +7,4 @@
 ALTER TABLE "conversations" ADD COLUMN "first_inbound_at" TIMESTAMP(3);
 ALTER TABLE "conversations" ADD COLUMN "first_human_reply_at" TIMESTAMP(3);
 ALTER TABLE "conversations" ADD COLUMN "last_human_reply_at" TIMESTAMP(3);
+ALTER TABLE "conversations" ADD COLUMN "first_human_message_at" TIMESTAMP(3);

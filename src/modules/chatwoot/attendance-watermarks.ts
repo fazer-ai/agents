@@ -1,7 +1,7 @@
 // When the customer first spoke and when the team answered — the two ends of an attendance, decided
 // once and away from the mirror's hot path so the rule can be read (and tested) as a table.
 //
-// Three facts make this more than "write the column if it is empty":
+// Four facts make this more than "write the column if it is empty":
 //
 //   1. A conversation that already existed when these columns were added has traffic we never
 //      watermarked. Its next customer message is NOT its first, and dating it as one would drop a
@@ -18,15 +18,20 @@
 //      message, and is not an answer to one — so the first response is the first team message at or
 //      after the inbound anchor, never simply the first one seen.
 //
-// The one row this deliberately treats as new is a conversation whose inbound watermark was cleared
-// by `/reset` before the columns existed: it reads as never-tracked, and anchors on the next
-// message. That is the start of a fresh attendance, which is what the number is about.
+// Facts 2 and 4 pull in opposite directions, and that is why a team message is recorded TWICE. An
+// anchorless team message is either the business opening the conversation (where a value would be
+// measured backwards) or the customer's first message still in the retry ladder (where a value is
+// exactly right), and nothing on this side tells the two rows apart. So the anchored reading answers
+// "what was the first response" and the unanchored one answers "what is the earliest we saw"; the
+// KPI prefers the first and falls back to the second only when the second is itself after the
+// anchor, which is the condition that makes it an answer rather than an opener.
 
 export interface StoredAttendance {
   firstInboundAt: Date | null;
   lastInboundAt: Date | null;
   firstHumanReplyAt: Date | null;
   lastHumanReplyAt: Date | null;
+  firstHumanMessageAt: Date | null;
 }
 
 export interface SeenAttendance {
@@ -43,6 +48,7 @@ export interface AttendanceWrites {
   firstInboundAt?: Date;
   firstHumanReplyAt?: Date;
   lastHumanReplyAt?: Date;
+  firstHumanMessageAt?: Date;
 }
 
 export function decideAttendanceWatermarks(
@@ -69,22 +75,20 @@ export function decideAttendanceWatermarks(
   const anchor = stored.firstInboundAt;
 
   if (seen.humanReplyAt !== null) {
-    // A first response is the first team message AT OR AFTER the customer's first, and a
+    // Unanchored, and it is the record of WHAT WAS SEEN rather than a judgement about it: the
+    // earliest team message, whatever it answered. It is what lets a conversation whose first
+    // inbound was delivered late still be measured — see the KPI's fallback in analytics/service.ts.
+    if (
+      stored.firstHumanMessageAt === null ||
+      seen.humanReplyAt < stored.firstHumanMessageAt
+    ) {
+      writes.firstHumanMessageAt = seen.humanReplyAt;
+    }
+    // Anchored: a first response is the first team message AT OR AFTER the customer's first, and a
     // BUSINESS-INITIATED conversation is why that has to be said: an operator writes first, the
     // customer answers a day later. Taking the opener would date the response before the message it
-    // answers — and because the column is an anchor, every real answer after it is then too late to
-    // replace it, so the conversation is excluded from the sample for good rather than for a day.
-    // Without an anchor (no inbound yet, or a conversation older than these columns) there is
-    // nothing to measure against, and the reply is only recorded as the team's LAST word.
-    //
-    // ACCEPTED OMISSION, and it is the same shape read twice: a team message with no anchor is
-    // EITHER the business opening the conversation (null is the right answer, and a value would be
-    // measured backwards) OR the customer's first message still stuck in the retry ladder (a value
-    // would be right, and null costs a sample). Nothing on this side distinguishes them — the two
-    // rows are identical — so the rule takes the reading that can never be WRONG, at the price of
-    // occasionally being SHORT. That price is visible: `firstResponseSampled` is reported beside the
-    // median precisely so a sample smaller than the conversation count can be seen rather than
-    // assumed away.
+    // answers — and because the column is an anchor, every real answer afterwards is then too late
+    // to replace it, so the conversation leaves the sample for good rather than for a day.
     if (
       anchor !== null &&
       seen.humanReplyAt >= anchor &&

@@ -19,11 +19,23 @@ function stored(over: Partial<StoredAttendance> = {}): StoredAttendance {
     lastInboundAt: null,
     firstHumanReplyAt: null,
     lastHumanReplyAt: null,
+    firstHumanMessageAt: null,
     ...over,
   };
 }
 function seen(over: Partial<SeenAttendance> = {}): SeenAttendance {
   return { inboundAt: null, humanReplyAt: null, ...over };
+}
+// A conversation already being watermarked, answered once at T1.
+function answered(over: Partial<StoredAttendance> = {}): StoredAttendance {
+  return stored({
+    firstInboundAt: T0,
+    lastInboundAt: T0,
+    firstHumanReplyAt: T1,
+    lastHumanReplyAt: T1,
+    firstHumanMessageAt: T1,
+    ...over,
+  });
 }
 
 const cases: {
@@ -67,68 +79,36 @@ const cases: {
     want: { firstInboundAt: T0 },
   },
   {
-    name: "the first team reply sets both ends at once",
+    name: "the first team reply sets every end at once",
     stored: stored({ firstInboundAt: T0, lastInboundAt: T0 }),
     seen: seen({ humanReplyAt: T1 }),
-    want: { firstHumanReplyAt: T1, lastHumanReplyAt: T1 },
+    want: {
+      firstHumanReplyAt: T1,
+      lastHumanReplyAt: T1,
+      firstHumanMessageAt: T1,
+    },
   },
   {
     name: "a later reply advances only the last end",
-    stored: stored({
-      firstInboundAt: T0,
-      lastInboundAt: T0,
-      firstHumanReplyAt: T1,
-      lastHumanReplyAt: T1,
-    }),
+    stored: answered(),
     seen: seen({ humanReplyAt: T2 }),
     want: { lastHumanReplyAt: T2 },
   },
   {
-    name: "a reply that arrives late but happened earlier lowers only the first end",
-    stored: stored({
-      firstInboundAt: T0,
-      lastInboundAt: T0,
+    name: "a reply that arrives late but happened earlier lowers both first ends",
+    stored: answered({
       firstHumanReplyAt: T2,
       lastHumanReplyAt: T2,
+      firstHumanMessageAt: T2,
     }),
     seen: seen({ humanReplyAt: T1 }),
-    want: { firstHumanReplyAt: T1 },
+    want: { firstHumanReplyAt: T1, firstHumanMessageAt: T1 },
   },
   {
     name: "a re-delivered reply on the exact stored clock writes nothing",
-    stored: stored({
-      firstInboundAt: T0,
-      lastInboundAt: T0,
-      firstHumanReplyAt: T1,
-      lastHumanReplyAt: T1,
-    }),
+    stored: answered(),
     seen: seen({ humanReplyAt: T1 }),
     want: {},
-  },
-  {
-    name: "a legacy row records the team's last word and never a first response",
-    stored: stored({ lastInboundAt: T0 }),
-    seen: seen({ humanReplyAt: T1 }),
-    want: { lastHumanReplyAt: T1 },
-  },
-  {
-    name: "the business opening a conversation is not a response to anything",
-    // An operator writes first and the customer answers later. Dating this as the first response
-    // would measure backwards, and the column is an anchor: every real answer after it would then
-    // be too late to replace it, so the conversation would leave the sample for good.
-    stored: stored(),
-    seen: seen({ humanReplyAt: T0 }),
-    want: { lastHumanReplyAt: T0 },
-  },
-  {
-    name: "and the answer after the customer finally writes is the response",
-    stored: stored({
-      firstInboundAt: T1,
-      lastInboundAt: T1,
-      lastHumanReplyAt: T0,
-    }),
-    seen: seen({ humanReplyAt: T2 }),
-    want: { firstHumanReplyAt: T2, lastHumanReplyAt: T2 },
   },
   {
     name: "an answer inside the same second as the question is still an answer",
@@ -136,18 +116,48 @@ const cases: {
     // it answers. Demanding a strictly later one would drop exactly the best attendances.
     stored: stored({ firstInboundAt: T1, lastInboundAt: T1 }),
     seen: seen({ humanReplyAt: T1 }),
-    want: { firstHumanReplyAt: T1, lastHumanReplyAt: T1 },
+    want: {
+      firstHumanReplyAt: T1,
+      lastHumanReplyAt: T1,
+      firstHumanMessageAt: T1,
+    },
   },
   {
-    name: "a team message dated before the anchor is never the first response",
+    name: "a team message with no anchor is recorded, but not as a first response",
+    // Either the business opening the conversation or a customer message still in the retry ladder.
+    // The two rows are identical here; the KPI is where they are told apart.
+    stored: stored(),
+    seen: seen({ humanReplyAt: T0 }),
+    want: { lastHumanReplyAt: T0, firstHumanMessageAt: T0 },
+  },
+  {
+    name: "and the answer after the customer finally writes is the response",
     stored: stored({
+      firstInboundAt: T1,
+      lastInboundAt: T1,
+      lastHumanReplyAt: T0,
+      firstHumanMessageAt: T0,
+    }),
+    seen: seen({ humanReplyAt: T2 }),
+    want: { firstHumanReplyAt: T2, lastHumanReplyAt: T2 },
+  },
+  {
+    name: "a team message dated before the anchor never becomes the first response",
+    stored: answered({
       firstInboundAt: T1,
       lastInboundAt: T1,
       firstHumanReplyAt: T2,
       lastHumanReplyAt: T2,
+      firstHumanMessageAt: T2,
     }),
     seen: seen({ humanReplyAt: T0 }),
-    want: {},
+    want: { firstHumanMessageAt: T0 },
+  },
+  {
+    name: "a legacy row records the team's word and never a first response",
+    stored: stored({ lastInboundAt: T0 }),
+    seen: seen({ humanReplyAt: T1 }),
+    want: { lastHumanReplyAt: T1, firstHumanMessageAt: T1 },
   },
 ];
 

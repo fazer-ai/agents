@@ -115,7 +115,7 @@ export async function armCompaction(
       // This dedupeKey is the THREAD, so the same row is reused by every attendance this contact ever
       // has. Each attendance is new work and gets its own retry budget; otherwise failures accumulate
       // across months and one bad day retires compaction for that contact permanently.
-      resetAttempts: true,
+      rearm: "new-work",
       payload: {
         instanceId: String(p.instanceId),
         contactInboxId: p.contactInboxId,

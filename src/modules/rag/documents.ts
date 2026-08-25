@@ -205,6 +205,9 @@ export async function createDocument(
     kind: "RAG_INGEST",
     dedupeKey: `doc:${doc.id}`,
     runAt: new Date(),
+    // A document that was just created: no row can exist under this key yet, so the answer is only
+    // ever about the insert. It is still stated, because a field nobody has to answer is a default.
+    rearm: "new-work",
     payload: { documentId: String(doc.id) },
     base,
   });
@@ -355,6 +358,10 @@ export async function updateDocument(
       kind: "RAG_INGEST",
       dedupeKey: `doc:${id}`,
       runAt: new Date(),
+      // The document's CONTENT changed, so this is a different index of a different text. The key is
+      // the document and lives as long as it does, so without the reset an ingest that failed once
+      // would follow the document through every edit it ever gets.
+      rearm: "new-work",
       payload: { documentId: String(id) },
       base,
     });
@@ -400,6 +407,10 @@ export async function retryDocument(
     kind: "RAG_INGEST",
     dedupeKey: `doc:${id}`,
     runAt: new Date(),
+    // An operator asked for this, on a document sitting in FAILED or UNINDEXED. FAILED is reached by
+    // exhausting the budget, so without the reset the retry button is worth exactly one attempt, and
+    // every press after the first fails straight back to DEAD.
+    rearm: "new-work",
     payload: { documentId: String(id) },
     base,
   });
@@ -518,6 +529,10 @@ export async function reindexKnowledgeBase(
       kind: "RAG_INGEST",
       dedupeKey: `doc:${d.id}`,
       runAt: new Date(),
+      // Same as the single-document retry, in bulk: an operator asked for the whole base to be
+      // indexed again, and a document that failed on a previous embedding provider is exactly the one
+      // this is for.
+      rearm: "new-work",
       payload: { documentId: String(d.id) },
       base,
     });

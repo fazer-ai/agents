@@ -192,6 +192,12 @@ async function sweepHandler(
       kind: "FOLLOWUP",
       dedupeKey: `followup:${t.thread_id}`,
       runAt: new Date(),
+      // A CLOCK arms this, not the world: the sweep re-enqueues every eligible thread once a minute,
+      // and a thread stays eligible until its follow-up actually goes out. So a re-arm here is the
+      // same episode being pushed again, and clearing the budget would hand a follow-up that keeps
+      // failing five fresh attempts every minute forever. A follow-up that DID go out completes,
+      // which is what clears the count for the next episode.
+      rearm: "same-work",
       payload: { threadId: t.thread_id },
       base,
     });
@@ -542,6 +548,11 @@ export async function ensureTenantSweep(
     tenantId,
     kind: "FOLLOWUP_SWEEP",
     dedupeKey: "sweep",
+    // One perpetual row per tenant: this call bootstraps or self-heals it, and every pass reschedules
+    // itself, so there is only ever one unit of work. Its budget is cleared by each completed pass
+    // (issue #287); clearing it HERE would mean a restart loop, or an operator saving an agent,
+    // resetting the count of a sweep that is genuinely broken.
+    rearm: "same-work",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
     base,
   });

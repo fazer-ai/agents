@@ -328,6 +328,7 @@ describe.skipIf(!dbUp)("debounce", () => {
     );
     const past = new Date(Date.now() - 60_000);
     await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dbc-wr",
@@ -1549,6 +1550,122 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(sent).toEqual([]);
     expect(calls.getMessages).toBe(0);
     expect(await watermarkOf(806)).toBe(12);
+  });
+
+  // Issue #339. The DEBOUNCE dedupeKey is the THREAD, so one physical row serves every burst this
+  // contact ever sends. A flush that dead-lettered (five consecutive failures) left the row carrying
+  // five attempts, and the re-arm only ever wrote status/run_at/payload, so the NEXT burst, days
+  // later, got exactly one attempt before being retired again, forever.
+  //
+  // A fresh burst is not a guess here: it is the same thing `burstStartedAt` already keys off, a row
+  // that is not PENDING, and both are asserted so the two cannot drift apart.
+  test("a burst after a dead-lettered flush starts with the whole budget", async () => {
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`,
+    );
+    const thread = threadOf(702);
+    const cfg = {
+      enabled: true,
+      windowSeconds: 15,
+      maxMessagesPerBurst: 20,
+      maxWindowSeconds: 60,
+    };
+    const t0 = new Date(Date.now() - 600_000);
+    await armDebounce({
+      tenantId,
+      threadId: thread,
+      agentBotId: 9,
+      cfg,
+      base: appDb,
+      now: t0,
+    });
+    const armed = await suDb.schedulerJob.findFirstOrThrow({
+      where: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(thread),
+      },
+      select: { id: true },
+    });
+    await suDb.schedulerJob.update({
+      where: { id: armed.id },
+      data: { attempts: 5, status: "DEAD" },
+    });
+
+    const t1 = new Date(t0.getTime() + 300_000);
+    await armDebounce({
+      tenantId,
+      threadId: thread,
+      agentBotId: 9,
+      cfg,
+      base: appDb,
+      now: t1,
+    });
+    const row = await suDb.schedulerJob.findUniqueOrThrow({
+      where: { id: armed.id },
+      select: { status: true, attempts: true, payload: true },
+    });
+    expect(row.status).toBe("PENDING");
+    expect(row.attempts).toBe(0);
+    expect((row.payload as { burstStartedAt: number }).burstStartedAt).toBe(
+      t1.getTime(),
+    );
+  });
+
+  // The control for the test above, and the reason the answer is not just "always clear it": while a
+  // burst is still open, a re-arm is the SAME flush being pushed out by another message. A flush that
+  // failed and is waiting on its backoff must not be handed five more attempts by every message the
+  // contact types.
+  test("re-arming inside a burst keeps the attempts that burst has spent", async () => {
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`,
+    );
+    const thread = threadOf(703);
+    const cfg = {
+      enabled: true,
+      windowSeconds: 15,
+      maxMessagesPerBurst: 20,
+      maxWindowSeconds: 60,
+    };
+    const t0 = new Date(Date.now() - 10_000);
+    await armDebounce({
+      tenantId,
+      threadId: thread,
+      agentBotId: 9,
+      cfg,
+      base: appDb,
+      now: t0,
+    });
+    const armed = await suDb.schedulerJob.findFirstOrThrow({
+      where: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(thread),
+      },
+      select: { id: true },
+    });
+    // The flush failed twice: failJob re-pends with a backoff, so the row is PENDING and the burst
+    // is still the same one.
+    await suDb.schedulerJob.update({
+      where: { id: armed.id },
+      data: { attempts: 2 },
+    });
+    await armDebounce({
+      tenantId,
+      threadId: thread,
+      agentBotId: 9,
+      cfg,
+      base: appDb,
+      now: new Date(t0.getTime() + 5_000),
+    });
+    const row = await suDb.schedulerJob.findUniqueOrThrow({
+      where: { id: armed.id },
+      select: { attempts: true, payload: true },
+    });
+    expect(row.attempts).toBe(2);
+    expect((row.payload as { burstStartedAt: number }).burstStartedAt).toBe(
+      t0.getTime(),
+    );
   });
 
   test("armDebounce keeps the burst's highest lastMessageId across re-arms", async () => {

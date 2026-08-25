@@ -32,8 +32,10 @@ import {
 // the GUC is transaction-local (set_config(...,true)) so it never leaks to the next request on a
 // pooled connection. Each job's EFFECT and status update run under the job's OWN tenant scope
 // (runScoped), so RLS still fences the work. `attempts` grows only on failure/crash and is CLEARED
-// by a completed pass (rescheduleJob), so the cap bounds CONSECUTIVE failures rather than the row's
-// lifetime — issue #287; the reaper bounds crash loops by pushing exhausted jobs to DEAD.
+// by a completed pass, whichever way it ends: rescheduleJob (issue #287) and completeJob (#339). So
+// the cap bounds CONSECUTIVE failures rather than the row's lifetime; the reaper bounds crash loops
+// by pushing exhausted jobs to DEAD. What a completed pass cannot reach is a row whose LAST pass
+// failed, and there the budget outlives the work only if the next arm says it should: see `Rearm`.
 
 const MAX_ATTEMPTS = 5;
 
@@ -87,65 +89,100 @@ export interface ClaimedJob {
   claimSeq: number;
 }
 
-export interface EnqueueParams {
+// What a re-arm of an existing row MEANS, answered by whoever arms it, because nothing the row
+// itself carries can answer it (issue #339).
+//
+// It decides ONE thing: whether the failure budget of the pass that came before survives into this
+// arm. It only ever matters on a row whose last pass FAILED, since a pass that completed clears the
+// count on its way out (completeJob, rescheduleJob).
+//
+//   "new-work":  this arm stands for a unit of work the row has not run yet. The trigger is the
+//                WORLD changing: a contact wrote, an operator asked for a re-index, an appointment
+//                was booked. Carrying the previous unit's failures into this one is how four
+//                transient blips spread over months make the next attendance dead-letter on its
+//                first, and that contact never compacts again.
+//
+//   "same-work": this arm is the SAME unit being pushed again. The trigger is a CLOCK: a sweep that
+//                re-enqueues every eligible thread each minute, a boot that re-arms the per-tenant
+//                sweeps, a key that names one message. Clearing here would hand a genuinely broken
+//                job five fresh attempts on a schedule, which is the cap doing nothing at all.
+//
+// There is deliberately no default. The rule is real but it is not derivable: the same status means
+// opposite things to different callers (a DEAD row re-armed by armCompaction is a new attendance,
+// the same row re-armed by the follow-up sweep is the same broken follow-up), and per kind does not
+// separate them either, since FOLLOWUP's key is the thread and the sweep arms it for both. The
+// knowledge is the caller's, so the caller is the one asked.
+export type Rearm = "new-work" | "same-work";
+
+export interface JobRowParams {
   tenantId: bigint;
-  // Written to the dedicated String column, never into `payload`. See ClaimedJob.payloadSecret.
-  payloadSecret?: string | null;
   kind: SchedulerJobKind;
   dedupeKey: string;
   runAt: Date;
   payload?: Record<string, unknown>;
-  // Start this row's retry budget over. Off by default, because most kinds key their dedupeKey to
-  // one unit of work (a conversation's follow-up, a document's ingest) and a re-arm there is the
-  // SAME work being retried. A kind whose key is permanent — one row per contact thread, reused by
-  // every attendance forever — needs it: without it, four transient failures spread over months make
-  // the next attendance dead-letter on its first, and that thread never compacts again.
-  resetAttempts?: boolean;
+  // Written to the dedicated String column, never into `payload`. See ClaimedJob.payloadSecret.
+  payloadSecret?: string | null;
+  rearm: Rearm;
+}
+
+export interface EnqueueParams extends JobRowParams {
   base?: PrismaClient;
+}
+
+// The ONE place a scheduler_jobs row comes into existence, and the reason it takes a ScopedDb rather
+// than being folded into enqueueJob: armDebounce has to write inside its own advisory-lock
+// transaction, so it cannot call something that opens a second one. It used to hand-copy this block
+// instead, which is exactly how DEBOUNCE ended up with no answer to the `rearm` question at all.
+// tests/modules/scheduler-row-writers.test.ts is the fence that keeps a third copy from appearing.
+export async function upsertJobRow(
+  db: ScopedDb,
+  params: JobRowParams,
+): Promise<bigint> {
+  const row = await db.schedulerJob.upsert({
+    where: {
+      tenantId_kind_dedupeKey: {
+        tenantId: params.tenantId,
+        kind: params.kind,
+        dedupeKey: params.dedupeKey,
+      },
+    },
+    create: {
+      tenantId: params.tenantId,
+      kind: params.kind,
+      dedupeKey: params.dedupeKey,
+      runAt: params.runAt,
+      payload: (params.payload ?? {}) as Prisma.InputJsonValue,
+      payloadSecret: params.payloadSecret ?? null,
+      status: "PENDING",
+    },
+    update: {
+      runAt: params.runAt,
+      status: "PENDING",
+      lastError: null,
+      // Re-arming with a payload is authoritative (the latest enqueue wins): this resets a stale
+      // payload on a reused row, e.g. the follow-up sweep restarting a sequence at step 0 on a row
+      // a prior run had advanced to a later step. A payload-less re-enqueue preserves the existing.
+      ...(params.payload !== undefined
+        ? { payload: params.payload as Prisma.InputJsonValue }
+        : {}),
+      // Re-armed together with the payload it belongs to: the two halves describe one message, and
+      // a re-enqueue that refreshed only the JSON would leave a body from the previous arming.
+      ...(params.payload !== undefined
+        ? { payloadSecret: params.payloadSecret ?? null }
+        : {}),
+      ...(params.rearm === "new-work" ? { attempts: 0 } : {}),
+    },
+    select: { id: true },
+  });
+  return row.id;
 }
 
 // One live row per (tenant, kind, dedupeKey): a re-enqueue re-arms run_at and resets to PENDING.
 export async function enqueueJob(params: EnqueueParams): Promise<bigint> {
   const base = params.base ?? basePrisma;
-  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
-    const row = await db.schedulerJob.upsert({
-      where: {
-        tenantId_kind_dedupeKey: {
-          tenantId: params.tenantId,
-          kind: params.kind,
-          dedupeKey: params.dedupeKey,
-        },
-      },
-      create: {
-        tenantId: params.tenantId,
-        kind: params.kind,
-        dedupeKey: params.dedupeKey,
-        runAt: params.runAt,
-        payload: (params.payload ?? {}) as Prisma.InputJsonValue,
-        payloadSecret: params.payloadSecret ?? null,
-        status: "PENDING",
-      },
-      update: {
-        runAt: params.runAt,
-        status: "PENDING",
-        lastError: null,
-        // Re-arming with a payload is authoritative (the latest enqueue wins) — this resets a stale
-        // payload on a reused row, e.g. the follow-up sweep restarting a sequence at step 0 on a row
-        // a prior run had advanced to a later step. A payload-less re-enqueue preserves the existing.
-        ...(params.payload !== undefined
-          ? { payload: params.payload as Prisma.InputJsonValue }
-          : {}),
-        // Re-armed together with the payload it belongs to: the two halves describe one message, and
-        // a re-enqueue that refreshed only the JSON would leave a body from the previous arming.
-        ...(params.payload !== undefined
-          ? { payloadSecret: params.payloadSecret ?? null }
-          : {}),
-        ...(params.resetAttempts ? { attempts: 0 } : {}),
-      },
-      select: { id: true },
-    });
-    return row.id;
-  });
+  return runScopedOn(base, sysCtx(params.tenantId), (db) =>
+    upsertJobRow(db, params),
+  );
 }
 
 // A customer reply (or opt-out) makes a pending proactive job moot: CAS-cancel the live PENDING
@@ -634,7 +671,18 @@ export async function completeJob(
         })
       : db.schedulerJob.updateMany({
           where: { id, status: "CLAIMED", claimSeq },
-          data: { status: "DONE" },
+          // `attempts` is cleared for the same reason rescheduleJob clears it (issue #287): reaching
+          // here means the handler neither threw nor reported failure, so the pass proved the job
+          // works and the budget it spent was for a state it is no longer in. DONE is simply the
+          // other ending of that same pass, and leaving the count on the row is what made a kind
+          // whose dedupeKey is permanent (one row per thread, per document, reused forever) inherit
+          // failures across months of healthy work and retire on the fifth (issue #339).
+          //
+          // `lastError` deliberately stays: a DONE row is the RECORD that the work happened, the last
+          // error is part of that record, and nothing reads it as state here. The two future-dated
+          // PENDING states that `lastError` does tell apart (backoff vs stood down) are rescheduleJob's
+          // problem, and a re-arm clears it before the row is claimable again anyway.
+          data: { status: "DONE", attempts: 0 },
         }),
   );
   return { applied: count > 0 };
@@ -659,7 +707,8 @@ export async function completeJob(
 // the same work again and fails again. Consecutive failures are never interleaved with a completed
 // pass, so a genuinely failing FOLLOWUP step or MEMORY_COMPACT still burns its five and dies. What
 // this does exempt is a job that fails INTERMITTENTLY, which is a job that works, and one that
-// dies for good in silence is the worse of the two outcomes.
+// dies for good in silence is the worse of the two outcomes. completeJob clears it for the same
+// reason, on the other ending of the same pass (issue #339).
 //
 // An optional
 // `payload` REPLACES the row's payload (used to advance a multi-step follow-up's stepIndex on the

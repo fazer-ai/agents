@@ -231,6 +231,40 @@ describe.skipIf(!dbUp)("rag documents", () => {
     expect(doc.error).toBeNull();
   });
 
+  // Issue #339. A document's ingest job is keyed `doc:<id>`, so one row serves the document for as
+  // long as it exists. FAILED is reached by EXHAUSTING the budget, which is precisely the state the
+  // retry button is for: without a fresh budget the retry is worth one attempt, and every press
+  // after the first dead-letters again on the first blip.
+  test("retryDocument gives the ingest its whole budget back", async () => {
+    const created = await createDocument({
+      ctx: ctxOf(t1),
+      knowledgeBaseId: kb1,
+      title: "Retry Budget Test",
+      text: "Failed five times",
+      sourceType: "text",
+      base: appDb,
+    });
+    await suDb.schedulerJob.updateMany({
+      where: { kind: "RAG_INGEST", dedupeKey: `doc:${created.id}` },
+      data: { status: "DEAD", attempts: 5 },
+    });
+    await runScopedOn(appDb, ctx(t1), (db) =>
+      db.knowledgeDocument.updateMany({
+        where: { id: created.id },
+        data: { status: "FAILED", error: "embeddings unavailable" },
+      }),
+    );
+
+    await retryDocument(ctxOf(t1), created.id, appDb);
+
+    const job = await suDb.schedulerJob.findFirstOrThrow({
+      where: { kind: "RAG_INGEST", dedupeKey: `doc:${created.id}` },
+      select: { status: true, attempts: true },
+    });
+    expect(job.status).toBe("PENDING");
+    expect(job.attempts).toBe(0);
+  });
+
   test("retryDocument re-queues an UNINDEXED document", async () => {
     const created = await createDocument({
       ctx: ctxOf(t1),

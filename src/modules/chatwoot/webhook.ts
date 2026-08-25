@@ -213,6 +213,44 @@ async function inboxAgentRuntime(
   });
 }
 
+// The mode of the agent bound to a conversation's OWN (mirrored) inbox, or null when nothing
+// resolves. Deliberately keyed by the conversation rather than by a payload inbox id: it is the
+// reading `maybeConsumeCommandOrGate` already uses for the test-mode gate, and it exists so the
+// question "is this command active?" and the gate that silences the conversation cannot be answered
+// by two different rows (issue #270). Only ever called on the path where the payload resolved
+// nothing, so the common delivery pays for no extra query.
+async function conversationAgentMode(
+  tenantId: bigint,
+  instanceId: bigint,
+  chatwootConversationId: number | null,
+  base: PrismaClient,
+): Promise<string | null> {
+  if (chatwootConversationId == null) return null;
+  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const conv = await db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId,
+        },
+      },
+      select: { inboxId: true },
+    });
+    if (conv?.inboxId == null) return null;
+    const inbox = await db.inbox.findUnique({
+      where: { id: conv.inboxId },
+      select: { agentId: true },
+    });
+    if (!inbox?.agentId) return null;
+    const agent = await db.agent.findUnique({
+      where: { id: inbox.agentId },
+      select: { mode: true },
+    });
+    return agent?.mode ?? null;
+  });
+}
+
 interface ResolvedChatwootBot {
   instanceId: bigint;
   tenantId: bigint;
@@ -2583,7 +2621,44 @@ export async function processChatwootDelivery(
         )
       : null;
   const command = isNewIncoming ? controlCommand(n) : null;
-  const commandActive = command !== null && rt?.mode === "test";
+  // A control command is "active" only for a test-mode agent, and issue #270 is what happens when
+  // that question is answered by a different row than the one that acts on it: `rt` resolves the
+  // agent from the inbox id the PAYLOAD carries, while the test-mode gate downstream resolves it
+  // from the inbox id STORED on the mirrored conversation. Disagree, and the operator sends /teste
+  // and gets back the private note asking them to send /teste — a dead end with no way out from
+  // inside the conversation, and nothing anywhere naming the command as the thing that was dropped.
+  //
+  // The payload stays PRIMARY, so an ordinary delivery is answered by exactly the query it always
+  // was and pays for nothing extra. The stored row is consulted only when the payload names no
+  // agent at all AND a command was actually typed, which is the miss path that used to dead-end.
+  // The fallback can only ever turn a dropped command into an honoured one; it can never make an
+  // active command inactive, so no delivery that works today changes.
+  const commandMode =
+    command === null
+      ? null
+      : rt !== null
+        ? rt.mode
+        : await conversationAgentMode(
+            params.tenantId,
+            params.instanceId,
+            n.conversationId,
+            base,
+          );
+  const commandActive = command !== null && commandMode === "test";
+  // A command that will not run is otherwise indistinguishable from ordinary customer text, in the
+  // logs and in the conversation alike — which is what left issue #270 undiagnosable from the
+  // outside. This is the only place that knows all three values the diagnosis needs, and past it
+  // the command is simply gone: `isTeste`/`isReset` are both false, so every later line describes a
+  // plain message. `mode=unresolved` means no inbox on either reading named an agent at all.
+  if (command !== null && !commandActive) {
+    logger.info(
+      "chatwoot: /%s not run (conv=%s) — control commands apply only to a test-mode agent (agent mode=%s, route bot=%s)",
+      command,
+      n.conversationId === null ? "?" : String(n.conversationId),
+      commandMode ?? "unresolved",
+      params.agentBotId === null ? "unknown" : String(params.agentBotId),
+    );
+  }
 
   // Mirror metadata (idempotent, monotonic, per-conversation locked) BEFORE the gate so the
   // runtime reads fresh state. Unconditional: applies to every event, not just actionable ones.

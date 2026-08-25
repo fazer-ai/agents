@@ -1,7 +1,5 @@
-import {
-  DEFAULT_BRAND_NAME,
-  useBranding,
-} from "@/client/contexts/BrandingContext";
+import { useBranding } from "@/client/contexts/BrandingContext";
+import { DEFAULT_BRAND_NAME } from "@/lib/branding";
 
 // The auth-page footer: "© {year} {brandName}". The brand name follows the global white-label
 // config. When it is the default it links to the product site; a custom brand renders as plain

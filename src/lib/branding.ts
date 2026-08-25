@@ -46,3 +46,20 @@ export function sanitizeBranding(input: unknown): Record<string, string> {
   }
   return out;
 }
+
+// The white-label display name when none is configured (the product's own brand). It is also the
+// `<title>` declared in `public/index.html`, so the cold-cache first paint already shows it.
+export const DEFAULT_BRAND_NAME = "fazer.ai agents";
+
+// Where the client caches the resolved global branding. Named here rather than in the provider
+// because a second reader lives outside the bundle: the inline <head> script that stamps the tab
+// title before React exists (#277).
+export const BRANDING_CACHE_KEY = "@app:branding";
+
+// The white-label name to display: the configured one, or the product's own. Blank and whitespace
+// count as unconfigured, and the configured name is displayed trimmed.
+export function resolveBrandName(
+  config: { brandName?: string | null } | null,
+): string {
+  return config?.brandName?.trim() || DEFAULT_BRAND_NAME;
+}

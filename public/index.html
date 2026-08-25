@@ -7,6 +7,21 @@
   <link rel="icon" href="./favicon-light.png" media="(prefers-color-scheme: light)" />
   <link rel="icon" href="./favicon-dark.png" media="(prefers-color-scheme: dark)" />
   <title>fazer.ai agents</title>
+  <!-- Stamp the operator's brand name onto the tab before the first paint: BrandingProvider only
+       reaches document.title after the bundle mounts, and until then the <title> above is what the
+       tab shows. Same cache and same trade-off the provider already accepts for the brand colors,
+       so a returning visitor reads the name written on the last load and only a cold cache waits. -->
+  <script>
+    (function () {
+      var name;
+      // No localStorage, no cache yet (JSON.parse(null) yields null and reading a property off it
+      // throws), corrupt entry: every miss leaves `name` undefined and the <title> above standing.
+      try { name = JSON.parse(localStorage.getItem("@app:branding")).brandName; } catch (_) { }
+      // Blank counts as unconfigured, as after mount. The value goes in untrimmed on purpose: the
+      // `document.title` getter strips and collapses whitespace itself.
+      if (typeof name === "string" && name.trim()) document.title = name;
+    })();
+  </script>
   <script>
     (function () {
       var stored;

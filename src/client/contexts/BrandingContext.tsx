@@ -10,7 +10,12 @@ import {
 } from "react";
 import { useTheme } from "@/client/contexts/ThemeContext";
 import { api } from "@/client/lib/api";
-import { BRANDABLE_KEY_TO_VAR, type BrandableKey } from "@/lib/branding";
+import {
+  BRANDABLE_KEY_TO_VAR,
+  BRANDING_CACHE_KEY,
+  type BrandableKey,
+  resolveBrandName,
+} from "@/lib/branding";
 import { derivePalette } from "@/lib/palette";
 
 // GLOBAL app identity/branding (applied app-wide — including anonymous pages like login/setup).
@@ -28,11 +33,9 @@ type BrandingData = NonNullable<
   Awaited<ReturnType<typeof api.api.v1.branding.get>>["data"]
 >;
 
-const CACHE_KEY = "@app:branding";
-
 function readCache(): BrandingData | null {
   try {
-    const raw = localStorage.getItem(CACHE_KEY);
+    const raw = localStorage.getItem(BRANDING_CACHE_KEY);
     return raw ? (JSON.parse(raw) as BrandingData) : null;
   } catch {
     return null;
@@ -41,16 +44,11 @@ function readCache(): BrandingData | null {
 
 function writeCache(config: BrandingData): void {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(config));
+    localStorage.setItem(BRANDING_CACHE_KEY, JSON.stringify(config));
   } catch {
     // NOTE: ignore quota / unavailable localStorage — the cache is a FOUC optimization only.
   }
 }
-
-// The white-label display name when none is configured (the product's own brand).
-// Exported so consumers (e.g. the auth-page footer) can tell the default apart
-// from an operator-configured name without re-hardcoding the string.
-export const DEFAULT_BRAND_NAME = "fazer.ai agents";
 
 interface BrandingContextValue {
   config: BrandingData | null;
@@ -186,7 +184,7 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh]);
 
-  const brandName = config?.brandName?.trim() || DEFAULT_BRAND_NAME;
+  const brandName = resolveBrandName(config);
 
   // The document title follows the brand name (the default is the product's own brand).
   useLayoutEffect(() => {
@@ -229,7 +227,7 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
 const DEFAULT_VALUE: BrandingContextValue = {
   config: null,
   logoUrl: null,
-  brandName: DEFAULT_BRAND_NAME,
+  brandName: resolveBrandName(null),
   // Outside the provider (isolated component tests) we render defaults immediately, never gated.
   ready: true,
   refresh: async () => {},

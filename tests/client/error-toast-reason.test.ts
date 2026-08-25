@@ -166,6 +166,23 @@ function catchSeesTheError(src: string, blockStart: number): boolean {
   );
 }
 
+// Has this handler awaited a request, up to here?
+//
+// Not `await api.` as literal text: a handler is free to name the endpoint first, and one does —
+// `KnowledgeApprovals.act` writes `const endpoint = api.api.v1.knowledge.approvals({ id })` and then
+// awaits `endpoint.approve.post()`. Reading only the literal call let the fence pass while that
+// handler discarded its `err` in a fixed "Action failed.", which is the invariant this file claims to
+// hold. Found by review, and it is the same shape as every other bug this predicate has had: a rule
+// stated over the TEXT rather than over what the text means.
+export function talkedToTheServer(body: string): boolean {
+  if (/await\s+api\./.test(body)) return true;
+  // Anything named from `api.` in this handler, then awaited under that name.
+  const aliases = [...body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*api\./g)].map(
+    (m) => m[1],
+  );
+  return aliases.some((name) => new RegExp(`await\\s+${name}\\b`).test(body));
+}
+
 export interface Offender {
   file: string;
   line: number;
@@ -225,7 +242,7 @@ export function unreadRefusals(src: string, file = "<memory>"): Offender[] {
       // understand must answer "I cannot tell", not throw a null dereference in the middle of the
       // suite. Mutation-surviving on purpose; the alternative is a crash instead of an abstention.
       if (!handler) continue;
-      if (!/await\s+api\./.test(code.slice(handler.start, m.index))) continue;
+      if (!talkedToTheServer(code.slice(handler.start, m.index))) continue;
     }
 
     out.push({
@@ -357,6 +374,22 @@ describe("an error toast shows what the server said", () => {
         }
       }`;
     expect(unreadRefusals(ownFault)).toEqual([]);
+  });
+
+  test("an endpoint named before it is awaited still counts as a request", () => {
+    // The alias shape, verbatim from `KnowledgeApprovals.act`. Reading `await api.` as literal text
+    // called this handler "never talked to the server" and let it discard its error.
+    const aliased = `
+      async function act(id) {
+        try {
+          const endpoint = api.api.v1.knowledge.approvals({ id });
+          const { error: err } = await endpoint.approve.post();
+          if (err) {
+            showToast(t("approvals.actionError", "Action failed."), "error");
+          }
+        } catch {}
+      }`;
+    expect(unreadRefusals(aliased).length).toBe(1);
   });
 
   test("a check that runs before the request is not an offender", () => {

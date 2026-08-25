@@ -87,7 +87,10 @@ export function KnowledgeApprovals({
           ? await endpoint.approve.post()
           : await endpoint.reject.post();
       if (err) {
-        showToast(t("approvals.actionError", "Action failed."), "error");
+        showToast(
+          apiErrorMessage(err) || t("approvals.actionError", "Action failed."),
+          "error",
+        );
         return;
       }
       setApprovals((prev) => {

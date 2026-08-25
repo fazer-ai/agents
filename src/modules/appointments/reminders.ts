@@ -327,6 +327,30 @@ async function fetchEventStatus(
   }
 }
 
+// Has the appointment this reminder announces already begun? A reminder that arrives after the start
+// is worse than none: it tells someone already in the appointment that it is coming up.
+//
+// The calendar's own answer wins whenever it gave one, because the payload's start is a snapshot from
+// the moment the row was armed and an event edited directly in Google (never through the agent, which
+// re-arms) can have moved in either direction. When the lookup could not be made or did not answer
+// with a start, the snapshot is the only thing left that knows, and it decides.
+//
+// This only became reachable when the handler learned to retry: a job used to run exactly once, at
+// `start - offset`, so the start was ahead by construction. A retry can land hours later, and a
+// Google GET failing at that moment used to leave nothing between it and the customer.
+//
+// An absent or unparseable snapshot is NOT "started", and that falls out of the comparison rather
+// than needing a guard: `Date.parse` answers NaN, and every comparison with NaN is false. Refusing to
+// remind on a date nobody can read would drop a customer-facing message over a field the agent wrote.
+export function reminderAlreadyStarted(
+  live: { startMs: number | null } | undefined,
+  snapshotStartISO: string,
+  now: number,
+): boolean {
+  if (live?.startMs != null) return live.startMs <= now;
+  return Date.parse(snapshotStartISO) <= now;
+}
+
 export async function appointmentReminderHandler(
   job: ClaimedJob,
   base: PrismaClient,
@@ -376,20 +400,23 @@ export async function appointmentReminderHandler(
   // Summary preference: live Google value > the snapshot enriched into the payload > generic.
   let summary =
     typeof p.summary === "string" && p.summary ? p.summary : "your appointment";
+  let live: EventStatus | undefined;
   if (credentialRef) {
-    const ev = await fetchEventStatus(
+    live = await fetchEventStatus(
       tenantId,
       credentialRef,
       calendarId,
       eventId,
       base,
     );
-    if (ev) {
-      if (ev.notFound || ev.cancelled) return { outcome: "done" };
-      if (ev.startMs != null && ev.startMs <= Date.now())
-        return { outcome: "done" };
-      if (ev.summary) summary = ev.summary;
+    if (live) {
+      if (live.notFound || live.cancelled) return { outcome: "done" };
+      if (live.summary) summary = live.summary;
     }
+  }
+
+  if (reminderAlreadyStarted(live, startISO, Date.now())) {
+    return { outcome: "done" };
   }
 
   // NOTE: The boundary that matters: the last thing before the customer hears from us. The check above
@@ -417,10 +444,14 @@ export async function appointmentReminderHandler(
   });
   // NOTE: A reminder offset is an occasion, and it is spent exactly once. When the nudge posted nothing
   // for a reason that may be repaired, retrying the SAME row is what keeps the customer's reminder
-  // from disappearing because a credential was broken for ten minutes. The event check at the top of
-  // this handler is the natural ceiling: a retry that lands after the appointment has started drops
-  // itself, so the bound below only has to stop a job that would otherwise outlive its own occasion.
-  if (isRepairableNudgeRefusal(outcome)) {
+  // from disappearing because a credential was broken for ten minutes.
+  //
+  // Only the LAST offset is retried, and that is the whole answer to the duplicate: offsets are whole
+  // hours and the backoff ladder spans two, so a retried 2h reminder would come due alongside the 1h
+  // one and a credential that recovered in between would send both, back to back. An earlier offset
+  // has a later one behind it to carry the message, so it yields instead of waiting. The last one has
+  // nothing behind it, and its ceiling is the appointment itself (the start check above).
+  if (isRepairableNudgeRefusal(outcome) && isLast) {
     const retry = nextNudgeRetry(job.payload);
     if (retry.retry) {
       // Patched, never replaced: the per-event cancel merges its tombstone onto this row without

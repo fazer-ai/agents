@@ -91,7 +91,20 @@ export async function retireCoveredDeliveries(params: {
           chatwootInstanceId: params.instanceId,
           conversationId: params.conversationId,
           inboundMessageId: { in: params.messageIds },
-          status: { in: ["PENDING", "PROCESSING"] },
+          // PROCESSING ONLY, and never PENDING. A PENDING row has not been claimed yet, and this
+          // write cannot tell "abandoned before the claim" from "claimed a millisecond from now":
+          // the ack is spent before the row is even inserted, so a burst re-read from Chatwoot can
+          // legitimately contain a message whose own delivery is between its insert and its CAS.
+          // Retiring that row makes the delivery's CAS match nothing and return "skipped", so the
+          // mirror write never runs and `lastInboundAt`, the contact and the attribute bags all go
+          // stale — this write would be preempting a delivery rather than rescuing one.
+          //
+          // A PROCESSING row is already claimed, so retiring it preempts nothing: its own tx2 writes
+          // PROCESSED over this a moment later, and until then the row says the message was covered,
+          // which it was. The cost is the one case left out — a delivery that died in the sliver
+          // between its insert and its CAS is reported as a loss even though a later burst answered
+          // it. That window is two statements wide, against the whole turn for PROCESSING.
+          status: "PROCESSING",
         },
         data: { status: "PROCESSED", processedAt: new Date() },
       }),

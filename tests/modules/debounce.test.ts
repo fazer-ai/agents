@@ -685,6 +685,53 @@ describe.skipIf(!dbUp)("debounce", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: stranded.id } });
   });
 
+  test("a flush does not consume a PENDING row it has not been claimed from", async () => {
+    // The retirement is a blind write into a state machine somebody else owns, and PENDING is the
+    // state where that owner has not arrived yet. The ack is spent before the ledger row is even
+    // inserted, so a burst re-read from Chatwoot legitimately contains a message whose own delivery
+    // is sitting between its insert and its CAS. Retired there, that delivery's CAS matches nothing
+    // and it returns "skipped" — the mirror write never runs, and `lastInboundAt`, the contact and
+    // the attribute bags stay behind.
+    //
+    // So the retirement takes PROCESSING only, and this row must survive a burst that contains it.
+    const convId = 885;
+    await seedConversation(convId);
+    const fresh = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-fresh-pending-${process.pid}`,
+        event: "message_created",
+        // Inserted a moment ago and not claimed: its own delivery is about to CAS it.
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 1, content: "oi" }])],
+          sent: [],
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: fresh.id },
+      select: { status: true },
+    });
+    expect(row.status).toBe("PENDING");
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: fresh.id } });
+  });
+
   test("a flush does not retire a strand on another Chatwoot ACCOUNT", async () => {
     // Display ids and message ids are numbered per Chatwoot account, so one tenant with two
     // connected accounts genuinely has two conversation 884s carrying two message 1s — the mirror

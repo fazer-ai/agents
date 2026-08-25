@@ -49,6 +49,7 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
+import { retireCoveredDeliveries } from "@/modules/chatwoot/delivery-sweep";
 import {
   describeClosedGate,
   type GateCloseDetail,
@@ -3025,6 +3026,33 @@ export async function processChatwootDelivery(
               chatwootConversationId: n.conversationId,
               base,
             });
+            // And say on the LEDGER that this message was covered, now rather than at tx2. The
+            // customer already has the reply; what still stands between here and tx2 is the
+            // ingestion pass, the compaction arming and the watermark tail, each of which can take
+            // its time. A process that dies inside that stretch leaves the row PROCESSING for a
+            // message that WAS answered, and the stranded-delivery sweep would report it as a loss
+            // and page an operator about it (issue #228). The flush says the same thing about the
+            // messages IT covered; this is the direct path saying it about its own.
+            //
+            // Best-effort, and tx2 writes PROCESSED over it a moment later either way.
+            const answeredId = n.message?.id ?? null;
+            if (answeredId !== null) {
+              try {
+                await retireCoveredDeliveries({
+                  tenantId: params.tenantId,
+                  instanceId: params.instanceId,
+                  conversationId: n.conversationId,
+                  messageIds: [answeredId],
+                  base,
+                });
+              } catch (e) {
+                logger.warn(
+                  "chatwoot: could not retire the covered delivery (conv=%s): %s",
+                  convLabel,
+                  errMsg(e),
+                );
+              }
+            }
           }
         } catch (err) {
           logger.error(

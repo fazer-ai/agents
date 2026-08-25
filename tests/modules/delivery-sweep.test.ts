@@ -1,8 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { FakeListChatModel } from "@langchain/core/utils/testing";
+import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
+import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   deliverySweepHandler,
   ensureDeliverySweep,
@@ -64,6 +68,7 @@ let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
 let deliverySeq = 0;
+let agentDbId = 0n;
 
 const threadOf = (convId: number) =>
   chatwootThreadId(tenantId, instanceId, convId);
@@ -180,6 +185,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         settings: {},
       },
     });
+    agentDbId = agent.id;
     await suDb.chatwootAgentBot.create({
       data: {
         tenantId,
@@ -585,6 +591,112 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
     expect(updated.conversationId).toBe(convId);
     expect(updated.inboundMessageId).toBeNull();
+  });
+
+  test("the DIRECT path retires its own row as soon as the reply is out", async () => {
+    // The window this closes: `runAgentTurn` posts inline and tx2 is several steps later — the
+    // ingestion pass, the compaction arming, the watermark tail — so a process that dies in that
+    // stretch leaves PROCESSING on a message the customer already has an answer to, and the sweep
+    // would report it as a loss and page somebody.
+    //
+    // Observed through a SECOND ledger row for the same message: `retireCoveredDeliveries` is a
+    // blind write by conversation and message id, so it takes both, while tx2 only ever touches its
+    // own row by primary key. A PROCESSED sibling is therefore proof the retirement ran, and not
+    // just proof that tx2 did.
+    const convId = 8810;
+    const messageId = 9721;
+    await seedConversation(convId);
+    const sibling = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `direct-sibling-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+
+    // Debounce OFF for this one: the direct path is the subject, and with it on the delivery arms a
+    // flush and returns without ever running a turn.
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: { debounce: { enabled: false } } },
+    });
+
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({ payload: [] }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "oi",
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente", type: null },
+      conversation: {
+        id: convId,
+        inbox_id: CHATWOOT_INBOX_ID,
+        // The bot holds it, so the gate opens and the turn runs.
+        status: "pending",
+        contact_inbox: { id: 61_000 + convId },
+        meta: { sender: { id: 77, name: "Cliente" } },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000),
+      },
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const own = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `direct-own-${process.pid}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: own.id,
+      agentBotId: AGENT_BOT_ID,
+      normalized: n,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["claro!"] }) as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(sent).toEqual([[convId, "claro!"]]);
+    expect((await statusOf(sibling.id)).status).toBe("PROCESSED");
+
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: {} },
+    });
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { id: { in: [own.id, sibling.id] } },
+    });
+    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await suDb.schedulerJob.deleteMany({ where: { tenantId } });
   });
 
   test("stamps the claim, so the sweep dates the ATTEMPT and not the receipt", async () => {

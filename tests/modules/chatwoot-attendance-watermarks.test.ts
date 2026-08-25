@@ -106,10 +106,48 @@ const cases: {
     want: {},
   },
   {
-    name: "a legacy row still dates the team's reply, and stays out of the sample for want of an anchor",
+    name: "a legacy row records the team's last word and never a first response",
     stored: stored({ lastInboundAt: T0 }),
     seen: seen({ humanReplyAt: T1 }),
+    want: { lastHumanReplyAt: T1 },
+  },
+  {
+    name: "the business opening a conversation is not a response to anything",
+    // An operator writes first and the customer answers later. Dating this as the first response
+    // would measure backwards, and the column is an anchor: every real answer after it would then
+    // be too late to replace it, so the conversation would leave the sample for good.
+    stored: stored(),
+    seen: seen({ humanReplyAt: T0 }),
+    want: { lastHumanReplyAt: T0 },
+  },
+  {
+    name: "and the answer after the customer finally writes is the response",
+    stored: stored({
+      firstInboundAt: T1,
+      lastInboundAt: T1,
+      lastHumanReplyAt: T0,
+    }),
+    seen: seen({ humanReplyAt: T2 }),
+    want: { firstHumanReplyAt: T2, lastHumanReplyAt: T2 },
+  },
+  {
+    name: "an answer inside the same second as the question is still an answer",
+    // Chatwoot's clock is whole seconds, so a reply typed fast shares its reading with the message
+    // it answers. Demanding a strictly later one would drop exactly the best attendances.
+    stored: stored({ firstInboundAt: T1, lastInboundAt: T1 }),
+    seen: seen({ humanReplyAt: T1 }),
     want: { firstHumanReplyAt: T1, lastHumanReplyAt: T1 },
+  },
+  {
+    name: "a team message dated before the anchor is never the first response",
+    stored: stored({
+      firstInboundAt: T1,
+      lastInboundAt: T1,
+      firstHumanReplyAt: T2,
+      lastHumanReplyAt: T2,
+    }),
+    seen: seen({ humanReplyAt: T0 }),
+    want: {},
   },
 ];
 

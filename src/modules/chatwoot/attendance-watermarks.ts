@@ -14,6 +14,9 @@
 //      through first, and a set-once column never revises it.
 //   3. "First" and "last" are an ordering, not an arrival order: first takes the EARLIEST reading
 //      seen, last the LATEST.
+//   4. A conversation can be opened by the BUSINESS. The team's message then precedes any customer
+//      message, and is not an answer to one — so the first response is the first team message at or
+//      after the inbound anchor, never simply the first one seen.
 //
 // The one row this deliberately treats as new is a conversation whose inbound watermark was cleared
 // by `/reset` before the columns existed: it reads as never-tracked, and anchors on the next
@@ -60,13 +63,24 @@ export function decideAttendanceWatermarks(
     // else: fact 1 — traffic predates the columns, so this conversation gets no anchor, ever.
   }
 
-  // No legacy test on this side: nothing recorded a human reply before these columns, so there is
-  // no stored fact to distinguish "first" from "first we saw". It costs nothing — the KPI requires
-  // BOTH ends, and a legacy conversation never gets the inbound anchor above.
+  // What a reply is measured against. The stored anchor and nothing else: one event cannot carry
+  // both readings — `inboundAt` is a new INCOMING message and `humanReplyAt` an OUTGOING one — so an
+  // anchor written by this same call could never be the one a reply in it needs.
+  const anchor = stored.firstInboundAt;
+
   if (seen.humanReplyAt !== null) {
+    // A first response is the first team message AT OR AFTER the customer's first, and a
+    // BUSINESS-INITIATED conversation is why that has to be said: an operator writes first, the
+    // customer answers a day later. Taking the opener would date the response before the message it
+    // answers — and because the column is an anchor, every real answer after it is then too late to
+    // replace it, so the conversation is excluded from the sample for good rather than for a day.
+    // Without an anchor (no inbound yet, or a conversation older than these columns) there is
+    // nothing to measure against, and the reply is only recorded as the team's LAST word.
     if (
-      stored.firstHumanReplyAt === null ||
-      seen.humanReplyAt < stored.firstHumanReplyAt
+      anchor !== null &&
+      seen.humanReplyAt >= anchor &&
+      (stored.firstHumanReplyAt === null ||
+        seen.humanReplyAt < stored.firstHumanReplyAt)
     ) {
       writes.firstHumanReplyAt = seen.humanReplyAt;
     }

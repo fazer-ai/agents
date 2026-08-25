@@ -373,9 +373,11 @@ describe.skipIf(!dbUp)("the attendance watermarks", () => {
     });
     expect(row.lastInboundAt?.getTime()).toBeGreaterThan(Date.now() - 60_000);
     expect(row.firstInboundAt).toBeNull();
-    // The reply is still dated — there is no stored fact that would say it is not the first — and
-    // the conversation stays out of the sample for want of the other end.
-    expect(row.firstHumanReplyAt).not.toBeNull();
+    // With no anchor there is nothing for a reply to be a response TO, so the team's word is
+    // recorded as their last one and never as a first response. Either way the conversation stays
+    // out of the sample, which is the point.
+    expect(row.firstHumanReplyAt).toBeNull();
+    expect(row.lastHumanReplyAt).not.toBeNull();
   });
 
   // Chatwoot retries out of order, and the state ordering refuses an event carrying an older clock
@@ -550,65 +552,101 @@ describe.skipIf(!dbUp)("the first-response KPI", () => {
     await attendance(9902, base, base + 60);
     await attendance(9903, base, base + 3_600);
 
-    // And an attendance whose team reply is dated BEFORE the message it answers — a clock the
-    // integration cannot vouch for. It is refused rather than contributed as a negative wait.
-    const skewed = 9904;
+    // A conversation the BUSINESS opened: the operator writes first, the customer answers half a
+    // minute later, and only THEN is there a response to time. The opener must not be taken as the
+    // first response — it would date the answer before the question, and the anchor is set once, so
+    // this attendance would never be sampled again.
+    const opened = 9904;
+    const openedConv = {
+      id: opened,
+      inbox_id: CHATWOOT_INBOX_ID,
+      status: "open",
+      contact_inbox: { id: 80_000 + opened },
+      meta: {
+        assignee_type: "User",
+        assignee: { id: 31, name: "Ana" },
+        sender: { id: 21, name: "Cliente" },
+      },
+      channel: "Channel::Api",
+    };
     await deliver(
       {
         event: "message_created",
-        id: skewed * 10,
-        content: "acompanhando",
+        id: opened * 10,
+        content: "bom dia, seu pedido chegou",
         message_type: "outgoing",
         private: false,
         sender: { id: 31, name: "Ana", type: "user" },
-        conversation: {
-          id: skewed,
-          inbox_id: CHATWOOT_INBOX_ID,
-          status: "open",
-          contact_inbox: { id: 80_000 + skewed },
-          meta: {
-            assignee_type: "User",
-            assignee: { id: 31, name: "Ana" },
-            sender: { id: 21, name: "Cliente" },
-          },
-          channel: "Channel::Api",
-          last_activity_at: base,
-        },
+        conversation: { ...openedConv, last_activity_at: base },
       },
-      `agg-${skewed}-out`,
+      `agg-${opened}-opener`,
       on(),
     );
     await deliver(
       {
         event: "message_created",
-        id: skewed * 10 + 1,
-        content: "oi?",
+        id: opened * 10 + 1,
+        content: "oi! pode entregar hoje?",
         message_type: "incoming",
         private: false,
-        conversation: {
-          id: skewed,
-          inbox_id: CHATWOOT_INBOX_ID,
-          status: "open",
-          contact_inbox: { id: 80_000 + skewed },
-          meta: {
-            assignee_type: "User",
-            assignee: { id: 31, name: "Ana" },
-            sender: { id: 21, name: "Cliente" },
-          },
-          channel: "Channel::Api",
-          last_activity_at: base + 30,
-        },
+        conversation: { ...openedConv, last_activity_at: base + 30 },
       },
-      `agg-${skewed}-in`,
+      `agg-${opened}-in`,
       on(),
     );
+    await deliver(
+      {
+        event: "message_created",
+        id: opened * 10 + 2,
+        content: "posso sim",
+        message_type: "outgoing",
+        private: false,
+        sender: { id: 31, name: "Ana", type: "user" },
+        conversation: { ...openedConv, last_activity_at: base + 150 },
+      },
+      `agg-${opened}-answer`,
+      on(),
+    );
+    const openedRow = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId: aggTenantId, chatwootConversationId: opened },
+    });
+    expect(openedRow.firstInboundAt?.getTime()).toBe((base + 30) * 1000);
+    expect(openedRow.firstHumanReplyAt?.getTime()).toBe((base + 150) * 1000);
 
     const kpis = await getKpis(
       { tenantId: aggTenantId, userId: null, role: "TENANT_ADMIN" },
       {},
       appDb,
     );
-    expect(kpis.firstResponseSampled).toBe(3);
-    expect(kpis.firstResponseSeconds).toBe(60);
+    // 10, 60, 120 and 3600 seconds: the median is 90 and the mean is 947.5, so this pins WHICH
+    // statistic the KPI reports and not merely that it reports one.
+    expect(kpis.firstResponseSampled).toBe(4);
+    expect(kpis.firstResponseSeconds).toBe(90);
+  });
+
+  // The query keeps its own guard against a reply dated before the message it answers. The mirror no
+  // longer produces such a row, so the guard is asked directly: a hand-written row is the only shape
+  // that can still reach it, and a clock the integration cannot vouch for is exactly that shape.
+  test("refuses a row whose reply precedes the message it answers", async () => {
+    const skewedId = 9905;
+    await suDb.conversation.create({
+      data: {
+        tenantId: aggTenantId,
+        chatwootInstanceId: aggInstanceId,
+        chatwootConversationId: skewedId,
+        status: "open",
+        threadId: `${aggTenantId}:${aggInstanceId}:${skewedId}`,
+        lastEventAt: new Date(Date.now() - 3_600_000),
+        firstInboundAt: new Date(Date.now() - 3_600_000),
+        firstHumanReplyAt: new Date(Date.now() - 3_660_000),
+      },
+    });
+    const kpis = await getKpis(
+      { tenantId: aggTenantId, userId: null, role: "TENANT_ADMIN" },
+      {},
+      appDb,
+    );
+    expect(kpis.firstResponseSampled).toBe(4);
+    expect(kpis.firstResponseSeconds).toBe(90);
   });
 });

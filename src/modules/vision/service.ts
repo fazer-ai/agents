@@ -16,9 +16,16 @@ import { tryResolveVaultEntry } from "@/modules/vault/service";
 import {
   getVisionProvider,
   type VisionKind,
+  type VisionProvider,
+  type VisionRequest,
   type VisionResult,
   visionKindForMime,
 } from "./providers";
+import {
+  isTransientVisionFailure,
+  planVisionAttempt,
+  VISION_MAX_ATTEMPTS,
+} from "./retry";
 import { readVisionConfig, type VisionConfig } from "./settings";
 
 // Image/document extraction orchestration (the vision mirror of stt/service): download the file,
@@ -66,6 +73,68 @@ export async function resolveVisionConfig(
   return cfg;
 }
 
+const realSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+// One extraction, asked as many times as the policy in ./retry allows. A transient provider failure
+// used to end the attachment for good — `extract` was called once and the caller degraded to the
+// "couldn't extract" marker, which is what enters the conversation history (issue #319).
+//
+// The flow span is INSIDE the loop, so each attempt is its own `vision` line carrying its own
+// `attempt` and duration. That is what makes a retried failure readable on the Logs page: three
+// lines saying 503 name an endpoint that is down, while one line summarising them reads like one
+// bad call. A first-attempt success is unchanged — a single line, now with `attempt: 1`.
+export async function extractWithRetry(args: {
+  provider: VisionProvider;
+  req: Omit<VisionRequest, "timeoutMs">;
+  flow?: FlowContext;
+  providerName: string;
+  model: string;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<VisionResult> {
+  const { kind } = args.req;
+  const sleep = args.sleep ?? realSleep;
+  const startedAt = Date.now();
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= VISION_MAX_ATTEMPTS; attempt++) {
+    const plan = planVisionAttempt({
+      kind,
+      attempt,
+      elapsedMs: Date.now() - startedAt,
+    });
+    // Out of attempts or out of budget. Attempt 1 always has a plan (it is asked at zero elapsed),
+    // so this only ever rethrows a failure that was already caught below.
+    if (!plan) throw lastErr;
+    if (plan.delayMs > 0) await sleep(plan.delayMs);
+    try {
+      return await withFlowStage(
+        args.flow,
+        "vision",
+        {
+          provider: args.providerName,
+          model: args.model,
+          // `budgetMs` is what THIS attempt was allowed, and it is not the same on every line: a
+          // later attempt gets what is left of the total. Without it a 17s timeout on attempt 3
+          // reads as a slow provider rather than as the budget running out.
+          detail: { kind, attempt, budgetMs: plan.timeoutMs },
+          // Recovered (→ "couldn't extract" marker), so a failure reads as an advisory, not a red
+          // error — same contract as TTS.
+          errorLevel: "warn",
+        },
+        () => args.provider.extract({ ...args.req, timeoutMs: plan.timeoutMs }),
+      );
+    } catch (err) {
+      // A permanent failure (a bad key, a model id that does not exist, a file the provider
+      // rejects) answers the same way every time, so asking again only makes the turn slower.
+      if (!isTransientVisionFailure(err)) throw err;
+      lastErr = err;
+    }
+  }
+  // Unreachable while the loop and the policy share VISION_MAX_ATTEMPTS: the policy stops planning
+  // first. Kept as the loop's own exit so that stopping never depends on a rule living elsewhere.
+  throw lastErr;
+}
+
 export interface ExtractInboundParams {
   tenantId: bigint;
   instanceId: bigint;
@@ -75,7 +144,12 @@ export interface ExtractInboundParams {
   dataUrl: string;
   cfg: VisionConfig;
   base?: PrismaClient;
-  deps?: { makeClient?: MakeClient; fetchImpl?: typeof fetch };
+  deps?: {
+    makeClient?: MakeClient;
+    fetchImpl?: typeof fetch;
+    // Injectable so the retry battery does not actually wait out the backoff.
+    sleep?: (ms: number) => Promise<void>;
+  };
   // Optional execution-flow context: when present, the extraction is logged as a `vision` stage
   // (mirrors STT), so a skip/failure is visible on the Logs page instead of vanishing.
   flow?: FlowContext;
@@ -169,31 +243,24 @@ export async function extractInboundFile(
 
   let extracted: VisionResult;
   try {
-    extracted = await withFlowStage(
-      params.flow,
-      "vision",
-      {
-        provider: cfg.provider,
+    extracted = await extractWithRetry({
+      provider,
+      providerName: cfg.provider,
+      model: cfg.model || provider.defaultModel,
+      flow: params.flow,
+      sleep: params.deps?.sleep,
+      req: {
+        bytes,
+        mimeType:
+          contentType ?? (kind === "image" ? "image/jpeg" : "application/pdf"),
+        kind,
+        prompt: cfg.extractionPrompt,
         model: cfg.model || provider.defaultModel,
-        detail: { kind },
-        // Recovered (→ "couldn't extract" marker), so a failure reads as an advisory, not a red
-        // error — same contract as TTS.
-        errorLevel: "warn",
+        apiKey: entry.secret,
+        baseURL: entry.baseUrl ?? cfg.baseURL,
+        fetchImpl: params.deps?.fetchImpl ?? fetch,
       },
-      () =>
-        provider.extract({
-          bytes,
-          mimeType:
-            contentType ??
-            (kind === "image" ? "image/jpeg" : "application/pdf"),
-          kind,
-          prompt: cfg.extractionPrompt,
-          model: cfg.model || provider.defaultModel,
-          apiKey: entry.secret,
-          baseURL: entry.baseUrl ?? cfg.baseURL,
-          fetchImpl: params.deps?.fetchImpl ?? fetch,
-        }),
-    );
+    });
   } catch (e) {
     // Best-effort: a provider error must not strand delivery. Log at error-level (ops alert channel)
     // and leave the attachment unextracted → the agent sees the "couldn't extract" marker.
@@ -276,7 +343,7 @@ export interface PlaygroundExtractParams {
   // so a freshly-set credential can be tested WITHOUT saving first.
   settings?: unknown;
   base?: PrismaClient;
-  deps?: { fetchImpl?: typeof fetch };
+  deps?: { fetchImpl?: typeof fetch; sleep?: (ms: number) => Promise<void> };
   // Optional execution-flow context: when present, the extraction is logged as a `vision` stage
   // (source=playground), so the operator sees it on the Logs page.
   flow?: FlowContext;
@@ -334,29 +401,25 @@ export async function extractPlaygroundFile(
   }
 
   try {
-    const extracted = await withFlowStage(
-      params.flow,
-      "vision",
-      {
-        provider: cfg.provider,
+    const extracted = await extractWithRetry({
+      provider,
+      providerName: cfg.provider,
+      model: cfg.model || provider.defaultModel,
+      flow: params.flow,
+      sleep: params.deps?.sleep,
+      req: {
+        bytes: params.file,
+        mimeType:
+          params.mimeType ??
+          (kind === "image" ? "image/jpeg" : "application/pdf"),
+        kind,
+        prompt: cfg.extractionPrompt,
         model: cfg.model || provider.defaultModel,
-        detail: { kind },
-        errorLevel: "warn",
+        apiKey: entry.secret,
+        baseURL: entry.baseUrl ?? cfg.baseURL,
+        fetchImpl: params.deps?.fetchImpl ?? fetch,
       },
-      () =>
-        provider.extract({
-          bytes: params.file,
-          mimeType:
-            params.mimeType ??
-            (kind === "image" ? "image/jpeg" : "application/pdf"),
-          kind,
-          prompt: cfg.extractionPrompt,
-          model: cfg.model || provider.defaultModel,
-          apiKey: entry.secret,
-          baseURL: entry.baseUrl ?? cfg.baseURL,
-          fetchImpl: params.deps?.fetchImpl ?? fetch,
-        }),
-    );
+    });
     if (params.flow && extracted.usage) {
       await recordDirectUsage(params.flow, {
         model: cfg.model || provider.defaultModel,

@@ -177,6 +177,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/stt.test.ts": 1,
   "tests/modules/tts-normalize-observability.test.ts": 1,
   "tests/modules/tts.test.ts": 2,
+  "tests/modules/vision-retry.test.ts": 1,
 };
 
 // Lives beside the rest of the flowlog family rather than in tests/tooling/, which the manifest

@@ -134,6 +134,9 @@ function num(v: unknown): number {
 // consistent across providers; carries `input_token_details.{cache_read,cache_creation}` in
 // LangChain v1.x), then the OpenAI-style `llmOutput.tokenUsage`, then the Anthropic-style
 // `llmOutput.usage`. Cached counts are best-effort across the legacy bags too.
+//
+// The question every branch here answers is not "did it carry a number" but "did it carry every
+// counter the provider BILLED" (issue #334). Two of them used to answer no.
 export function extractTokenUsage(output: LLMResult): TokenUsage {
   let promptTokens = 0;
   let completionTokens = 0;
@@ -144,8 +147,26 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
       // biome-ignore lint/suspicious/noExplicitAny: generation message shape is provider-dependent.
       const meta = (gen as any).message?.usage_metadata;
       if (meta) {
-        promptTokens += num(meta.input_tokens);
-        completionTokens += num(meta.output_tokens);
+        const input = num(meta.input_tokens);
+        const generated = num(meta.output_tokens);
+        promptTokens += input;
+        // The remainder of the provider's OWN total is generation the integration could not name,
+        // and it is billed all the same. Gemini is the live case: `convertUsageMetadata` maps
+        // `output_tokens` from `candidatesTokenCount` alone and reads `thoughtsTokenCount` nowhere,
+        // so with thinking on (the default of the current generation) every turn recorded less
+        // output than it cost. The API reference defines the total as prompt + thoughts +
+        // candidates, so the gap IS the thinking, and `total_tokens` is the only trace of it that
+        // survives into `usage_metadata`.
+        //   Inert everywhere else by construction: OpenAI's total is prompt + completion exactly
+        // (reasoning already inside completion), Anthropic's is summed upstream before it gets
+        // here, and a response with no total at all leaves the term at zero.
+        //   The premise that the gap is only thinking is fenced, not assumed: Gemini also folds
+        // `toolUsePromptTokenCount` into the total, which is populated only by its BUILT-IN tools
+        // (Search grounding, code execution, URL context). We enable none — client-side function
+        // declarations are ordinary prompt tokens — and tests/graph/usage-provider-counts.test.ts
+        // goes red the day one is turned on.
+        completionTokens +=
+          generated + Math.max(0, num(meta.total_tokens) - input - generated);
         const det = meta.input_token_details;
         if (det) {
           cachedReadTokens += num(det.cache_read);
@@ -176,12 +197,19 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
   }
   const u = out.usage;
   if (u && (u.input_tokens != null || u.output_tokens != null)) {
+    // Anthropic raw exposes cache read/write as their own counters, and they are ADDITIVE here:
+    // `input_tokens` is documented as the tokens that were NOT read from or used to create a cache,
+    // so the billed input is the sum of the three. That is the opposite of what this row means by
+    // `cachedReadTokens` (a discounted SUBSET of `promptTokens`), which is why the sum happens here
+    // rather than at the reader — and it is what `ChatAnthropic` itself does in `buildUsageMetadata`
+    // before handing over the normalized path above.
+    const cacheRead = num(u.cache_read_input_tokens);
+    const cacheCreation = num(u.cache_creation_input_tokens);
     return {
-      promptTokens: num(u.input_tokens),
+      promptTokens: num(u.input_tokens) + cacheRead + cacheCreation,
       completionTokens: num(u.output_tokens),
-      // Anthropic raw exposes cache read/write as their own counters.
-      cachedReadTokens: num(u.cache_read_input_tokens),
-      cacheCreationTokens: num(u.cache_creation_input_tokens),
+      cachedReadTokens: cacheRead,
+      cacheCreationTokens: cacheCreation,
     };
   }
   return {

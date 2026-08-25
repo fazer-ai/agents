@@ -72,7 +72,7 @@ describe("extractTokenUsage", () => {
     });
   });
 
-  test("falls back to Anthropic-style llmOutput.usage (+ cache read/write)", () => {
+  test("falls back to Anthropic-style llmOutput.usage (cache counters ADDITIVE)", () => {
     const r = {
       generations: [[{ text: "x" }]],
       llmOutput: {
@@ -84,8 +84,14 @@ describe("extractTokenUsage", () => {
         },
       },
     } as unknown as LLMResult;
+    // 11 + 8 + 2 (issue #334). Anthropic documents `input_tokens` as the tokens that were NEITHER
+    // read from NOR used to create a cache, so the billed input is the sum of the three — the
+    // opposite of the OpenAI shape above, where the cached count is already inside the prompt.
+    // This assertion used to read 11, which is the row disagreeing with itself: `cachedReadTokens`
+    // is documented as a discounted SUBSET of `promptTokens`, and 8 is not a subset of 11 when 11
+    // already excludes it.
     expect(extractTokenUsage(r)).toEqual({
-      promptTokens: 11,
+      promptTokens: 21,
       completionTokens: 5,
       cachedReadTokens: 8,
       cacheCreationTokens: 2,

@@ -463,7 +463,9 @@ export function templateMetadataProblem(input: {
 function parseNumberPrefix(value: unknown): string | null {
   const problem = templateMetadataProblem({ numberPrefix: value });
   if (problem) {
-    throw new AppError(problem, 400, "errors.invalidDocumentNumberPrefix");
+    throw new AppError(problem, 400, "errors.invalidDocumentNumberPrefix", {
+      reason: problem,
+    });
   }
   return templateNumberPrefixSchema.parse(value ?? null);
 }
@@ -475,6 +477,7 @@ function parseTemplateDescription(value: unknown): string | null {
       problem,
       400,
       "errors.invalidDocumentTemplateDescription",
+      { reason: problem },
     );
   }
   return templateDescriptionSchema.parse(value ?? null);
@@ -483,7 +486,9 @@ function parseTemplateDescription(value: unknown): string | null {
 function parseTemplateName(value: unknown): string {
   const problem = templateMetadataProblem({ name: value });
   if (problem) {
-    throw new AppError(problem, 400, "errors.invalidDocumentTemplateName");
+    throw new AppError(problem, 400, "errors.invalidDocumentTemplateName", {
+      reason: problem,
+    });
   }
   return templateNameSchema.parse(value);
 }
@@ -1031,7 +1036,9 @@ function callerValues(
   if (raw === undefined) return sampleValues(fields, now, day);
   const parsed = parseDocumentValues(fields, raw);
   if (!parsed.ok) {
-    throw new AppError(parsed.reason, 400, "errors.invalidDocumentValues");
+    throw new AppError(parsed.reason, 400, "errors.invalidDocumentValues", {
+      reason: parsed.reason,
+    });
   }
   return parsed.values;
 }

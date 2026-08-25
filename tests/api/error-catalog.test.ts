@@ -284,15 +284,24 @@ function keysThatSayLess(
 // `"errors.x"\s*,\s*"…"` also matches a key sitting next to its neighbour in an ARRAY of keys
 // (`src/graph/tools/documents.ts` holds one), and it reported `documentNotStored` and
 // `documentRevoked` as offenders whose "message" was the next key in the list.
-async function throwSiteRes(): Promise<RegExp[]> {
+// The pieces every producer spelling is built from, at module scope so the two readers below cannot
+// drift apart on what a key, a status or a literal looks like. MESSAGE is the literal one: a plain
+// string or a template, which is what the say-less rule can compare to a catalog entry.
+const STATUS = "(?:\\d+\\s*,\\s*)?";
+const KEY = '"errors\\.(?<key>[A-Za-z0-9_]+)"';
+const MESSAGE = '(?<msg>`[^`]*`|"(?:[^"\\\\]|\\\\.)*")';
+
+async function errorClasses(): Promise<string[]> {
   const src = await readFile("src/lib/errors.ts", "utf8");
   const classes = [...src.matchAll(/export class (\w+)/g)].map(
     (m) => m[1] as string,
   );
   expect(classes.length).toBeGreaterThan(5);
-  const MESSAGE = '(?<msg>`[^`]*`|"(?:[^"\\\\]|\\\\.)*")';
-  const STATUS = "(?:\\d+\\s*,\\s*)?";
-  const KEY = '"errors\\.(?<key>[A-Za-z0-9_]+)"';
+  return classes;
+}
+
+async function throwSiteRes(): Promise<RegExp[]> {
+  const classes = await errorClasses();
   return [
     new RegExp(
       `new (?:${classes.join("|")})\\(\\s*${MESSAGE}\\s*,\\s*${STATUS}${KEY}`,
@@ -367,6 +376,75 @@ function throwSites(
       into.set(key, set);
     }
   }
+}
+
+// A MESSAGE THAT VARIES, IN AN ENTRY THAT CANNOT CARRY ANYTHING THAT VARIES.
+//
+// The reader above takes literals only, and the reason it gives is sound: a message built from a
+// variable cannot be compared to a catalog entry, and the say-less rule is about what the two SAY.
+// The conclusion drawn from it was not. A computed message is, by construction, a sentence that
+// VARIES, and an entry with no `{{placeholder}}` is a sentence that cannot carry anything that
+// varies — a question that needs no comparison, and so needs no literal, to answer.
+//
+// Measured on main for issue #302: eight keys are thrown with a computed message and four of them
+// into a placeholder-less entry. One does not merely drop the reason, it answers with a DIFFERENT
+// one: a five-character template name holding a control character was refused with "The document
+// template name must be between 1 and 120 characters", so the operator counts characters and finds
+// nothing wrong.
+//
+// The `super(` spelling is deliberately absent. It occurs only in src/lib/errors.ts, where the
+// expression in the message position is the constructor's own parameter, and the sentence it
+// defaults to is read by `subclassDefaults` — reading the forwarding as a computed message would
+// report the three subclasses that hard-code a key as offenders against their own defaults.
+//
+// What this reader still cannot see is a caller that passes a computed message INTO one of those
+// classes, because that call site names no key. Measured: one call site passes an argument to one
+// of them, and it is a tenant id rather than a message (`new ActiveTenantNotFoundError(tenantId)`).
+async function computedSiteRes(): Promise<RegExp[]> {
+  const classes = await errorClasses();
+  // Anything in the message position that is not a literal: an identifier, a member chain, a call.
+  // It may not start with a quote or a backtick — that is the other reader's subject — and `[^;]`
+  // bounds it to the statement it was found in, so a call with no key cannot reach the next one's.
+  // On a nested call the lazy match can stop at an inner comma, which shortens the expression this
+  // records; the rule reads the KEY, and the expression only ever goes into the report.
+  const COMPUTED = '(?<msg>[^\\s;"`][^;]*?)';
+  return [
+    new RegExp(
+      `new (?:${classes.join("|")})\\(\\s*${COMPUTED}\\s*,\\s*${STATUS}${KEY}`,
+      "gs",
+    ),
+    new RegExp(`message:\\s*${COMPUTED}\\s*,\\s*key:\\s*${KEY}`, "gs"),
+    new RegExp(`\\btranslate\\(\\s*${KEY}\\s*,\\s*${COMPUTED}\\s*[,)]`, "gs"),
+    new RegExp(
+      `\\btranslateWithLocale\\(\\s*\\w+\\s*,\\s*${KEY}\\s*,\\s*${COMPUTED}\\s*[,)]`,
+      "gs",
+    ),
+  ];
+}
+
+async function computedSites(): Promise<Map<string, Set<string>>> {
+  const res = await computedSiteRes();
+  const sites = new Map<string, Set<string>>();
+  for (const f of await sourceFiles("src")) {
+    throwSites(await readFile(f, "utf8"), sites, res);
+  }
+  return sites;
+}
+
+// The rule itself, and it is one line: a key thrown with a message that varies has to have somewhere
+// to put it. No grandfathered list, because there is nothing to grandfather — the four this found
+// are fixed in the same change, and a fifth would be a refusal answering the wrong reason from the
+// day it was written.
+function keysThatCannotCarryTheirReason(
+  computed: Map<string, Set<string>>,
+  catalog: Record<string, string>,
+): string[] {
+  return [...computed.keys()]
+    .filter((key) => {
+      const entry = catalog[key];
+      return entry !== undefined && !/\{\{\w+\}\}/.test(entry);
+    })
+    .sort();
 }
 
 // PREDATES the rule, and may only ever SHRINK. Not an argument that each of these is fine: it is the
@@ -774,6 +852,60 @@ describe("both languages answer, and answer differently", () => {
     ).toEqual([]);
   });
 
+  test("the computed-message reader finds every spelling, and reads no literal", async () => {
+    const into = new Map<string, Set<string>>();
+    // Same reason as the fixture above: the interpolation has to survive into the SOURCE this reads.
+    const dollar = "$";
+    throwSites(
+      [
+        'throw new AppError(problem, 400, "errors.a");',
+        // the status is optional in the class form, and a call is as computed as an identifier
+        'throw new NotFoundError(whyNot(id), "errors.b");',
+        'return { message: parsed.reason, key: "errors.c", params: { reason } };',
+        'return translate("errors.d", fallbackFor(row));',
+        // a call that names NO key hands nothing over, however computed its message is
+        "throw new AppError(computeIt(), 400, keyVariable);",
+        // both literal spellings belong to the reader above, and neither may show up here
+        'throw new AppError("plain", 400, "errors.lit");',
+        `throw new AppError(\`with ${dollar}{x}\`, 502, "errors.tpl");`,
+        'translateWithLocale(locale, "errors.e", buildIt());',
+      ].join("\n"),
+      into,
+      await computedSiteRes(),
+    );
+    expect([...into.keys()].sort()).toEqual(["a", "b", "c", "d", "e"]);
+  });
+
+  test("the rule flags the entry with nowhere to put the reason, and only that one", () => {
+    const catalog = {
+      carries: "This document template is not valid: {{reason}}",
+      cannot: "The document template name must be between 1 and 120 characters",
+    };
+    const computed = new Map([
+      ["carries", new Set(["problem"])],
+      ["cannot", new Set(["problem"])],
+      // A key with no entry at all is the subject of the registration rules, not of this one.
+      ["absent", new Set(["problem"])],
+    ]);
+    expect(keysThatCannotCarryTheirReason(computed, catalog)).toEqual([
+      "cannot",
+    ]);
+  });
+
+  test("no key answers a computed reason with a sentence that cannot hold it", async () => {
+    const computed = await computedSites();
+    expect(
+      keysThatCannotCarryTheirReason(
+        computed,
+        apiEn.errors as Record<string, string>,
+      ),
+    ).toEqual([]);
+    // A reader that stopped matching reports the same empty list as a tree that stopped offending.
+    // Deliberately far below the eight measured: this is a liveness check, not a size pin, and a
+    // number calibrated on THIS tree is a red build in the smaller one the public CI runs.
+    expect(computed.size).toBeGreaterThan(3);
+  });
+
   // WHAT THE READER STILL CANNOT SEE, and why each one is allowed to stay invisible.
   //
   // A rule that never RUNS on a key is worse than one that runs and waives it: the waiver is a
@@ -790,13 +922,11 @@ describe("both languages answer, and answer differently", () => {
     "embeddingEmpty",
     "embeddingNotConfigured",
     "embeddingPending",
-    // A MESSAGE BUILT FROM A VARIABLE. The reader takes literals only, because a computed string
-    // cannot be compared to a catalog entry. That is right about the comparison and it is NOT a
-    // clean bill of health: a message that varies is exactly what an entry with no placeholder
-    // cannot carry, and four of these drop or contradict the reason that fired. Issue #302 holds
-    // the measurement and the fix; five of the nine already interpolate, which is the same answer
-    // arrived at one key at a time.
-    "invalidBusinessHoursDate",
+    // A MESSAGE BUILT FROM A VARIABLE. Still invisible to the reader above, which compares
+    // SENTENCES and so needs a literal, and no longer unexamined: the computed-message rule asks
+    // these eight the one question a varying message can be asked, and every one of them now has a
+    // placeholder to put it in (issue #302 — four of them did not, and one answered a control
+    // character in a five-character name with "must be between 1 and 120 characters").
     "invalidCompanyField",
     "invalidDocumentNumberPrefix",
     "invalidDocumentTemplateDescription",
@@ -805,6 +935,12 @@ describe("both languages answer, and answer differently", () => {
     "invalidDocumentValues",
     "invalidIdempotencyKey",
     "unstorableText",
+    // A LITERAL NEITHER READER CAN SPAN: a template message holding a nested template
+    // (src/modules/business-hours/service.ts writes `${x ? `${a}..${b}` : c}`), so the literal
+    // reader's `[^`]*` stops at the inner backtick and the computed reader skips it for starting
+    // with one. Its entry interpolates already, so the rule above would have nothing to say about
+    // it; what is unread is the say-less comparison, and this line is what says so.
+    "invalidBusinessHoursDate",
     // A third group stood here until review asked the obvious question: a subclass that hard-codes
     // its own refusal names nothing at the call site, and `errors.proEdition` was waived for it.
     // "Nothing to read at the call site" is not "nothing to read": the sentence is in the class, and

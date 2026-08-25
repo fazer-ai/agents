@@ -223,6 +223,7 @@ export async function issueDocument(
       parsedValues.reason,
       400,
       "errors.invalidDocumentValues",
+      { reason: parsedValues.reason },
     );
   }
   const { company, logo } = await readRenderContext(ctx, base);

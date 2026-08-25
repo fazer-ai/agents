@@ -572,11 +572,14 @@ describe.skipIf(!dbUp)("vision retry", () => {
       if (rows.length < VISION_MAX_ATTEMPTS)
         await new Promise((r) => setTimeout(r, 20));
     }
-    const details = rows.map((r) => r.detail as Record<string, unknown>);
-    // Sorted, not taken in row order: `emitFlowEvent` is fire-and-forget, so the lines of one turn
-    // race each other to the table and their ids do not carry the order. `attempt` does, which is
-    // the whole reason it is on the line.
-    expect(details.map((d) => d.attempt).sort()).toEqual([1, 2]);
+    // Sorted BY `attempt`, not taken in row order: `emitFlowEvent` is fire-and-forget, so the lines
+    // of one turn race each other to the table and their ids do not carry the order (measured —
+    // three lines landed 1, 3, 2). `attempt` carries it, which is the whole reason it is on the
+    // line, and every positional assertion below reads this ordering rather than the table's.
+    const details = rows
+      .map((r) => r.detail as Record<string, unknown>)
+      .sort((a, b) => (a.attempt as number) - (b.attempt as number));
+    expect(details.map((d) => d.attempt)).toEqual([1, 2]);
     // The two lines do NOT carry the same budget: the last attempt is capped by what is left of the
     // total rather than by the kind's ceiling.
     expect(details[0]?.budgetMs).toBe(VISION_ATTEMPT_CEILING_MS.image);

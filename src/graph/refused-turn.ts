@@ -59,18 +59,36 @@ function actedOnTheWorld(slice: readonly BaseMessage[]): boolean {
   );
 }
 
-// `produced` is THIS invoke's own view of the channel (what `graph.invoke` returned), and `present`
+// AN ID IS NOT AN IDENTITY ON THIS CHANNEL, and memory compaction is why. Its rewrite REUSES the id
+// of the first message it replaces for the rendered memory head, deliberately, because the reducer
+// replaces a same-id message in place and appends an unknown-id one at the end, and a memory head
+// sitting after the conversation is a footnote rather than a header (docs/graph.md). A compaction
+// that lands between the invoke and this plan can therefore hand the refused directive's id to the
+// head of an entire attendance, and a removal that only asked "is the id still there?" would delete
+// that head. Losing a summary is worse than the residue this exists to clear, so the current message
+// has to still BE the one this invoke produced, not merely occupy its id.
+function isStillTheSameMessage(
+  current: BaseMessage,
+  produced: BaseMessage,
+): boolean {
+  if (current.getType() !== produced.getType()) return false;
+  const text = (m: BaseMessage) =>
+    typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+  return text(current) === text(produced);
+}
+
+// `produced` is THIS invoke's own view of the channel (what `graph.invoke` returned), and `current`
 // is what the channel holds when the removal is about to be written. They are read at different
 // moments on purpose: between them sit the ownership probe and the guardrail judge, which are model
 // calls and Chatwoot round trips, and anything can have rewritten the thread in that time. The
 // reducer THROWS on a `RemoveMessage` whose id it cannot find ("Attempting to delete a message with
-// an ID that doesn't exist"), so intersecting is what keeps a rollback from turning a suppressed
-// follow-up into a failed job.
+// an ID that doesn't exist"), so a message that left has to be dropped from the plan rather than
+// named in it.
 export function planTurnRollback(
   produced: readonly BaseMessage[],
-  present: ReadonlySet<string>,
+  current: readonly BaseMessage[],
 ): RollbackPlan {
-  // The LAST one, not the first: the thread can already carry the directive of an earlier nudge that
+  // NOTE: the LAST one, not the first: the thread can already carry the directive of an earlier nudge that
   // ended silent, and that one belongs to a turn nobody refused. Everything from here on is what
   // this invoke appended, because the invoke loads the channel and then adds its own to the end.
   let start = -1;
@@ -84,9 +102,15 @@ export function planTurnRollback(
   if (start === -1) return { action: "keep", reason: "no-turn-found" };
   const slice = produced.slice(start);
   if (actedOnTheWorld(slice)) return { action: "keep", reason: "tool-ran" };
+  const byId = new Map<string, BaseMessage>();
+  for (const m of current) if (typeof m.id === "string") byId.set(m.id, m);
   const ids = slice
-    .map((m) => m.id)
-    .filter((id): id is string => typeof id === "string" && present.has(id));
+    .filter((m) => {
+      if (typeof m.id !== "string") return false;
+      const now = byId.get(m.id);
+      return now !== undefined && isStillTheSameMessage(now, m);
+    })
+    .map((m) => m.id as string);
   if (ids.length === 0) return { action: "keep", reason: "already-gone" };
   return { action: "remove", ids };
 }
@@ -122,8 +146,8 @@ export async function undoRefusedTurn(params: {
     if (isTurnInFlight(graphThreadId)) {
       return { action: "keep", reason: "another-invoke-is-reading" };
     }
-    // Taken only once the answer above is no, and for the length of the read and the write: it is
-    // what keeps a compaction from rewriting the channel between them.
+    // NOTE: taken only once the answer above is no, and for the length of the read and the write: it
+    // is what keeps a compaction from rewriting the channel between them.
     markTurnInFlight(graphThreadId);
     try {
       const current = ((
@@ -131,14 +155,7 @@ export async function undoRefusedTurn(params: {
           | { messages?: BaseMessage[] }
           | undefined
       )?.messages ?? []) as BaseMessage[];
-      const plan = planTurnRollback(
-        produced,
-        new Set(
-          current
-            .map((m) => m.id)
-            .filter((id): id is string => typeof id === "string"),
-        ),
-      );
+      const plan = planTurnRollback(produced, current);
       if (plan.action === "remove") {
         await graph.updateState(
           threadCfg,

@@ -1164,9 +1164,9 @@ export async function runAgentNudge(
       graphThreadId,
       produced: result.messages,
     }).catch((err) => {
-      // Best-effort, and loudly: the send was already suppressed, so a failed rollback costs the next
-      // turn a message the customer never saw, which is the defect this exists to close, and nothing more.
-      // Throwing would turn a correct refusal into a retried job.
+      // NOTE: best-effort, and loudly. The send was already suppressed, so a failed rollback costs
+      // the next turn a message the customer never saw, which is the defect this exists to close,
+      // and nothing more. Throwing would turn a correct refusal into a retried job.
       logger.warn(
         { err, conversationId: String(conversationId) },
         "agentNudge: could not roll back the refused turn",
@@ -1181,9 +1181,9 @@ export async function runAgentNudge(
         plan.ids.length,
       );
     } else if (plan?.reason === "another-invoke-is-reading") {
-      // The one keep that is a MISS rather than a decision about this turn: the history still holds a
-      // message the customer never received, and the next turn will read it. Logged at warn so the
-      // case has a name in the logs instead of looking like a rollback that ran.
+      // NOTE: the one keep that is a MISS rather than a decision about this turn. The history still
+      // holds a message the customer never received, and the next turn will read it. Logged at warn
+      // so the case has a name in the logs instead of looking like a rollback that ran.
       logger.warn(
         "agentNudge could not roll back a refused turn, another invoke holds the thread: conv=%s outcome=%s",
         String(conversationId),

@@ -5,7 +5,7 @@ import {
   HumanMessage,
   ToolMessage,
 } from "@langchain/core/messages";
-import { nudgeMessage } from "@/graph/markers";
+import { memoryHeadMessage, nudgeMessage } from "@/graph/markers";
 import { planTurnRollback, type RollbackPlan } from "@/graph/refused-turn";
 
 // The decision, as a table. `undoRefusedTurn` does the reading and the writing; everything that is a
@@ -36,13 +36,14 @@ function nudge(id: string): BaseMessage {
   m.id = id;
   return m;
 }
-const allOf = (...ms: BaseMessage[]) => new Set(ms.map((m) => m.id as string));
+const head = (id: string): BaseMessage =>
+  memoryHeadMessage("<atendimentos-anteriores>…</atendimentos-anteriores>", id);
 
 describe("planTurnRollback", () => {
   const ROWS: Array<{
     name: string;
     produced: BaseMessage[];
-    present: ReadonlySet<string>;
+    current: BaseMessage[];
     expected: RollbackPlan;
   }> = [
     (() => {
@@ -50,7 +51,7 @@ describe("planTurnRollback", () => {
       return {
         name: "a thread with no nudge in it has no proactive turn to take back",
         produced: hist,
-        present: allOf(...hist),
+        current: hist,
         expected: { action: "keep", reason: "no-turn-found" },
       };
     })(),
@@ -64,7 +65,7 @@ describe("planTurnRollback", () => {
       return {
         name: "the directive and the answer it produced, and nothing that came before them",
         produced,
-        present: allOf(...produced),
+        current: produced,
         expected: { action: "remove", ids: ["n1", "a2"] },
       };
     })(),
@@ -80,7 +81,7 @@ describe("planTurnRollback", () => {
       return {
         name: "a turn that ran a tool keeps its history, because the act it records really happened",
         produced,
-        present: allOf(...produced),
+        current: produced,
         expected: { action: "keep", reason: "tool-ran" },
       };
     })(),
@@ -90,7 +91,7 @@ describe("planTurnRollback", () => {
       return {
         name: "a bare tool result answers the same question the same way",
         produced,
-        present: allOf(...produced),
+        current: produced,
         expected: { action: "keep", reason: "tool-ran" },
       };
     })(),
@@ -106,7 +107,7 @@ describe("planTurnRollback", () => {
       return {
         name: "only the LAST directive's turn, never an earlier nudge that already stood",
         produced,
-        present: allOf(...produced),
+        current: produced,
         expected: { action: "remove", ids: ["n2", "a2"] },
       };
     })(),
@@ -115,7 +116,7 @@ describe("planTurnRollback", () => {
       return {
         name: "a channel another writer already rewrote is left exactly as it is",
         produced,
-        present: new Set<string>(),
+        current: [],
         expected: { action: "keep", reason: "already-gone" },
       };
     })(),
@@ -126,8 +127,30 @@ describe("planTurnRollback", () => {
       return {
         name: "half the turn still there names half the turn",
         produced,
-        present: new Set(["a1"]),
+        current: [produced[1] as BaseMessage],
         expected: { action: "remove", ids: ["a1"] },
+      };
+    })(),
+    (() => {
+      // The sharp one. Memory compaction REUSES the id of the first message it replaces for the
+      // rendered head, so a compaction landing between the invoke and this plan hands the refused
+      // directive's id to the head of an entire attendance. Removing by id alone would delete it.
+      const produced = [nudge("n1"), a("a1", "ainda precisa?")];
+      return {
+        name: "an id that memory compaction reused for its head is not the message we produced",
+        produced,
+        current: [head("n1")],
+        expected: { action: "keep", reason: "already-gone" } as RollbackPlan,
+      };
+    })(),
+    (() => {
+      // …and the half that IS still ours survives that same rewrite.
+      const produced = [nudge("n1"), a("a1", "ainda precisa?")];
+      return {
+        name: "the reply survives a rewrite that only took the directive's id",
+        produced,
+        current: [head("n1"), produced[1] as BaseMessage],
+        expected: { action: "remove", ids: ["a1"] } as RollbackPlan,
       };
     })(),
     (() => {
@@ -137,7 +160,7 @@ describe("planTurnRollback", () => {
       return {
         name: "a message with no id is not nameable, so it is not named",
         produced,
-        present: new Set(["n1"]),
+        current: [produced[0] as BaseMessage],
         expected: { action: "remove", ids: ["n1"] },
       };
     })(),
@@ -145,7 +168,7 @@ describe("planTurnRollback", () => {
 
   for (const row of ROWS) {
     test(row.name, () => {
-      expect(planTurnRollback(row.produced, row.present)).toEqual(row.expected);
+      expect(planTurnRollback(row.produced, row.current)).toEqual(row.expected);
     });
   }
 });

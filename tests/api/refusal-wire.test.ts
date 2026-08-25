@@ -46,14 +46,6 @@ app.get("/__refusal/ambient-tenant", () => {
 app.get("/__refusal/named-tenant", () => {
   throw new NotFoundError("Tenant not found", "errors.tenantNotFound");
 });
-// NOTE: Elysia freezes its route table on the first request it serves, and the app is a singleton
-// several test files import. A route registered after some OTHER file has already called `handle`
-// is silently dropped and answers the SPA catch-all instead, so the tests below passed or failed on
-// file ordering. Measured: two files that each register a route and hit it, run together, and the
-// one that registered second answered 200 `{}`. `compile()` rebuilds the table, and it has to stay
-// below the LAST route this file registers.
-app.compile();
-
 const refusal = async (
   path: string,
   lang: string,
@@ -280,6 +272,18 @@ describe("an unhandled error, whatever shape it arrives in", () => {
 // answers along with the accidents. This is the one member of the pass-through list that is not a
 // refusal Elysia raised on the caller's behalf, so it is asserted rather than assumed.
 app.get("/__chosen/teapot", ({ status }) => status(418, "deliberate"));
+
+// NOTE: Elysia freezes its route table on the first request it serves, and the app is a singleton
+// several test files import. A route registered after some OTHER file has already called `handle`
+// is silently dropped and answers the SPA catch-all instead, so the tests here passed or failed on
+// file ordering. Measured: two files that each register a route and hit it, run together, and the
+// one that registered second answered 200 `{}`. `compile()` rebuilds the table, and it has to stay
+// below the LAST route this file registers.
+//
+// Moved down here when the #263 block arrived below it. Measured with it left in place: every route
+// registered after it was missing, and 19 of this file's tests failed running the file ALONE. The
+// note above already said "below the LAST route"; the call simply stopped being there.
+app.compile();
 
 describe("a status the handler chose is not an unhandled failure", () => {
   test("it keeps its own code and body", async () => {

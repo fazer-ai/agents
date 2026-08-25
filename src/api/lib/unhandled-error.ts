@@ -29,6 +29,12 @@ import {
 export function isFrameworkRefusal(error: unknown): boolean {
   return (
     error instanceof ParseError ||
+    // NOTE: since #255 a ValidationError is answered by its own branch in src/app.ts, upstream of
+    // the arm that consults this, so today it does not reach here. Listed anyway: this predicate
+    // enumerates Elysia's refusal types, not the subset the app currently routes past it, and the
+    // day that branch moves or narrows, a schema refusal that fell through would be answered as a
+    // blank 500 instead of 422. Measured on the post-#255 tree: a schema-refused body answers 422
+    // with the app's own sentence, and dropping this clause still fails the table test below.
     error instanceof ValidationError ||
     error instanceof InvalidCookieSignature ||
     error instanceof InvalidFileType ||

@@ -2536,10 +2536,17 @@ export async function processChatwootDelivery(
 
   // tx1: CAS PENDING→PROCESSING. A re-entry (duplicate POST that found a stranded PENDING) sees
   // 0 rows and skips.
+  //
+  // The claim is STAMPED, because the winner of this CAS is not always the first attempt: a
+  // redelivery is deliberately allowed through to here on a row stranded on PENDING, and that claim
+  // can land long after the row was received. `claimed_at` is the clock the stranded-delivery sweep
+  // measures a PROCESSING row by; without it the sweep dates this live attempt to the original
+  // receipt, calls it abandoned the instant it starts, and reports a lost message while the process
+  // answering it is still running (issue #228).
   const claimed = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.chatwootWebhookDelivery.updateMany({
       where: { id: params.deliveryRowId, status: "PENDING" },
-      data: { status: "PROCESSING" },
+      data: { status: "PROCESSING", claimedAt: new Date() },
     }),
   );
   if (claimed.count === 0) return "skipped";
@@ -3186,9 +3193,10 @@ export async function processChatwootDelivery(
   }
 
   // tx2: mark processed. NOTE: a crash between tx1 and tx2 still strands the row in PROCESSING —
-  // nothing here can close that window, because the process is gone. What closes it is the recovery
-  // sweep (./delivery-sweep.ts), which re-arms the conversation's flush rather than replaying the
-  // event: the flush re-reads the messages from Chatwoot, so the payload never had to be stored.
+  // nothing here can close that window, because the process is gone. What closes it is the
+  // stranded-delivery sweep (./delivery-sweep.ts): it does not replay the event, it REPORTS the row,
+  // so the payload never had to be stored. Answering the customer is issue #295, and the reason it
+  // is not done from a sweep is written down there and at the head of that file.
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.chatwootWebhookDelivery.update({
       where: { id: params.deliveryRowId },

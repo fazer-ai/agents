@@ -1440,6 +1440,9 @@ export async function runAgentTurn(
             tenantId,
             conversationDbId: convDbId,
             toMessageId: triggerId,
+            // The direct path's post gate. Same as the flush's: the advance IS the claim on
+            // posting, and the watermark tail below covers every outcome that does not post.
+            answered: true,
             base,
           });
         }

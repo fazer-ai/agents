@@ -68,9 +68,16 @@ let deliverySeq = 0;
 const threadOf = (convId: number) =>
   chatwootThreadId(tenantId, instanceId, convId);
 
+// The two marks are settable INDEPENDENTLY, because that is the state the product actually
+// produces: six of the eight writers of the handled watermark advance it precisely because no answer
+// is coming, so a conversation with a handled mark far past an unanswered message is ordinary, not
+// contrived.
 async function seedConversation(
   convId: number,
-  over: { lastHandledMessageId?: number | null } = {},
+  over: {
+    lastHandledMessageId?: number | null;
+    lastAnsweredMessageId?: number | null;
+  } = {},
 ) {
   return suDb.conversation.create({
     data: {
@@ -82,6 +89,7 @@ async function seedConversation(
       threadId: threadOf(convId),
       lastEventAt: new Date(),
       lastHandledMessageId: over.lastHandledMessageId ?? null,
+      lastAnsweredMessageId: over.lastAnsweredMessageId ?? null,
       contactInboxId: 61_000 + convId,
     },
     select: { id: true },
@@ -92,6 +100,8 @@ async function seedConversation(
 async function seedStrandedDelivery(over: {
   conversationId: number | null;
   ageMs: number;
+  // How long ago the CURRENT attempt claimed the row, when something has. Omitted = never claimed.
+  claimedAgoMs?: number;
   inboundMessageId?: number | null;
   status?: "PENDING" | "PROCESSING";
   event?: string;
@@ -105,6 +115,10 @@ async function seedStrandedDelivery(over: {
       event: over.event ?? "message_created",
       status: over.status ?? "PROCESSING",
       receivedAt: new Date(Date.now() - over.ageMs),
+      claimedAt:
+        over.claimedAgoMs === undefined
+          ? null
+          : new Date(Date.now() - over.claimedAgoMs),
       conversationId: over.conversationId,
       inboundMessageId: over.inboundMessageId ?? null,
     },
@@ -271,9 +285,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   test("is recorded as a loss the operator can find", async () => {
     const convId = 8802;
     const messageId = 9101;
-    // The watermark is below the message: nothing ever answered it.
+    // No posted reply has reached this message: nothing ever answered it.
     const conv = await seedConversation(convId, {
-      lastHandledMessageId: messageId - 1,
+      lastAnsweredMessageId: messageId - 1,
     });
     const rowId = await seedStrandedDelivery({
       conversationId: convId,
@@ -314,7 +328,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     const convId = 8803;
     const messageId = 9201;
     const conv = await seedConversation(convId, {
-      lastHandledMessageId: messageId - 1,
+      lastAnsweredMessageId: messageId - 1,
     });
     const rowId = await seedStrandedDelivery({
       conversationId: convId,
@@ -355,7 +369,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // STRICTLY past: level with the message would mean this row's own flush took the at-most-once
     // claim and then died, which is a loss rather than an answer.
     const conv = await seedConversation(convId, {
-      lastHandledMessageId: messageId + 1,
+      lastAnsweredMessageId: messageId + 1,
     });
     const rowId = await seedStrandedDelivery({
       conversationId: convId,
@@ -368,6 +382,93 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(counts.lost).toBe(0);
     expect((await statusOf(rowId)).status).toBe("PROCESSED");
     expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
+  });
+
+  test("reports the strand a later DELIBERATE SKIP moved the watermark past", async () => {
+    // The finding this test exists for, and it is the difference between the two marks. The handled
+    // watermark means "never re-ANSWER this", and most of its writers advance it precisely because
+    // no answer is coming: here a later message arrived while the conversation was human-owned, so
+    // `processChatwootDelivery` advanced the watermark past the stranded message WITHOUT anything
+    // replying to it. Read as an answer, this closes a customer who wrote and was never served —
+    // the exact silence the sweep exists to remove — and it closes it in the situation a strand is
+    // MOST likely to happen in, since a deploy strands deliveries and shifts conversations to
+    // humans at the same time.
+    const convId = 8821;
+    const messageId = 9901;
+    const conv = await seedConversation(convId, {
+      // Far past the stranded message, and it proves nothing.
+      lastHandledMessageId: messageId + 25,
+      // Nothing has ever posted a reply here.
+      lastAnsweredMessageId: null,
+    });
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      inboundMessageId: messageId,
+    });
+
+    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(counts.lost).toBe(1);
+    expect(counts.closed).toBe(0);
+    expect((await statusOf(rowId)).status).toBe("DEAD");
+    expect(await deliveryLines(conv.id)).toHaveLength(1);
+
+    await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+  });
+
+  test("leaves a long-received row alone when the CURRENT attempt just claimed it", async () => {
+    // A redelivery is deliberately allowed through to the CAS on a row stranded on PENDING (the row
+    // existing is not the same as the work having been done), so a live attempt can begin long after
+    // the receipt. Judged by the receipt, this attempt looks abandoned the instant it starts, and
+    // the sweep would mark it DEAD and page an operator while the process answering it is still
+    // running — and then that process's own tx2 would find the row gone from under it.
+    const convId = 8822;
+    const messageId = 9951;
+    const conv = await seedConversation(convId, {
+      lastAnsweredMessageId: null,
+    });
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      // Received hours ago...
+      ageMs: STALE_MS * 4,
+      // ...but claimed a minute ago, by the attempt that is running right now.
+      claimedAgoMs: 60_000,
+      inboundMessageId: messageId,
+    });
+
+    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(counts.tooFresh).toBe(1);
+    expect(counts.lost).toBe(0);
+    // Untouched: still PROCESSING, and no line, because nothing was decided about it.
+    expect((await statusOf(rowId)).status).toBe("PROCESSING");
+    expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+  });
+
+  test("still reports a claimed row once the CLAIM itself goes stale", async () => {
+    // The other half of the clock above: a claim is not a shield, it is a restart of the same fence.
+    // An attempt that claimed the row and then died is exactly what this sweep is for.
+    const convId = 8823;
+    const messageId = 9961;
+    const conv = await seedConversation(convId, {
+      lastAnsweredMessageId: null,
+    });
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 4,
+      claimedAgoMs: STALE_MS * 2,
+      inboundMessageId: messageId,
+    });
+
+    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(counts.lost).toBe(1);
+    expect((await statusOf(rowId)).status).toBe("DEAD");
+    expect(await deliveryLines(conv.id)).toHaveLength(1);
+
+    await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
   test("reports a loss when the agent does not coalesce, whatever the watermark", async () => {
@@ -404,7 +505,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         threadId: threadOf(convId),
         lastEventAt: new Date(),
         // Past the stranded message, exactly as in the coalescing test above.
-        lastHandledMessageId: messageId + 40,
+        lastAnsweredMessageId: messageId + 40,
         contactInboxId: 61_000 + convId,
       },
       select: { id: true },
@@ -430,7 +531,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     const convId = 8815;
     const messageId = 9481;
     const conv = await seedConversation(convId, {
-      lastHandledMessageId: messageId,
+      lastAnsweredMessageId: messageId,
     });
     const rowId = await seedStrandedDelivery({
       conversationId: convId,
@@ -504,6 +605,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       deliveryId: "x",
       event: "message_created",
       receivedAt: new Date(),
+      claimedAt: null,
       conversationId: 8807,
       inboundMessageId: 9601,
     };
@@ -519,12 +621,14 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
-  test("writes the loss line before retiring the row that is its only other trace", async () => {
-    // ORDERING, and it only shows on failure: `finish` retires the ledger row, and no later pass
-    // sees a terminal one — so a line written after it and lost takes the report with it, which is
-    // the exact silence this sweep removes. Written first, a failed write leaves the row for the
-    // next pass. There is no seam to make the flow write fail against a real database without
-    // faking the client out from under `runScopedOn`, so the order is asserted where it is written.
+  test("retires the row before writing the line that pages an operator", async () => {
+    // ORDERING, and it is the reverse of what an earlier round of this PR did. `writeFlowEvent`
+    // DISPATCHES the alert as it writes — Discord, a webhook, somebody's phone — and nothing can
+    // retract that. Written before the CAS, the sweep pages an operator that a customer was never
+    // answered every time a redelivery claimed the row in between, which is a designed path here,
+    // not an infrastructure failure. There is no seam that makes the flow write fail against a real
+    // database without faking the client out from under `runScopedOn`, so the order is asserted
+    // where it is written.
     const src = await Bun.file(
       new URL("../../src/modules/chatwoot/delivery-sweep.ts", import.meta.url),
     ).text();
@@ -533,9 +637,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     const retire = body.indexOf('finish(row, tenantId, "DEAD", base)');
     expect(write).toBeGreaterThan(-1);
     expect(retire).toBeGreaterThan(-1);
-    expect(write).toBeLessThan(retire);
-    // And a failed write has to stop, not fall through to the retirement.
-    expect(body.slice(write, retire)).toContain("if (!written.delivered)");
+    expect(retire).toBeLessThan(write);
+    // And losing the CAS has to stop, not fall through to the line.
+    expect(body.slice(retire, write)).toContain("counts.raced += 1");
   });
 
   test("is armed when a Chatwoot account is connected, not only at boot", async () => {
@@ -630,6 +734,22 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(updated.inboundMessageId).toBeNull();
   });
 
+  test("stamps the claim, so the sweep dates the ATTEMPT and not the receipt", async () => {
+    // Written by tx1, through the real path. Without it the sweep has only `received_at` to judge a
+    // PROCESSING row by, and a redelivery that claims a long-stranded PENDING row would be reported
+    // as a lost message the instant it started working.
+    const convId = 8809;
+    await seedConversation(convId);
+    const row = await deliverThrough(convId, 9711, "incoming");
+    expect(row.claimedAt).not.toBeNull();
+    // At or after the receipt: it is a later event on the same row, never a copy of the receipt.
+    const claimedAt = row.claimedAt;
+    if (claimedAt === null) throw new Error("the claim was not stamped");
+    expect(claimedAt.getTime()).toBeGreaterThanOrEqual(
+      row.receivedAt.getTime(),
+    );
+  });
+
   async function deliverThrough(
     convId: number,
     messageId: number,
@@ -672,7 +792,12 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
     return suDb.chatwootWebhookDelivery.findFirstOrThrow({
       where: { tenantId, deliveryId },
-      select: { conversationId: true, inboundMessageId: true },
+      select: {
+        conversationId: true,
+        inboundMessageId: true,
+        claimedAt: true,
+        receivedAt: true,
+      },
     });
   }
 });

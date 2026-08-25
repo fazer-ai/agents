@@ -53,15 +53,24 @@ interface StrandedRow {
   deliveryId: string;
   event: string;
   receivedAt: Date;
+  claimedAt: Date | null;
   conversationId: number | null;
   inboundMessageId: number | null;
+}
+
+// The clock this row is judged by: when the CURRENT attempt started. A redelivery is allowed to
+// claim a row stranded on PENDING, so a live attempt can begin long after the receipt — dated to the
+// receipt it looks abandoned the instant it starts, and the sweep would report a lost message while
+// the process answering it is still running.
+function attemptStartedAt(row: StrandedRow): Date {
+  return row.claimedAt ?? row.receivedAt;
 }
 
 export interface SweepCounts {
   // Received too recently to call abandoned.
   tooFresh: number;
-  // Terminal, nothing lost: the delivery carried no inbound message, or the one it carried is at or
-  // below the handled watermark.
+  // Terminal, nothing lost: the delivery carried no inbound message, or a later turn posted a reply
+  // that covered the one it carried.
   closed: number;
   // Terminal, a customer message lost.
   lost: number;
@@ -69,7 +78,7 @@ export interface SweepCounts {
   raced: number;
 }
 
-// The conversation's mirror row, for the watermark and for the ids the flow line is filed under.
+// The conversation's mirror row, for the answered mark and for the ids the flow line is filed under.
 // Null when the mirror does not know this conversation — a delivery that died before the mirror
 // write — which the classifier reads as "not answered", because it is the reading that puts the row
 // in front of an operator rather than closing it quietly.
@@ -81,7 +90,7 @@ async function mirrorOf(
   conversationRowId: bigint;
   inboxId: bigint | null;
   agentId: bigint | null;
-  handledMessageId: number | null;
+  answeredMessageId: number | null;
   coalesces: boolean;
 } | null> {
   if (row.conversationId === null) return null;
@@ -95,7 +104,7 @@ async function mirrorOf(
           chatwootConversationId: conversationId,
         },
       },
-      select: { id: true, inboxId: true, lastHandledMessageId: true },
+      select: { id: true, inboxId: true, lastAnsweredMessageId: true },
     });
     if (!conv) return null;
     const inbox = conv.inboxId
@@ -114,7 +123,10 @@ async function mirrorOf(
       conversationRowId: conv.id,
       inboxId: conv.inboxId,
       agentId: inbox?.agentId ?? null,
-      handledMessageId: conv.lastHandledMessageId,
+      // The ANSWERED mark, never the handled watermark. That one means "never re-ANSWER this" and
+      // most of its writers advance it because no answer is coming, so reading it here closes real
+      // losses quietly — see the field's own note in ./stranded-delivery.ts.
+      answeredMessageId: conv.lastAnsweredMessageId,
       // Read NOW, not recorded THEN, and this is the one inexactness left in the sweep. It can be
       // wrong in both directions, and only one of them is harmless:
       //
@@ -127,8 +139,8 @@ async function mirrorOf(
       // Recording the path on the row at delivery time is what would close it, and it is a column
       // plus a write on the ack-adjacent path. Left undone deliberately: the second direction needs
       // an operator to have enabled debouncing in the half hour between a strand and the sweep, and
-      // the strict watermark comparison above already catches the case where the stranded row is
-      // the one that claimed the watermark.
+      // the strict comparison above already catches the case where the stranded row is the one that
+      // claimed the mark.
       coalesces: readDebounceConfig(agent?.settings).enabled,
     };
   });
@@ -185,6 +197,7 @@ export async function sweepStrandedDeliveries(
         deliveryId: true,
         event: true,
         receivedAt: true,
+        claimedAt: true,
         conversationId: true,
         inboundMessageId: true,
       },
@@ -194,28 +207,40 @@ export async function sweepStrandedDeliveries(
   for (const row of rows) {
     // Read the mirror only for a row that is actually stale, and only when it carried a message:
     // the fresh rows are the common case and the whole point of the age fence is not to touch them.
-    const preliminary = classifyStrandedDelivery(row, {
-      now,
-      staleAfterMs: STALE_AFTER_MS,
-      handledMessageId: null,
-      coalesces: false,
-    });
+    const preliminary = classifyStrandedDelivery(
+      {
+        attemptStartedAt: attemptStartedAt(row),
+        inboundMessageId: row.inboundMessageId,
+      },
+      {
+        now,
+        staleAfterMs: STALE_AFTER_MS,
+        answeredMessageId: null,
+        coalesces: false,
+      },
+    );
     if (preliminary === "in-flight") {
       counts.tooFresh += 1;
       continue;
     }
     const mirror =
       preliminary === "no-message" ? null : await mirrorOf(row, tenantId, base);
-    const verdict = classifyStrandedDelivery(row, {
-      now,
-      staleAfterMs: STALE_AFTER_MS,
-      handledMessageId: mirror?.handledMessageId ?? null,
-      coalesces: mirror?.coalesces ?? false,
-    });
+    const verdict = classifyStrandedDelivery(
+      {
+        attemptStartedAt: attemptStartedAt(row),
+        inboundMessageId: row.inboundMessageId,
+      },
+      {
+        now,
+        staleAfterMs: STALE_AFTER_MS,
+        answeredMessageId: mirror?.answeredMessageId ?? null,
+        coalesces: mirror?.coalesces ?? false,
+      },
+    );
     // Not reachable: the same row already answered "not in-flight" a few lines up, against the same
-    // clock and the same threshold — the second call only adds the watermark, which no branch above
-    // the age fence reads. Narrowed rather than asserted because the alternative is a throw on a
-    // path that cannot be taken.
+    // clock and the same threshold — the second call only adds the answered mark, which no branch
+    // above the age fence reads. Narrowed rather than asserted because the alternative is a throw on
+    // a path that cannot be taken.
     if (verdict === "in-flight") {
       counts.tooFresh += 1;
       continue;
@@ -249,17 +274,29 @@ async function record(
     return;
   }
 
-  // The line goes FIRST, and awaited. `finish` retires the ledger row, which is the line's only
-  // other trace: no later pass sees a terminal row, so a fire-and-forget emit that failed after the
-  // row went DEAD would lose the report permanently — the exact silence this sweep exists to
-  // remove. Written first, a failure leaves the row non-terminal and the next pass tries again.
+  // The CAS goes FIRST, and the line only if it wins. Ordering it the other way (an earlier round of
+  // this PR did) trades a real failure for a worse one: `writeFlowEvent` DISPATCHES the alert as it
+  // writes — Discord, webhook, an operator's phone — and nothing can retract that, so a line written
+  // before the CAS pages someone about a lost message every time a redelivery claimed the row in
+  // between. That race is a designed path here, not an infrastructure failure; the row moving under
+  // the sweep is precisely the outcome `finish` exists to detect.
+  //
+  // What the old ordering was protecting against is real but smaller: if the write fails after the
+  // CAS won, the row is DEAD with no line and no later pass revisits it. It is not a silence, though
+  // — the DEAD row is itself the record, and `WHERE status = 'DEAD'` is the list this sweep exists
+  // to produce. A failing write here is the tenant's own database refusing an insert one statement
+  // after accepting an update, which is an outage, not a race.
+  if (!(await finish(row, tenantId, "DEAD", base))) {
+    counts.raced += 1;
+    return;
+  }
   const written = await writeFlowEvent(
     {
       tenantId,
       turnId: crypto.randomUUID(),
       source: "inbox",
-      // Filed WITHOUT a conversation when the mirror does not know it — the line is still the only
-      // trace there is.
+      // Filed WITHOUT a conversation when the mirror does not know it. The line is worth writing
+      // unattached: the DEAD row carries the delivery id, this carries everything else about it.
       conversationId: mirror?.conversationRowId ?? null,
       agentId: mirror?.agentId ?? null,
       inboxId: mirror?.inboxId ?? null,
@@ -280,16 +317,12 @@ async function record(
     },
   );
   if (!written.delivered) {
-    logger.warn(
-      "chatwoot delivery sweep: could not record the loss for %s; leaving the row for the next pass",
+    // The row is already DEAD and stays in the list; what was lost is the conversation-level line
+    // and the alert. Loud, because nothing will retry it.
+    logger.error(
+      "chatwoot delivery sweep: %s is DEAD but its loss line could not be written; the row is in the DEAD list and nothing was alerted",
       label,
     );
-    return;
-  }
-
-  if (!(await finish(row, tenantId, "DEAD", base))) {
-    counts.raced += 1;
-    return;
   }
   counts.lost += 1;
   logger.error(

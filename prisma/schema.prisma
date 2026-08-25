@@ -335,15 +335,21 @@ model ChatwootWebhookDelivery {
   attempts           Int                   @default(0)
   receivedAt         DateTime              @default(now()) @map("received_at")
   processedAt        DateTime?             @map("processed_at")
-  // The Chatwoot display id this delivery was about. The ONLY thing the recovery sweep needs to
-  // re-arm the conversation's flush, and deliberately the only thing stored: the flush re-reads the
-  // messages from Chatwoot itself, so the event body never has to be persisted. Null on an event
-  // that names no conversation, and on every row written before this column existed.
+  // When the CURRENT attempt claimed this row (the tx1 CAS `PENDING -> PROCESSING`). The staleness
+  // clock for a row being worked, and it has to be separate from `receivedAt`: a redelivery is
+  // deliberately allowed to claim a row stranded on PENDING (see `recordAndProcessChatwootDelivery`),
+  // and measuring that live attempt from the ORIGINAL receipt makes it look abandoned the moment it
+  // starts. NULL = never claimed, so the row is still measured from receipt.
+  claimedAt          DateTime?             @map("claimed_at")
+  // The Chatwoot display id this delivery was about. What the stranded-delivery sweep files its
+  // report against, and deliberately the only thing stored: an id, never the event body, so nothing
+  // here can hold what the customer wrote. Null on an event that names no conversation, and on every
+  // row written before this column existed.
   conversationId     Int?                  @map("conversation_id")
   // The INBOUND message this delivery carried, when it carried one. Null on every event that is not
   // a customer message — a conversation update, the bot's own reply coming back around — which is
   // what lets the sweep tell a row where nothing was lost from one where a customer went unanswered.
-  // Compared against the conversation's handled watermark, never read for content: an id, like the
+  // Compared against the conversation's ANSWERED mark, never read for content: an id, like the
   // column above, and nothing here can hold what the customer wrote.
   inboundMessageId   Int?                  @map("inbound_message_id")
 
@@ -352,7 +358,7 @@ model ChatwootWebhookDelivery {
 
   @@unique([chatwootInstanceId, deliveryId])
   @@index([tenantId])
-  // Serves the recovery sweep, which asks for the oldest rows still on PROCESSING.
+  // Serves the stranded-delivery sweep, which asks for the oldest non-terminal rows.
   @@index([status, receivedAt])
   @@map("chatwoot_webhook_deliveries")
 }
@@ -503,6 +509,19 @@ model Conversation {
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.
   lastHandledMessageId   Int?      @map("last_handled_message_id")
+  // How far a TURN THAT RAN got, claimed by the two post gates through the same CAS as the mark
+  // above and never ahead of it. Precisely: a turn reached the point of posting covering up to this
+  // message. Not "a reply reached the customer" — the claim has to precede the send to be
+  // at-most-once, so an empty model reply or a guardrail suppression claims it and sends nothing.
+  //
+  // A separate column because the two answer different questions and most writers of the handled
+  // mark advance it precisely because NO TURN IS RUNNING (unauthorized contact, human takeover, a
+  // conversation that was already human-owned when the message arrived), so "handled" read as "a
+  // turn covered this" concludes a message was processed when nothing looked at it. The
+  // stranded-delivery sweep is the reader that needs the difference: it asks whether a message was
+  // lost to a PROCESS DEATH, and a burst a turn ran over was not (issue #228). NULL = no turn has
+  // ever reached the post gate here.
+  lastAnsweredMessageId  Int?      @map("last_answered_message_id")
   // Timestamp of the last INCOMING customer message — the WhatsApp 24h service-window anchor. A
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.

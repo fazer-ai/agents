@@ -193,6 +193,9 @@ export async function coalesceAndRunTurn(
       tenantId,
       conversationDbId: convDbId,
       toMessageId: targetWatermark,
+      // A post gate, and the only advance on this path that means a reply is going out. The tail
+      // advance below covers the outcomes where one is not.
+      answered: true,
       base,
     });
   };

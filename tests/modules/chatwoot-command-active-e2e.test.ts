@@ -479,9 +479,9 @@ describe.skipIf(!dbUp)("control commands: one reading of the agent", () => {
     });
     expect(row?.testActivatedAt).toBeNull();
     expect(posted.filter((p) => p.conversationId === 6010)).toEqual([]);
-    expect(
-      lines.some((c) => String(c[0]).includes("command not for this route")),
-    ).toBe(true);
+    expect(lines.some((c) => String(c[0]).includes("not for this route"))).toBe(
+      true,
+    );
     expect(lines.some((c) => String(c[0]).includes("not run"))).toBe(false);
   });
 });

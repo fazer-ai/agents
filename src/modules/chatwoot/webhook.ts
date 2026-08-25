@@ -84,6 +84,7 @@ import {
   resolveDebounceConfig,
 } from "@/modules/debounce/service";
 import { advanceHandledWatermark } from "@/modules/debounce/watermark";
+import { emitCommandDropped } from "@/modules/flowlog/command";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
 import { armCompaction } from "@/modules/memory/compact";
@@ -104,6 +105,7 @@ import {
 } from "@/modules/vision/service";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
 import type { ChatwootClient } from "./client";
+import { type CommandRoute, commandRoute } from "./command-route";
 import {
   type AgentBotIdentity,
   loadAgentBot,
@@ -1201,19 +1203,38 @@ async function maybeConsumeCommandOrGate(params: {
   // let a command arriving on ANOTHER persona's route unassign that working bot and hand the
   // conversation to one that cannot speak. The same for a delivery whose own route bot is unknown:
   // an unattributed route is not evidence that this is the right one.
-  const commandBelongsHere = async (): Promise<boolean> => {
-    const ourBotId = (await persona())?.chatwootAgentBotId ?? null;
-    return (
-      ourBotId !== null &&
-      params.agentBotId !== null &&
-      params.agentBotId === ourBotId
-    );
-  };
-  if (command !== null && commandActive && !(await commandBelongsHere())) {
+  //
+  // The two closed answers are not the same fact, and `commandRoute` is where that distinction is
+  // made once: `other_route` leaves the command to a persona that will run it, `no_persona` means
+  // there is no such persona and NO route will. Asking the question as a boolean here and again for
+  // the line that reports it is the #270 shape — one fact, two readings that can disagree.
+  const route: CommandRoute =
+    command !== null && commandActive
+      ? commandRoute(
+          (await persona())?.chatwootAgentBotId ?? null,
+          params.agentBotId,
+        )
+      : { reason: "ours" };
+  if (command !== null && route.reason !== "ours") {
     logger.info(
-      "chatwoot: command not for this route, leaving it to the inbox's persona (conv=%s)",
+      route.reason === "no_persona"
+        ? "chatwoot: /%s dropped (conv=%s) — the inbox's agent has no Chatwoot bot identity, so no route can run it"
+        : "chatwoot: /%s not for this route, leaving it to the inbox's persona (conv=%s)",
+      command,
       String(conversationId),
     );
+    emitCommandDropped({
+      tenantId,
+      conversationRowId: ctx.conv.id,
+      agentId: ctx.agentId,
+      inboxRowId: ctx.conv.inboxId,
+      command,
+      routeBot: params.agentBotId,
+      // The classifier's own answer, carried through: what the row says about the route is the
+      // value that decided it, never a second look at the same two ids.
+      drop: route,
+      base,
+    });
     return true;
   }
 
@@ -2663,21 +2684,6 @@ export async function processChatwootDelivery(
     }
   }
   const commandActive = command !== null && commandMode === "test";
-  // NOTE: A command that will not run is otherwise indistinguishable from ordinary customer text, in the
-  // logs and in the conversation alike — which is what left issue #270 undiagnosable from the
-  // outside. This is the only place that knows all three values the diagnosis needs, and past it
-  // the command is simply gone: `isTeste`/`isReset` are both false, so every later line describes a
-  // plain message. `mode=unresolved` means no inbox on either reading named an agent at all.
-  if (command !== null && !commandActive) {
-    logger.info(
-      "chatwoot: /%s not run (conv=%s) — control commands apply only to a test-mode agent (agent mode=%s, route bot=%s)",
-      command,
-      n.conversationId === null ? "?" : String(n.conversationId),
-      commandMode ?? "unresolved",
-      params.agentBotId === null ? "unknown" : String(params.agentBotId),
-    );
-  }
-
   // Mirror metadata (idempotent, monotonic, per-conversation locked) BEFORE the gate so the
   // runtime reads fresh state. Unconditional: applies to every event, not just actionable ones.
   const mirror = await mirrorChatwootEvent(
@@ -2687,6 +2693,37 @@ export async function processChatwootDelivery(
     base,
     { suppressInboundWatermark: commandActive },
   );
+
+  // NOTE: A command that will not run is otherwise indistinguishable from ordinary customer text, in the
+  // logs and in the conversation alike — which is what left issue #270 undiagnosable from the
+  // outside. This is the only place that knows all three values the diagnosis needs, and past it
+  // the command is simply gone: `isTeste`/`isReset` are both false, so every later line describes a
+  // plain message. `mode=unresolved` means no inbox on either reading named an agent at all.
+  //
+  // BELOW the mirror, and that is the whole reason it sits here rather than where the values are
+  // computed: the row hangs off the conversation, and the conversation row is what the mirror just
+  // created (issue #317). The process line moved with it so one place still knows the fact.
+  if (command !== null && !commandActive) {
+    logger.info(
+      "chatwoot: /%s not run (conv=%s) — control commands apply only to a test-mode agent (agent mode=%s, route bot=%s)",
+      command,
+      n.conversationId === null ? "?" : String(n.conversationId),
+      commandMode ?? "unresolved",
+      params.agentBotId === null ? "unknown" : String(params.agentBotId),
+    );
+    if (mirror.conversationRowId !== null) {
+      emitCommandDropped({
+        tenantId: params.tenantId,
+        conversationRowId: mirror.conversationRowId,
+        agentId: rt?.agentId ?? null,
+        inboxRowId: rt?.inboxId ?? mirror.inboxRowId,
+        command,
+        routeBot: params.agentBotId,
+        drop: { reason: "inactive", mode: commandMode ?? "unresolved" },
+        base,
+      });
+    }
+  }
 
   // Canonical realtime fan-out: only on an applied (non-stale) change, with the
   // post-write snapshot the mirror computed. Metadata only — no PII on the wire.

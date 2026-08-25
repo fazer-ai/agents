@@ -1563,17 +1563,21 @@
       "playground": "Playground"
     },
     "stage": {
+      "command": "Comando de controle",
       "contact_auth": "Autorização do contato",
       "debounce": "Agrupamento de mensagens",
       "embed": "Embedding",
       "generate": "Geração",
+      "guardrail": "Verificação de guardrails",
       "handoff": "Transferência",
+      "memory": "Memória",
       "normalize": "Reescrita para fala",
       "route": "Roteamento",
       "split": "Entrega",
       "stt": "Transcrição",
       "tool": "Chamada de ferramenta",
-      "tts": "Síntese de áudio"
+      "tts": "Síntese de áudio",
+      "vision": "Leitura de imagem"
     },
     "steps": "{{n}} etapas",
     "subtitle": "Fluxo de execução passo a passo de cada turno do agente: transcrição, geração, áudio, entrega e transferências.",

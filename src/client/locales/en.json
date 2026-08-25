@@ -1557,17 +1557,21 @@
       "playground": "Playground"
     },
     "stage": {
+      "command": "Control command",
       "contact_auth": "Contact authorization",
       "debounce": "Message grouping",
       "embed": "Embedding",
       "generate": "Generation",
+      "guardrail": "Guardrail check",
       "handoff": "Handoff",
+      "memory": "Memory",
       "normalize": "Speech rewrite",
       "route": "Routing",
       "split": "Delivery",
       "stt": "Transcription",
       "tool": "Tool call",
-      "tts": "Audio synthesis"
+      "tts": "Audio synthesis",
+      "vision": "Image reading"
     },
     "steps": "{{n}} steps",
     "subtitle": "Per-step execution flow for each agent turn: transcription, generation, audio, delivery and handoffs.",

@@ -8,6 +8,10 @@ export const FLOW_STAGES = [
   // inbox. It writes only when there is none — an inbox nobody bound consumes the message and
   // answers nothing, and until issue #318 the only trace was a process log line.
   "route",
+  // A control command (`/teste`, `/reset`) the delivery did NOT run. Also before the turn, and for
+  // the same reason as `route`: past the gate the command is gone and every later line describes a
+  // plain message, so the console had nothing to show for it (issue #317).
+  "command",
   "stt", // inbound voice-note transcription
   "vision", // inbound image/document extraction
   "embed", // RAG embedding (search / ingest)

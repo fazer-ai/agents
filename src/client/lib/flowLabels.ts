@@ -8,8 +8,12 @@ export function flowStageLabel(stage: string, t: TFunction): string {
   switch (stage) {
     case "route":
       return t("logs.stage.route", "Routing");
+    case "command":
+      return t("logs.stage.command", "Control command");
     case "stt":
       return t("logs.stage.stt", "Transcription");
+    case "vision":
+      return t("logs.stage.vision", "Image reading");
     case "embed":
       return t("logs.stage.embed", "Embedding");
     case "debounce":
@@ -18,6 +22,8 @@ export function flowStageLabel(stage: string, t: TFunction): string {
       return t("logs.stage.contact_auth", "Contact authorization");
     case "generate":
       return t("logs.stage.generate", "Generation");
+    case "guardrail":
+      return t("logs.stage.guardrail", "Guardrail check");
     case "tool":
       return t("logs.stage.tool", "Tool call");
     case "normalize":
@@ -28,6 +34,8 @@ export function flowStageLabel(stage: string, t: TFunction): string {
       return t("logs.stage.split", "Delivery");
     case "handoff":
       return t("logs.stage.handoff", "Handoff");
+    case "memory":
+      return t("logs.stage.memory", "Memory");
     default:
       return stage;
   }

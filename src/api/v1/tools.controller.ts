@@ -239,7 +239,7 @@ export const toolsController = new Elysia({
         "Create tool",
         "Create a custom HTTP tool definition for the current tenant.",
       ),
-      response: errors(400, 401, 403, 404, 409),
+      response: errors(400, 401, 403, 404, 409, 422),
       body: createBody,
     },
   )
@@ -259,7 +259,7 @@ export const toolsController = new Elysia({
         "Update tool",
         "Update fields of a custom HTTP tool definition.",
       ),
-      response: errors(400, 401, 403, 404, 409),
+      response: errors(400, 401, 403, 404, 409, 422),
       params: t.Object({
         id: t.String({
           description: "Tool definition id (BigInt as a string).",

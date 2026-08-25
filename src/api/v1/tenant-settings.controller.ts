@@ -114,7 +114,7 @@ export const tenantSettingsController = new Elysia({
         "Update embedding settings",
         "Updates the tenant's RAG embedding configuration.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .put(
@@ -161,7 +161,7 @@ export const tenantSettingsController = new Elysia({
         "Update Langfuse settings",
         "Updates the tenant's Langfuse tracing configuration.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .post(
@@ -197,7 +197,7 @@ export const tenantSettingsController = new Elysia({
         "Test Langfuse connection",
         "Probes the Langfuse instance with the supplied keys without saving them.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 422),
     },
   )
   .put(
@@ -238,7 +238,7 @@ export const tenantSettingsController = new Elysia({
         "Update company profile",
         "Updates the letterhead the tenant's issued documents carry.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .post(
@@ -260,7 +260,7 @@ export const tenantSettingsController = new Elysia({
         "Upload company logo",
         "Stores the letterhead logo used by document templates whose header shows one.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .delete(

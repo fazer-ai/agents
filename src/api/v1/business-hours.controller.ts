@@ -187,7 +187,7 @@ export const businessHoursController = new Elysia({
         "Create business hours",
         "Create a new business-hours schedule for the current tenant.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       body: createBody,
     },
   )
@@ -207,7 +207,7 @@ export const businessHoursController = new Elysia({
         "Update business hours",
         "Update a business-hours schedule name, timezone, or windows.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         id: t.String({
           description: "Business-hours schedule id (BigInt as a string).",

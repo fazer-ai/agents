@@ -102,7 +102,7 @@ export const integrationsAdminController = new Elysia({
             "Vault reference (vault:<id>) of a connected google_oauth credential.",
         }),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .get(
@@ -127,7 +127,7 @@ export const integrationsAdminController = new Elysia({
             "Vault reference (vault:<id>) of a connected google_oauth credential.",
         }),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .get(
@@ -235,7 +235,7 @@ export const integrationsAdminController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .patch(
@@ -299,7 +299,7 @@ export const integrationsAdminController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   // NOTE: Rotation is a POST because it MUTATES: the old URL stops resolving the moment it commits.

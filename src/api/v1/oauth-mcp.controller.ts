@@ -208,7 +208,7 @@ export const oauthMcpVaultController = new Elysia({
         "Discovers the MCP server OAuth configuration, registers a client via DCR if needed, and builds the authorization URL and signed state to start the consent flow for an mcp_oauth vault entry.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404, 502),
+      response: errors(400, 401, 403, 404, 422, 502),
     },
   )
   // Connection status (never returns tokens or the client secret).
@@ -226,7 +226,7 @@ export const oauthMcpVaultController = new Elysia({
         "Returns the connection state of an mcp_oauth vault entry; never returns tokens or the client secret.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   // Disconnect: drop the tokens but keep the discovered config + registered client so a reconnect
@@ -262,7 +262,7 @@ export const oauthMcpVaultController = new Elysia({
         "Drops the stored tokens for an mcp_oauth vault entry, keeping the discovered OAuth config and registered client.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   );
 

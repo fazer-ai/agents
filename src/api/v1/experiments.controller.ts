@@ -147,7 +147,7 @@ export const experimentsController = new Elysia({
         "Create experiment",
         "Create a prompt A/B experiment with one or more variants.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       body: t.Object({
         name: t.String({
           minLength: 1,
@@ -203,7 +203,7 @@ export const experimentsController = new Elysia({
         "Update experiment",
         "Update an experiment name, target agent, variants, or enabled flag.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         id: t.String({ description: "Experiment id (BigInt as a string)." }),
       }),

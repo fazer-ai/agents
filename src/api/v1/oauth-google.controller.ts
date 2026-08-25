@@ -134,7 +134,7 @@ export const oauthGoogleVaultController = new Elysia({
           { description: "Google OAuth scopes to request during consent." },
         ),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   // Connection status (never returns tokens or the client secret).
@@ -152,7 +152,7 @@ export const oauthGoogleVaultController = new Elysia({
         "Returns the connection state of a google_oauth vault entry; never returns tokens or the client secret.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   // Disconnect: best-effort revoke the refresh token, then drop the tokens (keep clientId/secret).
@@ -182,7 +182,7 @@ export const oauthGoogleVaultController = new Elysia({
         "Best-effort revokes the refresh token and drops the stored tokens for a google_oauth vault entry, keeping the client id and secret.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   );
 

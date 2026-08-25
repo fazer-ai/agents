@@ -169,7 +169,7 @@ export const mcpConnectionsController = new Elysia({
         "Registers a new consumed MCP server connection for the tenant.",
       ),
       body: createBody,
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .patch(
@@ -190,7 +190,7 @@ export const mcpConnectionsController = new Elysia({
       ),
       params: idParams,
       body: writeBody,
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .delete(

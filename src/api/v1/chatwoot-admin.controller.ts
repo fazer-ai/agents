@@ -117,7 +117,7 @@ export const chatwootAdminController = new Elysia({
             "Chatwoot admin/user access token; encrypted at rest, never returned.",
         }),
       }),
-      response: errors(400, 401, 403, 404, 409, 502),
+      response: errors(400, 401, 403, 404, 409, 422, 502),
     },
   )
   // Rotate the deployment's admin token (validated against the live deployment before it persists).
@@ -145,7 +145,7 @@ export const chatwootAdminController = new Elysia({
           description: "New admin token; encrypted at rest, never returned.",
         }),
       }),
-      response: errors(400, 401, 403, 404, 502),
+      response: errors(400, 401, 403, 404, 422, 502),
     },
   )
   // Tear down the whole Chatwoot connection (the "switch servers" path): wipes the local mirror
@@ -205,7 +205,7 @@ export const chatwootAdminController = new Elysia({
           description: "The acting user's password (step-up confirmation).",
         }),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   // Re-list the accounts the deployment's STORED token can reach (for the "manage accounts" editor —
@@ -250,7 +250,7 @@ export const chatwootAdminController = new Elysia({
           description: "The Chatwoot account ids that should be connected.",
         }),
       }),
-      response: errors(400, 401, 403, 404, 502),
+      response: errors(400, 401, 403, 404, 422, 502),
     },
   )
   .delete(
@@ -345,7 +345,7 @@ export const chatwootAdminController = new Elysia({
           description: "The acting user's password (step-up confirmation).",
         }),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .post(
@@ -549,7 +549,7 @@ export const chatwootAdminController = new Elysia({
             "Agent id (BigInt string) to bind, or null to unbind the inbox.",
         }),
       }),
-      response: errors(400, 401, 403, 404, 502),
+      response: errors(400, 401, 403, 404, 422, 502),
     },
   )
   // Re-provision + reconnect the bound inbox's persona bot (recovery when the bot was deleted on

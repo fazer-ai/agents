@@ -74,7 +74,7 @@ export const apiKeysController = new Elysia({
             "Human-readable label for the key (1 to 120 characters).",
         }),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .delete(

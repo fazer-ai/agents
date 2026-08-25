@@ -123,7 +123,7 @@ export const vaultController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403, 404, 409),
+      response: errors(400, 401, 403, 404, 409, 422),
     },
   )
   .put(
@@ -177,7 +177,7 @@ export const vaultController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403, 404, 409),
+      response: errors(400, 401, 403, 404, 409, 422),
     },
   )
   .get(
@@ -196,7 +196,7 @@ export const vaultController = new Elysia({
         "Returns where a vault entry is referenced across the tenant's configuration.",
       ),
       params: idParams,
-      response: errors(401, 403, 404),
+      response: errors(401, 403, 404, 422),
     },
   )
   // Test-on-save: probe a typed value (pre-save) or a stored credential by id. Stateless for the
@@ -244,7 +244,7 @@ export const vaultController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 422),
     },
   )
   .post(
@@ -276,7 +276,7 @@ export const vaultController = new Elysia({
           ),
         }),
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .delete(
@@ -292,6 +292,6 @@ export const vaultController = new Elysia({
         "Permanently removes a tenant secret by id.",
       ),
       params: idParams,
-      response: errors(401, 403, 404),
+      response: errors(401, 403, 404, 422),
     },
   );

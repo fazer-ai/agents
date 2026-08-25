@@ -124,7 +124,7 @@ export const documentsController = new Elysia({
       // and one past 2^63-1 is refused by the range check rather than by the transport. A status the
       // route returns and the contract does not name is a status no generated client knows how to
       // handle — the same reason the issue route names 409.
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .post(
@@ -182,7 +182,7 @@ export const documentsController = new Elysia({
       // 409 is a real answer here: an idempotency key can land on a row that was revoked, that could
       // not be numbered, or that nobody managed to store. A status the route returns and the
       // contract does not name is a status no generated client knows how to handle.
-      response: errors(400, 401, 403, 404, 409),
+      response: errors(400, 401, 403, 404, 409, 422),
     },
   )
   .post(
@@ -206,7 +206,7 @@ export const documentsController = new Elysia({
         "Revoke document",
         "Revokes an issued document; its PDF stops being served.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .get(
@@ -243,6 +243,6 @@ export const documentsController = new Elysia({
         "Download document PDF",
         "Streams the rendered PDF for inline viewing.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   );

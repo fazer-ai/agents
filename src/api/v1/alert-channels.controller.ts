@@ -117,7 +117,7 @@ export const alertChannelsController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .patch(
@@ -191,7 +191,7 @@ export const alertChannelsController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .delete(

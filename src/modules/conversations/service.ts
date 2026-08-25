@@ -13,6 +13,7 @@ import {
   parseSchedule,
   type ScheduleException,
 } from "@/modules/business-hours/hours";
+import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
@@ -527,6 +528,7 @@ async function loadConvRef(
   lastError: string | null;
   lastErrorAt: Date | null;
   testActivatedAt: Date | null;
+  contactId: bigint | null;
   lastFollowUpAt: Date | null;
   inbox: {
     id: bigint;
@@ -555,6 +557,7 @@ async function loadConvRef(
         lastError: true,
         lastErrorAt: true,
         testActivatedAt: true,
+        contactId: true,
         lastFollowUpAt: true,
         inbox: {
           select: {
@@ -834,6 +837,25 @@ export async function getConversationDetail(
         )?.chatwootAgentBotId ?? null)
       : null;
 
+  // The EPISODE's activation, not this row's (issue #261). A channel-redirect episode is two
+  // conversations of one contact and `/teste` stamps only the one it was typed in, so the row alone
+  // answers for half of it. Both readers below take this: the badge the console renders, and the
+  // follow-up estimate — and they have to agree with the gates in `webhook.ts`, which now answer the
+  // episode's question. A badge reading "awaiting /teste" over an agent that is answering is the
+  // console contradicting what the operator can see in the conversation.
+  const episodeActivatedAt = await episodeTestActivatedAt({
+    tenantId,
+    instanceId: conv.chatwootInstanceId,
+    cfg: readChannelRedirectConfig(agent?.settings),
+    agentMode: agent?.mode ?? "production",
+    conv: {
+      testActivatedAt: conv.testActivatedAt,
+      contactId: conv.contactId,
+      chatwootInboxId: conv.inbox?.chatwootInboxId ?? null,
+    },
+    base,
+  });
+
   // Follow-up journey (item 17): the agent's configured step count + the next PENDING follow-up job
   // for this conversation's thread. The job's runAt is an ESTIMATE — it fires on a background worker.
   let followUp: ConversationDetail["followUp"] = null;
@@ -858,7 +880,7 @@ export async function getConversationDetail(
       followUpEnabled: cfg.enabled,
       managedByRedirect,
       agentMode: agent?.mode ?? "production",
-      testActivatedAt: conv.testActivatedAt,
+      testActivatedAt: episodeActivatedAt,
       status: conv.status,
       assigneeType: conv.assigneeType,
       // The strict ownership answer, which this reader is the one that needs: nothing runs after the
@@ -1229,8 +1251,8 @@ export async function getConversationDetail(
       return parsed.success ? parsed.data.model : null;
     })(),
     outOfHours,
-    testActivatedAt: conv.testActivatedAt
-      ? conv.testActivatedAt.toISOString()
+    testActivatedAt: episodeActivatedAt
+      ? episodeActivatedAt.toISOString()
       : null,
     followUp,
     appointmentReminders,

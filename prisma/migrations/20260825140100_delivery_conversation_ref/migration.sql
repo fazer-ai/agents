@@ -46,6 +46,16 @@ ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "claimed_at" TIMESTAMP(3);
 --
 -- A delivery genuinely in flight during this migration is being stranded by the same deploy that
 -- runs it, so DEAD is the right answer for it too.
+--
+-- These rows land in the DEAD list WITHOUT the conversation-level log line and alert the sweep
+-- writes, and that is deliberate rather than an oversight. Nothing here knows what they carried:
+-- both id columns are being added by this same migration and neither is backfilled, so a line for
+-- one of these could not name a conversation, a message, or even whether a customer was waiting. A
+-- deploy-time burst of error-level alerts saying "some old deliveries were abandoned" would page an
+-- operator with nothing to act on. They are distinguishable from everything the sweep closes later,
+-- which is what an operator needs:
+--
+--   SELECT * FROM chatwoot_webhook_deliveries WHERE status = 'DEAD' AND conversation_id IS NULL;
 UPDATE "chatwoot_webhook_deliveries"
    SET status = 'DEAD', processed_at = now()
  WHERE status IN ('PENDING', 'PROCESSING');

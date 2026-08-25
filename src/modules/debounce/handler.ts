@@ -270,6 +270,7 @@ export async function coalesceAndRunTurn(
     try {
       await retireCoveredDeliveries({
         tenantId,
+        instanceId,
         conversationId,
         messageIds: pending.map((m) => m.id),
         base,

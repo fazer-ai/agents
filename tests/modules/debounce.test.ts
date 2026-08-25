@@ -685,6 +685,60 @@ describe.skipIf(!dbUp)("debounce", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: stranded.id } });
   });
 
+  test("a flush does not retire a strand on another Chatwoot ACCOUNT", async () => {
+    // Display ids and message ids are numbered per Chatwoot account, so one tenant with two
+    // connected accounts genuinely has two conversation 884s carrying two message 1s — the mirror
+    // says so by keying conversations on [tenant, instance, conversation]. The retirement is a
+    // blind-write by those ids, so without the instance in its predicate a burst on one account
+    // closes a real loss on the other, and closes it permanently: the row goes terminal and no
+    // later sweep pass ever looks at it again.
+    const convId = 884;
+    await seedConversation(convId);
+    const other = await seedChatwootInstance(suDb, {
+      tenantId,
+      accountId: 4242,
+      baseUrl: "https://chat.other.example",
+      adminToken: encryptJson("ADMIN"),
+    });
+    const strandedElsewhere = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        // Same tenant, same conversation number, same message number. Different ACCOUNT.
+        chatwootInstanceId: other.id,
+        deliveryId: `flush-other-instance-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 1, content: "oi" }])],
+          sent: [],
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: strandedElsewhere.id },
+      select: { status: true },
+    });
+    expect(row.status).toBe("PROCESSING");
+
+    await suDb.chatwootWebhookDelivery.delete({
+      where: { id: strandedElsewhere.id },
+    });
+  });
+
   test("a flush leaves a strand the burst did NOT contain alone", async () => {
     // The regression test for the finding that killed the watermark design for good. Message 1's
     // delivery died. Message 2 arrived while the conversation was human-owned, so the webhook

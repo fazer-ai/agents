@@ -3197,6 +3197,14 @@ export async function processChatwootDelivery(
   // stranded-delivery sweep (./delivery-sweep.ts): it does not replay the event, it REPORTS the row,
   // so the payload never had to be stored. Answering the customer is issue #295, and the reason it
   // is not done from a sweep is written down there and at the head of that file.
+  //
+  // NOTE: By ID and with no CAS, which matters for one race and is the right side of it. A turn that
+  // outlives the sweep's staleness threshold (nothing bounds a model call or a tool here) has its
+  // row judged abandoned and marked DEAD while this process is still working, and then reaches this
+  // line. Winning here is what leaves the row TRUE — the delivery did complete, late — so the
+  // correction outlives the sweep's verdict. What cannot be taken back is the alert the sweep
+  // already dispatched, which is why the threshold is generous; the residue is one false alert on a
+  // pathological turn, against a row that ends up saying the right thing.
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.chatwootWebhookDelivery.update({
       where: { id: params.deliveryRowId },

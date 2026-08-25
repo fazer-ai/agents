@@ -30,9 +30,15 @@ import {
 
 // Longer than any legitimate delivery. There is no number to derive it from — the direct path runs
 // the agent turn INSIDE `processChatwootDelivery` and neither the model call nor the tools have a
-// timeout — so it is a policy choice, and it is cheap to be generous with: nothing here acts on the
-// conversation, so judging a live delivery early costs a row marked terminal a few minutes too
-// soon, not a second turn.
+// timeout — so it is a policy choice, and generous on purpose.
+//
+// What being early costs is one false ALERT, not a second turn: nothing here acts on the
+// conversation. A turn still running past this mark has its row marked DEAD and its loss
+// dispatched, and then the turn finishes and `processChatwootDelivery`'s tx2 writes PROCESSED over
+// it — by id, deliberately, so the row ends up saying the true thing (see the note there). The
+// alert is what cannot be recalled. Thirty minutes puts that outside anything but a pathological
+// turn; closing it properly needs the processor to heartbeat, which is machinery this does not
+// carry.
 const STALE_AFTER_MS = 30 * 60 * 1000;
 // Cadence of the sweep. Recovery is not on the table, so what this buys is how fast an operator
 // learns; minutes rather than hours because the answer is "go read this conversation".
@@ -64,6 +70,12 @@ function sysCtx(tenantId: bigint): TenantContext {
 // retiring there would erase the evidence of precisely the crash window the sweep exists to catch.
 export async function retireCoveredDeliveries(params: {
   tenantId: bigint;
+  // The Chatwoot ACCOUNT, and it is part of the key rather than context. Display ids and message ids
+  // are numbered per account, so a tenant with two connected accounts has two conversation 41s — the
+  // mirror says as much, keying conversations on `[tenantId, chatwootInstanceId,
+  // chatwootConversationId]`. Left out, a burst on one account retires a genuine strand on the
+  // other and hides that loss for good.
+  instanceId: bigint;
   // Chatwoot display id, which is what the ledger column holds.
   conversationId: number;
   // Chatwoot ids of the messages the turn ran over.
@@ -76,6 +88,7 @@ export async function retireCoveredDeliveries(params: {
     (db) =>
       db.chatwootWebhookDelivery.updateMany({
         where: {
+          chatwootInstanceId: params.instanceId,
           conversationId: params.conversationId,
           inboundMessageId: { in: params.messageIds },
           status: { in: ["PENDING", "PROCESSING"] },

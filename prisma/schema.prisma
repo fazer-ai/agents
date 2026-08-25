@@ -493,41 +493,29 @@ model Conversation {
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.
   lastInboundAt          DateTime? @map("last_inbound_at")
-  // Attendance watermarks: the two ends of a human answer, mirrored from the same events the
-  // inbound watermark is (message_created, never message_updated), so the analytics side can ask
-  // how long a customer waited without reading a message body or paying for a model.
+  // Chatwoot's own first-response SLA, mirrored rather than derived. Chatwoot computes both from
+  // the messages table and ships them on every conversation payload, so the pair answers "how long
+  // did the team take to answer" on an inbox the agent never touched — the one question the
+  // dashboard could not ask, because every other KPI here is derived from LlmUsage.
   //
-  // firstInboundAt / firstHumanReplyAt anchor the conversation's first-response time, which is a
-  // property of the attendance and does not change because the dialogue continued. They are never
-  // cleared, and they move only DOWNWARD — a delivery that arrives late carrying an earlier clock
-  // corrects the anchor, which is the one revision an out-of-order retry has to be able to make.
-  // lastHumanReplyAt only advances, and is the human counterpart of lastInboundAt. The rule is one
-  // function, with the orderings as a table: src/modules/chatwoot/attendance-watermarks.ts.
+  // Mirrored and not computed, deliberately. A first-response watermark maintained on this side
+  // would be a state machine fed by webhooks, and would have to be right about every ordering they
+  // can arrive in (a retry delivering the reply before the question, a conversation the mirror
+  // first meets mid-dialogue, a /reset). Chatwoot has the messages table and answers from it. Both
+  // values are immutable at the source once set, so a late delivery carries the same numbers as the
+  // one it duplicates and the write is idempotent whatever order it lands in.
   //
-  // The author is `isNewHumanAgentMessage` (an outgoing, non-private, non-reaction message whose
-  // sender is a `user`) — the SAME predicate the memory ingestion uses, so "the team answered" means
-  // one thing in this codebase. Our own bot's replies are deliberately excluded: they are already
-  // counted through LlmUsage, and folding them in here would make an automated answer read as a
-  // human response time.
+  // chatwootCreatedAt is the conversation's creation at the SOURCE (never our row's createdAt,
+  // which dates the first webhook we happened to see). chatwootFirstReplyAt is
+  // `first_reply_created_at`: the first message passing Chatwoot's `Message#valid_first_reply?`,
+  // which excludes an AgentBot's reply — so our own answers stay out of a HUMAN response time and
+  // go on being counted through LlmUsage.
   //
-  // firstInboundAt stays NULL FOREVER on a conversation that already carried customer traffic when
-  // these columns were added: its next message is not its first, and dating it as one would put a
-  // mid-conversation interval into the service level. That is what excludes those rows from the
-  // sample, since the KPI needs both ends.
-  firstInboundAt         DateTime? @map("first_inbound_at")
-  firstHumanReplyAt      DateTime? @map("first_human_reply_at")
-  lastHumanReplyAt       DateTime? @map("last_human_reply_at")
-  // The earliest team message on the record, whatever it was an answer to. Kept BESIDE
-  // firstHumanReplyAt rather than instead of it because the two answer different questions and
-  // neither survives alone: the anchored one is empty when the deliveries arrived out of order, and
-  // the unanchored one cannot tell an answer from the business opening the conversation. The KPI
-  // takes the EARLIER of the two, admitting this one only when it is itself at or after the anchor.
-  firstHumanMessageAt    DateTime? @map("first_human_message_at")
-  // Provenance bit for the first-response sample. True only when the local mirror was created by
-  // Chatwoot's conversation_created event, before any message could be accepted for that row.
-  // Migration rows and rows first discovered through a message stay false permanently: neither a
-  // later inbound nor /reset can turn mid-conversation traffic into a first-response sample.
-  attendanceTrackedFromStart Boolean @default(false) @map("attendance_tracked_from_start")
+  // NULL = the payload never carried it: a conversation with no qualifying reply yet, or one no
+  // event has been seen for since these columns existed. The KPI needs both, and reports the size
+  // of its sample beside the median so a partial backfill can be seen instead of assumed away.
+  chatwootCreatedAt      DateTime? @map("chatwoot_created_at")
+  chatwootFirstReplyAt   DateTime? @map("chatwoot_first_reply_at")
   // Watermark for follow-up single-shot semantics: set after each follow-up (sent or silenced).
   // Another follow-up can only fire once the client speaks again (lastInboundAt > lastFollowUpAt).
   // NULL = no follow-up has ever been attempted for this conversation.

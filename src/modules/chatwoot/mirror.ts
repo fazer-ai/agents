@@ -5,8 +5,7 @@ import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
-import { decideAttendanceWatermarks } from "./attendance-watermarks";
-import { isNewHumanAgentMessage, isNewIncomingMessage } from "./normalize";
+import { isNewIncomingMessage } from "./normalize";
 import { decideConversationWrites, type StatePayload } from "./state-order";
 import type { NormalizedChatwootEvent } from "./types";
 
@@ -108,13 +107,20 @@ export async function mirrorChatwootEvent(
       ? (newLastEventAt ?? now)
       : null;
 
-  // The human counterpart, from the same event class and on the same clock. Deliberately NOT
-  // suppressed by `suppressInboundWatermark`: that flag is about a customer's control command not
-  // counting as engagement, and an operator's reply is engagement whatever the customer typed
-  // before it.
-  const humanReplyAt = isNewHumanAgentMessage(n)
-    ? (newLastEventAt ?? now)
-    : null;
+  // Chatwoot's first-response SLA, taken from the payload as it stands. Not ordered against what is
+  // stored and not guarded by the staleness decision below: both values are computed at the source
+  // from the messages table and never revised, so every delivery mentioning a conversation carries
+  // the same two readings, and the latest to arrive writes what the first one would have. Absent
+  // (`null`) means the payload said nothing — a conversation with no qualifying reply yet, or a
+  // message event with no `conversation` — and must never wipe a stored reading.
+  const slaWrites: {
+    chatwootCreatedAt?: Date;
+    chatwootFirstReplyAt?: Date;
+  } = {};
+  if (n.conversationCreatedAt != null)
+    slaWrites.chatwootCreatedAt = n.conversationCreatedAt;
+  if (n.firstReplyCreatedAt != null)
+    slaWrites.chatwootFirstReplyAt = n.firstReplyCreatedAt;
 
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     const contactId = await upsertContact(
@@ -147,15 +153,10 @@ export async function mirrorChatwootEvent(
           status: true,
           resolvedBy: true,
           resolvedByAt: true,
-          // Read so `decideAttendanceWatermarks` can order this event against what is stored: a
-          // "first" column is not simply write-if-null (an out-of-order delivery has to lower it,
-          // and a conversation older than the columns must never be anchored at all).
-          firstInboundAt: true,
-          lastInboundAt: true,
-          firstHumanReplyAt: true,
-          lastHumanReplyAt: true,
-          firstHumanMessageAt: true,
-          attendanceTrackedFromStart: true,
+          // Read so the stale branch can tell a reading it already has from one it does not, and
+          // skip the UPDATE in the common case rather than rewriting the same two values.
+          chatwootCreatedAt: true,
+          chatwootFirstReplyAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -199,23 +200,32 @@ export async function mirrorChatwootEvent(
         // taken by every out-of-order delivery, and clearing a column that is already null would
         // add an UPDATE to each one.
         // NOTE: And a second exception, for the same reason stated the other way round: the ORDER
-        // this event lost is about the conversation's state, not about the message it carries. A
-        // customer message or a team reply mentioned by a stale delivery still happened, and for a
-        // watermark that anchors an attendance the earliest reading has to win even when it arrives
-        // last. `decideAttendanceWatermarks` returns {} whenever this event teaches nothing, which
-        // is every other stale delivery — so this branch still writes nothing in the common case.
-        const staleWatermarks = decideAttendanceWatermarks(existing, {
-          inboundAt,
-          humanReplyAt,
-        });
+        // this event lost is about the conversation's STATE. The SLA pair it carries is not state
+        // this side maintains — it is two immutable readings Chatwoot computed from its own
+        // messages table — so losing the ordering says nothing about them, and a row that has never
+        // seen them yet is exactly the row a late delivery can still teach. Compared rather than
+        // written blind so the common stale delivery, which repeats what is stored, adds no UPDATE.
+        const staleSla: typeof slaWrites = {};
+        if (
+          slaWrites.chatwootCreatedAt != null &&
+          slaWrites.chatwootCreatedAt.getTime() !==
+            existing.chatwootCreatedAt?.getTime()
+        )
+          staleSla.chatwootCreatedAt = slaWrites.chatwootCreatedAt;
+        if (
+          slaWrites.chatwootFirstReplyAt != null &&
+          slaWrites.chatwootFirstReplyAt.getTime() !==
+            existing.chatwootFirstReplyAt?.getTime()
+        )
+          staleSla.chatwootFirstReplyAt = slaWrites.chatwootFirstReplyAt;
         const clearsOrigin =
           dropsResolutionOrigin && existing.resolvedBy != null;
-        if (clearsOrigin || Object.keys(staleWatermarks).length > 0) {
+        if (clearsOrigin || Object.keys(staleSla).length > 0) {
           await db.conversation.update({
             where: { id: existing.id },
             data: {
               ...(clearsOrigin ? { resolvedBy: null, resolvedByAt: null } : {}),
-              ...staleWatermarks,
+              ...staleSla,
             },
           });
         }
@@ -252,22 +262,10 @@ export async function mirrorChatwootEvent(
             chatwootStatusAt: decision.statusAt,
             chatwootAssigneeAt: decision.assigneeAt,
             lastInboundAt: inboundAt,
-            // Creation by a message proves only that this is the first message WE observed. Only
-            // conversation_created proves the mirror was present before source traffic began.
-            attendanceTrackedFromStart: n.event === "conversation_created",
-            // The same rule as the two branches below, asked with nothing stored: a row we are
-            // creating has been observed from before its first message by construction.
-            ...decideAttendanceWatermarks(
-              {
-                attendanceTrackedFromStart: n.event === "conversation_created",
-                firstInboundAt: null,
-                lastInboundAt: null,
-                firstHumanReplyAt: null,
-                lastHumanReplyAt: null,
-                firstHumanMessageAt: null,
-              },
-              { inboundAt, humanReplyAt },
-            ),
+            // A row created mid-dialogue needs no special case here: what it stores is what
+            // Chatwoot measured over the whole conversation, not what we happened to witness.
+            ...slaWrites,
+
             ...(n.customAttributes
               ? {
                   customAttributes: n.customAttributes as Prisma.InputJsonValue,
@@ -341,7 +339,7 @@ export async function mirrorChatwootEvent(
             ? { chatwootAssigneeAt: decision.assigneeAt }
             : {}),
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
-          ...decideAttendanceWatermarks(existing, { inboundAt, humanReplyAt }),
+          ...slaWrites,
           // NOTE: The bags are ASSIGNED (the payload always ships the whole jsonb), but only when the
           // event carried one: a payload without them must not wipe the stored snapshot.
           ...(decision.unversioned && n.customAttributes

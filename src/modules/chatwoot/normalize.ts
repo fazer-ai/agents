@@ -28,6 +28,25 @@ function float(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
+// A Chatwoot timestamp field that is NOT one of the push_timestamps trio, read off the conversation
+// payload. Two spellings reach us for the same column and both are Chatwoot's own: the jbuilder
+// partials render `created_at` as epoch seconds (`.to_i`), while `first_reply_created_at` is a
+// plain ActiveRecord attribute and serializes as an ISO-8601 string. Accept either, reject anything
+// that does not parse — a field we cannot read must read as absent, never as the epoch.
+function ts(v: unknown): Date | null {
+  if (typeof v === "number" && Number.isFinite(v))
+    return v > 0 ? new Date(v * 1000) : null;
+  if (typeof v === "string") {
+    if (/^\d+$/.test(v)) {
+      const sec = Number(v);
+      return sec > 0 ? new Date(sec * 1000) : null;
+    }
+    const parsed = new Date(v);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
 // NOTE: undefined means "this payload said nothing", so the mirror keeps the stored bag instead of
 // wiping it; `{}` is a real "no attributes" and DOES clear it.
 function attrs(v: unknown): Record<string, unknown> | undefined {
@@ -154,6 +173,12 @@ export function normalizeChatwootEvent(
   // NOTE: float() and not num() — `updated_at` ships as `to_f`, so it carries a fraction, and num()
   // parses ids (its string branch is integers only).
   normalized.conversationUpdatedAt = conv ? float(conv.updated_at) : null;
+  // The service level of the human half of an attendance, as CHATWOOT computes it — see the field
+  // notes in types.ts for why these two are read instead of derived from the events we receive.
+  normalized.conversationCreatedAt = conv ? ts(conv.created_at) : null;
+  normalized.firstReplyCreatedAt = conv
+    ? ts(conv.first_reply_created_at)
+    : null;
   return normalized;
 }
 

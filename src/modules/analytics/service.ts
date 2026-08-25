@@ -237,15 +237,22 @@ export interface DashboardKpis {
   involvementRate: number;
   resolutionRate: number;
   automationRate: number;
-  // MEDIAN seconds between the customer's first message and the team's first reply, over the
-  // conversations that have both watermarks. Median and not mean: one conversation opened on a
-  // Friday night and answered on Monday moves a mean by hours and says nothing about the week.
+  // MEDIAN seconds from the conversation's creation to the team's first reply — Chatwoot's own
+  // first-response SLA, mirrored (`chatwootCreatedAt` / `chatwootFirstReplyAt`) rather than
+  // recomputed, so this reports the same number the operator reads on the Chatwoot dashboard.
+  // Median and not mean: one conversation opened on a Friday night and answered on Monday moves a
+  // mean by hours and says nothing about the week.
   //
   // This is the only KPI here that does not go through LlmUsage, and it is the only one that still
   // answers on an inbox the agent never touched. NULL when no conversation in the window carries
-  // both watermarks — which is every conversation that started before they existed, hence the
-  // sample count beside it: a median over four conversations is not a service level, and the caller
-  // has to be able to tell that apart from a median over four hundred.
+  // both readings — a conversation nobody has answered yet has no response time, and one no event
+  // has been seen for since the columns existed has not been mirrored yet. Hence the sample count
+  // beside it: a median over four conversations is not a service level, and the caller has to be
+  // able to tell that apart from a median over four hundred.
+  //
+  // A conversation the BUSINESS opened counts its own opening message as the reply, because that is
+  // what `first_reply_created_at` means to Chatwoot. Timing the customer's wait instead is a
+  // different metric (Chatwoot answers it with `waiting_since`) and a different decision.
   firstResponseSeconds: number | null;
   firstResponseSampled: number;
 }
@@ -299,43 +306,24 @@ export async function getKpis(
     }
     // Raw SQL for percentile_cont (no Prisma builder), inside the scoped tx so RLS fences the rows —
     // never filter tenant_id by hand. EPOCH of the difference: both columns are mirrored from the
-    // same Chatwoot clock (`last_activity_at`), so the subtraction is between two readings of one
-    // source rather than across two.
+    // same Chatwoot row, so the subtraction is between two readings of one source rather than
+    // across two clocks.
     const [responseRow] = await db.$queryRaw<
       { median: number | null; sampled: number }[]
     >(Prisma.sql`
       SELECT percentile_cont(0.5) WITHIN GROUP (
-               ORDER BY EXTRACT(EPOCH FROM (answered_at - first_inbound_at))
+               ORDER BY EXTRACT(EPOCH FROM (chatwoot_first_reply_at - chatwoot_created_at))
              )::float8 AS median,
              COUNT(*)::int AS sampled
-      FROM (
-        SELECT first_inbound_at,
-               created_at,
-               -- The earlier of the two readings, with the unanchored one admitted ONLY when it is
-               -- itself after the anchor. That condition is what separates an answer whose question
-               -- was delivered late from the business opening the conversation: both leave
-               -- first_human_reply_at NULL, and only the first has a team message that comes AFTER
-               -- the customer's. See attendance-watermarks.ts.
-               --
-               -- LEAST and not COALESCE: Postgres's LEAST ignores NULLs, so this is still the
-               -- fallback when there is no anchored reading — and when there IS one, an earlier
-               -- message that only became an answer because the anchor was later lowered still wins,
-               -- which COALESCE would have skipped over.
-               LEAST(
-                 first_human_reply_at,
-                 CASE
-                   WHEN first_human_message_at >= first_inbound_at
-                     THEN first_human_message_at
-                 END
-               ) AS answered_at
-          FROM conversations
-         WHERE first_inbound_at IS NOT NULL
-      ) c
-      WHERE answered_at IS NOT NULL
-        -- A reply cannot precede the message it answers: a clock skew or a hand-written row would
-        -- otherwise contribute a negative "response time".
-        AND answered_at >= first_inbound_at
-        AND (${filter.since ?? null}::timestamptz IS NULL OR created_at >= ${filter.since ?? null})`);
+        FROM conversations
+       WHERE chatwoot_created_at IS NOT NULL
+         AND chatwoot_first_reply_at IS NOT NULL
+         -- A reply cannot precede the conversation that carries it: a clock skew or a hand-written
+         -- row would otherwise contribute a negative "response time".
+         AND chatwoot_first_reply_at >= chatwoot_created_at
+         -- The window is the one the other KPIs use — OUR row's createdAt — so a filtered dashboard
+         -- counts the same conversations here as it does above.
+         AND (${filter.since ?? null}::timestamptz IS NULL OR created_at >= ${filter.since ?? null})`);
     // COUNT and the percentile come from ONE aggregate over the same rows, so they cannot
     // disagree: no row in the sample means `sampled` is 0 and `median` is NULL together.
     const sampled = Number(responseRow?.sampled ?? 0);

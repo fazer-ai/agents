@@ -1134,8 +1134,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     // 8804 exists but never ran a turn, so the tenant's newest handoff row belongs to 8803.
     await seedConversation(8804, null, null, "open");
-    // One read, and awaited. 8804 never ran a turn, so no handoff write is in flight and there is
-    // nothing to poll for: the waiting reader would spend its whole 3s to agree, and it would spend
+    // The control has to be POSITIVE before the absence means anything: this test only detects an
+    // unscoped reader if there IS a neighbouring row for it to wrongly return, and 8803's row is
+    // written fire-and-forget, so without this wait the null below can mean "nothing has landed
+    // yet" and the test passes having proved nothing.
+    expect(await handoffDetail(8803)).toBeDefined();
+    // Then one read, awaited. 8804 never ran a turn, so no write of its own is in flight and there
+    // is nothing to poll for: the waiting reader would spend its whole 3s to agree, and would spend
     // it AFTER this test returned, because the assertion it was handed to was never awaited (#258).
     expect(await handoffRowNow(8804)).toBeNull();
   });

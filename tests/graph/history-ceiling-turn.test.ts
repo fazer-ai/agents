@@ -156,13 +156,21 @@ async function waitForTrimLines(convId: number) {
   return trims;
 }
 
-// "Did this thread trim NOTHING?" — wait for the turns' own bookkeeping, then read once.
+// "Did this thread trim NOTHING?" — wait for the turns' own bookkeeping, then read.
 //
-// NOTE: the landmark is the count of NON-trim rows, never a trim appearing: polling for something
-// that must never arrive can only spend the whole timeout and then agree with itself, which is what
-// this assertion used to do for 3 of the file's 4 seconds. And the landmark is sound rather than
-// approximate here, because `onHistoryTrim` fires only when the window actually dropped something
-// (src/graph/graph.ts): with the ceiling off there is no second write to lose a race to.
+// The landmark is the count of NON-trim rows, never a trim appearing: polling for something that
+// must never arrive can only spend the whole timeout and then agree with itself, which is what this
+// assertion used to do for 3 of the file's 4 seconds.
+//
+// NOTE: an absence can only ever be asserted against a barrier, and `emitFlowEvent` offers none, so
+// this composes the two that exist. The turn's OWN row is dispatched after any trim row of the same
+// turn — `onHistoryTrim` runs while the history window is built, before the model call, and the
+// ordinary row closes the generate stage after it — so `turns` ordinary rows means every trim write
+// this thread could owe was already dispatched. The settle re-read covers the rest: two independent
+// transactions dispatched in order can still land out of order on a pool. Neither is a lock, which
+// is why the regression this corroborates is ALSO caught deterministically one assertion earlier:
+// `onHistoryTrim` fires only when the window dropped something (src/graph/graph.ts), and anything
+// dropped means the model no longer saw all 12 messages.
 async function trimLinesAfterTurns(convId: number, turns: number) {
   let rows: Awaited<ReturnType<typeof generateLines>> = [];
   for (let i = 0; i < 30; i++) {
@@ -170,7 +178,8 @@ async function trimLinesAfterTurns(convId: number, turns: number) {
     if (rows.filter((r) => !isTrim(r)).length >= turns) break;
     await new Promise((r) => setTimeout(r, 100));
   }
-  return rows.filter(isTrim);
+  await new Promise((r) => setTimeout(r, 100));
+  return (await generateLines(convId)).filter(isTrim);
 }
 
 describe.skipIf(!dbUp)("a turn under the agent's history ceiling", () => {

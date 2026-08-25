@@ -1,4 +1,7 @@
-import type { PrismaClient } from "@/../generated/prisma/client";
+import type {
+  InboundDeliveryStatus,
+  PrismaClient,
+} from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { chatwootThreadId } from "@/graph/checkpointer";
@@ -65,6 +68,8 @@ function sysCtx(tenantId: bigint): TenantContext {
 
 interface StrandedRow {
   id: bigint;
+  // Narrowed by the query, not by the type: the column's enum has terminal values this never sees.
+  status: InboundDeliveryStatus;
   chatwootInstanceId: bigint;
   deliveryId: string;
   event: string;
@@ -198,6 +203,31 @@ async function recoverConversation(
   return "flushed";
 }
 
+// Takes a stale PENDING row with the delivery path's own CAS, so a redelivery landing at this
+// moment cannot process the same event beside the recovery. False means somebody else got it.
+//
+// PENDING is the only state that needs this, and that is not an oversight: a redelivery's own CAS
+// matches `PENDING` too, so it is the one state where two writers can both believe the event is
+// theirs. A row already PROCESSING is invisible to a redelivery (the CAS matches nothing, the call
+// returns "skipped"), and two sweep passes cannot overlap — the scheduler is single-replica, claims
+// with FOR UPDATE SKIP LOCKED, and does not re-enter a tick.
+//
+// Exported for the test: the false branch is a race, and a test that tries to construct one is the
+// kind that goes green for the wrong reason. Asked directly, it is one deterministic assertion.
+export async function claimStrandedRow(
+  row: StrandedRow,
+  tenantId: bigint,
+  base: PrismaClient,
+): Promise<boolean> {
+  const claimed = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootWebhookDelivery.updateMany({
+      where: { id: row.id, status: "PENDING" },
+      data: { status: "PROCESSING" },
+    }),
+  );
+  return claimed.count > 0;
+}
+
 export interface SweepStrandedDeliveriesParams {
   tenantId: bigint;
   base: PrismaClient;
@@ -219,13 +249,21 @@ export async function sweepStrandedDeliveries(
     closed: 0,
     lost: 0,
   };
+  // BOTH non-terminal states, because both strand and for the same reason. The ack is spent before
+  // the ledger row is even written, so a process that dies between the insert and the CAS leaves
+  // PENDING with nothing running — and #226's answer to that ("a redelivery goes on to the CAS
+  // instead of being dropped") only helps when a redelivery actually arrives. Chatwoot holds a 200,
+  // so usually none does. The PENDING window is much narrower than the PROCESSING one (microseconds
+  // between the insert and the CAS, against the whole length of a turn), but the row already
+  // carries everything the recovery needs.
   const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootWebhookDelivery.findMany({
-      where: { status: "PROCESSING" },
+      where: { status: { in: ["PENDING", "PROCESSING"] } },
       orderBy: { receivedAt: "asc" },
       take: BATCH,
       select: {
         id: true,
+        status: true,
         chatwootInstanceId: true,
         deliveryId: true,
         event: true,
@@ -244,6 +282,16 @@ export async function sweepStrandedDeliveries(
     });
     if (verdict === "in-flight") {
       counts.tooFresh += 1;
+      continue;
+    }
+    // A stale PENDING row is still claimable by a redelivery arriving right now, so take it with
+    // the same CAS the delivery path uses before doing anything with it. Losing the race is not a
+    // failure: whoever won is processing the event, which is the outcome this sweep exists to
+    // produce. A PROCESSING row needs no such claim — its CAS already ran.
+    if (
+      row.status === "PENDING" &&
+      !(await claimStrandedRow(row, tenantId, base))
+    ) {
       continue;
     }
     await applyVerdict(verdict, row, tenantId, base, counts, params.deps);

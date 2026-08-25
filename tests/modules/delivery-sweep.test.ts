@@ -8,6 +8,7 @@ import { chatwootThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
+  claimStrandedRow,
   deliverySweepHandler,
   ensureDeliverySweep,
   sweepStrandedDeliveries,
@@ -126,6 +127,7 @@ async function seedStrandedDelivery(over: {
   ageMs: number;
   attempts?: number;
   messageId?: number | null;
+  status?: "PENDING" | "PROCESSING";
 }): Promise<bigint> {
   deliverySeq += 1;
   const row = await suDb.chatwootWebhookDelivery.create({
@@ -134,7 +136,7 @@ async function seedStrandedDelivery(over: {
       chatwootInstanceId: instanceId,
       deliveryId: `sweep-${process.pid}-${deliverySeq}`,
       event: "message_created",
-      status: "PROCESSING",
+      status: over.status ?? "PROCESSING",
       attempts: over.attempts ?? 0,
       receivedAt: new Date(Date.now() - over.ageMs),
       conversationId: over.conversationId,
@@ -455,6 +457,93 @@ describe.skipIf(!dbUp)("a delivery stranded on PROCESSING", () => {
       select: { status: true },
     });
     expect(row.status).toBe("PROCESSED");
+  });
+
+  test("recovers a delivery stranded on PENDING, before its CAS ever ran", async () => {
+    // The ack is spent before the ledger row is written, so a process that dies between the insert
+    // and the CAS leaves PENDING with nothing running. #226's answer — a redelivery goes on to the
+    // CAS instead of being dropped — only helps when a redelivery arrives, and Chatwoot holds a 200,
+    // so usually none does. Narrower window than PROCESSING, same lost message.
+    const convId = 8812;
+    const messageId = 9981;
+    await seedConversation(convId, { lastHandledMessageId: messageId - 1 });
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      messageId,
+      status: "PENDING",
+    });
+
+    const sent: Array<[number, string]> = [];
+    const counts = await sweepStrandedDeliveries({
+      tenantId,
+      base: appDb,
+      deps: flushDeps({
+        messages: [{ id: messageId, content: "oi, continua aí?" }],
+        sent,
+      }),
+    });
+    expect(counts.recovered).toBe(1);
+    expect(sent).toEqual([[convId, REPLY]]);
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: rowId },
+      select: { status: true },
+    });
+    expect(row.status).toBe("PROCESSED");
+  });
+
+  test("takes a PENDING row exactly once, so a redelivery cannot process it too", async () => {
+    // PENDING is the one state where two writers can both believe the event is theirs: a
+    // redelivery's CAS matches `PENDING` as well. So the sweep takes the row with the same CAS
+    // before flushing, and the second caller gets nothing. Asked directly rather than by racing two
+    // passes — a constructed race here goes green for the wrong reason more often than it detects.
+    const rowId = await seedStrandedDelivery({
+      conversationId: 8813,
+      ageMs: STALE_MS * 2,
+      status: "PENDING",
+    });
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: rowId },
+      select: {
+        id: true,
+        status: true,
+        chatwootInstanceId: true,
+        deliveryId: true,
+        event: true,
+        receivedAt: true,
+        attempts: true,
+        conversationId: true,
+        messageId: true,
+      },
+    });
+    expect(await claimStrandedRow(row, tenantId, appDb)).toBe(true);
+    expect(await claimStrandedRow(row, tenantId, appDb)).toBe(false);
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: rowId },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("PROCESSING");
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+  });
+
+  test("the sweep takes a PENDING row before flushing it, at the call site", async () => {
+    // `claimStrandedRow` is proven above, but proving the FUNCTION is not proving that the sweep
+    // calls it: the claim's whole effect is on a concurrent redelivery, so removing the call
+    // changes nothing any single-threaded test can see. Measured — deleting the guard leaves the
+    // suite green. So the call site is asserted where it is actually written.
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/delivery-sweep.ts", import.meta.url),
+    ).text();
+    const guard = src
+      .slice(src.indexOf("export async function sweepStrandedDeliveries"))
+      .slice(0, src.length);
+    expect(guard).toContain("claimStrandedRow(row, tenantId, base)");
+    expect(guard).toContain('row.status === "PENDING"');
   });
 
   test("leaves a delivery that is still in flight alone", async () => {

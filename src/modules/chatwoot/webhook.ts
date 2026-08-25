@@ -2907,6 +2907,14 @@ export async function processChatwootDelivery(
 
   // Hoisted so the ingestion pass below can tell an out-of-hours-silenced incoming (consumed) from an
   // answered one. Stays false on every path that never runs the gate.
+  // Whether THIS delivery settled the customer message it carries: something ran over it, or a gate
+  // decided deliberately that nothing would. Set by whoever decides, read once before tx2.
+  //
+  // It is not the same as "answered". The question the ledger has to hold is whether a message was
+  // lost to a PROCESS DEATH, and a message a gate consumed or a turn answered with silence was not
+  // lost — a delivery that armed a flush has NOT settled it, because the flush is what will, and it
+  // retires the row itself when it does.
+  let settledMessageId: number | null = null;
   let consumed = false;
   // What the contact-authorization gate below learned about this contact, for the direct turn's
   // prompt. Null when the gate is off, or when the delivery never reaches a turn.
@@ -3018,6 +3026,22 @@ export async function processChatwootDelivery(
             outcome,
             mirror.applied ? "applied" : "skipped",
           );
+          // The turn RAN over this message, so nothing is owed on it — the same rule the flush
+          // applies to its burst. "superseded" and "stale" are the two that leave it open: a newer
+          // message re-answers it, or the run was withdrawn with the thread.
+          //
+          // NOTE: no `isNewIncoming` here, because the whole block is already inside it — an
+          // incoming `message_updated` (our own media write-back coming around) never reaches this
+          // line, which matters: it carries the same message id as the `message_created` whose row
+          // may be stranded, and nothing about it answered anybody. Asserted from the outside in
+          // tests/modules/delivery-sweep.test.ts, since a guard that is absorbed cannot be mutated.
+          if (
+            outcome !== "superseded" &&
+            outcome !== "stale" &&
+            n.message?.id != null
+          ) {
+            settledMessageId = n.message.id;
+          }
           // Recovered: a successful answer clears any previously surfaced turn error (item 6).
           if (outcome === "posted" && n.conversationId !== null) {
             await clearConversationError({
@@ -3026,33 +3050,6 @@ export async function processChatwootDelivery(
               chatwootConversationId: n.conversationId,
               base,
             });
-            // And say on the LEDGER that this message was covered, now rather than at tx2. The
-            // customer already has the reply; what still stands between here and tx2 is the
-            // ingestion pass, the compaction arming and the watermark tail, each of which can take
-            // its time. A process that dies inside that stretch leaves the row PROCESSING for a
-            // message that WAS answered, and the stranded-delivery sweep would report it as a loss
-            // and page an operator about it (issue #228). The flush says the same thing about the
-            // messages IT covered; this is the direct path saying it about its own.
-            //
-            // Best-effort, and tx2 writes PROCESSED over it a moment later either way.
-            const answeredId = n.message?.id ?? null;
-            if (answeredId !== null) {
-              try {
-                await retireCoveredDeliveries({
-                  tenantId: params.tenantId,
-                  instanceId: params.instanceId,
-                  conversationId: n.conversationId,
-                  messageIds: [answeredId],
-                  base,
-                });
-              } catch (e) {
-                logger.warn(
-                  "chatwoot: could not retire the covered delivery (conv=%s): %s",
-                  convLabel,
-                  errMsg(e),
-                );
-              }
-            }
           }
         } catch (err) {
           logger.error(
@@ -3188,6 +3185,10 @@ export async function processChatwootDelivery(
     n.message?.id != null &&
     mirror.conversationRowId !== null
   ) {
+    // The same fact the watermark records here, on the ledger: a human owns the conversation, or a
+    // command or a gate consumed the message. Nothing further is coming for it, deliberately, so it
+    // is not a message a crash lost.
+    settledMessageId = n.message.id;
     try {
       await advanceHandledWatermark({
         tenantId: params.tenantId,
@@ -3218,6 +3219,36 @@ export async function processChatwootDelivery(
       compactionEnabled: readMemoryConfig(rt.settings).compaction.enabled,
       base,
     });
+  }
+
+  // Say on the LEDGER that this message is settled, now rather than at tx2. Everything between the
+  // decision and tx2 — the ingestion pass, the compaction arming, the redirect re-arm, the watermark
+  // tail — takes its own time, and a process that dies inside that stretch leaves the row PROCESSING
+  // for a message whose fate was already decided. The stranded-delivery sweep would then report it
+  // as a customer nobody answered and page somebody about it (issue #228).
+  //
+  // Asked ONCE, from a fact the deciding branches set, rather than once per branch: the branches
+  // that decide are the direct turn, the gates that consume a message, and the flush — and the
+  // flush is the one that is NOT here, because it settles its messages itself when it runs, which
+  // is the whole reason a burst can rescue a delivery that died.
+  //
+  // Best-effort, and tx2 writes PROCESSED over it a moment later either way.
+  if (settledMessageId !== null && n.conversationId !== null) {
+    try {
+      await retireCoveredDeliveries({
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        conversationId: n.conversationId,
+        messageIds: [settledMessageId],
+        base,
+      });
+    } catch (e) {
+      logger.warn(
+        "chatwoot: could not retire the settled delivery (conv=%s): %s",
+        convLabel,
+        errMsg(e),
+      );
+    }
   }
 
   // tx2: mark processed. NOTE: a crash between tx1 and tx2 still strands the row in PROCESSING —

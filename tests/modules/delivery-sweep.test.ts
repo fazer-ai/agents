@@ -347,8 +347,8 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
 
     const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
-    expect(counts.tooFresh).toBe(1);
     expect(counts.lost).toBe(0);
+    expect(counts.closed).toBe(0);
     expect((await statusOf(rowId)).status).toBe("PROCESSING");
     expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
 
@@ -374,8 +374,8 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
 
     const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
-    expect(counts.tooFresh).toBe(1);
     expect(counts.lost).toBe(0);
+    expect(counts.closed).toBe(0);
     // Untouched: still PROCESSING, and no line, because nothing was decided about it.
     expect((await statusOf(rowId)).status).toBe("PROCESSING");
     expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
@@ -403,6 +403,52 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
 
     await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+  });
+
+  test("a batch full of live attempts does not starve an older strand", async () => {
+    // FAIRNESS, and it only shows once the batch is full. The pass is capped and ordered by
+    // `received_at`, but a row's staleness is measured from its CURRENT attempt — so rows received
+    // long ago and RECLAIMED a moment ago sort first and fill every slot, while a genuinely stranded
+    // row with a newer receipt is skipped pass after pass. Batch of two here rather than a fixture
+    // of five hundred; the boundary is the same one.
+    const convId = 8824;
+    const messageId = 9971;
+    const conv = await seedConversation(convId);
+    // Two rows old enough to sort first, both claimed a minute ago: live attempts.
+    const live = [];
+    for (const n of [0, 1]) {
+      live.push(
+        await seedStrandedDelivery({
+          conversationId: convId,
+          ageMs: STALE_MS * 10 + n,
+          claimedAgoMs: 60_000,
+          inboundMessageId: 9980 + n,
+        }),
+      );
+    }
+    // And the one that matters: received AFTER them, never claimed, long past stale.
+    const starved = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      inboundMessageId: messageId,
+    });
+
+    const counts = await sweepStrandedDeliveries({
+      tenantId,
+      base: appDb,
+      batch: 2,
+    });
+    expect(counts.lost).toBe(1);
+    expect((await statusOf(starved)).status).toBe("DEAD");
+    // The live ones were never in the batch to begin with, so they are untouched.
+    for (const id of live) {
+      expect((await statusOf(id)).status).toBe("PROCESSING");
+    }
+
+    await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { id: { in: [...live, starved] } },
+    });
   });
 
   test("closes a strand that carried no inbound message", async () => {
@@ -697,6 +743,241 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
     await suDb.executionLog.deleteMany({ where: { tenantId } });
     await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+  });
+
+  test("a message_updated settles nothing: it is our own write-back coming around", async () => {
+    // An incoming `message_updated` is usually the media write-back we just made, and `runAgentTurn`
+    // no-ops on it — nobody answered anything. But it carries the SAME message id, and the ledger row
+    // that does hold that id as an inbound message is the original `message_created`, which is
+    // exactly the row that may be stranded. Without the new-incoming guard this event would retire
+    // it and hide a real loss.
+    const convId = 8826;
+    const messageId = 9751;
+    await seedConversation(convId);
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: { debounce: { enabled: false } } },
+    });
+    const original = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `updated-original-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+
+    const client = {
+      getMessages: async () => ({ payload: [] }),
+      sendMessage: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const n = normalizeChatwootEvent({
+      event: "message_updated",
+      id: messageId,
+      private: false,
+      content: "oi",
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente", type: null },
+      conversation: {
+        id: convId,
+        inbox_id: CHATWOOT_INBOX_ID,
+        // Held by the bot, so this reaches the direct path rather than a gate exit.
+        status: "pending",
+        contact_inbox: { id: 61_000 + convId },
+        meta: { sender: { id: 77, name: "Cliente" } },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000),
+      },
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const own = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `updated-own-${process.pid}`,
+        event: "message_updated",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: null,
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: own.id,
+      agentBotId: AGENT_BOT_ID,
+      normalized: n,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["claro!"] }) as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect((await statusOf(original.id)).status).toBe("PROCESSING");
+
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: {} },
+    });
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { id: { in: [own.id, original.id] } },
+    });
+    await suDb.executionLog.deleteMany({ where: { tenantId } });
+  });
+
+  test("a SUPERSEDED direct turn settles nothing: another turn owes the answer", async () => {
+    // `superseded` is the one direct outcome that says "this turn did not cover the message, a newer
+    // one will" — the post gate re-fetched, found a newer incoming id and stood down, leaving the
+    // watermark where it was so the next turn re-answers from below this message. Retiring the row
+    // there would assert coverage nobody has provided yet, and if that next turn dies too the loss
+    // is already hidden.
+    const convId = 8825;
+    const messageId = 9741;
+    await seedConversation(convId);
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: { debounce: { enabled: false } } },
+    });
+    const sibling = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `superseded-sibling-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+
+    const sent: Array<[number, string]> = [];
+    const client = {
+      // A NEWER incoming message, which is what makes the post gate stand down.
+      getMessages: async () => ({
+        payload: [
+          {
+            id: messageId + 1,
+            content: "e aí?",
+            message_type: 0,
+            private: false,
+          },
+        ],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "oi",
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente", type: null },
+      conversation: {
+        id: convId,
+        inbox_id: CHATWOOT_INBOX_ID,
+        status: "pending",
+        contact_inbox: { id: 61_000 + convId },
+        meta: { sender: { id: 77, name: "Cliente" } },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000),
+      },
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const own = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `superseded-own-${process.pid}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: own.id,
+      agentBotId: AGENT_BOT_ID,
+      normalized: n,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: ["claro!"] }) as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    // Nothing was posted, and nothing was declared covered.
+    expect(sent).toEqual([]);
+    expect((await statusOf(sibling.id)).status).toBe("PROCESSING");
+
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: {} },
+    });
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { id: { in: [own.id, sibling.id] } },
+    });
+    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+  });
+
+  test("a GATE that consumes the message settles the row too", async () => {
+    // The gates are the third decider, next to the direct turn and the flush, and the one with no
+    // turn behind it: a human holds the conversation, or a command / test-mode / availability /
+    // redirect gate consumed the message. Nothing further is coming for it deliberately, so a
+    // process dying between that decision and tx2 must not turn into "a customer nobody answered".
+    //
+    // `deliverThrough` drives the real receiver on a conversation held by a human, which is exactly
+    // that exit, and the sibling row makes the retirement observable: it is a blind write by
+    // conversation and message, so it takes both, while tx2 only touches its own by primary key.
+    const convId = 8811;
+    const messageId = 9731;
+    await seedConversation(convId);
+    const sibling = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `gate-sibling-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+
+    await deliverThrough(convId, messageId, "incoming");
+    expect((await statusOf(sibling.id)).status).toBe("PROCESSED");
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: sibling.id } });
+    await suDb.executionLog.deleteMany({ where: { tenantId } });
   });
 
   test("stamps the claim, so the sweep dates the ATTEMPT and not the receipt", async () => {

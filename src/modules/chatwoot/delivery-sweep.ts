@@ -141,8 +141,6 @@ function attemptStartedAt(row: StrandedRow): Date {
 }
 
 export interface SweepCounts {
-  // Received too recently to call abandoned.
-  tooFresh: number;
   // Terminal, nothing lost: the delivery carried no inbound message at all.
   closed: number;
   // Terminal, a customer message lost.
@@ -227,6 +225,8 @@ export interface SweepStrandedDeliveriesParams {
   tenantId: bigint;
   base: PrismaClient;
   now?: Date;
+  // One pass's ceiling, overridable so the batch's fairness can be asked with a handful of rows.
+  batch?: number;
 }
 
 // One pass for one tenant. Exported for the tests, which drive it directly rather than through the
@@ -236,17 +236,36 @@ export async function sweepStrandedDeliveries(
 ): Promise<SweepCounts> {
   const { tenantId, base } = params;
   const now = params.now ?? new Date();
-  const counts: SweepCounts = { tooFresh: 0, closed: 0, lost: 0, raced: 0 };
+  // Overridable so the batch's FAIRNESS can be asked with three rows instead of five hundred. A test
+  // that has to build a real backlog to reach the boundary is a test nobody writes.
+  const batch = params.batch ?? BATCH;
+  const counts: SweepCounts = { closed: 0, lost: 0, raced: 0 };
 
   // BOTH non-terminal states, because both strand and for the same reason. The ack is spent before
   // the ledger row is even written, so a death between the insert and the CAS leaves PENDING — and
   // #226's answer to that ("a redelivery goes on to the CAS instead of being dropped") only helps
   // when a redelivery actually arrives, which it usually does not, because Chatwoot holds a 200.
+  // The staleness cutoff belongs in the QUERY, not only in the classifier, because the batch is
+  // capped. Ordered and capped by `received_at` alone, a backlog of BATCH rows with old receipts
+  // that were RECENTLY reclaimed fills every slot with live attempts, and a genuinely stranded row
+  // with a newer receipt is skipped pass after pass — starved by rows the classifier then discards
+  // as in-flight. Filtered here, every row in the batch is one the sweep will actually decide.
+  //
+  // The two arms are the same `claimedAt ?? receivedAt` the classifier uses, written the way a
+  // nullable column has to be compared. The classifier still asks its own question afterwards: this
+  // is which rows to look at, that is what they mean, and the boundary belongs to the pure rule.
+  const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
   const rows = (await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootWebhookDelivery.findMany({
-      where: { status: { in: ["PENDING", "PROCESSING"] } },
+      where: {
+        status: { in: ["PENDING", "PROCESSING"] },
+        OR: [
+          { claimedAt: { not: null, lt: cutoff } },
+          { claimedAt: null, receivedAt: { lt: cutoff } },
+        ],
+      },
       orderBy: { receivedAt: "asc" },
-      take: BATCH,
+      take: batch,
       select: {
         id: true,
         status: true,
@@ -269,10 +288,11 @@ export async function sweepStrandedDeliveries(
       },
       { now, staleAfterMs: STALE_AFTER_MS },
     );
-    if (verdict === "in-flight") {
-      counts.tooFresh += 1;
-      continue;
-    }
+    // Unreachable through the query above, which already excluded every row a live attempt could
+    // still be working. Kept because the RULE is the classifier's, not the query's: they are two
+    // statements of one threshold, and this is where they would be caught disagreeing rather than
+    // where a fresh row would be marked terminal.
+    if (verdict === "in-flight") continue;
     // Read the mirror only for a row that is going in the loss list: it is where the line is filed,
     // and a row that carried no message writes no line.
     const mirror =

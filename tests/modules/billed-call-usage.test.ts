@@ -293,6 +293,42 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
     expect(guard?.inboxId).toBe(inboxDbId);
   });
 
+  test("an injected sink receives the guardrail row too, and the database receives neither", async () => {
+    await seedConversation(9303);
+    const threadId = `${tenantId}:${instanceId}:9303`;
+    // The seam exists so a test can capture rows without a database. It only tells the truth if it
+    // covers every billed call in the turn: a sink that catches the agent's row and lets the
+    // guardrail's fall through to the real table is worse than no sink, because the capture looks
+    // complete.
+    const captured: { node: string | null; model: string }[] = [];
+    const agentModel = new UsageReportingModel(["Claro, posso agendar."]);
+    const guardModel = new UsageReportingModel([CLEAN_VERDICT]);
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: { ...textEvent(9303), conversationId: 9303 },
+      base: appDb,
+      deps: {
+        makeModel: ((args: { model: string }) =>
+          args.model === GUARDRAIL_MODEL
+            ? guardModel
+            : agentModel) as unknown as never,
+        makeClient: makeStub({ text: [] }),
+        checkpointer: new MemorySaver(),
+        persistUsage: async (row) => {
+          captured.push({ node: row.node, model: row.model });
+        },
+      },
+    });
+    expect(captured.map((r) => r.node).sort()).toEqual(["agent", "guardrail"]);
+    expect(captured.find((r) => r.node === "guardrail")?.model).toBe(
+      GUARDRAIL_MODEL,
+    );
+    // Nothing leaked past the sink.
+    expect(await usageRows(threadId)).toEqual([]);
+  });
+
   test("an extracted image bills vision with the counts the provider returned", async () => {
     const convDbId = await seedConversation(9302);
     const threadId = `${tenantId}:${instanceId}:9302`;
@@ -469,7 +505,12 @@ const USAGE_SHAPES = [
     },
   },
   {
-    name: "anthropic: cache read and cache write are separate counters",
+    // Anthropic is the ODD ONE, and reading it like the other two undercounts every cached call:
+    // `input_tokens` is "the number of input tokens which were not read from or used to create a
+    // cache", so the doc's own formula is
+    // total_input = cache_read + cache_creation + input_tokens. On OpenAI and Gemini the cached
+    // count is a subset of a prompt total that already contains it.
+    name: "anthropic: the cache counters are ADDITIVE to input_tokens, not a subset",
     provider: "anthropic",
     body: {
       content: [{ type: "text", text: "ok" }],
@@ -481,7 +522,8 @@ const USAGE_SHAPES = [
       },
     },
     want: {
-      promptTokens: 100,
+      // 100 uncached + 40 read from cache + 7 written to cache.
+      promptTokens: 147,
       completionTokens: 10,
       cachedReadTokens: 40,
       cacheCreationTokens: 7,

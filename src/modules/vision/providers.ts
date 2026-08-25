@@ -60,15 +60,24 @@ function usageOf(u: {
   completion: unknown;
   cachedRead?: unknown;
   cacheCreation?: unknown;
+  // Whether `prompt` already contains the cached counts. OpenAI and Gemini report a prompt total
+  // that includes them; Anthropic reports only what fell outside the cache, and its own docs give
+  // the total as cache_read + cache_creation + input_tokens. Reading one like the other undercounts
+  // every cached call on that provider, and the row would carry subsets larger than the whole.
+  promptExcludesCached?: boolean;
 }): VisionUsage | null {
-  const promptTokens = num(u.prompt);
+  const cachedReadTokens = num(u.cachedRead);
+  const cacheCreationTokens = num(u.cacheCreation);
+  const promptTokens = u.promptExcludesCached
+    ? num(u.prompt) + cachedReadTokens + cacheCreationTokens
+    : num(u.prompt);
   const completionTokens = num(u.completion);
   if (promptTokens === 0 && completionTokens === 0) return null;
   return {
     promptTokens,
     completionTokens,
-    cachedReadTokens: num(u.cachedRead),
-    cacheCreationTokens: num(u.cacheCreation),
+    cachedReadTokens,
+    cacheCreationTokens,
   };
 }
 
@@ -279,6 +288,7 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
       completion: json.usage?.output_tokens,
       cachedRead: json.usage?.cache_read_input_tokens,
       cacheCreation: json.usage?.cache_creation_input_tokens,
+      promptExcludesCached: true,
     }),
   };
 }

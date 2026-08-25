@@ -615,6 +615,9 @@ export async function runLoadedTurn(
     // words would make it judge the reply against something nobody said.
     customerMessage: text,
     makeModel: params.deps?.makeModel,
+    // The same sink the turn's own callbacks use. A test that injects one and leaves guardrails on
+    // would otherwise capture the agent's row and send the guardrail's to the real database.
+    persistUsage: params.deps?.persistUsage,
   });
 
   // One piece of customer-facing text, delivered the way this agent delivers text: as audio when the

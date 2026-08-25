@@ -891,6 +891,8 @@ export async function runAgentNudge(
       flow,
       systemPrompt: cfg.systemPrompt,
       makeModel: params.deps?.makeModel,
+      // Same sink as this turn's own callbacks (see the buildCallbacks call above).
+      persistUsage: params.deps?.persistUsage,
     })("output", text);
 
   // What the transfer promised the customer, delivered on the way OUT of the turn — whatever the way

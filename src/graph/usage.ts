@@ -205,12 +205,11 @@ export async function recordDirectUsage(
     cachedReadTokens?: number;
     cacheCreationTokens?: number;
   },
-  persist?: UsagePersist,
 ): Promise<void> {
   if (row.promptTokens === 0 && row.completionTokens === 0) return;
   const attr = usageAttribution(flow);
   try {
-    await (persist ?? defaultUsagePersist(attr.base))({
+    await defaultUsagePersist(attr.base)({
       ...attr,
       model: row.model,
       node: row.node,

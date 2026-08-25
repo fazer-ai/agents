@@ -76,6 +76,15 @@ export function decideAttendanceWatermarks(
     // replace it, so the conversation is excluded from the sample for good rather than for a day.
     // Without an anchor (no inbound yet, or a conversation older than these columns) there is
     // nothing to measure against, and the reply is only recorded as the team's LAST word.
+    //
+    // ACCEPTED OMISSION, and it is the same shape read twice: a team message with no anchor is
+    // EITHER the business opening the conversation (null is the right answer, and a value would be
+    // measured backwards) OR the customer's first message still stuck in the retry ladder (a value
+    // would be right, and null costs a sample). Nothing on this side distinguishes them — the two
+    // rows are identical — so the rule takes the reading that can never be WRONG, at the price of
+    // occasionally being SHORT. That price is visible: `firstResponseSampled` is reported beside the
+    // median precisely so a sample smaller than the conversation count can be seen rather than
+    // assumed away.
     if (
       anchor !== null &&
       seen.humanReplyAt >= anchor &&

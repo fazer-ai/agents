@@ -358,11 +358,14 @@ model ChatwootWebhookDelivery {
 
   @@unique([chatwootInstanceId, deliveryId])
   @@index([tenantId])
-  // Serves the stranded-delivery sweep, which asks for the oldest non-terminal rows.
-  @@index([status, receivedAt])
   // Serves the other half of the same contract: a turn retiring the rows of the messages it just ran
-  // over, by conversation and message id (`retireCoveredDeliveries`).
-  @@index([conversationId, inboundMessageId])
+  // over. ACCOUNT FIRST, because that is how the write is keyed — display ids and message ids are
+  // numbered per Chatwoot account, so a conversation id alone matches rows on every account a tenant
+  // has connected.
+  @@index([chatwootInstanceId, conversationId, inboundMessageId])
+  // NOTE: the sweep's own index is PARTIAL and lives in raw SQL, which Prisma cannot express:
+  // `(tenant_id, received_at) WHERE status IN ('PENDING','PROCESSING')`. See the migration for why
+  // a full index over this table is the wrong shape.
   @@map("chatwoot_webhook_deliveries")
 }
 

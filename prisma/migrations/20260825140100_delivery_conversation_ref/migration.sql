@@ -10,9 +10,24 @@
 -- guessing.
 ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "conversation_id" INTEGER;
 
--- Serves the sweep's only query: the oldest non-terminal rows. PENDING and PROCESSING are both
--- transient (in-flight deliveries plus strands), so this index stays small next to the table.
-CREATE INDEX "chatwoot_webhook_deliveries_status_received_at_idx" ON "chatwoot_webhook_deliveries"("status", "received_at");
+-- Serves the sweep's only query, and it is PARTIAL and TENANT-LEADING for two reasons the table
+-- makes unavoidable.
+--
+-- Partial, because nothing prunes this ledger. PENDING and PROCESSING are transient — in-flight
+-- deliveries plus strands — while PROCESSED and DEAD accumulate for the life of the install, so a
+-- full index over `status` would carry every delivery the system has ever handled, forever, and pay
+-- for it on every insert. Restricted to the two states the sweep asks about, it stays the size of
+-- what is actually in flight.
+--
+-- Tenant-leading, because the sweep is per-tenant: one job per tenant, each asking only about its
+-- own rows. Led by `status`, every tenant's pass walks the whole fleet's non-terminal range and lets
+-- RLS discard the rest afterwards.
+--
+-- Prisma cannot express a partial index, so this one is declared here and NOT in schema.prisma —
+-- the same arrangement the `agent_tool_selections` uniques use.
+CREATE INDEX "chatwoot_webhook_deliveries_sweep_idx"
+    ON "chatwoot_webhook_deliveries"("tenant_id", "received_at")
+ WHERE status IN ('PENDING', 'PROCESSING');
 
 
 -- The INBOUND message the delivery carried, for the same reason and with the same discipline: an id,
@@ -20,10 +35,13 @@ CREATE INDEX "chatwoot_webhook_deliveries_status_received_at_idx" ON "chatwoot_w
 -- sweep tell a row where nothing was lost from one where a customer went unanswered.
 ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "inbound_message_id" INTEGER;
 -- Serves the other half of the same contract: when a turn answers a burst it retires the ledger rows
--- of the messages that burst contained, matched by conversation and message id. That write is what
--- lets the sweep ask "did anything cover this message" of the ROW rather than inferring it from the
--- conversation's watermarks, which cannot answer a per-message question.
-CREATE INDEX "chatwoot_webhook_deliveries_conversation_message_idx" ON "chatwoot_webhook_deliveries"("conversation_id", "inbound_message_id");
+-- of the messages that burst contained. ACCOUNT FIRST, because that is how the write is keyed —
+-- display ids and message ids are numbered per Chatwoot account, so a conversation id alone matches
+-- rows on every account a tenant has connected. That write is what lets the sweep ask "did anything
+-- cover this message" of the ROW rather than inferring it from the conversation's watermarks, which
+-- cannot answer a per-message question.
+CREATE INDEX "chatwoot_webhook_deliveries_chatwoot_instance_id_conversation_id_inbound_message_id_idx"
+    ON "chatwoot_webhook_deliveries"("chatwoot_instance_id", "conversation_id", "inbound_message_id");
 
 -- When the CURRENT attempt claimed the row, stamped by the tx1 CAS `PENDING -> PROCESSING`.
 --

@@ -579,6 +579,31 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(body.slice(retire, write)).toContain("counts.raced += 1");
   });
 
+  test("the receiver settles at the DECISION, not after its tail work", async () => {
+    // ORDERING, and it only shows on failure. tx2 is the natural place to record that a delivery
+    // finished and much too late to record that its MESSAGE is settled: the error clearing, the
+    // follow-up arming, the redirect re-arm, the ingestion pass and the watermark tail all sit in
+    // between, each taking its own time, and a process dying in that stretch leaves PROCESSING on a
+    // message whose fate was already sealed. Asserted at the source, since a passing run cannot tell
+    // an early write from a late one.
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/webhook.ts", import.meta.url),
+    ).text();
+    const body = src.slice(
+      src.indexOf("export async function processChatwootDelivery("),
+    );
+    const settle = body.indexOf("await settleDelivery(");
+    const ingest = body.indexOf("await ingestUnhandledMessage(");
+    const tx2 = body.indexOf("// tx2: mark processed.");
+    expect(settle).toBeGreaterThan(-1);
+    expect(ingest).toBeGreaterThan(-1);
+    expect(tx2).toBeGreaterThan(-1);
+    expect(settle).toBeLessThan(ingest);
+    expect(settle).toBeLessThan(tx2);
+    // And the gate tail settles at its own decision, which is also before the ingestion.
+    expect(body.lastIndexOf("await settleDelivery(")).toBeLessThan(ingest);
+  });
+
   test("is armed when a Chatwoot account is connected, not only at boot", async () => {
     // The boot arm alone leaves a first-run install with nothing: `/setup` creates the tenant after
     // boot has already counted zero tenants, and there is no second arming point.
@@ -1017,6 +1042,56 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.schedulerJob.deleteMany({ where: { tenantId } });
   });
 
+  test("a redelivery of a LEGACY row fills in what that row could not record", async () => {
+    // The previous release wrote neither id, and the CAS that follows a redelivery stamps
+    // `claimed_at` on the row it finds — which is exactly the signature the sweep reads as "this
+    // build wrote it, so its nulls mean what they say". Left empty, a redelivery of a legacy row
+    // turns a lost customer message into one the sweep closes as carrying none.
+    const convId = 8815;
+    const messageId = 9761;
+    await seedConversation(convId);
+    const legacy = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `legacy-reclaim-${process.pid}-${messageId}`,
+        event: "message_created",
+        status: "PENDING",
+        // What the old build left behind: no conversation, no message, no claim.
+        conversationId: null,
+        inboundMessageId: null,
+      },
+      select: { id: true },
+    });
+
+    // The same delivery id arriving again, through the real receiver.
+    await deliverThrough(convId, messageId, "incoming", {
+      deliveryId: `legacy-reclaim-${process.pid}-${messageId}`,
+    });
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: legacy.id },
+      select: { conversationId: true, inboundMessageId: true },
+    });
+    expect(row.conversationId).toBe(convId);
+    expect(row.inboundMessageId).toBe(messageId);
+
+    // And only ever FILLS. A row this build already wrote holds the right values, and a redelivery
+    // of it must not be able to move them — the ids are what the sweep and the retirement key on, so
+    // a rewrite would point both at the wrong message.
+    await deliverThrough(convId, messageId + 500, "incoming", {
+      deliveryId: `legacy-reclaim-${process.pid}-${messageId}`,
+    });
+    const again = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: legacy.id },
+      select: { conversationId: true, inboundMessageId: true },
+    });
+    expect(again.inboundMessageId).toBe(messageId);
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: legacy.id } });
+    await suDb.executionLog.deleteMany({ where: { tenantId } });
+  });
+
   test("a GATE that consumes the message settles the row too", async () => {
     // The gates are the third decider, next to the direct turn and the flush, and the one with no
     // turn behind it: a human holds the conversation, or a command / test-mode / availability /
@@ -1044,10 +1119,52 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       select: { id: true },
     });
 
+    // And one the sweep had already reported, so the correction path runs from a GATE.
+    const reported = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `gate-reported-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        processedAt: new Date(Date.now() - 60_000),
+        receivedAt: new Date(Date.now() - 120_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+
     await deliverThrough(convId, messageId, "incoming");
     expect((await statusOf(sibling.id)).status).toBe("PROCESSED");
+    expect((await statusOf(reported.id)).status).toBe("PROCESSED");
 
-    await suDb.chatwootWebhookDelivery.delete({ where: { id: sibling.id } });
+    // A gate is silence by construction: nobody replied, so the closing line must not say anyone
+    // did. Claiming otherwise hands an operator a resolution that never happened.
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const deadline = Date.now() + 2000;
+    let lines: Array<{ detail: unknown }> = [];
+    while (Date.now() < deadline) {
+      lines = await suDb.executionLog.findMany({
+        where: { tenantId, conversationId: conv.id, stage: "delivery" },
+        select: { detail: true },
+      });
+      if (lines.length > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(lines).toHaveLength(1);
+    const line = lines[0];
+    if (line === undefined) throw new Error("no correction line was written");
+    expect((line.detail as Record<string, unknown>).outcome).toBe(
+      "consumed_late",
+    );
+
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { id: { in: [sibling.id, reported.id] } },
+    });
     await suDb.executionLog.deleteMany({ where: { tenantId } });
   });
 
@@ -1071,7 +1188,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     convId: number,
     messageId: number,
     direction: "incoming" | "outgoing",
-    over: { event?: string } = {},
+    over: { event?: string; deliveryId?: string } = {},
   ) {
     const n = normalizeChatwootEvent({
       event: over.event ?? "message_created",
@@ -1098,7 +1215,8 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       },
     });
     if (!n) throw new Error("payload did not normalize");
-    const deliveryId = `sweep-real-${process.pid}-${messageId}`;
+    const deliveryId =
+      over.deliveryId ?? `sweep-real-${process.pid}-${messageId}`;
     await recordAndProcessChatwootDelivery({
       tenantId,
       instanceId,

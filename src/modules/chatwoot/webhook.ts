@@ -559,6 +559,29 @@ async function recordDelivery(
       }),
     );
     if (!existing) throw err;
+    // Fill what the row is missing before handing it back. A row inserted by a build that predates
+    // these columns carries neither id, and the CAS that follows stamps `claimed_at` on it — which
+    // is precisely the signature the sweep reads as "this build wrote it, so its nulls mean what
+    // they say". Left empty, a redelivery of a legacy row turns a lost customer message into a row
+    // the sweep closes as carrying none (issue #228).
+    //
+    // Only ever fills, never overwrites: a row this build already wrote has the right values, and a
+    // redelivery of it must not be able to change them.
+    if (conversationId !== null || inboundMessageId !== null) {
+      await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
+        db.chatwootWebhookDelivery.updateMany({
+          where: {
+            id: existing.id,
+            ...(conversationId !== null ? { conversationId: null } : {}),
+            ...(inboundMessageId !== null ? { inboundMessageId: null } : {}),
+          },
+          data: {
+            ...(conversationId !== null ? { conversationId } : {}),
+            ...(inboundMessageId !== null ? { inboundMessageId } : {}),
+          },
+        }),
+      );
+    }
     return { rowId: existing.id, duplicate: true };
   }
 }
@@ -2907,17 +2930,46 @@ export async function processChatwootDelivery(
 
   // Hoisted so the ingestion pass below can tell an out-of-hours-silenced incoming (consumed) from an
   // answered one. Stays false on every path that never runs the gate.
-  // Whether THIS delivery settled the customer message it carries: something ran over it, or a gate
-  // decided deliberately that nothing would. Set by whoever decides, read once before tx2.
+  // Say on the LEDGER that this delivery settled the message it carries — something ran over it, or
+  // a gate decided deliberately that nothing would — AT THE MOMENT it is decided, never later.
   //
-  // It is not the same as "answered". The question the ledger has to hold is whether a message was
-  // lost to a PROCESS DEATH, and a message a gate consumed or a turn answered with silence was not
-  // lost — a delivery that armed a flush has NOT settled it, because the flush is what will, and it
-  // retires the row itself when it does.
-  let settledMessageId: number | null = null;
-  // ...and whether the customer actually got a reply. A gate that consumed the message is silence by
-  // design, so the default says so and only a posted turn overrides it.
-  let settledAs: "answered" | "consumed" = "consumed";
+  // Later is the whole point. tx2 is the natural place and it is much too late: the error clearing,
+  // the follow-up arming, the redirect re-arm, the ingestion pass and the watermark tail all sit in
+  // between, each taking its own time, and a process that dies anywhere in that stretch leaves the
+  // row PROCESSING for a message whose fate was already sealed. The stranded-delivery sweep would
+  // then report it as a customer nobody answered and page somebody about it (issue #228).
+  //
+  // One body, called from each branch that decides, rather than one call reading a flag set by
+  // them: the decision and the record have to be adjacent, and a flag is exactly the thing that
+  // lets them drift apart again.
+  //
+  // "Settled" is not "answered", which is why the caller says which. What the ledger has to hold is
+  // whether a message was lost to a PROCESS DEATH, and one a gate consumed or a turn answered with
+  // silence was not lost. A delivery that armed a flush settles NOTHING here: the flush is what
+  // will, and it retires the rows itself when it runs.
+  const settleDelivery = async (
+    messageId: number,
+    settlement: "answered" | "consumed",
+  ): Promise<void> => {
+    if (n.conversationId === null) return;
+    try {
+      await retireCoveredDeliveries({
+        tenantId: params.tenantId,
+        instanceId: params.instanceId,
+        conversationId: n.conversationId,
+        conversationRowId: mirror.conversationRowId,
+        settlement,
+        messageIds: [messageId],
+        base,
+      });
+    } catch (e) {
+      logger.warn(
+        "chatwoot: could not settle the delivery (conv=%s): %s",
+        convLabel,
+        errMsg(e),
+      );
+    }
+  };
   let consumed = false;
   // What the contact-authorization gate below learned about this contact, for the direct turn's
   // prompt. Null when the gate is off, or when the delivery never reaches a turn.
@@ -3043,8 +3095,10 @@ export async function processChatwootDelivery(
             outcome !== "stale" &&
             n.message?.id != null
           ) {
-            settledMessageId = n.message.id;
-            settledAs = outcome === "posted" ? "answered" : "consumed";
+            await settleDelivery(
+              n.message.id,
+              outcome === "posted" ? "answered" : "consumed",
+            );
           }
           // Recovered: a successful answer clears any previously surfaced turn error (item 6).
           if (outcome === "posted" && n.conversationId !== null) {
@@ -3191,8 +3245,8 @@ export async function processChatwootDelivery(
   ) {
     // The same fact the watermark records here, on the ledger: a human owns the conversation, or a
     // command or a gate consumed the message. Nothing further is coming for it, deliberately, so it
-    // is not a message a crash lost.
-    settledMessageId = n.message.id;
+    // is not a message a crash lost — and a gate is silence by construction, never an answer.
+    await settleDelivery(n.message.id, "consumed");
     try {
       await advanceHandledWatermark({
         tenantId: params.tenantId,
@@ -3223,38 +3277,6 @@ export async function processChatwootDelivery(
       compactionEnabled: readMemoryConfig(rt.settings).compaction.enabled,
       base,
     });
-  }
-
-  // Say on the LEDGER that this message is settled, now rather than at tx2. Everything between the
-  // decision and tx2 — the ingestion pass, the compaction arming, the redirect re-arm, the watermark
-  // tail — takes its own time, and a process that dies inside that stretch leaves the row PROCESSING
-  // for a message whose fate was already decided. The stranded-delivery sweep would then report it
-  // as a customer nobody answered and page somebody about it (issue #228).
-  //
-  // Asked ONCE, from a fact the deciding branches set, rather than once per branch: the branches
-  // that decide are the direct turn, the gates that consume a message, and the flush — and the
-  // flush is the one that is NOT here, because it settles its messages itself when it runs, which
-  // is the whole reason a burst can rescue a delivery that died.
-  //
-  // Best-effort, and tx2 writes PROCESSED over it a moment later either way.
-  if (settledMessageId !== null && n.conversationId !== null) {
-    try {
-      await retireCoveredDeliveries({
-        tenantId: params.tenantId,
-        instanceId: params.instanceId,
-        conversationId: n.conversationId,
-        conversationRowId: mirror.conversationRowId,
-        settlement: settledAs,
-        messageIds: [settledMessageId],
-        base,
-      });
-    } catch (e) {
-      logger.warn(
-        "chatwoot: could not retire the settled delivery (conv=%s): %s",
-        convLabel,
-        errMsg(e),
-      );
-    }
   }
 
   // tx2: mark processed. NOTE: a crash between tx1 and tx2 still strands the row in PROCESSING —

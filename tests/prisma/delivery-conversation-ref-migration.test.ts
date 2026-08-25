@@ -149,6 +149,37 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery backfill", () => {
     expect(await statusOf("LIVE")).toBe("PENDING");
   });
 
+  // The two indexes, asked of the CATALOG. Their shape changes no result, so no behavioural test can
+  // hold them — and both shapes are load-bearing for reasons a passing suite will never show:
+  //
+  //   * the sweep's is PARTIAL and TENANT-LEADING. Nothing prunes this ledger, so a full index over
+  //     `status` would carry every delivery the install has ever handled, forever, and pay for it on
+  //     every insert; and the sweep is one job per tenant, so a `status`-led index makes each pass
+  //     walk the whole fleet's non-terminal range and let RLS discard the rest afterwards.
+  //   * the retirement's leads with the ACCOUNT, because that is how the write is keyed: display ids
+  //     and message ids are numbered per Chatwoot account.
+  //
+  // Prisma cannot express a partial index, so the first one is declared in raw SQL and deliberately
+  // absent from schema.prisma — which is exactly why it needs a test of its own.
+  test("ships the index shapes the sweep and the retirement are keyed for", async () => {
+    const rows = await suDb.query<{ indexname: string; indexdef: string }>(
+      "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'chatwoot_webhook_deliveries'",
+    );
+    const byName = new Map(rows.rows.map((r) => [r.indexname, r.indexdef]));
+
+    const sweep = byName.get("chatwoot_webhook_deliveries_sweep_idx");
+    expect(sweep).toBeDefined();
+    expect(sweep).toContain("(tenant_id, received_at)");
+    expect(sweep).toContain("WHERE");
+    expect(sweep).toContain("PENDING");
+    expect(sweep).toContain("PROCESSING");
+
+    const retire = [...byName.values()].find((d) =>
+      d.includes("(chatwoot_instance_id, conversation_id, inbound_message_id)"),
+    );
+    expect(retire).toBeDefined();
+  });
+
   // The negative twin, run through the FILE rather than a copy of the UPDATE, so deleting the
   // `SET app.is_super_admin` line turns this red. FORCE RLS binds a non-superuser owner exactly like
   // any other role, which is what a managed-Postgres migration role usually is.

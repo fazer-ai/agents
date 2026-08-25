@@ -793,6 +793,22 @@ describe.skipIf(!dbUp)("debounce", () => {
       },
       select: { id: true },
     });
+    const top = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-gate-top-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        // Exactly AT the payload's lastMessageId: the message this very flush was armed for, and
+        // the one the exit is deciding about right now. The top bound is inclusive for it.
+        inboundMessageId: 5,
+      },
+      select: { id: true },
+    });
     const later = await suDb.chatwootWebhookDelivery.create({
       data: {
         tenantId,
@@ -854,9 +870,20 @@ describe.skipIf(!dbUp)("debounce", () => {
       select: { status: true },
     });
     expect(atMark.status).toBe("PROCESSING");
+    // The other end is INCLUSIVE, and asymmetrically so on purpose: the lower bound is a decision
+    // already made, the upper bound is the decision being made. The message that armed this flush is
+    // the one most in need of retiring — excluded, every gated flush leaves behind a reported loss
+    // for the exact message it just declined to answer.
+    const atTop = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: top.id },
+      select: { status: true },
+    });
+    expect(atTop.status).toBe("PROCESSED");
 
     await suDb.chatwootWebhookDelivery.deleteMany({
-      where: { id: { in: [stranded.id, later.id, before.id, level.id] } },
+      where: {
+        id: { in: [stranded.id, later.id, before.id, level.id, top.id] },
+      },
     });
   });
 

@@ -3087,6 +3087,8 @@ export async function processChatwootDelivery(
     messageId: number,
     settlement: "answered" | "consumed",
   ): Promise<void> => {
+    // Narrows for the call below, which takes a number. Every caller is already inside a branch that
+    // needs a conversation, so nothing reaches here without one and removing this kills no test.
     if (n.conversationId === null) return;
     try {
       await retireCoveredDeliveries({

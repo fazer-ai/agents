@@ -362,7 +362,10 @@ model ChatwootWebhookDelivery {
   // over. ACCOUNT FIRST, because that is how the write is keyed — display ids and message ids are
   // numbered per Chatwoot account, so a conversation id alone matches rows on every account a tenant
   // has connected.
-  @@index([chatwootInstanceId, conversationId, inboundMessageId])
+  // Named: the implicit name for these three columns is 87 bytes, and Postgres keeps the FIRST 63
+  // while Prisma truncates so `_idx` survives. Left implicit, the created index and this line
+  // disagree, and every later `migrate dev` reports drift against a database that is correct.
+  @@index([chatwootInstanceId, conversationId, inboundMessageId], map: "chatwoot_webhook_deliveries_retire_idx")
   // NOTE: the sweep's own index is PARTIAL and lives in raw SQL, which Prisma cannot express:
   // `(tenant_id, received_at) WHERE status IN ('PENDING','PROCESSING')`. See the migration for why
   // a full index over this table is the wrong shape.

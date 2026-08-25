@@ -40,7 +40,11 @@ ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "inbound_message_id" INTEGE
 -- rows on every account a tenant has connected. That write is what lets the sweep ask "did anything
 -- cover this message" of the ROW rather than inferring it from the conversation's watermarks, which
 -- cannot answer a per-message question.
-CREATE INDEX "chatwoot_webhook_deliveries_chatwoot_instance_id_conversation_id_inbound_message_id_idx"
+-- NAMED, and short. Prisma's implicit name for this `@@index` is 87 bytes; Postgres truncates an
+-- identifier to 63 and keeps the FIRST 63, while Prisma truncates so the `_idx` suffix survives. The
+-- two disagree, so an implicit name here creates an index whose name does not match the schema and
+-- every later `migrate dev` reports drift. One explicit name, in both places.
+CREATE INDEX "chatwoot_webhook_deliveries_retire_idx"
     ON "chatwoot_webhook_deliveries"("chatwoot_instance_id", "conversation_id", "inbound_message_id");
 
 -- When the CURRENT attempt claimed the row, stamped by the tx1 CAS `PENDING -> PROCESSING`.
@@ -68,17 +72,30 @@ ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "claimed_at" TIMESTAMP(3);
 -- customer message is discarded by the upgrade. Thirty minutes is the same threshold the sweep uses
 -- to call a row abandoned, so what this closes is exactly what the sweep would have.
 --
--- A delivery genuinely in flight and older than that is being stranded by the same deploy, so DEAD
--- is the right answer for it. A younger one is left where it is: if the deploy strands it, the sweep
--- reaches it half an hour later and reads it by the rules below rather than by this blanket.
+-- A delivery genuinely in flight and older than that is being stranded by the same deploy, so a
+-- terminal state is the right answer for it. A younger one is left where it is: if the deploy
+-- strands it, the sweep reaches it half an hour later and reads it by the rules below rather than by
+-- this blanket.
 --
--- These rows land in the DEAD list WITHOUT the conversation-level log line and alert the sweep
--- writes, and that is deliberate rather than an oversight. Nothing here knows what they carried:
--- both id columns are being added by this same migration and neither is backfilled, so a line for
--- one of these could not name a conversation, a message, or even whether a customer was waiting. A
--- deploy-time burst of error-level alerts saying "some old deliveries were abandoned" would page an
--- operator with nothing to act on. They are distinguishable from everything the sweep closes later,
--- which is what an operator needs:
+-- WHICH terminal state is a question this migration can answer, and it is the same question
+-- `classifyStrandedDelivery` asks first: only a `message_created` could ever have owed a customer a
+-- turn. `event` is not one of the columns being added here — every build has always written it — so
+-- a conversation update, our own media write-back, a contact created and everything else Chatwoot
+-- sends an agent bot are closed rather than reported. Blanket-DEAD, they would arrive as a deploy-day
+-- pile of "customer went unanswered" rows that no customer was ever waiting on, in the list whose
+-- entire value is that every row in it is real.
+--
+-- What stays ambiguous is a legacy `message_created`, which may or may not have carried an incoming
+-- message: the id columns are added by this same migration and neither is backfilled. DEAD is the
+-- conservative reading, and the one this whole change exists for — closing them as PROCESSED would
+-- hide real losses in the population most likely to hold them.
+--
+-- Those rows land in the DEAD list WITHOUT the conversation-level log line and alert the sweep
+-- writes, and that is deliberate rather than an oversight. Nothing here knows what they carried, so
+-- a line for one of them could not name a conversation, a message, or even whether a customer was
+-- waiting. A deploy-time burst of error-level alerts saying "some old deliveries were abandoned"
+-- would page an operator with nothing to act on. They are distinguishable from everything the sweep
+-- closes later, which is what an operator needs:
 --
 --   SELECT * FROM chatwoot_webhook_deliveries WHERE status = 'DEAD' AND conversation_id IS NULL;
 -- The GUC is load-bearing, and its absence fails SILENTLY in the one direction that matters. This
@@ -96,8 +113,15 @@ ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "claimed_at" TIMESTAMP(3);
 SET app.is_super_admin = 'on';
 
 UPDATE "chatwoot_webhook_deliveries"
+   SET status = 'PROCESSED', processed_at = now()
+ WHERE status IN ('PENDING', 'PROCESSING')
+   AND event <> 'message_created'
+   AND received_at < now() - interval '30 minutes';
+
+UPDATE "chatwoot_webhook_deliveries"
    SET status = 'DEAD', processed_at = now()
  WHERE status IN ('PENDING', 'PROCESSING')
+   AND event = 'message_created'
    AND received_at < now() - interval '30 minutes';
 
 RESET app.is_super_admin;

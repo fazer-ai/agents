@@ -10,6 +10,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   ensureDeliverySweep,
   finish,
+  type retireCoveredDeliveries,
   sweepStrandedDeliveries,
 } from "@/modules/chatwoot/delivery-sweep";
 import { setConnectedAccounts } from "@/modules/chatwoot/management";
@@ -1084,6 +1085,27 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
     await suDb.executionLog.deleteMany({ where: { tenantId } });
     await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+  });
+
+  test("naming no messages at all is not a call anyone can write", () => {
+    // A COMPILE-time guard, held by `bun check` rather than by this run: the two ways to say what a
+    // decision covered are a union, so the third combination — neither the burst nor the range —
+    // does not typecheck. It is the dangerous one. Dropping all three fields once left a filter of
+    // `{ chatwootInstanceId, conversationId }`, which retires every non-terminal row on the
+    // conversation and closes whatever loss was sitting there, and the only thing between that call
+    // and the damage was a `not: null` on a filter whose whole job is to be narrow.
+    //
+    // `@ts-expect-error` is the assertion: it fails the typecheck if the error stops happening.
+    // @ts-expect-error — neither shape: no message bound at all, so this does not typecheck.
+    const neither: Parameters<typeof retireCoveredDeliveries>[0] = {
+      tenantId: 1n,
+      instanceId: 1n,
+      conversationId: 1,
+      conversationRowId: null,
+      settlement: "consumed",
+      base: appDb,
+    };
+    expect(neither.settlement).toBe("consumed");
   });
 
   test("the direct path queues nothing, which is why it settles on every outcome", async () => {

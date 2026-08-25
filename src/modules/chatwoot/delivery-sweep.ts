@@ -68,46 +68,59 @@ function sysCtx(tenantId: bigint): TenantContext {
 //
 // It runs AFTER the turn, never at the post gate: the gate claims before the reply is sent, and
 // retiring there would erase the evidence of precisely the crash window the sweep exists to catch.
-export async function retireCoveredDeliveries(params: {
-  tenantId: bigint;
-  // The Chatwoot ACCOUNT, and it is part of the key rather than context. Display ids and message ids
-  // are numbered per account, so a tenant with two connected accounts has two conversation 41s — the
-  // mirror says as much, keying conversations on `[tenantId, chatwootInstanceId,
-  // chatwootConversationId]`. Left out, a burst on one account retires a genuine strand on the
-  // other and hides that loss for good.
-  instanceId: bigint;
-  // Chatwoot display id, which is what the ledger column holds.
-  conversationId: number;
-  // The mirror's own row id, for filing the correction line below against the conversation. Null
-  // only where the mirror does not know it, which is the same reading the sweep's own line uses.
-  conversationRowId: bigint | null;
-  // What actually happened to the customer, and it has to come from the caller because only the
-  // caller knows. "answered" is a reply that posted; "consumed" is every deliberate silence — a gate
-  // that took the message, a model that produced nothing, a human who took the conversation
-  // mid-turn. Assuming the first would tell an operator their customer was answered when nobody
-  // replied, which is the same class of lie this whole sweep exists to remove.
-  settlement: "answered" | "consumed";
-  // Which messages the decision covered, in the shape the caller can actually state it.
-  //
-  // `messageIds` is the burst a turn ran over, known exactly because the thread was re-fetched.
-  //
-  // The pair is the gate exits, which decide before any fetch and can only say what the watermark
-  // they advance says. That is a RANGE, and it is bounded at BOTH ends: the burst they consume is
-  // everything after the watermark as it stood, up to the payload's newest id. Open at the bottom,
-  // it reaches back past its own burst and retires a strand some earlier message left behind — the
-  // gate never decided about that one, and closing it hides a real loss for good. (Message 1
-  // strands; message 2 arrives on a human-owned conversation and advances the watermark past both;
-  // a gated flush for message 3 then swallows message 1.)
+// Which messages the decision covered, in the shape the caller can actually state it — and the two
+// shapes are EXCLUSIVE, spelled as a union so the third combination cannot be written.
+//
+// It is not a stylistic union. Every field was optional once, and dropping all three left a filter
+// with no message bound at all: `{ chatwootInstanceId, conversationId }`, which retires every
+// non-terminal row on the conversation and closes whatever loss was sitting there. A `not: null`
+// alarm was what stood between that call and the damage, on a filter whose whole job is to be
+// narrow. There is now no such call to write.
+type CoveredMessages =
+  // The burst a turn ran over, known exactly because the thread was re-fetched.
+  | { messageIds: number[]; afterMessageId?: never; upToMessageId?: never }
+  // The gate exits, which decide before any fetch and can only say what the watermark they advance
+  // says. That is a RANGE, and it is bounded at BOTH ends: the burst they consume is everything
+  // after the watermark as it stood, up to the payload's newest id. Open at the bottom, it reaches
+  // back past its own burst and retires a strand some earlier message left behind — the gate never
+  // decided about that one, and closing it hides a real loss for good. (Message 1 strands; message 2
+  // arrives on a human-owned conversation and advances the watermark past both; a gated flush for
+  // message 3 then swallows message 1.)
   //
   // A range is sound HERE, where it is a write at the moment of the decision, and would not be as a
   // read afterwards — that difference is the whole reason the sweep no longer reads watermarks at
   // all. `afterMessageId` null means nothing had been handled yet, so the burst genuinely starts at
-  // the beginning.
-  messageIds?: number[];
-  afterMessageId?: number | null;
-  upToMessageId?: number;
-  base: PrismaClient;
-}): Promise<number> {
+  // the beginning. `upToMessageId` is required: it is the message the gate just decided about, and
+  // the bound is inclusive because that message is the one most in need of retiring.
+  | {
+      messageIds?: never;
+      afterMessageId: number | null;
+      upToMessageId: number;
+    };
+
+export async function retireCoveredDeliveries(
+  params: CoveredMessages & {
+    tenantId: bigint;
+    // The Chatwoot ACCOUNT, and it is part of the key rather than context. Display ids and message ids
+    // are numbered per account, so a tenant with two connected accounts has two conversation 41s — the
+    // mirror says as much, keying conversations on `[tenantId, chatwootInstanceId,
+    // chatwootConversationId]`. Left out, a burst on one account retires a genuine strand on the
+    // other and hides that loss for good.
+    instanceId: bigint;
+    // Chatwoot display id, which is what the ledger column holds.
+    conversationId: number;
+    // The mirror's own row id, for filing the correction line below against the conversation. Null
+    // only where the mirror does not know it, which is the same reading the sweep's own line uses.
+    conversationRowId: bigint | null;
+    // What actually happened to the customer, and it has to come from the caller because only the
+    // caller knows. "answered" is a reply that posted; "consumed" is every deliberate silence — a gate
+    // that took the message, a model that produced nothing, a human who took the conversation
+    // mid-turn. Assuming the first would tell an operator their customer was answered when nobody
+    // replied, which is the same class of lie this whole sweep exists to remove.
+    settlement: "answered" | "consumed";
+    base: PrismaClient;
+  },
+): Promise<number> {
   const where = {
     chatwootInstanceId: params.instanceId,
     conversationId: params.conversationId,
@@ -116,11 +129,9 @@ export async function retireCoveredDeliveries(params: {
         ? { in: params.messageIds }
         : {
             lte: params.upToMessageId,
-            ...(params.afterMessageId !== null &&
-            params.afterMessageId !== undefined
+            ...(params.afterMessageId !== null
               ? { gt: params.afterMessageId }
               : {}),
-            not: null,
           },
   };
 
@@ -369,6 +380,11 @@ export async function sweepStrandedDeliveries(
           { claimedAt: null, receivedAt: { lt: cutoff } },
         ],
       },
+      // Neither of these decides a verdict, and a mutation of either leaves the suite green: the
+      // cutoff above already excluded every row a live attempt could be working, so ORDER is
+      // fairness under a backlog deeper than one batch, and the CAP is a bound on one pass's cost.
+      // Both are policy about how the work is spread, not about what any row means, and the passes
+      // are five minutes apart.
       orderBy: { receivedAt: "asc" },
       take: batch,
       select: {
@@ -396,7 +412,9 @@ export async function sweepStrandedDeliveries(
     // where a fresh row would be marked terminal.
     if (verdict === "in-flight") continue;
     // Read the mirror only for a row that is going in the loss list: it is where the line is filed,
-    // and a row that carried no message writes no line.
+    // and a row that carried no message writes no line. A saved query per benign row, not a rule —
+    // `record` returns before the line for any other verdict, so reading it anyway changes no
+    // outcome and no test can hold this.
     const mirror =
       verdict === "no-message" ? null : await mirrorOf(row, tenantId, base);
     await record(verdict, row, tenantId, mirror, counts, base);

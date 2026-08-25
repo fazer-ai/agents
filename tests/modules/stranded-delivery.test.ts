@@ -105,6 +105,20 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "lost",
     },
     {
+      // A row NOTHING has claimed is dated by its receipt, and a fresh receipt is as protective as a
+      // fresh claim. This is the PENDING row of a delivery that arrived a second ago: the ack is
+      // spent before the row is even inserted, so between the insert and the opening CAS there is
+      // always a live delivery holding a row no claim stamp names yet. Read as "unclaimed means
+      // infinitely old", the sweep would mark it DEAD and page an operator about a message being
+      // answered while it reads.
+      name: "a row nothing has claimed is still in flight while its RECEIPT is fresh",
+      ageMs: 1_000,
+      claimed: false,
+      status: "PENDING",
+      inboundMessageId: 50,
+      expected: "in-flight",
+    },
+    {
       // The order is the decision: a fresh row is left alone whatever it carries, because something
       // may still be working it and a verdict now would be about a live delivery.
       name: "fresh outranks the question about the message",

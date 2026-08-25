@@ -70,6 +70,18 @@ async function statusOf(name: string): Promise<string> {
   return r.rows[0]?.status ?? "";
 }
 
+async function processedAtOf(name: string): Promise<string | null> {
+  const r = await suDb.query(
+    'SELECT processed_at FROM "chatwoot_webhook_deliveries" WHERE id = $1',
+    [String(ids[name])],
+  );
+  return r.rows[0]?.processed_at ?? null;
+}
+
+// What the two already-terminal rows carried before the file ran, so a statement that widens its
+// status list is caught restamping them.
+const stamps: Record<string, string | null> = {};
+
 async function resetStates(): Promise<void> {
   for (const s of STATES) {
     await suDb.query(
@@ -78,9 +90,32 @@ async function resetStates(): Promise<void> {
     );
   }
   await suDb.query(
+    `UPDATE "chatwoot_webhook_deliveries" SET status = 'PROCESSING', processed_at = NULL WHERE id = $1`,
+    [String(ids.BENIGN)],
+  );
+  await suDb.query(
+    `UPDATE "chatwoot_webhook_deliveries" SET status = 'PENDING', processed_at = NULL WHERE id = $1`,
+    [String(ids.WRITEBACK)],
+  );
+  await suDb.query(
     `UPDATE "chatwoot_webhook_deliveries" SET status = 'PENDING', processed_at = NULL, received_at = now() WHERE id = $1`,
     [String(ids.LIVE)],
   );
+  await suDb.query(
+    `UPDATE "chatwoot_webhook_deliveries" SET status = 'PENDING', processed_at = NULL, received_at = now() WHERE id = $1`,
+    [String(ids.LIVEBENIGN)],
+  );
+  await suDb.query(
+    `UPDATE "chatwoot_webhook_deliveries" SET status = 'PROCESSED' WHERE id = $1`,
+    [String(ids.DONEBENIGN)],
+  );
+  for (const s of ["PROCESSED", "DEAD", "DONEBENIGN"] as const) {
+    await suDb.query(
+      `UPDATE "chatwoot_webhook_deliveries" SET processed_at = $1 WHERE id = $2`,
+      [new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(), String(ids[s])],
+    );
+    stamps[s] = await processedAtOf(s);
+  }
 }
 
 describe.skipIf(!dbUp)("migration: the stranded-delivery backfill", () => {
@@ -112,6 +147,64 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery backfill", () => {
       });
       ids[status] = row.id;
     }
+    // A stranded event that could never have owed a customer a turn. `event` is not one of the
+    // columns this migration adds — every build has always written it — so the backfill can read it,
+    // and blanket-DEAD would put a conversation update in the list of unanswered customers.
+    const benign = await db.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `bf-${process.pid}-BENIGN`,
+        event: "conversation_updated",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      },
+      select: { id: true },
+    });
+    ids.BENIGN = benign.id;
+    // Our own media write-back coming around: a message event, and still one no turn was ever owed
+    // for. The rule is the event NAME, which is why this is separate from the one above.
+    const writeback = await db.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `bf-${process.pid}-WRITEBACK`,
+        event: "message_updated",
+        status: "PENDING",
+        receivedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      },
+      select: { id: true },
+    });
+    ids.WRITEBACK = writeback.id;
+    // The live twin of the two above: a non-turn event the PREVIOUS release inserted seconds ago.
+    // The age fence has to hold on BOTH statements — closed here, its own CAS matches nothing and
+    // the mirror write that event carried never runs.
+    const liveBenign = await db.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `bf-${process.pid}-LIVEBENIGN`,
+        event: "conversation_updated",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    ids.LIVEBENIGN = liveBenign.id;
+    // A benign event that already FINISHED. Both statements carry the same status list, and each
+    // one only ever sees its own half of the events — so a list widened on the benign statement is
+    // invisible until a benign row is sitting in a terminal state to be restamped.
+    const doneBenign = await db.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `bf-${process.pid}-DONEBENIGN`,
+        event: "conversation_updated",
+        status: "PROCESSED",
+        receivedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+      },
+      select: { id: true },
+    });
+    ids.DONEBENIGN = doneBenign.id;
     // And one the PREVIOUS release inserted while this migration ran: about to be claimed by it.
     const live = await db.chatwootWebhookDelivery.create({
       data: {
@@ -147,6 +240,48 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery backfill", () => {
     // it. Closed here, that `PENDING -> PROCESSING` CAS matches nothing, the delivery returns
     // "skipped", and a customer message is discarded by the upgrade itself.
     expect(await statusOf("LIVE")).toBe("PENDING");
+    // And the terminal state is chosen, not blanket. Only a legacy `message_created` is ambiguous
+    // enough to report: the id columns arrive with this migration and neither is backfilled, so a
+    // `message_created` may or may not have carried an incoming message and DEAD is the conservative
+    // reading. Everything else is closed — reported, they would arrive as a deploy-day pile of
+    // "customer went unanswered" rows no customer was ever waiting on, in the one list whose value
+    // is that every row in it is real.
+    expect(await statusOf("BENIGN")).toBe("PROCESSED");
+    expect(await statusOf("WRITEBACK")).toBe("PROCESSED");
+    expect(await statusOf("LIVEBENIGN")).toBe("PENDING");
+    // A row already terminal keeps the timestamp that recorded when it FINISHED. Two statements now
+    // carry the same status list, and widening either to include a terminal state reads as a no-op
+    // on `status` while quietly restamping when the work actually ended.
+    expect(await processedAtOf("PROCESSED")).toEqual(stamps.PROCESSED ?? null);
+    expect(await processedAtOf("DEAD")).toEqual(stamps.DEAD ?? null);
+    expect(await statusOf("DONEBENIGN")).toBe("PROCESSED");
+    expect(await processedAtOf("DONEBENIGN")).toEqual(
+      stamps.DONEBENIGN ?? null,
+    );
+  });
+
+  test("names every index it creates short enough for Postgres to keep the name", async () => {
+    // Read from the FILE, not the catalog. The test below asks the database what it has, and the
+    // database was built by an earlier `migrate deploy` — so it answers about the index that exists,
+    // not about the statement that would create one now. This is the half that pins the statement.
+    //
+    // Postgres truncates an identifier to 63 bytes and keeps the FIRST 63; Prisma truncates its
+    // implicit `@@index` name so the `_idx` suffix survives. The two disagree above 63, so an
+    // implicit name creates an index whose name does not match schema.prisma and every later
+    // `migrate dev` reports drift against a database that is actually correct.
+    const names = [...sql.matchAll(/CREATE INDEX\s+"([^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) {
+      expect(new TextEncoder().encode(name ?? "").length).toBeLessThanOrEqual(
+        63,
+      );
+    }
+    // And the one that needed the name says the same thing on both sides of the wall.
+    const schema = await Bun.file("prisma/schema.prisma").text();
+    expect(names).toContain("chatwoot_webhook_deliveries_retire_idx");
+    expect(schema).toContain('map: "chatwoot_webhook_deliveries_retire_idx"');
   });
 
   // The two indexes, asked of the CATALOG. Their shape changes no result, so no behavioural test can
@@ -174,10 +309,20 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery backfill", () => {
     expect(sweep).toContain("PENDING");
     expect(sweep).toContain("PROCESSING");
 
-    const retire = [...byName.values()].find((d) =>
-      d.includes("(chatwoot_instance_id, conversation_id, inbound_message_id)"),
-    );
+    // Asked by NAME, because the name is the half that drifts. Prisma's implicit name for these
+    // three columns is 87 bytes: Postgres keeps the first 63 and Prisma truncates so `_idx`
+    // survives, so left implicit the created index and schema.prisma disagree and every later
+    // `migrate dev` reports drift against a database that is actually correct.
+    const retire = byName.get("chatwoot_webhook_deliveries_retire_idx");
     expect(retire).toBeDefined();
+    expect(retire).toContain(
+      "(chatwoot_instance_id, conversation_id, inbound_message_id)",
+    );
+    // The rule under that, rather than the one name: no index on this table may be long enough for
+    // Postgres to rename it on the way in.
+    for (const name of byName.keys()) {
+      expect(new TextEncoder().encode(name).length).toBeLessThanOrEqual(63);
+    }
   });
 
   // The negative twin, run through the FILE rather than a copy of the UPDATE, so deleting the

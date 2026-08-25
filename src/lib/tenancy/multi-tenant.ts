@@ -1,6 +1,9 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
-import { NotFoundError, TenantTargetRequiredError } from "@/lib/errors";
+import {
+  ActiveTenantNotFoundError,
+  TenantTargetRequiredError,
+} from "@/lib/errors";
 import type { ScopedDb, TenantContext } from "./context";
 
 // NOTE: the closure-extended `$extends` client is not the bare PrismaClient type, but it
@@ -110,8 +113,11 @@ async function requireTenantExists(
     select: { id: true },
   });
   if (!row) {
-    // The same status and key the MCP selector and `getTenant` already answer with.
-    throw new NotFoundError("Tenant not found", "errors.tenantNotFound");
+    // The same status and key the MCP selector and `getTenant` already answer with, in a class of
+    // its own: this is the only one of the seven that refuses the selector the CALLER WAS CARRYING
+    // rather than a tenant its request named, and the console has to tell them apart to know whether
+    // to drop what it has stored (src/lib/console-params.ts).
+    throw new ActiveTenantNotFoundError(tenantId);
   }
 }
 

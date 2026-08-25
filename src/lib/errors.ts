@@ -76,6 +76,19 @@ export class NotFoundError extends AppError {
   }
 }
 
+// NOTE: the tenant the request was AMBIENTLY scoped to is gone — the SUPER_ADMIN selector it carried
+// (the console's stored `X-Tenant-Id`) names a tenant that no longer exists. Same status, key and
+// sentence as the 404 for a tenant the caller NAMED, and a different fact: only this one says the
+// browser is holding something dead, and only this one obliges it to drop the selection. The
+// rejected id travels so the boundary can name it on the wire (src/api/lib/refusal.ts). Issue #252.
+export class ActiveTenantNotFoundError extends NotFoundError {
+  readonly rejectedTenantId: string;
+  constructor(tenantId: bigint | string) {
+    super("Tenant not found", "errors.tenantNotFound");
+    this.rejectedTenantId = String(tenantId);
+  }
+}
+
 // NOTE: uniform 401 for the inbound receptor. An unknown/disabled route token and a bad
 // auth signature must look identical (same status, same body) so the response never reveals
 // which token strings are live.

@@ -6,7 +6,7 @@ import api from "@/api";
 import { cspDirectives } from "@/api/lib/csp";
 import logger from "@/api/lib/logger";
 import { parseOrigins } from "@/api/lib/origin";
-import { refusalBody } from "@/api/lib/refusal";
+import { refusalBody, refusalHeaders } from "@/api/lib/refusal";
 import { localeMiddleware } from "@/api/middlewares/locale";
 import {
   credentialRateLimitMiddleware,
@@ -111,7 +111,10 @@ const app = new Elysia({
     // NOTE: keep set.status in sync, because the access log in onAfterResponse reads it and a raw
     // Response alone would make a 4xx show up there as a 500.
     set.status = error.statusCode;
-    return Response.json(body, { status: error.statusCode });
+    return Response.json(body, {
+      status: error.statusCode,
+      headers: refusalHeaders(error),
+    });
   })
   .use(rateLimitMiddleware())
   .use(mcpTransportRateLimitMiddleware())

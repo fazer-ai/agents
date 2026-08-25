@@ -54,3 +54,24 @@ export function reconcileActiveTenantId(tenantIds: string[]): {
   setActiveTenantId(null);
   return { activeId: null, cleared: true };
 }
+
+// The same question `reconcileActiveTenantId` asks at page load, asked by a single REFUSED REQUEST.
+//
+// The list-based reconciliation only runs on mount, so everything that kills a tenant mid-session is
+// invisible to it: deleted from another tab or by another operator, `tenant_delete` over MCP, the
+// console pointed at a different database. This path finds out on the next request instead of on the
+// next page load, from the id the boundary names (REJECTED_TENANT_SELECTOR_HEADER).
+//
+// It compares that id against what is stored rather than trusting the refusal, for the same reason
+// the reconciliation reads storage at call time: a request that went out under the old selection can
+// be refused AFTER the operator switched to a live tenant, and that newer choice is not this
+// answer's to discard.
+//
+// Returns whether it dropped anything, which is also the once-flag. A page has several requests in
+// flight and each answers 404; the first clears storage synchronously, so every later answer in the
+// burst finds nothing to clear and the caller reloads once rather than once per request.
+export function dropSelectionIfRejected(rejectedId: string): boolean {
+  if (getActiveTenantId() !== rejectedId) return false;
+  setActiveTenantId(null);
+  return true;
+}

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import type { PrismaClient as PrismaClientType } from "@/../generated/prisma/client";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { AppError } from "@/lib/errors";
+import { ActiveTenantNotFoundError, AppError } from "@/lib/errors";
 import {
   resolveRequestTenantContext,
   runScopedOn,
@@ -116,6 +116,14 @@ describe.skipIf(!dbUp)("a tenant selector that names no tenant", () => {
     // The key the MCP selector and GET /v1/tenants/:id already answer with, so the console shows one
     // sentence for one fact whichever transport asked.
     expect(app_err.translationKey).toBe("errors.tenantNotFound");
+    // And the class that separates this refusal from those: same status, same key, same sentence,
+    // and the only one of the seven that is about the selector the CALLER WAS CARRYING. It names the
+    // id it refused so the boundary can put it on the wire for the console to match against what it
+    // has stored (src/lib/console-params.ts). Issue #252.
+    expect(err instanceof ActiveTenantNotFoundError).toBe(true);
+    expect((err as ActiveTenantNotFoundError).rejectedTenantId).toBe(
+      String(deadId),
+    );
   });
 
   test("a live target still runs, and pays exactly one statement for the check", async () => {

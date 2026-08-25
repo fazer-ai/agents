@@ -1,4 +1,5 @@
-// Query parameters and routes that the SERVER writes into a console URL and the BROWSER reads back.
+// Names the SERVER writes and the BROWSER reads back: query parameters, routes, and one response
+// header.
 //
 // They live here, with no imports of their own, because both ends need them and the two ends have
 // opposite constraints: `src/modules/mcp/console-links.ts` builds the URLs and needs `config`
@@ -21,3 +22,16 @@ export const CONSOLE_ROUTES = {
   vault: "/resources/vault",
   integrations: "/resources/integrations",
 } as const;
+
+// Names the id on the 404 that refuses the tenant SELECTOR a request was carrying (the console's
+// stored `X-Tenant-Id`), which `ActiveTenantNotFoundError` separates from every other 404 answering
+// the same key and sentence (src/lib/errors.ts).
+//
+// A header rather than a code in the body because of who reads it: Eden's `onResponse` sees the
+// `Response` before the body is parsed, and reading the body there consumes the stream Eden is about
+// to read. The body's one machine-readable key is `field`, whose contract is an INPUT the operator
+// can go and fix (src/api/lib/refusal.ts); an ambient target is not one. Issue #252.
+//
+// NOTE: readable from script because the console is same-origin with the API. A cross-origin reader
+// would need it in `Access-Control-Expose-Headers`, which this app does not send.
+export const REJECTED_TENANT_SELECTOR_HEADER = "X-Tenant-Id-Invalid";

@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { isTurnInFlight } from "@/graph/inflight";
 import { parseThreadId, runAgentNudge } from "@/graph/nudge";
+import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { hasLiveAppointment } from "@/modules/appointments/reminders";
@@ -47,16 +48,6 @@ const IN_FLIGHT_BACKOFF_MS = 30_000;
 // cancelled. Coarse (1h) because the sweep already filters these out — this only catches a FOLLOWUP
 // that was in flight before the booking.
 const APPOINTMENT_BACKOFF_MS = 3_600_000;
-// NOTE: Back-off when the nudge could not run to completion without posting anything: the live-state GET
-// failed (fail-closed) or a pending human-in-the-loop interrupt deferred it. Retry the SAME step —
-// nothing was sent, so the watermark must not advance.
-const NUDGE_RETRY_BACKOFF_MS = 900_000;
-// NOTE: Cap on consecutive same-step retries (payload `nudgeRetries`, reset when the step advances).
-// A conversation whose live GET fails forever (e.g. deleted in Chatwoot) must not stay PENDING
-// indefinitely. On exhaustion the CURRENT EPISODE is abandoned by stamping lastFollowUpAt WITHOUT
-// posting — dead-lettering alone would loop, because the sweep re-enqueues any conversation with
-// no stamp; the stamp keeps it away until the customer speaks again (which starts a new episode).
-const NUDGE_RETRY_LIMIT = 8;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -482,21 +473,18 @@ export async function followUpHandler(
   // NOTE: Live gate: the conversation is no longer bot-owned in Chatwoot (resolved / human took over) —
   // the episode is moot. No watermark, no next step; the reconciled mirror keeps the sweep away.
   if (nudgeOutcome === "stale") return { outcome: "done" };
-  // NOTE: Nothing was posted: the live-state GET failed (fail-closed) or a pending human-in-the-loop
-  // interrupt deferred the nudge. Retry the SAME step later instead of stamping a follow-up that
-  // never happened — but bounded (NUDGE_RETRY_LIMIT): on exhaustion, abandon the episode with a
-  // stamp so the sweep stays away until the customer speaks again.
-  if (nudgeOutcome === "live-unavailable" || nudgeOutcome === "deferred") {
-    const priorRetries =
-      typeof job.payload.nudgeRetries === "number" &&
-      Number.isInteger(job.payload.nudgeRetries)
-        ? job.payload.nudgeRetries
-        : 0;
-    if (priorRetries + 1 >= NUDGE_RETRY_LIMIT) {
+  // NOTE: Nothing was posted, for a reason that may not hold next time (the shared predicate names the
+  // three). Retry the SAME step later instead of stamping a follow-up that never happened, but
+  // bounded (NUDGE_RETRY_LIMIT): on exhaustion, abandon the episode with a stamp so the sweep stays
+  // away until the customer speaks again. Dead-lettering alone would loop, because the sweep
+  // re-enqueues any conversation with no stamp.
+  if (isRepairableNudgeRefusal(nudgeOutcome)) {
+    const retry = nextNudgeRetry(job.payload);
+    if (!retry.retry) {
       logger.warn(
         "followUpHandler: giving up on step %d after %d %s retries (thread=%s) — stamping without posting",
         stepIndex,
-        priorRetries + 1,
+        retry.attempt,
         nudgeOutcome,
         threadId,
       );
@@ -505,8 +493,8 @@ export async function followUpHandler(
     }
     return {
       outcome: "reschedule",
-      runAt: new Date(Date.now() + NUDGE_RETRY_BACKOFF_MS),
-      payload: { ...job.payload, nudgeRetries: priorRetries + 1 },
+      runAt: retry.runAt,
+      payload: { ...job.payload, nudgeRetries: retry.attempt },
     };
   }
 

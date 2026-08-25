@@ -110,6 +110,12 @@ export type RunAgentNudgeOutcome =
   | "stale"
   // Live-state gate could not verify (GET failed): fail-closed, nothing posted; caller may retry.
   | "live-unavailable"
+  // NOTE: The agent this conversation IS bound to could not author anything: its model credential does
+  // not resolve, or it is switched off. Nothing was posted and no model was reached, and the reason
+  // is one an operator repairs, which is what separates it from `no-agent` (issue #281). Callers
+  // that own an occasion (a follow-up step, a reminder offset, a ladder stage) must not spend it
+  // here; see isRepairableNudgeRefusal.
+  | "agent-unavailable"
   | "no-conversation"
   | "no-agent";
 
@@ -343,7 +349,12 @@ export async function runAgentNudge(
       agentId: inbox.agentId,
       threadId: params.threadId,
     });
-    if (!cfg) return null;
+    // Classified by exclusion, and the exclusion is the point: `loadAgentConfig` refuses for three
+    // reasons (the row is gone, the switch is off, the model credentialRef does not resolve) and
+    // answers all three with null. The agent row read above already distinguishes the first from the
+    // other two, and the rule survives a fourth reason being added there: a config that refuses an
+    // agent which EXISTS is, whatever the reason, an agent that cannot author right now.
+    if (!cfg) return agent ? ("agent-unavailable" as const) : null;
     return {
       cfg,
       status: conv.status,
@@ -365,6 +376,16 @@ export async function runAgentNudge(
       String(conversationId),
     );
     return "silent";
+  }
+  if (loaded === "agent-unavailable") {
+    // `loadAgentConfig` already logs WHICH reason (the unresolvable credentialRef by name); this line
+    // is the other half an operator needs, and the half no log had: that a proactive occasion reached
+    // the agent and found it unable to answer.
+    logger.info(
+      "agentNudge: the agent cannot author right now (conv=%s), nothing posted",
+      String(conversationId),
+    );
+    return "agent-unavailable";
   }
   if (!loaded) return "no-agent";
   // `let` for one reason: an authorized contact's facts are appended to the prompt below, after the

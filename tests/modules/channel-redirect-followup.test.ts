@@ -938,6 +938,59 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     persistUsage: async () => {},
   });
 
+  // Issue #281. The chat stage is the only one of the three that needs the agent to author anything,
+  // and it used to advance regardless: an agent that could not answer at all still cost the lead its
+  // softest stage, moving them one step closer to the closing with nothing sent.
+  async function withUnresolvableCredential<T>(
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { modelConfig: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-4o-mini",
+          credentialRef: "vault:999999999",
+        },
+      },
+    });
+    try {
+      return await fn();
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { modelConfig: before.modelConfig ?? {} },
+      });
+    }
+  }
+
+  test("a chat stage whose agent cannot author retries the stage instead of escalating", async () => {
+    const job = await claimed("chat");
+    const s = stubClient();
+
+    const result = await withUnresolvableCredential(() =>
+      redirectFollowUpHandler(job, appDb, {
+        ...deps(),
+        makeClient: s.makeClient,
+      }),
+    );
+
+    expect(result.outcome).toBe("reschedule");
+    if (result.outcome === "reschedule") {
+      // Still `chat`: "whatsapp" here is the escalation this stage never earned.
+      expect(result.payload).toMatchObject({
+        stage: "chat",
+        nudgeRetries: 1,
+      });
+    }
+    expect(s.sent).toEqual([]);
+    expect(s.resolved).toEqual([]);
+  });
+
   test("stands down instead of chasing the lead", async () => {
     const job = await claimed();
     await retireRedirectFollowUp(tenantId, widgetThread, appDb);

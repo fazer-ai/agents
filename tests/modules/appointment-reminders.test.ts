@@ -5,6 +5,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { DATA_FENCE, renderNudge } from "@/graph/nudge";
+import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
 import {
   appointmentReminderHandler,
   cancelThreadAppointmentReminders,
@@ -285,6 +286,7 @@ const suDb = su as PrismaClient;
 describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
   let tenantId = 0n;
   let instanceId = 0n;
+  let agentId = 0n;
   const CONV_ID = 4242;
   let threadId = "";
 
@@ -337,6 +339,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
         },
       },
     });
+    agentId = agent.id;
     await suDb.chatwootAgentBot.create({
       data: {
         tenantId,
@@ -403,6 +406,82 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     };
     return job;
   };
+
+  // Issue #281. A reminder offset is spent exactly once, and it used to be spent even when the agent
+  // could not author a word: the handler discarded the outcome and answered `done`, so a credential
+  // that was broken at the wrong minute cost the customer the reminder outright.
+  // Restored on the way out: the tests below this one read the same agent row, and a credential left
+  // broken would make them fail for a reason that has nothing to do with what they assert.
+  async function withUnresolvableCredential<T>(
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { modelConfig: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-4o-mini",
+          credentialRef: "vault:999999999",
+        },
+      },
+    });
+    try {
+      return await fn();
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { modelConfig: before.modelConfig ?? {} },
+      });
+    }
+  }
+
+  test("an agent that cannot author gets the reminder retried, not consumed", async () => {
+    const job = await armed("reminder:evt-unavailable:60");
+    const s = stubClient();
+
+    const result = await withUnresolvableCredential(() =>
+      appointmentReminderHandler(job, appDb, {
+        makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      }),
+    );
+
+    expect(result.outcome).toBe("reschedule");
+    if (result.outcome === "reschedule") {
+      expect(result.payload).toMatchObject({ nudgeRetries: 1 });
+    }
+    expect(s.sent).toEqual([]);
+  });
+
+  test("the retry is bounded: the reminder is dropped once the attempts run out", async () => {
+    const armedJob = await armed("reminder:evt-unavailable-bound:60");
+    const job: ClaimedJob = {
+      ...armedJob,
+      payload: {
+        ...armedJob.payload,
+        nudgeRetries: NUDGE_RETRY_LIMIT - 1,
+      },
+    };
+    const s = stubClient();
+
+    const result = await withUnresolvableCredential(() =>
+      appointmentReminderHandler(job, appDb, {
+        makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      }),
+    );
+
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+  });
 
   test("is not sent, even though the worker still holds the pre-cancel payload", async () => {
     const job = await armed("reminder:evt-1:60");

@@ -5,6 +5,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
+import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
 import { hasLiveAppointment } from "@/modules/appointments/reminders";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
@@ -183,6 +184,34 @@ async function seedConversation(
       assigneeId: over.assigneeId ?? null,
     },
   });
+}
+
+// Points the agent's model at a vault entry that does not exist, which is the state issue #281 is
+// about: the agent is live and expected to answer, and nothing it needs to author with resolves.
+// Restored on the way out, because every other test in this file reads the same agent row.
+async function withUnresolvableCredential<T>(fn: () => Promise<T>): Promise<T> {
+  const before = await suDb.agent.findUniqueOrThrow({
+    where: { id: agentId },
+    select: { modelConfig: true },
+  });
+  await suDb.agent.update({
+    where: { id: agentId },
+    data: {
+      modelConfig: {
+        provider: "openai",
+        model: "gpt-4o-mini",
+        credentialRef: "vault:999999999",
+      },
+    },
+  });
+  try {
+    return await fn();
+  } finally {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { modelConfig: before.modelConfig ?? {} },
+    });
+  }
 }
 
 async function lastFollowUpOf(convId: number): Promise<Date | null> {
@@ -1112,6 +1141,61 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         },
       }),
     ).toBeNull();
+  });
+
+  // Issue #281. An agent whose model credentialRef does not resolve cannot author anything, and the
+  // step used to be spent anyway: the watermark was stamped and the sequence advanced, so a broken
+  // credential silently consumed the whole episode and the customer got nothing once it was fixed.
+  test("(y) a step whose agent cannot author is retried, not stamped", async () => {
+    await setAgentSteps(TWO_STEPS);
+    await seedConversation(1090, { lastFollowUpAt: null });
+    const s = stubClient();
+    const result = await withUnresolvableCredential(() =>
+      followUpHandler(jobFor(1090, 0), appDb, {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      }),
+    );
+    expect(result.outcome).toBe("reschedule");
+    if (result.outcome === "reschedule") {
+      // The SAME step, with the attempt counter, not stepIndex 1, which is what advancing looks like.
+      expect(result.payload).toEqual({
+        threadId: threadOf(1090),
+        stepIndex: 0,
+        nudgeRetries: 1,
+      });
+    }
+    expect(s.sent).toEqual([]);
+    expect(await lastFollowUpOf(1090)).toBeNull();
+  });
+
+  test("(z) the retry is bounded: the episode is abandoned with a stamp once the attempts run out", async () => {
+    await setAgentSteps(TWO_STEPS);
+    await seedConversation(1091, { lastFollowUpAt: null });
+    const s = stubClient();
+    const job: ClaimedJob = {
+      ...jobFor(1091, 0),
+      payload: {
+        threadId: threadOf(1091),
+        stepIndex: 0,
+        nudgeRetries: NUDGE_RETRY_LIMIT - 1,
+      },
+    };
+    const result = await withUnresolvableCredential(() =>
+      followUpHandler(job, appDb, {
+        makeModel: fakeModel,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      }),
+    );
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+    // Stamped WITHOUT posting: the sweep re-enqueues any conversation with no stamp, so giving up
+    // without one would loop instead of ending.
+    expect(await lastFollowUpOf(1091)).not.toBeNull();
   });
 
   test("(x) an impossible calendar date never suppresses (no Date.parse roll-over on either side)", async () => {

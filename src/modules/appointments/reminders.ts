@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
+import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -395,7 +396,7 @@ export async function appointmentReminderHandler(
   // ran before a network call long enough for the reset to land inside it.
   if (await retired()) return { outcome: "done" };
 
-  await runAgentNudge({
+  const outcome = await runAgentNudge({
     tenantId,
     threadId,
     // And once more inside, where the nudge re-asks its own questions across the model call. Three
@@ -414,6 +415,27 @@ export async function appointmentReminderHandler(
     base,
     deps,
   });
+  // NOTE: A reminder offset is an occasion, and it is spent exactly once. When the nudge posted nothing
+  // for a reason that may be repaired, retrying the SAME row is what keeps the customer's reminder
+  // from disappearing because a credential was broken for ten minutes. The event check at the top of
+  // this handler is the natural ceiling: a retry that lands after the appointment has started drops
+  // itself, so the bound below only has to stop a job that would otherwise outlive its own occasion.
+  if (isRepairableNudgeRefusal(outcome)) {
+    const retry = nextNudgeRetry(job.payload);
+    if (retry.retry) {
+      return {
+        outcome: "reschedule",
+        runAt: retry.runAt,
+        payload: { ...job.payload, nudgeRetries: retry.attempt },
+      };
+    }
+    logger.warn(
+      "appointmentReminder: giving up after %d %s retries (thread=%s), the reminder is not sent",
+      retry.attempt,
+      outcome,
+      threadId,
+    );
+  }
   return { outcome: "done" };
 }
 

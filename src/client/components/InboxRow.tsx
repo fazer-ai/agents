@@ -113,7 +113,7 @@ export function InboxRow({
                 loading={removing}
                 onClick={onRemove}
                 aria-label={t("channels.removeInbox", "Remove inbox mirror")}
-                className="text-text-muted hover:text-danger"
+                className="text-text-muted hover:text-error"
               >
                 <Trash2 className="h-4 w-4" aria-hidden="true" />
               </Button>

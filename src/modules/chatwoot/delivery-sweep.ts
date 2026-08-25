@@ -197,6 +197,15 @@ async function mirrorOf(
 // Writes the row's terminal state, CASing on the status the scan read. Losing that CAS means a
 // redelivery claimed the row in between and is processing the event right now — the outcome this
 // sweep exists to report the absence of — so it is not a failure and nothing is recorded.
+//
+// NOTE: The other ordering is not symmetric and is left as it stands. On a PENDING row this CAS
+// races the delivery's own `PENDING -> PROCESSING` claim, and winning it means that claim then
+// matches nothing and returns "skipped" — a redelivery arriving in that instant is discarded, and
+// with it the one path that could still have answered the customer through the real gates. The
+// report is still true (nothing had processed the message), and the window needs a manual replay to
+// land inside the sweep's write, since Chatwoot holds a 200 and does not redeliver on its own.
+// Closing it means letting a claim take a row back from a terminal state, which is recovery, and
+// recovery is issue #295 rather than something to smuggle in here.
 // Exported for the test: the false branch is a race between the scan and the write, and a test that
 // tries to construct one goes green for the wrong reason more often than it detects.
 export async function finish(

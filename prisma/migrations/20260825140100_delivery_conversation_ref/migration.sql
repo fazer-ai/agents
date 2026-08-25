@@ -56,6 +56,22 @@ ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "claimed_at" TIMESTAMP(3);
 -- which is what an operator needs:
 --
 --   SELECT * FROM chatwoot_webhook_deliveries WHERE status = 'DEAD' AND conversation_id IS NULL;
+-- The GUC is load-bearing, and its absence fails SILENTLY in the one direction that matters. This
+-- table is tenant-scoped and carries FORCE ROW LEVEL SECURITY, which subjects even the table OWNER
+-- to the tenant policy, and `MIGRATION_DATABASE_URL` is only ever documented as "superuser OR owner"
+-- (docs/deploy.md). On a self-hosted Postgres the migration role is usually a real superuser and
+-- this makes no difference; on managed Postgres the admin role is typically the owner WITHOUT
+-- rolsuper, and there this UPDATE matches ZERO rows and reports success. The rows would then stay
+-- non-terminal with both id columns null, which is exactly what the sweep reads as "carried no
+-- message" — so every pre-existing loss would be closed as PROCESSED and never reported, on the
+-- population most likely to contain real ones.
+--
+-- Plain SET, not SET LOCAL: outside a transaction SET LOCAL is a no-op with only a warning, which
+-- would reproduce the very failure this line exists to prevent.
+SET app.is_super_admin = 'on';
+
 UPDATE "chatwoot_webhook_deliveries"
    SET status = 'DEAD', processed_at = now()
  WHERE status IN ('PENDING', 'PROCESSING');
+
+RESET app.is_super_admin;

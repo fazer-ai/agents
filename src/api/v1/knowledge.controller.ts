@@ -44,7 +44,7 @@ import type { ChunkHit } from "@/modules/rag/sql";
 // translate('errors.embeddingNotConfigured', 'Embeddings are not configured for this workspace.')
 // translate('errors.embeddingPending', 'The embedding credential is not filled in yet.')
 // translate('errors.knowledgeBaseNotFound', 'Knowledge base not found.')
-// translate('errors.noExtractableText', 'No extractable text found in this file')
+// translate('errors.noExtractableText', 'No extractable text found in this {{kind}} file')
 // translate('errors.unstorableText', '{{field}} contains characters that cannot be stored ({{codePoints}})')
 // translate('errors.unsupportedFileType', 'Unsupported file type: {{type}}')
 

@@ -44,11 +44,18 @@ import { vaultRefWhere } from "@/modules/vault/service";
 
 // NOTE: these AppError translationKeys are localized centrally in `onError`; declared here for the
 // i18n extractor (keepRemoved: false). Keep in sync with src/api/locales/*.json.
-// translate('errors.mcpOAuthDiscoveryFailed', 'Could not discover the MCP server OAuth configuration')
+// translate('errors.mcpOAuthDiscoveryFailed', 'Could not read the MCP server OAuth configuration: {{url}} answered {{status}}')
+// translate('errors.mcpOAuthNoAuthorizationServer', 'The MCP server metadata names no authorization server, so there is nothing to connect to')
+// translate('errors.mcpOAuthMetadataIncomplete', 'The MCP authorization server metadata is missing the authorization or token endpoint')
+// translate('errors.mcpOAuthPkceUnsupported', 'The MCP authorization server does not support PKCE (S256), which is required to connect')
 // translate('errors.mcpOAuthDcrDisabled', 'The MCP server does not support dynamic client registration')
 // translate('errors.mcpOAuthDcrFailed', 'Dynamic client registration with the MCP server failed: {{reason}}')
 // translate('errors.mcpOAuthTokenExchangeFailed', 'Failed to exchange the MCP authorization code')
 // translate('errors.mcpOAuthNotConnected', 'This MCP credential is not connected')
+// translate('errors.mcpOAuthNoServerUrl', 'This MCP credential has no server URL, so there is nothing to authorize')
+// translate('errors.mcpOAuthCredentialNotFound', 'This MCP credential no longer exists')
+// translate('errors.mcpOAuthTokenEndpointError', 'The MCP server refused the token request: {{reason}}')
+// translate('errors.mcpOAuthRefreshFailed', 'Could not refresh the MCP credential: the answer carried no access token. Reconnect it.')
 // translate('errors.mcpOAuthInvalidState', 'Invalid MCP OAuth state')
 // translate('errors.mcpOAuthWrongKind', 'This credential is not an MCP OAuth credential')
 
@@ -124,7 +131,7 @@ export const oauthMcpVaultController = new Elysia({
       if (!baseUrl) {
         throw new NotFoundError(
           "mcp_oauth credential has no MCP server URL (baseUrl)",
-          "errors.mcpOAuthNotConnected",
+          "errors.mcpOAuthNoServerUrl",
         );
       }
 

@@ -287,7 +287,25 @@ function keysThatSayLess(
 // The pieces every producer spelling is built from, at module scope so the two readers below cannot
 // drift apart on what a key, a status or a literal looks like. MESSAGE is the literal one: a plain
 // string or a template, which is what the say-less rule can compare to a catalog entry.
-const STATUS = "(?:\\d+\\s*,\\s*)?";
+// THE STATUS ARGUMENT IS AN EXPRESSION, not always a literal. This read `\d+` until issue #292,
+// and the two OAuth token helpers answer `json.error === "invalid_grant" ? 400 : 502` — so the
+// reader walked past both of them and counted their key as having one producer fewer than it has.
+// Splitting those keys without seeing it would have left the third producer behind, answering the
+// sentence written for another fact.
+//
+// MEASURED IN BOTH DIRECTIONS, which is the half that is easy to skip: a widened reader is judged
+// by what it newly sees, and a matcher that runs too far does not merely see more — it pairs a
+// message with somebody else's key and DROPS the right pairing, which shows up as a loss, not as a
+// gain. Against this tree: 233 pairs before, 235 after, zero lost, and the two gained are exactly
+// the two helpers above.
+//
+// BOUNDED TO ONE ARGUMENT, and not merely to the next comma. A status is a single expression on a
+// single line inside one call, so the run may cross neither a parenthesis, a newline nor a
+// semicolon. The looser `[^,]*` measures identically on this tree and is a weaker guarantee: after
+// a call that passes NO status, it could swallow the key, the `)` and whatever follows, and pair
+// that message with a LATER key. Nothing is written that way here today, which is exactly why the
+// bound belongs in the expression instead of in a habit (found by review, issue #292).
+const STATUS = "(?:[^,()\\n;]*,\\s*)?";
 const KEY = '"errors\\.(?<key>[A-Za-z0-9_]+)"';
 const MESSAGE = '(?<msg>`[^`]*`|"(?:[^"\\\\]|\\\\.)*")';
 
@@ -447,36 +465,13 @@ function keysThatCannotCarryTheirReason(
     .sort();
 }
 
-// PREDATES the rule, and may only ever SHRINK. Not an argument that each of these is fine: it is the
-// line drawn under what was already there, so no NEW key can land in this shape. Working the list
-// down is its own change.
-//
-// That none of these arrived with the rule was checked against the merge base while writing it, and
-// deliberately is NOT a test: the comparison needs a ref that stops meaning anything once this is on
-// main. What IS a test, below, is the half that keeps mattering — a waiver whose key no longer
-// offends has to leave, so the list stays a record of what is left to do rather than a graveyard.
-const SAY_LESS_GRANDFATHERED: readonly string[] = [
-  "baseUrlRequired",
-  "credentialRequired",
-  "documentWouldBeBlank",
-  "googleOAuthNotConnected",
-  "googleOAuthTokenExchangeFailed",
-  "imageTooLarge",
-  // The one entry here that did NOT predate the rule: it predated the READER. Widening it to the
-  // `translate(key, "…")` producers (issue #299) put the admin surface's re-auth refusal beside the
-  // four `AppError` ones, and the two spell the same fact differently: "password verification
-  // failed" is the log line, "Incorrect password" is the sentence, and the catalog already answers
-  // both with the second. Two phrasings of one fact is what #292 exists to judge; rewording either
-  // side to satisfy the count would be pretending the rule caught something.
-  "invalidPassword",
-  "invalidVaultValue",
-  "mcpOAuthDiscoveryFailed",
-  "mcpOAuthNotConnected",
-  "mcpOAuthTokenExchangeFailed",
-  "noExtractableText",
-  "providerModelsFailed",
-  "unknownProvider",
-];
+// EMPTY, and pinned there. It was fifteen keys drawn as a line under what predated the rule, each
+// one a catalog sentence that could not say what its call sites said; issue #292 worked them down to
+// nothing, key by key, by asking of every pair of messages whether they are two FACTS (split the
+// key), one fact with a value that varies (give the entry a placeholder), or one fact written twice
+// (make the two call sites say the one sentence). An append here is now a defect being waived rather
+// than a line being held, which is what the pin below says out loud.
+const SAY_LESS_GRANDFATHERED: readonly string[] = [];
 
 describe("the error catalog cannot be bypassed", () => {
   // A sweep whose subject does not exist yet asserts nothing, and reads exactly like one that
@@ -772,6 +767,9 @@ describe("both languages answer, and answer differently", () => {
         // controls: a reader that stopped matching one would go green here and quietly stop
         // covering a whole family, which is what it did to `invalidDocumentSlug` for four releases.
         'super("from a subclass", 400, "errors.e");',
+        // The status as an EXPRESSION. Both OAuth token helpers spell it this way, and a reader
+        // pinned to `\\d+` reports their key with one producer fewer than it has.
+        'throw new AppError("computed status", cond ? 400 : 502, "errors.k");',
         'return { message: "built, thrown elsewhere", key: "errors.f", params: {} };',
         // KEY FIRST in these two, and the message second. The auth and admin surfaces answer with a
         // body instead of throwing, and the schema boundary renders its own.
@@ -781,6 +779,10 @@ describe("both languages answer, and answer differently", () => {
         // beside its neighbour in an ARRAY of keys is not a key beside its message. Read by
         // adjacency instead of by call, this line reports `i` as a refusal whose sentence is `j`.
         'const DOCUMENT_KEYS = ["errors.i", "errors.j"];',
+        // NEGATIVE, and the reason the status matcher is bounded to one argument. A call that
+        // passes no status is one comma away from the next key on the line: a matcher that only
+        // stops at a comma pairs "keyless status" with `m` and loses `l` entirely.
+        'throw new NotFoundError("keyless status", "errors.l"); log(ctx, "errors.m");',
       ].join("\n"),
       into,
       await throwSiteRes(),
@@ -793,6 +795,8 @@ describe("both languages answer, and answer differently", () => {
       "f",
       "g",
       "h",
+      "k",
+      "l",
     ]);
     // The captured MESSAGE, not just the key: what feeds the rule above is whether the message
     // interpolates, so a reader that stripped the `${…}` on the way out would silence it.
@@ -803,6 +807,10 @@ describe("both languages answer, and answer differently", () => {
     const captured = [...(into.get("b") ?? [])][0] ?? "";
     expect(captured.charCodeAt(captured.indexOf("{") - 1)).toBe(36);
     expect(into.get("a")?.size).toBe(2);
+    // The pairing, not just the presence: the bounded status matcher has to attach the message to
+    // the key of its OWN call, and leave the neighbouring key alone.
+    expect([...(into.get("l") ?? [])]).toEqual(["keyless status"]);
+    expect(into.has("m")).toBe(false);
     // A message built from a variable has nothing to compare, so it is not a site.
     expect(into.has("d")).toBe(false);
   });
@@ -1088,14 +1096,11 @@ describe("both languages answer, and answer differently", () => {
       CLIENT_IDENTICAL_BY_DESIGN,
       hasProOnlyKeys ? 102 : 100,
     );
-    expectWaiverLedger(
-      "SAY_LESS_GRANDFATHERED",
-      SAY_LESS_GRANDFATHERED,
-      // GREW by one, which a ledger pinned to shrink has to explain out loud: a reader that sees
-      // more finds more, and the entry it found is named above with why it is a waiver and not a
-      // fix. This is the only direction of growth that is not an append papering over a defect.
-      hasProOnlyKeys ? 15 : 14,
-    );
+    // NOT per edition any more, and that is the point: the list is empty in every tree, so the two
+    // editions can no longer differ on it. The one entry that used to make them differ was waived
+    // because the Pro-only branding writer was its second producer; it now passes the same values
+    // the other producer does, so the key stops offending in the full tree too (issue #292).
+    expectWaiverLedger("SAY_LESS_GRANDFATHERED", SAY_LESS_GRANDFATHERED, 0);
   });
 });
 

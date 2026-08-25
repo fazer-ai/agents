@@ -28,6 +28,7 @@ import {
 // translate('errors.documentNotFound', 'Document not found')
 // translate('errors.documentTemplateDisabled', 'This document template is disabled')
 // translate('errors.documentTemplateSlugTaken', 'A document template with the identifier "{{slug}}" already exists')
+// translate('errors.documentTemplateSlugTakenBy', 'The identifier "{{slug}}" is already taken by the template "{{name}}"')
 // translate('errors.documentTemplateNameTaken', 'You already have a document template called "{{name}}"')
 // translate('errors.documentTemplateNameCollides', '"{{name}}" collides with the template "{{existing}}": both produce the tool name {{tool}}')
 // translate('errors.documentTemplateNameCollidesUnknown', 'You already have a document template whose name produces the tool {{tool}}. Pick another name.')
@@ -45,7 +46,10 @@ import {
 // translate('errors.invalidDocumentNumberPrefix', 'This document number prefix is not valid: {{reason}}')
 // translate('errors.invalidIdempotencyKey', 'This idempotency key is not valid: {{reason}}')
 // translate('errors.documentNotStored', 'This document could not be stored')
-// translate('errors.documentWouldBeBlank', 'This document would be blank')
+// translate('errors.documentWouldBeBlank', 'This document would be blank: with the values given, no block prints anything.')
+// translate('errors.documentWouldBeBlankNoLetterhead', 'This document would be blank: the company letterhead it printed is no longer configured.')
+// translate('errors.imageTooManyPixels', 'The image has too many pixels: at most {{max}} in total (about {{dimensions}})')
+// translate('errors.imageDimensionsUnreadable', 'The image header could not be read, so its size cannot be checked. Export the file again.')
 // translate('errors.logoNotFound', 'Logo not found')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {

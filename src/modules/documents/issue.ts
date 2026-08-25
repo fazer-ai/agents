@@ -472,7 +472,7 @@ async function finish(
     throw new AppError(
       "this document would be blank: with the letterhead now missing, no block prints anything.",
       409,
-      "errors.documentWouldBeBlank",
+      "errors.documentWouldBeBlankNoLetterhead",
     );
   }
 

@@ -224,7 +224,8 @@ async function postToken(
     throw new AppError(
       `google token endpoint error: ${json.error ?? res.status}`,
       json.error === "invalid_grant" ? 400 : 502,
-      "errors.googleOAuthTokenExchangeFailed",
+      "errors.googleOAuthTokenEndpointError",
+      { reason: String(json.error ?? res.status) },
     );
   }
   return json;
@@ -318,9 +319,9 @@ export async function ensureFreshGoogleAccessToken(
     });
     if (!entry) {
       throw new AppError(
-        `google_oauth credential ${entryId} not found`,
+        "google_oauth credential not found",
         404,
-        "errors.googleOAuthNotConnected",
+        "errors.googleOAuthCredentialNotFound",
       );
     }
     if (entry.kind !== "google_oauth") {
@@ -356,7 +357,7 @@ export async function ensureFreshGoogleAccessToken(
     throw new AppError(
       "google refresh response missing access_token",
       502,
-      "errors.googleOAuthTokenExchangeFailed",
+      "errors.googleOAuthRefreshFailed",
     );
   }
 

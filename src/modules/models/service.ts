@@ -5,6 +5,7 @@ import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl as defaultAssertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { tryResolveVaultEntry } from "@/modules/vault/service";
+import { readProviderJson } from "./provider-listing";
 
 // Non-chat model ids to filter out from OpenAI listings.
 const OPENAI_FILTER_SEGMENTS = [
@@ -121,6 +122,7 @@ export async function listProviderModels(
       `unknown ${capability} provider: ${provider}`,
       400,
       "errors.unknownProvider",
+      { capability, provider },
     );
   }
 
@@ -129,7 +131,7 @@ export async function listProviderModels(
 
   if (!credentialRef) {
     throw new AppError(
-      "credentialRef is required to list provider models",
+      "A credential is required to list provider models.",
       400,
       "errors.credentialRequired",
     );
@@ -137,7 +139,7 @@ export async function listProviderModels(
 
   if (provider === "openai-compatible" && !baseURL) {
     throw new AppError(
-      "baseURL is required for openai-compatible provider",
+      "A base URL is required for this provider.",
       400,
       "errors.baseUrlRequired",
     );
@@ -172,19 +174,21 @@ export async function listProviderModels(
             `OpenAI models endpoint returned ${res.status}`,
             502,
             "errors.providerModelsFailed",
+            { provider, status: res.status },
           );
         }
-        const json = (await res.json()) as unknown;
+        const json = await readProviderJson(res, provider);
         const data = (json as { data?: unknown[] }).data;
         if (!Array.isArray(data)) {
           throw new AppError(
             "unexpected OpenAI models response",
             502,
-            "errors.providerModelsFailed",
+            "errors.providerListUnexpectedResponse",
+            { provider },
           );
         }
         return data
-          .map((m) => (m as { id?: unknown }).id)
+          .map((m) => (m as { id?: unknown } | null)?.id)
           .filter((id): id is string => typeof id === "string")
           .filter(openAiCapabilityFilter(capability))
           .sort((a, b) => b.localeCompare(a))
@@ -201,19 +205,21 @@ export async function listProviderModels(
             `DeepSeek models endpoint returned ${res.status}`,
             502,
             "errors.providerModelsFailed",
+            { provider, status: res.status },
           );
         }
-        const json = (await res.json()) as unknown;
+        const json = await readProviderJson(res, provider);
         const data = (json as { data?: unknown[] }).data;
         if (!Array.isArray(data)) {
           throw new AppError(
             "unexpected DeepSeek models response",
             502,
-            "errors.providerModelsFailed",
+            "errors.providerListUnexpectedResponse",
+            { provider },
           );
         }
         return data
-          .map((m) => (m as { id?: unknown }).id)
+          .map((m) => (m as { id?: unknown } | null)?.id)
           .filter((id): id is string => typeof id === "string")
           .sort((a, b) => b.localeCompare(a))
           .map((id) => ({ id }));
@@ -230,21 +236,23 @@ export async function listProviderModels(
             `OpenRouter models endpoint returned ${res.status}`,
             502,
             "errors.providerModelsFailed",
+            { provider, status: res.status },
           );
         }
-        const json = (await res.json()) as unknown;
+        const json = await readProviderJson(res, provider);
         const data = (json as { data?: unknown[] }).data;
         if (!Array.isArray(data)) {
           throw new AppError(
             "unexpected OpenRouter models response",
             502,
-            "errors.providerModelsFailed",
+            "errors.providerListUnexpectedResponse",
+            { provider },
           );
         }
         const result: ProviderModel[] = [];
         for (const m of data) {
-          const model = m as { id?: unknown; name?: unknown };
-          if (typeof model.id !== "string") continue;
+          const model = m as { id?: unknown; name?: unknown } | null;
+          if (typeof model?.id !== "string") continue;
           const entry: ProviderModel = { id: model.id };
           if (typeof model.name === "string") entry.label = model.name;
           result.push(entry);
@@ -265,21 +273,23 @@ export async function listProviderModels(
             `Anthropic models endpoint returned ${res.status}`,
             502,
             "errors.providerModelsFailed",
+            { provider, status: res.status },
           );
         }
-        const json = (await res.json()) as unknown;
+        const json = await readProviderJson(res, provider);
         const data = (json as { data?: unknown[] }).data;
         if (!Array.isArray(data)) {
           throw new AppError(
             "unexpected Anthropic models response",
             502,
-            "errors.providerModelsFailed",
+            "errors.providerListUnexpectedResponse",
+            { provider },
           );
         }
         const result: ProviderModel[] = [];
         for (const m of data) {
-          const model = m as { id?: unknown; display_name?: unknown };
-          if (typeof model.id !== "string") continue;
+          const model = m as { id?: unknown; display_name?: unknown } | null;
+          if (typeof model?.id !== "string") continue;
           const entry: ProviderModel = { id: model.id };
           if (typeof model.display_name === "string") {
             entry.label = model.display_name;
@@ -302,15 +312,17 @@ export async function listProviderModels(
             `Google models endpoint returned ${res.status}`,
             502,
             "errors.providerModelsFailed",
+            { provider, status: res.status },
           );
         }
-        const json = (await res.json()) as unknown;
+        const json = await readProviderJson(res, provider);
         const models = (json as { models?: unknown[] }).models;
         if (!Array.isArray(models)) {
           throw new AppError(
             "unexpected Google models response",
             502,
-            "errors.providerModelsFailed",
+            "errors.providerListUnexpectedResponse",
+            { provider },
           );
         }
         const result: ProviderModel[] = [];
@@ -319,8 +331,8 @@ export async function listProviderModels(
             name?: unknown;
             displayName?: unknown;
             supportedGenerationMethods?: unknown[];
-          };
-          if (typeof model.name !== "string") continue;
+          } | null;
+          if (typeof model?.name !== "string") continue;
           const methods = model.supportedGenerationMethods;
           if (!Array.isArray(methods) || !methods.includes("generateContent")) {
             continue;
@@ -352,19 +364,21 @@ export async function listProviderModels(
             `OpenAI-compatible models endpoint returned ${res.status}`,
             502,
             "errors.providerModelsFailed",
+            { provider, status: res.status },
           );
         }
-        const json = (await res.json()) as unknown;
+        const json = await readProviderJson(res, provider);
         const data = (json as { data?: unknown[] }).data;
         if (!Array.isArray(data)) {
           throw new AppError(
             "unexpected OpenAI-compatible models response",
             502,
-            "errors.providerModelsFailed",
+            "errors.providerListUnexpectedResponse",
+            { provider },
           );
         }
         return data
-          .map((m) => (m as { id?: unknown }).id)
+          .map((m) => (m as { id?: unknown } | null)?.id)
           .filter((id): id is string => typeof id === "string")
           .sort((a, b) => b.localeCompare(a))
           .map((id) => {
@@ -378,11 +392,24 @@ export async function listProviderModels(
     }
   } catch (e) {
     // Re-throw AppErrors as-is; wrap network/timeout errors.
+    //
+    // NOTE: what reaches here has to BE a network error, which is why every read of the parsed body
+    // above is null-safe (`readProviderJson` for the body, `?.` for each item). A `TypeError` from
+    // reading a field off `null` lands in this catch indistinguishable from a refused connection,
+    // and this sentence then sends the operator to check a network that is fine. Two rounds of
+    // review on issue #292 found it twice, one layer apart: the body, then the items inside it.
     if (e instanceof AppError) throw e;
+    // NOTE: the sentence carries the PROVIDER and not the error text. A failure to reach a host is
+    // raised by the client with the request in hand, and Bun's header validation puts the offending
+    // header VALUE in the message it throws — measured: `Header 'Authorization' has invalid value:
+    // 'Bearer <the vault secret>'`. Interpolating that would answer a write-only credential back to
+    // whoever called the listing endpoint. The text stays in `message`, which is the log line, and
+    // the catalog entry has no placeholder for it (found by review, issue #292).
     throw new AppError(
       `failed to list models: ${e instanceof Error ? e.message : String(e)}`,
       502,
-      "errors.providerModelsFailed",
+      "errors.providerListUnreachable",
+      { provider },
     );
   }
 }

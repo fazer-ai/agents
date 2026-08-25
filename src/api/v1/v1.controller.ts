@@ -163,11 +163,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         !user?.passwordHash ||
         !(await verifyPassword(b.password, user.passwordHash))
       ) {
-        throw new AppError(
-          "password verification failed",
-          403,
-          "errors.invalidPassword",
-        );
+        throw new AppError("Incorrect password", 403, "errors.invalidPassword");
       }
       await deleteTenant(ctx, id);
       return { instance: instanceIdentity, success: true };

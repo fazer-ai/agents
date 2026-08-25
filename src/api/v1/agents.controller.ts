@@ -54,13 +54,16 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.audioTooLarge', 'Audio file is too large')
 // translate('errors.baseUrlRequired', 'A base URL is required for this provider.')
 // translate('errors.credentialRequired', 'A credential is required to list provider models.')
+// translate('errors.credentialNotUsable', 'This credential did not provide an API key: it may be missing, empty, or of a type this provider cannot use.')
 // translate('errors.emptyMessage', 'The message is empty.')
 // translate('errors.fileTooLarge', 'File is too large')
 // translate('errors.invalidAgentExport', 'This file is not a valid agent export.')
 // translate('errors.invalidModelConfig', 'The model configuration must be an object.')
 // translate('errors.invalidModelConfigDetail', 'The model configuration is not valid: {{reason}}')
 // translate('errors.promptTooLong', 'System prompt is too long: {{len}} characters (limit {{max}}).')
-// translate('errors.providerModelsFailed', 'Failed to retrieve model list from provider.')
+// translate('errors.providerModelsFailed', '{{provider}} refused the list request (status {{status}}).')
+// translate('errors.providerListUnexpectedResponse', '{{provider}} answered the list request in an unexpected format.')
+// translate('errors.providerListUnreachable', 'Could not reach {{provider}} to list the options')
 // translate('errors.sessionNotFound', 'Playground session not found.')
 // translate('errors.settingsTextTooLong', 'The text in {{field}} is too long: {{len}} characters (limit {{max}}).')
 // translate('errors.sttCredentialMissing', 'The transcription credential was not found.')
@@ -72,7 +75,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.toolGrantToolNotInIntegration', 'The tool {{tool}} is not available for the {{integration}} integration.')
 // translate('errors.toolGrantUnknownSource', 'Unknown tool source: {{source}}.')
 // translate('errors.toolGrantUnknownTool', 'Unknown {{source}} tool: {{tool}}.')
-// translate('errors.unknownProvider', 'Unknown model provider.')
+// translate('errors.unknownProvider', 'Unknown {{capability}} provider: {{provider}}.')
 // translate('errors.unsupportedAudioType', 'Unsupported audio type')
 // translate('errors.visionCredentialMissing', 'Vision credential not found')
 // translate('errors.visionFailed', 'Image/document extraction failed')
@@ -564,11 +567,7 @@ export const agentsController = new Elysia({
         !user?.passwordHash ||
         !(await verifyPassword(b.password, user.passwordHash))
       ) {
-        throw new AppError(
-          "password verification failed",
-          403,
-          "errors.invalidPassword",
-        );
+        throw new AppError("Incorrect password", 403, "errors.invalidPassword");
       }
       await deleteAgent(ctx, BigInt(params.id));
       return { instance: instanceIdentity, success: true };

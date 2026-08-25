@@ -25,6 +25,14 @@ export const LOGO_EXT_BY_TYPE: Record<string, "png" | "jpg"> = {
 };
 export const LOGO_MAX_BYTES = 524_288; // 512 KB
 
+// DERIVED from the map above, for the same reason the branding upload derives its own: the refusal
+// names the formats it accepts, and the two surfaces do not accept the same ones.
+export const LOGO_ALLOWED_FORMATS = [
+  ...new Set(Object.values(LOGO_EXT_BY_TYPE)),
+]
+  .map((e) => e.toUpperCase())
+  .join(", ");
+
 // The BYTES decide the format, not the label on them. `file.type` is whatever the caller put in the
 // multipart part (and Bun derives it from the file NAME's extension, which a REST caller controls
 // outright), so a JPEG announced as image/png would be stored under a .png key and handed to
@@ -56,6 +64,9 @@ const LOGO_TERMINATORS: Record<"png" | "jpg", number[]> = {
 // Four megapixels is roughly 2000×2000, which is far beyond what a letterhead needs (it prints
 // around 150pt wide) and still bounded at ~16 MB decoded.
 export const LOGO_MAX_PIXELS = 4_000_000;
+// The same budget as a square side, so the refusal can say it in a shape anyone can picture. Derived
+// rather than written: a hand-typed "about 2000x2000" stops being true the day the budget moves.
+export const LOGO_MAX_SIDE = Math.round(Math.sqrt(LOGO_MAX_PIXELS));
 
 // UNSIGNED, which is the whole reason this is a function. PNG writes its dimensions as uint32 and
 // JavaScript's bitwise operators work on SIGNED 32-bit ints, so a value with the high bit set comes
@@ -173,9 +184,10 @@ export async function setCompanyLogo(
   const ext = LOGO_EXT_BY_TYPE[file.type];
   if (!ext) {
     throw new AppError(
-      "the logo must be a PNG or JPEG",
+      `the logo must be one of: ${LOGO_ALLOWED_FORMATS}`,
       400,
       "errors.unsupportedImageType",
+      { allowed: LOGO_ALLOWED_FORMATS },
     );
   }
   if (file.size > LOGO_MAX_BYTES) {
@@ -184,21 +196,35 @@ export async function setCompanyLogo(
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (!logoBytesLookLike(bytes, ext)) {
     throw new AppError(
-      "the logo must be a PNG or JPEG",
+      `the logo must be one of: ${LOGO_ALLOWED_FORMATS}`,
       400,
       "errors.unsupportedImageType",
+      { allowed: LOGO_ALLOWED_FORMATS },
     );
   }
   // Dimensions decide, not bytes. A file well under the size cap can declare enough pixels to
   // exhaust the process when the renderer decodes it, and the renderer runs on every preview and
   // every issuance of a template that shows the logo — for every tenant on the instance.
-  // Unreadable dimensions are refused too: an image we cannot measure is one we cannot bound.
+  //
+  // TWO REFUSALS, not one: an image we cannot measure is refused for the same reason (unbounded is
+  // unbounded), and it is a different thing to be told. The file passed the signature and the
+  // terminator, so what is wrong is the header between them — re-exporting fixes it, and shrinking
+  // the image does not. One sentence covering both said "at most 4000000 pixels" about a file whose
+  // pixel count nobody could read (issue #292 review).
   const pixels = logoPixels(bytes, ext);
-  if (pixels === null || pixels <= 0 || pixels > LOGO_MAX_PIXELS) {
+  if (pixels === null || pixels <= 0) {
     throw new AppError(
-      `the logo must be at most ${LOGO_MAX_PIXELS} pixels (about 2000×2000)`,
+      "the logo dimensions could not be read",
       400,
-      "errors.imageTooLarge",
+      "errors.imageDimensionsUnreadable",
+    );
+  }
+  if (pixels > LOGO_MAX_PIXELS) {
+    throw new AppError(
+      `the logo must be at most ${LOGO_MAX_PIXELS} pixels (about ${LOGO_MAX_SIDE}×${LOGO_MAX_SIDE})`,
+      400,
+      "errors.imageTooManyPixels",
+      { max: LOGO_MAX_PIXELS, dimensions: `${LOGO_MAX_SIDE}×${LOGO_MAX_SIDE}` },
     );
   }
   // ONE NAME PER UPLOAD, which is what makes everything below short. The configured file is never

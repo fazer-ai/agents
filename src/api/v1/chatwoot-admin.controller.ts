@@ -181,11 +181,7 @@ export const chatwootAdminController = new Elysia({
         !user?.passwordHash ||
         !(await verifyPassword(b.password, user.passwordHash))
       ) {
-        throw new AppError(
-          "password verification failed",
-          403,
-          "errors.invalidPassword",
-        );
+        throw new AppError("Incorrect password", 403, "errors.invalidPassword");
       }
       await disconnectChatwootDeployment(ctx);
       return { instance: instanceIdentity, success: true };
@@ -318,11 +314,7 @@ export const chatwootAdminController = new Elysia({
         !user?.passwordHash ||
         !(await verifyPassword(b.password, user.passwordHash))
       ) {
-        throw new AppError(
-          "password verification failed",
-          403,
-          "errors.invalidPassword",
-        );
+        throw new AppError("Incorrect password", 403, "errors.invalidPassword");
       }
       await removeChatwootInstance(ctx, id);
       return { instance: instanceIdentity, success: true };

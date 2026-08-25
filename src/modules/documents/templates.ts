@@ -153,8 +153,8 @@ function nameTaken(
   if (name === undefined) {
     return {
       message: `the slug "${slug}" is already taken by the template "${existingName}"`,
-      key: "errors.documentTemplateSlugTaken",
-      params: { slug },
+      key: "errors.documentTemplateSlugTakenBy",
+      params: { slug, name: existingName },
       field: "slug",
     };
   }

@@ -16,7 +16,7 @@ import { clipText } from "@/lib/text";
 // shared module present in every edition — for the i18n extractor (keepRemoved: false).
 // translate('errors.invalidColorMode', 'Invalid color mode')
 // translate('errors.invalidColorToken', 'Invalid color value')
-// translate('errors.unsupportedImageType', 'Unsupported image type')
+// translate('errors.unsupportedImageType', 'Unsupported image type. Allowed: {{allowed}}')
 // translate('errors.imageTooLarge', 'Image is too large')
 // translate('errors.noUpdatableFields', 'No updatable fields provided')
 // translate('errors.invalidSiteUrl', 'Invalid website URL')
@@ -52,6 +52,14 @@ const TYPE_BY_EXT: Record<string, string> = {
 };
 
 export const ALLOWED_ASSET_TYPES = Object.keys(EXT_BY_TYPE);
+
+// The formats a refusal names, DERIVED from the map that decides them: the sentence and the
+// allowlist cannot drift apart, and the two upload surfaces accept different sets (the document
+// letterhead takes PNG and JPEG only), which is why the sentence carries the list instead of
+// spelling one of them out.
+export const ALLOWED_ASSET_FORMATS = [...new Set(Object.values(EXT_BY_TYPE))]
+  .map((e) => e.toUpperCase())
+  .join(", ");
 
 export interface GlobalBrandingDto {
   // White-label display name (document title + auth-page footer). null = use the default.

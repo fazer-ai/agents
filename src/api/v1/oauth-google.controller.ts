@@ -44,6 +44,9 @@ import { vaultRefWhere } from "@/modules/vault/service";
 // translate('errors.googleOAuthTokenExchangeFailed', 'Failed to exchange the Google authorization code')
 // translate('errors.googleOAuthNoRefreshToken', 'Google did not return a refresh token; re-consent is required')
 // translate('errors.googleOAuthNotConnected', 'This Google credential is not connected')
+// translate('errors.googleOAuthCredentialNotFound', 'This Google credential no longer exists')
+// translate('errors.googleOAuthTokenEndpointError', 'Google refused the token request: {{reason}}')
+// translate('errors.googleOAuthRefreshFailed', 'Could not refresh the Google credential: the answer carried no access token. Reconnect it.')
 // translate('errors.googleOAuthWrongKind', 'This credential is not a Google OAuth credential')
 
 const idParams = t.Object({

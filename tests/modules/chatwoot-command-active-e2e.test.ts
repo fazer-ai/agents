@@ -105,6 +105,7 @@ async function deliver(
   content: string,
   seq: number,
   botId = BOT,
+  topLevelInboxId?: number,
 ) {
   const n = normalizeChatwootEvent({
     event: "message_created",
@@ -112,6 +113,9 @@ async function deliver(
     content,
     message_type: "incoming",
     private: false,
+    ...(topLevelInboxId === undefined
+      ? {}
+      : { inbox: { id: topLevelInboxId, name: "Top" } }),
     conversation: {
       id: convId,
       ...(chatwootInboxId === null ? {} : { inbox_id: chatwootInboxId }),
@@ -433,5 +437,23 @@ describe.skipIf(!dbUp)("control commands: one reading of the agent", () => {
       "unresolved",
       String(BOT),
     ]);
+  });
+
+  test("the message's own top-level inbox is honoured before the mirrored conversation", async () => {
+    // No `conversation.inbox_id`, but the message names its inbox at the top level. That is an
+    // answer, so the command must be decided against THAT inbox — never against whatever inbox the
+    // conversation happened to point at. Here the two disagree on purpose: the conversation sits on
+    // the redirect entry inbox (persona BOT) and the message names the plain one (persona BOT+1),
+    // so borrowing the conversation's agent would run the command on the wrong persona's route.
+    const id = await seedConv(6009, entryInboxId);
+    await deliver(6009, null, "/teste", 10, BOT + 1, PLAIN);
+    const row = await suDb.conversation.findUnique({
+      where: { id },
+      select: { testActivatedAt: true },
+    });
+    expect(row?.testActivatedAt).not.toBeNull();
+    expect(
+      posted.filter((p) => p.conversationId === 6009 && !p.private).length,
+    ).toBeGreaterThan(0);
   });
 });

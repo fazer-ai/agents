@@ -88,6 +88,10 @@ export function normalizeChatwootEvent(
   const contactInbox =
     conv && isRecord(conv.contact_inbox) ? conv.contact_inbox : null;
 
+  // The message's own inbox object (Message#webhook_data → inbox: {id, name}); conversation events
+  // do not carry it. Read for both halves: the name, and the id when the conversation scalar is gone.
+  const inboxObj = isMessage && isRecord(payload.inbox) ? payload.inbox : null;
+
   const normalized: NormalizedChatwootEvent = {
     event,
     conversationId: conv ? num(conv.id) : null,
@@ -96,7 +100,13 @@ export function normalizeChatwootEvent(
       : conv
         ? num(conv.contact_inbox_id)
         : null,
-    inboxId: conv ? num(conv.inbox_id) : null,
+    // `conversation.inbox_id` first, then the message's own top-level `inbox` object. They name the
+    // same inbox and the fork sends both, but only the second survives a payload that carries the
+    // message without the conversation's scalar — and an inbox the payload named at either spot is
+    // an answer, so nothing downstream should go looking for an older one (issue #270).
+    inboxId:
+      (conv ? num(conv.inbox_id) : null) ??
+      (inboxObj ? num(inboxObj.id) : null),
     status: conv ? str(conv.status) : null,
     // NOTE: No meta ⇒ undefined ("said nothing", the mirror preserves); meta without an assignee ⇒
     // explicit null (a real unassign). Mirrors the attrs() sentinel above.
@@ -178,8 +188,6 @@ export function normalizeChatwootEvent(
     ? attrs(kanbanTask.custom_attributes)
     : undefined;
   if (taskAttrs) normalized.kanbanAttributes = taskAttrs;
-  // Inbox name only ships on message events (Message#webhook_data → inbox: {id, name}).
-  const inboxObj = isMessage && isRecord(payload.inbox) ? payload.inbox : null;
   normalized.inboxName = inboxObj ? str(inboxObj.name) : null;
   // `channel` (channel_type) is exposed by EventDataPresenter on conversation events.
   normalized.channel = conv ? str(conv.channel) : null;

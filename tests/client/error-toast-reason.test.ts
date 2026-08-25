@@ -119,25 +119,61 @@ export function openBlocks(code: string, at: number): number[] {
 // component body, and two client-side preflights were accused because something ELSE in the
 // component awaited.
 const FUNCTION_HEAD = /\)\s*(?::[^={}]*)?(?:=>)?\s*\{$/;
+// The keyword that opens the block starting at `brace`, or "" when its head is not `<word>(…) {`.
+//
 // `\w+(args) {` is also how every control statement reads, and treating `if (error || !data) {` as
-// the handler is what the positive control caught: the search for the request stopped one brace too
-// early and answered "this handler never talked to the server" about the commonest shape there is.
-const CONTROL_HEAD =
-  /\b(if|else|for|while|switch|catch|do|try)\s*(\([^()]*\))?\s*\{$/;
+// the handler is what the first positive control caught: the search for the request stopped one brace
+// too early and answered "this handler never talked to the server" about the commonest shape there
+// is.
+//
+// Matched by PARENS and not by a regex over the head, because `[^()]*` cannot cross a nested call:
+// `if (error && isKnown(error)) {` failed the control test while `FUNCTION_HEAD` matched its trailing
+// `) {`, so the `if` was taken for the handler, the request above it fell outside, and the scan
+// answered "no offender". Blindness, which is the direction that passes silently.
+export function headKeyword(code: string, brace: number): string {
+  let i = brace - 1;
+  while (i >= 0 && /\s/.test(code[i] as string)) i--;
+  if (code[i] !== ")") return "";
+  let depth = 0;
+  for (; i >= 0; i--) {
+    if (code[i] === ")") depth++;
+    else if (code[i] === "(") {
+      depth--;
+      if (depth === 0) break;
+    }
+  }
+  if (i < 0) return "";
+  let j = i - 1;
+  while (j >= 0 && /\s/.test(code[j] as string)) j--;
+  const end = j + 1;
+  while (j >= 0 && /[\w$]/.test(code[j] as string)) j--;
+  return code.slice(j + 1, end);
+}
+
+const CONTROL_WORDS = new Set([
+  "if",
+  "else",
+  "for",
+  "while",
+  "switch",
+  "catch",
+  "do",
+  "try",
+]);
 
 // The block that IS the handler: the innermost enclosing block whose head reads as a function, so a
 // `try`, an `if` or a loop in between does not truncate the search for the request.
 function enclosingHandler(
-  src: string,
+  code: string,
   chain: number[],
 ): { body: string; start: number } | null {
   for (let i = chain.length - 1; i >= 0; i--) {
     const start = chain[i] as number;
-    const head = src.slice(Math.max(0, start - 200), start + 1);
-    if (CONTROL_HEAD.test(head)) continue;
+    if (CONTROL_WORDS.has(headKeyword(code, start))) continue;
+    const head = code.slice(Math.max(0, start - 200), start + 1);
     if (FUNCTION_HEAD.test(head)) {
       return {
-        body: src.slice(start, chain[chain.length - 1] as number),
+        body: code.slice(start, chain[chain.length - 1] as number),
         start,
       };
     }
@@ -152,18 +188,31 @@ function enclosingHandler(
 //
 // Two ways: the catch binds it itself, or the try re-threw it. `throw err` is the idiom in this tree
 // (`if (err || !data) throw err`), and it is the one that reads like there is nothing to show.
-function catchSeesTheError(src: string, blockStart: number): boolean {
-  const head = src.slice(Math.max(0, blockStart - 40), blockStart + 1);
+function catchSeesTheError(code: string, blockStart: number): boolean {
+  const head = code.slice(Math.max(0, blockStart - 40), blockStart + 1);
   const bound = /catch\s*\(\s*\w+\s*\)\s*\{$/.test(head);
   if (bound) return true;
   if (!/catch\s*\{$/.test(head)) return false;
-  // The `try` this catch belongs to: the block that ends where the catch begins.
-  const before = src.slice(0, blockStart);
-  const tryEnd = before.lastIndexOf("}");
+  // The `try` this catch belongs to, brace-matched. A fixed window backwards instead accepted a
+  // `throw err` from ANOTHER function entirely: a local `JSON.parse` catch two functions below a
+  // request handler was read as receiving a server error, and the tree scan then demanded a fix for a
+  // refusal that does not exist.
+  const tryEnd = code.lastIndexOf("}", blockStart);
   if (tryEnd < 0) return false;
-  return /\bthrow\s+(err|error|e)\b/.test(
-    before.slice(Math.max(0, tryEnd - 3000), tryEnd),
-  );
+  let depth = 0;
+  let tryStart = -1;
+  for (let i = tryEnd; i >= 0; i--) {
+    if (code[i] === "}") depth++;
+    else if (code[i] === "{") {
+      depth--;
+      if (depth === 0) {
+        tryStart = i;
+        break;
+      }
+    }
+  }
+  if (tryStart < 0) return false;
+  return /\bthrow\s+(err|error|e)\b/.test(code.slice(tryStart, tryEnd));
 }
 
 // Has this handler awaited a request, up to here?
@@ -451,6 +500,44 @@ describe("an error toast shows what the server said", () => {
         return data.id;
       }`;
     expect(unreadRefusals(annotated)).toEqual([]);
+  });
+
+  test("a nested call in an `if` head does not make it the handler", () => {
+    // `if (error && isKnown(error)) {` reads as `<word>(…) {` just like a function head does, and a
+    // regex over the head cannot tell them apart: `[^()]*` stops at the inner call's paren. The `if`
+    // was then taken for the handler, the request above it fell OUTSIDE the body being searched, and
+    // the scan answered "never talked to the server" — blindness, which is the direction that passes
+    // in silence.
+    const nested = `
+      async function save() {
+        const { data, error } = await api.api.v1.things.post(body);
+        if (error && isKnown(error)) {
+          showToast(t("x.saveError", "Could not save."), "error");
+        }
+      }`;
+    expect(unreadRefusals(nested).length).toBe(1);
+  });
+
+  test("a throw in another function does not feed this catch", () => {
+    // The `try` a bare catch belongs to is brace-matched, not a fixed window backwards. With a
+    // window, any earlier `throw err` in the file counted: a local `JSON.parse` catch was read as
+    // holding a server refusal, and the tree scan demanded a fix for a sentence that cannot exist.
+    const elsewhere = `
+      async function save() {
+        const { data, error: err } = await api.api.v1.things.post(body);
+        if (err || !data) throw err;
+        render(data);
+      }
+
+      function parseLocal(raw) {
+        try {
+          return JSON.parse(raw);
+        } catch {
+          showToast(t("x.parseError", "Could not read the file."), "error");
+          return null;
+        }
+      }`;
+    expect(unreadRefusals(elsewhere)).toEqual([]);
   });
 
   test("a handler that reads the sentence is not an offender", () => {

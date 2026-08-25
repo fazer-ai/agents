@@ -98,6 +98,9 @@ export async function extractWithRetry(args: {
   now?: () => number;
 }): Promise<VisionResult> {
   const { kind } = args.req;
+  // A `baseURL` means the operator chose the endpoint, so the latency is their hardware's and none
+  // of our measurements describe it — the ceiling stands down and the attempt keeps the full total.
+  const customEndpoint = args.req.baseURL !== null;
   const sleep = args.sleep ?? realSleep;
   const now = args.now ?? Date.now;
   const startedAt = now();
@@ -113,6 +116,7 @@ export async function extractWithRetry(args: {
         kind,
         attempt,
         elapsedMs: now() - startedAt + delayMs,
+        customEndpoint,
       }) === null
     )
       break;
@@ -124,6 +128,7 @@ export async function extractWithRetry(args: {
       kind,
       attempt,
       elapsedMs: now() - startedAt,
+      customEndpoint,
     });
     if (budgetMs === null) break;
     try {

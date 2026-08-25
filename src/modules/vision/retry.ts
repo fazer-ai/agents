@@ -47,15 +47,32 @@ export const VISION_RETRY_DELAYS_MS = [500];
 // that was its only other way out.
 export const VISION_MAX_ATTEMPTS = VISION_RETRY_DELAYS_MS.length + 1;
 
-// What a NON-final attempt may take, per kind. An image is measured (2.0-4.4s live through gpt-4o,
-// a 3000x3000 one included; the issue reports 4s in production), so 20s is ~5x the slowest and
-// cutting there is what funds a second attempt inside the same total. A document is NOT measured —
-// up to 25MB and ~100 pages — so it is capped only by the total, and gains a retry when the failure
-// leaves room, which an overload usually does.
-export const VISION_ATTEMPT_CEILING_MS: Record<VisionKind, number> = {
-  image: 20_000,
-  document: VISION_TOTAL_BUDGET_MS,
-};
+// What a non-final attempt may take when the work IS measured: 2.0-4.4s live through gpt-4o for an
+// image, a 3000x3000 one included, and the issue reports 4s in production. 20s is ~5x the slowest,
+// so an image that has not answered by then is not a slow image, it is a bad call — and cutting it
+// there is what funds a second attempt inside the same total.
+export const VISION_IMAGE_CEILING_MS = 20_000;
+
+// The ceiling only applies where a measurement backs it; everywhere else an attempt is bounded by
+// the total alone, exactly as the single call was. Two cases are unmeasured, and cutting either one
+// at 20s would turn a slow SUCCESS into a permanent marker:
+//
+//   a document — up to 25MB and ~100 pages of provider work, with no live measurement here;
+//   a custom endpoint — `baseURL` set means the operator pointed us somewhere the numbers above say
+//   nothing about (a self-hosted Qwen-VL on modest hardware, a proxy, a regional gateway). The
+//   provider name does not answer this: `openai` with a `baseURL` is not the endpoint that was
+//   measured, and `openai-compatible` has no default one at all.
+//
+// Both still gain a retry, just only when the failure leaves room — which an overload usually does,
+// since it answers in seconds.
+export function attemptCeilingMs(args: {
+  kind: VisionKind;
+  customEndpoint: boolean;
+}): number {
+  return args.kind === "image" && !args.customEndpoint
+    ? VISION_IMAGE_CEILING_MS
+    : VISION_TOTAL_BUDGET_MS;
+}
 
 // Applied upward, so a delay lands in [base, base * 1.5). A 503 is upstream overload, and every
 // caller retrying on the same schedule is what keeps it overloaded.
@@ -89,12 +106,16 @@ export function attemptBudgetMs(args: {
   kind: VisionKind;
   attempt: number;
   elapsedMs: number;
+  customEndpoint: boolean;
 }): number | null {
   const left = VISION_TOTAL_BUDGET_MS - args.elapsedMs;
   const ceiling =
     args.attempt >= VISION_MAX_ATTEMPTS
       ? left
-      : VISION_ATTEMPT_CEILING_MS[args.kind];
+      : attemptCeilingMs({
+          kind: args.kind,
+          customEndpoint: args.customEndpoint,
+        });
   const budget = Math.min(ceiling, left);
   return budget < MIN_ATTEMPT_MS ? null : budget;
 }

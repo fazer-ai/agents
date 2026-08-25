@@ -13,7 +13,7 @@ import {
   attemptBudgetMs,
   isTransientVisionFailure,
   retryDelayMs,
-  VISION_ATTEMPT_CEILING_MS,
+  VISION_IMAGE_CEILING_MS,
   VISION_MAX_ATTEMPTS,
   VISION_RETRY_DELAYS_MS,
   VISION_TOTAL_BUDGET_MS,
@@ -94,12 +94,20 @@ describe("retryDelayMs", () => {
 });
 
 describe("attemptBudgetMs", () => {
-  const at = (kind: "image" | "document", attempt: number, elapsedMs: number) =>
-    attemptBudgetMs({ kind, attempt, elapsedMs });
+  const at = (
+    kind: "image" | "document",
+    attempt: number,
+    elapsedMs: number,
+    customEndpoint = false,
+  ) => attemptBudgetMs({ kind, attempt, elapsedMs, customEndpoint });
 
-  test("a non-final attempt is capped by its kind's ceiling", () => {
-    expect(at("image", 1, 0)).toBe(VISION_ATTEMPT_CEILING_MS.image);
-    expect(at("document", 1, 0)).toBe(VISION_ATTEMPT_CEILING_MS.document);
+  test("a non-final attempt is capped only where a measurement backs the cap", () => {
+    expect(at("image", 1, 0)).toBe(VISION_IMAGE_CEILING_MS);
+    // Unmeasured, both of them: a document is 25MB and ~100 pages of provider work, and a custom
+    // `baseURL` is the operator's own hardware. Cutting either at 20s would turn a slow SUCCESS
+    // into a permanent marker, so they keep the whole total, exactly as the single call had it.
+    expect(at("document", 1, 0)).toBe(VISION_TOTAL_BUDGET_MS);
+    expect(at("image", 1, 0, true)).toBe(VISION_TOTAL_BUDGET_MS);
   });
 
   test("the LAST attempt is capped only by the total, so a slow call still has its window", () => {
@@ -107,7 +115,7 @@ describe("attemptBudgetMs", () => {
     // again — that is what keeps a legitimately slow endpoint from becoming a permanent marker.
     const left = VISION_TOTAL_BUDGET_MS - 20_750;
     expect(at("image", VISION_MAX_ATTEMPTS, 20_750)).toBe(left);
-    expect(left).toBeGreaterThan(VISION_ATTEMPT_CEILING_MS.image);
+    expect(left).toBeGreaterThan(VISION_IMAGE_CEILING_MS);
   });
 
   test("no attempt gets more than what is left of the total", () => {
@@ -122,7 +130,11 @@ describe("attemptBudgetMs", () => {
   });
 
   test("the whole retried extraction still fits the budget one call used to have", () => {
-    for (const kind of ["image", "document"] as const) {
+    for (const [kind, customEndpoint] of [
+      ["image", false],
+      ["document", false],
+      ["image", true],
+    ] as const) {
       let elapsed = 0;
       for (let attempt = 1; attempt <= VISION_MAX_ATTEMPTS; attempt++) {
         // rand at its maximum: the longest waits this policy can produce.
@@ -133,6 +145,7 @@ describe("attemptBudgetMs", () => {
           kind,
           attempt,
           elapsedMs: elapsed + delay,
+          customEndpoint,
         });
         if (budget === null) break;
         elapsed += delay + budget;
@@ -291,26 +304,33 @@ describe("extractWithRetry", () => {
     // The first is cut at the image ceiling so a second one can exist; the last is not, because
     // after it there is nothing to leave room for. Both are far below the 60s total a hardcoded
     // ceiling would have handed each of them.
-    expect(budgets[0]).toBe(VISION_ATTEMPT_CEILING_MS.image);
-    expect(budgets[1] as number).toBeGreaterThan(
-      VISION_ATTEMPT_CEILING_MS.image,
-    );
+    expect(budgets[0]).toBe(VISION_IMAGE_CEILING_MS);
+    expect(budgets[1] as number).toBeGreaterThan(VISION_IMAGE_CEILING_MS);
     // `<=`, not `<`: the stand-in answers instantly and the wait is stubbed, so nothing of the
     // total is actually spent here and the remainder IS the total. That the remainder shrinks with
     // real elapsed time is the pure table's assertion, not this one's.
     expect(budgets[1] as number).toBeLessThanOrEqual(VISION_TOTAL_BUDGET_MS);
   });
 
-  test("a document is handed its own ceiling, which is the whole budget", async () => {
-    const { provider, budgets } = recordingProvider(["ok"]);
-    await extractWithRetry({
-      provider,
-      providerName: "gemini",
-      model: "m",
-      req: req("document"),
-      sleep: async () => {},
-    });
-    expect(budgets).toEqual([VISION_ATTEMPT_CEILING_MS.document]);
+  test("unmeasured work is handed the whole budget on the first attempt", async () => {
+    // `now` frozen, not for speed but for exactness: with the real clock a millisecond passing
+    // between `startedAt` and the budget makes this 59_999, and the assertion is about the ceiling
+    // standing down, not about the machine.
+    for (const r of [
+      req("document"),
+      { ...req(), baseURL: "https://vl.internal/v1" },
+    ]) {
+      const { provider, budgets } = recordingProvider(["ok"]);
+      await extractWithRetry({
+        provider,
+        providerName: "gemini",
+        model: "m",
+        req: r,
+        now: () => 0,
+        sleep: async () => {},
+      });
+      expect(budgets).toEqual([VISION_TOTAL_BUDGET_MS]);
+    }
   });
 
   test("it stops asking as soon as one attempt answers", async () => {
@@ -582,9 +602,9 @@ describe.skipIf(!dbUp)("vision retry", () => {
     expect(details.map((d) => d.attempt)).toEqual([1, 2]);
     // The two lines do NOT carry the same budget: the last attempt is capped by what is left of the
     // total rather than by the kind's ceiling.
-    expect(details[0]?.budgetMs).toBe(VISION_ATTEMPT_CEILING_MS.image);
+    expect(details[0]?.budgetMs).toBe(VISION_IMAGE_CEILING_MS);
     expect(details[1]?.budgetMs as number).toBeGreaterThan(
-      VISION_ATTEMPT_CEILING_MS.image,
+      VISION_IMAGE_CEILING_MS,
     );
   });
 

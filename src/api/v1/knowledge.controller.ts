@@ -29,6 +29,7 @@ import {
   searchKnowledge,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
+import type { ChunkHit } from "@/modules/rag/sql";
 
 // Knowledge base + human-approval REST surface (same core the agent tools and MCP project over).
 // Reads need auth; mutations and approvals require TENANT_ADMIN (the approval gate is the
@@ -58,6 +59,26 @@ export function readerSafeBlock(
   block: EmbeddingBlock | null,
 ): { reason: EmbeddingBlock["reason"] } | null {
   return block ? { reason: block.reason } : null;
+}
+
+// One search hit on the wire. Written out field by field, NOT as a spread of the row: `ChunkHit`
+// carries three bigint columns and the spread published all of them, with only two given a spelling
+// JSON accepts. `documentId` rode out as a BigInt and every search that MATCHED something answered
+// 500 (issue #253) — the empty-result case serialized fine, so the endpoint looked half-alive. The
+// two other readers of `ChunkHit` (the MCP tool and the agent's search_knowledge) already project
+// explicitly; this is the one that did not. A column added to the row now reaches the client only
+// when someone gives it a spelling here.
+export function searchHitDto(h: ChunkHit) {
+  return {
+    id: String(h.id),
+    knowledgeBaseId: String(h.knowledgeBaseId),
+    knowledgeBaseName: h.knowledgeBaseName,
+    documentId: String(h.documentId),
+    documentTitle: h.documentTitle,
+    content: h.content,
+    metadata: h.metadata,
+    distance: h.distance,
+  };
 }
 
 export const knowledgeController = new Elysia({
@@ -508,14 +529,7 @@ export const knowledgeController = new Elysia({
         knowledgeBaseIds: body.knowledgeBaseIds?.map((s) => BigInt(s)),
         limit: body.limit,
       });
-      return {
-        instance: instanceIdentity,
-        hits: hits.map((h) => ({
-          ...h,
-          id: String(h.id),
-          knowledgeBaseId: String(h.knowledgeBaseId),
-        })),
-      };
+      return { instance: instanceIdentity, hits: hits.map(searchHitDto) };
     },
     {
       requireAuth: true,

@@ -8,6 +8,7 @@ import { chatwootThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
+  deliverySweepHandler,
   ensureDeliverySweep,
   sweepStrandedDeliveries,
 } from "@/modules/chatwoot/delivery-sweep";
@@ -17,6 +18,7 @@ import {
   processChatwootDelivery,
   recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
+import { retireJobsByDedupeKey } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A Chatwoot delivery stranded on PROCESSING, and the sweep that gets the customer answered anyway
@@ -545,6 +547,149 @@ describe.skipIf(!dbUp)("a delivery stranded on PROCESSING", () => {
     expect(
       (await sweepStrandedDeliveries({ tenantId, base: appDb })).lost,
     ).toBe(0);
+  });
+
+  test("stands down when /reset retired this thread's flush", async () => {
+    // The recovery asks the scheduler whether its flush has been retired, and it has to ask about a
+    // REAL row: `flushDebounceJob` hands the job it is given to `stillWanted`, which re-reads
+    // `scheduler_jobs` BY ID and compares `claimSeq`. Pointed at this thread's own DEBOUNCE row,
+    // that question is the right one — `/reset` retires that row by dedupe key — and a recovery
+    // landing after a reset must stand down exactly as a live flush would.
+    const convId = 8809;
+    const messageId = 9901;
+    await seedConversation(convId, { lastHandledMessageId: messageId - 1 });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: `debounce:${threadOf(convId)}`,
+        runAt: new Date(),
+        status: "PENDING",
+        payload: { threadId: threadOf(convId), agentBotId: AGENT_BOT_ID },
+      },
+    });
+    // What /reset does to it: DONE, a cancelledAt stamp, claim_seq bumped.
+    await retireJobsByDedupeKey(
+      tenantId,
+      "DEBOUNCE",
+      `debounce:${threadOf(convId)}`,
+      suDb,
+    );
+    await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      messageId,
+    });
+
+    const sent: Array<[number, string]> = [];
+    await sweepStrandedDeliveries({
+      tenantId,
+      base: appDb,
+      deps: flushDeps({
+        messages: [{ id: messageId, content: "oi, continua aí?" }],
+        sent,
+      }),
+    });
+    expect(sent).toEqual([]);
+    expect(await watermarkOf(convId)).toBe(messageId - 1);
+  });
+
+  test("proceeds when this thread's flush row is live, whatever its claim sequence", async () => {
+    // The retirement probe compares the job's `claimSeq` against the row's, so the recovery has to
+    // carry the ROW's sequence and not a zero. A thread whose flush has been claimed before — the
+    // ordinary state of any busy conversation — sits at a nonzero sequence, and a recovery hard-
+    // coding zero would read every one of them as retired and stand down for the wrong reason.
+    const convId = 8811;
+    const messageId = 9971;
+    await seedConversation(convId, { lastHandledMessageId: messageId - 1 });
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: `debounce:${threadOf(convId)}`,
+        runAt: new Date(),
+        status: "PENDING",
+        // Claimed and re-armed a few times, and never cancelled.
+        claimSeq: 3,
+        payload: { threadId: threadOf(convId), agentBotId: AGENT_BOT_ID },
+      },
+    });
+    await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      messageId,
+    });
+
+    const sent: Array<[number, string]> = [];
+    const counts = await sweepStrandedDeliveries({
+      tenantId,
+      base: appDb,
+      deps: flushDeps({
+        messages: [{ id: messageId, content: "oi, continua aí?" }],
+        sent,
+      }),
+    });
+    expect(counts.recovered).toBe(1);
+    expect(sent).toEqual([[convId, REPLY]]);
+  });
+
+  test("is not fenced by an unrelated scheduler row that shares the delivery's id", async () => {
+    // The delivery ledger and `scheduler_jobs` are independent sequences, so their ids collide
+    // eventually. While the recovery passed its own row id as the scheduler identity, a collision
+    // made `stillWanted` compare against a STRANGER's claimSeq, the turn stood down, and the sweep
+    // recorded a success with nothing answered. Constructed here rather than waited for.
+    const convId = 8810;
+    const messageId = 9951;
+    await seedConversation(convId, { lastHandledMessageId: messageId - 1 });
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      messageId,
+    });
+    // A claimed job of another kind wearing the delivery row's number.
+    await suDb.schedulerJob.create({
+      data: {
+        id: rowId,
+        tenantId,
+        kind: "HEARTBEAT",
+        dedupeKey: `collide-${process.pid}`,
+        runAt: new Date(),
+        status: "CLAIMED",
+        claimSeq: 7,
+        payload: {},
+      },
+    });
+
+    const sent: Array<[number, string]> = [];
+    const counts = await sweepStrandedDeliveries({
+      tenantId,
+      base: appDb,
+      deps: flushDeps({
+        messages: [{ id: messageId, content: "oi, continua aí?" }],
+        sent,
+      }),
+    });
+    expect(counts.recovered).toBe(1);
+    expect(sent).toEqual([[convId, REPLY]]);
+  });
+
+  test("clears its failure budget on a pass that completed", async () => {
+    // The other half of #287, and the half `ensureDeliverySweep` cannot reach: every successful
+    // cycle goes through `rescheduleJob`, which preserves `attempts` by design. Without this a
+    // perpetual sweep dies on its fifth transient failure ever, however far apart they fall.
+    const result = await deliverySweepHandler(
+      {
+        id: 1n,
+        tenantId,
+        kind: "DELIVERY_SWEEP",
+        payload: {},
+        attempts: 4,
+        claimSeq: 1,
+      },
+      appDb,
+    );
+    expect(result.outcome).toBe("reschedule");
+    expect((result as { resetAttempts?: boolean }).resetAttempts).toBe(true);
   });
 
   test("is armed when a Chatwoot account is connected, not only at boot", async () => {

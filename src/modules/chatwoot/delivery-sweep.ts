@@ -6,6 +6,7 @@ import { isTurnInFlight } from "@/graph/inflight";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { flushDebounceJob } from "@/modules/debounce/handler";
+import { debounceDedupeKey } from "@/modules/debounce/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
@@ -53,6 +54,10 @@ const MAX_RECOVERY_ATTEMPTS = 3;
 // turn: strands come from process deaths, so a pass normally finds none, and a backlog is drained
 // over consecutive passes rather than inside one job.
 const BATCH = 25;
+// The job id handed to a recovery flush when this thread has no DEBOUNCE row. Negative on purpose:
+// `scheduler_jobs.id` is a positive autoincrement, so this matches nothing and the retirement probe
+// answers "not retired", which is the truth when there is no row that could have been retired.
+const NO_SCHEDULER_ROW = -1n;
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -138,6 +143,28 @@ async function recoverConversation(
   if (agentBotId === undefined) return "no-mirror";
 
   const threadId = chatwootThreadId(tenantId, instanceId, conversationId);
+  // The identity the flush's retirement probe reads, and it has to be a REAL one. `flushDebounceJob`
+  // hands the job it was given to `stillWanted`, which re-reads `scheduler_jobs` BY ITS ID and
+  // compares `claimSeq` — so a synthesized id is not inert, it is a question asked about whatever
+  // row happens to carry that number. Pointing it at this thread's own DEBOUNCE row asks the right
+  // question about the right row: `/reset` retires that row by dedupe key, stamping `cancelledAt`
+  // and bumping `claim_seq`, and a recovery that lands after a reset must stand down exactly as a
+  // live flush would.
+  //
+  // No row means nothing could have retired it, and `isRetired` answers false for a missing row —
+  // the correct answer, reached for the right reason. NO_SCHEDULER_ROW is what guarantees the miss:
+  // ids are a positive autoincrement, so a negative one matches nothing, whereas the delivery row's
+  // own id is a live number in a different sequence that will eventually collide.
+  const flushRow = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(threadId),
+      },
+      select: { id: true, claimSeq: true },
+    }),
+  );
   // The fence a concurrently-fired follow-up already uses (../../graph/inflight.ts), asked here for
   // the same reason and against the case the wall-clock threshold cannot see: a legitimate turn
   // that has been running longer than the threshold. Without it the flush would start a SECOND turn
@@ -152,9 +179,8 @@ async function recoverConversation(
   if (isTurnInFlight(threadId)) return "turn-running";
 
   const job: ClaimedJob = {
-    // Synthesized, never persisted: `flushDebounceJob` reads `payload` and `tenantId` and nothing
-    // else off it. (The dead-letter announcer is what reads `id`, and it is not on this path.)
-    id: row.id,
+    id: flushRow?.id ?? NO_SCHEDULER_ROW,
+    claimSeq: flushRow?.claimSeq ?? 0,
     tenantId,
     kind: "DEBOUNCE",
     payload: {
@@ -167,7 +193,6 @@ async function recoverConversation(
       ...(row.messageId !== null ? { lastMessageId: row.messageId } : {}),
     },
     attempts: 0,
-    claimSeq: 0,
   };
   await flushDebounceJob({ job, base, deps });
   return "flushed";
@@ -333,7 +358,9 @@ async function applyVerdict(
   await finish("PROCESSED");
 }
 
-async function deliverySweepHandler(
+// Exported for the test that pins the reschedule's `resetAttempts`, which is the half of the
+// perpetual-job budget that `ensureDeliverySweep` cannot cover.
+export async function deliverySweepHandler(
   job: ClaimedJob,
   base: PrismaClient,
 ): Promise<JobResult> {
@@ -341,6 +368,12 @@ async function deliverySweepHandler(
   return {
     outcome: "reschedule",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
+    // A pass that completed is proof the sweep works, so the next failure starts a fresh budget.
+    // Without it `attempts` counts this row's WHOLE LIFETIME — `rescheduleJob` deliberately leaves
+    // it alone — and five transient failures spread over weeks of successful passes dead-letter a
+    // job that is supposed to run forever. Opt-in, so nothing changes for the kinds whose attempts
+    // are about one finite unit of work; issue #287 is the general case.
+    resetAttempts: true,
   };
 }
 
@@ -363,14 +396,13 @@ export async function ensureDeliverySweep(
     kind: "DELIVERY_SWEEP",
     dedupeKey: "delivery-sweep",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
-    // A job's failure budget (MAX_ATTEMPTS = 5) counts its WHOLE LIFETIME: `rescheduleJob` does not
-    // clear `attempts`, so a perpetual job accumulates every failure it has ever had and is
-    // dead-lettered on the fifth — after which it stops sweeping and a re-arm that did not reset
-    // would revive it only to die on the next one. Correct for a follow-up, whose attempts are
-    // about that follow-up; wrong for a row that is meant to run forever.
+    // Revives a row that was already dead-lettered: without this it comes back with `attempts` at
+    // the cap and dies on the very next failure. The handler resets the budget on every successful
+    // pass, so this covers the one case that cannot — a row that reached the cap before this
+    // release, or while the sweep was failing.
     //
-    // This diverges from `ensureFlowlogSweep` / `ensureTenantSweep`, which have the same shape and
-    // do not reset. That is issue #287, not something to fix from here.
+    // Both halves diverge from `ensureFlowlogSweep` / `ensureTenantSweep`, which have the same shape
+    // and neither resets. That is issue #287, not something to fix from here.
     resetAttempts: true,
     base,
   });

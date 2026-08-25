@@ -27,7 +27,20 @@ export type JobResult =
   | { outcome: "done" }
   // `payload`, when present, REPLACES the job's payload on reschedule (e.g. a follow-up advancing its
   // step index on the same row). Omit it to keep the current payload.
-  | { outcome: "reschedule"; runAt: Date; payload?: Record<string, unknown> }
+  //
+  // `resetAttempts` clears the failure budget, and exists for the kinds that reschedule FOREVER. A
+  // job's attempts are its whole lifetime's — nothing else clears them — which is right for a
+  // finite unit of work and wrong for a perpetual sweep, where five transient failures spread over
+  // weeks of successful passes dead-letter a row that is supposed to keep running. Opt-in, because
+  // a kind that reschedules WITHIN one unit of work (a follow-up advancing a step, a compaction
+  // waiting out its grace window) must keep counting: resetting there would hand a genuinely
+  // failing unit of work an unbounded retry. Issue #287 is the general case.
+  | {
+      outcome: "reschedule";
+      runAt: Date;
+      payload?: Record<string, unknown>;
+      resetAttempts?: boolean;
+    }
   | { outcome: "fail"; error?: string };
 
 export type JobHandler = (
@@ -168,6 +181,7 @@ export async function runClaimed(
       result.runAt,
       result.payload,
       base,
+      result.resetAttempts,
     );
     if (!applied) supersededWarning(job, "reschedule");
   } else {

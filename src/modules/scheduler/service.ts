@@ -658,6 +658,9 @@ export async function rescheduleJob(
   runAt: Date,
   payload?: Record<string, unknown>,
   base: PrismaClient = basePrisma,
+  // Clears the failure budget. Opt-in, for the kinds that reschedule forever — see JobResult in
+  // ../scheduler/worker.ts for why it cannot be the default.
+  resetAttempts?: boolean,
 ): Promise<{ applied: boolean }> {
   const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
@@ -666,6 +669,7 @@ export async function rescheduleJob(
         status: "PENDING",
         runAt,
         lastError: null,
+        ...(resetAttempts ? { attempts: 0 } : {}),
         ...(payload !== undefined
           ? { payload: payload as Prisma.InputJsonValue }
           : {}),

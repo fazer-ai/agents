@@ -308,6 +308,49 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect(s.attempts).toBe(0);
   });
 
+  test("reschedule preserves a NONZERO attempt count, and clears it on request", async () => {
+    // The test above starts at zero, so it reads the same whether reschedule preserves or resets.
+    // Here the count is moved first, which is what makes both halves of the rule observable — and
+    // the second half is the one a perpetual job depends on: `attempts` is its WHOLE LIFETIME's, so
+    // without a reset five transient failures spread over weeks dead-letter a sweep that is
+    // supposed to run forever (issue #287).
+    const id = await enqueueJob({
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-resched-reset",
+      runAt: past(),
+      base: appDb,
+    });
+    await claimDueJobs(10, appDb, new Date(), tenantId);
+    await failJob(tenantId, id, await seqOf(id), 0, "transient", appDb);
+    await claimDueJobs(10, appDb, new Date(Date.now() + 3_600_000), tenantId);
+    expect((await statusOf(id)).attempts).toBe(1);
+
+    await rescheduleJob(
+      tenantId,
+      id,
+      await seqOf(id),
+      new Date(Date.now() + 3_600_000),
+      undefined,
+      appDb,
+    );
+    expect((await statusOf(id)).attempts).toBe(1);
+
+    await claimDueJobs(10, appDb, new Date(Date.now() + 7_200_000), tenantId);
+    await rescheduleJob(
+      tenantId,
+      id,
+      await seqOf(id),
+      new Date(Date.now() + 10_800_000),
+      undefined,
+      appDb,
+      true,
+    );
+    const s = await statusOf(id);
+    expect(s.status).toBe("PENDING");
+    expect(s.attempts).toBe(0);
+  });
+
   test("reschedule with a payload REPLACES the row payload (step advance)", async () => {
     const id = await enqueueJob({
       tenantId,

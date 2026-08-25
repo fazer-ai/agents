@@ -1706,6 +1706,94 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     // The control the negative above needs: a fence that stood every ladder down would pass it.
     expect(s.sent.map(([c]) => c)).toEqual([WIDGET_CONV]);
   });
+
+  // ── The episode's activation, not the row's ──────────────────────────────────────────────────────
+  // A redirect episode is TWO conversations of one person, and `/teste` stamps only the one it was
+  // typed in. The bridge between them (`shouldPropagateTestMode`) runs ONCE, at link time, WhatsApp →
+  // widget — so an activation that lands after the link, or on the other side, leaves the two halves
+  // disagreeing about a question that has one answer per PERSON: the operator activated the agent,
+  // not a channel. The ladder then judges every send by the WIDGET row, including the two stages whose
+  // destination is the WhatsApp conversation.
+  const setStamps = async (widget: Date | null, entry: Date | null) => {
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: WIDGET_CONV },
+      data: { testActivatedAt: widget, redirectClosedAt: null },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: ENTRY_CONV },
+      data: { testActivatedAt: entry },
+    });
+  };
+  const restoreProduction = async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { enabled: true, mode: "production" },
+    });
+    await setStamps(null, null);
+  };
+  const asTestAgent = async (widget: Date | null, entry: Date | null) => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { enabled: true, mode: "test" },
+    });
+    await setStamps(widget, entry);
+  };
+
+  // `/teste` typed on WhatsApp AFTER the link: the entry row carries the stamp, the widget row does
+  // not, and the one-shot propagation is already spent. Stage 2's destination IS the entry
+  // conversation — the activated one — so the ladder goes mute on the very channel that was activated.
+  test("stage 2 sends when the activation is on the side it messages", async () => {
+    await asTestAgent(null, new Date());
+    const job = await claimed("whatsapp");
+    const s = stubClient();
+    wire.length = 0;
+    globalThis.fetch = httpDouble;
+    try {
+      await redirectFollowUpHandler(job, appDb, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+      await restoreProduction();
+    }
+    expect(wire.filter((u) => u.includes("/messages"))).toHaveLength(1);
+  });
+
+  // The same activation, one stage earlier. Stage 1 messages the WIDGET, so this is the half of the
+  // episode whose own row is unstamped — and it still has to speak, because the person who typed
+  // `/teste` on WhatsApp is the person now sitting in this chat.
+  test("stage 1 nudges when the activation is on the sibling", async () => {
+    await asTestAgent(null, new Date());
+    const job = await claimed();
+    const s = stubClient();
+    try {
+      await redirectFollowUpHandler(job, appDb, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      await restoreProduction();
+    }
+    expect(s.sent.map(([c]) => c)).toEqual([WIDGET_CONV]);
+  });
+
+  // The control both need: with NEITHER side stamped the episode is not activated, and the ladder
+  // stays silent. Without this, an implementation that simply stopped asking would pass the two above.
+  test("an episode with no activation anywhere stays silent", async () => {
+    await asTestAgent(null, null);
+    const job = await claimed();
+    const s = stubClient();
+    try {
+      await redirectFollowUpHandler(job, appDb, {
+        ...deps(),
+        makeClient: s.makeClient,
+      });
+    } finally {
+      await restoreProduction();
+    }
+    expect(s.sent).toEqual([]);
+  });
 });
 
 describe("isRedirectFollowUpLive", () => {

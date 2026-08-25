@@ -35,6 +35,7 @@ import {
   scheduleCanClose,
 } from "@/modules/business-hours/hours";
 import { linkRedirectConversations } from "@/modules/channel-redirect/cross-link";
+import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
 import {
   armRedirectChatFollowUp,
   deliverRedirectClosing,
@@ -44,6 +45,7 @@ import {
 } from "@/modules/channel-redirect/followup";
 import { runRedirectGate } from "@/modules/channel-redirect/gate";
 import {
+  type ChannelRedirectConfig,
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
@@ -563,12 +565,16 @@ export function hasPendingInboundMediaUpdate(
   );
 }
 
-// The widget conversation's /teste stamp, for the resolve-triggered closing gate. Its own read
-// rather than the boolean above, because the liveness predicate takes the stamp itself.
-async function widgetTestActivatedAt(
+// The EPISODE's /teste stamp, for the resolve-triggered closing gate. Its own read rather than the
+// boolean above, because the liveness predicate takes the stamp itself — and the episode's answer
+// rather than this row's, because what this gate protects is a message to the WhatsApp SIBLING
+// (`closeChat: false`), a conversation whose activation the widget row does not hold (issue #249).
+async function episodeActivationForWidget(
   tenantId: bigint,
   instanceId: bigint,
   conversationId: number,
+  cfg: ChannelRedirectConfig,
+  agentMode: string,
   base: PrismaClient,
 ): Promise<Date | null> {
   const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
@@ -580,10 +586,25 @@ async function widgetTestActivatedAt(
           chatwootConversationId: conversationId,
         },
       },
-      select: { testActivatedAt: true },
+      select: {
+        testActivatedAt: true,
+        contactId: true,
+        inbox: { select: { chatwootInboxId: true } },
+      },
     }),
   );
-  return row?.testActivatedAt ?? null;
+  return episodeTestActivatedAt({
+    tenantId,
+    instanceId,
+    cfg,
+    agentMode,
+    conv: {
+      testActivatedAt: row?.testActivatedAt ?? null,
+      contactId: row?.contactId ?? null,
+      chatwootInboxId: row?.inbox?.chatwootInboxId ?? null,
+    },
+    base,
+  });
 }
 
 async function isTestConversationActivated(params: {
@@ -2673,20 +2694,18 @@ export async function processChatwootDelivery(
               // nothing to look up.
               testActivatedAt:
                 closingRt.mode === "test"
-                  ? await widgetTestActivatedAt(
+                  ? await episodeActivationForWidget(
                       params.tenantId,
                       params.instanceId,
                       conversationId,
+                      redirectCfg,
+                      closingRt.mode,
                       base,
                     )
                   : null,
             });
           if (closingLive && redirectCfg.entryInboxId !== null) {
             const outcome = await deliverRedirectClosing({
-              // The answer above is older than the sibling lookup, the client build and this
-              // function's own reads, and this path has no job to ask about — so the switch is
-              // re-asked from inside, at the same points (issue #246). Fail OPEN on a read that
-              // fails: a conversation resolves once, so a transient error must not cost the closing.
               // The gate above is older than the sibling lookup, the client build and this
               // function's own reads, and this path has no job to ask about — so the switch is
               // re-asked from inside, at the same points the ladder asks (issue #246). One read, and
@@ -2712,10 +2731,12 @@ export async function processChatwootDelivery(
                 // relation to select through — so it would take raw SQL or a schema change, for a
                 // window one query wide on a test agent, on the path where the operator has just
                 // resolved the conversation by hand.
-                const testActivatedAt = await widgetTestActivatedAt(
+                const testActivatedAt = await episodeActivationForWidget(
                   params.tenantId,
                   params.instanceId,
                   conversationId,
+                  redirectCfg,
+                  rt.mode,
                   base,
                 ).catch(() => new Date());
                 return isRedirectFollowUpLive({

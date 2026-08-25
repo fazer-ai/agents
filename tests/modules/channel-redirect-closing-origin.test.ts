@@ -425,6 +425,40 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    // Issue #249: the activation the operator gave is on the OTHER half of the episode. This gate's
+    // own conversation is the widget, but what it protects is a message to the WhatsApp SIBLING
+    // (`closeChat: false`) — the conversation that carries the stamp. Judged by the widget row alone
+    // it reads as "never activated" and the goodbye is dropped on an episode that is activated, on
+    // the very channel it would have messaged.
+    test("a test agent activated on the sibling still posts the goodbye", async () => {
+      await suDb.agent.update({
+        where: { id: agent },
+        data: { enabled: true, mode: "test" },
+      });
+      await rearm();
+      await suDb.conversation.updateMany({
+        where: { tenantId: tid, chatwootConversationId: WIDGET },
+        data: { testActivatedAt: null },
+      });
+      await suDb.conversation.updateMany({
+        where: { tenantId: tid, chatwootConversationId: SIBLING },
+        data: { testActivatedAt: new Date() },
+      });
+      try {
+        await resolveWidget();
+        expect(wire.filter((u) => u.includes("/messages"))).not.toEqual([]);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent },
+          data: { mode: "production" },
+        });
+        await suDb.conversation.updateMany({
+          where: { tenantId: tid, chatwootConversationId: SIBLING },
+          data: { testActivatedAt: null },
+        });
+      }
+    });
+
     // Issue #246: the runtime is read, and then compaction arming, the ladder cancel and the closing's
     // own reads all run before anything is posted. The switch is re-asked from inside for that window.
     test("switched off while the closing reads posts nothing", async () => {

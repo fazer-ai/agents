@@ -24,6 +24,7 @@ import {
   proactiveSendMode,
   readServiceWindowConfig,
 } from "@/modules/service-window/service";
+import { episodeTestActivatedAt } from "./episode";
 import { interpolateLink, resolveRedirectLink } from "./gate";
 import {
   type ChannelRedirectConfig,
@@ -444,9 +445,31 @@ export async function redirectFollowUpHandler(
           chatwootConversationId: parsed.conversationId,
         },
       },
-      select: { testActivatedAt: true },
+      select: {
+        testActivatedAt: true,
+        contactId: true,
+        inbox: { select: { chatwootInboxId: true } },
+      },
     });
-    return { agent, testActivatedAt: conv?.testActivatedAt ?? null };
+    return {
+      agent,
+      // The EPISODE's activation, not this row's. The ladder is keyed by the widget thread but two of
+      // its three stages message the WhatsApp sibling, so a row read on its own answers for a
+      // destination whose state it does not hold (issue #249).
+      testActivatedAt: await episodeTestActivatedAt({
+        tenantId,
+        instanceId: parsed.instanceId,
+        cfg: readChannelRedirectConfig(agent.settings),
+        agentMode: agent.mode,
+        conv: {
+          testActivatedAt: conv?.testActivatedAt ?? null,
+          contactId: conv?.contactId ?? null,
+          chatwootInboxId: conv?.inbox?.chatwootInboxId ?? null,
+        },
+        base,
+        scoped: db,
+      }),
+    };
   });
   if (!loaded) return { outcome: "done" };
   const { agent } = loaded;
@@ -489,7 +512,9 @@ export async function redirectFollowUpHandler(
     // message abandons its watermark and the customer gets it twice. `strict` is the ask that runs
     // BEFORE anything is written — inside the thread's critical section, ahead of the divider and
     // the checkpoint — where guessing recreates the memory /reset just cleared and nothing later
-    // catches it. Only the RETIREMENT half changes: liveness stays fail-open in both.
+    // catches it. Only the RETIREMENT half changes: liveness stays fail-open in both — including the
+    // episode read inside it, which falls back to the row's own (null) answer rather than failing
+    // open, because that is the answer this fence gave before that read existed.
     opts: { strict?: boolean } = {},
   ): Promise<LadderVerdict> => {
     const read = async (db: ScopedDb) => {
@@ -535,12 +560,31 @@ export async function redirectFollowUpHandler(
               chatwootConversationId: parsed.conversationId,
             },
           },
-          select: { testActivatedAt: true },
+          select: {
+            testActivatedAt: true,
+            contactId: true,
+            inbox: { select: { chatwootInboxId: true } },
+          },
         });
         return isRedirectFollowUpLive({
           agentEnabled: a.enabled,
           agentMode: a.mode,
-          testActivatedAt: c?.testActivatedAt ?? null,
+          // The episode's answer, on this same connection. A sibling read that fails returns this
+          // row's own answer — which, to have got here, is null — so the worst a failure can do is
+          // reproduce the behaviour this call replaced. It can lose the fix, never invent a refusal.
+          testActivatedAt: await episodeTestActivatedAt({
+            tenantId,
+            instanceId: parsed.instanceId,
+            cfg,
+            agentMode: a.mode,
+            conv: {
+              testActivatedAt: c?.testActivatedAt ?? null,
+              contactId: c?.contactId ?? null,
+              chatwootInboxId: c?.inbox?.chatwootInboxId ?? null,
+            },
+            base,
+            scoped: db,
+          }),
         })
           ? ("go" as const)
           : ("stood-down" as const);

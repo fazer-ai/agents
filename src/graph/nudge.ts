@@ -6,6 +6,8 @@ import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { isTestSilenced } from "@/modules/agents/test-mode";
+import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
+import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   parseLiveConversation,
@@ -289,6 +291,7 @@ export async function runAgentNudge(
         assigneeName: true,
         lastInboundAt: true,
         testActivatedAt: true,
+        contactId: true,
       },
     });
     if (!conv?.inboxId) return null;
@@ -306,9 +309,31 @@ export async function runAgentNudge(
     // hasn't been activated with /teste. Covers EVERY nudge caller (follow-up + inbound events).
     const agent = await db.agent.findUnique({
       where: { id: inbox.agentId },
-      select: { mode: true },
+      select: { mode: true, settings: true },
     });
-    if (agent && isTestSilenced(agent.mode, conv.testActivatedAt)) {
+    if (
+      agent &&
+      isTestSilenced(
+        agent.mode,
+        // The EPISODE's activation, not this row's: a redirect episode is two conversations of one
+        // person, and `/teste` stamps only the one it was typed in. Asked on the caller's connection
+        // — this runs inside the thread claim, where a second connection would stall on the pool
+        // (issue #249).
+        await episodeTestActivatedAt({
+          tenantId,
+          instanceId,
+          cfg: readChannelRedirectConfig(agent.settings),
+          agentMode: agent.mode,
+          conv: {
+            testActivatedAt: conv.testActivatedAt,
+            contactId: conv.contactId,
+            chatwootInboxId: inbox.chatwootInboxId,
+          },
+          base,
+          scoped: db,
+        }),
+      )
+    ) {
       return "silenced" as const;
     }
     const cfg = await loadAgentConfig(db, {

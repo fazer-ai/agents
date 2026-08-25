@@ -3025,8 +3025,11 @@ export async function processChatwootDelivery(
       // empty audio/image message. For a production agent this already ran before the gate; the call
       // is idempotent, so here it only does real work for a test-mode agent that just passed the gate
       // (activated with /teste). Best-effort — a failure leaves a "please send text" marker.
-      // `rt` is null only when no agent is bound to this inbox, and then no STT/vision config
-      // resolves and no line is written — so the nulls never reach a row.
+      // `rt` is null when nothing on the payload's inbox names an agent — either none is bound, or
+      // the payload named no inbox at all — and then no STT/vision config resolves and no line is
+      // written, so the nulls never reach a row. The second half of that reaches here only through
+      // a control command that the conversation's own agent made active (issue #270); the state
+      // itself is not new, since `act` never depended on `rt`.
       await runEagerMedia(params.tenantId, params.instanceId, n, base, {
         conversationId: mirror.conversationRowId,
         agentId: rt?.agentId ?? null,

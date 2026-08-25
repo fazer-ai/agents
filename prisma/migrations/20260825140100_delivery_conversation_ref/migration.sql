@@ -15,7 +15,20 @@ ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "conversation_id" INTEGER;
 -- state (in-flight deliveries plus strands), so this index stays small next to the table.
 CREATE INDEX "chatwoot_webhook_deliveries_status_received_at_idx" ON "chatwoot_webhook_deliveries"("status", "received_at");
 
--- The message the delivery carried, for the same reason and with the same discipline: an id, never
--- the content. Recovery passes it to the flush as the burst's high-water mark so a gate that closed
--- between the strand and the sweep can mark the burst handled without re-fetching it.
-ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "message_id" INTEGER;
+-- The INBOUND message the delivery carried, for the same reason and with the same discipline: an id,
+-- never the content. Null on every event that is not a customer message, which is what lets the
+-- sweep tell a row where nothing was lost from one where a customer went unanswered. Compared
+-- against the conversation's handled watermark and read no other way.
+ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "inbound_message_id" INTEGER;
+
+-- Every row still non-terminal at this moment is, by definition, abandoned: nothing but
+-- `processChatwootDelivery` moves these, and the process that would have is long gone. They predate
+-- both columns above, so the sweep could never tell whether each one carried a customer message —
+-- and closing them as PROCESSED would hide real losses in exactly the list that exists to surface
+-- them. Marked DEAD once, here, so they appear in it instead.
+--
+-- A delivery genuinely in flight during this migration is being stranded by the same deploy that
+-- runs it, so DEAD is the right answer for it too.
+UPDATE "chatwoot_webhook_deliveries"
+   SET status = 'DEAD', processed_at = now()
+ WHERE status IN ('PENDING', 'PROCESSING');

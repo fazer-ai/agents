@@ -1558,6 +1558,7 @@
     "stage": {
       "contact_auth": "Autorização do contato",
       "debounce": "Agrupamento de mensagens",
+      "delivery": "Mensagem que não chegou",
       "embed": "Embedding",
       "generate": "Geração",
       "handoff": "Transferência",

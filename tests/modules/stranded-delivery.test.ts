@@ -4,114 +4,116 @@ import {
   type StrandedVerdict,
 } from "@/modules/chatwoot/stranded-delivery";
 
-// The rule the recovery sweep applies to a ledger row still on PROCESSING, as a table.
+// Whether a ledger row stuck non-terminal means a customer went unanswered, as a table.
 //
-// Stated here rather than exercised only through the sweep because the sweep's own test can drive
-// one row at a time through a database and a network stub: the boundaries (a row that is one
-// millisecond short of stale, a row exactly at the attempt bound) are cheap here and expensive
-// there, and the ORDER of the questions — which is a decision, not an implementation detail — has
-// no other place that states it.
+// Stated here rather than exercised only through the sweep because the sweep's own test drives one
+// row at a time through a database: the boundaries (a row one millisecond short of stale, a message
+// exactly at the watermark) are cheap here and expensive there, and the ORDER of the questions —
+// which is a decision, not an implementation detail — has no other place that states it.
 
-const STALE_MS = 10 * 60 * 1000;
-const MAX = 3;
+const STALE_MS = 30 * 60 * 1000;
 const NOW = new Date("2026-08-25T12:00:00.000Z");
 
 function verdict(row: {
   ageMs: number;
-  attempts: number;
-  conversationId: number | null;
+  inboundMessageId: number | null;
+  handledMessageId: number | null;
 }): StrandedVerdict {
   return classifyStrandedDelivery(
     {
       receivedAt: new Date(NOW.getTime() - row.ageMs),
-      attempts: row.attempts,
-      conversationId: row.conversationId,
+      inboundMessageId: row.inboundMessageId,
     },
-    { now: NOW, staleAfterMs: STALE_MS, maxAttempts: MAX },
+    {
+      now: NOW,
+      staleAfterMs: STALE_MS,
+      handledMessageId: row.handledMessageId,
+    },
   );
 }
 
-describe("classifying a delivery stranded on PROCESSING", () => {
+describe("classifying a delivery stranded non-terminal", () => {
   const cases: Array<{
     name: string;
     ageMs: number;
-    attempts: number;
-    conversationId: number | null;
+    inboundMessageId: number | null;
+    handledMessageId: number | null;
     expected: StrandedVerdict;
   }> = [
     {
-      name: "claimed a moment ago: a live process may still be working it",
+      name: "received a moment ago: a live process may still be working it",
       ageMs: 1_000,
-      attempts: 0,
-      conversationId: 55,
+      inboundMessageId: 50,
+      handledMessageId: 10,
       expected: "in-flight",
     },
     {
       name: "one millisecond short of the threshold is still in flight",
       ageMs: STALE_MS - 1,
-      attempts: 0,
-      conversationId: 55,
+      inboundMessageId: 50,
+      handledMessageId: 10,
       expected: "in-flight",
     },
     {
-      name: "exactly at the threshold is stale",
+      name: "exactly at the threshold is stranded",
       ageMs: STALE_MS,
-      attempts: 0,
-      conversationId: 55,
-      expected: "recover",
+      inboundMessageId: 50,
+      handledMessageId: 10,
+      expected: "lost",
     },
     {
-      name: "fresh beats every other question: attempts do not age a row",
+      name: "fresh outranks every other question",
       ageMs: 1_000,
-      attempts: MAX + 10,
-      conversationId: null,
+      inboundMessageId: null,
+      handledMessageId: null,
       expected: "in-flight",
     },
     {
-      name: "stale, names a conversation, attempts left",
+      // The bot's own reply comes back as a `message_created` too, and a conversation update carries
+      // no message at all. Neither is a customer waiting, so neither may appear in the loss list.
+      name: "carried no inbound message: nothing was lost",
       ageMs: STALE_MS * 3,
-      attempts: 0,
-      conversationId: 55,
-      expected: "recover",
+      inboundMessageId: null,
+      handledMessageId: null,
+      expected: "no-message",
     },
     {
-      name: "the last attempt still recovers",
+      name: "no inbound message outranks an unanswered watermark",
       ageMs: STALE_MS * 3,
-      attempts: MAX - 1,
-      conversationId: 55,
-      expected: "recover",
+      inboundMessageId: null,
+      handledMessageId: 1,
+      expected: "no-message",
     },
     {
-      name: "at the bound, recovery is given up on",
+      name: "the message is below the watermark: something else answered it",
       ageMs: STALE_MS * 3,
-      attempts: MAX,
-      conversationId: 55,
-      expected: "exhausted",
+      inboundMessageId: 50,
+      handledMessageId: 90,
+      expected: "already-answered",
     },
     {
-      name: "past the bound stays given up on",
+      name: "the watermark exactly at the message counts as answered",
       ageMs: STALE_MS * 3,
-      attempts: MAX + 5,
-      conversationId: 55,
-      expected: "exhausted",
+      inboundMessageId: 50,
+      handledMessageId: 50,
+      expected: "already-answered",
     },
     {
-      name: "stale with no conversation: nothing to re-arm",
+      name: "one below the message is not answered",
       ageMs: STALE_MS * 3,
-      attempts: 0,
-      conversationId: null,
-      expected: "unrecoverable",
+      inboundMessageId: 50,
+      handledMessageId: 49,
+      expected: "lost",
     },
     {
-      // The ordering decision, and the reason it is a test rather than a comment: a row that names
-      // no conversation can never be recovered however many attempts remain, so answering
-      // "exhausted" here would name a retry budget it never spent and send an operator looking for
-      // a transient fault that does not exist.
-      name: "no conversation outranks an exhausted attempt count",
+      // The delivery died before the mirror write, so there is no watermark to compare against. The
+      // safe reading of a question that cannot be answered is the one that puts the row in front of
+      // an operator instead of closing it quietly.
+      name: "an unknown conversation reads as unanswered, not as closed",
       ageMs: STALE_MS * 3,
-      attempts: MAX + 5,
-      conversationId: null,
-      expected: "unrecoverable",
+      inboundMessageId: 50,
+      handledMessageId: null,
+      expected: "lost",
     },
   ];
 
@@ -120,8 +122,8 @@ describe("classifying a delivery stranded on PROCESSING", () => {
       expect(
         verdict({
           ageMs: c.ageMs,
-          attempts: c.attempts,
-          conversationId: c.conversationId,
+          inboundMessageId: c.inboundMessageId,
+          handledMessageId: c.handledMessageId,
         }),
       ).toBe(c.expected);
     });

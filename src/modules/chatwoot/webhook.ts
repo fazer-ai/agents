@@ -449,7 +449,12 @@ export async function recordAndProcessChatwootDelivery(
     params.deliveryId,
     params.normalized.event,
     params.normalized.conversationId,
-    params.normalized.message?.id ?? null,
+    // Only an INBOUND message: the recovery sweep uses this to tell a delivery that lost a
+    // customer's message from one that lost nothing, and the bot's own reply coming back around as
+    // a `message_created` is the second kind (issue #228).
+    isIncomingMessage(params.normalized)
+      ? (params.normalized.message?.id ?? null)
+      : null,
   );
   return processChatwootDelivery({
     tenantId: params.tenantId,
@@ -480,7 +485,7 @@ async function claimDelivery(
   deliveryId: string,
   event: string,
   conversationId: number | null,
-  messageId: number | null,
+  inboundMessageId: number | null,
 ): Promise<{ rowId: bigint; duplicate: boolean }> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= LEDGER_CLAIM_ATTEMPTS; attempt++) {
@@ -491,7 +496,7 @@ async function claimDelivery(
         deliveryId,
         event,
         conversationId,
-        messageId,
+        inboundMessageId,
       );
     } catch (err) {
       lastErr = err;
@@ -520,7 +525,7 @@ async function recordDelivery(
   deliveryId: string,
   event: string,
   conversationId: number | null,
-  messageId: number | null,
+  inboundMessageId: number | null,
 ): Promise<{ rowId: bigint; duplicate: boolean }> {
   try {
     const row = await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
@@ -536,7 +541,7 @@ async function recordDelivery(
           // supposed to answer. Two ids, and nothing else about the event — the flush re-reads the
           // messages from Chatwoot, so no column here can hold what the customer wrote.
           conversationId,
-          messageId,
+          inboundMessageId,
         },
         select: { id: true },
       }),

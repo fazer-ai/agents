@@ -89,12 +89,11 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   MEMORY_COMPACT: false,
   // No model, no embedding: it appends to a checkpointer channel and writes one row.
   INGEST_MESSAGE: false,
-  // TRUE, and it took a review round to get here. The sweep used to arm a DEBOUNCE job and count
-  // the spend there — but DEBOUNCE is drained only by the optional debounce lane, so a recovery
-  // parked in it never ran on the installs most likely to need it. The sweep runs the recovery
-  // flush itself now, which means a pass can invoke the model, and the shared lane has to bound how
-  // many passes do that at once.
-  DELIVERY_SWEEP: true,
+  // It reads and writes rows and emits log lines. Answering the stranded message would make this
+  // true, and that is exactly why answering is not done here (issue #295): the delivery path's own
+  // gates do not survive the process that died, so a turn run from a sweep is not the turn the
+  // delivery would have run.
+  DELIVERY_SWEEP: false,
 };
 
 // How many provider-spending jobs the shared lane may run at once, out of the model budget. NEVER

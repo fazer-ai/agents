@@ -947,6 +947,69 @@ describe("google calendar toolpack — list + availability", () => {
     ]);
   });
 
+  // Regression: a pinned duration/spacing is the operator's business rule (a 1h school visit offered
+  // on the half hour). While granularityMinutes stayed on the schema, the model could send 15 and get
+  // back 14:15 — a real, bookable slot the school does not actually offer.
+  test("availability IGNORES a granularity the model sends when the operator pinned one", async () => {
+    const day = spWeekday("2099-06-22T14:00:00-03:00");
+    const { impl } = stubFetch(200, { calendars: { primary: { busy: [] } } });
+    const out = (await toolFor(
+      "calendar_check_availability",
+      {
+        businessHoursId: "5",
+        slotDurationMinutes: 60,
+        slotGranularityMinutes: 30,
+      },
+      baseCtx({
+        fetchImpl: impl,
+        resolveBusinessHours: async () => ({
+          windows: [{ day, start: "14:00", end: "16:00" }],
+          exceptions: [],
+          timezone: TZ,
+        }),
+      }),
+    )?.invoke({
+      timeMin: "2099-06-22T00:00:00-03:00",
+      timeMax: "2099-06-22T23:59:00-03:00",
+      // What the model actually sent in production. The pinned 30 must win.
+      granularityMinutes: 15,
+      slotDurationMinutes: 15,
+    })) as string;
+    const parsed = JSON.parse(out) as { slots: { start: string }[] };
+    expect(parsed.slots.map((s) => localHM(s.start))).toEqual([
+      "14:00",
+      "14:30",
+      "15:00",
+    ]);
+  });
+
+  test("availability hides the duration/spacing args when the operator pinned them", () => {
+    const keysFor = (config: Record<string, unknown>) => {
+      const tool = toolFor("calendar_check_availability", config, baseCtx({}));
+      if (!tool) throw new Error("calendar_check_availability was not built");
+      const { shape } = tool.schema as unknown as {
+        shape: Record<string, unknown>;
+      };
+      return Object.keys(shape);
+    };
+    // Pinned on both ⇒ neither arg exists, so the model cannot redefine the grid.
+    const pinned = keysFor({
+      slotDurationMinutes: 60,
+      slotGranularityMinutes: 30,
+    });
+    expect(pinned).not.toContain("slotDurationMinutes");
+    expect(pinned).not.toContain("granularityMinutes");
+    expect(pinned).toContain("timeMin");
+    // Left open ⇒ the model still chooses per request (a clinic with variable appointment lengths).
+    const open = keysFor({});
+    expect(open).toContain("slotDurationMinutes");
+    expect(open).toContain("granularityMinutes");
+    // Mixed: only the pinned one disappears.
+    const halfPinned = keysFor({ slotGranularityMinutes: 30 });
+    expect(halfPinned).toContain("slotDurationMinutes");
+    expect(halfPinned).not.toContain("granularityMinutes");
+  });
+
   test("availability with no schedule configured ⇒ no time-of-day filter (full grid)", async () => {
     const { impl } = stubFetch(200, { calendars: { primary: { busy: [] } } });
     const out = (await toolFor(

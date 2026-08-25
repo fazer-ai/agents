@@ -322,6 +322,17 @@ function resolveSlotDuration(
   );
 }
 
+// The operator-pinned spacing between candidate start times, or null when the integration leaves it
+// open. Mirrors configuredSlotDuration: a pinned grid is a business rule, not a per-request choice.
+function configuredSlotGranularity(
+  config: Record<string, unknown>,
+): number | null {
+  const v = config.slotGranularityMinutes;
+  return typeof v === "number" && Number.isFinite(v) && v > 0
+    ? Math.round(v)
+    : null;
+}
+
 function resolveSlotGranularity(
   config: Record<string, unknown>,
   override?: number,
@@ -581,7 +592,7 @@ const CHECK_AVAILABILITY_SCHEMA = z.object({
     .positive()
     .optional()
     .describe(
-      "Appointment length in minutes. Optional; defaults to the integration's setting (e.g. 30 or 60).",
+      "Appointment length in minutes. Only offered when the integration has NOT pinned one; when it is pinned this arg is absent and the pinned length always applies.",
     ),
   granularityMinutes: z
     .number()
@@ -589,7 +600,7 @@ const CHECK_AVAILABILITY_SCHEMA = z.object({
     .positive()
     .optional()
     .describe(
-      "Spacing between candidate start times, in minutes. Optional; defaults to the integration's setting (e.g. 15 ⇒ 09:00 and 09:15 are both offered).",
+      "Spacing between candidate start times, in minutes. Only offered when the integration has NOT pinned one; when it is pinned this arg is absent and the pinned spacing always applies.",
     ),
   calendarId: z.string().optional().describe(AVAILABILITY_CALENDAR_ID_DESC),
 });
@@ -730,6 +741,18 @@ function buildCheckAvailabilityTool(
   const businessHoursId = resolveBusinessHoursId(sel.config);
   const minLeadMinutes = resolveMinLead(sel.config);
   const blockingIds = resolveBlockingCalendarIds(sel.config);
+  // A pinned duration or spacing is the operator's business rule (a 1h visit offered on the half
+  // hour). Leaving the args on the schema let the model redefine that rule per call and offer a
+  // start time the business does not actually sell, so we drop them from what the model can send.
+  const pinnedDuration = configuredSlotDuration(sel.config);
+  const pinnedGranularity = configuredSlotGranularity(sel.config);
+  const pinnedArgs: { slotDurationMinutes?: true; granularityMinutes?: true } =
+    {};
+  if (pinnedDuration !== null) pinnedArgs.slotDurationMinutes = true;
+  if (pinnedGranularity !== null) pinnedArgs.granularityMinutes = true;
+  const schema = Object.keys(pinnedArgs).length
+    ? CHECK_AVAILABILITY_SCHEMA.omit(pinnedArgs)
+    : CHECK_AVAILABILITY_SCHEMA;
   return failableTool(
     async (input: {
       timeMin: string;
@@ -952,10 +975,14 @@ function buildCheckAvailabilityTool(
               .flatMap((b) => b.windows),
           ],
         })),
-        slotMinutes: resolveSlotDuration(sel.config, input.slotDurationMinutes),
+        // A pinned value wins over anything the model sent.
+        slotMinutes: resolveSlotDuration(
+          sel.config,
+          pinnedDuration === null ? input.slotDurationMinutes : undefined,
+        ),
         granularityMinutes: resolveSlotGranularity(
           sel.config,
-          input.granularityMinutes,
+          pinnedGranularity === null ? input.granularityMinutes : undefined,
         ),
         minLeadMinutes,
         // NOTE: Only when aggregating. The multiplication this bounds does not exist with one calendar,
@@ -977,11 +1004,11 @@ function buildCheckAvailabilityTool(
     {
       name: "calendar_check_availability",
       description: withCalendarContext(
-        `Return ALL bookable appointment start times within a range, already honoring the service hours, existing bookings and any operator-designated blocking calendars such as holidays or closures (no appointment details are exposed). Each slot has start, end, a human-readable label, and the calendarId (plus calendarLabel) that can actually take it. With several calendars configured, OMIT calendarId to search all of them at once and answer "who is available first?" in a single call; pass calendarId only to restrict the search to one. Offer these to the customer and confirm one before creating the appointment, then pass that slot's calendarId when booking. If \`unavailableCalendars\` comes back, those calendars could not be read and their slots are missing from the list. If \`coveredUntil\` comes back, the search stopped early and that timestamp is the FIRST start time it did not cover: the list is NOT the whole range, so never conclude that later times are unavailable, and call again with timeMin set to that value to continue. Pass ISO 8601 timestamps for the range, and search AT MOST 24 hours per call (one day at a time — call again for other days). The configured appointment length is shown in \`<slot_duration>\` below — when preset="false", choose it yourself per request and pass slotDurationMinutes (e.g. 30 for a standard appointment, 60 for a longer one); when preset="true", pass slotDurationMinutes only to override it.`,
+        `Return ALL bookable appointment start times within a range, already honoring the service hours, existing bookings and any operator-designated blocking calendars such as holidays or closures (no appointment details are exposed). Each slot has start, end, a human-readable label, and the calendarId (plus calendarLabel) that can actually take it. With several calendars configured, OMIT calendarId to search all of them at once and answer "who is available first?" in a single call; pass calendarId only to restrict the search to one. Offer these to the customer and confirm one before creating the appointment, then pass that slot's calendarId when booking. If \`unavailableCalendars\` comes back, those calendars could not be read and their slots are missing from the list. If \`coveredUntil\` comes back, the search stopped early and that timestamp is the FIRST start time it did not cover: the list is NOT the whole range, so never conclude that later times are unavailable, and call again with timeMin set to that value to continue. Pass ISO 8601 timestamps for the range, and search AT MOST 24 hours per call (one day at a time — call again for other days). The configured appointment length is shown in \`<slot_duration>\` below — when preset="false", choose it yourself per request and pass slotDurationMinutes (e.g. 30 for a standard appointment, 60 for a longer one); when preset="true" the length is fixed by the business and there is no arg to change it. Offer the returned start times EXACTLY as they come back: never round them, shift them or invent times in between.`,
         slotDurationXml(sel.config),
         calendarContextXml(allowed, labels),
       ),
-      schema: calendarArgSchema(CHECK_AVAILABILITY_SCHEMA, allowed),
+      schema: calendarArgSchema(schema, allowed),
     },
   );
 }

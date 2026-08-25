@@ -183,6 +183,7 @@
     "vaultNameInUse": "Já existe um segredo com esse nome e tipo",
     "vaultParamNameRequired": "O nome do parâmetro é obrigatório para este tipo de credencial",
     "vaultRefNotFound": "Essa referência do cofre não aponta para nenhuma credencial: {{ref}}",
+    "vaultSecretWhitespace": "Um segredo do cofre não pode começar nem terminar com espaço ou quebra de linha. Remova e salve de novo.",
     "visionCredentialMissing": "Credencial de visão não encontrada",
     "visionFailed": "Falha ao extrair imagem/documento",
     "visionNotConfigured": "A leitura de imagens/documentos não está configurada",

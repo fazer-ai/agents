@@ -353,44 +353,25 @@ function validateParamName(raw: string, kind: string): string {
   return trimmed;
 }
 
-// A credential is pasted, and a paste out of a provider's panel routinely carries a newline or a
-// space. Nothing downstream can recover from it, because the comparison is asymmetric by protocol:
-// an HTTP field value has its surrounding whitespace stripped before any handler sees it, so the
-// whitespace can live on our side and can never arrive from the other one. The refusal that follows
-// is byte-identical to a wrong token, so the operator retypes the value on the provider's side and
-// nothing changes (issue #338).
+// A credential is stored as its exact bytes, so a paste artifact is not a detail: an HTTP field
+// value has its surrounding whitespace stripped before any handler sees it, so a token stored with a
+// trailing newline can never be matched by the one that arrives, and the refusal that follows is
+// byte-identical to a wrong token (issue #338).
 //
-// Normalizing HERE rather than in the form is what makes the stored shape an invariant: the REST
-// controller and the MCP write surface both land on createVaultEntry/updateVaultEntry, and the MCP
-// one never had a form to trim in.
-//
-// It runs BEFORE validateVaultValue, so a value that is only whitespace becomes "" and is refused as
-// empty instead of being stored as a secret nothing can match. Anything this cannot narrow is
-// returned untouched, for validation to refuse by shape.
-export function normalizeVaultSecret(value: string): string {
-  return value.trim();
-}
-
-export function normalizeVaultValue(kind: string, value: unknown): unknown {
-  if (typeof value === "string") return normalizeVaultSecret(value);
-  // Managed-blob kinds hold a server-managed object with no operator-typed fields.
-  if (secretTypeIsManagedBlob(kind)) return value;
-  const fields = getSecretTypeFields(kind);
-  if (
-    !fields ||
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value)
-  ) {
-    return value;
-  }
-  const rec = value as Record<string, unknown>;
-  const out: Record<string, unknown> = { ...rec };
-  for (const { key } of fields) {
-    const v = rec[key];
-    if (typeof v === "string") out[key] = normalizeVaultSecret(v);
-  }
-  return out;
+// This REFUSES rather than trimming, and the difference is the whole point. Trimming would repair
+// the header case silently while breaking the one where the bytes are shared rather than sent: an
+// HMAC key never travels, both sides hold it, and `createHmac` uses it verbatim — so rewriting ours
+// would fail every signature at the provider instead of here. Refusing changes no secret, needs no
+// per-kind exception, and hands the operator the one fact they could not see.
+function assertNoSurroundingWhitespace(value: string, field?: string): void {
+  if (value === value.trim()) return;
+  throw new AppError(
+    "vault secret must not begin or end with whitespace",
+    400,
+    "errors.vaultSecretWhitespace",
+    undefined,
+    field,
+  );
 }
 
 // Validates the secret value against the kind's declared shape.
@@ -434,6 +415,7 @@ function validateVaultValue(kind: string, value: unknown): void {
           key,
         );
       }
+      assertNoSurroundingWhitespace(v, key);
     }
     // Reject extra keys not in the declared field list.
     const declaredKeys = new Set(fields.map((f) => f.key));
@@ -455,6 +437,7 @@ function validateVaultValue(kind: string, value: unknown): void {
         "errors.emptyVaultSecret",
       );
     }
+    assertNoSurroundingWhitespace(value);
   }
 }
 
@@ -578,9 +561,8 @@ export async function createVaultEntry(
 
   const normalizedKind = rawKind ?? "generic";
 
-  // Normalize before validating: whitespace-only becomes "" and is refused as empty.
-  const normalizedValue = normalizeVaultValue(normalizedKind, rawValue);
-  validateVaultValue(normalizedKind, normalizedValue);
+  // Validate value shape for the kind.
+  validateVaultValue(normalizedKind, rawValue);
 
   // Validate and normalize baseUrl.
   let normalizedBaseUrl: string | null = null;
@@ -622,7 +604,7 @@ export async function createVaultEntry(
         "errors.vaultNameInUse",
       );
     }
-    const blob = encryptJson(normalizedValue);
+    const blob = encryptJson(rawValue);
     try {
       const created = await db.vaultEntry.create({
         data: {
@@ -804,9 +786,8 @@ export async function updateVaultEntry(
     }
 
     if (patch.value !== undefined) {
-      const normalizedValue = normalizeVaultValue(entry.kind, patch.value);
-      validateVaultValue(entry.kind, normalizedValue);
-      data.secret = encryptJson(normalizedValue);
+      validateVaultValue(entry.kind, patch.value);
+      data.secret = encryptJson(patch.value);
       // Writing a real value promotes a pending entry (reference-only) to active. No-op for entries
       // already active. This is how "filling" a pending credential in the UI completes it.
       data.status = "active";
@@ -874,13 +855,7 @@ export async function testVaultValue(
   if (kind && !isSecretTypeId(kind)) {
     throw new AppError("invalid secret type", 400, "errors.invalidSecretType");
   }
-  // The probe has to see exactly what a save would persist. They used to agree by both taking the
-  // typed value raw; now that the write normalizes, testing the raw value would fail the probe on a
-  // credential this would store working (" tok" probes as `Bearer  tok`) and abort the save with it.
-  return runSecretTest(
-    { kind, value: normalizeVaultSecret(value), baseURL, paramName },
-    deps,
-  );
+  return runSecretTest({ kind, value, baseURL, paramName }, deps);
 }
 
 // Tests an ALREADY-stored credential by its `vault:<id>` ref (decrypts server-side; the value is

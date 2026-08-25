@@ -183,6 +183,7 @@
     "vaultNameInUse": "A secret with this name and type already exists",
     "vaultParamNameRequired": "Param name is required for this credential type",
     "vaultRefNotFound": "That vault reference does not point to any credential: {{ref}}",
+    "vaultSecretWhitespace": "A vault secret must not begin or end with a space or line break. Remove it and save again.",
     "visionCredentialMissing": "Vision credential not found",
     "visionFailed": "Image/document extraction failed",
     "visionNotConfigured": "Image/document reading is not configured",

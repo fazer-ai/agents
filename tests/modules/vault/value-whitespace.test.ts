@@ -1,20 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { decryptJson } from "@/api/lib/crypto";
+import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
-import {
-  createVaultEntry,
-  normalizeVaultValue,
-  testVaultValue,
-  updateVaultEntry,
-} from "@/modules/vault/service";
+import { createVaultEntry, updateVaultEntry } from "@/modules/vault/service";
 
-// A credential is PASTED, and a paste out of a provider's panel routinely carries a newline or a
-// space. Nothing downstream can recover from it: an HTTP field value has its surrounding whitespace
-// stripped before any handler sees it, so the whitespace can be stored on our side and can never
-// arrive from the other one. The refusal that follows is byte-identical to a wrong token, so the
-// operator retypes the value on the provider's side forever (issue #338).
+// A credential is stored as its exact bytes, and a paste out of a provider's panel routinely carries
+// a newline or a space. An HTTP field value has its surrounding whitespace stripped before any
+// handler sees it, so a token stored padded can never be matched by the one that arrives, and the
+// refusal is byte-identical to a wrong token: the operator retypes the value on the provider's side
+// forever (issue #338). The write refuses instead of repairing, so no secret is ever rewritten.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -39,80 +34,29 @@ if (appUrl && suUrl) {
   }
 }
 
+// OUTSIDE the skipIf: when the superuser probe connects and the app one does not, `dbUp` is false
+// and the suite below never runs its own afterAll, leaving an open pool for the rest of the process.
+afterAll(async () => {
+  await su?.$disconnect();
+  await app?.$disconnect();
+});
+
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 let tenantId = 0n;
 
-const storedValue = async <T>(id: bigint): Promise<T> => {
-  const row = await suDb.vaultEntry.findUnique({
-    where: { id },
-    select: { secret: true },
-  });
-  if (!row) throw new Error(`vault entry ${id} not found`);
-  return decryptJson<T>(row.secret);
+const refusal = async (run: () => Promise<unknown>): Promise<AppError> => {
+  try {
+    await run();
+  } catch (e) {
+    if (e instanceof AppError) return e;
+    throw e;
+  }
+  throw new Error("expected the write to be refused, and it was not");
 };
 
-// The rule itself, away from the database: what is stored for a value the operator typed. Proving
-// the function is not proving the call sites use it — the DB-backed tests below are that half.
-describe("normalizeVaultValue", () => {
-  const table: Array<[string, string, unknown, unknown]> = [
-    ["single value, trailing newline", "generic", "tok\n", "tok"],
-    ["single value, trailing space", "asaas", "tok ", "tok"],
-    ["single value, leading space", "openai", " tok", "tok"],
-    ["single value, both ends", "generic", "\t tok \r\n", "tok"],
-    ["single value, already clean", "generic", "tok", "tok"],
-    ["single value, inner space kept", "generic", " a b ", "a b"],
-    [
-      "whitespace only, left empty for validation to refuse",
-      "generic",
-      " \n",
-      "",
-    ],
-    [
-      "named fields, each end trimmed",
-      "langfuse",
-      { publicKey: "pk \n", secretKey: " sk" },
-      { publicKey: "pk", secretKey: "sk" },
-    ],
-    ["managed blob, untouched", "mcp_oauth", {}, {}],
-    ["non-string, untouched for validation to refuse", "generic", 7, 7],
-  ];
-
-  for (const [label, kind, input, expected] of table) {
-    test(label, () => {
-      expect(normalizeVaultValue(kind, input)).toEqual(expected);
-    });
-  }
-});
-
-// Test-on-save probes the value the operator just typed, and the form ABORTS the save when the probe
-// fails. Before the write normalized, the two agreed by both taking the value raw; they have to keep
-// agreeing, or a credential this stores working is refused before it is ever stored.
-describe("test-on-save probes what a save would store", () => {
-  test("a typed value with whitespace is probed trimmed, not raw", async () => {
-    const seen: string[] = [];
-    const fetchImpl = (async (
-      _input: string | URL | Request,
-      init?: RequestInit,
-    ) => {
-      const h = (init?.headers ?? {}) as Record<string, string>;
-      for (const [k, v] of Object.entries(h)) {
-        if (k.toLowerCase() === "authorization") seen.push(v);
-      }
-      return new Response("{}", { status: 200 });
-    }) as unknown as typeof fetch;
-
-    const r = await testVaultValue("openai", " sk-secret\n", null, {
-      fetchImpl,
-      assertSafe: async (u: string) => new URL(u),
-    });
-    expect(r).toEqual({ testable: true, ok: true });
-    expect(seen).toEqual(["Bearer sk-secret"]);
-  });
-});
-
 describe.skipIf(!dbUp)(
-  "vault: a stored value carries no surrounding whitespace",
+  "vault: a value that begins or ends in whitespace",
   () => {
     const ctx = (): TenantContext => ({
       tenantId,
@@ -137,22 +81,62 @@ describe.skipIf(!dbUp)(
           `DELETE FROM tenants WHERE id = ${tenantId}`,
         );
       }
-      await su?.$disconnect();
-      await app?.$disconnect();
     });
 
-    test("createVaultEntry stores a single value without the whitespace around it", async () => {
+    for (const [label, value] of [
+      ["a trailing newline", "abc123TOKEN\n"],
+      ["a trailing space", "abc123TOKEN "],
+      ["a leading space", " abc123TOKEN"],
+      ["a tab on both ends", "\tabc123TOKEN\t"],
+    ] as const) {
+      test(`createVaultEntry refuses ${label}, by name`, async () => {
+        const e = await refusal(() =>
+          createVaultEntry(
+            ctx(),
+            { name: `ws-${label.replace(/\s/g, "-")}`, value, kind: "asaas" },
+            undefined,
+            undefined,
+            appDb,
+          ),
+        );
+        expect(e.statusCode).toBe(400);
+        expect(e.translationKey).toBe("errors.vaultSecretWhitespace");
+      });
+    }
+
+    test("a clean value is stored, so the rule refuses the padding and nothing else", async () => {
       const { id } = await createVaultEntry(
         ctx(),
-        { name: "ws-create", value: "abc123TOKEN\n", kind: "asaas" },
+        { name: "ws-clean", value: "abc123TOKEN", kind: "asaas" },
         undefined,
         undefined,
         appDb,
       );
-      expect(await storedValue<string>(id)).toBe("abc123TOKEN");
+      const row = await suDb.vaultEntry.findUnique({
+        where: { id },
+        select: { status: true },
+      });
+      expect(row?.status).toBe("active");
     });
 
-    test("updateVaultEntry stores it trimmed too — the path an operator re-saves through", async () => {
+    test("an inner space is kept: the rule is about the ends, not about spaces", async () => {
+      const { id } = await createVaultEntry(
+        ctx(),
+        { name: "ws-inner", value: "two words", kind: "generic" },
+        undefined,
+        undefined,
+        appDb,
+      );
+      const { decryptJson } = await import("@/api/lib/crypto");
+      const row = await suDb.vaultEntry.findUnique({
+        where: { id },
+        select: { secret: true },
+      });
+      if (!row) throw new Error("created row not found");
+      expect(decryptJson<string>(row.secret)).toBe("two words");
+    });
+
+    test("updateVaultEntry refuses it too — the path an operator re-saves through", async () => {
       const { id } = await createVaultEntry(
         ctx(),
         { name: "ws-update", value: "first", kind: "generic" },
@@ -160,48 +144,26 @@ describe.skipIf(!dbUp)(
         undefined,
         appDb,
       );
-      await updateVaultEntry(ctx(), id, { value: "  abc123TOKEN  " }, appDb);
-      expect(await storedValue<string>(id)).toBe("abc123TOKEN");
-    });
-
-    test("a named-field credential is trimmed per field, on the surface that has no form", async () => {
-      const { id } = await createVaultEntry(
-        ctx(),
-        {
-          name: "ws-fields",
-          value: { publicKey: "pk-123\n", secretKey: " sk-456 " },
-          kind: "langfuse",
-          baseUrl: "https://cloud.langfuse.com",
-        },
-        undefined,
-        undefined,
-        appDb,
+      const e = await refusal(() =>
+        updateVaultEntry(ctx(), id, { value: "  abc123TOKEN  " }, appDb),
       );
-      expect(await storedValue<Record<string, string>>(id)).toEqual({
-        publicKey: "pk-123",
-        secretKey: "sk-456",
+      expect(e.translationKey).toBe("errors.vaultSecretWhitespace");
+      const { decryptJson } = await import("@/api/lib/crypto");
+      const row = await suDb.vaultEntry.findUnique({
+        where: { id },
+        select: { secret: true },
       });
+      if (!row) throw new Error("row not found");
+      expect(decryptJson<string>(row.secret)).toBe("first");
     });
 
-    test("a value that is only whitespace is refused as empty, never stored as one", async () => {
-      await expect(
-        createVaultEntry(
-          ctx(),
-          { name: "ws-blank", value: "   \n", kind: "generic" },
-          undefined,
-          undefined,
-          appDb,
-        ),
-      ).rejects.toThrow(/empty/i);
-    });
-
-    test("a named field that is only whitespace is refused, not stored blank", async () => {
-      await expect(
+    test("a named field is refused by ITS name, on the surface that has no form", async () => {
+      const e = await refusal(() =>
         createVaultEntry(
           ctx(),
           {
-            name: "ws-blank-field",
-            value: { publicKey: "  ", secretKey: "sk" },
+            name: "ws-fields",
+            value: { publicKey: "pk-123\n", secretKey: "sk-456" },
             kind: "langfuse",
             baseUrl: "https://cloud.langfuse.com",
           },
@@ -209,7 +171,9 @@ describe.skipIf(!dbUp)(
           undefined,
           appDb,
         ),
-      ).rejects.toThrow(/non-empty/i);
+      );
+      expect(e.translationKey).toBe("errors.vaultSecretWhitespace");
+      expect(e.field).toBe("publicKey");
     });
   },
 );

@@ -279,11 +279,13 @@ export function CredentialForm({
     }
   }, [typeOpen]);
 
-  // Build the value to send for multi-field types.
+  // Build the value to send for multi-field types. Sent VERBATIM, like the single-value path: the
+  // server refuses a secret that begins or ends in whitespace rather than repairing it (#338), and
+  // trimming here would hide that refusal from the console while the MCP surface still got it.
   function buildMultiFieldValue(): Record<string, string> {
     const result: Record<string, string> = {};
     for (const f of fields ?? []) {
-      result[f.key] = (fieldValues[f.key] ?? "").trim();
+      result[f.key] = fieldValues[f.key] ?? "";
     }
     return result;
   }

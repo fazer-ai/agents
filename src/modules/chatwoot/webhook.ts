@@ -3226,20 +3226,37 @@ export async function processChatwootDelivery(
             outcome,
             mirror.applied ? "applied" : "skipped",
           );
-          // The turn RAN over this message, so nothing is owed on it — the same rule the flush
-          // applies to its burst. "superseded" and "stale" are the two that leave it open: a newer
-          // message re-answers it, or the run was withdrawn with the thread.
+          // The turn RAN over this message, so nothing is owed on it — EVERY outcome, where the
+          // flush keeps two of them open. The rule belongs to the call site, because the same two
+          // words mean different things on each side:
+          //
+          //   superseded  On the flush it means the burst is handed to a re-armed flush that will
+          //               answer it and retire these same rows, so retiring them now would close a
+          //               message before the run that covers it exists. Nothing is re-armed here:
+          //               the graph already ran over this message (the thread state, reply included,
+          //               is written before `shouldPost` is consulted), and it is the NEWER
+          //               message's own delivery that carries the reply. Left open, the row is
+          //               reported as a lost customer message every time the process dies in the
+          //               tail after a deliberate supersede — which is the one thing separating this
+          //               outcome from every other one on this path, since all of them close here.
+          //   stale       Not reachable at all: `runAgentTurn` passes `stillWanted: null`, because
+          //               nothing queued this turn and there is no job for /reset to retire. It is
+          //               NOT written into the condition, because a branch no input can take is a
+          //               branch no test can hold: it would read as a rule and be a comment. The
+          //               premise it rests on is asserted instead, in
+          //               tests/modules/delivery-sweep.test.ts, so the day something hands this path
+          //               a `stillWanted` the failure points here rather than passing silently.
           //
           // NOTE: no `isNewIncoming` here, because the whole block is already inside it — an
           // incoming `message_updated` (our own media write-back coming around) never reaches this
           // line, which matters: it carries the same message id as the `message_created` whose row
           // may be stranded, and nothing about it answered anybody. Asserted from the outside in
           // tests/modules/delivery-sweep.test.ts, since a guard that is absorbed cannot be mutated.
-          if (
-            outcome !== "superseded" &&
-            outcome !== "stale" &&
-            n.message?.id != null
-          ) {
+          //
+          // The null check below is absorbed by that same enclosing guard: an event that is a new
+          // incoming message HAS an id. It answers the compiler, not the runtime, which is why
+          // removing it kills no test — a survivor that is a narrowing rather than a rule.
+          if (n.message?.id != null) {
             await settleDelivery(
               n.message.id,
               outcome === "posted" ? "answered" : "consumed",

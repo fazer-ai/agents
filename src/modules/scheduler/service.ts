@@ -31,8 +31,9 @@ import {
 // it must see every tenant's due jobs — so it runs via asSuperAdmin with FOR UPDATE SKIP LOCKED;
 // the GUC is transaction-local (set_config(...,true)) so it never leaks to the next request on a
 // pooled connection. Each job's EFFECT and status update run under the job's OWN tenant scope
-// (runScoped), so RLS still fences the work. `attempts` grows only on failure/crash (a reschedule
-// for out-of-hours is free), and the reaper bounds crash loops by pushing exhausted jobs to DEAD.
+// (runScoped), so RLS still fences the work. `attempts` grows only on failure/crash and is CLEARED
+// by a completed pass (rescheduleJob), so the cap bounds CONSECUTIVE failures rather than the row's
+// lifetime — issue #287; the reaper bounds crash loops by pushing exhausted jobs to DEAD.
 
 const MAX_ATTEMPTS = 5;
 
@@ -435,10 +436,12 @@ async function claimWhere(
   // answers that WITHIN one drain; this is the same question ACROSS them.
   //
   // TOLD APART BY `last_error`, NOT BY `attempts`. The first version of this asked whether the job
-  // had ever failed, which is a different question wearing the same clothes: `rescheduleJob`
-  // preserves the attempt count, so a job that failed once and LATER stood down for a turn read as
-  // backing off, and the barrier skipped the very message it exists to fold in. The error is the
-  // state, and it is cleared the moment the row leaves it.
+  // had ever failed, which is a different question wearing the same clothes: a job that failed once
+  // and LATER stood down for a turn read as backing off, and the barrier skipped the very message it
+  // exists to fold in. The error is the state, and it is cleared the moment the row leaves it. Both
+  // columns now clear on a completed pass (issue #287), so the two agree here; `last_error` remains
+  // the one to read, because it is the column that says which STATE the row is in rather than how
+  // much budget it has left.
   //
   // Nothing is lost by waiting: a row left here is still PENDING, so `countOwedByKeyPrefix` reports
   // the thread as owing something and the one reader that cannot be corrected afterwards still
@@ -638,13 +641,26 @@ export async function completeJob(
   return { applied: count > 0 };
 }
 
-// Not a failure (e.g. out-of-hours): back to PENDING at a new time, attempts UNCHANGED — and
-// `lastError` CLEARED, because the row is no longer in the state that error describes. That is also
-// what makes the two future-dated states tellable apart: a row waiting on a backoff still carries
-// the error that caused it, a row that merely stood down carries none, and `attempts` cannot say
-// which (it survives a reschedule by design, so a job that failed once and later defers looks
-// exactly like one that is backing off). The ingestion barrier reads that difference — see
-// claimWhere's prefix branch. `enqueueJob` already clears it on a re-arm, for the same reason.
+// Not a failure (e.g. out-of-hours): back to PENDING at a new time, with the failure budget and
+// `lastError` both CLEARED, because the row is no longer in the state that error describes. That is
+// also what makes the two future-dated states tellable apart: a row waiting on a backoff still
+// carries the error that caused it, a row that merely stood down carries none. The ingestion
+// barrier reads that difference — see claimWhere's prefix branch. `enqueueJob` already clears
+// `lastError` on a re-arm, for the same reason.
+//
+// `attempts` is reset here, which is what makes MAX_ATTEMPTS bound CONSECUTIVE failures rather than
+// the row's lifetime (issue #287). Reaching this call means the handler neither threw nor reported
+// failure — runClaimed routes those to failJob — so the pass proved the job works, and the budget it
+// spent was for a state it is no longer in. Without this, a job that reschedules itself forever
+// (FLOWLOG_SWEEP, FOLLOWUP_SWEEP, HEARTBEAT) accumulates every failure it has ever had across weeks
+// of healthy passes and dead-letters on the fifth, permanently and silently.
+//
+// It does NOT hand a broken unit of work an unbounded retry, and the reason is the shape of a
+// failure rather than a rule stated here: failJob re-pends with a backoff, so the next claim runs
+// the same work again and fails again. Consecutive failures are never interleaved with a completed
+// pass, so a genuinely failing FOLLOWUP step or MEMORY_COMPACT still burns its five and dies. What
+// this does exempt is a job that fails INTERMITTENTLY, which is a job that works, and one that
+// dies for good in silence is the worse of the two outcomes.
 //
 // An optional
 // `payload` REPLACES the row's payload (used to advance a multi-step follow-up's stepIndex on the
@@ -665,17 +681,9 @@ export async function rescheduleJob(
   // tombstone, re-arming a cancelled reminder (issue #281's review). A handler that only needs to
   // carry a counter forward has no business overwriting what it never read.
   payloadPatch?: Record<string, unknown>,
-  // Clears the failure budget. Opt-in, for the kinds that reschedule forever — see JobResult in
-  // ../scheduler/worker.ts for why it cannot be the default.
-  resetAttempts?: boolean,
 ): Promise<{ applied: boolean }> {
   if (payloadPatch !== undefined) {
     const patch = JSON.stringify(payloadPatch);
-    // The same opt-in as the branch below, spelled again because this one writes its own SET list.
-    // Leaving it out would make the two tails disagree on a flag the signature offers to both, and
-    // the disagreement would be SILENT: a caller that patches its payload and asks for the budget
-    // back gets the patch, no error, and a job still counting down to DEAD.
-    const budget = resetAttempts ? Prisma.sql`attempts = 0,` : Prisma.empty;
     const count = await runScopedOn(
       base,
       sysCtx(tenantId),
@@ -685,7 +693,7 @@ export async function rescheduleJob(
            SET status = 'PENDING'::"SchedulerJobStatus",
                run_at = ${runAt},
                last_error = NULL,
-               ${budget}
+               attempts = 0,
                payload = payload || ${patch}::jsonb,
                updated_at = now()
          WHERE id = ${id}
@@ -702,7 +710,7 @@ export async function rescheduleJob(
         status: "PENDING",
         runAt,
         lastError: null,
-        ...(resetAttempts ? { attempts: 0 } : {}),
+        attempts: 0,
         ...(payload !== undefined
           ? { payload: payload as Prisma.InputJsonValue }
           : {}),

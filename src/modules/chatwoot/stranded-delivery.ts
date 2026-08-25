@@ -26,7 +26,12 @@
 // that message's ledger row itself, so a row still non-terminal is one nothing covered. The sweep
 // and that retirement are both in ./delivery-sweep.ts.
 
+import { TURN_BEARING_EVENT } from "./normalize";
+
 export interface StrandedDeliveryRow {
+  // The Chatwoot event name, as the receiver stored it. The one column here that EVERY build has
+  // written, which is why it is read before the fence for builds that wrote the others.
+  event: string;
   // Which non-terminal state it is stuck in. Both strand, but only one of them carries a promise
   // about the other columns (see `claimedAt`).
   status: "PENDING" | "PROCESSING";
@@ -56,8 +61,9 @@ export type StrandedVerdict =
   // The current attempt started recently enough that a live process may still be working it. Left
   // alone.
   | "in-flight"
-  // Stranded, but carried no inbound message. Terminal and benign: nothing a customer sent is at
-  // stake, so it must NOT appear in the list of lost messages.
+  // Stranded, but carried no inbound message — either its event could never carry one, or its event
+  // could and this one did not (our own reply coming back around). Terminal and benign: nothing a
+  // customer sent is at stake, so it must NOT appear in the list of lost messages.
   | "no-message"
   // Stranded with a customer message nothing ever covered, or stranded by a build whose columns
   // cannot be read. Nothing will answer it.
@@ -74,6 +80,19 @@ export function classifyStrandedDelivery(
   const age =
     policy.now.getTime() - (row.claimedAt ?? row.receivedAt).getTime();
   if (age < policy.staleAfterMs) return "in-flight";
+  // An event that could never have owed a turn never lost one, and this is asked BEFORE the fence
+  // below because the event name is the one column no migration added: a row an older build wrote
+  // still names its event, so this answers for those rows too, which is the population the fence
+  // exists for.
+  //
+  // Chatwoot sends an agent bot far more than customer messages — a contact created, a widget
+  // triggered, a kanban card moved — and `normalize.ts` reads a conversation id from nothing but the
+  // two shapes that are a conversation or a message (issue #257), so those reach the ledger with
+  // BOTH ids null and no claim: byte for byte the signature the fence reads as "a build we cannot
+  // read". A `message_updated` is the same story from the other direction — it is our own media
+  // write-back coming around and drives no turn, which is why the name it shares with
+  // `isNewIncomingMessage` is one constant and not two.
+  if (row.event !== TURN_BEARING_EVENT) return "no-message";
   // A row this build never touched, whose nulls are UNRECORDED rather than "nothing was there". Read
   // the literal way, every message the previous release lost would be closed as carrying none — the
   // exact silence this sweep exists to remove, on the rows a deploy is most likely to strand, since

@@ -8,7 +8,6 @@ import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId } from "@/graph/checkpointer";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
-  deliverySweepHandler,
   ensureDeliverySweep,
   finish,
   sweepStrandedDeliveries,
@@ -502,6 +501,28 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
   });
 
+  test("closes an event that could never carry a message, ids or no ids", async () => {
+    // Chatwoot sends an agent bot far more than messages, and `normalize.ts` reads a conversation id
+    // from nothing but the two shapes that ARE a conversation or a message (issue #257). So a
+    // contact being created reaches the ledger with both ids null and, if the process dies before
+    // the claim, no claim stamp either — byte for byte the signature the next test reads as "a build
+    // whose columns we cannot trust", on a row where the nulls mean exactly what they say.
+    const rowId = await seedStrandedDelivery({
+      conversationId: null,
+      ageMs: STALE_MS * 2,
+      status: "PENDING",
+      inboundMessageId: null,
+      event: "contact_created",
+    });
+
+    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(counts.closed).toBe(1);
+    expect(counts.lost).toBe(0);
+    expect((await statusOf(rowId)).status).toBe("PROCESSED");
+    expect(await unscopedDeliveryLines(200)).toHaveLength(0);
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+  });
+
   test("reports a row the OLD container stranded during a rolling deploy", async () => {
     // The migration closes what exists when it runs, and then the container still serving keeps
     // acking webhooks until it is stopped. That build writes neither id and does not stamp the
@@ -705,24 +726,6 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
     expect(job.status).toBe("PENDING");
     expect(job.attempts).toBe(0);
-  });
-
-  test("clears its failure budget on a pass that completed", async () => {
-    // The other half of #287, and the half `ensureDeliverySweep` cannot reach: every successful
-    // cycle goes through `rescheduleJob`, which preserves `attempts` by design.
-    const result = await deliverySweepHandler(
-      {
-        id: 1n,
-        tenantId,
-        kind: "DELIVERY_SWEEP",
-        payload: {},
-        attempts: 4,
-        claimSeq: 1,
-      },
-      appDb,
-    );
-    expect(result.outcome).toBe("reschedule");
-    expect((result as { resetAttempts?: boolean }).resetAttempts).toBe(true);
   });
 
   test("records the two ids recovery needs, and only for an INBOUND message", async () => {
@@ -965,12 +968,16 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.executionLog.deleteMany({ where: { tenantId } });
   });
 
-  test("a SUPERSEDED direct turn settles nothing: another turn owes the answer", async () => {
-    // `superseded` is the one direct outcome that says "this turn did not cover the message, a newer
-    // one will" — the post gate re-fetched, found a newer incoming id and stood down, leaving the
-    // watermark where it was so the next turn re-answers from below this message. Retiring the row
-    // there would assert coverage nobody has provided yet, and if that next turn dies too the loss
-    // is already hidden.
+  test("a SUPERSEDED direct turn still settles: the graph ran over the message", async () => {
+    // `superseded` on the DIRECT path is not what it is on the flush, and this is the test that
+    // holds the two apart. On the flush it hands the burst to a re-armed flush that will answer
+    // these same messages, so the rows stay open for that run to retire. Nothing is re-armed here:
+    // the graph already invoked and wrote the thread state, the post gate then found a newer
+    // incoming id and stood down, and it is the NEWER message's own delivery that carries the reply.
+    //
+    // Left open, the row is a customer-loss alert every time the process dies in the tail after a
+    // supersede — the same tail every other outcome on this path is already closed before, which is
+    // why the sibling below (a row nothing will take to PROCESSED) is the probe.
     const convId = 8825;
     const messageId = 9741;
     await seedConversation(convId);
@@ -984,7 +991,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         chatwootInstanceId: instanceId,
         deliveryId: `superseded-sibling-${process.pid}`,
         event: "message_created",
-        status: "PROCESSING",
+        // DEAD: the sweep already reported this message and an operator is holding the alert. That
+        // makes the correction line observable, which is the only place the settlement WORD shows
+        // up — and a supersede reached no customer, so the word has to be the deliberate one.
+        status: "DEAD",
         receivedAt: new Date(Date.now() - 60_000),
         claimedAt: new Date(Date.now() - 60_000),
         conversationId: convId,
@@ -1059,9 +1069,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       },
     });
 
-    // Nothing was posted, and nothing was declared covered.
+    // Nothing was posted — and the message is settled anyway, on the row a tail death would have
+    // left behind. "consumed", never "answered": this turn reached no customer.
     expect(sent).toEqual([]);
-    expect((await statusOf(sibling.id)).status).toBe("PROCESSING");
+    expect((await statusOf(sibling.id)).status).toBe("PROCESSED");
+    expect(await correctionOutcome(convId)).toBe("consumed_late");
 
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -1072,6 +1084,23 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
     await suDb.executionLog.deleteMany({ where: { tenantId } });
     await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+  });
+
+  test("the direct path queues nothing, which is why it settles on every outcome", async () => {
+    // The premise under the unconditional settle in webhook.ts, asserted where it can fail loudly.
+    //
+    // The flush keeps "stale" open because a /reset can retire the job that queued it, and that
+    // withdrawal means nothing ever answered the burst. `runAgentTurn` has no job: the delivery IS
+    // the trigger, so `stillWanted` is null and no outcome on that path can be a withdrawal. Written
+    // as a source read because there is no input that reaches the branch — a run that cannot be
+    // called off cannot be asked to prove it stayed uncalled-off — and a rule no test can hold does
+    // not belong in the condition. If this ever stops being null, the settle above needs the same
+    // exception the flush has, and this is what says so.
+    const src = await Bun.file("src/graph/runtime.ts").text();
+    const call = src.slice(
+      src.indexOf("const outcome = await runLoadedTurn({"),
+    );
+    expect(call.slice(0, call.indexOf("});"))).toContain("stillWanted: null,");
   });
 
   test("a redelivery of a LEGACY row fills in what that row could not record", async () => {

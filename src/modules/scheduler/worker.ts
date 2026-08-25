@@ -21,7 +21,8 @@ import {
 // Single-replica worker that drains the scheduler. The handler registry decouples the scheduler
 // from feature logic (follow-ups register their handlers); a job kind with no handler fails (and
 // eventually goes DEAD) rather than silently vanishing. `reschedule` is for "not yet" (out of
-// hours) and does not consume an attempt; `fail` retries with backoff up to the cap.
+// hours) and CLEARS the failure budget, because it means the pass completed (issue #287); `fail`
+// retries with backoff up to the cap.
 
 export type JobResult =
   | { outcome: "done" }
@@ -29,21 +30,11 @@ export type JobResult =
   // step index on the same row). Omit it to keep the current payload. `payloadPatch` MERGES instead,
   // which is what a handler wants when it only carries a field forward and another writer may have
   // stamped the row while it ran (see rescheduleJob). Pass at most one of the two.
-  //
-  // `resetAttempts` clears the failure budget, and exists for the kinds that reschedule FOREVER. A
-  // job's attempts are its whole lifetime's — nothing else clears them — which is right for a
-  // finite unit of work and wrong for a perpetual sweep, where five transient failures spread over
-  // weeks of successful passes dead-letter a row that is supposed to keep running. Opt-in, because
-  // a kind that reschedules WITHIN one unit of work (a follow-up advancing a step, a compaction
-  // waiting out its grace window) must keep counting: resetting there would hand a genuinely
-  // failing unit of work an unbounded retry. Issue #287 is the general case. It is orthogonal to
-  // the two payload knobs, and rescheduleJob honours it on either path.
   | {
       outcome: "reschedule";
       runAt: Date;
       payload?: Record<string, unknown>;
       payloadPatch?: Record<string, unknown>;
-      resetAttempts?: boolean;
     }
   | { outcome: "fail"; error?: string };
 
@@ -186,7 +177,6 @@ export async function runClaimed(
       result.payload,
       base,
       result.payloadPatch,
-      result.resetAttempts,
     );
     if (!applied) supersededWarning(job, "reschedule");
   } else {

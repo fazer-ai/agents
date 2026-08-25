@@ -63,6 +63,13 @@ const CONVERSATION_BODY_EVENTS = new Set([
 // and hand `isNewIncomingMessage` a class of event it has never seen.
 const MESSAGE_BODY_EVENTS = new Set(["message_created", "message_updated"]);
 
+// The ONE event name that can owe a customer an answer, named because two very different readers
+// need the same answer and must not drift: `isNewIncomingMessage` below, which decides whether a
+// live event drives a turn, and ./stranded-delivery.ts, which asks of a ledger row whether anything
+// was ever owed on it. A `message_updated` is our own write-back coming around and drives nothing,
+// which is why the two questions have one answer.
+export const TURN_BEARING_EVENT = "message_created";
+
 export function normalizeChatwootEvent(
   payload: unknown,
 ): NormalizedChatwootEvent | null {
@@ -305,7 +312,7 @@ export function isIncomingMessage(e: NormalizedChatwootEvent): boolean {
 // loop forever (the voice-note infinite loop). The media is present at creation (baileys attaches
 // it before the single `save!`), so gating on message_created loses nothing.
 export function isNewIncomingMessage(e: NormalizedChatwootEvent): boolean {
-  return e.event === "message_created" && isIncomingMessage(e);
+  return e.event === TURN_BEARING_EVENT && isIncomingMessage(e);
 }
 
 // A message the BUSINESS sent to the customer, typed by a HUMAN agent rather than produced by a bot.

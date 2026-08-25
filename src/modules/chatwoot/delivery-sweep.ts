@@ -493,8 +493,7 @@ async function record(
   );
 }
 
-// Exported for the test that pins the reschedule's `resetAttempts`.
-export async function deliverySweepHandler(
+async function deliverySweepHandler(
   job: ClaimedJob,
   base: PrismaClient,
 ): Promise<JobResult> {
@@ -502,12 +501,6 @@ export async function deliverySweepHandler(
   return {
     outcome: "reschedule",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
-    // A pass that completed is proof the sweep works, so the next failure starts a fresh budget.
-    // Without it `attempts` counts this row's WHOLE LIFETIME — `rescheduleJob` deliberately leaves
-    // it alone — and five transient failures spread over weeks of successful passes dead-letter a
-    // job that is supposed to run forever. Opt-in, so nothing changes for the kinds whose attempts
-    // are about one finite unit of work; issue #287 is the general case.
-    resetAttempts: true,
   };
 }
 
@@ -531,12 +524,12 @@ export async function ensureDeliverySweep(
     dedupeKey: "delivery-sweep",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
     // Revives a row that was already dead-lettered: without this it comes back with `attempts` at
-    // the cap and dies on the very next failure. The handler resets the budget on every successful
-    // pass, so this covers the one case that cannot — a row that reached the cap while the sweep
-    // was failing.
+    // the cap and dies on the very next failure. `rescheduleJob` clears the budget on every pass
+    // that completed (#337), so this covers the one case that cannot — a row that reached the cap
+    // while the sweep was failing, which no completed pass will ever follow.
     //
-    // Both halves diverge from `ensureFlowlogSweep` / `ensureTenantSweep`, which have the same shape
-    // and neither resets. That is issue #287, not something to fix from here.
+    // Diverges from `ensureFlowlogSweep` / `ensureTenantSweep`, which have the same shape and do not
+    // reset. That is the re-arm half of the same question, and it is issue #339.
     resetAttempts: true,
     base,
   });

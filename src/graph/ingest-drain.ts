@@ -82,7 +82,8 @@ export async function drainPendingIngest(
     // Every row this drain has touched, kept out of the next pass. It used to carry the failure case
     // too, and no longer does: the claim itself now honours backoff for a row that has failed
     // (../modules/scheduler/service.ts). What is left is the DEFERRAL loop, which the claim cannot
-    // see — a job that stands down for a turn keeps `attempts` at zero, so it stays claimable, and
+    // see — a job that stands down for a turn carries no error and no spent budget, so it stays
+    // claimable exactly like a fresh row, and
     // without this the same row would be claimed and deferred once per pass, five times over, inside
     // a customer's turn.
     const seen: bigint[] = [];

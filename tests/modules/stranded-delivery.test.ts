@@ -26,6 +26,9 @@ const NOW = new Date("2026-08-25T12:00:00.000Z");
 function verdict(row: {
   ageMs: number;
   inboundMessageId: number | null;
+  // The Chatwoot event name. `message_created` by default: the only shape this table is really
+  // about, and the one every other column below is describing.
+  event?: string;
   status?: "PENDING" | "PROCESSING";
   // Whether the age above is a CLAIM (the default, the common case) or only a receipt.
   claimed?: boolean;
@@ -39,6 +42,7 @@ function verdict(row: {
   const claimed = row.claimed ?? true;
   return classifyStrandedDelivery(
     {
+      event: row.event ?? "message_created",
       status: row.status ?? "PROCESSING",
       receivedAt: new Date(NOW.getTime() - (row.receivedAgoMs ?? row.ageMs)),
       claimedAt: claimed ? at : null,
@@ -55,6 +59,7 @@ describe("classifying a delivery stranded non-terminal", () => {
     name: string;
     ageMs: number;
     inboundMessageId: number | null;
+    event?: string;
     status?: "PENDING" | "PROCESSING";
     claimed?: boolean;
     conversationId?: number | null;
@@ -150,6 +155,67 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "lost",
     },
     {
+      // The event Chatwoot sends when a contact is created carries a CONTACT, so `normalize.ts`
+      // reads no conversation from it (issue #257) and the row is inserted with both ids null. Its
+      // signature is identical to an old build's PENDING row, and read that way every one of them
+      // stranded before a claim would be a customer-loss alert about an event nobody was waiting on.
+      name: "an event that cannot carry a message never lost one, ids or no ids",
+      ageMs: STALE_MS * 3,
+      event: "contact_created",
+      inboundMessageId: null,
+      conversationId: null,
+      status: "PENDING",
+      claimed: false,
+      expected: "no-message",
+    },
+    {
+      // And the same event on the OTHER non-terminal state, which the fence below reads as a build
+      // it cannot parse whatever the conversation column says.
+      name: "the event outranks the unreadable-build fence, on PROCESSING too",
+      ageMs: STALE_MS * 3,
+      event: "webwidget_triggered",
+      inboundMessageId: null,
+      status: "PROCESSING",
+      claimed: false,
+      expected: "no-message",
+    },
+    {
+      // The reason this is asked by NAME and not by "did it record a conversation": a
+      // conversation-bearing event records one, and is still an event no customer is waiting on.
+      name: "a conversation event that names its conversation is still no message",
+      ageMs: STALE_MS * 3,
+      event: "conversation_updated",
+      inboundMessageId: null,
+      expected: "no-message",
+    },
+    {
+      // The other half of the same rule, and the reason the constant is `message_created` alone
+      // rather than "a body shaped like a message": a `message_updated` is our own media write-back
+      // coming around, `isNewIncomingMessage` refuses to drive a turn on it, and so nothing was ever
+      // owed. On a current build its inbound id is null and the check below would say so anyway; on
+      // a row from a build that wrote no ids, this is the only thing that can.
+      name: "a message_updated never owed a turn, so it never lost one",
+      ageMs: STALE_MS * 3,
+      event: "message_updated",
+      inboundMessageId: null,
+      conversationId: null,
+      status: "PENDING",
+      claimed: false,
+      expected: "no-message",
+    },
+    {
+      // The guard is on the event NAME, not on the ids: a message event whose id columns an older
+      // build never wrote is still the row this sweep exists for.
+      name: "a message event from a build we cannot read is still a loss",
+      ageMs: STALE_MS * 3,
+      event: "message_created",
+      inboundMessageId: null,
+      conversationId: null,
+      status: "PENDING",
+      claimed: false,
+      expected: "lost",
+    },
+    {
       name: "stranded with a customer message is a loss",
       ageMs: STALE_MS * 3,
       inboundMessageId: 50,
@@ -171,6 +237,7 @@ describe("classifying a delivery stranded non-terminal", () => {
         verdict({
           ageMs: c.ageMs,
           inboundMessageId: c.inboundMessageId,
+          event: c.event,
           status: c.status,
           claimed: c.claimed,
           conversationId: c.conversationId,

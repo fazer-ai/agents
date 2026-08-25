@@ -770,13 +770,22 @@ describe("both languages answer, and answer differently", () => {
       }
       throwSites(body, seen, res);
     }
-    // Both halves are asserted, because a scan that stopped finding anything would satisfy the
-    // difference below with an empty set on either side.
-    expect(named.size).toBeGreaterThan(150);
-    expect(seen.size).toBeGreaterThan(150);
-    expect([...named].filter((k) => !seen.has(k)).sort()).toEqual(
+    const unseenGiven = (visible: Set<string>): string[] =>
+      [...named].filter((k) => !visible.has(k)).sort();
+    // NO FLOOR ON EITHER COUNT, and that is the whole lesson of this assertion. The first version
+    // pinned both above 150, which is true on THIS tree and false on the one the public CI runs:
+    // both totals shrink with the edition (166 named / 153 seen here, 161 / 148 in the Free
+    // projection, measured), while the ledger below is the same thirteen in every tree. A sentinel
+    // calibrated against a tree that the derivation reshapes is a red build in the derived repo and
+    // a green one here, which is the shape this file has been bitten by before.
+    //
+    // The comparison guards itself, so it needs no sentinel: a blinded reader reports every named
+    // key as unseen, and that is not this ledger. Proven rather than claimed, because "it would have
+    // failed" is exactly the kind of statement that turns out to be false.
+    expect(unseenGiven(new Set())).not.toEqual(
       [...UNSEEN_BY_THE_READER].sort(),
     );
+    expect(unseenGiven(seen)).toEqual([...UNSEEN_BY_THE_READER].sort());
   });
 
   test("the grandfathered list only names keys that still offend", async () => {

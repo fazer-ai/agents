@@ -340,6 +340,12 @@ model ChatwootWebhookDelivery {
   // messages from Chatwoot itself, so the event body never has to be persisted. Null on an event
   // that names no conversation, and on every row written before this column existed.
   conversationId     Int?                  @map("conversation_id")
+  // The Chatwoot message id this delivery carried, when it carried one. Recovery hands it to the
+  // flush as the burst's high-water mark, which is what lets a flush whose gate has since CLOSED
+  // (a human took the conversation) mark the burst handled without a fetch — without it the
+  // stranded message stays below the watermark and a later flush re-answers the pre-handoff
+  // backlog. An id, like the column above: nothing here can hold what the customer wrote.
+  messageId          Int?                  @map("message_id")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

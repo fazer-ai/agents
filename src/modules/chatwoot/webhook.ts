@@ -449,6 +449,7 @@ export async function recordAndProcessChatwootDelivery(
     params.deliveryId,
     params.normalized.event,
     params.normalized.conversationId,
+    params.normalized.message?.id ?? null,
   );
   return processChatwootDelivery({
     tenantId: params.tenantId,
@@ -479,6 +480,7 @@ async function claimDelivery(
   deliveryId: string,
   event: string,
   conversationId: number | null,
+  messageId: number | null,
 ): Promise<{ rowId: bigint; duplicate: boolean }> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= LEDGER_CLAIM_ATTEMPTS; attempt++) {
@@ -489,6 +491,7 @@ async function claimDelivery(
         deliveryId,
         event,
         conversationId,
+        messageId,
       );
     } catch (err) {
       lastErr = err;
@@ -517,6 +520,7 @@ async function recordDelivery(
   deliveryId: string,
   event: string,
   conversationId: number | null,
+  messageId: number | null,
 ): Promise<{ rowId: bigint; duplicate: boolean }> {
   try {
     const row = await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
@@ -527,10 +531,12 @@ async function recordDelivery(
           deliveryId,
           event,
           status: "PENDING",
-          // The one thing a recovery sweep needs if this delivery is stranded on PROCESSING by a
-          // process death: which conversation to re-arm (issue #228). Nothing else about the event
-          // is stored — the flush re-reads its messages from Chatwoot.
+          // What a recovery sweep needs if this delivery is stranded on PROCESSING by a process
+          // death (issue #228): which conversation to flush, and which message that flush was
+          // supposed to answer. Two ids, and nothing else about the event — the flush re-reads the
+          // messages from Chatwoot, so no column here can hold what the customer wrote.
           conversationId,
+          messageId,
         },
         select: { id: true },
       }),

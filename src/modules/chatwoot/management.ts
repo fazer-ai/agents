@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
@@ -11,6 +12,7 @@ import {
   type WidgetHealthStatus,
 } from "@/modules/channel-redirect/link";
 import { type ChatwootClient, fetchChatwootProfile } from "./client";
+import { ensureDeliverySweep } from "./delivery-sweep";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
 import { chatwootAutoRepliesOutOfHours } from "./out-of-office";
 import { ensureAgentBot } from "./provisioning";
@@ -412,6 +414,19 @@ async function connectAccount(
   // lets an event arriving in that window read the old row and cache the refusal all over again, so
   // the reconnect would not take effect until the entry expires.
   if (result.reconnected) invalidateRouteTokenCache();
+  // Arm the stranded-delivery recovery sweep for this tenant (issue #228). Here and not only at
+  // boot: a first-run install has no tenants when the boot arm runs, and connecting an account is
+  // the moment a tenant acquires the only thing that can produce a delivery to strand. Idempotent
+  // (enqueueJob upserts one live row per tenant) and best-effort — a failure here must not fail the
+  // connection the operator asked for; the next boot arms it.
+  try {
+    await ensureDeliverySweep(tenantId, base);
+  } catch (err) {
+    logger.warn(
+      { tenantId: String(tenantId), err },
+      "delivery sweep arm failed on Chatwoot connect; continuing",
+    );
+  }
   return result.id;
 }
 

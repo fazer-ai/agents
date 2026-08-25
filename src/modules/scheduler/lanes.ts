@@ -89,9 +89,12 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   MEMORY_COMPACT: false,
   // No model, no embedding: it appends to a checkpointer channel and writes one row.
   INGEST_MESSAGE: false,
-  // It queries, and at most ARMS a flush. The model spend belongs to the DEBOUNCE job that flush
-  // becomes, which is claimed on its own lane and counted there.
-  DELIVERY_SWEEP: false,
+  // TRUE, and it took a review round to get here. The sweep used to arm a DEBOUNCE job and count
+  // the spend there — but DEBOUNCE is drained only by the optional debounce lane, so a recovery
+  // parked in it never ran on the installs most likely to need it. The sweep runs the recovery
+  // flush itself now, which means a pass can invoke the model, and the shared lane has to bound how
+  // many passes do that at once.
+  DELIVERY_SWEEP: true,
 };
 
 // How many provider-spending jobs the shared lane may run at once, out of the model budget. NEVER

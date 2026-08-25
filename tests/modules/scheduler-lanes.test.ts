@@ -107,7 +107,9 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   DEBOUNCE: false,
   MEMORY_COMPACT: false,
   INGEST_MESSAGE: false,
-  DELIVERY_SWEEP: false,
+  // The recovery flush runs INSIDE the sweep pass (it cannot be armed onto the optional debounce
+  // lane), so a pass invokes the model like any other proactive sender.
+  DELIVERY_SWEEP: true,
 };
 
 // Same discipline again, and both of these maps were added by the change that introduced

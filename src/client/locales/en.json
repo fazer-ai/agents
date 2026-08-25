@@ -1557,6 +1557,7 @@
       "generate": "Generation",
       "handoff": "Handoff",
       "normalize": "Speech rewrite",
+      "route": "Routing",
       "split": "Delivery",
       "stt": "Transcription",
       "tool": "Tool call",

@@ -85,6 +85,7 @@ import {
 } from "@/modules/debounce/service";
 import { advanceHandledWatermark } from "@/modules/debounce/watermark";
 import { emitFlowEvent } from "@/modules/flowlog/service";
+import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
 import { armCompaction } from "@/modules/memory/compact";
 import { clearContactMemory } from "@/modules/memory/reset";
 import { readMemoryConfig } from "@/modules/memory/settings";
@@ -3128,6 +3129,19 @@ export async function processChatwootDelivery(
             outcome,
             mirror.applied ? "applied" : "skipped",
           );
+          // NOTE: The turn had nowhere to go: this inbox has no agent bound (issue #318). The
+          // outcome is narrow enough to key on — `runAgentTurn` only reaches it for a new incoming
+          // message with text, so this is one line per customer message that nothing will answer,
+          // the same unit as the gate's line below.
+          if (outcome === "no-agent" && mirror.conversationRowId !== null) {
+            emitUnroutedMessage({
+              tenantId: params.tenantId,
+              conversationRowId: mirror.conversationRowId,
+              inboxRowId: mirror.inboxRowId,
+              chatwootInboxId: n.inboxId,
+              base,
+            });
+          }
           // Recovered: a successful answer clears any previously surfaced turn error (item 6).
           if (outcome === "posted" && n.conversationId !== null) {
             await clearConversationError({

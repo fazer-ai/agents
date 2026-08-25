@@ -1563,6 +1563,7 @@
       "generate": "Geração",
       "handoff": "Transferência",
       "normalize": "Reescrita para fala",
+      "route": "Roteamento",
       "split": "Entrega",
       "stt": "Transcrição",
       "tool": "Chamada de ferramenta",

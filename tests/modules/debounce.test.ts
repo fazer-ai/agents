@@ -1023,6 +1023,68 @@ describe.skipIf(!dbUp)("debounce", () => {
     return null;
   }
 
+  async function routeRowOf(convId: number) {
+    const conversation = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    for (let i = 0; i < 40; i++) {
+      const row = await suDb.executionLog.findFirst({
+        where: { tenantId, stage: "route", conversationId: conversation.id },
+        orderBy: { id: "desc" },
+      });
+      if (row) return row;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return null;
+  }
+
+  // The OTHER unbound-inbox exit, and the one nothing recorded: the gate is OPEN, so this burst is
+  // the bot's to answer and there is simply no agent to answer it. It ended as a silent `done`
+  // (issue #318), which from the operator's side is indistinguishable from an agent that is quiet.
+  test("an unbound inbox with the gate open leaves the line that names the inbox", async () => {
+    await seedConversation(874);
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 7302,
+        name: "Recem-conectada",
+        agentId: null,
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 874 },
+      data: { inboxId: inbox.id },
+    });
+    const sent: Array<[number, string]> = [];
+    const out = await flushDebounceJob({
+      job: jobFor(874, { lastMessageId: 31 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 31, content: "oi" }])],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]);
+    const row = await routeRowOf(874);
+    expect(row?.level).toBe("warn");
+    expect(row?.status).toBe("skipped");
+    expect(row?.agentId).toBeNull();
+    expect(row?.inboxId).toBe(inbox.id);
+    expect(row?.detail).toEqual({ outcome: "no_agent", chatwootInboxId: 7302 });
+    // The burst is NOT consumed: an open gate on an inbox that gets bound later has to answer it,
+    // which is exactly what the bail's position below the gate buys. The line does not change that.
+    expect(await watermarkOf(874)).toBeNull();
+  });
+
   test("a gate closed by a human writes the handoff line that names the takeover", async () => {
     await seedConversation(870, { assigneeType: "User" });
     const out = await flushDebounceJob({

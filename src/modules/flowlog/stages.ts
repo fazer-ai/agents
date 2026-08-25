@@ -4,6 +4,10 @@
 // One stage per pipeline step a turn can run through. Stored as a validated String on ExecutionLog
 // (never a Prisma enum — adding a stage must not require a migration).
 export const FLOW_STAGES = [
+  // The step BEFORE any of the others: the delivery is matched to the agent that answers this
+  // inbox. It writes only when there is none — an inbox nobody bound consumes the message and
+  // answers nothing, and until issue #318 the only trace was a process log line.
+  "route",
   "stt", // inbound voice-note transcription
   "vision", // inbound image/document extraction
   "embed", // RAG embedding (search / ingest)

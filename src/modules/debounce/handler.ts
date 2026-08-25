@@ -33,6 +33,7 @@ import {
 import { announceFailedTurn } from "@/modules/conversations/failure-note";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import type { FlowStage } from "@/modules/flowlog/stages";
+import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
 import {
   type ClaimedJob,
   jobRetired,
@@ -347,7 +348,18 @@ export async function flushDebounceJob(
         agentId: inbox?.agentId ?? null,
       };
     }
-    if (!inbox?.agentId) return null;
+    if (!inbox?.agentId) {
+      // NOTE: The inbox has no agent — it never had one, or it lost it between the arm and this
+      // flush. The burst is the customer's, and until issue #318 this exit was as silent as the
+      // webhook's: same state, same line, written by the same producer. The watermark is
+      // deliberately NOT advanced (see the note above): the burst has to survive a later rebind.
+      return {
+        unbound: true as const,
+        convDbId: conv.id,
+        inboxDbId: conv.inboxId,
+        chatwootInboxId: inbox?.chatwootInboxId ?? null,
+      };
+    }
     const agentRow = await db.agent.findUnique({
       where: { id: inbox.agentId },
       select: { settings: true },
@@ -368,8 +380,21 @@ export async function flushDebounceJob(
       settings: agentRow?.settings ?? {},
     };
   });
-  // No agent / unbound inbox → nothing to do (not a failure).
+  // No conversation / no config → nothing to do (not a failure).
   if (ctx === null) return { outcome: "done" };
+  // NOTE: An unbound inbox is a state an operator has to repair, so it leaves the same line the
+  // webhook's direct path leaves rather than ending as a silent "done" (issue #318).
+  if ("unbound" in ctx) {
+    emitUnroutedMessage({
+      tenantId,
+      conversationRowId: ctx.convDbId,
+      inboxRowId: ctx.inboxDbId ?? null,
+      chatwootInboxId: ctx.chatwootInboxId ?? null,
+      threadId,
+      base,
+    });
+    return { outcome: "done" };
+  }
   // NOTE: The gate closed between the arm and this flush, and TWO different events wear that exit:
   // a human took the conversation, or it left `pending` with nobody on the other side — most often
   // Chatwoot escalating after a slow ack. Either way the burst counts as handled: the arm path kept

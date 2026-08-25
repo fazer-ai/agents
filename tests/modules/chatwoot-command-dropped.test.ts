@@ -166,11 +166,17 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
     inboxId: number,
     content: string,
     agentBotId: number | null,
-    // The SAME Chatwoot message, redelivered on another bot's route: that is the fan-out, not a
-    // second command (`agent_bots_for` sends one message to the conversation's assigned bot and to
-    // the inbox's).
-    sameMessage = false,
+    over: {
+      // The SAME Chatwoot message, redelivered on another bot's route: that is the fan-out, not a
+      // second command (`agent_bots_for` sends one message to the conversation's assigned bot and
+      // to the inbox's).
+      sameMessage?: boolean;
+      // A payload that names no inbox ANYWHERE, which is the shape issue #270's fallback exists
+      // for: the agent is resolved from the conversation the mirror already stored.
+      sparse?: boolean;
+    } = {},
   ): Promise<void> {
+    const { sameMessage = false, sparse = false } = over;
     deliverySeq += 1;
     if (!sameMessage) messageSeq += 1;
     stamp += 1;
@@ -183,7 +189,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
       sender: { id: 77, name: "Operadora", type: null },
       conversation: {
         id: convId,
-        inbox_id: inboxId,
+        ...(sparse ? {} : { inbox_id: inboxId }),
         status: "pending",
         contact_inbox: { id: 91_000 + convId },
         meta: { assignee: null, sender: { id: 77, name: "Operadora" } },
@@ -213,9 +219,12 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
     });
   }
 
-  // Scoped to the conversation by its INTERNAL id, and polled: the emit is fire-and-forget, so an
-  // unscoped read answers with a neighbour's row and an unpolled one races the write it asserts.
-  async function commandRows(convId: number, waitMs = 2000) {
+  // Scoped to the conversation by its INTERNAL id, and polled for the count the test EXPECTS: the
+  // emit is fire-and-forget, so an unscoped read answers with a neighbour's row and one that stops
+  // at the first row reads the fan-out's first delivery while the second is still in flight, then
+  // calls that the answer. Zero is the same rule from the other side: nothing to wait for, so the
+  // window is spent before reading rather than short-circuited.
+  async function commandRows(convId: number, expected: number, waitMs = 2000) {
     const conv = await suDb.conversation.findFirst({
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true },
@@ -227,14 +236,15 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
         where: { tenantId, stage: "command", conversationId: conv.id },
         orderBy: { id: "asc" },
       });
-      if (rows.length > 0 || Date.now() > deadline) return rows;
+      if (expected > 0 && rows.length >= expected) return rows;
+      if (Date.now() > deadline) return rows;
       await new Promise((r) => setTimeout(r, 50));
     }
   }
 
   test("a command at a production agent is ordinary text, and the line says which mode dropped it", async () => {
     await deliver(9201, PROD_INBOX, "/teste", OUR_BOT);
-    const rows = await commandRows(9201);
+    const rows = await commandRows(9201, 1);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.level).toBe("info");
     expect(rows[0]?.status).toBe("skipped");
@@ -249,7 +259,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
 
   test("a command at an inbox nobody bound names the mode as unresolved", async () => {
     await deliver(9301, UNBOUND_INBOX, "/reset", OUR_BOT);
-    const rows = await commandRows(9301);
+    const rows = await commandRows(9301, 1);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.detail).toMatchObject({
       command: "reset",
@@ -270,7 +280,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
 
   test("a delivery on another persona's route says it left the command to the inbox's", async () => {
     await deliver(9101, TEST_INBOX, "/teste", OTHER_BOT);
-    const rows = await commandRows(9101);
+    const rows = await commandRows(9101, 1);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.level).toBe("info");
     expect(rows[0]?.detail).toMatchObject({
@@ -286,7 +296,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
   // misconfiguration to repair rather than a route deferring to its sibling.
   test("an inbox whose agent has no bot identity drops the command on every route, at warn", async () => {
     await deliver(9401, NO_PERSONA_INBOX, "/teste", OUR_BOT);
-    const rows = await commandRows(9401);
+    const rows = await commandRows(9401, 1);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.level).toBe("warn");
     expect(rows[0]?.status).toBe("skipped");
@@ -303,8 +313,8 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
   // stopped it, the other route reports that it deferred.
   test("the fan-out reports one command, not the same drop twice", async () => {
     await deliver(9202, PROD_INBOX, "/teste", OUR_BOT);
-    await deliver(9202, PROD_INBOX, "/teste", OTHER_BOT, true);
-    const rows = await commandRows(9202);
+    await deliver(9202, PROD_INBOX, "/teste", OTHER_BOT, { sameMessage: true });
+    const rows = await commandRows(9202, 2);
     expect(rows).toHaveLength(2);
     expect(
       rows.map((r) => (r.detail as { reason: string }).reason).sort(),
@@ -319,15 +329,42 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
     });
   });
 
+  // The sparse-payload path (#270): no inbox anywhere on the event, so `inboxAgentRuntime` answers
+  // nothing and the agent comes from the conversation the mirror already stored. The row has to name
+  // that agent, and the route question has to be asked against ITS persona — reading only the
+  // payload's runtime writes a row attributed to nobody, and calls both fan-out deliveries the same
+  // drop, on the one path where the ids cost nothing to keep.
+  test("a sparse payload names the agent the conversation stored", async () => {
+    await deliver(9203, PROD_INBOX, "bom dia", OUR_BOT);
+    await deliver(9203, PROD_INBOX, "/teste", OUR_BOT, { sparse: true });
+    await deliver(9203, PROD_INBOX, "/teste", OTHER_BOT, {
+      sparse: true,
+      sameMessage: true,
+    });
+    const rows = await commandRows(9203, 2);
+    expect(rows).toHaveLength(2);
+    for (const r of rows) expect(r.agentId).toBe(prodAgentId);
+    expect(
+      rows.map((r) => (r.detail as { reason: string }).reason).sort(),
+    ).toEqual(["inactive", "other_route"]);
+    const inactive = rows.find(
+      (r) => (r.detail as { reason: string }).reason === "inactive",
+    );
+    expect(inactive?.detail).toMatchObject({
+      mode: "production",
+      routeBot: OUR_BOT,
+    });
+  });
+
   test("a command that RUNS writes no dropped line", async () => {
     await deliver(9102, TEST_INBOX, "/teste", OUR_BOT);
-    const rows = await commandRows(9102, 400);
+    const rows = await commandRows(9102, 0, 400);
     expect(rows).toHaveLength(0);
   });
 
   test("an ordinary message writes no dropped line", async () => {
     await deliver(9103, PROD_INBOX, "bom dia", OUR_BOT);
-    const rows = await commandRows(9103, 400);
+    const rows = await commandRows(9103, 0, 400);
     expect(rows).toHaveLength(0);
   });
 });

@@ -216,27 +216,28 @@ async function inboxAgentRuntime(
   });
 }
 
-// The mode of the agent bound to a conversation's OWN (mirrored) inbox, or null when nothing
-// resolves. Deliberately keyed by the conversation rather than by a payload inbox id: it is the
+// The agent bound to a conversation's OWN (mirrored) inbox — its mode, and the two ids the same
+// query already reads — or null when nothing resolves. Deliberately keyed by the conversation rather
+// than by a payload inbox id: it is the
 // reading `maybeConsumeCommandOrGate` already uses for the test-mode gate, and it exists so the
 // question "is this command active?" and the gate that silences the conversation cannot be answered
 // by two different rows (issue #270).
 //
 // It answers about the AGENT and says nothing about the route, which is the split that keeps this
 // safe. Chatwoot fans one command out to the inbox's persona and to the conversation's assigned bot,
-// so more than one delivery can reach here with the same command; `commandBelongsHere` downstream is
+// so more than one delivery can reach here with the same command; `commandRoute` downstream is
 // the single fence that picks which one runs it and consumes the rest. Answering the route question
 // here too would give the losing delivery `commandActive === false`, which does not defer to that
 // fence — it walks past it and hands the agent "/teste" as ordinary customer text.
 //
 // Only ever called on the path where the payload named no inbox, so the common delivery pays for no
 // extra query.
-async function conversationAgentMode(
+async function conversationAgent(
   tenantId: bigint,
   instanceId: bigint,
   chatwootConversationId: number | null,
   base: PrismaClient,
-): Promise<string | null> {
+): Promise<{ agentId: bigint; inboxId: bigint; mode: string } | null> {
   if (chatwootConversationId == null) return null;
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     const conv = await db.conversation.findUnique({
@@ -259,7 +260,11 @@ async function conversationAgentMode(
       where: { id: inbox.agentId },
       select: { mode: true },
     });
-    return agent?.mode ?? null;
+    if (!agent) return null;
+    // NOTE: the ids come back with the mode because this query already read them, and the caller needs
+    // them for the same reason it needs the mode: a sparse payload answered by this reading has an
+    // agent, and a line that reports the command without naming it is attributable to nothing.
+    return { agentId: inbox.agentId, inboxId: conv.inboxId, mode: agent.mode };
   });
 }
 
@@ -2665,6 +2670,12 @@ export async function processChatwootDelivery(
   // The fallback can only ever turn a dropped command into an honoured one; it can never make an
   // active command inactive, so no delivery that works today changes.
   let commandMode: string | null = null;
+  // The agent the command was decided against, from whichever of the two readings answered. Named
+  // once and used by the line that reports a dropped one: `rt` is null on the sparse-payload path
+  // even though the stored conversation names an agent there, and reading only `rt` writes a row
+  // attributed to no agent and no inbox, on the one path where the ids cost nothing to keep.
+  let commandAgent: { agentId: bigint; inboxId: bigint } | null =
+    rt !== null ? { agentId: rt.agentId, inboxId: rt.inboxId } : null;
   if (command !== null) {
     if (rt !== null) {
       commandMode = rt.mode;
@@ -2675,12 +2686,15 @@ export async function processChatwootDelivery(
       // that just arrived. The command would then be active for an agent the delivery never reached,
       // the route check would find no persona to match, and it would be consumed without running and
       // without an acknowledgement — a worse silence than the one this fixes.
-      commandMode = await conversationAgentMode(
+      const stored = await conversationAgent(
         params.tenantId,
         params.instanceId,
         n.conversationId,
         base,
       );
+      commandMode = stored?.mode ?? null;
+      if (stored !== null)
+        commandAgent = { agentId: stored.agentId, inboxId: stored.inboxId };
     }
   }
   const commandActive = command !== null && commandMode === "test";
@@ -2716,12 +2730,12 @@ export async function processChatwootDelivery(
     // failure than a command nobody reports, and that state already has #318's `route` line per
     // delivery for the same reason.
     const personaBot =
-      rt !== null
+      commandAgent !== null
         ? ((
             await loadAgentBot(
               params.tenantId,
               params.instanceId,
-              rt.agentId,
+              commandAgent.agentId,
               base,
             )
           )?.chatwootAgentBotId ?? null)
@@ -2740,8 +2754,8 @@ export async function processChatwootDelivery(
       emitCommandDropped({
         tenantId: params.tenantId,
         conversationRowId: mirror.conversationRowId,
-        agentId: rt?.agentId ?? null,
-        inboxRowId: rt?.inboxId ?? mirror.inboxRowId,
+        agentId: commandAgent?.agentId ?? null,
+        inboxRowId: commandAgent?.inboxId ?? mirror.inboxRowId,
         command,
         routeBot: params.agentBotId,
         drop:

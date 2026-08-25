@@ -17,6 +17,8 @@ describe("GET /v1/metrics/kpis response contract", () => {
     involvementRate: 0.8,
     resolutionRate: 0.125,
     automationRate: 0.1,
+    firstResponseSeconds: 42.5,
+    firstResponseSampled: 6,
   };
   const app = new Elysia().get("/kpis", () => ({ instance: "i", kpis }), {
     // The route's real declaration: error statuses only, no 200 schema.

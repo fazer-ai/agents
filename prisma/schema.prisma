@@ -493,6 +493,25 @@ model Conversation {
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.
   lastInboundAt          DateTime? @map("last_inbound_at")
+  // Attendance watermarks: the two ends of a human answer, mirrored from the same events the
+  // inbound watermark is (message_created, never message_updated), so the analytics side can ask
+  // how long a customer waited without reading a message body or paying for a model.
+  //
+  // firstInboundAt / firstHumanReplyAt are SET ONCE and never cleared: they anchor the
+  // conversation's first-response time, which is a property of the attendance and does not change
+  // because the dialogue continued. lastHumanReplyAt always advances, and is the human counterpart
+  // of lastInboundAt.
+  //
+  // The author is `isNewHumanAgentMessage` (an outgoing, non-private, non-reaction message whose
+  // sender is a `user`) — the SAME predicate the memory ingestion uses, so "the team answered" means
+  // one thing in this codebase. Our own bot's replies are deliberately excluded: they are already
+  // counted through LlmUsage, and folding them in here would make an automated answer read as a
+  // human response time.
+  //
+  // NULL on any conversation whose first inbound / first human reply predates this column.
+  firstInboundAt         DateTime? @map("first_inbound_at")
+  firstHumanReplyAt      DateTime? @map("first_human_reply_at")
+  lastHumanReplyAt       DateTime? @map("last_human_reply_at")
   // Watermark for follow-up single-shot semantics: set after each follow-up (sent or silenced).
   // Another follow-up can only fire once the client speaks again (lastInboundAt > lastFollowUpAt).
   // NULL = no follow-up has ever been attempted for this conversation.

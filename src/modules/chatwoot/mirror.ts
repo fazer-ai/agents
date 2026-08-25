@@ -5,7 +5,7 @@ import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
-import { isNewIncomingMessage } from "./normalize";
+import { isNewHumanAgentMessage, isNewIncomingMessage } from "./normalize";
 import { decideConversationWrites, type StatePayload } from "./state-order";
 import type { NormalizedChatwootEvent } from "./types";
 
@@ -107,6 +107,14 @@ export async function mirrorChatwootEvent(
       ? (newLastEventAt ?? now)
       : null;
 
+  // The human counterpart, from the same event class and on the same clock. Deliberately NOT
+  // suppressed by `suppressInboundWatermark`: that flag is about a customer's control command not
+  // counting as engagement, and an operator's reply is engagement whatever the customer typed
+  // before it.
+  const humanReplyAt = isNewHumanAgentMessage(n)
+    ? (newLastEventAt ?? now)
+    : null;
+
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     const contactId = await upsertContact(
       db,
@@ -138,6 +146,10 @@ export async function mirrorChatwootEvent(
           status: true,
           resolvedBy: true,
           resolvedByAt: true,
+          // Read to keep the two "first" watermarks set-once: Prisma has no write-if-null, and a
+          // conditional UPDATE per event would serialize on a row this function already holds.
+          firstInboundAt: true,
+          firstHumanReplyAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -219,6 +231,9 @@ export async function mirrorChatwootEvent(
             chatwootStatusAt: decision.statusAt,
             chatwootAssigneeAt: decision.assigneeAt,
             lastInboundAt: inboundAt,
+            firstInboundAt: inboundAt,
+            firstHumanReplyAt: humanReplyAt,
+            lastHumanReplyAt: humanReplyAt,
             ...(n.customAttributes
               ? {
                   customAttributes: n.customAttributes as Prisma.InputJsonValue,
@@ -292,6 +307,13 @@ export async function mirrorChatwootEvent(
             ? { chatwootAssigneeAt: decision.assigneeAt }
             : {}),
           ...(inboundAt != null ? { lastInboundAt: inboundAt } : {}),
+          ...(inboundAt != null && existing.firstInboundAt == null
+            ? { firstInboundAt: inboundAt }
+            : {}),
+          ...(humanReplyAt != null ? { lastHumanReplyAt: humanReplyAt } : {}),
+          ...(humanReplyAt != null && existing.firstHumanReplyAt == null
+            ? { firstHumanReplyAt: humanReplyAt }
+            : {}),
           // NOTE: The bags are ASSIGNED (the payload always ships the whole jsonb), but only when the
           // event carried one: a payload without them must not wipe the stored snapshot.
           ...(decision.unversioned && n.customAttributes

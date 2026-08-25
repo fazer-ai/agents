@@ -237,6 +237,17 @@ export interface DashboardKpis {
   involvementRate: number;
   resolutionRate: number;
   automationRate: number;
+  // MEDIAN seconds between the customer's first message and the team's first reply, over the
+  // conversations that have both watermarks. Median and not mean: one conversation opened on a
+  // Friday night and answered on Monday moves a mean by hours and says nothing about the week.
+  //
+  // This is the only KPI here that does not go through LlmUsage, and it is the only one that still
+  // answers on an inbox the agent never touched. NULL when no conversation in the window carries
+  // both watermarks — which is every conversation that started before they existed, hence the
+  // sample count beside it: a median over four conversations is not a service level, and the caller
+  // has to be able to tell that apart from a median over four hundred.
+  firstResponseSeconds: number | null;
+  firstResponseSampled: number;
 }
 
 export async function getKpis(
@@ -286,12 +297,37 @@ export async function getKpis(
         }
       }
     }
+    // Raw SQL for percentile_cont (no Prisma builder), inside the scoped tx so RLS fences the rows —
+    // never filter tenant_id by hand. EPOCH of the difference: both columns are mirrored from the
+    // same Chatwoot clock (`last_activity_at`), so the subtraction is between two readings of one
+    // source rather than across two.
+    const [responseRow] = await db.$queryRaw<
+      { median: number | null; sampled: number }[]
+    >(Prisma.sql`
+      SELECT percentile_cont(0.5) WITHIN GROUP (
+               ORDER BY EXTRACT(EPOCH FROM (first_human_reply_at - first_inbound_at))
+             )::float8 AS median,
+             COUNT(*)::int AS sampled
+      FROM conversations
+      WHERE first_inbound_at IS NOT NULL
+        AND first_human_reply_at IS NOT NULL
+        -- A reply cannot precede the message it answers: a clock skew or a conversation whose
+        -- inbound watermark was cleared would otherwise contribute a negative "response time".
+        AND first_human_reply_at >= first_inbound_at
+        AND (${filter.since ?? null}::timestamptz IS NULL OR created_at >= ${filter.since ?? null})`);
+    const sampled = Number(responseRow?.sampled ?? 0);
+
     return {
       totalConversations,
       involved,
       resolvedByBot,
       handoff,
       resolvedBeforeTracking,
+      firstResponseSeconds:
+        sampled > 0 && responseRow?.median != null
+          ? Number(responseRow.median)
+          : null,
+      firstResponseSampled: sampled,
       involvementRate:
         totalConversations > 0 ? involved / totalConversations : 0,
       resolutionRate: involved > 0 ? resolvedByBot / involved : 0,

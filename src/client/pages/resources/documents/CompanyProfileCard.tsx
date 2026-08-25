@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Card, FormField, Input, useToast } from "@/client/components";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import {
@@ -67,6 +68,11 @@ export function CompanyProfileCard({
   // an unsaved edit and a click on another tab — or a tenant switch, which is a full reload. The
   // same `companyChanges` the save sends is what "unsaved" means here, so the two cannot disagree.
   const dirty = Object.keys(companyChanges(form)).length > 0;
+  // The six patch keys ARE the six names the server refuses by: `updateCompanySettings` names the key
+  // of the patch it rejected, and that key was chosen to be this form's input name. Declared from the
+  // same constant the inputs are rendered from, so a seventh field cannot be added to one and not the
+  // other.
+  const refusal = useFieldRefusal(FIELDS);
   useNavGuard(dirty);
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -127,14 +133,19 @@ export function CompanyProfileCard({
       if (error || !data) {
         // The server's own words when it sent any: a letterhead field is refused for a character the
         // document fonts cannot print, and the refusal NAMES the field and the character. Six inputs
-        // and a generic sentence leave the operator hunting for which one.
-        showToast(
-          apiErrorMessage(error) ||
-            t("documents.company.saveError", "Could not save."),
-          "error",
+        // and a generic sentence leave the operator hunting for which one — and a toast that names
+        // the field still makes them count down the form to find it.
+        //
+        // A sentence back means the refusal is about nothing this form renders (or there was no
+        // server at all); null means it is already on the control and repeating it would be noise.
+        const toast = refusal.capture(
+          error,
+          t("documents.company.saveError", "Could not save."),
         );
+        if (toast) showToast(toast, "error");
         return;
       }
+      refusal.clear();
       // The text is now stored, so it becomes the baseline — see afterCompanySave. Anything typed
       // while the request was in flight stays, and stays unsaved.
       // Computed from the ref, not from the closed-over `form`: the operator can type during the
@@ -246,15 +257,19 @@ export function CompanyProfileCard({
           they all get the short one's width. */}
       <div className="grid gap-3">
         {FIELDS.map((field) => (
-          <FormField key={field} label={label[field]}>
+          <FormField key={field} label={label[field]} error={refusal.at(field)}>
             <Input
               value={draft[field]}
-              onChange={(e) =>
+              onChange={(e) => {
+                // The operator has acted on what the message asked for, so the mark comes off before
+                // the next save answers. Leaving it would keep a refusal on screen about a value the
+                // server has not seen.
+                refusal.clear(field);
                 setForm((current) => ({
                   ...current,
                   draft: { ...current.draft, [field]: e.target.value },
-                }))
-              }
+                }));
+              }}
             />
           </FormField>
         ))}

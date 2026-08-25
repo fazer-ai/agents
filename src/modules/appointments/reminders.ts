@@ -423,10 +423,13 @@ export async function appointmentReminderHandler(
   if (isRepairableNudgeRefusal(outcome)) {
     const retry = nextNudgeRetry(job.payload);
     if (retry.retry) {
+      // Patched, never replaced: the per-event cancel merges its tombstone onto this row without
+      // bumping the claim token, so writing back the claim-time snapshot would pass the compare-and-set
+      // and un-cancel an appointment the operator already cancelled.
       return {
         outcome: "reschedule",
         runAt: retry.runAt,
-        payload: { ...job.payload, nudgeRetries: retry.attempt },
+        payloadPatch: { nudgeRetries: retry.attempt },
       };
     }
     logger.warn(

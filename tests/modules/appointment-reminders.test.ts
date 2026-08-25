@@ -8,6 +8,7 @@ import { DATA_FENCE, renderNudge } from "@/graph/nudge";
 import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
 import {
   appointmentReminderHandler,
+  cancelAppointmentReminders,
   cancelThreadAppointmentReminders,
   computeReminderJobs,
   enqueueAppointmentReminders,
@@ -20,7 +21,12 @@ import {
   readAppointmentReminderConfig,
 } from "@/modules/appointments/settings";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import type { ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
+import {
+  type ClaimedJob,
+  type enqueueJob,
+  jobRetired,
+  rescheduleJob,
+} from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 describe("normalizeOffsets", () => {
@@ -454,9 +460,76 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
 
     expect(result.outcome).toBe("reschedule");
     if (result.outcome === "reschedule") {
-      expect(result.payload).toMatchObject({ nudgeRetries: 1 });
+      expect(result.payloadPatch).toEqual({ nudgeRetries: 1 });
     }
     expect(s.sent).toEqual([]);
+  });
+
+  // The review of #281 caught this one: the retry above writes to a row another writer may stamp
+  // while the handler runs, and the per-event cancel is the writer that does it WITHOUT bumping the
+  // claim token (it merges the tombstone onto rows of any status). A payload written back from the
+  // claim-time snapshot therefore passes the compare-and-set and un-cancels the appointment.
+  test("a cancel landing during the retry survives the reschedule", async () => {
+    const eventId = `evt-cancel-race-${process.pid}`;
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: `reminder:${eventId}:60`,
+        status: "CLAIMED",
+        runAt: new Date(),
+        payload: { threadId, eventId, calendarId: "primary" },
+      },
+    });
+    const job: ClaimedJob = {
+      id: row.id,
+      tenantId,
+      kind: "APPOINTMENT_REMINDER",
+      payload: row.payload as Record<string, unknown>,
+      attempts: 0,
+      claimSeq: row.claimSeq,
+    };
+    const s = stubClient();
+
+    const result = await withUnresolvableCredential(() =>
+      appointmentReminderHandler(job, appDb, {
+        makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      }),
+    );
+    expect(result.outcome).toBe("reschedule");
+    if (result.outcome !== "reschedule") return;
+    // The claim-time payload is never written back, which is what makes the merge below possible.
+    expect(result.payload).toBeUndefined();
+    expect(result.payloadPatch).toEqual({ nudgeRetries: 1 });
+
+    // The operator cancels the appointment in the window the handler just spent. Neither the status
+    // nor the claim token moves, so the worker's compare-and-set below still matches.
+    await cancelAppointmentReminders(tenantId, eventId, appDb);
+
+    const { applied } = await rescheduleJob(
+      tenantId,
+      job.id,
+      job.claimSeq,
+      result.runAt,
+      result.payload,
+      appDb,
+      result.payloadPatch,
+    );
+    expect(applied).toBe(true);
+
+    const after = await suDb.schedulerJob.findUniqueOrThrow({
+      where: { id: row.id },
+      select: { payload: true, status: true },
+    });
+    const payload = after.payload as Record<string, unknown>;
+    // Both survive: the counter this run carried forward, and the tombstone it did not write.
+    expect(payload.nudgeRetries).toBe(1);
+    expect(payload.cancelledAt).toBeTruthy();
+    // And the next run stands down on it rather than reminding about a cancelled appointment.
+    expect(await jobRetired({ ...job, payload }, appDb)).toBe(true);
   });
 
   test("the retry is bounded: the reminder is dropped once the attempts run out", async () => {

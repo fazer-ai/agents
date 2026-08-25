@@ -657,7 +657,34 @@ export async function rescheduleJob(
   runAt: Date,
   payload?: Record<string, unknown>,
   base: PrismaClient = basePrisma,
+  // Merged into the row's CURRENT payload (jsonb `||`) inside the same compare-and-set, instead of
+  // replacing it. The difference matters on a row another writer stamps while the handler runs: the
+  // per-event reminder cancel merges `cancelledAt` onto rows of ANY status without bumping the claim
+  // token, so a replacement written from the claim-time snapshot passes the CAS and erases the
+  // tombstone, re-arming a cancelled reminder (issue #281's review). A handler that only needs to
+  // carry a counter forward has no business overwriting what it never read.
+  payloadPatch?: Record<string, unknown>,
 ): Promise<{ applied: boolean }> {
+  if (payloadPatch !== undefined) {
+    const patch = JSON.stringify(payloadPatch);
+    const count = await runScopedOn(
+      base,
+      sysCtx(tenantId),
+      (db) =>
+        db.$executeRaw`
+        UPDATE scheduler_jobs
+           SET status = 'PENDING'::"SchedulerJobStatus",
+               run_at = ${runAt},
+               last_error = NULL,
+               payload = payload || ${patch}::jsonb,
+               updated_at = now()
+         WHERE id = ${id}
+           AND tenant_id = ${tenantId}
+           AND status = 'CLAIMED'
+           AND claim_seq = ${claimSeq}`,
+    );
+    return { applied: count > 0 };
+  }
   const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
       where: { id, status: "CLAIMED", claimSeq },

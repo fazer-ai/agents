@@ -26,8 +26,15 @@ import {
 export type JobResult =
   | { outcome: "done" }
   // `payload`, when present, REPLACES the job's payload on reschedule (e.g. a follow-up advancing its
-  // step index on the same row). Omit it to keep the current payload.
-  | { outcome: "reschedule"; runAt: Date; payload?: Record<string, unknown> }
+  // step index on the same row). Omit it to keep the current payload. `payloadPatch` MERGES instead,
+  // which is what a handler wants when it only carries a field forward and another writer may have
+  // stamped the row while it ran (see rescheduleJob). Pass at most one of the two.
+  | {
+      outcome: "reschedule";
+      runAt: Date;
+      payload?: Record<string, unknown>;
+      payloadPatch?: Record<string, unknown>;
+    }
   | { outcome: "fail"; error?: string };
 
 export type JobHandler = (
@@ -168,6 +175,7 @@ export async function runClaimed(
       result.runAt,
       result.payload,
       base,
+      result.payloadPatch,
     );
     if (!applied) supersededWarning(job, "reschedule");
   } else {

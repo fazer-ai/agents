@@ -301,6 +301,41 @@ export interface FlushDebounceParams {
   deps?: RuntimeDeps;
 }
 
+// A gate exit consumed the burst without a turn, and the ledger has to hear it too.
+//
+// These three exits decide before any Chatwoot fetch, so the burst is not known message by message —
+// what IS known is the watermark they advance, which says everything up to `last` is handled. A row
+// still non-terminal below that is one whose delivery died before arming this very flush, and left
+// unretired it becomes a reported loss for a message the product deliberately declined to answer
+// (issue #228).
+//
+// Best-effort: a miss costs a line in the loss list, never a reply.
+async function settleGateExit(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  upToMessageId: number;
+  base: PrismaClient;
+  label: string;
+}): Promise<void> {
+  try {
+    await retireCoveredDeliveries({
+      tenantId: params.tenantId,
+      instanceId: params.instanceId,
+      conversationId: params.conversationId,
+      upToMessageId: params.upToMessageId,
+      base: params.base,
+    });
+  } catch (e) {
+    logger.warn(
+      "%s: could not retire the deliveries the gate consumed (conv=%s): %s",
+      params.label,
+      String(params.conversationId),
+      err(e),
+    );
+  }
+}
+
 export async function flushDebounceJob(
   params: FlushDebounceParams,
 ): Promise<JobResult> {
@@ -429,6 +464,14 @@ export async function flushDebounceJob(
         toMessageId: last,
         base,
       });
+      await settleGateExit({
+        tenantId,
+        instanceId,
+        conversationId,
+        upToMessageId: last,
+        base,
+        label: "debounce flush",
+      });
     }
     return { outcome: "done" };
   }
@@ -492,6 +535,14 @@ export async function flushDebounceJob(
           conversationDbId: ctx.convDbId,
           toMessageId: last,
           base,
+        });
+        await settleGateExit({
+          tenantId,
+          instanceId,
+          conversationId,
+          upToMessageId: last,
+          base,
+          label: "debounce flush",
         });
       }
       return { outcome: "done" };
@@ -563,6 +614,14 @@ export async function flushDebounceJob(
           conversationDbId: ctx.convDbId,
           toMessageId: last,
           base,
+        });
+        await settleGateExit({
+          tenantId,
+          instanceId,
+          conversationId,
+          upToMessageId: last,
+          base,
+          label: "debounce flush",
         });
       }
       return { outcome: "done" };

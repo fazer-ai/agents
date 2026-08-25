@@ -27,12 +27,15 @@
 // and that retirement are both in ./delivery-sweep.ts.
 
 export interface StrandedDeliveryRow {
-  // Wall clock the CURRENT attempt started at: when the row was claimed, or when it was received if
-  // nothing has claimed it. A row is not stranded because it is old, it is stranded because nothing
-  // has moved it for longer than the longest legitimate delivery — and a redelivery is allowed to
-  // claim a row left stranded on PENDING, so an attempt that started a minute ago must not be judged
-  // by a receipt from an hour ago.
-  attemptStartedAt: Date;
+  // Which non-terminal state it is stuck in. Both strand, but only one of them carries a promise
+  // about the other columns (see `claimedAt`).
+  status: "PENDING" | "PROCESSING";
+  receivedAt: Date;
+  // When the CURRENT attempt claimed the row, or null when nothing has. A row is not stranded
+  // because it is old, it is stranded because nothing has moved it for longer than the longest
+  // legitimate delivery — and a redelivery is allowed to claim a row left stranded on PENDING, so an
+  // attempt that started a minute ago must not be judged by a receipt from an hour ago.
+  claimedAt: Date | null;
   // The INBOUND message this delivery carried, when it carried one. Null on every event that is not
   // a customer message — a conversation update, the bot's own reply coming back around — and those
   // are the rows where nothing was lost no matter how long they sat.
@@ -52,7 +55,8 @@ export type StrandedVerdict =
   // Stranded, but carried no inbound message. Terminal and benign: nothing a customer sent is at
   // stake, so it must NOT appear in the list of lost messages.
   | "no-message"
-  // Stranded with a customer message nothing ever covered. Nothing will answer it.
+  // Stranded with a customer message nothing ever covered, or stranded by a build whose columns
+  // cannot be read. Nothing will answer it.
   //
   // There is no "already covered" verdict, and its absence is the design rather than an omission: a
   // message a later turn ran over never reaches this function at all, because that turn retired its
@@ -63,8 +67,19 @@ export function classifyStrandedDelivery(
   row: StrandedDeliveryRow,
   policy: StrandedDeliveryPolicy,
 ): StrandedVerdict {
-  const age = policy.now.getTime() - row.attemptStartedAt.getTime();
+  const age =
+    policy.now.getTime() - (row.claimedAt ?? row.receivedAt).getTime();
   if (age < policy.staleAfterMs) return "in-flight";
+  // A row PROCESSING without a claim stamp was claimed by a build that predates the column, which
+  // during a rolling deploy is the container still serving while the new one migrates. Its nulls are
+  // UNRECORDED, not "nothing was there", so the question below cannot be asked of it: read the
+  // literal way, every message the old container lost would be closed as carrying none — the exact
+  // silence this sweep exists to remove, on the rows a deploy is most likely to strand.
+  //
+  // Only PROCESSING carries that promise. tx1 stamps the claim on every row this build works, so a
+  // missing stamp there is provenance; on PENDING nothing has claimed yet and there is nothing to
+  // infer from its absence.
+  if (row.status === "PROCESSING" && row.claimedAt === null) return "lost";
   if (row.inboundMessageId === null) return "no-message";
   return "lost";
 }

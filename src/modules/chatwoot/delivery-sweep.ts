@@ -78,8 +78,15 @@ export async function retireCoveredDeliveries(params: {
   instanceId: bigint;
   // Chatwoot display id, which is what the ledger column holds.
   conversationId: number;
-  // Chatwoot ids of the messages the turn ran over.
-  messageIds: number[];
+  // Which messages the decision covered, in the shape the caller can actually state it.
+  //
+  // `messageIds` is the burst a turn ran over, known exactly because the thread was re-fetched.
+  // `upToMessageId` is the gate exits, which decide before any fetch and can only say what the
+  // watermark they advance says: everything up to this id is handled. A range is sound HERE, where
+  // it is a write at the moment of the decision, and would not be as a read afterwards — that
+  // difference is the whole reason the sweep no longer reads watermarks at all.
+  messageIds?: number[];
+  upToMessageId?: number;
   base: PrismaClient;
 }): Promise<number> {
   const { count } = await runScopedOn(
@@ -90,7 +97,10 @@ export async function retireCoveredDeliveries(params: {
         where: {
           chatwootInstanceId: params.instanceId,
           conversationId: params.conversationId,
-          inboundMessageId: { in: params.messageIds },
+          inboundMessageId:
+            params.messageIds !== undefined
+              ? { in: params.messageIds }
+              : { lte: params.upToMessageId, not: null },
           // PROCESSING ONLY, and never PENDING. A PENDING row has not been claimed yet, and this
           // write cannot tell "abandoned before the claim" from "claimed a millisecond from now":
           // the ack is spent before the row is even inserted, so a burst re-read from Chatwoot can
@@ -130,14 +140,6 @@ interface StrandedRow {
   claimedAt: Date | null;
   conversationId: number | null;
   inboundMessageId: number | null;
-}
-
-// The clock this row is judged by: when the CURRENT attempt started. A redelivery is allowed to
-// claim a row stranded on PENDING, so a live attempt can begin long after the receipt — dated to the
-// receipt it looks abandoned the instant it starts, and the sweep would report a lost message while
-// the process answering it is still running.
-function attemptStartedAt(row: StrandedRow): Date {
-  return row.claimedAt ?? row.receivedAt;
 }
 
 export interface SweepCounts {
@@ -281,13 +283,10 @@ export async function sweepStrandedDeliveries(
   )) as StrandedRow[];
 
   for (const row of rows) {
-    const verdict = classifyStrandedDelivery(
-      {
-        attemptStartedAt: attemptStartedAt(row),
-        inboundMessageId: row.inboundMessageId,
-      },
-      { now, staleAfterMs: STALE_AFTER_MS },
-    );
+    const verdict = classifyStrandedDelivery(row, {
+      now,
+      staleAfterMs: STALE_AFTER_MS,
+    });
     // Unreachable through the query above, which already excluded every row a live attempt could
     // still be working. Kept because the RULE is the classifier's, not the query's: they are two
     // statements of one threshold, and this is where they would be caught disagreeing rather than

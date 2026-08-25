@@ -26,10 +26,19 @@ const NOW = new Date("2026-08-25T12:00:00.000Z");
 function verdict(row: {
   ageMs: number;
   inboundMessageId: number | null;
+  status?: "PENDING" | "PROCESSING";
+  // Whether the age above is a CLAIM (the default, the common case) or only a receipt.
+  claimed?: boolean;
+  // When the two clocks disagree: how long ago the row was RECEIVED, against `ageMs` as the claim.
+  receivedAgoMs?: number;
 }): StrandedVerdict {
+  const at = new Date(NOW.getTime() - row.ageMs);
+  const claimed = row.claimed ?? true;
   return classifyStrandedDelivery(
     {
-      attemptStartedAt: new Date(NOW.getTime() - row.ageMs),
+      status: row.status ?? "PROCESSING",
+      receivedAt: new Date(NOW.getTime() - (row.receivedAgoMs ?? row.ageMs)),
+      claimedAt: claimed ? at : null,
       inboundMessageId: row.inboundMessageId,
     },
     { now: NOW, staleAfterMs: STALE_MS },
@@ -41,6 +50,9 @@ describe("classifying a delivery stranded non-terminal", () => {
     name: string;
     ageMs: number;
     inboundMessageId: number | null;
+    status?: "PENDING" | "PROCESSING";
+    claimed?: boolean;
+    receivedAgoMs?: number;
     expected: StrandedVerdict;
   }> = [
     {
@@ -62,6 +74,26 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "lost",
     },
     {
+      // The two clocks, disagreeing. A redelivery is allowed to claim a row left stranded on
+      // PENDING, so an attempt that started a minute ago must not be judged by a receipt from hours
+      // ago — dated to the receipt, the sweep would mark a live delivery DEAD and page somebody
+      // while the process answering it is still running.
+      name: "an old receipt with a fresh claim is the fresh one that counts",
+      ageMs: 60_000,
+      receivedAgoMs: STALE_MS * 4,
+      inboundMessageId: 50,
+      expected: "in-flight",
+    },
+    {
+      // And the claim is a restart of the same fence, not a shield: an attempt that claimed and then
+      // died is exactly what this exists for.
+      name: "once the CLAIM itself goes stale the row is reported",
+      ageMs: STALE_MS * 2,
+      receivedAgoMs: STALE_MS * 4,
+      inboundMessageId: 50,
+      expected: "lost",
+    },
+    {
       // The order is the decision: a fresh row is left alone whatever it carries, because something
       // may still be working it and a verdict now would be about a live delivery.
       name: "fresh outranks the question about the message",
@@ -75,6 +107,27 @@ describe("classifying a delivery stranded non-terminal", () => {
       name: "carried no inbound message: nothing was lost",
       ageMs: STALE_MS * 3,
       inboundMessageId: null,
+      expected: "no-message",
+    },
+    {
+      // A rolling deploy: the container still serving does not stamp the claim, and does not fill
+      // either id either. Its nulls are UNRECORDED, so reading them literally would close every
+      // message that container lost as "carried none" — on the rows a deploy is most likely to
+      // strand.
+      name: "PROCESSING with no claim stamp is a build we cannot read, not an empty delivery",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      status: "PROCESSING",
+      claimed: false,
+      expected: "lost",
+    },
+    {
+      // PENDING makes no such promise: nothing has claimed it, so the missing stamp says nothing.
+      name: "PENDING with no claim stamp and no message is still just an empty delivery",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      status: "PENDING",
+      claimed: false,
       expected: "no-message",
     },
     {
@@ -96,7 +149,13 @@ describe("classifying a delivery stranded non-terminal", () => {
   for (const c of cases) {
     test(c.name, () => {
       expect(
-        verdict({ ageMs: c.ageMs, inboundMessageId: c.inboundMessageId }),
+        verdict({
+          ageMs: c.ageMs,
+          inboundMessageId: c.inboundMessageId,
+          status: c.status,
+          claimed: c.claimed,
+          receivedAgoMs: c.receivedAgoMs,
+        }),
       ).toBe(c.expected);
     });
   }

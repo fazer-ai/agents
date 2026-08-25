@@ -685,6 +685,82 @@ describe.skipIf(!dbUp)("debounce", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: stranded.id } });
   });
 
+  test("a flush stopped by a closed gate settles the ledger too", async () => {
+    // The gate exits decide before any Chatwoot fetch: they advance the watermark from the payload's
+    // own lastMessageId and return. A delivery that armed this flush and then died is sitting
+    // PROCESSING, and left there it becomes a reported loss for a message the product deliberately
+    // declined to answer — a human holds the conversation, and reporting "nobody answered" about it
+    // is exactly the wrong thing to page someone with.
+    //
+    // The exit knows the burst only as "everything up to this id", which is what the watermark it
+    // writes says, so the retirement takes the same range. Sound as a WRITE at the moment of the
+    // decision, in a way reading a watermark afterwards never was.
+    const convId = 886;
+    await seedConversation(convId, { assigneeType: "User" });
+    const stranded = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-gate-exit-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: 3,
+      },
+      select: { id: true },
+    });
+    const later = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-gate-beyond-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        // ABOVE the payload's lastMessageId: it arrived after the arm, so this gate exit says
+        // nothing about it.
+        inboundMessageId: 9,
+      },
+      select: { id: true },
+    });
+    const out = await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 5 }),
+      base: appDb,
+      deps: {
+        makeModel: () => {
+          throw new Error("the gate must close before any model call");
+        },
+        makeClient: async () => {
+          throw new Error("the gate must close before any Chatwoot fetch");
+        },
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: stranded.id },
+      select: { status: true },
+    });
+    expect(row.status).toBe("PROCESSED");
+    // And ONLY up to what the watermark says. A message that arrived after the arm is not in the
+    // payload, so the gate never decided about it — retiring its row would hide a real loss behind a
+    // decision that was never made about it.
+    const beyond = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: later.id },
+      select: { status: true },
+    });
+    expect(beyond.status).toBe("PROCESSING");
+
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { id: { in: [stranded.id, later.id] } },
+    });
+  });
+
   test("a flush does not consume a PENDING row it has not been claimed from", async () => {
     // The retirement is a blind write into a state machine somebody else owns, and PENDING is the
     // state where that owner has not arrived yet. The ack is spent before the ledger row is even

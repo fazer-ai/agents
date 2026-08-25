@@ -454,11 +454,16 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   test("closes a strand that carried no inbound message", async () => {
     // A conversation update, or the bot's own reply coming back around as a `message_created`.
     // Neither is a customer waiting.
+    //
+    // CLAIMED, because that is what a row this build produced looks like: tx1 stamps every one it
+    // works. The null inbound id can only be read as "nothing was there" on a row whose build was
+    // recording it — see the next test for the row where it cannot.
     const convId = 8806;
     const conv = await seedConversation(convId);
     const rowId = await seedStrandedDelivery({
       conversationId: convId,
       ageMs: STALE_MS * 2,
+      claimedAgoMs: STALE_MS * 2,
       inboundMessageId: null,
       event: "conversation_updated",
     });
@@ -468,6 +473,33 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(counts.lost).toBe(0);
     expect((await statusOf(rowId)).status).toBe("PROCESSED");
     expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
+  });
+
+  test("reports a row the OLD container stranded during a rolling deploy", async () => {
+    // The migration closes what exists when it runs, and then the container still serving keeps
+    // acking webhooks until it is stopped. That build writes neither id and does not stamp the
+    // claim, so a row it strands carries nothing but its status — and read literally, every message
+    // it lost would be closed as "carried none". The missing claim stamp is the tell: tx1 writes one
+    // on every row THIS build works, so a PROCESSING row without it was claimed by a build whose
+    // nulls mean "unrecorded".
+    const rowId = await seedStrandedDelivery({
+      conversationId: null,
+      ageMs: STALE_MS * 2,
+      // No claimedAgoMs: the old tx1 had no column to stamp.
+      inboundMessageId: null,
+      event: "message_created",
+    });
+
+    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(counts.lost).toBe(1);
+    expect(counts.closed).toBe(0);
+    expect((await statusOf(rowId)).status).toBe("DEAD");
+    // Filed without a conversation, because that is all the row can say.
+    const lines = await unscopedDeliveryLines();
+    expect(lines.length).toBeGreaterThan(0);
+
+    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
   test("reports a loss even when the mirror does not know the conversation", async () => {

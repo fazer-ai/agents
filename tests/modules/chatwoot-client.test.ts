@@ -498,4 +498,17 @@ describe("ChatwootClient", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
   });
+
+  test("updateContact can clear an identifier with null", async () => {
+    // The unique index is `(identifier, account_id)` with no partial predicate, so an empty string is
+    // a value like any other and a second contact cleared that way would collide with the first.
+    const { fetchImpl, calls } = stub(200, {});
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.updateContact(7, { identifier: null });
+    expect(calls[0]?.method).toBe("PUT");
+    expect(calls[0]?.body).toEqual({ identifier: null });
+  });
 });

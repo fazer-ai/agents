@@ -213,19 +213,27 @@ async function inboxAgentRuntime(
   });
 }
 
-// The mode of the agent bound to a conversation's OWN (mirrored) inbox, or null when nothing
-// resolves. Deliberately keyed by the conversation rather than by a payload inbox id: it is the
-// reading `maybeConsumeCommandOrGate` already uses for the test-mode gate, and it exists so the
-// question "is this command active?" and the gate that silences the conversation cannot be answered
-// by two different rows (issue #270). Only ever called on the path where the payload resolved
-// nothing, so the common delivery pays for no extra query.
+// The mode of the agent bound to a conversation's OWN (mirrored) inbox — but ONLY when that agent is
+// also the persona whose route this delivery arrived on. Deliberately keyed by the conversation
+// rather than by a payload inbox id: it is the reading `maybeConsumeCommandOrGate` already uses for
+// the test-mode gate, and it exists so the question "is this command active?" and the gate that
+// silences the conversation cannot be answered by two different rows (issue #270).
+//
+// The route check is what keeps that safe. A payload that names no inbox leaves the mirrored row as
+// the only thing that can name an agent, and a mirrored row can be out of date — so without it a
+// command could go active for a persona this delivery never reached, fail the route fence
+// downstream, and be consumed without running and without an acknowledgement. Requiring the match
+// means the fallback either applies to this exact route or does not apply at all, which is the
+// behaviour that was there before it. Only ever called on the path where the payload named no inbox,
+// so the common delivery pays for no extra query.
 async function conversationAgentMode(
   tenantId: bigint,
   instanceId: bigint,
   chatwootConversationId: number | null,
+  agentBotId: number | null,
   base: PrismaClient,
 ): Promise<string | null> {
-  if (chatwootConversationId == null) return null;
+  if (chatwootConversationId == null || agentBotId == null) return null;
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     const conv = await db.conversation.findUnique({
       where: {
@@ -243,6 +251,17 @@ async function conversationAgentMode(
       select: { agentId: true },
     });
     if (!inbox?.agentId) return null;
+    const bot = await db.chatwootAgentBot.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_agentId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId: inbox.agentId,
+        },
+      },
+      select: { chatwootAgentBotId: true },
+    });
+    if (bot?.chatwootAgentBotId !== agentBotId) return null;
     const agent = await db.agent.findUnique({
       where: { id: inbox.agentId },
       select: { mode: true },
@@ -2648,6 +2667,7 @@ export async function processChatwootDelivery(
         params.tenantId,
         params.instanceId,
         n.conversationId,
+        params.agentBotId,
         base,
       );
     }

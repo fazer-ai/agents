@@ -456,4 +456,33 @@ describe.skipIf(!dbUp)("control commands: one reading of the agent", () => {
       posted.filter((p) => p.conversationId === 6009 && !p.private).length,
     ).toBeGreaterThan(0);
   });
+
+  test("the fallback does not fire on a route the conversation's own agent does not own", async () => {
+    // The payload names no inbox, so the mirrored conversation is the only thing that can name an
+    // agent — and it names the entry inbox's persona (BOT). This delivery arrived on the OTHER
+    // persona's route (BOT+1), so the row does not describe where it landed. Firing there would make
+    // the command active for a persona this delivery never reached, and the route fence downstream
+    // would then eat it without running it and without a word. Not applying is what main did.
+    const id = await seedConv(6010, entryInboxId);
+    const info = spyOn(logger, "info");
+    let lines: unknown[][] = [];
+    try {
+      await deliver(6010, null, "/teste", 11, BOT + 1);
+      lines = info.mock.calls.map((c) => [...c]);
+    } finally {
+      info.mockRestore();
+    }
+    const row = await suDb.conversation.findUnique({
+      where: { id },
+      select: { testActivatedAt: true },
+    });
+    expect(row?.testActivatedAt).toBeNull();
+    const line = lines.find((c) => String(c[0]).includes("not run"));
+    expect(line?.slice(1)).toEqual([
+      "teste",
+      "6010",
+      "unresolved",
+      String(BOT + 1),
+    ]);
+  });
 });

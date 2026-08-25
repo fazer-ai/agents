@@ -3,6 +3,7 @@
  * the rule under test, and the template hole is the shape the rule reads.
  */
 import { describe, expect, test } from "bun:test";
+import { expectWaiverLedger } from "@/tests/utils/ledger";
 
 // THE GUARD AGAINST THE NEXT REFUSAL THAT KNOWS A FIELD AND DOES NOT SAY SO.
 //
@@ -268,5 +269,12 @@ describe("a refusal that knows a field says so on the wire", () => {
     expect(
       topLevelArgs('`a, b`, 400, "k", { field, len: 1, max: 2 }, field'),
     ).toEqual(["`a, b`", "400", '"k"', "{ field, len: 1, max: 2 }", "field"]);
+  });
+
+  // The sweep skips any file named in the ledger, and the stale-entry rule only removes one that
+  // stopped matching, so a second file joins by being appended. Pinned at the one it was argued
+  // into. tests/utils/ledger.ts carries the measurement (issue #293).
+  test("the not-about-an-input ledger may only shrink", () => {
+    expectWaiverLedger("NOT_ABOUT_AN_INPUT", NOT_ABOUT_AN_INPUT, 1);
   });
 });

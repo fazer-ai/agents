@@ -6,6 +6,7 @@ import apiEn from "@/api/locales/en.json";
 import apiPt from "@/api/locales/pt-BR.json";
 import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
+import { expectWaiverLedger } from "@/tests/utils/ledger";
 
 // The guard for what `ErrorTranslationKey` (src/lib/errors.ts) cannot see.
 //
@@ -435,6 +436,15 @@ describe("the error catalog cannot be bypassed", () => {
     const dotted = [...API].filter((k) => k.split(".").length > 2);
     expect(dotted).toEqual([]);
   });
+
+  // The other direction of every waiver rule in this file, and the one none of them had: a ledger is
+  // subtracted from a set DERIVED from the tree, so appending to it both silences a new offender and
+  // satisfies the stale-waiver test. The size is the only fact the tree cannot supply.
+  // tests/utils/ledger.ts carries the measurement (issue #293).
+  test("the cast and legacy-token ledgers may only shrink", () => {
+    expectWaiverLedger("ALLOWED_CASTS", ALLOWED_CASTS, 0);
+    expectWaiverLedger("STORED_LEGACY_TOKENS", STORED_LEGACY_TOKENS, 3);
+  });
 });
 
 describe("both languages answer, and answer differently", () => {
@@ -735,6 +745,45 @@ describe("both languages answer, and answer differently", () => {
       (k) => pt[k] === en[k] && !ALLOWED_UNTRANSLATED.includes(`errors.${k}`),
     );
     expect(untranslated).toEqual([]);
+  });
+
+  // Same rule, same reason as the cast and legacy-token pin above.
+  test("the untranslated, keyless and say-less ledgers may only shrink", () => {
+    expectWaiverLedger("ALLOWED_UNTRANSLATED", ALLOWED_UNTRANSLATED, 0);
+    expectWaiverLedger("KEYLESS_BY_DESIGN", KEYLESS_BY_DESIGN, 1);
+    // PER EDITION, and the split is made by EXCLUSION rather than by two pins. Both ledgers hold
+    // entries inside `@full-only` blocks, waiving keys the Free extractor prunes, so waiver and key
+    // leave the Free tree together and the ledger is shorter there. Counting the entries every
+    // edition holds keeps one number right in all three trees.
+    //
+    // Not a second ledger to keep in sync by hand. A `@full-only` waiver missing from here leaves the
+    // full tree one OVER its pin, which is the same red as an append; and an entry listed here that
+    // is not actually marked stays in the Free ledger and leaves that tree one UNDER. The cheat this
+    // shape would otherwise invite — append to the ledger and to this list — is refused for the same
+    // reason: it only balances once the entry is genuinely inside a marker block.
+    //
+    // Runtime cannot answer this, which is what the shape above replaced: written as
+    // `IS_FREE ? 100 : 102` it failed in a derived Free tree, because the env var that flips
+    // `config.edition` is set by the Dockerfile and not by the test runner. Written with the markers
+    // inside the expression it passed everywhere and left the derived Free file unformatted, which
+    // `bun run lint` refuses in the public repo. Both measured.
+    const PRUNED_IN_FREE = [
+      "branding.faviconTitle",
+      "branding.logoTitle",
+      "unsupportedImageType",
+    ];
+    const inEveryEdition = (ledger: readonly string[]): readonly string[] =>
+      ledger.filter((k) => !PRUNED_IN_FREE.includes(k));
+    expectWaiverLedger(
+      "CLIENT_IDENTICAL_BY_DESIGN (excluding what Free prunes)",
+      inEveryEdition(CLIENT_IDENTICAL_BY_DESIGN),
+      100,
+    );
+    expectWaiverLedger(
+      "SAY_LESS_GRANDFATHERED (excluding what Free prunes)",
+      inEveryEdition(SAY_LESS_GRANDFATHERED),
+      25,
+    );
   });
 });
 

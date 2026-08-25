@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
+import { expectWaiverLedger } from "@/tests/utils/ledger";
 
 // A field whose stored value is clamped by its reader has to say so on the control, or the operator
 // meets the cap only in what the model receives. `maxLength` is the whole mechanism, which makes
@@ -51,6 +52,14 @@ describe("agent editor text caps", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+
+  // "Stays honest" below is one direction only: it removes an entry whose file or field is gone. The
+  // other one is what lets a new uncapped textarea ship, because both lists are subtracted from a set
+  // read out of the editor sources. tests/utils/ledger.ts, issue #293.
+  test("the ledgers this file waives with may only shrink", () => {
+    expectWaiverLedger("UNCLAMPED_FILES", UNCLAMPED_FILES, 2);
+    expectWaiverLedger("UNCLAMPED_FIELDS", UNCLAMPED_FIELDS, 2);
   });
 
   test("the allowlist itself stays honest (every entry still exists)", () => {

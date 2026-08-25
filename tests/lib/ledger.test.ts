@@ -27,6 +27,14 @@ describe("a waiver ledger is pinned to its size", () => {
     expect(() => expectWaiverLedger("L", { first: "why" }, 0)).toThrow();
   });
 
+  // A Set reaches `Object.keys` as an empty array, so a ledger written as one would report size 0
+  // and pass every pin above zero without comparing anything.
+  test("a Set is measured by its size, not by its enumerable keys", () => {
+    expect(() => expectWaiverLedger("L", new Set(["a", "b"]), 2)).not.toThrow();
+    expect(() => expectWaiverLedger("L", new Set(["a"]), 2)).toThrow();
+    expect(() => expectWaiverLedger("L", new Set(["a"]), 0)).toThrow();
+  });
+
   test("the failure names the ledger and says which way to fix it", () => {
     expect(() => expectWaiverLedger("SOME_LEDGER", ["a"], 0)).toThrow(
       /SOME_LEDGER is pinned at 0\. A waiver ledger may only shrink/,

@@ -21,12 +21,19 @@ import { expect } from "bun:test";
 // it does, which is the trade this accepts.
 export function expectWaiverLedger(
   name: string,
-  ledger: readonly unknown[] | Readonly<Record<string, unknown>>,
+  ledger:
+    | readonly unknown[]
+    | ReadonlySet<unknown>
+    | Readonly<Record<string, unknown>>,
   pinned: number,
 ): void {
+  // NOTE: a `Set` reaches `Object.keys` as `[]`, so a ledger written as one would report size 0 and
+  // pass every pin above zero silently. Two of the thirteen are Sets.
   const size = Array.isArray(ledger)
     ? ledger.length
-    : Object.keys(ledger).length;
+    : ledger instanceof Set
+      ? ledger.size
+      : Object.keys(ledger).length;
   expect(
     size,
     `${name} is pinned at ${pinned}. A waiver ledger may only shrink: if the sweep flagged something ` +

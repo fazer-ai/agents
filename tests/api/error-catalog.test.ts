@@ -751,38 +751,31 @@ describe("both languages answer, and answer differently", () => {
   test("the untranslated, keyless and say-less ledgers may only shrink", () => {
     expectWaiverLedger("ALLOWED_UNTRANSLATED", ALLOWED_UNTRANSLATED, 0);
     expectWaiverLedger("KEYLESS_BY_DESIGN", KEYLESS_BY_DESIGN, 1);
-    // PER EDITION, and the split is made by EXCLUSION rather than by two pins. Both ledgers hold
-    // entries inside `@full-only` blocks, waiving keys the Free extractor prunes, so waiver and key
-    // leave the Free tree together and the ledger is shorter there. Counting the entries every
-    // edition holds keeps one number right in all three trees.
+    // NOTE: PER EDITION, and the question is asked of the CATALOG. Both ledgers hold entries
+    // inside `@full-only` blocks, waiving keys the Free extractor prunes, so waiver and key leave
+    // that tree together: two entries from one ledger, one from the other.
     //
-    // Not a second ledger to keep in sync by hand. A `@full-only` waiver missing from here leaves the
-    // full tree one OVER its pin, which is the same red as an append; and an entry listed here that
-    // is not actually marked stays in the Free ledger and leaves that tree one UNDER. The cheat this
-    // shape would otherwise invite — append to the ledger and to this list — is refused for the same
-    // reason: it only balances once the entry is genuinely inside a marker block.
+    // Three cheaper signals were written first and every one of them is wrong somewhere, measured:
+    // `IS_FREE` reads "full" in a derived Free tree, because the env var that flips
+    // `config.edition` is set by the Dockerfile and not by the test runner; reading this file's own
+    // `@full-only` markers reads nothing in PRO, because the derivation strips the marker lines from
+    // both derived trees while keeping the Pro content; and a hand-kept list of the excluded names is
+    // a second waiver ledger, where appending to it and to the ledger balances the count in every
+    // tree. The catalog is not another proxy: these ledgers differ BECAUSE those keys do.
     //
-    // Runtime cannot answer this, which is what the shape above replaced: written as
-    // `IS_FREE ? 100 : 102` it failed in a derived Free tree, because the env var that flips
-    // `config.edition` is set by the Dockerfile and not by the test runner. Written with the markers
-    // inside the expression it passed everywhere and left the derived Free file unformatted, which
-    // `bun run lint` refuses in the public repo. Both measured.
-    const PRUNED_IN_FREE = [
-      "branding.faviconTitle",
-      "branding.logoTitle",
-      "unsupportedImageType",
-    ];
-    const inEveryEdition = (ledger: readonly string[]): readonly string[] =>
-      ledger.filter((k) => !PRUNED_IN_FREE.includes(k));
+    // The key it reads is one of the waived ones on purpose. Renamed or dropped, this reads "free"
+    // in the full tree and the pin goes red there, where someone can see it.
+    const hasProOnlyKeys =
+      "faviconTitle" in (clientEn.branding as Record<string, unknown>);
     expectWaiverLedger(
-      "CLIENT_IDENTICAL_BY_DESIGN (excluding what Free prunes)",
-      inEveryEdition(CLIENT_IDENTICAL_BY_DESIGN),
-      100,
+      "CLIENT_IDENTICAL_BY_DESIGN",
+      CLIENT_IDENTICAL_BY_DESIGN,
+      hasProOnlyKeys ? 102 : 100,
     );
     expectWaiverLedger(
-      "SAY_LESS_GRANDFATHERED (excluding what Free prunes)",
-      inEveryEdition(SAY_LESS_GRANDFATHERED),
-      25,
+      "SAY_LESS_GRANDFATHERED",
+      SAY_LESS_GRANDFATHERED,
+      hasProOnlyKeys ? 26 : 25,
     );
   });
 });

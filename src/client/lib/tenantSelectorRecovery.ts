@@ -1,5 +1,5 @@
 import { dropRejectedSelection } from "@/client/lib/activeTenant";
-import { suppressUnloadPrompt } from "@/client/lib/unsavedGuard";
+import { reloadOntoSafeRoute } from "@/client/lib/tenantSwitch";
 import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
 
 // What a window does when the server refuses the tenant selector it just sent.
@@ -27,9 +27,8 @@ export function recoverFromRejectedSelector(response: Response): boolean {
   w[RELOADING] = true;
   // NOTE: the page on screen was built on the id that just died, and clearing storage neither
   // remounts nor retries the requests it already sent: a one-shot loader would sit in its error state
-  // until someone retried it by hand. A tenant SWITCH reloads for the same reason (see
-  // TenantSwitcher), and this is the same event arriving from the other side.
-  suppressUnloadPrompt();
-  window.location.reload();
+  // until someone retried it by hand. A tenant SWITCH reloads for the same reason, and this is the
+  // same event arriving from the other side — including the detail route it has to land off of.
+  reloadOntoSafeRoute();
   return true;
 }

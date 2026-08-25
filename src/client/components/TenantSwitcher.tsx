@@ -8,8 +8,7 @@ import { useConfirmLeave } from "@/client/contexts/NavGuardContext";
 import { useTenantList } from "@/client/hooks/useTenantList";
 import { setActiveTenantId } from "@/client/lib/activeTenant";
 import { IS_FREE } from "@/client/lib/env";
-import { tenantSwitchTarget } from "@/client/lib/tenantSwitch";
-import { suppressUnloadPrompt } from "@/client/lib/unsavedGuard";
+import { reloadOntoSafeRoute } from "@/client/lib/tenantSwitch";
 import { cn } from "@/client/lib/utils";
 
 // Dedicated SUPER_ADMIN target-tenant picker mounted in the header (NOT inside the user menu).
@@ -77,14 +76,8 @@ export function TenantSwitcher() {
                   // prompt would otherwise leave the new tenant set while the UI
                   // stays put, surfacing the switch only on the next refresh.
                   confirmLeave(() => {
-                    suppressUnloadPrompt();
                     setActiveTenantId(value);
-                    // On a detail route the id belongs to the old tenant and won't exist in the new one,
-                    // so reloading in place would 404. Land on the list root instead. assign() is still
-                    // a full reload, so the TOCTOU-safe single-source-of-truth invariant holds.
-                    const target = tenantSwitchTarget(window.location.pathname);
-                    if (target) window.location.assign(target);
-                    else window.location.reload();
+                    reloadOntoSafeRoute();
                   });
                 }}
               >

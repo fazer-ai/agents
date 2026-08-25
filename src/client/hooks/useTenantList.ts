@@ -5,7 +5,7 @@ import {
   TENANTS_CHANGED_EVENT,
 } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
-import { suppressUnloadPrompt } from "@/client/lib/unsavedGuard";
+import { reloadOntoSafeRoute } from "@/client/lib/tenantSwitch";
 
 // The SUPER_ADMIN's tenant list, plus the selection that survives it.
 //
@@ -60,12 +60,10 @@ export function useTenantList(enabled: boolean): TenantList {
           // clearing storage neither remounts nor retries them: a one-shot loader stays in its error
           // state until the operator retries it by hand. A full reload is what a tenant SWITCH
           // already does for the same reason (see TenantSwitcher), and the effective tenant changing
-          // out from under the console is the same kind of event. It cannot loop: nothing is stored
-          // any more, so the next reconciliation returns early with cleared false.
-          if (cleared) {
-            suppressUnloadPrompt();
-            window.location.reload();
-          }
+          // out from under the console is the same kind of event, down to landing off a detail route
+          // whose id belonged to the tenant that is gone. It cannot loop: nothing is stored any more,
+          // so the next reconciliation returns early with cleared false.
+          if (cleared) reloadOntoSafeRoute();
         })
         .catch(() => {});
     };

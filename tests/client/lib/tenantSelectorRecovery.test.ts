@@ -22,7 +22,9 @@ import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 let responder: () => Response = () => new Response(null, { status: 204 });
+let pathname = "/dashboard";
 const reloads: number[] = [];
+const assigns: string[] = [];
 const realFetch = globalThis.fetch;
 const realLocation = window.location;
 
@@ -37,6 +39,8 @@ const refusal = (rejectedId: string | null) =>
 
 beforeEach(() => {
   reloads.length = 0;
+  assigns.length = 0;
+  pathname = "/dashboard";
   setActiveTenantId(null);
   // The per-window once-flag, reset because each test is a fresh page.
   (window as unknown as Record<string, unknown>).__tenantSelectorReloading =
@@ -48,7 +52,15 @@ beforeEach(() => {
   }) as typeof fetch;
   Object.defineProperty(window, "location", {
     configurable: true,
-    value: { ...realLocation, reload: () => reloads.push(1) },
+    value: {
+      ...realLocation,
+      // NOTE: a getter, because the route a test wants is set in the test body, after this ran.
+      get pathname() {
+        return pathname;
+      },
+      reload: () => reloads.push(1),
+      assign: (to: string) => assigns.push(to),
+    },
   });
 });
 
@@ -101,6 +113,17 @@ describe("a request refused because the selector it carried is dead", () => {
     responder = () => refusal("999");
     await api.api.v1.agents.get();
     expect(reloads.length).toBe(1);
+  });
+
+  test("on a detail route it lands on the list root, not on the dead id", async () => {
+    // The route names a resource of the tenant that just died, so reloading in place would answer
+    // 404 under whichever tenant /auth/me seeds next. Same answer a tenant SWITCH already gives.
+    pathname = "/agents/42";
+    setActiveTenantId("999");
+    responder = () => refusal("999");
+    await api.api.v1.agents.get();
+    expect(assigns).toEqual(["/agents"]);
+    expect(reloads.length).toBe(0);
   });
 
   test("a 404 that names no selector is left to the page that asked", async () => {

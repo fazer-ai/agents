@@ -37,6 +37,8 @@ let scripted: Array<{
 }> = [];
 const sentTenantHeaders: Array<string | null> = [];
 const reloads: number[] = [];
+const assigns: string[] = [];
+let pathname = "/dashboard";
 const realFetch = globalThis.fetch;
 const realLocation = window.location;
 
@@ -101,12 +103,22 @@ beforeEach(() => {
   tenantsFails = false;
   sentTenantHeaders.length = 0;
   reloads.length = 0;
+  assigns.length = 0;
+  pathname = "/dashboard";
   scripted = [];
   setActiveTenantId(null);
   installFetchStub();
   Object.defineProperty(window, "location", {
     configurable: true,
-    value: { ...realLocation, reload: () => reloads.push(1) },
+    value: {
+      ...realLocation,
+      // NOTE: a getter, because the route a test wants is set in the test body, after this ran.
+      get pathname() {
+        return pathname;
+      },
+      reload: () => reloads.push(1),
+      assign: (to: string) => assigns.push(to),
+    },
   });
 });
 
@@ -195,6 +207,20 @@ describe("a stored tenant the fleet no longer has", () => {
     first.release();
     await new Promise((r) => setTimeout(r, 30));
     expect(getActiveTenantId()).toBe("9");
+    expect(reloads.length).toBe(0);
+  });
+
+  test("on a detail route it lands on the list root, not on the dead id", async () => {
+    // The route names an agent of the tenant that is gone, so reloading in place would look that id
+    // up under whichever tenant is seeded next and answer 404. The switch already knew this; the
+    // reconciliation did not, and both now ask the same function (reloadOntoSafeRoute).
+    pathname = "/agents/42";
+    setActiveTenantId("999");
+    tenantsPayload = [{ id: "1", name: "Acme" }];
+    mount();
+    await waitFor(() => {
+      expect(assigns).toEqual(["/agents"]);
+    });
     expect(reloads.length).toBe(0);
   });
 

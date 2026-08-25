@@ -12,6 +12,7 @@ import {
   NotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
@@ -359,7 +360,7 @@ export async function updateAgent(
   opts: { expectedUpdatedAt?: Date } = {},
 ): Promise<AgentDto> {
   assertPromptSize(patch.systemPrompt);
-  const data = agentUpdateSchema.parse(patch);
+  const data = parseInput(agentUpdateSchema, patch);
   validateModelConfigForWrite(data.modelConfig);
   const { businessHoursId, followUpHoursId, ...rest } = data;
   const hasBh = businessHoursId !== undefined;
@@ -574,7 +575,7 @@ export async function createAgent(
   const tenantId = requireTenant(ctx);
   assertPromptSize(input.systemPrompt);
   assertSettingsTextSizes(input.settings, undefined);
-  const data = agentCreateSchema.parse(input);
+  const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);
   const bhId =
     data.businessHoursId != null ? BigInt(data.businessHoursId) : null;

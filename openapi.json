@@ -11069,15 +11069,13 @@
             "application/json": {
               "schema": {
                 "type": "object",
+                "required": [
+                  "name",
+                  "label",
+                  "urlTemplate",
+                  "allowedHosts"
+                ],
                 "properties": {
-                  "name": {
-                    "description": "Tool name the agent sees when selecting tools.",
-                    "type": "string"
-                  },
-                  "label": {
-                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
-                    "type": "string"
-                  },
                   "description": {
                     "description": "Tool description shown to the agent, or null to clear it.",
                     "anyOf": [
@@ -11098,17 +11096,6 @@
                       "PATCH",
                       "DELETE"
                     ]
-                  },
-                  "urlTemplate": {
-                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
-                    "type": "string"
-                  },
-                  "allowedHosts": {
-                    "description": "Hostnames the tool is permitted to call (SSRF allowlist).",
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
                   },
                   "headers": {
                     "description": "Static request headers; values may contain {{secret}} placeholders.",
@@ -11190,6 +11177,25 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "name": {
+                    "description": "Tool name the agent sees when selecting tools.",
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
+                    "type": "string"
+                  },
+                  "urlTemplate": {
+                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
+                    "type": "string"
+                  },
+                  "allowedHosts": {
+                    "description": "Hostnames the tool is permitted to call (SSRF allowlist).",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 }
               }
@@ -11197,15 +11203,13 @@
             "application/x-www-form-urlencoded": {
               "schema": {
                 "type": "object",
+                "required": [
+                  "name",
+                  "label",
+                  "urlTemplate",
+                  "allowedHosts"
+                ],
                 "properties": {
-                  "name": {
-                    "description": "Tool name the agent sees when selecting tools.",
-                    "type": "string"
-                  },
-                  "label": {
-                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
-                    "type": "string"
-                  },
                   "description": {
                     "description": "Tool description shown to the agent, or null to clear it.",
                     "anyOf": [
@@ -11226,17 +11230,6 @@
                       "PATCH",
                       "DELETE"
                     ]
-                  },
-                  "urlTemplate": {
-                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
-                    "type": "string"
-                  },
-                  "allowedHosts": {
-                    "description": "Hostnames the tool is permitted to call (SSRF allowlist).",
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
                   },
                   "headers": {
                     "description": "Static request headers; values may contain {{secret}} placeholders.",
@@ -11318,6 +11311,25 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "name": {
+                    "description": "Tool name the agent sees when selecting tools.",
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
+                    "type": "string"
+                  },
+                  "urlTemplate": {
+                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
+                    "type": "string"
+                  },
+                  "allowedHosts": {
+                    "description": "Hostnames the tool is permitted to call (SSRF allowlist).",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 }
               }
@@ -11325,15 +11337,13 @@
             "multipart/form-data": {
               "schema": {
                 "type": "object",
+                "required": [
+                  "name",
+                  "label",
+                  "urlTemplate",
+                  "allowedHosts"
+                ],
                 "properties": {
-                  "name": {
-                    "description": "Tool name the agent sees when selecting tools.",
-                    "type": "string"
-                  },
-                  "label": {
-                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
-                    "type": "string"
-                  },
                   "description": {
                     "description": "Tool description shown to the agent, or null to clear it.",
                     "anyOf": [
@@ -11354,17 +11364,6 @@
                       "PATCH",
                       "DELETE"
                     ]
-                  },
-                  "urlTemplate": {
-                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
-                    "type": "string"
-                  },
-                  "allowedHosts": {
-                    "description": "Hostnames the tool is permitted to call (SSRF allowlist).",
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
                   },
                   "headers": {
                     "description": "Static request headers; values may contain {{secret}} placeholders.",
@@ -11446,6 +11445,25 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "name": {
+                    "description": "Tool name the agent sees when selecting tools.",
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
+                    "type": "string"
+                  },
+                  "urlTemplate": {
+                    "description": "Request URL template; {{param}}, {{context}} and {{secret}} placeholders are interpolated at call time. Single-brace {param} is accepted and normalized when it matches a declared input field or context variable.",
+                    "type": "string"
+                  },
+                  "allowedHosts": {
+                    "description": "Hostnames the tool is permitted to call (SSRF allowlist).",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 }
               }
@@ -12577,19 +12595,11 @@
             "application/json": {
               "schema": {
                 "type": "object",
+                "required": [
+                  "name",
+                  "transport"
+                ],
                 "properties": {
-                  "name": {
-                    "description": "Display name for the MCP server connection.",
-                    "type": "string"
-                  },
-                  "transport": {
-                    "type": "string",
-                    "enum": [
-                      "streamableHttp",
-                      "sse",
-                      "stdio"
-                    ]
-                  },
                   "url": {
                     "description": "Server URL for the streamableHttp and sse transports; null for stdio.",
                     "anyOf": [
@@ -12626,6 +12636,18 @@
                   "enabled": {
                     "description": "Whether the connection is active.",
                     "type": "boolean"
+                  },
+                  "name": {
+                    "description": "Display name for the MCP server connection.",
+                    "type": "string"
+                  },
+                  "transport": {
+                    "type": "string",
+                    "enum": [
+                      "streamableHttp",
+                      "sse",
+                      "stdio"
+                    ]
                   }
                 }
               }
@@ -12633,19 +12655,11 @@
             "application/x-www-form-urlencoded": {
               "schema": {
                 "type": "object",
+                "required": [
+                  "name",
+                  "transport"
+                ],
                 "properties": {
-                  "name": {
-                    "description": "Display name for the MCP server connection.",
-                    "type": "string"
-                  },
-                  "transport": {
-                    "type": "string",
-                    "enum": [
-                      "streamableHttp",
-                      "sse",
-                      "stdio"
-                    ]
-                  },
                   "url": {
                     "description": "Server URL for the streamableHttp and sse transports; null for stdio.",
                     "anyOf": [
@@ -12682,6 +12696,18 @@
                   "enabled": {
                     "description": "Whether the connection is active.",
                     "type": "boolean"
+                  },
+                  "name": {
+                    "description": "Display name for the MCP server connection.",
+                    "type": "string"
+                  },
+                  "transport": {
+                    "type": "string",
+                    "enum": [
+                      "streamableHttp",
+                      "sse",
+                      "stdio"
+                    ]
                   }
                 }
               }
@@ -12689,19 +12715,11 @@
             "multipart/form-data": {
               "schema": {
                 "type": "object",
+                "required": [
+                  "name",
+                  "transport"
+                ],
                 "properties": {
-                  "name": {
-                    "description": "Display name for the MCP server connection.",
-                    "type": "string"
-                  },
-                  "transport": {
-                    "type": "string",
-                    "enum": [
-                      "streamableHttp",
-                      "sse",
-                      "stdio"
-                    ]
-                  },
                   "url": {
                     "description": "Server URL for the streamableHttp and sse transports; null for stdio.",
                     "anyOf": [
@@ -12738,6 +12756,18 @@
                   "enabled": {
                     "description": "Whether the connection is active.",
                     "type": "boolean"
+                  },
+                  "name": {
+                    "description": "Display name for the MCP server connection.",
+                    "type": "string"
+                  },
+                  "transport": {
+                    "type": "string",
+                    "enum": [
+                      "streamableHttp",
+                      "sse",
+                      "stdio"
+                    ]
                   }
                 }
               }
@@ -13709,11 +13739,10 @@
             "application/json": {
               "schema": {
                 "type": "object",
+                "required": [
+                  "name"
+                ],
                 "properties": {
-                  "name": {
-                    "description": "Human-readable name of the schedule.",
-                    "type": "string"
-                  },
                   "timezone": {
                     "description": "IANA timezone (e.g. America/Sao_Paulo) the windows are evaluated in.",
                     "type": "string"
@@ -13807,6 +13836,10 @@
                         }
                       }
                     }
+                  },
+                  "name": {
+                    "description": "Human-readable name of the schedule.",
+                    "type": "string"
                   }
                 }
               }
@@ -13814,11 +13847,10 @@
             "application/x-www-form-urlencoded": {
               "schema": {
                 "type": "object",
+                "required": [
+                  "name"
+                ],
                 "properties": {
-                  "name": {
-                    "description": "Human-readable name of the schedule.",
-                    "type": "string"
-                  },
                   "timezone": {
                     "description": "IANA timezone (e.g. America/Sao_Paulo) the windows are evaluated in.",
                     "type": "string"
@@ -13912,6 +13944,10 @@
                         }
                       }
                     }
+                  },
+                  "name": {
+                    "description": "Human-readable name of the schedule.",
+                    "type": "string"
                   }
                 }
               }
@@ -13919,11 +13955,10 @@
             "multipart/form-data": {
               "schema": {
                 "type": "object",
+                "required": [
+                  "name"
+                ],
                 "properties": {
-                  "name": {
-                    "description": "Human-readable name of the schedule.",
-                    "type": "string"
-                  },
                   "timezone": {
                     "description": "IANA timezone (e.g. America/Sao_Paulo) the windows are evaluated in.",
                     "type": "string"
@@ -14017,6 +14052,10 @@
                         }
                       }
                     }
+                  },
+                  "name": {
+                    "description": "Human-readable name of the schedule.",
+                    "type": "string"
                   }
                 }
               }

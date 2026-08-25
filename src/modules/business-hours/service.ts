@@ -3,6 +3,7 @@ import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   isRangeOrdered,
@@ -199,7 +200,7 @@ export async function createBusinessHours(
 ): Promise<BusinessHoursDto> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const data = businessHoursCreateSchema.parse(input);
+  const data = parseInput(businessHoursCreateSchema, input);
   if (data.timezone) assertValidTimezone(data.timezone);
   if (data.windows) assertValidWindows(data.windows);
   if (data.exceptions) assertValidExceptions(data.exceptions);
@@ -225,7 +226,7 @@ export async function updateBusinessHours(
   patch: BusinessHoursUpdate,
   base: PrismaClient = basePrisma,
 ): Promise<BusinessHoursDto> {
-  const data = businessHoursUpdateSchema.parse(patch);
+  const data = parseInput(businessHoursUpdateSchema, patch);
   if (data.timezone) assertValidTimezone(data.timezone);
   if (data.windows) assertValidWindows(data.windows);
   if (data.exceptions) assertValidExceptions(data.exceptions);

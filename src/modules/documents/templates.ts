@@ -280,6 +280,7 @@ export async function documentTemplateWriteProblem(
   const metadata = templateMetadataProblem(input);
   if (metadata) return metadata;
   const name =
+    // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
     input.name !== undefined ? templateNameSchema.parse(input.name) : undefined;
   // Only CREATE derives a slug from the name; a rename keeps the slug it already has, because the
   // slug is a tool name an agent may already be granted. Deriving here on an update would refuse a
@@ -465,6 +466,7 @@ function parseNumberPrefix(value: unknown): string | null {
   if (problem) {
     throw new AppError(problem, 400, "errors.invalidDocumentNumberPrefix");
   }
+  // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
   return templateNumberPrefixSchema.parse(value ?? null);
 }
 
@@ -477,6 +479,7 @@ function parseTemplateDescription(value: unknown): string | null {
       "errors.invalidDocumentTemplateDescription",
     );
   }
+  // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
   return templateDescriptionSchema.parse(value ?? null);
 }
 
@@ -485,6 +488,7 @@ function parseTemplateName(value: unknown): string {
   if (problem) {
     throw new AppError(problem, 400, "errors.invalidDocumentTemplateName");
   }
+  // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
   return templateNameSchema.parse(value);
 }
 

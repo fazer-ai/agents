@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
@@ -222,7 +223,7 @@ export async function connectChatwootDeployment(
 }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const data = chatwootDeploymentConnectSchema.parse(input);
+  const data = parseInput(chatwootDeploymentConnectSchema, input);
   data.baseUrl = normalizeChatwootBaseUrl(data.baseUrl);
   await assertSafeOutboundUrl(data.baseUrl); // DNS lookup OUTSIDE the tx
   // Validate the credentials (and discover accounts) before persisting anything.
@@ -271,7 +272,11 @@ export async function rotateChatwootDeploymentToken(
   deps: ListAccountsDeps = {},
   base: PrismaClient = basePrisma,
 ): Promise<ChatwootDeploymentDto> {
-  const token = z.string().min(1).max(2000).parse(adminToken);
+  const token = parseInput(
+    z.string().min(1).max(2000),
+    adminToken,
+    "adminToken",
+  );
   const dep = await runScopedOn(base, ctx, (db) =>
     db.chatwootDeployment.findFirst({ select: { id: true, baseUrl: true } }),
   );
@@ -1413,7 +1418,7 @@ export async function listChatwootAccounts(
   input: ChatwootAccountsProbeInput,
   deps: ListAccountsDeps = {},
 ): Promise<ChatwootAccountSummary[]> {
-  const data = chatwootAccountsProbeSchema.parse(input);
+  const data = parseInput(chatwootAccountsProbeSchema, input);
   const fetchProfile = deps.fetchProfile ?? fetchChatwootProfile;
   let raw: unknown;
   try {

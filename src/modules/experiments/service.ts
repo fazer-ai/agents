@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { NotFoundError } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 
 // Prompt A/B experiments. A thread is bucketed to a variant DETERMINISTICALLY (so re-resolution is
@@ -112,7 +113,11 @@ export async function createExperiment(params: {
   base?: PrismaClient;
 }): Promise<{ id: bigint }> {
   const base = params.base ?? basePrisma;
-  const variants = z.array(variantSchema).parse(params.variants);
+  const variants = parseInput(
+    z.array(variantSchema),
+    params.variants,
+    "variants",
+  );
   return runScopedOn(base, params.ctx, async (db) => {
     const exp = await db.experiment.create({
       data: {
@@ -167,7 +172,7 @@ export async function updateExperiment(params: {
   const base = params.base ?? basePrisma;
   const variants =
     params.variants !== undefined
-      ? z.array(variantSchema).parse(params.variants)
+      ? parseInput(z.array(variantSchema), params.variants, "variants")
       : undefined;
   return runScopedOn(base, params.ctx, async (db) => {
     const current = await db.experiment.findUnique({

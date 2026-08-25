@@ -113,6 +113,22 @@ const writeBody = t.Object({
   ),
 });
 
+// The CREATE route's own body. `writeBody` above describes what a PATCH accepts, where every field
+// being optional is correct, and a POST that borrows it lets a request missing a required field
+// through the transport: the refusal then comes from the service's zod schema, whose `ZodError`
+// src/app.ts has no branch for, so the caller is told the server broke about a field they own
+// (issue #301, measured: `POST` with `{}` answered 500 `Something went wrong`).
+//
+// Composed rather than written out, so the descriptions and the field list stay in one place and a
+// field added to `writeBody` cannot be missing here. WHICH fields are required is not written twice
+// either: tests/api/v1/write-body-required.test.ts derives that set from the service's create schema
+// and fails if the two drift.
+const CREATE_REQUIRED = ["name"] as const;
+const createBody = t.Composite([
+  t.Omit(writeBody, CREATE_REQUIRED),
+  t.Required(t.Pick(writeBody, CREATE_REQUIRED)),
+]);
+
 export const businessHoursController = new Elysia({
   prefix: "/v1/business-hours",
   tags: ["Resources"],
@@ -172,7 +188,7 @@ export const businessHoursController = new Elysia({
         "Create a new business-hours schedule for the current tenant.",
       ),
       response: errors(400, 401, 403, 404),
-      body: writeBody,
+      body: createBody,
     },
   )
   .patch(

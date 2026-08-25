@@ -33,6 +33,36 @@
       document.documentElement.dataset.theme = resolved;
     })();
   </script>
+
+  <!-- Apply the operator's icon before the first paint, for the same reason and from the same cache
+       as the title above. This one has to REMOVE the links declared above rather than add to them:
+       leaving them in place makes the browser fetch the bundled default too (measured in Chromium).
+       So it hands them to the bundle on the way out, which is what a cleared favicon restores.
+       Below the theme script on purpose: the variant follows the theme that script just resolved. -->
+  <script>
+    (function () {
+      var cfg;
+      try { cfg = JSON.parse(localStorage.getItem("@app:branding")); } catch (_) { }
+      var present = cfg && cfg.favicon;
+      if (!present) return;
+      var dark = document.documentElement.dataset.theme === "dark";
+      var variant = dark
+        ? (present.dark ? "dark" : present.light ? "light" : null)
+        : (present.light ? "light" : present.dark ? "dark" : null);
+      if (!variant) return;
+      var declared = [];
+      var links = document.querySelectorAll('link[rel~="icon"]');
+      for (var i = 0; i < links.length; i++) {
+        declared.push({ href: links[i].getAttribute("href") || "", media: links[i].getAttribute("media") });
+        links[i].remove();
+      }
+      window.__brandingDefaultFavicons = declared;
+      var link = document.createElement("link");
+      link.rel = "icon";
+      link.href = "/api/v1/branding/asset/favicon/" + variant + "?v=" + cfg.version;
+      document.head.appendChild(link);
+    })();
+  </script>
 </head>
 
 <body>

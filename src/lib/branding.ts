@@ -63,3 +63,31 @@ export function resolveBrandName(
 ): string {
   return config?.brandName?.trim() || DEFAULT_BRAND_NAME;
 }
+
+// Where the branding binaries are served from. Public by design (they load before any auth
+// context), and long-cached, so every URL carries the config's `version` as the cache buster.
+export const BRANDING_ASSET_BASE = "/api/v1/branding/asset";
+
+export function brandingAssetUrl(
+  kind: "logo" | "favicon",
+  variant: "dark" | "light",
+  version: string,
+): string {
+  return `${BRANDING_ASSET_BASE}/${kind}/${variant}?v=${version}`;
+}
+
+// Prefer the variant matching the active theme; fall back to the other if only one was uploaded.
+export function pickVariant(
+  present: { dark: boolean; light: boolean },
+  theme: "light" | "dark",
+): "dark" | "light" | null {
+  if (theme === "dark")
+    return present.dark ? "dark" : present.light ? "light" : null;
+  return present.light ? "light" : present.dark ? "dark" : null;
+}
+
+// Where the page's DECLARED icon links are kept, so a cleared favicon can restore them. The inline
+// <head> script that applies the custom icon before the first paint has to remove them (leaving
+// them in place makes the browser fetch the default too), so it writes them here on the way out
+// and `applyFavicon` reads them back (#290).
+export const BRANDING_DEFAULT_FAVICONS_KEY = "__brandingDefaultFavicons";

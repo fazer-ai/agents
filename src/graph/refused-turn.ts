@@ -2,7 +2,11 @@ import type { AIMessage, BaseMessage } from "@langchain/core/messages";
 import { RemoveMessage } from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import { withKeyedQueue } from "@/lib/locks";
-import { clearTurnInFlight, markTurnInFlight } from "./inflight";
+import {
+  clearTurnInFlight,
+  isTurnInFlight,
+  markTurnInFlight,
+} from "./inflight";
 import { isNudgeTurn } from "./markers";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 
@@ -32,7 +36,14 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 
 export type RollbackPlan =
   | { action: "remove"; ids: string[] }
-  | { action: "keep"; reason: "no-turn-found" | "tool-ran" | "already-gone" };
+  | {
+      action: "keep";
+      reason:
+        | "no-turn-found"
+        | "tool-ran"
+        | "already-gone"
+        | "another-invoke-is-reading";
+    };
 
 // A tool call is the line between a turn that only SAID something and one that DID something. The
 // transfer is the case that forces it: `handoffAnsweredTheTurn` hands the conversation to the human
@@ -82,9 +93,23 @@ export function planTurnRollback(
 
 // Reads the channel and writes the removal under the SAME key the append and the compaction rewrite
 // take (`ingest:<graphThreadId>`), so the read and the write are one step as far as those two are
-// concerned. The in-flight claim is taken for the length of it as well: compaction stands down on a
-// claimed thread, and a rewrite landing between this read and this write would be deciding about a
-// channel that is one message away from changing.
+// concerned.
+//
+// THE QUEUE IS NOT ENOUGH, AND THE COUNT IS WHY. A turn takes that key to mark itself and RELEASES
+// it before the model runs, so an invoke in flight is not holding anything this could queue behind.
+// What it is holding is a claim in `src/graph/inflight.ts`, and the hazard that registry exists for
+// is exactly this one: an invoke is a read-modify-write of the WHOLE channel, so one that loaded the
+// refused turn will save it back the moment it finishes, undoing a removal written underneath it.
+//
+// Memory compaction answers this by reading the count before adding its own claim and standing down
+// (`isTurnInFlight` -> "busy"), and so does this. The difference is what standing down costs: a
+// deferred compaction runs again at the next attendance boundary, and a deferred rollback has no
+// later, so the refused turn stays in the history. That is the honest outcome rather than a better
+// one: writing a removal that another invoke is about to undo leaves the same history and a
+// checkpoint that says otherwise. It is named and logged so the case is visible instead of silent.
+//
+// The nudge's own claim is already released by the time any refusal reaches here (the `finally` that
+// clears it sits above them all), so this never stands down on account of itself.
 export async function undoRefusedTurn(params: {
   checkpointer: BaseCheckpointSaver;
   graphThreadId: string;
@@ -94,6 +119,11 @@ export async function undoRefusedTurn(params: {
   const graph = buildThreadStateGraph(checkpointer);
   const threadCfg = { configurable: { thread_id: graphThreadId } };
   return withKeyedQueue(`ingest:${graphThreadId}`, async () => {
+    if (isTurnInFlight(graphThreadId)) {
+      return { action: "keep", reason: "another-invoke-is-reading" };
+    }
+    // Taken only once the answer above is no, and for the length of the read and the write: it is
+    // what keeps a compaction from rewriting the channel between them.
     markTurnInFlight(graphThreadId);
     try {
       const current = ((

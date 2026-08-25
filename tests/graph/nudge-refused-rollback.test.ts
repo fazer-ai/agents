@@ -11,6 +11,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
+import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { isNudgeTurn } from "@/graph/markers";
 import { runAgentNudge } from "@/graph/nudge";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
@@ -344,6 +345,55 @@ describe.skipIf(!dbUp)(
       expect(
         after.some((m) => ((m as AIMessage).tool_calls?.length ?? 0) > 0),
       ).toBe(true);
+    });
+
+    // The hazard `src/graph/inflight.ts` exists for, asked from this side: a reactive turn invoking on
+    // this same memory thread is a read-modify-write of the whole channel, so it will save back
+    // whatever it loaded. A removal written underneath it is undone the moment it finishes, and the
+    // history ends up exactly where it started with a checkpoint claiming otherwise. Standing down is
+    // the honest answer, and this pins that it stands down rather than writing that checkpoint.
+    test("another invoke holding the thread defers the rollback instead of racing it", async () => {
+      const contactInboxId = 7254;
+      await seedConv(9254, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const s = stub();
+      let wanted = true;
+      // A reactive turn that started before this nudge and has not finished. Released in the finally,
+      // or every later test on this thread would inherit the claim.
+      markTurnInFlight(graphThreadId);
+      let outcome: string;
+      try {
+        outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9254`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          stillWanted: async () => wanted,
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new RetiringModel(() => {
+                wanted = false;
+              }, "Oi, ainda precisa de ajuda?"),
+            makeClient: s.makeClient,
+            checkpointer,
+            persistUsage: async () => {},
+          },
+        });
+      } finally {
+        clearTurnInFlight(graphThreadId);
+      }
+
+      expect(outcome).toBe("stale");
+      expect(s.messages).toEqual([]);
+      const after = await channel(checkpointer, graphThreadId);
+      expect(after.some((m) => isNudgeTurn(m))).toBe(true);
+      expect(after.map(textOf).join("\n")).toContain("ainda precisa de ajuda");
     });
 
     test("a turn that reached the customer stays in the history, where it belongs", async () => {

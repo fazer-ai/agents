@@ -1180,6 +1180,15 @@ export async function runAgentNudge(
         outcome,
         plan.ids.length,
       );
+    } else if (plan?.reason === "another-invoke-is-reading") {
+      // The one keep that is a MISS rather than a decision about this turn: the history still holds a
+      // message the customer never received, and the next turn will read it. Logged at warn so the
+      // case has a name in the logs instead of looking like a rollback that ran.
+      logger.warn(
+        "agentNudge could not roll back a refused turn, another invoke holds the thread: conv=%s outcome=%s",
+        String(conversationId),
+        outcome,
+      );
     }
     return outcome;
   };

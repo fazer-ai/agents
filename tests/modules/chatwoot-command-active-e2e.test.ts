@@ -406,4 +406,32 @@ describe.skipIf(!dbUp)("control commands: one reading of the agent", () => {
     expect(after.length).toBeGreaterThan(0);
     expect(after.every((p) => !p.content.includes("Envie /teste"))).toBe(true);
   });
+
+  test("a payload naming an UNKNOWN inbox does not borrow the conversation's previous agent", async () => {
+    // The conversation is mirrored on the bound entry inbox, so the fallback would find a test-mode
+    // agent — but the delivery arrived on an inbox that names no agent, and the mirror is about to
+    // move the conversation there. Deciding the command against the old inbox would activate it for
+    // an agent this delivery never reached, and the route check would then eat it without a word.
+    const id = await seedConv(6008, entryInboxId);
+    const info = spyOn(logger, "info");
+    let lines: unknown[][] = [];
+    try {
+      await deliver(6008, 999, "/teste", 9);
+      lines = info.mock.calls.map((c) => [...c]);
+    } finally {
+      info.mockRestore();
+    }
+    const row = await suDb.conversation.findUnique({
+      where: { id },
+      select: { testActivatedAt: true },
+    });
+    expect(row?.testActivatedAt).toBeNull();
+    const line = lines.find((c) => String(c[0]).includes("not run"));
+    expect(line?.slice(1)).toEqual([
+      "teste",
+      "6008",
+      "unresolved",
+      String(BOT),
+    ]);
+  });
 });

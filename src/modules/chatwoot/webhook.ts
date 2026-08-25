@@ -2630,20 +2630,28 @@ export async function processChatwootDelivery(
   //
   // The payload stays PRIMARY, so an ordinary delivery is answered by exactly the query it always
   // was and pays for nothing extra. The stored row is consulted only when the payload names no
-  // agent at all AND a command was actually typed, which is the miss path that used to dead-end.
+  // INBOX at all AND a command was actually typed, which is the miss path that used to dead-end.
   // The fallback can only ever turn a dropped command into an honoured one; it can never make an
   // active command inactive, so no delivery that works today changes.
-  const commandMode =
-    command === null
-      ? null
-      : rt !== null
-        ? rt.mode
-        : await conversationAgentMode(
-            params.tenantId,
-            params.instanceId,
-            n.conversationId,
-            base,
-          );
+  let commandMode: string | null = null;
+  if (command !== null) {
+    if (rt !== null) {
+      commandMode = rt.mode;
+    } else if (n.inboxId == null) {
+      // ONLY when the payload named no inbox at all. An inbox it DID name that resolves to no agent
+      // is an answer, not a gap: falling back there would decide the command against whatever inbox
+      // the conversation pointed at BEFORE this event, and the mirror is about to move it to the one
+      // that just arrived. The command would then be active for an agent the delivery never reached,
+      // the route check would find no persona to match, and it would be consumed without running and
+      // without an acknowledgement — a worse silence than the one this fixes.
+      commandMode = await conversationAgentMode(
+        params.tenantId,
+        params.instanceId,
+        n.conversationId,
+        base,
+      );
+    }
+  }
   const commandActive = command !== null && commandMode === "test";
   // A command that will not run is otherwise indistinguishable from ordinary customer text, in the
   // logs and in the conversation alike — which is what left issue #270 undiagnosable from the

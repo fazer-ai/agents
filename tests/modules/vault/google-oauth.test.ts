@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import { buildHttpTool, type HttpToolDef } from "@/graph/tools/http";
+import type { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   buildAuthorizeUrl,
@@ -331,20 +332,25 @@ describe.skipIf(!dbUp)("google-oauth: DB-backed", () => {
   });
 
   test("createVaultEntry validates google_oauth fields (clientId + clientSecret)", async () => {
-    // Missing clientSecret → rejected.
-    await expect(
-      createVaultEntry(
-        ctx(),
-        {
-          name: "g-bad",
-          value: { clientId: "c" } as Record<string, string>,
-          kind: "google_oauth",
-        },
-        undefined,
-        undefined,
-        appDb,
-      ),
-    ).rejects.toThrow();
+    // Missing clientSecret → rejected, NAMING the field: the credential form renders one input per
+    // declared field and keys it by exactly this string, so a refusal that only says it in prose
+    // leaves the console with nowhere to put the message (issue #231).
+    const refused = await createVaultEntry(
+      ctx(),
+      {
+        name: "g-bad",
+        value: { clientId: "c" } as Record<string, string>,
+        kind: "google_oauth",
+      },
+      undefined,
+      undefined,
+      appDb,
+    ).then(
+      () => null,
+      (e: unknown) => e as AppError,
+    );
+    expect(refused).not.toBeNull();
+    expect(refused?.field).toBe("clientSecret");
 
     // Both fields present → accepted.
     const { id } = await createVaultEntry(

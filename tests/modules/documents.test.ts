@@ -739,6 +739,22 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
     ).rejects.toThrow();
   });
 
+  // The company profile is a form of several inputs, and the refusal knows which one it read: the
+  // loop that finds the unprintable character is iterating the patch by key. Without the key on the
+  // wire the operator is told a character cannot be printed and left to find where they typed it.
+  test("an unprintable company field names the input it was read from", async () => {
+    const refused = await updateCompanySettings(
+      ctx(tenantA),
+      { document: "12.345.678/0001-90 \u2603" },
+      appDb,
+    ).then(
+      () => null,
+      (e: unknown) => e as AppError,
+    );
+    expect(refused?.field).toBe("document");
+    expect(refused?.statusCode).toBe(400);
+  });
+
   // The letterhead is read at issue time and frozen into the snapshot, so a profile edited later
   // does not rewrite documents already sent.
   test("freezes the company profile into the issued document", async () => {

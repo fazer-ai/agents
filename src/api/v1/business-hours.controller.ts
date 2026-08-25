@@ -130,7 +130,7 @@ export const businessHoursController = new Elysia({
         "List business hours",
         "List all business-hours schedules for the current tenant.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .get(
@@ -171,7 +171,7 @@ export const businessHoursController = new Elysia({
         "Create business hours",
         "Create a new business-hours schedule for the current tenant.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
       body: writeBody,
     },
   )

@@ -142,7 +142,7 @@ export const integrationsAdminController = new Elysia({
         "List integration instances",
         "Returns the tenant's configured integration instances. The routeToken is omitted here; read a single instance to get it.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .get(

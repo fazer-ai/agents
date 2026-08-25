@@ -55,7 +55,7 @@ export const alertChannelsController = new Elysia({
         "List alert channels",
         "Returns the tenant's alert channels; the token-bearing url is returned only as a masked preview.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .post(
@@ -117,7 +117,7 @@ export const alertChannelsController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   .patch(

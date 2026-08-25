@@ -67,7 +67,7 @@ export const vaultController = new Elysia({
         "List vault entries",
         "Returns the tenant's secret names, kinds and reference usage; the secret value is never returned.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .post(
@@ -123,7 +123,7 @@ export const vaultController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403, 409),
+      response: errors(400, 401, 403, 404, 409),
     },
   )
   .put(

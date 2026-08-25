@@ -112,7 +112,7 @@ export const logsController = new Elysia({
         "List execution logs",
         "Lists tenant-scoped execution-flow logs with keyset pagination.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   // Bulk export of the (filtered) execution-flow log as a downloadable file. Same filter surface as
@@ -186,6 +186,6 @@ export const logsController = new Elysia({
         "Export execution logs",
         "Exports the tenant-scoped execution-flow logs (matching the given filters) as a CSV or JSON file, newest first, up to a bounded row cap.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   );

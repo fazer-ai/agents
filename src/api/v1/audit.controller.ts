@@ -45,6 +45,6 @@ export const auditController = new Elysia({
         "List audit entries",
         "Lists tenant-scoped audit log entries.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   );

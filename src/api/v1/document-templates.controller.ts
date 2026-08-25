@@ -99,7 +99,7 @@ export const documentTemplatesController = new Elysia({
         "List document templates",
         "Lists the tenant's document templates.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .get(
@@ -143,7 +143,7 @@ export const documentTemplatesController = new Elysia({
         "Create document template",
         "Creates a document template from blocks, fields and style.",
       ),
-      response: errors(400, 401, 403, 409),
+      response: errors(400, 401, 403, 404, 409),
     },
   )
   .post(
@@ -274,7 +274,7 @@ export const documentTemplatesController = new Elysia({
         "List template references",
         "Agents that were granted this template, so deletion can warn first.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   .patch(

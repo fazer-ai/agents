@@ -268,7 +268,7 @@ export const agentsController = new Elysia({
         "List agents",
         "Returns a paginated list of agents for the tenant.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",
       query: t.Object({
         q: t.Optional(
@@ -374,7 +374,7 @@ export const agentsController = new Elysia({
         "List inboxes that answer out of hours",
         'The agent\'s bound inboxes whose Chatwoot inbox-level out-of-office reply is configured (working hours enabled AND a message set), read live from Chatwoot. Chatwoot\'s schedule is keyed on the day of the week alone, so it cannot express the dated closures this product\'s business hours can: the two calendars disagree on holidays by construction. An inbox on an unreachable Chatwoot account is omitted rather than reported, so an empty list means "nothing found", not "nothing to find".',
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -391,7 +391,7 @@ export const agentsController = new Elysia({
     }),
     {
       detail: doc("Create agent", "Creates a new agent for the tenant."),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",
       body: t.Object({
         name: t.String({
@@ -689,7 +689,7 @@ export const agentsController = new Elysia({
         "Import agent config",
         "Recreates an agent (disabled) from an exported config, resolving references by name.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",
       body: t.Object({
         export: t.Unknown({
@@ -1225,7 +1225,7 @@ export const agentsController = new Elysia({
         "List provider models",
         "Lists the available models for a model provider, using a vault credential reference.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",
       body: t.Object({
         provider: t.String({
@@ -1286,7 +1286,7 @@ export const agentsController = new Elysia({
         "List TTS voices/models",
         "Lists the voices or models for a text-to-speech provider. OpenAI returns a curated set; ElevenLabs is fetched live with the vault credential.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",
       body: t.Object({
         provider: t.String({

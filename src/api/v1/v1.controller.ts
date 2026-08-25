@@ -310,7 +310,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Conversations"],
       },
-      response: errors(400, 401),
+      response: errors(400, 401, 404),
     },
   )
   .get(
@@ -637,7 +637,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(400, 401),
+      response: errors(400, 401, 404),
     },
   )
   .get(
@@ -666,7 +666,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(401),
+      response: errors(401, 404),
     },
   )
   .get(
@@ -709,7 +709,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(400, 401),
+      response: errors(400, 401, 404),
     },
   )
   .get(
@@ -738,6 +738,6 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(401),
+      response: errors(401, 404),
     },
   );

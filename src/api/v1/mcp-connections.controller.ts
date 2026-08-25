@@ -96,7 +96,7 @@ export const mcpConnectionsController = new Elysia({
         "List MCP connections",
         "Returns the tenant's consumed MCP server connections.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .get(
@@ -153,7 +153,7 @@ export const mcpConnectionsController = new Elysia({
         "Registers a new consumed MCP server connection for the tenant.",
       ),
       body: writeBody,
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   .patch(

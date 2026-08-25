@@ -124,7 +124,7 @@ export const documentsController = new Elysia({
       // and one past 2^63-1 is refused by the range check rather than by the transport. A status the
       // route returns and the contract does not name is a status no generated client knows how to
       // handle — the same reason the issue route names 409.
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   .post(

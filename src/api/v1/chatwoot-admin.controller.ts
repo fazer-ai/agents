@@ -83,7 +83,7 @@ export const chatwootAdminController = new Elysia({
         "Get Chatwoot deployment",
         "The tenant's Chatwoot deployment (base URL; admin-token presence) and its accounts. `deployment` is null when none is connected yet.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   // Register the deployment from a base URL + admin token, entered ONCE. Validates the credentials by
@@ -117,7 +117,7 @@ export const chatwootAdminController = new Elysia({
             "Chatwoot admin/user access token; encrypted at rest, never returned.",
         }),
       }),
-      response: errors(400, 401, 403, 409, 502),
+      response: errors(400, 401, 403, 404, 409, 502),
     },
   )
   // Rotate the deployment's admin token (validated against the live deployment before it persists).
@@ -378,7 +378,7 @@ export const chatwootAdminController = new Elysia({
         "List inboxes",
         "List the tenant's mirrored Chatwoot inboxes.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   // Live per-inbox bot status for the Channels UI: each bound inbox → "active" | "missing" (its
@@ -396,7 +396,7 @@ export const chatwootAdminController = new Elysia({
         "Reconcile inbox bot status",
         "Per bound inbox, whether its persona's Chatwoot Agent Bot still exists (active) or was deleted out-of-band (missing).",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   // Live health of a web-widget inbox's website_url (the WhatsApp→website-chat redirect target), so
@@ -420,7 +420,7 @@ export const chatwootAdminController = new Elysia({
       params: t.Object({
         id: t.String({ description: "Mirror inbox id (BigInt string)." }),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   // Live agents + teams for the handoff-targeting picker, scoped to the accounts the agent serves
@@ -445,7 +445,7 @@ export const chatwootAdminController = new Elysia({
       params: t.Object({
         agentId: t.String({ description: "Agent id (BigInt string)." }),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   // Approved WhatsApp HSM templates available to an agent's inbox(es), for the service-window
@@ -468,7 +468,7 @@ export const chatwootAdminController = new Elysia({
       params: t.Object({
         agentId: t.String({ description: "Agent id (BigInt string)." }),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   // Account labels available to an agent's inbox(es), for the follow-up step's label picker. Empty
@@ -491,7 +491,7 @@ export const chatwootAdminController = new Elysia({
       params: t.Object({
         agentId: t.String({ description: "Agent id (BigInt string)." }),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   // NOTE: Custom-attribute definitions available to an agent's inbox(es), for the attribute-context
@@ -514,7 +514,7 @@ export const chatwootAdminController = new Elysia({
       params: t.Object({
         agentId: t.String({ description: "Agent id (BigInt string)." }),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   .patch(

@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import type { PrismaClient as PrismaClientType } from "@/../generated/prisma/client";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { createTenant } from "@/api/v1/tenants.admin.service";
+import { listTenants } from "@/api/v1/tenants.service";
 import { ActiveTenantNotFoundError, AppError } from "@/lib/errors";
 import { resolveRequestTenantContext, type TenantContext } from "@/lib/tenancy";
 import { issueDocument } from "@/modules/documents/issue";
@@ -415,22 +417,52 @@ describe("no REST controller hands a module a bare tenant id", () => {
   });
 });
 
+// The negative control for the two exemptions at the bottom of this file, and the reason they are
+// exemptions rather than routes nobody got around to converting: a FLEET operation answers the
+// selector instead of refusing it. `listTenants` and `createTenant` both branch to `asSuperAdminOn`
+// when the caller is a SUPER_ADMIN, so the id the selector carries is never looked up, and asking
+// their response maps to name a 404 would publish a status they cannot return.
+describe.skipIf(!dbUp)("a fleet route answers a dead selector", () => {
+  test("listing tenants returns the fleet rather than refusing", async () => {
+    const rows = await listTenants(fromSelector(deadId), appDb);
+    expect(Array.isArray(rows)).toBe(true);
+  });
+
+  // Written as "whatever it answers, it is not about the selector" because this file ships to both
+  // editions: the derivation swaps `tenants.admin.service` for a stub that refuses with
+  // `ProEditionError` in Free, so asserting the row gets created would fail there for a reason that
+  // has nothing to do with what is under test.
+  test("creating a tenant never refuses the selector", async () => {
+    const slug = `selsweep-fleet-${process.pid}`;
+    const err = await createTenant(
+      fromSelector(deadId),
+      { name: "SelSweepFleet", slug },
+      appDb,
+    )
+      .then(() => null)
+      .catch((e: unknown) => e);
+    try {
+      expect(err instanceof ActiveTenantNotFoundError).toBe(false);
+    } finally {
+      await suDb.tenant.deleteMany({ where: { slug } });
+    }
+  });
+});
+
 // The other half of "refuses, naming the selector": the CONTRACT has to name that refusal too.
 //
-// These routes could not answer 404 before — a dead selector read as an empty tenant, or was refused
-// by a fence of their own that already declared its 404. Making them refuse turned 404 into a status
-// they return on purpose, and a status a route returns that the contract does not name is a status no
-// generated client knows how to handle: `openapi.json` is committed and `bun openapi:check` gates it,
-// and the Eden types the console is built against come from the same declarations.
+// A status a route returns that the contract does not name is a status no generated client knows how
+// to handle: `openapi.json` is committed and `bun openapi:check` gates it, and the Eden types the
+// console is built against come from the same declarations. #284 declared the twelve routes it had
+// just converted; issue #297 is the fifty older ones, which could ALREADY answer 404 before that
+// change and did not say so, and it is why this sweep is no longer scoped to two files.
 //
-// Scoped to the two controllers this PR converted end to end, because they are the only ones where
-// every route that takes the context passes it to a scoped read — `integrations-admin` has
-// `/catalog`, which calls `ctxOrThrow` for authorization alone and correctly declares no 404, so a
-// file-wide rule there would be wrong rather than merely noisy.
-//
-// NOT a repo-wide sweep on purpose: the same predicate flags 50 more routes across 15 controllers
-// that could ALREADY answer 404 before this change and do not declare it. That is a real gap and a
-// separate one; fixing it here would mean rewriting response maps in files this PR never touches.
+// Measured for #297 over real HTTP — the whole app, a real Postgres, a SUPER_ADMIN cookie and an
+// `X-Tenant-Id` naming a tenant that does not exist. 48 of the 50 answered
+// `404 errors.tenantNotFound` carrying `X-Tenant-Id-Invalid`; the two that did not are the fleet
+// routes exempted below. Reachability is input-dependent and that is why it was measured rather than
+// read: `POST /v1/agents/tts/list` answers 200 for `provider: "openai"` (a curated list, no scoped
+// read) and 404 for `provider: "elevenlabs"`, which resolves a vault credential inside the scope.
 export function passesTheContextOn(routeBlock: string): boolean {
   // Used as a VALUE — an argument, an assignment, a property — rather than as a bare authorization
   // statement (`ctxOrThrow(tenantContext);`), which reaches no scoped read and so cannot 404.
@@ -446,6 +478,64 @@ function routeBlocks(source: string): string[] {
     m = re.exec(source);
   }
   return starts.map((s, i) => source.slice(s, starts[i + 1] ?? source.length));
+}
+
+// `GET /v1/knowledge/bases`, the way the published contract spells it: the controller's own prefix,
+// and `:id` rewritten as `{id}`.
+export function routeIdentity(
+  prefix: string,
+  block: string,
+): { verb: string; path: string } | null {
+  const verb = /^ {2}\.(\w+)\(/.exec(block)?.[1];
+  const route = /^ {2}\.\w+\(\s*\n?\s*"([^"]*)"/.exec(block)?.[1];
+  if (!verb || route === undefined) return null;
+  const joined = `${prefix}${route === "/" ? "" : route}`;
+  return {
+    verb: verb.toLowerCase(),
+    path: joined.replace(/:(\w+)/g, "{$1}"),
+  };
+}
+
+// The routes that pass the context on and STILL cannot answer 404, so the sweep would otherwise be
+// asking them to declare a status they never return — which is its own kind of wrong contract.
+//
+// Both are fleet operations: `listTenants` and `createTenant` branch to `asSuperAdminOn` for a
+// SUPER_ADMIN caller, so the id the selector carries is never looked up. Measured, with a dead
+// selector, both answered 200 (and `POST /v1/tenants` created the tenant). Pinned as behaviour by
+// the two rows in the DB-backed block above rather than only asserted here, because an exemption
+// that only lives in a list is an exemption nobody re-checks.
+const CANNOT_REFUSE_THE_SELECTOR = new Set([
+  "get /v1/tenants",
+  "post /v1/tenants",
+]);
+
+async function sweepRoutes(): Promise<
+  Array<{ file: string; verb: string; path: string; declared: string }>
+> {
+  const { Glob } = await import("bun");
+  const out: Array<{
+    file: string;
+    verb: string;
+    path: string;
+    declared: string;
+  }> = [];
+  for await (const rel of new Glob("**/*.controller.ts").scan("src/api")) {
+    const file = `src/api/${rel}`;
+    const source = await Bun.file(file).text();
+    const prefix = /new Elysia\(\{[^}]*prefix:\s*"([^"]+)"/.exec(source)?.[1];
+    if (!prefix) continue;
+    for (const block of routeBlocks(source)) {
+      if (!passesTheContextOn(block)) continue;
+      const id = routeIdentity(prefix, block);
+      if (!id) throw new Error(`unreadable route in ${file}`);
+      out.push({
+        file,
+        ...id,
+        declared: /response:\s*errors\(([^)]*)\)/.exec(block)?.[1] ?? "",
+      });
+    }
+  }
+  return out;
 }
 
 describe("a route that can refuse the selector declares that refusal", () => {
@@ -471,67 +561,55 @@ describe("a route that can refuse the selector declares that refusal", () => {
     expect(passesTheContextOn(AUTH_ONLY)).toBe(false);
   });
 
-  test("every knowledge and experiments route that passes it on names 404", async () => {
-    const offenders: string[] = [];
-    let checked = 0;
-    for (const file of [
-      "src/api/v1/knowledge.controller.ts",
-      "src/api/v1/experiments.controller.ts",
-    ]) {
-      const source = await Bun.file(file).text();
-      for (const block of routeBlocks(source)) {
-        if (!passesTheContextOn(block)) continue;
-        checked++;
-        const declared = /response:\s*errors\(([^)]*)\)/.exec(block)?.[1] ?? "";
-        if (!declared.includes("404")) {
-          offenders.push(
-            `${file}: ${/\n\s*"([^"]+)",/.exec(block)?.[1] ?? "?"} → errors(${declared})`,
-          );
-        }
-      }
-    }
+  test("the identity is the one the published contract uses", () => {
+    expect(routeIdentity("/v1/knowledge", PASSES_ON)).toEqual({
+      verb: "get",
+      path: "/v1/knowledge/bases",
+    });
+    expect(
+      routeIdentity(
+        "/v1/chatwoot",
+        `  .get(\n    "/inboxes/:id/widget-health",\n    async ({ tenantContext }) => {\n      const x = ctxOrThrow(tenantContext);\n    },\n  )`,
+      ),
+    ).toEqual({ verb: "get", path: "/v1/chatwoot/inboxes/{id}/widget-health" });
+  });
+
+  test("every v1 route that passes the context on names 404", async () => {
+    const routes = await sweepRoutes();
+    const offenders = routes
+      .filter((r) => !CANNOT_REFUSE_THE_SELECTOR.has(`${r.verb} ${r.path}`))
+      .filter((r) => !r.declared.includes("404"))
+      .map((r) => `${r.file}: ${r.verb} ${r.path} → errors(${r.declared})`);
     expect(offenders).toEqual([]);
     // …and the sweep is looking at something. A rule whose subject can become empty starts passing
     // for the wrong reason the day someone reshapes these files.
-    expect(checked).toBeGreaterThanOrEqual(20);
-  });
-
-  // The twelfth route, in a file the rule above cannot cover as a whole.
-  test("the integration create route names it too", async () => {
-    const source = await Bun.file(
-      "src/api/v1/integrations-admin.controller.ts",
-    ).text();
-    const create = routeBlocks(source).find((b) =>
-      b.includes("createIntegrationInstance("),
+    expect(routes.length).toBeGreaterThanOrEqual(150);
+    // An exemption for a route that no longer exists (renamed, moved, deleted) silently exempts
+    // nothing and hides the day it comes back under the same name. Every entry has to be met.
+    const seen = new Set(routes.map((r) => `${r.verb} ${r.path}`));
+    expect([...CANNOT_REFUSE_THE_SELECTOR].filter((k) => !seen.has(k))).toEqual(
+      [],
     );
-    expect(create).toBeDefined();
-    expect(
-      /response:\s*errors\(([^)]*)\)/.exec(create as string)?.[1],
-    ).toContain("404");
   });
 
-  // The contract as it is actually published, not only as it is declared in the source: `openapi.json`
-  // is the committed artifact and what a generated client reads.
-  test("the published contract carries the 404 for those routes", async () => {
+  // The contract as it is actually published, not only as it is declared in the source:
+  // `openapi.json` is the committed artifact and what a generated client reads.
+  test("the published contract carries the 404 for every one of them", async () => {
     const spec = (await Bun.file("openapi.json").json()) as {
       paths: Record<
         string,
         Record<string, { responses?: Record<string, unknown> }>
       >;
     };
-    const expected: Array<[string, string]> = [
-      ["/v1/knowledge/bases", "get"],
-      ["/v1/knowledge/bases", "post"],
-      ["/v1/knowledge/embedding-block", "get"],
-      ["/v1/knowledge/search", "post"],
-      ["/v1/knowledge/approvals", "get"],
-      ["/v1/experiments", "get"],
-      ["/v1/experiments", "post"],
-      ["/v1/integrations/instances", "post"],
-    ];
-    const missing = expected.filter(
-      ([path, verb]) => !spec.paths?.[path]?.[verb]?.responses?.["404"],
-    );
+    const routes = await sweepRoutes();
+    const missing = routes
+      .filter((r) => !CANNOT_REFUSE_THE_SELECTOR.has(`${r.verb} ${r.path}`))
+      .filter((r) => !spec.paths?.[r.path]?.[r.verb]?.responses?.["404"])
+      .map((r) => `${r.verb} ${r.path}`);
     expect(missing).toEqual([]);
+    // The published spec has to be the same set of routes the source sweep found: a path this test
+    // cannot look up would otherwise pass as "no 404 missing".
+    const unpublished = routes.filter((r) => !spec.paths?.[r.path]?.[r.verb]);
+    expect(unpublished.map((r) => `${r.verb} ${r.path}`)).toEqual([]);
   });
 });

@@ -61,7 +61,7 @@ export const webhooksController = new Elysia({
         "List webhook subscriptions",
         "Returns the tenant's outbound webhook subscriptions; the secret value never crosses this surface.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .post(
@@ -107,7 +107,7 @@ export const webhooksController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
     },
   )
   .patch(

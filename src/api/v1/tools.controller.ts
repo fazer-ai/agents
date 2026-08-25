@@ -154,7 +154,7 @@ export const toolsController = new Elysia({
         "List tools",
         "List all custom HTTP tool definitions for the current tenant.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .get(
@@ -218,7 +218,7 @@ export const toolsController = new Elysia({
         "Create tool",
         "Create a custom HTTP tool definition for the current tenant.",
       ),
-      response: errors(400, 401, 403, 409),
+      response: errors(400, 401, 403, 404, 409),
       body: writeBody,
     },
   )

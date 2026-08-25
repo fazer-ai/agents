@@ -180,6 +180,7 @@
     "vaultBaseUrlRequired": "Este tipo de credencial exige uma URL base.",
     "vaultFieldRequired": "O campo \"{{field}}\" não pode ficar vazio",
     "vaultFieldUnknown": "Este tipo de credencial não tem um campo chamado \"{{field}}\"",
+    "vaultFieldWhitespace": "O campo \"{{field}}\" não pode começar nem terminar com espaço ou quebra de linha. Remova e salve de novo.",
     "vaultNameInUse": "Já existe um segredo com esse nome e tipo",
     "vaultParamNameRequired": "O nome do parâmetro é obrigatório para este tipo de credencial",
     "vaultRefNotFound": "Essa referência do cofre não aponta para nenhuma credencial: {{ref}}",

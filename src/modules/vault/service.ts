@@ -363,14 +363,25 @@ function validateParamName(raw: string, kind: string): string {
 // HMAC key never travels, both sides hold it, and `createHmac` uses it verbatim — so rewriting ours
 // would fail every signature at the provider instead of here. Refusing changes no secret, needs no
 // per-kind exception, and hands the operator the one fact they could not see.
+// The sentence names the field when there is one, because that is the only place the name survives:
+// `AppError.field` is dropped by the MCP writer (`failOf` sends `e.message`) and by the console's
+// save-error path, so a padded Langfuse key would otherwise refuse with a sentence that cannot say
+// WHICH of the two is padded — for whitespace, of all things, which the operator cannot see.
 function assertNoSurroundingWhitespace(value: string, field?: string): void {
   if (value === value.trim()) return;
+  if (field !== undefined) {
+    throw new AppError(
+      `value.${field} must not begin or end with whitespace`,
+      400,
+      "errors.vaultFieldWhitespace",
+      { field },
+      field,
+    );
+  }
   throw new AppError(
     "vault secret must not begin or end with whitespace",
     400,
     "errors.vaultSecretWhitespace",
-    undefined,
-    field,
   );
 }
 

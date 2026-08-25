@@ -38,6 +38,7 @@ import {
 // translate('errors.vaultNameInUse', 'A secret with this name and type already exists')
 // translate('errors.vaultParamNameRequired', 'Param name is required for this credential type')
 // translate('errors.vaultRefNotFound', 'That vault reference does not point to any credential: {{ref}}')
+// translate('errors.vaultFieldWhitespace', 'The "{{field}}" field must not begin or end with a space or line break. Remove it and save again.')
 // translate('errors.vaultSecretWhitespace', 'A vault secret must not begin or end with a space or line break. Remove it and save again.')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {

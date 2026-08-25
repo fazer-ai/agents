@@ -210,7 +210,12 @@ describe.skipIf(!dbUp)(
           appDb,
         ),
       );
-      expect(e.translationKey).toBe("errors.vaultSecretWhitespace");
+      // The SENTENCE has to name it, not only `AppError.field`: the MCP writer sends `e.message` and
+      // the console's save path drops the field, so a generic sentence leaves the operator hunting
+      // invisible whitespace across two inputs.
+      expect(e.translationKey).toBe("errors.vaultFieldWhitespace");
+      expect(e.translationParams).toEqual({ field: "publicKey" });
+      expect(e.message).toContain("publicKey");
       expect(e.field).toBe("publicKey");
     });
   },

@@ -180,6 +180,7 @@
     "vaultBaseUrlRequired": "This credential type requires a base URL.",
     "vaultFieldRequired": "The \"{{field}}\" field must not be empty",
     "vaultFieldUnknown": "This credential type has no field called \"{{field}}\"",
+    "vaultFieldWhitespace": "The \"{{field}}\" field must not begin or end with a space or line break. Remove it and save again.",
     "vaultNameInUse": "A secret with this name and type already exists",
     "vaultParamNameRequired": "Param name is required for this credential type",
     "vaultRefNotFound": "That vault reference does not point to any credential: {{ref}}",

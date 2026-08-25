@@ -85,6 +85,9 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // deciding correctness — and the debounce lane can be switched off entirely, which would have
   // stranded every queued message on an install that does not use debounce.
   INGEST_MESSAGE: "shared",
+  // Shared: a sweep with a cadence of minutes and one indexed query per tenant. The recovery it
+  // arms is a DEBOUNCE job, which is claimed on the fast lane on its own account (issue #228).
+  DELIVERY_SWEEP: "shared",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -104,6 +107,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   DEBOUNCE: false,
   MEMORY_COMPACT: false,
   INGEST_MESSAGE: false,
+  DELIVERY_SWEEP: false,
 };
 
 // Same discipline again, and both of these maps were added by the change that introduced
@@ -124,6 +128,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   APPOINTMENT_REMINDER: false,
   REDIRECT_FOLLOWUP: false,
   MEMORY_COMPACT: false,
+  DELIVERY_SWEEP: false,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
@@ -138,6 +143,7 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   APPOINTMENT_REMINDER: false,
   REDIRECT_FOLLOWUP: false,
   MEMORY_COMPACT: false,
+  DELIVERY_SWEEP: false,
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];

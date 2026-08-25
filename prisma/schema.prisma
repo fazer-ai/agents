@@ -66,6 +66,7 @@ enum SchedulerJobKind {
   REDIRECT_FOLLOWUP
   MEMORY_COMPACT
   INGEST_MESSAGE
+  DELIVERY_SWEEP
 }
 
 enum SchedulerJobStatus {
@@ -334,12 +335,19 @@ model ChatwootWebhookDelivery {
   attempts           Int                   @default(0)
   receivedAt         DateTime              @default(now()) @map("received_at")
   processedAt        DateTime?             @map("processed_at")
+  // The Chatwoot display id this delivery was about. The ONLY thing the recovery sweep needs to
+  // re-arm the conversation's flush, and deliberately the only thing stored: the flush re-reads the
+  // messages from Chatwoot itself, so the event body never has to be persisted. Null on an event
+  // that names no conversation, and on every row written before this column existed.
+  conversationId     Int?                  @map("conversation_id")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
 
   @@unique([chatwootInstanceId, deliveryId])
   @@index([tenantId])
+  // Serves the recovery sweep, which asks for the oldest rows still on PROCESSING.
+  @@index([status, receivedAt])
   @@map("chatwoot_webhook_deliveries")
 }
 

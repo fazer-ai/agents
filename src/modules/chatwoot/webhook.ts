@@ -448,6 +448,7 @@ export async function recordAndProcessChatwootDelivery(
     { tenantId: params.tenantId, instanceId: params.instanceId },
     params.deliveryId,
     params.normalized.event,
+    params.normalized.conversationId,
   );
   return processChatwootDelivery({
     tenantId: params.tenantId,
@@ -477,11 +478,18 @@ async function claimDelivery(
   scope: { tenantId: bigint; instanceId: bigint },
   deliveryId: string,
   event: string,
+  conversationId: number | null,
 ): Promise<{ rowId: bigint; duplicate: boolean }> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= LEDGER_CLAIM_ATTEMPTS; attempt++) {
     try {
-      return await recordDelivery(base, scope, deliveryId, event);
+      return await recordDelivery(
+        base,
+        scope,
+        deliveryId,
+        event,
+        conversationId,
+      );
     } catch (err) {
       lastErr = err;
       logger.warn(
@@ -508,6 +516,7 @@ async function recordDelivery(
   scope: { tenantId: bigint; instanceId: bigint },
   deliveryId: string,
   event: string,
+  conversationId: number | null,
 ): Promise<{ rowId: bigint; duplicate: boolean }> {
   try {
     const row = await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
@@ -518,6 +527,10 @@ async function recordDelivery(
           deliveryId,
           event,
           status: "PENDING",
+          // The one thing a recovery sweep needs if this delivery is stranded on PROCESSING by a
+          // process death: which conversation to re-arm (issue #228). Nothing else about the event
+          // is stored — the flush re-reads its messages from Chatwoot.
+          conversationId,
         },
         select: { id: true },
       }),
@@ -3159,8 +3172,10 @@ export async function processChatwootDelivery(
     });
   }
 
-  // tx2: mark processed. NOTE: a crash between tx1 and tx2 strands the row in PROCESSING; a
-  // reaper (stale PROCESSING→PENDING) lands with the durable payload store.
+  // tx2: mark processed. NOTE: a crash between tx1 and tx2 still strands the row in PROCESSING —
+  // nothing here can close that window, because the process is gone. What closes it is the recovery
+  // sweep (./delivery-sweep.ts), which re-arms the conversation's flush rather than replaying the
+  // event: the flush re-reads the messages from Chatwoot, so the payload never had to be stored.
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.chatwootWebhookDelivery.update({
       where: { id: params.deliveryRowId },

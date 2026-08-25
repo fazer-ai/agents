@@ -9,6 +9,10 @@ import {
 } from "@/lib/db-guard";
 import { registerAppointmentReminderHandler } from "@/modules/appointments/reminders";
 import { registerRedirectFollowUpHandlers } from "@/modules/channel-redirect/followup";
+import {
+  ensureAllDeliverySweeps,
+  registerDeliverySweepHandler,
+} from "@/modules/chatwoot/delivery-sweep";
 import { registerDebounceHandler } from "@/modules/debounce/handler";
 import {
   startDebounceWorker,
@@ -165,6 +169,7 @@ if (config.schedulerWorker.enabled) {
   registerAppointmentReminderHandler();
   registerRedirectFollowUpHandlers();
   registerMemoryHandlers();
+  registerDeliverySweepHandler();
   startScheduler();
   // Arm the per-tenant execution-log retention sweep for every existing tenant (best-effort: a
   // boot-time DB outage just means the sweep arms on the next restart).
@@ -175,6 +180,12 @@ if (config.schedulerWorker.enabled) {
   // sweep's row is lost (DB reset, external truncate). Same best-effort discipline as above.
   void ensureAllTenantSweeps().catch((error) =>
     logger.warn({ error }, "Failed to arm follow-up sweeps"),
+  );
+  // Arm the per-tenant recovery sweep for Chatwoot deliveries stranded on PROCESSING (issue #228).
+  // A deploy is both the thing that strands them and the thing that runs this, so the boot arm is
+  // what makes the recovery reach the rows the restart itself created.
+  void ensureAllDeliverySweeps().catch((error) =>
+    logger.warn({ error }, "Failed to arm Chatwoot delivery sweeps"),
   );
 }
 

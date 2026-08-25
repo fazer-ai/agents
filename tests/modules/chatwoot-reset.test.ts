@@ -18,6 +18,7 @@ import {
 } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
+import { withKeyedQueue } from "@/lib/locks";
 import { CHATWOOT_AUTH_HEADER } from "@/modules/chatwoot/constants";
 import {
   receiveChatwootWebhook,
@@ -502,7 +503,7 @@ describe.skipIf(!dbUp)(
     //
     // Held from another connection, the lock proves the ordering directly: while it is held, nothing
     // of the memory may be gone.
-    test("the checkpoint is deleted under the lock, not before it", async () => {
+    test("the checkpoint is deleted inside the critical section, not before it", async () => {
       const threadId = contactInboxThreadId(tenantId, instanceId, 301);
       const cp = await getCheckpointer();
       await buildThreadStateGraph(cp).updateState(
@@ -528,13 +529,15 @@ describe.skipIf(!dbUp)(
       const cw = fakeChatwoot();
       globalThis.fetch = cw.impl;
       const survived: boolean[] = [];
-      // Kept OUT of the transaction's return value on purpose: returning it would make Prisma await
-      // the reset before committing, and the reset is waiting on the lock that commit releases.
       let running: Promise<void> = Promise.resolve();
       let resetFailed: unknown;
-      // The memory step is the FIRST of the reset, so it blocks here almost immediately.
-      await suDb.$transaction(async (tx) => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`ingest:${threadId}`})::bigint)`;
+      // Occupies the thread's critical section the way ingestion, a turn, the nudge and compaction
+      // all do now: the process-local queue, not a `pg_advisory_xact_lock`. The lock was what an
+      // earlier version of this test held, and it stopped meaning anything the moment this family
+      // moved off it (issue #225): the reset would have sailed straight past it and deleted the
+      // checkpoint while a peer was mid-read, which is the exact failure being pinned here.
+      await withKeyedQueue(`ingest:${threadId}`, async () => {
+        // The memory step is the FIRST of the reset, so it blocks here almost immediately.
         running = sendReset().catch((err) => {
           resetFailed = err;
         });

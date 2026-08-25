@@ -15,6 +15,7 @@ import { runAgentNudge } from "@/graph/nudge";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { countingBase } from "../utils/counting-base";
 import { PromptCapturingModel } from "../utils/scripted-models";
 
 // The gate on the PROACTIVE side: a follow-up is a turn the agent starts, so a contact the reactive
@@ -261,21 +262,27 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
       wanted = false;
       return new Response('{"authorized":true}', { status: 200 });
     });
-    // Recorded per ask: the one made inside the thread claim runs in an advisory-lock transaction,
-    // so it must arrive WITH a connection to read on. A provider that opens its own there asks a
-    // pinned pool for a second one, which on `DB_POOL_MAX=1` fails — and jobRetired swallows a
-    // failed read as "not retired", so the fence would go quiet exactly where it matters.
-    const gotDb: boolean[] = [];
+    // Recorded per ask, and what is recorded is how many Prisma transactions are OPEN at that moment.
+    // The ask made inside the thread claim used to have to arrive WITH a connection, because the
+    // claim was one long advisory-lock transaction and a provider opening its own there asked a
+    // pinned pool for a second one, which fails under `DB_POOL_MAX=1` — and jobRetired swallows a
+    // failed read as "not retired", so the fence went quiet exactly where it mattered. The claim
+    // holds no transaction any more (issue #225), so the invariant that replaces it is the stronger
+    // one: the ask is free to open its own scope precisely because nothing is pinned.
+    const openTxAtAsk: number[] = [];
+    const strictness: boolean[] = [];
+    const counted = countingBase(appDb);
     const outcome = await runAgentNudge({
       tenantId,
       threadId: `${tenantId}:${instanceId}:9413`,
       nudge: { source: "followup", kind: "inactivity" },
       postActions: { assignLabels: ["seguimento"] },
-      stillWanted: async (scoped) => {
-        gotDb.push(scoped !== undefined);
+      stillWanted: async ({ strict }) => {
+        openTxAtAsk.push(counted.open());
+        strictness.push(strict);
         return wanted;
       },
-      base: appDb,
+      base: counted.base,
       deps: {
         makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
         makeClient: s.makeClient,
@@ -287,9 +294,16 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
 
     expect(outcome).toBe("stale");
     expect(auth.calls).toHaveLength(1);
-    // The entry ask has no transaction to share; the last one is the claim's, and it does.
-    expect(gotDb[0]).toBe(false);
-    expect(gotDb.at(-1)).toBe(true);
+    // Asked at both moments it has to be: on entry, and again inside the thread claim, which is what
+    // makes it exclusive with a /reset. And no ask, the claim's included, finds a transaction open.
+    expect(openTxAtAsk.length).toBeGreaterThanOrEqual(2);
+    expect(openTxAtAsk.filter((n) => n !== 0)).toEqual([]);
+    // EXACTLY ONE of them asks strictly, and it is not the entry one. The two want opposite answers
+    // when the read itself fails: before the write an unreadable answer has to stop the run, and
+    // around a send it must not, because throwing there abandons the bookkeeping of a message the
+    // customer already has.
+    expect(strictness[0]).toBe(false);
+    expect(strictness.filter(Boolean)).toHaveLength(1);
     // The durable half: had the run gone on, this row would name the conversation the reset cleared.
     const row = await suDb.agentThread.findUnique({
       where: {

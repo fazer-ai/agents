@@ -14,6 +14,7 @@ import {
   type ClaimedJob,
   enqueueJob,
   jobRetired,
+  jobRetiredStrict,
   retireJobsByDedupeKey,
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -410,8 +411,9 @@ export async function redirectFollowUpHandler(
   // was legitimately armed.
   // Takes the caller's connection when there is one — see jobRetired: asked from inside the nudge's
   // thread claim, a second connection would stall on the pool while the advisory lock is held.
-  const retired = (scoped?: ScopedDb): Promise<boolean> =>
-    jobRetired(job, base, scoped);
+  // Its own short scope: the nudge's thread claim no longer holds a transaction to borrow one from
+  // (issue #225).
+  const retired = (): Promise<boolean> => jobRetired(job, base);
   if (await retired()) return { outcome: "done" };
   const parsed = parseThreadId(payload.widgetThreadId);
   if (!parsed || parsed.tenantId !== job.tenantId) return { outcome: "done" };
@@ -476,10 +478,20 @@ export async function redirectFollowUpHandler(
   // a snapshot (`runScopedOn` uses the default isolation), which leaves a gap of one statement with no
   // network in it — narrower than the window this whole fence exists to close.
   //
-  // Takes the caller's connection when there is one — the same rule `jobRetired` states and for the
-  // same reason: asked from inside the nudge's thread claim, a second connection would stall on an
-  // exhausted pool while the advisory lock is held, and `DB_POOL_MAX=1` is a supported setting.
-  const fence = async (scoped?: ScopedDb): Promise<LadderVerdict> => {
+  // Opens its own transaction, always. It used to take the nudge's connection when the nudge had one,
+  // because a claim that HELD a transaction across a checkpointer round trip could drain the pool a
+  // second connection then had to wait on. That claim holds no transaction any more — the critical
+  // section is a process-local queue with short transactions inside it — so there is no caller
+  // connection to inherit, and the branch that inherited one was unreachable.
+  const fence = async (
+    // Which question is being asked, in the sense `runAgentNudge` means it. The default is the one
+    // every send-time ask wants: an unreadable answer is "go", because unwinding past a delivered
+    // message abandons its watermark and the customer gets it twice. `strict` is the ask that runs
+    // BEFORE anything is written — inside the thread's critical section, ahead of the divider and
+    // the checkpoint — where guessing recreates the memory /reset just cleared and nothing later
+    // catches it. Only the RETIREMENT half changes: liveness stays fail-open in both.
+    opts: { strict?: boolean } = {},
+  ): Promise<LadderVerdict> => {
     const read = async (db: ScopedDb) => {
       // NOTE: The retirement read goes LAST, and that ordering is the whole of what the transaction
       // can offer: the two statements share a connection but not a snapshot (default READ COMMITTED),
@@ -505,7 +517,12 @@ export async function redirectFollowUpHandler(
       // The cost is that for a TEST agent the retirement answer is one statement older than the send
       // instead of the last thing read. For every other agent nothing moves: the stamp is not read at
       // all, so retirement stays last.
-      if (await jobRetired(job, base, db)) return "retired" as const;
+      if (
+        await (opts.strict
+          ? jobRetiredStrict(job, base, db)
+          : jobRetired(job, base, db))
+      )
+        return "retired" as const;
       if (a.mode !== "test") return "go" as const;
       // NOTE: The stamp lookup fails open ON ITS OWN: unknown liveness is live, and the answer that
       // matters more — retirement — is already decided above.
@@ -536,27 +553,25 @@ export async function redirectFollowUpHandler(
         return "go" as const;
       }
     };
-    const answer = await (scoped
-      ? read(scoped)
-      : runScopedOn(base, sysCtx(tenantId), read)
-    ).catch(async (err: unknown) => {
-      logger.warn(
-        "channel-redirect: could not re-read the ladder's fence (widget thread=%s): %s",
-        payload.widgetThreadId,
-        err instanceof Error ? err.message : String(err),
-      );
-      // NOTE: The liveness half is unknown here, and unknown is live. Retirement is not allowed to be
-      // unknown by association: a statement the server rejects leaves the transaction aborted, so it
-      // cannot be asked in THAT one — it gets a fresh one. A /reset is the strongest fence in this
-      // file and it must not be overtaken by a question that was added on top of it.
-      //
-      // Not when the caller handed us its connection: opening a second one inside the nudge's
-      // advisory lock is the pool inversion `jobRetired` warns about, and that path keeps its own
-      // retirement fences either side of this one.
-      if (scoped) return "go" as const;
-      const stillRetired = await jobRetired(job, base).catch(() => false);
-      return stillRetired ? ("retired" as const) : ("go" as const);
-    });
+    const answer = await runScopedOn(base, sysCtx(tenantId), read).catch(
+      async (err: unknown) => {
+        // The strict ask does not get an answer it could not read. Its caller is about to write, so
+        // "go" here is the guess this whole distinction exists to refuse: the scheduler's own bounded
+        // retry carries the job instead.
+        if (opts.strict) throw err;
+        logger.warn(
+          "channel-redirect: could not re-read the ladder's fence (widget thread=%s): %s",
+          payload.widgetThreadId,
+          err instanceof Error ? err.message : String(err),
+        );
+        // NOTE: The liveness half is unknown here, and unknown is live. Retirement is not allowed to be
+        // unknown by association: a statement the server rejects leaves the transaction aborted, so it
+        // cannot be asked in THAT one — it gets a fresh one. A /reset is the strongest fence in this
+        // file and it must not be overtaken by a question that was added on top of it.
+        const stillRetired = await jobRetired(job, base).catch(() => false);
+        return stillRetired ? ("retired" as const) : ("go" as const);
+      },
+    );
     return answer;
   };
   const entryInboxId = cfg.entryInboxId ?? payload.entryInboxId;
@@ -592,7 +607,7 @@ export async function redirectFollowUpHandler(
         threadId: payload.widgetThreadId,
         nudge: chatFollowupNudge(cfg.chatFollowupInstructions),
         base,
-        // NOTE: The composite fence, on the nudge's own connection. This stage's window is the widest
+        // NOTE: The composite fence. This stage's window is the widest
         // in the ladder — the config load is fail-closed on `enabled`, but the model turn runs after
         // it and the post comes after that — so a switch flipped mid-turn would otherwise reach the
         // customer from an agent that is already off.
@@ -606,7 +621,7 @@ export async function redirectFollowUpHandler(
         // fence again, so an agent still off there ends the ladder anyway; what is left uncovered is
         // an operator switching OFF during the turn and back ON inside the milliseconds before that
         // ask, and an agent that is live again by then has a defensible claim to the next stage.
-        stillWanted: async (scoped) => (await fence(scoped)) === "go",
+        stillWanted: async ({ strict }) => (await fence({ strict })) === "go",
         deps,
       });
     }

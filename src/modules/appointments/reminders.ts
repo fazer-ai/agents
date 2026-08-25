@@ -4,13 +4,14 @@ import basePrisma from "@/api/lib/prisma";
 import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
-import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadAppointmentContext } from "@/modules/appointments/context";
 import {
   type ClaimedJob,
   cancelPendingJobsByPrefix,
   enqueueJob,
   jobRetired,
+  jobRetiredStrict,
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
@@ -355,11 +356,14 @@ export async function appointmentReminderHandler(
   // Re-read rather than trusted from `job.payload`: that snapshot is from claim time, which is
   // exactly the moment before the stamp lands. A read that fails does NOT suppress the reminder —
   // an unknown answer must not silently drop a customer-facing message that was legitimately armed.
-  // Takes the caller's connection when there is one: asked from inside the nudge's thread claim,
-  // which runs in an advisory-lock transaction, a second connection would stall the lock (see
-  // jobRetired).
-  const retired = (scoped?: ScopedDb): Promise<boolean> =>
-    jobRetired(job, base, scoped);
+  // Opens its own short scope. It used to take the caller's connection, because the nudge's thread
+  // claim ran inside an advisory-lock transaction and a second connection there would stall the lock
+  // under DB_POOL_MAX=1. That claim holds no transaction any more (issue #225), so there is nothing
+  // to borrow and nothing to stall.
+  const retired = (): Promise<boolean> => jobRetired(job, base);
+  // Strict at the thread claim, where guessing wrong recreates state /reset cleared (see
+  // jobRetiredStrict). The two asks above it can afford the lenient answer.
+  const retiredStrict = (): Promise<boolean> => jobRetiredStrict(job, base);
 
   // NOTE: Asked TWICE, and the two calls buy different things. Here it saves the Google round trip, which
   // holds this handler for up to ten seconds. After it — see below — is where the window actually
@@ -397,7 +401,8 @@ export async function appointmentReminderHandler(
     // And once more inside, where the nudge re-asks its own questions across the model call. Three
     // reads is not belt-and-braces: each covers a different slow step (the Google fetch, the nudge's
     // setup, the judge's call), and the stamp can land in any of them.
-    stillWanted: async (scoped) => !(await retired(scoped)),
+    stillWanted: async ({ strict }) =>
+      !(await (strict ? retiredStrict() : retired())),
     nudge: reminderNudge({
       isLast,
       askConfirmation,

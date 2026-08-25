@@ -19,6 +19,7 @@ import {
   enqueueJob,
   jobNotRetiredSql,
   jobRetired,
+  jobRetiredStrict,
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
@@ -472,7 +473,8 @@ export async function followUpHandler(
     // operator resets, which returns the conversation to the agent, and the second probe then finds
     // it bot-owned again and posts a nudge from the episode that was just erased. The tombstone is
     // the question the hand-back cannot answer yes to.
-    stillWanted: async (scoped) => !(await jobRetired(job, base, scoped)),
+    stillWanted: async ({ strict }) =>
+      !(await (strict ? jobRetiredStrict(job, base) : jobRetired(job, base))),
     base,
     deps,
   });

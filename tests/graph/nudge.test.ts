@@ -551,11 +551,11 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(seen[0] ?? "").toContain(OWED);
   });
 
-  // The claim is taken inside a transaction, and a transaction can reject AFTER its callback ran (a
-  // failed commit, a lost connection). A claim made on the way to a rejection that skips the release
-  // never comes back: every later compaction on this thread reads it as busy and reschedules until
-  // the process restarts.
-  test("a claim taken on a transaction that then rejects is still released", async () => {
+  // The claim is taken inside the thread's critical section, and anything in there can fail after
+  // the mark is set: a short transaction, the checkpointer write, a lost connection. A claim made on
+  // the way to a rejection that skips the release never comes back, and every later compaction on
+  // this thread reads it as busy and reschedules until the process restarts.
+  test("a claim taken in a section that then fails is still released", async () => {
     const contactInboxId = 8803;
     await seedConv(914, null, new Date(), contactInboxId);
     const graphThreadId = contactInboxThreadId(
@@ -563,55 +563,54 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       instanceId,
       contactInboxId,
     );
-    // Fails ONLY the transaction that takes the claim, and only on the way OUT — the callback, and
-    // the mark inside it, already ran. That transaction is the one that acquires the advisory lock,
-    // which is how it is told apart from the scoped reads the nudge makes before it; failing all of
-    // them would abort the nudge before it ever claimed, and the test would pass with the bug in.
+    // Fails ONLY the transaction that writes the sidecar row, and only on the way OUT: that write is
+    // the one piece of work that runs AFTER the mark is set, so it is what tells the post-claim
+    // transaction apart from the reads the nudge makes before it. Failing by count instead was the
+    // first attempt and it proved nothing: the nudge opens several transactions before the section,
+    // so the count tripped early, the nudge aborted before it ever claimed, and the test passed with
+    // the release deleted.
     // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
-    const failCommitOnLock = (client: any): any =>
+    const failAfterClaim = (client: any): any =>
       new Proxy(client, {
         get(target, prop, receiver) {
           if (prop === "$extends") {
             return (...args: unknown[]) =>
-              failCommitOnLock(target.$extends(...args));
+              failAfterClaim(target.$extends(...args));
           }
           if (prop === "$transaction") {
             return async (fn: (tx: unknown) => Promise<unknown>) => {
-              let tookTheLock = false;
+              let wroteTheMarker = false;
               // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
               const out = await target.$transaction((tx: any) =>
                 fn(
                   new Proxy(tx, {
                     // biome-ignore lint/suspicious/noExplicitAny: same
                     get(t2: any, p2: string | symbol, r2: unknown) {
-                      if (p2 === "$executeRaw") {
-                        return (
-                          strings: TemplateStringsArray,
-                          ...v: unknown[]
-                        ) => {
-                          if (
-                            String(strings?.[0]).includes(
-                              "pg_advisory_xact_lock",
-                            )
-                          ) {
-                            tookTheLock = true;
-                          }
-                          return t2.$executeRaw(strings, ...v);
-                        };
+                      if (p2 === "agentThread") {
+                        const model = Reflect.get(t2, p2, r2);
+                        return new Proxy(model, {
+                          // biome-ignore lint/suspicious/noExplicitAny: same
+                          get(m: any, mp: string | symbol, mr: unknown) {
+                            if (mp === "upsert") {
+                              wroteTheMarker = true;
+                            }
+                            return Reflect.get(m, mp, mr);
+                          },
+                        });
                       }
                       return Reflect.get(t2, p2, r2);
                     },
                   }),
                 ),
               );
-              if (tookTheLock) throw new Error("connection lost on commit");
+              if (wroteTheMarker) throw new Error("connection lost on commit");
               return out;
             };
           }
           return Reflect.get(target, prop, receiver);
         },
       });
-    const rejectingBase = failCommitOnLock(appDb) as typeof appDb;
+    const rejectingBase = failAfterClaim(appDb) as typeof appDb;
     const s2 = stub();
 
     await expect(

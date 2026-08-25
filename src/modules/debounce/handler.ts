@@ -7,7 +7,7 @@ import {
   type RuntimeDeps,
   runLoadedTurn,
 } from "@/graph/runtime";
-import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
@@ -32,7 +32,11 @@ import {
 import { announceFailedTurn } from "@/modules/conversations/failure-note";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import type { FlowStage } from "@/modules/flowlog/stages";
-import { type ClaimedJob, jobRetired } from "@/modules/scheduler/service";
+import {
+  type ClaimedJob,
+  jobRetired,
+  jobRetiredStrict,
+} from "@/modules/scheduler/service";
 import {
   type JobResult,
   registerDeadLetterHandler,
@@ -85,7 +89,7 @@ export interface CoalesceTurnContext {
   // Whether the run that queued this turn is still wanted, handed straight to `runLoadedTurn`,
   // which asks it inside the `ingest:` lock and again before each post. REQUIRED and nullable so a
   // future caller has to answer it: `null` says "nothing queued this, nothing can call it off".
-  stillWanted: ((db?: ScopedDb) => Promise<boolean>) | null;
+  stillWanted: ((opts: { strict: boolean }) => Promise<boolean>) | null;
   // Label for the single summary log line ("debounce flush" / "reengage").
   label: string;
   // When set (the debounce flush passes "debounce"), emit a flow line for the coalescing under the
@@ -504,7 +508,10 @@ export async function flushDebounceJob(
         // the model — all waits the command lands inside — and the run would still recreate the
         // thread. `runLoadedTurn` asks it inside the `ingest:` lock, which is the boundary the
         // divider and the claim are written at, and again before each post.
-        stillWanted: async (scoped) => !(await jobRetired(job, base, scoped)),
+        stillWanted: async ({ strict }) =>
+          !(await (strict
+            ? jobRetiredStrict(job, base)
+            : jobRetired(job, base))),
         authContext,
         // Re-read, not the value captured before the authorization call: that call is a round-trip
         // to somebody else's endpoint with a ceiling of ten seconds, and a message that arrived and

@@ -4,8 +4,8 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { withEntityLock } from "@/lib/locks";
-import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { withKeyedQueue } from "@/lib/locks";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
@@ -170,14 +170,24 @@ export interface RunLoadedTurnParams {
   // false suppresses the reply (outcome "superseded"). Used by the debounce flush to drop a reply
   // when a newer message arrived mid-turn; the re-armed flush then answers the full burst.
   shouldPost?: () => Promise<boolean>;
-  // Whether the run that queued this turn is still wanted. Asked INSIDE the `ingest:` lock, on that
-  // transaction's own connection, and again immediately before each post — the two moments this
-  // function writes something the customer or the next turn can see.
+  // Whether the run that queued this turn is still wanted. Asked INSIDE the `ingest:` critical
+  // section, and again immediately before each post — the two moments this function writes
+  // something the customer or the next turn can see.
+  //
+  // It takes no `db`: the section is a process-local queue now rather than one pinned transaction,
+  // so the ask opens its own short scope instead of borrowing an enclosing connection.
+  //
+  // `strict` says WHICH of the two questions is being asked, because they want opposite answers when
+  // the read itself fails. Inside the critical section, before anything is written, an unreadable
+  // answer must stop the run: guessing "still wanted" there recreates the state /reset just cleared,
+  // and no later fence catches it. Everywhere else the ask guards a SEND, and throwing would abandon
+  // the bookkeeping of a message already delivered, so an unreadable answer lets the run continue and
+  // be fenced by the CAS at the end.
   //
   // REQUIRED and nullable rather than optional, because the compiler is the only thing that will ask
   // a future caller the question. `null` is the honest answer for a turn that arrives straight from
   // a webhook: there is no job to call it off, and nothing else names this run.
-  stillWanted: ((db?: ScopedDb) => Promise<boolean>) | null;
+  stillWanted: ((opts: { strict: boolean }) => Promise<boolean>) | null;
 }
 
 // Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
@@ -451,7 +461,8 @@ export async function runLoadedTurn(
   // Adjacency is not something a call site can be trusted to keep — it has to be where the question
   // is asked.
   const writeCalledOff = async (): Promise<boolean> =>
-    params.stillWanted !== null && !(await params.stillWanted());
+    params.stillWanted !== null &&
+    !(await params.stillWanted({ strict: false }));
 
   // The two gates that stand between this turn and a post, and neither is the fence — the fences are
   // the asks at the sends themselves. This is where a run that is already called off stops before
@@ -820,114 +831,125 @@ export async function runLoadedTurn(
       const checkpointerForDivider =
         params.deps?.checkpointer ?? (await getCheckpointer());
       const dividerGraph = buildThreadStateGraph(checkpointerForDivider);
-      const closedConversationId = await runScopedOn(
-        base,
-        sysCtx(tenantId),
-        (db) =>
-          withEntityLock(db, `ingest:${graphThreadId}`, async () => {
-            // THE ASK, and this is the boundary it belongs at: everything below writes — the divider
-            // is a real message, the claim arms compaction, and the invoke that follows persists the
-            // channel. A turn queued by a job the command retired must not recreate the thread the
-            // command just cleared, with input from before it.
-            //
-            // Inside the lock and on THIS transaction's connection, for both halves of the reason
-            // the nudge states: the lock is what makes the answer exclusive with a compaction
-            // rewrite, and `runScopedOn` has pinned this pooled connection, so a nested scope would
-            // ask the pool for a second one and time out under `DB_POOL_MAX=1`.
-            if (params.stillWanted && !(await params.stillWanted(db))) {
-              calledOff = true;
-              return null;
-            }
-            // Per-THREAD marker (AgentThread keyed by contact-inbox): a different display_id ⇒ a new
-            // conversation reusing the thread. Per-thread and not per-contact, so a multi-channel
-            // contact never gets a spurious divider from activity on another channel.
-            const key = {
-              tenantId_chatwootInstanceId_contactInboxId: {
-                tenantId,
-                chatwootInstanceId: instanceId,
-                contactInboxId,
-              },
-            };
-            const existing = await db.agentThread.findUnique({
+      // Serialized by the process-local queue, not by a transaction-scoped advisory lock. The
+      // section below spans the checkpointer, which is a SEPARATE Postgres pool, and holding a Prisma
+      // transaction open across it drained the main pool and made every other query in the process
+      // wait out `maxWait` (issue #225). The reads and the write are short transactions of their own
+      // now; the ordering between them is what the queue provides.
+      const closedConversationId = await withKeyedQueue(
+        `ingest:${graphThreadId}`,
+        async () => {
+          // THE ASK, and this is the boundary it belongs at: everything below writes — the divider
+          // is a real message, the claim arms compaction, and the invoke that follows persists the
+          // channel. A turn queued by a job the command retired must not recreate the thread the
+          // command just cleared, with input from before it.
+          //
+          // Still inside the critical section, which is what the exclusion needs; what changed is
+          // that the section is no longer one pinned transaction. The reason #202 gave for running
+          // this on the enclosing transaction's connection was that `runScopedOn` had pinned it and
+          // a nested scope would ask the pool for a second one and time out under `DB_POOL_MAX=1`.
+          // With the queue there is no enclosing transaction to nest inside, so the ask opens its
+          // own short one and the hazard it was avoiding cannot arise.
+          if (
+            params.stillWanted &&
+            !(await params.stillWanted({ strict: true }))
+          ) {
+            calledOff = true;
+            return null;
+          }
+          // Per-THREAD marker (AgentThread keyed by contact-inbox): a different display_id ⇒ a new
+          // conversation reusing the thread. Per-thread and not per-contact, so a multi-channel
+          // contact never gets a spurious divider from activity on another channel.
+          const key = {
+            tenantId_chatwootInstanceId_contactInboxId: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              contactInboxId,
+            },
+          };
+          const existing = await runScopedOn(base, sysCtx(tenantId), (db) =>
+            db.agentThread.findUnique({
               where: key,
               select: {
                 lastConversationId: true,
                 lastSyncedMessageId: true,
               },
-            });
-            // Read BEFORE this turn adds its own claim: what matters is whether some OTHER invoke
-            // is mid-flight on this thread (./attendance-boundary.ts, case 1).
-            const anotherInvokeIsReading = isTurnInFlight(graphThreadId);
-            // Claim the thread against a memory-compaction rewrite, under the lock the rewrite also
-            // holds while it checks. That makes the two exclusive rather than merely staggered: the
-            // rewrite either completes before this claim — and the invoke below then loads the
-            // rewritten channel — or it finds the thread claimed and stands down. Claimed for EVERY
-            // turn, not only the ones that cross a boundary, because what has to be excluded is the
-            // invoke, and every turn has one. Released in the `finally` below, on every exit.
-            markTurnInFlight(graphThreadId);
-            claimedGraphThread = true;
-            const prev = existing?.lastConversationId ?? null;
-            const alreadyStarted = needsAttendanceStartProbe(
-              prev,
-              conversationId,
-              anotherInvokeIsReading,
-            )
-              ? attendanceHasStarted(
+            }),
+          );
+          // Read BEFORE this turn adds its own claim: what matters is whether some OTHER invoke
+          // is mid-flight on this thread (./attendance-boundary.ts, case 1).
+          const anotherInvokeIsReading = isTurnInFlight(graphThreadId);
+          // Claim the thread against a memory-compaction rewrite, inside the critical section the
+          // rewrite also enters while it checks. That makes the two exclusive rather than merely staggered: the
+          // rewrite either completes before this claim — and the invoke below then loads the
+          // rewritten channel — or it finds the thread claimed and stands down. Claimed for EVERY
+          // turn, not only the ones that cross a boundary, because what has to be excluded is the
+          // invoke, and every turn has one. Released in the `finally` below, on every exit.
+          markTurnInFlight(graphThreadId);
+          claimedGraphThread = true;
+          const prev = existing?.lastConversationId ?? null;
+          const alreadyStarted = needsAttendanceStartProbe(
+            prev,
+            conversationId,
+            anotherInvokeIsReading,
+          )
+            ? attendanceHasStarted(
+                (
                   (
-                    (
-                      await dividerGraph.getState({
-                        configurable: { thread_id: graphThreadId },
-                      })
-                    ).values as { messages?: BaseMessage[] } | undefined
-                  )?.messages ?? [],
-                  conversationId,
-                )
-              : false;
-            const claim = claimAttendanceBoundary({
-              previousConversationId: prev,
-              conversationId,
-              anotherInvokeIsReading,
-              attendanceAlreadyStarted: alreadyStarted,
-            });
-            if (claim.writeDivider) {
-              await dividerGraph.updateState(
-                { configurable: { thread_id: graphThreadId } },
-                { messages: [conversationDividerMessage(conversationId)] },
-                THREAD_STATE_NODE,
-              );
-            }
-            // THE TURN RECORDS THE INBOUND ID IT HANDLED (issue #194). Ingestion decides whether an
-            // out-of-order message may still speak for the thread's attendance by comparing it with
-            // the newest inbound id the thread has seen (./attendance-boundary.ts,
-            // movesAttendanceFrontier), and this writer used to leave no id at all — so the frontier
-            // was blind to the most ordinary way a new attendance opens, which is the customer
-            // writing and the bot ANSWERING. A delayed message from the previous conversation then
-            // compared newer than a stale mark, walked the marker back and armed compaction for the
-            // conversation being served.
-            //
-            // ON EVERY HANDLED TURN, and `lastConversationId` alone stays conditional. An earlier
-            // round cut this back to boundaries only, reasoning that the frontier merely suppresses a
-            // boundary claim — which was already false by then, because the same change had given it
-            // a second job: it also decides whether the message may carry an attendance STAMP. And
-            // `advanceMarker` is false in two different situations, not one. The second is a boundary
-            // DEFERRED because another invoke is reading (./attendance-boundary.ts, case 1): the
-            // conversation really is new, this turn really is handling its first message, and the
-            // marker deliberately stays behind. Recording nothing there leaves the frontier back in
-            // the previous attendance, so a delayed message from it reads as current, stamps itself
-            // at the end of the channel, and the compaction cut then treats the live conversation as
-            // the closed prefix.
-            //
-            // The scalar only. `recentSyncedMessageIds` is ingestion's own ledger of what IT folded
-            // in, and the two never overlap by construction — a message a turn answers is never
-            // ingested (../modules/chatwoot/webhook.ts) — so putting a turn's id in that set would
-            // describe an append that never happened.
-            const inboundId = params.messageId;
-            const markedId =
-              inboundId === undefined
-                ? null
-                : Math.max(existing?.lastSyncedMessageId ?? 0, inboundId);
-            if (claim.advanceMarker || markedId !== null) {
-              await db.agentThread.upsert({
+                    await dividerGraph.getState({
+                      configurable: { thread_id: graphThreadId },
+                    })
+                  ).values as { messages?: BaseMessage[] } | undefined
+                )?.messages ?? [],
+                conversationId,
+              )
+            : false;
+          const claim = claimAttendanceBoundary({
+            previousConversationId: prev,
+            conversationId,
+            anotherInvokeIsReading,
+            attendanceAlreadyStarted: alreadyStarted,
+          });
+          if (claim.writeDivider) {
+            await dividerGraph.updateState(
+              { configurable: { thread_id: graphThreadId } },
+              { messages: [conversationDividerMessage(conversationId)] },
+              THREAD_STATE_NODE,
+            );
+          }
+          // THE TURN RECORDS THE INBOUND ID IT HANDLED (issue #194). Ingestion decides whether an
+          // out-of-order message may still speak for the thread's attendance by comparing it with
+          // the newest inbound id the thread has seen (./attendance-boundary.ts,
+          // movesAttendanceFrontier), and this writer used to leave no id at all — so the frontier
+          // was blind to the most ordinary way a new attendance opens, which is the customer
+          // writing and the bot ANSWERING. A delayed message from the previous conversation then
+          // compared newer than a stale mark, walked the marker back and armed compaction for the
+          // conversation being served.
+          //
+          // ON EVERY HANDLED TURN, and `lastConversationId` alone stays conditional. An earlier
+          // round cut this back to boundaries only, reasoning that the frontier merely suppresses a
+          // boundary claim — which was already false by then, because the same change had given it
+          // a second job: it also decides whether the message may carry an attendance STAMP. And
+          // `advanceMarker` is false in two different situations, not one. The second is a boundary
+          // DEFERRED because another invoke is reading (./attendance-boundary.ts, case 1): the
+          // conversation really is new, this turn really is handling its first message, and the
+          // marker deliberately stays behind. Recording nothing there leaves the frontier back in
+          // the previous attendance, so a delayed message from it reads as current, stamps itself
+          // at the end of the channel, and the compaction cut then treats the live conversation as
+          // the closed prefix.
+          //
+          // The scalar only. `recentSyncedMessageIds` is ingestion's own ledger of what IT folded
+          // in, and the two never overlap by construction — a message a turn answers is never
+          // ingested (../modules/chatwoot/webhook.ts) — so putting a turn's id in that set would
+          // describe an append that never happened.
+          const inboundId = params.messageId;
+          const markedId =
+            inboundId === undefined
+              ? null
+              : Math.max(existing?.lastSyncedMessageId ?? 0, inboundId);
+          if (claim.advanceMarker || markedId !== null) {
+            await runScopedOn(base, sysCtx(tenantId), (db) =>
+              db.agentThread.upsert({
                 where: key,
                 create: {
                   tenantId,
@@ -947,10 +969,11 @@ export async function runLoadedTurn(
                     ? {}
                     : { lastSyncedMessageId: markedId }),
                 },
-              });
-            }
-            return claim.closedConversationId;
-          }),
+              }),
+            );
+          }
+          return claim.closedConversationId;
+        },
       );
       // Out here, where the lock's transaction has committed: nothing was claimed, nothing was
       // written, and the thread stays as the command left it.
@@ -1007,7 +1030,7 @@ export async function runLoadedTurn(
     // state read, the toolset build and the prompt resolution, and on a conversation with no
     // contact-inbox the lock block does not run at all — so an invoke that inherited the lock's
     // answer would be a turn fenced only where it happens to have been convenient.
-    if (params.stillWanted && !(await params.stillWanted())) {
+    if (params.stillWanted && !(await params.stillWanted({ strict: false }))) {
       logger.info(
         "turn: the run was retired before the invoke (conv=%s), standing down",
         String(conversationId),

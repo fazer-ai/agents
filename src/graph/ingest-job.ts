@@ -2,10 +2,15 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { armCompaction } from "@/modules/memory/compact";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { type IngestRole, ingestMessageIntoThread } from "./ingest";
+
+function sysCtx(tenantId: bigint): TenantContext {
+  return { tenantId, userId: null, role: "TENANT_ADMIN" };
+}
 
 // Continuous ingestion as a scheduler job, instead of an append made inline while the webhook is
 // being acked (issue #194).
@@ -169,13 +174,18 @@ export async function ingestHandler(
     // row and bumps it — the later enqueue wins, and standing down here is what lets it, since that
     // re-armed row carries the same message and will run again.
     //
-    // Read on the connection the ingestion transaction already holds. Opening a second one here
-    // would let a busy shared lane deadlock on its own pool (see ./ingest.ts, stillWanted).
-    stillWanted: async (db) => {
-      const row = await db.schedulerJob.findUnique({
-        where: { id: job.id },
-        select: { status: true, claimSeq: true },
-      });
+    // Its own short transaction. This used to have to run on the ingestion transaction's connection,
+    // because that transaction stayed open across the whole critical section and a second one here
+    // could deadlock a busy shared lane against its own pool. The section holds no transaction while
+    // this runs any more (issue #225), so the read stands on its own; what still matters is that it
+    // happens INSIDE the critical section, which is what makes it exclusive with the reset.
+    stillWanted: async () => {
+      const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.schedulerJob.findUnique({
+          where: { id: job.id },
+          select: { status: true, claimSeq: true },
+        }),
+      );
       return row?.status === "CLAIMED" && row.claimSeq === job.claimSeq;
     },
     tenantId,

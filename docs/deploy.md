@@ -45,6 +45,10 @@ Destructive migrations (enum changes, `ACCESS EXCLUSIVE` on `users`) want a main
 
 The realtime pub/sub, the scheduler tick, the debounce worker, the outbound-webhook worker, and the alert-delivery worker are single-process by construction (in-process state + reentrancy guards). **Run one replica.** To scale the web tier: run the extra replicas with `SCHEDULER_WORKER_ENABLED=false`, `WEBHOOK_WORKER_ENABLED=false`, `DEBOUNCE_WORKER_ENABLED=false`, and `ALERT_WORKER_ENABLED=false` (workers off), and keep exactly one "leader" replica with them on. Scaling with workers on every replica causes double-fires and lost cross-replica realtime events (a durable claim / leader election / Redis pub/sub bridge is the post-MVP path).
 
+**One more thing now depends on the single process.** The `ingest:<threadId>` critical section (held by continuous ingestion, a reactive turn, the proactive nudge, memory compaction and `/reset`, all on the same key) is serialized by an in-process queue (`withKeyedQueue`), not by the Postgres advisory lock it used before. That lock had to go: those sections span the LangGraph checkpointer, which is a **separate** connection pool, and holding a Prisma transaction open across it drained the main pool and made unrelated queries fail on `maxWait` (issue #225). The in-flight turn registry (`src/graph/inflight.ts`) was already in-process, so the invariant is not new; its scope is wider. On a genuinely scaled web tier two replicas can now interleave a thread's channel read-modify-write, which is issue #203.
+
+`/reset` is the one member that still holds a transaction across the checkpointer, deliberately: there the rollback is what keeps a failed checkpoint delete from leaving an operator told the memory was cleared while the thread still answers from it (`src/modules/memory/reset.ts`).
+
 ### 5. CSP / build
 
 Production serves `dist/index.html`; its inline-script hashes are baked into the CSP at build time. Rebuild (`bun run build`) after editing any inline script. Per-tenant theming uses `setProperty` (DOM API, no inline `<style>`) precisely so it does not break the CSP hash.

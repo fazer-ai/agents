@@ -2,8 +2,8 @@ import { type BaseMessage, HumanMessage } from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
-import { withEntityLock } from "@/lib/locks";
-import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { withKeyedQueue } from "@/lib/locks";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   attendanceHasStarted,
   claimAttendanceBoundary,
@@ -167,7 +167,7 @@ export interface IngestMessageParams {
   // a callback that opened a transaction of its own would have every handler waiting for a
   // connection only another handler could release — all of them timing out, retrying, and
   // dead-lettering a customer's message on a pool that was merely busy.
-  stillWanted?: (db: ScopedDb) => Promise<boolean>;
+  stillWanted?: () => Promise<boolean>;
 }
 
 export async function ingestMessageIntoThread(
@@ -186,16 +186,22 @@ export async function ingestMessageIntoThread(
   const checkpointer = params.checkpointer ?? (await getCheckpointer());
   const graph = buildThreadStateGraph(checkpointer);
 
-  const done = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    withEntityLock(db, `ingest:${graphThreadId}`, async () => {
-      const key = {
-        tenantId_chatwootInstanceId_contactInboxId: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          contactInboxId,
-        },
-      };
-      const row = await db.agentThread.findUnique({
+  // Serialized by the process-local queue, not by a transaction-scoped advisory lock. This section
+  // reads and writes the checkpointer, which is a SEPARATE Postgres pool, and holding a Prisma
+  // transaction open across those round-trips drained the main pool: every other query in the
+  // process, the webhook ack included, then waited out `maxWait` and failed (issue #225). The row
+  // read and the row write are short transactions of their own now, and the ordering between them,
+  // which is what the lock was really providing, comes from the queue.
+  const done = await withKeyedQueue(`ingest:${graphThreadId}`, async () => {
+    const key = {
+      tenantId_chatwootInstanceId_contactInboxId: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+      },
+    };
+    const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.agentThread.findUnique({
         where: key,
         select: {
           lastSyncedMessageId: true,
@@ -204,163 +210,164 @@ export async function ingestMessageIntoThread(
           recentAgentMessageIds: true,
           lastConversationId: true,
         },
-      });
-      // Never re-append a message already folded into the thread. The decision is membership in the
-      // ids this direction remembers, NOT a comparison against the highest one: within a direction
-      // the ids arrive out of order too, and a mark read the later-arriving lower id as handled
-      // (./ingest-dedup.ts, issue #194). ONE SET PER DIRECTION for the older half of the same
-      // reason: the two writers do not share a latency at all, so an attendant answering a voice
-      // note lands before the note itself.
-      const recent =
-        params.role === "human_agent"
-          ? (row?.recentAgentMessageIds ?? [])
-          : (row?.recentSyncedMessageIds ?? []);
-      const prevMark =
-        (params.role === "human_agent"
-          ? row?.lastAgentMessageId
-          : row?.lastSyncedMessageId) ?? null;
-      if (ingestVerdict(recent, messageId) !== "new") {
-        return { outcome: "skipped" as const, closedConversationId: null };
-      }
+      }),
+    );
+    // Never re-append a message already folded into the thread. The decision is membership in the
+    // ids this direction remembers, NOT a comparison against the highest one: within a direction
+    // the ids arrive out of order too, and a mark read the later-arriving lower id as handled
+    // (./ingest-dedup.ts, issue #194). ONE SET PER DIRECTION for the older half of the same
+    // reason: the two writers do not share a latency at all, so an attendant answering a voice
+    // note lands before the note itself.
+    const recent =
+      params.role === "human_agent"
+        ? (row?.recentAgentMessageIds ?? [])
+        : (row?.recentSyncedMessageIds ?? []);
+    const prevMark =
+      (params.role === "human_agent"
+        ? row?.lastAgentMessageId
+        : row?.lastSyncedMessageId) ?? null;
+    if (ingestVerdict(recent, messageId) !== "new") {
+      return { outcome: "skipped" as const, closedConversationId: null };
+    }
 
-      // STAND DOWN, and do it from IN HERE. A turn owning the channel undoes anything appended
-      // beside it, and the caller cannot ask this question for us: a check made before the lock is
-      // only staggered, not exclusive — the turn can take the lock, mark itself and release between
-      // that check and this one, and the append then lands inside the invoke after all. Turns mark
-      // themselves under this same lock (./inflight.ts, ../graph/runtime.ts), so asking here is what
-      // makes the two mutually exclusive.
-      //
-      // Nothing is written on this path, watermark included: the message has to stay OWED. Recording
-      // it as handled and not having it is the exact shape of the loss this whole change is about.
-      //
-      // PROCESS-LOCAL, like the two consumers of that claim that came before this one. It holds under
-      // the invariant ./inflight.ts states and docs/deploy.md §4 asks for (one replica, or one leader
-      // sharing the process with the scheduler worker) and not on a scaled web tier, where turns run
-      // wherever the webhook landed. What is new here is that this consumer's cross-process failure
-      // is the irreversible one, so it is written down: issue #203, for the module rather than for
-      // this call site.
-      if (params.deferIfTurnInFlight && isTurnInFlight(graphThreadId)) {
-        return { outcome: "deferred" as const, closedConversationId: null };
-      }
+    // STAND DOWN, and do it from IN HERE. A turn owning the channel undoes anything appended
+    // beside it, and the caller cannot ask this question for us: a check made before the lock is
+    // only staggered, not exclusive — the turn can take the lock, mark itself and release between
+    // that check and this one, and the append then lands inside the invoke after all. Turns mark
+    // themselves under this same lock (./inflight.ts, ../graph/runtime.ts), so asking here is what
+    // makes the two mutually exclusive.
+    //
+    // Nothing is written on this path, watermark included: the message has to stay OWED. Recording
+    // it as handled and not having it is the exact shape of the loss this whole change is about.
+    //
+    // PROCESS-LOCAL, like the two consumers of that claim that came before this one. It holds under
+    // the invariant ./inflight.ts states and docs/deploy.md §4 asks for (one replica, or one leader
+    // sharing the process with the scheduler worker) and not on a scaled web tier, where turns run
+    // wherever the webhook landed. What is new here is that this consumer's cross-process failure
+    // is the irreversible one, so it is written down: issue #203, for the module rather than for
+    // this call site.
+    if (params.deferIfTurnInFlight && isTurnInFlight(graphThreadId)) {
+      return { outcome: "deferred" as const, closedConversationId: null };
+    }
 
-      // REVOKED WHILE WE WAITED. Checked here and not before the lock, for the same reason the
-      // deferral above is: /reset does its clearing while holding this lock, so a check made outside
-      // it answers about a thread that may be cleared a microsecond later. "Skipped" and not
-      // "deferred" — the work is not owed later, it is not wanted at all.
-      if (params.stillWanted && !(await params.stillWanted(db))) {
-        return { outcome: "skipped" as const, closedConversationId: null };
-      }
+    // REVOKED WHILE WE WAITED. Checked here and not before the lock, for the same reason the
+    // deferral above is: /reset does its clearing while holding this lock, so a check made outside
+    // it answers about a thread that may be cleared a microsecond later. "Skipped" and not
+    // "deferred" — the work is not owed later, it is not wanted at all.
+    if (params.stillWanted && !(await params.stillWanted())) {
+      return { outcome: "skipped" as const, closedConversationId: null };
+    }
 
-      // A LATE ARRIVAL DOES NOT MOVE THE FRONTIER, and the frontier is the THREAD'S — the newest id
-      // either writer has folded in, not the newest of the arriving one's own direction. The rule
-      // and both hazards it closes live in ./attendance-boundary.ts; what matters here is that the
-      // marks go in as a pair, because reading only this direction's is what let a delayed customer
-      // message close the live conversation an attendant had just opened.
-      //
-      // A late message is appended with its own conversation stamp — which is all the compaction cut
-      // needs to file it correctly — and nothing else.
-      const movesFrontier = movesAttendanceFrontier(
-        [row?.lastSyncedMessageId, row?.lastAgentMessageId],
-        messageId,
-      );
+    // A LATE ARRIVAL DOES NOT MOVE THE FRONTIER, and the frontier is the THREAD'S — the newest id
+    // either writer has folded in, not the newest of the arriving one's own direction. The rule
+    // and both hazards it closes live in ./attendance-boundary.ts; what matters here is that the
+    // marks go in as a pair, because reading only this direction's is what let a delayed customer
+    // message close the live conversation an attendant had just opened.
+    //
+    // A late message is appended with its own conversation stamp — which is all the compaction cut
+    // needs to file it correctly — and nothing else.
+    const movesFrontier = movesAttendanceFrontier(
+      [row?.lastSyncedMessageId, row?.lastAgentMessageId],
+      messageId,
+    );
 
-      // Which attendance this message belongs to, and what that costs the thread. One decision,
-      // shared with the reactive turn and the proactive nudge (./attendance-boundary.ts). Human-agent
-      // messages count as a start: an agent who opens the conversation sends its first message, and
-      // skipping them here left that message sitting inside the PREVIOUS attendance, summarized and
-      // removed with it when the customer finally replied.
-      const prevConv = row?.lastConversationId ?? null;
-      const anotherInvokeIsReading = isTurnInFlight(graphThreadId);
-      const alreadyStarted =
-        movesFrontier &&
-        needsAttendanceStartProbe(
-          prevConv,
+    // Which attendance this message belongs to, and what that costs the thread. One decision,
+    // shared with the reactive turn and the proactive nudge (./attendance-boundary.ts). Human-agent
+    // messages count as a start: an agent who opens the conversation sends its first message, and
+    // skipping them here left that message sitting inside the PREVIOUS attendance, summarized and
+    // removed with it when the customer finally replied.
+    const prevConv = row?.lastConversationId ?? null;
+    const anotherInvokeIsReading = isTurnInFlight(graphThreadId);
+    const alreadyStarted =
+      movesFrontier &&
+      needsAttendanceStartProbe(
+        prevConv,
+        conversationId,
+        anotherInvokeIsReading,
+      )
+        ? attendanceHasStarted(
+            (
+              (
+                await graph.getState({
+                  configurable: { thread_id: graphThreadId },
+                })
+              ).values as { messages?: BaseMessage[] } | undefined
+            )?.messages ?? [],
+            conversationId,
+          )
+        : false;
+    const claim = !movesFrontier
+      ? // Appended, and nothing else: no divider, no marker move, no compaction armed.
+        {
+          writeDivider: false,
+          advanceMarker: false,
+          closedConversationId: null,
+        }
+      : claimAttendanceBoundary({
+          previousConversationId: prevConv,
           conversationId,
           anotherInvokeIsReading,
-        )
-          ? attendanceHasStarted(
-              (
-                (
-                  await graph.getState({
-                    configurable: { thread_id: graphThreadId },
-                  })
-                ).values as { messages?: BaseMessage[] } | undefined
-              )?.messages ?? [],
-              conversationId,
-            )
-          : false;
-      const claim = !movesFrontier
-        ? // Appended, and nothing else: no divider, no marker move, no compaction armed.
-          {
-            writeDivider: false,
-            advanceMarker: false,
-            closedConversationId: null,
-          }
-        : claimAttendanceBoundary({
-            previousConversationId: prevConv,
-            conversationId,
-            anotherInvokeIsReading,
-            attendanceAlreadyStarted: alreadyStarted,
-          });
+          attendanceAlreadyStarted: alreadyStarted,
+        });
 
-      // A RETRY REPAIRING ITS OWN HALF-DONE ATTEMPT MUST NOT REWRITE THE MESSAGE. The append and the
-      // row that records it are not atomic, so attempt 2 can find attempt 1's message already in the
-      // channel — and it would not write the same thing twice over: the boundary claim now sees this
-      // conversation's stamp already present, so `writeDivider` is false, and the derived id makes
-      // the reducer REPLACE the divider-bearing message with a plain one. The attendance boundary
-      // would be silently erased by the retry that was supposed to be idempotent.
-      //
-      // So the append is skipped outright when its id is already there. Only the row write is owed,
-      // which is exactly what failed the first time.
-      // ASKED OF THE CHANNEL, EVERY TIME. The first version gated this on the scheduler's attempt
-      // count, which is a different question wearing the same clothes: "has this job run before"
-      // does not answer "is this message already in the thread". A duplicate delivery re-arming the
-      // row while it is CLAIMED flips it back to PENDING, `failJob`'s CAS then refuses, and attempts
-      // stays at zero — so a run that IS repairing a half-done append announced itself as the first
-      // one, and went on to replace the divider-bearing message with a plain one. One channel read
-      // is the price of asking the question that is actually being asked.
-      const alreadyAppended = (
+    // A RETRY REPAIRING ITS OWN HALF-DONE ATTEMPT MUST NOT REWRITE THE MESSAGE. The append and the
+    // row that records it are not atomic, so attempt 2 can find attempt 1's message already in the
+    // channel — and it would not write the same thing twice over: the boundary claim now sees this
+    // conversation's stamp already present, so `writeDivider` is false, and the derived id makes
+    // the reducer REPLACE the divider-bearing message with a plain one. The attendance boundary
+    // would be silently erased by the retry that was supposed to be idempotent.
+    //
+    // So the append is skipped outright when its id is already there. Only the row write is owed,
+    // which is exactly what failed the first time.
+    // ASKED OF THE CHANNEL, EVERY TIME. The first version gated this on the scheduler's attempt
+    // count, which is a different question wearing the same clothes: "has this job run before"
+    // does not answer "is this message already in the thread". A duplicate delivery re-arming the
+    // row while it is CLAIMED flips it back to PENDING, `failJob`'s CAS then refuses, and attempts
+    // stays at zero — so a run that IS repairing a half-done append announced itself as the first
+    // one, and went on to replace the divider-bearing message with a plain one. One channel read
+    // is the price of asking the question that is actually being asked.
+    const alreadyAppended = (
+      (
         (
-          (
-            await graph.getState({
-              configurable: { thread_id: graphThreadId },
-            })
-          ).values as { messages?: BaseMessage[] } | undefined
-        )?.messages ?? []
-      ).some((m) => m.id === `ingest:${messageId}`);
+          await graph.getState({
+            configurable: { thread_id: graphThreadId },
+          })
+        ).values as { messages?: BaseMessage[] } | undefined
+      )?.messages ?? []
+    ).some((m) => m.id === `ingest:${messageId}`);
 
-      // Every message carries the conversation it belongs to, which is what the compaction cut reads.
-      // Markers go through their factories because nothing else can make a message COUNT as one —
-      // the text alone never does, or a customer could type it (src/graph/markers.ts).
-      if (!alreadyAppended)
-        await graph.updateState(
-          { configurable: { thread_id: graphThreadId } },
-          {
-            messages: ingestedMessages(
-              params.role,
-              params.text,
-              // The whole late-arrival rule, spent here: a message that does not move the frontier
-              // claims NOTHING — not the divider, not the marker, not the attendance stamp.
-              movesFrontier ? conversationId : null,
-              claim.writeDivider,
-              messageId,
-            ),
-          },
-          THREAD_STATE_NODE,
-        );
+    // Every message carries the conversation it belongs to, which is what the compaction cut reads.
+    // Markers go through their factories because nothing else can make a message COUNT as one —
+    // the text alone never does, or a customer could type it (src/graph/markers.ts).
+    if (!alreadyAppended)
+      await graph.updateState(
+        { configurable: { thread_id: graphThreadId } },
+        {
+          messages: ingestedMessages(
+            params.role,
+            params.text,
+            // The whole late-arrival rule, spent here: a message that does not move the frontier
+            // claims NOTHING — not the divider, not the marker, not the attendance stamp.
+            movesFrontier ? conversationId : null,
+            claim.writeDivider,
+            messageId,
+          ),
+        },
+        THREAD_STATE_NODE,
+      );
 
-      // Remember THIS direction's message, and only it. The scalar stays the HIGHEST id folded in,
-      // which is now a `max` rather than an assignment: a message ingested out of order must not
-      // walk the mark backwards, or the next reader would read the thread as less complete than it
-      // is. Both messages also advance the divider marker (turns do the same).
-      const mark =
-        prevMark === null ? messageId : Math.max(prevMark, messageId);
-      const remembered = rememberIngested(recent, messageId);
-      const advance =
-        params.role === "human_agent"
-          ? { lastAgentMessageId: mark, recentAgentMessageIds: remembered }
-          : { lastSyncedMessageId: mark, recentSyncedMessageIds: remembered };
-      await db.agentThread.upsert({
+    // Remember THIS direction's message, and only it. The scalar stays the HIGHEST id folded in,
+    // which is now a `max` rather than an assignment: a message ingested out of order must not
+    // walk the mark backwards, or the next reader would read the thread as less complete than it
+    // is. Both messages also advance the divider marker (turns do the same).
+    const mark = prevMark === null ? messageId : Math.max(prevMark, messageId);
+    const remembered = rememberIngested(recent, messageId);
+    const advance =
+      params.role === "human_agent"
+        ? { lastAgentMessageId: mark, recentAgentMessageIds: remembered }
+        : { lastSyncedMessageId: mark, recentSyncedMessageIds: remembered };
+    await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.agentThread.upsert({
         where: key,
         create: {
           tenantId,
@@ -377,17 +384,17 @@ export async function ingestMessageIntoThread(
           // lost divider for a duplicated message.
           lastConversationId: claim.advanceMarker ? conversationId : prevConv,
         },
-      });
-      return {
-        outcome: "ingested" as const,
-        // Armed even when the boundary was not consumed. The attendance that just ended is
-        // compactable right now — its boundary lives on the messages, not on the divider this call
-        // declined to write — and withholding the arm would make it wait on a next message that may
-        // never come.
-        closedConversationId: claim.closedConversationId,
-      };
-    }),
-  );
+      }),
+    );
+    return {
+      outcome: "ingested" as const,
+      // Armed even when the boundary was not consumed. The attendance that just ended is
+      // compactable right now — its boundary lives on the messages, not on the divider this call
+      // declined to write — and withholding the arm would make it wait on a next message that may
+      // never come.
+      closedConversationId: claim.closedConversationId,
+    };
+  });
 
   if (done.closedConversationId !== null) {
     await params.onAttendanceClosed?.(done.closedConversationId);

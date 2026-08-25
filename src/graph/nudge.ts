@@ -2,8 +2,8 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { withEntityLock } from "@/lib/locks";
-import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { withKeyedQueue } from "@/lib/locks";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
@@ -142,7 +142,7 @@ export interface RunAgentNudgeParams {
   // second connection there stalls on an exhausted pool while holding the lock, and `DB_POOL_MAX=1`
   // is supported; the ingestion barrier takes the same argument for the same reason. Optional
   // because the other six asks are outside any transaction and have nothing to hand over.
-  stillWanted?: (db?: ScopedDb) => Promise<boolean>;
+  stillWanted?: (opts: { strict: boolean }) => Promise<boolean>;
   base?: PrismaClient;
   deps?: RuntimeDeps;
 }
@@ -468,8 +468,11 @@ export async function runAgentNudge(
   }
 
   // Absent, the answer is yes: every caller that does not schedule work has nothing to retire.
-  const stillWanted = async (db?: ScopedDb): Promise<boolean> =>
-    params.stillWanted === undefined || (await params.stillWanted(db));
+  // `strict` selects which question is being asked; see RunAgentTurnParams.stillWanted. Only the ask
+  // inside the thread's critical section, before anything is written, wants an unreadable answer to
+  // stop the run.
+  const stillWanted = async (strict = false): Promise<boolean> =>
+    params.stillWanted === undefined || (await params.stillWanted({ strict }));
 
   // THE RULE for the asks below, because a check placed by intuition is a check the next branch is
   // born without: ONE ask per stretch of I/O that precedes a write, and never any I/O between an ask
@@ -929,95 +932,105 @@ export async function runAgentNudge(
     // ingestion still owed writes one message without one line of context, and the next reader gets
     // it. See ./ingest-drain.ts for the reader that cannot make that trade.
     await drainPendingIngest(tenantId, graphThreadId, base);
-    // Taken INSIDE the try, and released only if it was actually taken: the transaction can reject
-    // after its callback ran (a failed commit, a lost connection), and a claim made on the way to a
-    // rejection that skips the `finally` never comes back — every later compaction on this thread
-    // would read it as busy and reschedule until the process restarts.
-    const claim = await runScopedOn(base, sysCtx(tenantId), (db) =>
-      withEntityLock(db, `ingest:${graphThreadId}`, async () => {
-        // The one ask that has to happen HERE and cannot be hoisted out: everything below writes the
-        // thread (the divider, the marker, and then the invoke), and /reset clears exactly those
-        // under this same lock. Outside it the answer decays — the authorization call and the drain
-        // above both take time, and a reset that lands in either window clears the memory and then
-        // has this run write it back, leaving the operator told the conversation was cleared and the
-        // agent still answering from it. Inside the lock there is no such window in either
-        // direction: either this claims the thread first (and the clear refuses on isTurnInFlight)
-        // or the clear ran first (and this sees the tombstone). Asked BEFORE markTurnInFlight, so a
-        // retired run takes no claim it would then have to release.
-        if (!(await stillWanted(db))) return null;
-        // A thread keyed by CONVERSATION rather than by contact-inbox (resolveGraphThreadId, when the
-        // contact-inbox is unknown) carries a single attendance by construction: there is no earlier
-        // one for a divider to separate this from, and no sidecar row keyed by contact-inbox to
-        // advance. Claim the thread against a compaction rewrite all the same — the invoke below is
-        // still a read-modify-write of the whole channel.
-        if (contactInboxId === null) {
-          markTurnInFlight(graphThreadId);
-          claimedGraphThread = true;
-          return {
-            writeDivider: false,
-            advanceMarker: false,
-            closedConversationId: null,
-          };
-        }
-        const key = {
-          tenantId_chatwootInstanceId_contactInboxId: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            contactInboxId,
-          },
-        };
-        const existing = await db.agentThread.findUnique({
-          where: key,
-          select: { lastConversationId: true },
-        });
-        // Read BEFORE this nudge marks its own claim: what matters is whether some OTHER invoke is
-        // mid-flight (./attendance-boundary.ts, case 1).
-        const anotherInvokeIsReading = isTurnInFlight(graphThreadId);
+    // Taken INSIDE the try, and released only if it was actually taken: a claim made on the way to
+    // a rejection that skips the `finally` never comes back, and every later compaction on this
+    // thread would then read it as busy and reschedule until the process restarts.
+    //
+    // Serialized by the process-local queue rather than by a transaction-scoped advisory lock. The
+    // work below spans the checkpointer, which is a SEPARATE Postgres pool, and holding a Prisma
+    // transaction open across it is what drained the main pool and made every other query in the
+    // process wait out `maxWait` (issue #225). The two reads and the one write are short
+    // transactions of their own now; the ordering between them is what the queue provides.
+    const claim = await withKeyedQueue(`ingest:${graphThreadId}`, async () => {
+      // The one ask that has to happen HERE and cannot be hoisted out: everything below writes the
+      // thread (the divider, the marker, and then the invoke), and /reset clears exactly those
+      // inside this same critical section. Outside it the answer decays — the authorization call
+      // and the drain above both take time, and a reset that lands in either window clears the
+      // memory and then has this run write it back, leaving the operator told the conversation was
+      // cleared and the agent still answering from it. Inside there is no such window in either
+      // direction: either this claims the thread first (and the clear refuses on isTurnInFlight) or
+      // the clear ran first (and this sees the tombstone). Asked BEFORE markTurnInFlight, so a
+      // retired run takes no claim it would then have to release.
+      //
+      // It no longer borrows an enclosing transaction's connection, because there is no longer one
+      // to borrow: what makes this exclusive is the queue, not a transaction-scoped lock.
+      if (!(await stillWanted(true))) return null;
+      // A thread keyed by CONVERSATION rather than by contact-inbox (resolveGraphThreadId, when the
+      // contact-inbox is unknown) carries a single attendance by construction: there is no earlier
+      // one for a divider to separate this from, and no sidecar row keyed by contact-inbox to
+      // advance. Claim the thread against a compaction rewrite all the same — the invoke below is
+      // still a read-modify-write of the whole channel.
+      if (contactInboxId === null) {
         markTurnInFlight(graphThreadId);
         claimedGraphThread = true;
-        const previous = existing?.lastConversationId ?? null;
-        const alreadyStarted = needsAttendanceStartProbe(
-          previous,
-          conversationId,
-          anotherInvokeIsReading,
-        )
-          ? attendanceHasStarted(
-              (
-                (await graph.getState(invokeConfig)).values as
-                  | { messages?: BaseMessage[] }
-                  | undefined
-              )?.messages ?? [],
-              conversationId,
-            )
-          : false;
-        const decided = claimAttendanceBoundary({
-          previousConversationId: previous,
-          conversationId,
-          anotherInvokeIsReading,
-          attendanceAlreadyStarted: alreadyStarted,
-        });
-        // The divider goes in BEFORE the marker moves, and inside the claim — the same order and the
-        // same lock the reactive turn uses (./runtime.ts). It used to ride in this nudge's own invoke
-        // instead, which advanced the marker on a divider that did not exist yet: a turn arriving
-        // during the generation read the conversation as already recorded, declined to write one of
-        // its own, and then this invoke appended ours AFTER that turn's messages — a divider in the
-        // middle of the attendance, which is worse than none. An invoke that never succeeded left the
-        // marker advanced and no divider at all.
-        //
-        // The invoke below does not erase it either: an invoke saves the channel it LOADED, and this
-        // one has not started yet, so it loads the divider along with everything else.
-        if (decided.writeDivider) {
-          await buildThreadStateGraph(checkpointer).updateState(
-            { configurable: { thread_id: graphThreadId } },
-            { messages: [conversationDividerMessage(conversationId)] },
-            THREAD_STATE_NODE,
-          );
-        }
-        // The sidecar row is what resolve-time compaction reads to know which attendance the thread
-        // is on. A nudge that opens a conversation used to leave it absent, and the job then exited
-        // at its generation fence with the attendance never summarized.
-        if (decided.advanceMarker) {
-          await db.agentThread.upsert({
+        return {
+          writeDivider: false,
+          advanceMarker: false,
+          closedConversationId: null,
+        };
+      }
+      const key = {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      };
+      const existing = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.agentThread.findUnique({
+          where: key,
+          select: { lastConversationId: true },
+        }),
+      );
+      // Read BEFORE this nudge marks its own claim: what matters is whether some OTHER invoke is
+      // mid-flight (./attendance-boundary.ts, case 1).
+      const anotherInvokeIsReading = isTurnInFlight(graphThreadId);
+      markTurnInFlight(graphThreadId);
+      claimedGraphThread = true;
+      const previous = existing?.lastConversationId ?? null;
+      const alreadyStarted = needsAttendanceStartProbe(
+        previous,
+        conversationId,
+        anotherInvokeIsReading,
+      )
+        ? attendanceHasStarted(
+            (
+              (await graph.getState(invokeConfig)).values as
+                | { messages?: BaseMessage[] }
+                | undefined
+            )?.messages ?? [],
+            conversationId,
+          )
+        : false;
+      const decided = claimAttendanceBoundary({
+        previousConversationId: previous,
+        conversationId,
+        anotherInvokeIsReading,
+        attendanceAlreadyStarted: alreadyStarted,
+      });
+      // The divider goes in BEFORE the marker moves, and inside the claim — the same order and the
+      // same lock the reactive turn uses (./runtime.ts). It used to ride in this nudge's own invoke
+      // instead, which advanced the marker on a divider that did not exist yet: a turn arriving
+      // during the generation read the conversation as already recorded, declined to write one of
+      // its own, and then this invoke appended ours AFTER that turn's messages — a divider in the
+      // middle of the attendance, which is worse than none. An invoke that never succeeded left the
+      // marker advanced and no divider at all.
+      //
+      // The invoke below does not erase it either: an invoke saves the channel it LOADED, and this
+      // one has not started yet, so it loads the divider along with everything else.
+      if (decided.writeDivider) {
+        await buildThreadStateGraph(checkpointer).updateState(
+          { configurable: { thread_id: graphThreadId } },
+          { messages: [conversationDividerMessage(conversationId)] },
+          THREAD_STATE_NODE,
+        );
+      }
+      // The sidecar row is what resolve-time compaction reads to know which attendance the thread
+      // is on. A nudge that opens a conversation used to leave it absent, and the job then exited
+      // at its generation fence with the attendance never summarized.
+      if (decided.advanceMarker) {
+        await runScopedOn(base, sysCtx(tenantId), (db) =>
+          db.agentThread.upsert({
             where: key,
             create: {
               tenantId,
@@ -1027,15 +1040,16 @@ export async function runAgentNudge(
               lastConversationId: conversationId,
             },
             update: { lastConversationId: conversationId },
-          });
-        }
-        return decided;
-      }),
-    );
+          }),
+        );
+      }
+      return decided;
+    });
+    // `stillWanted` said no inside the critical section: the run was retired while this got here.
     if (claim === null) return "stale";
     if (claim.closedConversationId !== null && contactInboxId !== null) {
-      // Outside the lock: this opens its own transaction, and nesting one inside an advisory-lock
-      // transaction would hold that lock across a second connection's work.
+      // Outside the critical section: this arms a job of its own and has no business inside the
+      // ordering the queue exists to provide.
       await armCompaction({
         tenantId,
         instanceId,

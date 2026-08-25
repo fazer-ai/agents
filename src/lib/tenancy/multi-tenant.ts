@@ -118,8 +118,27 @@ async function requireTenantExists(
 // NOTE: no network/LLM await inside `fn` — the transaction pins a pooled connection and
 // long I/O would exhaust the pool. Keep fn to DB work; do network I/O outside.
 //
+// "Network" includes A SECOND POSTGRES. The `ingest:<threadId>` sections used to await the LangGraph
+// checkpointer, which has its own pool and its own connections, from in here, and the rule read as satisfied
+// because nothing was calling an HTTP API. It cost the same: a connection held idle-in-transaction
+// across another pool's round-trips, this pool drained, and every unrelated query failing on
+// `maxWait` (issue #225). If `fn` awaits anything that is not this transaction, it does not belong.
+//
 // `...On` variants take the base client explicitly so integration tests can pass their own
 // (real) client instead of the singleton, which unit tests mock globally.
+// Stated rather than inherited. These ARE the Prisma defaults, and that is the problem: the two
+// failures a drained pool produces name these exact numbers ("Unable to start a transaction in the
+// given time" is `maxWait`; "a query cannot be executed on an expired transaction" is `timeout`),
+// and neither number appeared anywhere in this repository. Naming them here is what makes the
+// budget greppable from the error, and tunable in one place if it ever has to move.
+export const SCOPED_TX_OPTIONS = {
+  // Time to WAIT for a free connection before giving up.
+  maxWait: 2_000,
+  // Time the transaction may stay open once it has one. Every section in here is DB-only work by the
+  // rule above, so this is a ceiling on a pathology, not a budget anything should approach.
+  timeout: 5_000,
+} as const;
+
 export async function runScopedOn<T>(
   base: TransactionCapable,
   ctx: TenantContext,
@@ -137,7 +156,7 @@ export async function runScopedOn<T>(
     const db = tx as unknown as ScopedDb;
     if (ctx.role === "SUPER_ADMIN") await requireTenantExists(db, tenantId);
     return fn(db);
-  });
+  }, SCOPED_TX_OPTIONS);
 }
 
 export async function runScoped<T>(
@@ -157,7 +176,7 @@ export async function asSuperAdminOn<T>(
   return base.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config('app.is_super_admin', 'on', true)`;
     return fn(tx as unknown as ScopedDb);
-  });
+  }, SCOPED_TX_OPTIONS);
 }
 
 export async function asSuperAdmin<T>(

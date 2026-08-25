@@ -18,7 +18,7 @@ import type { IngestRole } from "@/graph/ingest";
 import { armIngest } from "@/graph/ingest-job";
 import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
 import { AppError, UnauthorizedError } from "@/lib/errors";
-import { withEntityLock } from "@/lib/locks";
+import { withKeyedQueue } from "@/lib/locks";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { shouldRunReset } from "@/modules/agents/test-mode";
 import { cancelThreadAppointmentReminders } from "@/modules/appointments/reminders";
@@ -1644,19 +1644,28 @@ async function maybeConsumeCommandOrGate(params: {
       //     of the three, because the operator sees the reset confirmed and the agent keeps
       //     answering from the memory they just cleared.
       //
-      // Under the shared lock the job either finished before this ran (and this deletes everything it
-      // wrote) or it finds the AgentThread row gone and drops the summary. The checkpointer call is a
-      // separate connection, which is exactly why the advisory lock — and not the transaction — is
-      // what serializes here.
+      // Inside the shared critical section the job either finished before this ran (and this deletes
+      // everything it wrote) or it finds the AgentThread row gone and drops the summary.
+      //
+      // THE ONLY MEMBER OF THIS FAMILY THAT STILL HOLDS A TRANSACTION ACROSS THE CHECKPOINTER, and
+      // deliberately. Everywhere else that hold was removed because it drained the pool (issue #225);
+      // here the transaction IS the safety net. `clearContactMemory` deletes the rows first and the
+      // checkpoint last precisely so a failed checkpoint delete rolls the rows back and leaves /reset
+      // a clean retry (../memory/reset.ts spells out why the reverse order is worse). Moving the
+      // checkpointer call outside would commit the rows and then possibly fail, leaving the operator
+      // told the memory was cleared while the thread still answers from it. This is an operator
+      // action, not a hot path, so the one held connection is not what starves anything.
+      //
+      // The queue is what keeps it exclusive with ingestion, the turn, the nudge and compaction now
+      // that they no longer take the advisory lock.
       //
       // The order the three deletions run in is load-bearing and lives with its reasoning in
       // src/modules/memory/reset.ts.
       await step("clear agent memory", "memória", () =>
-        runScopedOn(base, sysCtx(tenantId), (db) =>
-          withEntityLock(
-            db,
-            `ingest:${contactInboxThreadId(tenantId, instanceId, contactInboxId)}`,
-            async () => {
+        withKeyedQueue(
+          `ingest:${contactInboxThreadId(tenantId, instanceId, contactInboxId)}`,
+          () =>
+            runScopedOn(base, sysCtx(tenantId), async (db) => {
               const graphThreadId = contactInboxThreadId(
                 tenantId,
                 instanceId,
@@ -1692,12 +1701,12 @@ async function maybeConsumeCommandOrGate(params: {
               // just told had been cleared.
               //
               // Inside the critical section, not as a step after it, because the window between
-              // releasing the lock and cancelling is exactly where a claimed job takes the lock.
-              // Retiring the rows is half; a run already in memory re-reads its own row under this
-              // lock and stands down (../../graph/ingest-job.ts, stillWanted).
+              // leaving it and cancelling is exactly where a claimed job enters it. Retiring the
+              // rows is half; a run already in memory re-reads its own row inside the section and
+              // stands down (../../graph/ingest-job.ts, stillWanted).
               // On `db`, the connection this step already holds. A helper that opened its own
               // transaction would wait for a connection this one cannot release until it returns,
-              // and `DB_POOL_MAX=1` is a supported setting — the reset would time out and report a
+              // and `DB_POOL_MAX=1` is a supported setting: the reset would time out and report a
               // partial failure of the very step that had nothing wrong with it.
               await revokeJobsByKeyPrefixOn(
                 db,
@@ -1712,8 +1721,7 @@ async function maybeConsumeCommandOrGate(params: {
                 contactInboxId,
                 threadId: graphThreadId,
               });
-            },
-          ),
+            }),
         ),
       );
       // The compacted memory of past attendances lives in its own table, not in the thread, so

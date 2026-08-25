@@ -236,39 +236,23 @@ export async function retireJobsByDedupeKey(
   });
 }
 
-// The other half of the tombstone, for the handler holding the claim: has this run been superseded
-// while it worked? Re-READ rather than trusted from `job.payload`, because that snapshot is from
-// claim time, which is exactly the moment before a stamp would land.
-//
-// Unreadable is NOT retired. An unknown must not silently drop a customer-facing message that was
-// legitimately armed — the caller asks this to withhold work, so the uncertain answer is the one that
-// lets it proceed and be fenced by the CAS at the end.
-export async function jobRetired(
+function readJobRetirement(
   job: ClaimedJob,
-  base: PrismaClient = basePrisma,
-  // The connection to read on, when the caller already holds one. Required in practice wherever this
-  // is asked from inside an advisory-lock transaction: opening a second connection there stalls on
-  // an exhausted pool while still holding the lock, and `DB_POOL_MAX=1` is a supported setting. The
-  // ingestion barrier states the same rule for the same reason (../../graph/ingest.ts, stillWanted).
+  base: PrismaClient,
   scoped?: ScopedDb,
-): Promise<boolean> {
+): Promise<{ payload: unknown; claimSeq: number } | null> {
   const read = (db: ScopedDb) =>
     db.schedulerJob.findUnique({
       where: { id: job.id },
       select: { payload: true, claimSeq: true },
     });
-  const row = await (scoped
-    ? read(scoped)
-    : runScopedOn(base, sysCtx(job.tenantId), read)
-  ).catch((err: unknown) => {
-    logger.warn(
-      "scheduler: could not re-read the retirement of a claimed job (kind=%s job=%s): %s",
-      job.kind,
-      String(job.id),
-      err instanceof Error ? err.message : String(err),
-    );
-    return null;
-  });
+  return scoped ? read(scoped) : runScopedOn(base, sysCtx(job.tenantId), read);
+}
+
+function isRetired(
+  job: ClaimedJob,
+  row: { payload: unknown; claimSeq: number } | null,
+): boolean {
   if (!row) return false;
   const retired =
     (row.payload as { cancelledAt?: unknown } | null)?.cancelledAt != null ||
@@ -281,6 +265,60 @@ export async function jobRetired(
     );
   }
   return retired;
+}
+
+// The other half of the tombstone, for the handler holding the claim: has this run been superseded
+// while it worked? Re-READ rather than trusted from `job.payload`, because that snapshot is from
+// claim time, which is exactly the moment before a stamp would land.
+//
+// Unreadable is NOT retired. An unknown must not silently drop a customer-facing message that was
+// legitimately armed — the caller asks this to withhold work, so the uncertain answer is the one that
+// lets it proceed and be fenced by the CAS at the end. `jobRetiredStrict` is for the callers whose
+// fence comes BEFORE that one and cannot afford the guess.
+export async function jobRetired(
+  job: ClaimedJob,
+  base: PrismaClient = basePrisma,
+  // The connection to read on, when the caller already holds one. No production caller does since the
+  // thread's critical section stopped being one long transaction (issue #225), so every `stillWanted`
+  // now opens its own short scope. Kept, and kept tested, because the rule it encodes still binds
+  // anything asked from inside a transaction: opening a second connection there stalls on an
+  // exhausted pool while still holding the lock, and `DB_POOL_MAX=1` is a supported setting.
+  scoped?: ScopedDb,
+): Promise<boolean> {
+  const row = await readJobRetirement(job, base, scoped).catch(
+    (err: unknown) => {
+      logger.warn(
+        "scheduler: could not re-read the retirement of a claimed job (kind=%s job=%s): %s",
+        job.kind,
+        String(job.id),
+        err instanceof Error ? err.message : String(err),
+      );
+      return null;
+    },
+  );
+  return isRetired(job, row);
+}
+
+// THE SAME QUESTION, ASKED WHERE A GUESS IS THE EXPENSIVE ANSWER. `jobRetired` swallows an
+// unreadable row as "still wanted" because for most callers the cost of guessing wrong is a message
+// sent one time too many, fenced later by the CAS. Inside the thread's critical section the cost is
+// the opposite and it lands before any fence: the run recreates the graph state /reset just cleared,
+// and the operator is told the conversation was wiped while the agent keeps answering from it.
+//
+// The read can now fail where it could not before. It used to borrow the enclosing transaction's live
+// connection; since that transaction is gone (issue #225) it opens its own short scope, which can
+// exhaust `maxWait` under exactly the pool pressure this whole change is about. Propagating sends the
+// job back through the scheduler's own bounded retry (worker.ts `fail`), which is what an unknown
+// deserves here.
+export async function jobRetiredStrict(
+  job: ClaimedJob,
+  base: PrismaClient = basePrisma,
+  // Same connection rule as the lenient probe above. The redirect ladder's composite fence asks from
+  // inside its own read, and a second connection opened there would be a round trip this question
+  // does not need.
+  scoped?: ScopedDb,
+): Promise<boolean> {
+  return isRetired(job, await readJobRetirement(job, base, scoped));
 }
 
 // The SAME question as a SQL predicate, for the one caller that cannot ask it and then act: a write

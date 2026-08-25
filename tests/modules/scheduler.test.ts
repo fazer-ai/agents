@@ -12,6 +12,7 @@ import {
   failJob,
   jobNotRetiredSql,
   jobRetired,
+  jobRetiredStrict,
   reapStaleJobs,
   rescheduleJob,
   retireJobsByDedupeKey,
@@ -522,9 +523,38 @@ describe.skipIf(!dbUp)("scheduler", () => {
       );
       expect(answers.shared).toBe(true);
       expect(answers.own).toBe(false);
+
+      // THE STRICT VARIANT REFUSES TO GUESS. Same unreadable read, and it propagates instead of
+      // reporting "not retired". That is what the thread's critical section asks, because there the
+      // wrong guess recreates the graph state /reset just cleared, and no later fence catches it.
+      await expect(
+        runScopedOn(
+          onePool,
+          { tenantId, userId: null, role: "SUPER_ADMIN" } as never,
+          async () => jobRetiredStrict(job, onePool),
+        ),
+      ).rejects.toThrow();
     } finally {
       await onePool.$disconnect();
     }
+  });
+
+  // Strict is only about the UNREADABLE case: on a readable row it answers exactly like the lenient
+  // one, so swapping it in at a call site does not change the ordinary path.
+  test("the strict probe still answers when the read succeeds", async () => {
+    const id = await enqueueJob({
+      tenantId,
+      kind: "FOLLOWUP",
+      dedupeKey: "dk-strict-ok",
+      runAt: past(),
+      base: appDb,
+    });
+    const [job] = await claimDueJobs(1, appDb, new Date(), tenantId);
+    if (!job || job.id !== id)
+      throw new Error("claim did not return dk-strict-ok");
+    expect(await jobRetiredStrict(job, appDb)).toBe(false);
+    await retireJobsByDedupeKey(tenantId, "FOLLOWUP", "dk-strict-ok", appDb);
+    expect(await jobRetiredStrict(job, appDb)).toBe(true);
   });
 
   test("reaper requeues a stranded CLAIMED job", async () => {

@@ -955,6 +955,51 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(s.resolved).toEqual([]);
   });
 
+  // AND THE SAME WINDOW WITH THE DATABASE GONE, which is the pair the incident actually reported:
+  // a /reset, and a pool too exhausted to answer whether it happened. The lenient probe answers "not
+  // retired" to an unreadable row — right for a send it must not abandon halfway, wrong here, because
+  // the ask inside the thread's critical section runs BEFORE the divider and the checkpoint. Guessing
+  // there writes the memory back after the operator was told it was cleared, and no later fence
+  // catches it. `runAgentNudge` marks that one ask `{ strict: true }`, and this callback has to carry
+  // it through: the liveness half stays fail-open, the retirement half stops failing open.
+  test("a retirement read that fails after the reset does not write the memory back", async () => {
+    const job = await claimed();
+    let reads = 0;
+    const failing = appDb.$extends({
+      query: {
+        schedulerJob: {
+          async findUnique({ args, query }) {
+            reads += 1;
+            // The first answer is the one the handler takes before any work: it has to succeed and
+            // say "still wanted", or the run stands down for the wrong reason and proves nothing.
+            if (reads === 1) {
+              const res = await query(args);
+              await retireRedirectFollowUp(tenantId, widgetThread, appDb);
+              return res;
+            }
+            throw new Error(
+              "Timed out fetching a new connection from the pool",
+            );
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const s = stubClient();
+
+    await redirectFollowUpHandler(job, failing, {
+      ...deps(),
+      makeClient: s.makeClient,
+    }).catch(() => {
+      // The strict ask propagates, and the scheduler's own bounded retry is what carries the job.
+      // Whether it surfaces as a throw or a stand-down is the handler's business; what this test is
+      // about is the line below.
+    });
+
+    // Nothing left, and nothing was written back over the reset.
+    expect(s.sent).toEqual([]);
+    expect(s.resolved).toEqual([]);
+  });
+
   // The window INSIDE the stage. The ladder advances by replacing the row's payload, which would
   // wipe the very stamp that retires it — so a /reset landing mid-stage would be undone by the stage
   // it interrupted, and the ladder would go on to its closing. The rendezvous is the fence's own

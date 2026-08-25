@@ -320,6 +320,10 @@ async function settleGateExit(params: {
   instanceId: bigint;
   conversationId: number;
   conversationRowId: bigint;
+  // The burst this exit consumed, and BOTH ends matter. The watermark as it stood is the lower
+  // bound: below it sits whatever earlier messages already had decided for them, including a strand
+  // this gate knows nothing about, and reaching back over one hides a real loss for good.
+  afterMessageId: number | null;
   upToMessageId: number;
   base: PrismaClient;
   label: string;
@@ -332,6 +336,7 @@ async function settleGateExit(params: {
       conversationRowId: params.conversationRowId,
       // A gate exit is a deliberate silence by definition: it decided before any model call.
       settlement: "consumed",
+      afterMessageId: params.afterMessageId,
       upToMessageId: params.upToMessageId,
       base: params.base,
     });
@@ -412,6 +417,10 @@ export async function flushDebounceJob(
         convDbId: conv.id,
         inboxDbId: conv.inboxId,
         agentId: inbox?.agentId ?? null,
+        // Carried on this branch too, and it is not decoration: the exit below retires the ledger
+        // rows of the burst it consumed, and this is that burst's LOWER bound. Missing, the range is
+        // open at the bottom and reaches back over a strand an earlier message left behind.
+        watermark: conv.lastHandledMessageId,
       };
     }
     if (!inbox?.agentId) return null;
@@ -478,6 +487,7 @@ export async function flushDebounceJob(
         instanceId,
         conversationId,
         conversationRowId: ctx.convDbId,
+        afterMessageId: ctx.watermark ?? null,
         upToMessageId: last,
         base,
         label: "debounce flush",
@@ -551,6 +561,7 @@ export async function flushDebounceJob(
           instanceId,
           conversationId,
           conversationRowId: ctx.convDbId,
+          afterMessageId: ctx.watermark ?? null,
           upToMessageId: last,
           base,
           label: "debounce flush",
@@ -631,6 +642,7 @@ export async function flushDebounceJob(
           instanceId,
           conversationId,
           conversationRowId: ctx.convDbId,
+          afterMessageId: ctx.watermark ?? null,
           upToMessageId: last,
           base,
           label: "debounce flush",

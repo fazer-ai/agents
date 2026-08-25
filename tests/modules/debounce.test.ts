@@ -710,7 +710,42 @@ describe.skipIf(!dbUp)("debounce", () => {
     // writes says, so the retirement takes the same range. Sound as a WRITE at the moment of the
     // decision, in a way reading a watermark afterwards never was.
     const convId = 886;
-    await seedConversation(convId, { assigneeType: "User" });
+    // The watermark already sits at 2: messages 1 and 2 had their fate decided before this flush
+    // was ever armed.
+    await seedConversation(convId, {
+      assigneeType: "User",
+      lastHandledMessageId: 2,
+    });
+    const before = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-gate-before-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        // BELOW the watermark: nothing about this gate exit is a decision about it.
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    const level = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-gate-level-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        // Exactly AT the watermark: the last message the previous decision covered.
+        inboundMessageId: 2,
+      },
+      select: { id: true },
+    });
     const stranded = await suDb.chatwootWebhookDelivery.create({
       data: {
         tenantId,
@@ -761,17 +796,34 @@ describe.skipIf(!dbUp)("debounce", () => {
       select: { status: true },
     });
     expect(row.status).toBe("PROCESSED");
-    // And ONLY up to what the watermark says. A message that arrived after the arm is not in the
-    // payload, so the gate never decided about it — retiring its row would hide a real loss behind a
-    // decision that was never made about it.
+    // And ONLY the burst, bounded at BOTH ends.
+    //
+    // Above: a message that arrived after the arm is not in the payload, so the gate never decided
+    // about it.
     const beyond = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
       where: { id: later.id },
       select: { status: true },
     });
     expect(beyond.status).toBe("PROCESSING");
+    // Below: a strand from BEFORE the watermark belongs to an earlier decision, or to none. Left
+    // open at the bottom, this exit reaches back over it and closes a real loss for good — message 1
+    // strands, message 2 arrives on a human-owned conversation and carries the watermark past both,
+    // and then a gated flush for message 5 swallows message 1 without anything ever answering it.
+    const earlier = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: before.id },
+      select: { status: true },
+    });
+    expect(earlier.status).toBe("PROCESSING");
+    // And the boundary is STRICT: the message sitting exactly AT the watermark is the last one
+    // something else already decided, so it belongs to that decision and not to this one.
+    const atMark = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: level.id },
+      select: { status: true },
+    });
+    expect(atMark.status).toBe("PROCESSING");
 
     await suDb.chatwootWebhookDelivery.deleteMany({
-      where: { id: { in: [stranded.id, later.id] } },
+      where: { id: { in: [stranded.id, later.id, before.id, level.id] } },
     });
   });
 

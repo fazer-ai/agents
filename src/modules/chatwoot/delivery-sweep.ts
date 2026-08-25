@@ -90,11 +90,21 @@ export async function retireCoveredDeliveries(params: {
   // Which messages the decision covered, in the shape the caller can actually state it.
   //
   // `messageIds` is the burst a turn ran over, known exactly because the thread was re-fetched.
-  // `upToMessageId` is the gate exits, which decide before any fetch and can only say what the
-  // watermark they advance says: everything up to this id is handled. A range is sound HERE, where
-  // it is a write at the moment of the decision, and would not be as a read afterwards — that
-  // difference is the whole reason the sweep no longer reads watermarks at all.
+  //
+  // The pair is the gate exits, which decide before any fetch and can only say what the watermark
+  // they advance says. That is a RANGE, and it is bounded at BOTH ends: the burst they consume is
+  // everything after the watermark as it stood, up to the payload's newest id. Open at the bottom,
+  // it reaches back past its own burst and retires a strand some earlier message left behind — the
+  // gate never decided about that one, and closing it hides a real loss for good. (Message 1
+  // strands; message 2 arrives on a human-owned conversation and advances the watermark past both;
+  // a gated flush for message 3 then swallows message 1.)
+  //
+  // A range is sound HERE, where it is a write at the moment of the decision, and would not be as a
+  // read afterwards — that difference is the whole reason the sweep no longer reads watermarks at
+  // all. `afterMessageId` null means nothing had been handled yet, so the burst genuinely starts at
+  // the beginning.
   messageIds?: number[];
+  afterMessageId?: number | null;
   upToMessageId?: number;
   base: PrismaClient;
 }): Promise<number> {
@@ -104,7 +114,14 @@ export async function retireCoveredDeliveries(params: {
     inboundMessageId:
       params.messageIds !== undefined
         ? { in: params.messageIds }
-        : { lte: params.upToMessageId, not: null },
+        : {
+            lte: params.upToMessageId,
+            ...(params.afterMessageId !== null &&
+            params.afterMessageId !== undefined
+              ? { gt: params.afterMessageId }
+              : {}),
+            not: null,
+          },
   };
 
   // TWO writes, and the split is what makes the correction exact rather than nearly exact.

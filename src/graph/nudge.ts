@@ -1163,6 +1163,7 @@ export async function runAgentNudge(
       checkpointer,
       graphThreadId,
       produced: result.messages,
+      kind: "proactive",
     }).catch((err) => {
       // NOTE: best-effort, and loudly. The send was already suppressed, so a failed rollback costs
       // the next turn a message the customer never saw, which is the defect this exists to close,

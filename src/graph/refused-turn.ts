@@ -102,6 +102,15 @@ export function planTurnRollback(
   if (start === -1) return { action: "keep", reason: "no-turn-found" };
   const slice = produced.slice(start);
   if (actedOnTheWorld(slice)) return { action: "keep", reason: "tool-ran" };
+  return nameWhatSurvived(slice, current);
+}
+
+// The last step of both plans, and the only one that reads the CURRENT channel: a slice is a
+// proposal, and this is what turns it into ids the reducer will accept.
+function nameWhatSurvived(
+  slice: readonly BaseMessage[],
+  current: readonly BaseMessage[],
+): RollbackPlan {
   const byId = new Map<string, BaseMessage>();
   for (const m of current) if (typeof m.id === "string") byId.set(m.id, m);
   const ids = slice
@@ -113,6 +122,50 @@ export function planTurnRollback(
     .map((m) => m.id as string);
   if (ids.length === 0) return { action: "keep", reason: "already-gone" };
   return { action: "remove", ids };
+}
+
+// WHAT A REACTIVE TURN LEAVES BEHIND, which is the same residue and NOT the same slice (issue #315).
+//
+// `runLoadedTurn` appends the customer's own message and then invokes, so the pair in the channel is
+// [their message][our answer] — and every refusal below the invoke suppresses only the second half.
+// The proactive plan above removes the directive together with the answer because this process wrote
+// the directive; doing that here would delete the customer's message, and on `superseded` it is
+// precisely the message the re-armed flush exists to answer.
+//
+// So the removable part is named directly rather than by a boundary: the trailing run of assistant
+// messages that neither called a tool nor are a tool result. It stops at the first message that is
+// anything else, which means it can never reach a HumanMessage of any kind — the customer's, a
+// divider, a memory head, a nudge, or an attendant's — and it needs no rule about where a turn
+// "starts".
+//
+// That also answers the tool case better than the proactive plan could. There, the directive and the
+// act are one slice, so any tool call keeps everything. Here the act sits OUTSIDE the trailing run by
+// construction: the tool call and its result stay, and only the sentence nobody read comes out. A
+// transfer that really happened keeps its record, and the closing line the customer never saw does
+// not go on to be read as something they were told.
+function saidSomethingAndNothingElse(m: BaseMessage): boolean {
+  return (
+    m.getType() === "ai" && ((m as AIMessage).tool_calls?.length ?? 0) === 0
+  );
+}
+
+export function planReactiveTurnRollback(
+  produced: readonly BaseMessage[],
+  current: readonly BaseMessage[],
+): RollbackPlan {
+  let start = produced.length;
+  while (start > 0) {
+    const m = produced[start - 1];
+    if (m === undefined || !saidSomethingAndNothingElse(m)) break;
+    start--;
+  }
+  // Nothing trailing (the turn ended on a tool, so it said nothing), or nothing but assistant
+  // messages, which is not a channel this invoke produced — the wall this rule leans on is missing,
+  // and guessing where the turn began is how a rollback eats history.
+  if (start === produced.length || start === 0) {
+    return { action: "keep", reason: "no-turn-found" };
+  }
+  return nameWhatSurvived(produced.slice(start), current);
 }
 
 // Reads the channel and writes the removal under the SAME key the append and the compaction rewrite
@@ -148,8 +201,15 @@ export async function undoRefusedTurn(params: {
   checkpointer: BaseCheckpointSaver;
   graphThreadId: string;
   produced: readonly BaseMessage[];
+  // WHICH turn was refused, because the two have different removable slices and neither plan is
+  // right for the other: a proactive one wrote its own `[human]` directive and takes it back with the
+  // answer, a reactive one is answering the CUSTOMER'S message and must leave it standing. Required
+  // rather than defaulted — a caller that has to name it cannot inherit the wrong one by omission.
+  kind: "proactive" | "reactive";
 }): Promise<RollbackPlan> {
-  const { checkpointer, graphThreadId, produced } = params;
+  const { checkpointer, graphThreadId, produced, kind } = params;
+  const plan =
+    kind === "reactive" ? planReactiveTurnRollback : planTurnRollback;
   const graph = buildThreadStateGraph(checkpointer);
   const threadCfg = { configurable: { thread_id: graphThreadId } };
   return withKeyedQueue(`ingest:${graphThreadId}`, async () => {
@@ -165,15 +225,15 @@ export async function undoRefusedTurn(params: {
           | { messages?: BaseMessage[] }
           | undefined
       )?.messages ?? []) as BaseMessage[];
-      const plan = planTurnRollback(produced, current);
-      if (plan.action === "remove") {
+      const decided = plan(produced, current);
+      if (decided.action === "remove") {
         await graph.updateState(
           threadCfg,
-          { messages: plan.ids.map((id) => new RemoveMessage({ id })) },
+          { messages: decided.ids.map((id) => new RemoveMessage({ id })) },
           THREAD_STATE_NODE,
         );
       }
-      return plan;
+      return decided;
     } finally {
       clearTurnInFlight(graphThreadId);
     }

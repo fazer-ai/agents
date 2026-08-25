@@ -74,6 +74,7 @@ import {
   buildToolset,
   loadAgentConfig,
 } from "./prepare";
+import { undoRefusedTurn } from "./refused-turn";
 import { AgentStatusReporter } from "./status";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 import { ToolFlowLogger } from "./tool-flowlog";
@@ -1076,6 +1077,56 @@ export async function runLoadedTurn(
       await deliverHandoffPromise();
       throw e;
     });
+    // EVERY REFUSAL FROM HERE DOWN GOES OUT THROUGH THIS, and the fence in
+    // tests/graph/refused-turn-callsites.test.ts is what keeps that true.
+    //
+    // The invoke above checkpointed as it ran, so the customer's message and the assistant's answer
+    // are in the thread's history the moment it returned. Everything below suppresses the SEND and
+    // nothing removes what was written: an operator took the conversation, a newer message arrived
+    // mid-turn, a `/reset` retired the run, the output guardrail replaced the reply with nothing. The
+    // customer never received it and the next turn reads it as something they were told — on
+    // `superseded` that next turn is guaranteed, because the re-armed flush answers the whole burst
+    // with the abandoned reply already in its context (issue #315).
+    //
+    // It never decides WHETHER to roll back: `undoRefusedTurn` reads the channel and answers that,
+    // so a refusal is one word here and the judgement lives in one place.
+    const refuse = async (
+      outcome: RunAgentTurnOutcome,
+    ): Promise<RunAgentTurnOutcome> => {
+      const plan = await undoRefusedTurn({
+        checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
+        graphThreadId,
+        produced: result.messages,
+        kind: "reactive",
+      }).catch((err) => {
+        // NOTE: best-effort, and loudly. The send was already suppressed, so a failed rollback costs
+        // the next turn a message the customer never saw — the defect this exists to close, and
+        // nothing more. Throwing would turn a correct refusal into a retried turn.
+        logger.warn(
+          { err, conversationId: String(conversationId) },
+          "turn: could not roll back the refused turn",
+        );
+        return null;
+      });
+      if (plan?.action === "remove") {
+        logger.info(
+          "turn rolled back a refused turn: conv=%s outcome=%s messages=%d",
+          String(conversationId),
+          outcome,
+          plan.ids.length,
+        );
+      } else if (plan?.reason === "another-invoke-is-reading") {
+        // NOTE: the one keep that is a MISS rather than a decision about this turn. The history still
+        // holds a message the customer never received. Logged at warn so the case has a name instead
+        // of looking like a rollback that ran.
+        logger.warn(
+          "turn could not roll back a refused turn, another invoke holds the thread: conv=%s outcome=%s",
+          String(conversationId),
+          outcome,
+        );
+      }
+      return outcome;
+    };
     let reply = lastAssistantText(result.messages).trim();
 
     // The deferred resolve falls with the TRANSFER, not with the suppression of the final text: a
@@ -1163,13 +1214,13 @@ export async function runLoadedTurn(
           status: recheck.observed.status,
         }),
       });
-      return "taken-over";
+      return refuse("taken-over");
     }
 
     // Last-moment supersede gate (debounce): a newer message arrived mid-turn → drop this reply
     // AND any deferred resolve intent (the re-armed flush re-decides over the full burst).
     const blocked = await postBlocked();
-    if (blocked) return blocked;
+    if (blocked) return refuse(blocked);
 
     // OUTPUT guardrail: screen the model's reply BEFORE delivery. On a violation, replace it with the
     // template / a guardrails-generated safe reply, or suppress the send entirely ("silent"). A
@@ -1190,11 +1241,11 @@ export async function runLoadedTurn(
     const outGuard = screened ? await runGuardrail("output", screened) : null;
     // Same wait, same reason: `postBlocked` answered before this model call, and the suppressed
     // branch below returns "blocked" without passing any later ask.
-    if (await writeCalledOff()) return "stale";
+    if (await writeCalledOff()) return refuse("stale");
     if (outGuard && guardrailTripped(outGuard)) {
       turnState.pendingAttachments.length = 0;
       const replacement = screenedText(outGuard, screened);
-      if (replacement === null) return "blocked";
+      if (replacement === null) return refuse("blocked");
       reply = replacement;
     }
 
@@ -1208,7 +1259,7 @@ export async function runLoadedTurn(
     // reported "empty" would leave a stale turn error on a conversation that was just answered.
     if (!reply) {
       // Nothing has left this turn yet on this branch, so the whole thing stands down.
-      if (await writeCalledOff()) return "stale";
+      if (await writeCalledOff()) return refuse("stale");
       const queued = turnState.pendingAttachments.length;
       const {
         sent,
@@ -1226,7 +1277,7 @@ export async function runLoadedTurn(
       // customer, and "stale" would leave the watermark where it is — handing the same burst to the
       // next flush, which would send that attachment again. What was delivered decides the word, the
       // same rule the reply below follows.
-      if (attachmentsCalledOff && !sent) return "stale";
+      if (attachmentsCalledOff && !sent) return refuse("stale");
       // NOTE: The attachments WERE the turn and none of them reached the customer. That is a failed
       // turn, not a silent one: returning "empty" here would let the deferred resolve close a
       // conversation nobody answered, and the callers only record a turn error (private note,
@@ -1264,7 +1315,7 @@ export async function runLoadedTurn(
 
     // The image lands before the text that talks about it, and before the TTS branch: an audio
     // reply must not swallow the attachment.
-    if (await writeCalledOff()) return "stale";
+    if (await writeCalledOff()) return refuse("stale");
     const attachments = await deliverPendingAttachments(
       client,
       conversationId,
@@ -1276,7 +1327,8 @@ export async function runLoadedTurn(
     // Called off mid-batch with something already out: the text below would stand down anyway, and
     // returning "stale" from there would replay a burst whose attachment the customer has. The turn
     // reports what it delivered and stops here.
-    if (attachments.calledOff) return attachments.sent ? "posted" : "stale";
+    if (attachments.calledOff)
+      return attachments.sent ? "posted" : refuse("stale");
 
     const delivered = await deliverText(reply, recheck.voiceReply);
     // Zero is the split loop standing down on its FIRST balloon: nothing reached the customer, so
@@ -1288,7 +1340,7 @@ export async function runLoadedTurn(
     // command landing in the text send leaves a customer holding part of the answer. "stale" would
     // hand the burst back to the next flush, which sends that attachment again.
     if (delivered === "stale" || delivered === 0) {
-      return attachments.sent ? "posted" : "stale";
+      return attachments.sent ? "posted" : refuse("stale");
     }
     deliveredBalloons = delivered;
     // Same rule as the branch above: the reply is out, the resolve is a separate write.

@@ -10,8 +10,9 @@ import {
   type VisionRequest,
 } from "@/modules/vision/providers";
 import {
+  attemptBudgetMs,
   isTransientVisionFailure,
-  planVisionAttempt,
+  retryDelayMs,
   VISION_ATTEMPT_CEILING_MS,
   VISION_MAX_ATTEMPTS,
   VISION_RETRY_DELAYS_MS,
@@ -77,59 +78,64 @@ describe("isTransientVisionFailure", () => {
   }
 });
 
-describe("planVisionAttempt", () => {
-  // `rand` fixed: the jitter is the only randomness, and a battery that cannot predict the delay
-  // cannot assert the budget.
-  const at = (
-    kind: "image" | "document",
-    attempt: number,
-    elapsedMs: number,
-    rand = 0,
-  ) => planVisionAttempt({ kind, attempt, elapsedMs, rand: () => rand });
-
-  test("the first attempt is immediate and gets its kind's ceiling", () => {
-    expect(at("image", 1, 0)).toEqual({
-      delayMs: 0,
-      timeoutMs: VISION_ATTEMPT_CEILING_MS.image,
-    });
-    expect(at("document", 1, 0)).toEqual({
-      delayMs: 0,
-      timeoutMs: VISION_ATTEMPT_CEILING_MS.document,
-    });
+describe("retryDelayMs", () => {
+  test("the first attempt is immediate, and the retry waits with jitter that only adds", () => {
+    expect(retryDelayMs(1, () => 0)).toBe(0);
+    expect(retryDelayMs(1, () => 1)).toBe(0);
+    expect(retryDelayMs(2, () => 0)).toBe(VISION_RETRY_DELAYS_MS[0] as number);
+    expect(retryDelayMs(2, () => 1)).toBe(
+      (VISION_RETRY_DELAYS_MS[0] as number) * 1.5,
+    );
   });
 
-  test("the retries wait, and the jitter only ever adds", () => {
-    expect(at("image", 2, 20_000, 0)?.delayMs).toBe(500);
-    expect(at("image", 2, 20_000, 1)?.delayMs).toBe(750);
-    expect(at("image", 3, 41_000, 0)?.delayMs).toBe(1_500);
-    expect(at("image", 3, 41_000, 1)?.delayMs).toBe(2_250);
+  test("past the last attempt there is no delay to give, and null says so", () => {
+    expect(retryDelayMs(VISION_MAX_ATTEMPTS + 1, () => 0)).toBeNull();
+  });
+});
+
+describe("attemptBudgetMs", () => {
+  const at = (kind: "image" | "document", attempt: number, elapsedMs: number) =>
+    attemptBudgetMs({ kind, attempt, elapsedMs });
+
+  test("a non-final attempt is capped by its kind's ceiling", () => {
+    expect(at("image", 1, 0)).toBe(VISION_ATTEMPT_CEILING_MS.image);
+    expect(at("document", 1, 0)).toBe(VISION_ATTEMPT_CEILING_MS.document);
   });
 
-  test("an attempt never gets more than what is left of the total", () => {
-    // A document's ceiling IS the whole budget, so its second attempt is bounded by the remainder.
-    expect(at("document", 2, 2_000, 0)?.timeoutMs).toBe(57_500);
-    expect(at("image", 3, 41_000, 0)?.timeoutMs).toBe(17_500);
+  test("the LAST attempt is capped only by the total, so a slow call still has its window", () => {
+    // 20s spent on a first attempt that timed out, plus the wait: the second is NOT cut at 20s
+    // again — that is what keeps a legitimately slow endpoint from becoming a permanent marker.
+    const left = VISION_TOTAL_BUDGET_MS - 20_750;
+    expect(at("image", VISION_MAX_ATTEMPTS, 20_750)).toBe(left);
+    expect(left).toBeGreaterThan(VISION_ATTEMPT_CEILING_MS.image);
   });
 
-  test("there is no fourth attempt, and no attempt too short to answer", () => {
-    expect(at("image", 4, 0)).toBeNull();
-    // 500ms of budget buys a timeout, not an extraction: the fastest measured call is 2.0s.
-    expect(at("document", 2, 59_000)).toBeNull();
+  test("no attempt gets more than what is left of the total", () => {
+    expect(at("document", 1, 3_000)).toBe(VISION_TOTAL_BUDGET_MS - 3_000);
+    expect(at("image", 1, 45_000)).toBe(VISION_TOTAL_BUDGET_MS - 45_000);
+  });
+
+  test("a remainder too short to answer is no budget at all", () => {
+    // 500ms buys a timeout, not an extraction: the fastest measured call is 2.0s.
+    expect(at("document", 2, 59_500)).toBeNull();
+    expect(at("image", 2, VISION_TOTAL_BUDGET_MS)).toBeNull();
   });
 
   test("the whole retried extraction still fits the budget one call used to have", () => {
     for (const kind of ["image", "document"] as const) {
       let elapsed = 0;
-      for (let attempt = 1; ; attempt++) {
+      for (let attempt = 1; attempt <= VISION_MAX_ATTEMPTS; attempt++) {
         // rand at its maximum: the longest waits this policy can produce.
-        const plan = planVisionAttempt({
+        const delay = retryDelayMs(attempt, () => 1);
+        if (delay === null) break;
+        // The loop's own order: a wait is only spent when what follows it can still fund a call.
+        const budget = attemptBudgetMs({
           kind,
           attempt,
-          elapsedMs: elapsed,
-          rand: () => 1,
+          elapsedMs: elapsed + delay,
         });
-        if (!plan) break;
-        elapsed += plan.delayMs + plan.timeoutMs;
+        if (budget === null) break;
+        elapsed += delay + budget;
       }
       expect(elapsed).toBeLessThanOrEqual(VISION_TOTAL_BUDGET_MS);
     }
@@ -281,9 +287,18 @@ describe("extractWithRetry", () => {
         sleep: async () => {},
       }),
     ).rejects.toThrow("vision gemini failed with 503");
-    expect(budgets).toEqual(
-      Array(VISION_MAX_ATTEMPTS).fill(VISION_ATTEMPT_CEILING_MS.image),
+    expect(budgets).toHaveLength(VISION_MAX_ATTEMPTS);
+    // The first is cut at the image ceiling so a second one can exist; the last is not, because
+    // after it there is nothing to leave room for. Both are far below the 60s total a hardcoded
+    // ceiling would have handed each of them.
+    expect(budgets[0]).toBe(VISION_ATTEMPT_CEILING_MS.image);
+    expect(budgets[1] as number).toBeGreaterThan(
+      VISION_ATTEMPT_CEILING_MS.image,
     );
+    // `<=`, not `<`: the stand-in answers instantly and the wait is stubbed, so nothing of the
+    // total is actually spent here and the remainder IS the total. That the remainder shrinks with
+    // real elapsed time is the pure table's assertion, not this one's.
+    expect(budgets[1] as number).toBeLessThanOrEqual(VISION_TOTAL_BUDGET_MS);
   });
 
   test("a document is handed its own ceiling, which is the whole budget", async () => {
@@ -311,8 +326,61 @@ describe("extractWithRetry", () => {
     expect(budgets).toHaveLength(2);
   });
 
+  test("a wait that oversleeps loses the attempt it was waiting for", async () => {
+    // The budget is read AFTER the wait: a stalled or suspended process can sleep far past the
+    // nominal delay, and an attempt planned before that wait would be handed time the total no
+    // longer has. Here the clock jumps almost the whole budget while sleeping.
+    const { provider, budgets } = recordingProvider([503]);
+    let clock = 0;
+    await expect(
+      extractWithRetry({
+        provider,
+        providerName: "gemini",
+        model: "m",
+        req: req(),
+        now: () => clock,
+        sleep: async () => {
+          clock += VISION_TOTAL_BUDGET_MS - 1_000;
+        },
+      }),
+    ).rejects.toThrow("vision gemini failed with 503");
+    expect(budgets).toHaveLength(1);
+  });
+
+  test("a wait is not spent when nothing is left for the attempt behind it", async () => {
+    // The mirror of the case above, on the other side of the sleep: when a slow first attempt has
+    // already spent the total, waiting out the backoff buys nothing, and the turn should not pay it
+    // just to discover that.
+    let clock = 0;
+    const budgets: number[] = [];
+    const waited: number[] = [];
+    const provider = {
+      defaultModel: "m",
+      supportsDocuments: true,
+      extract: async (r: VisionRequest) => {
+        budgets.push(r.timeoutMs);
+        clock += VISION_TOTAL_BUDGET_MS; // the call ran until the whole budget was gone
+        throw new VisionError("gemini", 503);
+      },
+    } as VisionProvider;
+    await expect(
+      extractWithRetry({
+        provider,
+        providerName: "gemini",
+        model: "m",
+        req: req(),
+        now: () => clock,
+        sleep: async (ms) => {
+          waited.push(ms);
+        },
+      }),
+    ).rejects.toThrow("vision gemini failed with 503");
+    expect(budgets).toHaveLength(1);
+    expect(waited).toEqual([]);
+  });
+
   test("it waits between attempts, and the waits are the policy's", async () => {
-    const { provider } = recordingProvider([503, 503, "ok"]);
+    const { provider } = recordingProvider([503, "ok"]);
     const waited: number[] = [];
     await extractWithRetry({
       provider,
@@ -323,12 +391,9 @@ describe("extractWithRetry", () => {
         waited.push(ms);
       },
     });
-    expect(waited).toHaveLength(2);
+    expect(waited).toHaveLength(VISION_MAX_ATTEMPTS - 1);
     expect(waited[0]).toBeGreaterThanOrEqual(
       VISION_RETRY_DELAYS_MS[0] as number,
-    );
-    expect(waited[1]).toBeGreaterThanOrEqual(
-      VISION_RETRY_DELAYS_MS[1] as number,
     );
   });
 });
@@ -508,15 +573,15 @@ describe.skipIf(!dbUp)("vision retry", () => {
         await new Promise((r) => setTimeout(r, 20));
     }
     const details = rows.map((r) => r.detail as Record<string, unknown>);
-    // Sorted, not taken in row order: `emitFlowEvent` is fire-and-forget, so three lines of one
-    // turn race each other to the table and their ids do not carry the order. `attempt` does, which
-    // is the whole reason it is on the line.
-    expect(details.map((d) => d.attempt).sort()).toEqual([1, 2, 3]);
-    // Every line carries the kind's ceiling here because this harness barely spends the total: the
-    // waits are stubbed and the calls answer instantly. What a later attempt gets once real time
-    // HAS passed is the pure table's job (`planVisionAttempt`), not this one's.
-    expect(details.map((d) => d.budgetMs)).toEqual(
-      Array(VISION_MAX_ATTEMPTS).fill(VISION_ATTEMPT_CEILING_MS.image),
+    // Sorted, not taken in row order: `emitFlowEvent` is fire-and-forget, so the lines of one turn
+    // race each other to the table and their ids do not carry the order. `attempt` does, which is
+    // the whole reason it is on the line.
+    expect(details.map((d) => d.attempt).sort()).toEqual([1, 2]);
+    // The two lines do NOT carry the same budget: the last attempt is capped by what is left of the
+    // total rather than by the kind's ceiling.
+    expect(details[0]?.budgetMs).toBe(VISION_ATTEMPT_CEILING_MS.image);
+    expect(details[1]?.budgetMs as number).toBeGreaterThan(
+      VISION_ATTEMPT_CEILING_MS.image,
     );
   });
 
@@ -538,7 +603,7 @@ describe.skipIf(!dbUp)("vision retry", () => {
         sleep: async () => {},
       },
     });
-    expect(calls.length).toBe(3);
+    expect(calls.length).toBe(VISION_MAX_ATTEMPTS);
     expect(out).toBeNull();
     expect(meta).toEqual([]);
   });

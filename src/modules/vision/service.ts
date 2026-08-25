@@ -22,8 +22,9 @@ import {
   visionKindForMime,
 } from "./providers";
 import {
+  attemptBudgetMs,
   isTransientVisionFailure,
-  planVisionAttempt,
+  retryDelayMs,
   VISION_MAX_ATTEMPTS,
 } from "./retry";
 import { readVisionConfig, type VisionConfig } from "./settings";
@@ -91,21 +92,40 @@ export async function extractWithRetry(args: {
   providerName: string;
   model: string;
   sleep?: (ms: number) => Promise<void>;
+  // Injectable together with `sleep`, and for the same reason: what this loop spends is TIME, and a
+  // battery that cannot move the clock cannot tell a budget read before the wait from one read
+  // after it.
+  now?: () => number;
 }): Promise<VisionResult> {
   const { kind } = args.req;
   const sleep = args.sleep ?? realSleep;
-  const startedAt = Date.now();
+  const now = args.now ?? Date.now;
+  const startedAt = now();
   let lastErr: unknown;
   for (let attempt = 1; attempt <= VISION_MAX_ATTEMPTS; attempt++) {
-    const plan = planVisionAttempt({
+    const delayMs = retryDelayMs(attempt);
+    if (delayMs === null) break;
+    // Two readings of the same question, because the wait sits between them. The first asks whether
+    // waiting is worth it AT ALL — a wait that lands past the total costs the turn hundreds of
+    // milliseconds to buy nothing.
+    if (
+      attemptBudgetMs({
+        kind,
+        attempt,
+        elapsedMs: now() - startedAt + delayMs,
+      }) === null
+    )
+      break;
+    if (delayMs > 0) await sleep(delayMs);
+    // The second is the one the provider gets, and it is read AFTER the wait: `sleep` is what a
+    // stalled or suspended process oversleeps, and a deadline computed from the nominal delay would
+    // hand that process time the total no longer has.
+    const budgetMs = attemptBudgetMs({
       kind,
       attempt,
-      elapsedMs: Date.now() - startedAt,
+      elapsedMs: now() - startedAt,
     });
-    // Out of attempts or out of budget. Attempt 1 always has a plan (it is asked at zero elapsed),
-    // so this only ever rethrows a failure that was already caught below.
-    if (!plan) throw lastErr;
-    if (plan.delayMs > 0) await sleep(plan.delayMs);
+    if (budgetMs === null) break;
     try {
       return await withFlowStage(
         args.flow,
@@ -113,15 +133,15 @@ export async function extractWithRetry(args: {
         {
           provider: args.providerName,
           model: args.model,
-          // `budgetMs` is what THIS attempt was allowed, and it is not the same on every line: a
-          // later attempt gets what is left of the total. Without it a 17s timeout on attempt 3
-          // reads as a slow provider rather than as the budget running out.
-          detail: { kind, attempt, budgetMs: plan.timeoutMs },
+          // `budgetMs` is what THIS attempt was allowed, and the two lines of one extraction do
+          // not carry the same number: the last attempt gets what is left of the total. Without it
+          // a 39s timeout reads as a slow provider rather than as the budget running out.
+          detail: { kind, attempt, budgetMs },
           // Recovered (→ "couldn't extract" marker), so a failure reads as an advisory, not a red
           // error — same contract as TTS.
           errorLevel: "warn",
         },
-        () => args.provider.extract({ ...args.req, timeoutMs: plan.timeoutMs }),
+        () => args.provider.extract({ ...args.req, timeoutMs: budgetMs }),
       );
     } catch (err) {
       // A permanent failure (a bad key, a model id that does not exist, a file the provider
@@ -130,8 +150,9 @@ export async function extractWithRetry(args: {
       lastErr = err;
     }
   }
-  // Unreachable while the loop and the policy share VISION_MAX_ATTEMPTS: the policy stops planning
-  // first. Kept as the loop's own exit so that stopping never depends on a rule living elsewhere.
+  // Reached when the attempts or the budget ran out, and by the loop's own bound — so stopping
+  // never depends only on a rule that lives elsewhere. `lastErr` is always set here: attempt 1 is
+  // asked at zero elapsed, so it always gets a budget and always either returns or fills it.
   throw lastErr;
 }
 

@@ -29,29 +29,33 @@ export function isTransientVisionFailure(err: unknown): boolean {
 }
 
 // The ceiling for the WHOLE extraction, attempts and waits included — the value the single call
-// already carried. Kept, so no turn gets slower than it could before and nothing that succeeds
-// today starts timing out because retries exist.
+// already carried. Kept, so no turn gets slower than it could before.
 export const VISION_TOTAL_BUDGET_MS = 60_000;
 
-// What ONE attempt may take. Two numbers because they rest on different evidence: an image is
-// measured (2.0-4.4s live through gpt-4o, a 3000x3000 one included; the issue reports 4s in
-// production), so 20s is ~5x the slowest and cutting there is what funds a second attempt inside
-// the same total. A document is NOT measured — up to 25MB and ~100 pages — so it keeps the whole
-// budget and gains a retry only when the failure leaves room, which an overload usually does.
-export const VISION_ATTEMPT_CEILING_MS: Record<VisionKind, number> = {
-  image: 20_000,
-  document: VISION_TOTAL_BUDGET_MS,
-};
-
-// Waits before the second and third attempts. Same shape as the attachment-download backoff in the
-// Chatwoot client, and short for the same reason: a customer is waiting on this turn.
-export const VISION_RETRY_DELAYS_MS = [500, 1_500];
+// Waits before each retry; its length is what sets the number of attempts. Same shape as the
+// attachment-download backoff in the Chatwoot client, and short for the same reason: a customer is
+// waiting on this turn.
+//
+// TWO attempts, not more, and that is a consequence of the ceiling below rather than of the odds. A
+// third attempt would have to be carved out of the same 60s, and what it costs is the length of the
+// LAST one — the only attempt that can still answer a call that is legitimately slow.
+export const VISION_RETRY_DELAYS_MS = [500];
 
 // Derived, never written twice: the loop that spends the attempts and the policy that plans them
 // must not be able to disagree about when to stop. Mutating the policy alone turned that loop into
 // a spin — the battery hung instead of failing, because a stubbed clock never spends the budget
 // that was its only other way out.
 export const VISION_MAX_ATTEMPTS = VISION_RETRY_DELAYS_MS.length + 1;
+
+// What a NON-final attempt may take, per kind. An image is measured (2.0-4.4s live through gpt-4o,
+// a 3000x3000 one included; the issue reports 4s in production), so 20s is ~5x the slowest and
+// cutting there is what funds a second attempt inside the same total. A document is NOT measured —
+// up to 25MB and ~100 pages — so it is capped only by the total, and gains a retry when the failure
+// leaves room, which an overload usually does.
+export const VISION_ATTEMPT_CEILING_MS: Record<VisionKind, number> = {
+  image: 20_000,
+  document: VISION_TOTAL_BUDGET_MS,
+};
 
 // Applied upward, so a delay lands in [base, base * 1.5). A 503 is upstream overload, and every
 // caller retrying on the same schedule is what keeps it overloaded.
@@ -60,32 +64,37 @@ const JITTER = 0.5;
 // Under this an attempt buys a timeout instead of an answer: the fastest measured call is 2.0s.
 const MIN_ATTEMPT_MS = 2_000;
 
-export interface VisionAttemptPlan {
-  // How long to wait before making this attempt (0 for the first).
-  delayMs: number;
-  // This attempt's budget alone, handed to the provider as its abort deadline.
-  timeoutMs: number;
+// How long to wait before attempt `attempt` (1-based; 0 for the first), or null when the attempts
+// are used up.
+export function retryDelayMs(
+  attempt: number,
+  rand: () => number = Math.random,
+): number | null {
+  if (attempt > VISION_MAX_ATTEMPTS) return null;
+  const base = attempt <= 1 ? 0 : (VISION_RETRY_DELAYS_MS[attempt - 2] ?? 0);
+  return Math.round(base * (1 + JITTER * rand()));
 }
 
-// The plan for attempt `attempt` (1-based), or null when nothing is left to spend — the attempts
-// are used up, or the remainder cannot fund a useful call. `elapsedMs` runs from the first attempt,
-// so the waits and the failed calls both count against the total.
+// This attempt's own deadline, or null when what is left of the total cannot fund a useful call.
+// `elapsedMs` runs from the first attempt and is read AFTER the wait, not before it: the wait is
+// what the process may oversleep, and a budget computed from the nominal delay would hand a stalled
+// process more time than the total still has.
 //
-// Attempt 1 always has a plan: it is asked at zero elapsed, and both ceilings are far above the
-// minimum.
-export function planVisionAttempt(args: {
+// The LAST attempt is not capped by its kind's ceiling. The ceiling exists to leave room for a next
+// attempt, and after the last one there is none — so capping it there would buy nothing and would
+// cost the one case the ceiling is bad at: a call that is legitimately slow (a loaded vendor, a
+// self-hosted `openai-compatible` endpoint on modest hardware) used to have the whole 60s and would
+// otherwise be cut at 20s on every attempt, turning a slow success into a permanent marker.
+export function attemptBudgetMs(args: {
   kind: VisionKind;
   attempt: number;
   elapsedMs: number;
-  rand?: () => number;
-}): VisionAttemptPlan | null {
-  const { kind, attempt, elapsedMs } = args;
-  if (attempt > VISION_MAX_ATTEMPTS) return null;
-  const base = attempt <= 1 ? 0 : (VISION_RETRY_DELAYS_MS[attempt - 2] ?? 0);
-  const delayMs = Math.round(
-    base * (1 + JITTER * (args.rand ?? Math.random)()),
-  );
-  const left = VISION_TOTAL_BUDGET_MS - elapsedMs - delayMs;
-  const timeoutMs = Math.min(VISION_ATTEMPT_CEILING_MS[kind], left);
-  return timeoutMs < MIN_ATTEMPT_MS ? null : { delayMs, timeoutMs };
+}): number | null {
+  const left = VISION_TOTAL_BUDGET_MS - args.elapsedMs;
+  const ceiling =
+    args.attempt >= VISION_MAX_ATTEMPTS
+      ? left
+      : VISION_ATTEMPT_CEILING_MS[args.kind];
+  const budget = Math.min(ceiling, left);
+  return budget < MIN_ATTEMPT_MS ? null : budget;
 }

@@ -134,6 +134,16 @@ export function planTurnRollback(
 //
 // The nudge's own claim is already released by the time any refusal reaches here (the `finally` that
 // clears it sits above them all), so this never stands down on account of itself.
+//
+// WHERE THIS STOPS, because the check reads a count rather than holding a gate. It excludes an invoke
+// that is ALREADY in flight; it cannot exclude one that starts a moment later, loads the refused turn
+// and saves it back when it finishes. The window is widest on the fallback thread, where a
+// conversation with no `contactInboxId` makes the graph thread and the conversation thread the same
+// key, and `runLoadedTurn` marks that key before it takes any lock. Closing it would mean holding a
+// critical section across another invoke, which is the pool inversion #227 removed for issue #225, so
+// it is deliberately not attempted. Losing that race costs exactly what happens today with no
+// rollback at all: the refused turn stays in the history. The rollback is best-effort against a
+// concurrent invoke, and never worse than not having run.
 export async function undoRefusedTurn(params: {
   checkpointer: BaseCheckpointSaver;
   graphThreadId: string;

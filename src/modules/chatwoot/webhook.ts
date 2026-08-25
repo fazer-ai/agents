@@ -213,27 +213,28 @@ async function inboxAgentRuntime(
   });
 }
 
-// The mode of the agent bound to a conversation's OWN (mirrored) inbox — but ONLY when that agent is
-// also the persona whose route this delivery arrived on. Deliberately keyed by the conversation
-// rather than by a payload inbox id: it is the reading `maybeConsumeCommandOrGate` already uses for
-// the test-mode gate, and it exists so the question "is this command active?" and the gate that
-// silences the conversation cannot be answered by two different rows (issue #270).
+// The mode of the agent bound to a conversation's OWN (mirrored) inbox, or null when nothing
+// resolves. Deliberately keyed by the conversation rather than by a payload inbox id: it is the
+// reading `maybeConsumeCommandOrGate` already uses for the test-mode gate, and it exists so the
+// question "is this command active?" and the gate that silences the conversation cannot be answered
+// by two different rows (issue #270).
 //
-// The route check is what keeps that safe. A payload that names no inbox leaves the mirrored row as
-// the only thing that can name an agent, and a mirrored row can be out of date — so without it a
-// command could go active for a persona this delivery never reached, fail the route fence
-// downstream, and be consumed without running and without an acknowledgement. Requiring the match
-// means the fallback either applies to this exact route or does not apply at all, which is the
-// behaviour that was there before it. Only ever called on the path where the payload named no inbox,
-// so the common delivery pays for no extra query.
+// It answers about the AGENT and says nothing about the route, which is the split that keeps this
+// safe. Chatwoot fans one command out to the inbox's persona and to the conversation's assigned bot,
+// so more than one delivery can reach here with the same command; `commandBelongsHere` downstream is
+// the single fence that picks which one runs it and consumes the rest. Answering the route question
+// here too would give the losing delivery `commandActive === false`, which does not defer to that
+// fence — it walks past it and hands the agent "/teste" as ordinary customer text.
+//
+// Only ever called on the path where the payload named no inbox, so the common delivery pays for no
+// extra query.
 async function conversationAgentMode(
   tenantId: bigint,
   instanceId: bigint,
   chatwootConversationId: number | null,
-  agentBotId: number | null,
   base: PrismaClient,
 ): Promise<string | null> {
-  if (chatwootConversationId == null || agentBotId == null) return null;
+  if (chatwootConversationId == null) return null;
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     const conv = await db.conversation.findUnique({
       where: {
@@ -251,17 +252,6 @@ async function conversationAgentMode(
       select: { agentId: true },
     });
     if (!inbox?.agentId) return null;
-    const bot = await db.chatwootAgentBot.findUnique({
-      where: {
-        tenantId_chatwootInstanceId_agentId: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          agentId: inbox.agentId,
-        },
-      },
-      select: { chatwootAgentBotId: true },
-    });
-    if (bot?.chatwootAgentBotId !== agentBotId) return null;
     const agent = await db.agent.findUnique({
       where: { id: inbox.agentId },
       select: { mode: true },
@@ -2640,7 +2630,7 @@ export async function processChatwootDelivery(
         )
       : null;
   const command = isNewIncoming ? controlCommand(n) : null;
-  // A control command is "active" only for a test-mode agent, and issue #270 is what happens when
+  // NOTE: A control command is "active" only for a test-mode agent, and issue #270 is what happens when
   // that question is answered by a different row than the one that acts on it: `rt` resolves the
   // agent from the inbox id the PAYLOAD carries, while the test-mode gate downstream resolves it
   // from the inbox id STORED on the mirrored conversation. Disagree, and the operator sends /teste
@@ -2657,7 +2647,7 @@ export async function processChatwootDelivery(
     if (rt !== null) {
       commandMode = rt.mode;
     } else if (n.inboxId == null) {
-      // ONLY when the payload named no inbox at all. An inbox it DID name that resolves to no agent
+      // NOTE: ONLY when the payload named no inbox at all. An inbox it DID name that resolves to no agent
       // is an answer, not a gap: falling back there would decide the command against whatever inbox
       // the conversation pointed at BEFORE this event, and the mirror is about to move it to the one
       // that just arrived. The command would then be active for an agent the delivery never reached,
@@ -2667,13 +2657,12 @@ export async function processChatwootDelivery(
         params.tenantId,
         params.instanceId,
         n.conversationId,
-        params.agentBotId,
         base,
       );
     }
   }
   const commandActive = command !== null && commandMode === "test";
-  // A command that will not run is otherwise indistinguishable from ordinary customer text, in the
+  // NOTE: A command that will not run is otherwise indistinguishable from ordinary customer text, in the
   // logs and in the conversation alike — which is what left issue #270 undiagnosable from the
   // outside. This is the only place that knows all three values the diagnosis needs, and past it
   // the command is simply gone: `isTeste`/`isReset` are both false, so every later line describes a

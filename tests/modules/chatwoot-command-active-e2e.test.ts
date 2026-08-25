@@ -457,12 +457,13 @@ describe.skipIf(!dbUp)("control commands: one reading of the agent", () => {
     ).toBeGreaterThan(0);
   });
 
-  test("the fallback does not fire on a route the conversation's own agent does not own", async () => {
+  test("a sparse command on the losing route defers to the fence, it does not become customer text", async () => {
     // The payload names no inbox, so the mirrored conversation is the only thing that can name an
-    // agent — and it names the entry inbox's persona (BOT). This delivery arrived on the OTHER
-    // persona's route (BOT+1), so the row does not describe where it landed. Firing there would make
-    // the command active for a persona this delivery never reached, and the route fence downstream
-    // would then eat it without running it and without a word. Not applying is what main did.
+    // agent — and Chatwoot fans one command out to the inbox's persona AND to the conversation's
+    // assigned bot, so two deliveries arrive carrying it. This is the losing one. It must reach
+    // `commandBelongsHere` and be consumed there; deciding the route any earlier leaves it
+    // `commandActive === false`, which walks past that fence and hands the agent "/teste" as
+    // ordinary customer text.
     const id = await seedConv(6010, entryInboxId);
     const info = spyOn(logger, "info");
     let lines: unknown[][] = [];
@@ -477,12 +478,10 @@ describe.skipIf(!dbUp)("control commands: one reading of the agent", () => {
       select: { testActivatedAt: true },
     });
     expect(row?.testActivatedAt).toBeNull();
-    const line = lines.find((c) => String(c[0]).includes("not run"));
-    expect(line?.slice(1)).toEqual([
-      "teste",
-      "6010",
-      "unresolved",
-      String(BOT + 1),
-    ]);
+    expect(posted.filter((p) => p.conversationId === 6010)).toEqual([]);
+    expect(
+      lines.some((c) => String(c[0]).includes("command not for this route")),
+    ).toBe(true);
+    expect(lines.some((c) => String(c[0]).includes("not run"))).toBe(false);
   });
 });

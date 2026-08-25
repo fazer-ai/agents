@@ -166,9 +166,13 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
     inboxId: number,
     content: string,
     agentBotId: number | null,
+    // The SAME Chatwoot message, redelivered on another bot's route: that is the fan-out, not a
+    // second command (`agent_bots_for` sends one message to the conversation's assigned bot and to
+    // the inbox's).
+    sameMessage = false,
   ): Promise<void> {
     deliverySeq += 1;
-    messageSeq += 1;
+    if (!sameMessage) messageSeq += 1;
     stamp += 1;
     const n = normalizeChatwootEvent({
       event: "message_created",
@@ -290,6 +294,28 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
       command: "teste",
       reason: "no_persona",
       routeBot: OUR_BOT,
+    });
+  });
+
+  // Measured live before this was written: one `/teste` on a production agent whose conversation is
+  // assigned to another persona's bot produced TWO identical `inactive` rows, one per route. They
+  // are not the same fact, and the pair now reads as one command: the inbox's persona reports what
+  // stopped it, the other route reports that it deferred.
+  test("the fan-out reports one command, not the same drop twice", async () => {
+    await deliver(9202, PROD_INBOX, "/teste", OUR_BOT);
+    await deliver(9202, PROD_INBOX, "/teste", OTHER_BOT, true);
+    const rows = await commandRows(9202);
+    expect(rows).toHaveLength(2);
+    expect(
+      rows.map((r) => (r.detail as { reason: string }).reason).sort(),
+    ).toEqual(["inactive", "other_route"]);
+    const deferred = rows.find(
+      (r) => (r.detail as { reason: string }).reason === "other_route",
+    );
+    expect(deferred?.detail).toMatchObject({
+      command: "teste",
+      routeBot: OTHER_BOT,
+      personaBot: OUR_BOT,
     });
   });
 

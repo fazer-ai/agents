@@ -2704,8 +2704,33 @@ export async function processChatwootDelivery(
   // computed: the row hangs off the conversation, and the conversation row is what the mirror just
   // created (issue #317). The process line moved with it so one place still knows the fact.
   if (command !== null && !commandActive) {
+    // WHO SPEAKS FOR THE COMMAND, asked here too and by the same rule the fence downstream uses for
+    // an active one. Chatwoot fans a message out to the conversation's assigned bot AND the inbox's
+    // (`agent_bots_for`), and both deliveries reach this line: measured live, one `/teste` on a
+    // production agent produced two identical drops, one per route. They are not the same fact —
+    // the inbox's persona is the one the command was about, and the other route only deferred to
+    // it — so each delivery reports what IT did and the pair reads as one command.
+    //
+    // With no persona to compare against (no agent bound, or one with no `ChatwootAgentBot` row)
+    // nothing here separates two deliveries, and both report the mode: a row twice is the lesser
+    // failure than a command nobody reports, and that state already has #318's `route` line per
+    // delivery for the same reason.
+    const personaBot =
+      rt !== null
+        ? ((
+            await loadAgentBot(
+              params.tenantId,
+              params.instanceId,
+              rt.agentId,
+              base,
+            )
+          )?.chatwootAgentBotId ?? null)
+        : null;
+    const route = commandRoute(personaBot, params.agentBotId);
     logger.info(
-      "chatwoot: /%s not run (conv=%s) — control commands apply only to a test-mode agent (agent mode=%s, route bot=%s)",
+      route.reason === "other_route"
+        ? "chatwoot: /%s not for this route, leaving it to the inbox's persona (conv=%s, agent mode=%s, route bot=%s)"
+        : "chatwoot: /%s not run (conv=%s) — control commands apply only to a test-mode agent (agent mode=%s, route bot=%s)",
       command,
       n.conversationId === null ? "?" : String(n.conversationId),
       commandMode ?? "unresolved",
@@ -2719,7 +2744,10 @@ export async function processChatwootDelivery(
         inboxRowId: rt?.inboxId ?? mirror.inboxRowId,
         command,
         routeBot: params.agentBotId,
-        drop: { reason: "inactive", mode: commandMode ?? "unresolved" },
+        drop:
+          route.reason === "other_route"
+            ? route
+            : { reason: "inactive", mode: commandMode ?? "unresolved" },
         base,
       });
     }

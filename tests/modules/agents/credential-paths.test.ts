@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
-import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
+import {
+  collectCredentialRefWrites,
+  SETTINGS_CREDENTIAL_PATHS,
+} from "@/modules/agents/credential-paths";
 import { credentialFieldTargets } from "@/modules/agents/transfer";
 
 // The list of settings paths that hold a credential ref has to equal what the behavior readers
@@ -77,5 +80,132 @@ describe("credentialFieldTargets", () => {
       tab: "behavior",
       sectionId: "memory",
     });
+  });
+});
+
+// What a write is allowed to put in the two bags. The rule is not "is this ref valid" but "does this
+// write introduce or change one", and the difference is the whole design: eight credential fields
+// live across three editor tabs, several only rendered with their section switched on, so refusing a
+// ref the write merely carried along would answer 400 naming a field the operator cannot open — and
+// one deleted vault entry would freeze every agent that named it, down to the switch that turns the
+// agent off.
+describe("collectCredentialRefWrites", () => {
+  const MODEL = { provider: "openai", model: "gpt-4o-mini" };
+  const paths = (
+    next: { modelConfig?: unknown; settings?: unknown },
+    stored: { modelConfig?: unknown; settings?: unknown } = {},
+  ) => collectCredentialRefWrites(next, stored).map((w) => w.path);
+
+  test("a bag the write does not send is a bag it does not touch", () => {
+    const stored = {
+      modelConfig: { ...MODEL, credentialRef: "vault:1" },
+      settings: { stt: { credentialRef: "vault:2" } },
+    };
+    expect(paths({}, stored)).toEqual([]);
+    expect(
+      paths({ modelConfig: { ...MODEL, credentialRef: "vault:1" } }, stored),
+    ).toEqual([]);
+  });
+
+  test("names every field an unconfigured agent's first save fills in", () => {
+    const settings: Record<string, unknown> = {};
+    for (const { path } of SETTINGS_CREDENTIAL_PATHS) {
+      let node = settings;
+      for (const step of path.slice(0, -1)) {
+        node[step] ??= {};
+        node = node[step] as Record<string, unknown>;
+      }
+      node[path[path.length - 1] as string] = "vault:9";
+    }
+    expect(
+      paths({
+        modelConfig: { ...MODEL, credentialRef: "vault:9" },
+        settings,
+      }).sort(),
+    ).toEqual(
+      [
+        "modelConfig.credentialRef",
+        ...SETTINGS_CREDENTIAL_PATHS.map(
+          ({ path }) => `settings.${path.join(".")}`,
+        ),
+      ].sort(),
+    );
+  });
+
+  test("a ref equal to the stored one is not a write at all", () => {
+    const bag = { guardrails: { credentialRef: "vault:7" } };
+    expect(paths({ settings: bag }, { settings: bag })).toEqual([]);
+    expect(
+      paths(
+        { settings: { guardrails: { credentialRef: "vault:8" } } },
+        { settings: bag },
+      ),
+    ).toEqual(["settings.guardrails.credentialRef"]);
+  });
+
+  test("a write that drops the block is not a write of a ref", () => {
+    // The stored bag holds one, the submitted bag does not: the save is REMOVING the credential, and
+    // there is nothing to check against the vault.
+    expect(
+      paths(
+        { settings: {} },
+        { settings: { stt: { credentialRef: "vault:7" } } },
+      ),
+    ).toEqual([]);
+  });
+
+  test("only a non-empty string counts as a ref", () => {
+    expect(
+      paths({
+        settings: {
+          stt: { credentialRef: "" },
+          vision: { credentialRef: 7 },
+          tts: { credentialRef: null },
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  test("the stored comparison is per FIELD, not per block", () => {
+    // `tts` carries two credentials. Changing one while re-sending the other unchanged has to report
+    // exactly the one that moved, or a save of the normalizer's key drags the voice key along.
+    expect(
+      paths(
+        {
+          settings: {
+            tts: {
+              credentialRef: "vault:1",
+              normalizeCredentialRef: "vault:3",
+            },
+          },
+        },
+        {
+          settings: {
+            tts: {
+              credentialRef: "vault:1",
+              normalizeCredentialRef: "vault:2",
+            },
+          },
+        },
+      ),
+    ).toEqual(["settings.tts.normalizeCredentialRef"]);
+  });
+
+  test("replace rewrites the leaf where it was found, at any depth", () => {
+    const settings = {
+      memory: { compaction: { credentialRef: "vault:007", model: "gpt-4o" } },
+    };
+    const next = {
+      modelConfig: { ...MODEL, credentialRef: "vault:009" },
+      settings,
+    };
+    for (const w of collectCredentialRefWrites(next, {})) w.replace("vault:9");
+    expect(settings.memory.compaction).toEqual({
+      credentialRef: "vault:9",
+      // The sibling the walker knows nothing about is still there: rebuilding the bag from the
+      // declared paths would have dropped it.
+      model: "gpt-4o",
+    });
+    expect(next.modelConfig.credentialRef).toBe("vault:9");
   });
 });

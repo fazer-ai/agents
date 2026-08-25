@@ -4,7 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { unprintableProblem } from "@/modules/documents/printable";
-import { tryResolveVaultEntry } from "@/modules/vault/service";
+import { requireVaultRef, vaultRefWhere } from "@/modules/vault/service";
 
 // Per-tenant settings live in the Tenant.settings JSON column. RLS scopes the row to the active
 // tenant (the runtime role may read/update its own row), so the same reader works at runtime
@@ -210,6 +210,18 @@ export async function updateEmbeddingSettings(
   patch: Partial<EmbeddingSettings>,
   base: PrismaClient = basePrisma,
 ): Promise<EmbeddingSettings> {
+  // The same boundary every other ref column has been held to since #124: `vault:<id>`, in this
+  // tenant, canonically spelled. Nothing checked this one, so a PATCH carrying a vault entry NAME
+  // stored it and indexing then failed with no credential the operator could see was wrong (#254).
+  // The block holds one field, so naming it IS changing it — there is no unrelated save to protect
+  // here, unlike the agent's bags.
+  const incoming = patch.credentialRef;
+  const credentialRef =
+    incoming == null
+      ? incoming
+      : await runScopedOn(base, ctx, (db) =>
+          requireVaultRef(db, incoming, "embedding.credentialRef"),
+        );
   return patchBlock(ctx, base, "embedding", (raw) => {
     const current = parseEmbeddingSettings(raw);
     // LOCKED to EMBEDDING_DEFAULTS (OpenAI + text-embedding-3-small) until the flexible-embeddings
@@ -219,9 +231,7 @@ export async function updateEmbeddingSettings(
     return embeddingSettingsSchema.parse({
       ...EMBEDDING_DEFAULTS,
       credentialRef:
-        patch.credentialRef !== undefined
-          ? patch.credentialRef
-          : current.credentialRef,
+        credentialRef !== undefined ? credentialRef : current.credentialRef,
     });
   });
 }
@@ -252,25 +262,35 @@ export async function updateLangfuse(
     if (input.credentialRef === null) {
       credentialRef = null;
     } else {
-      // Validate: ref must resolve and be a langfuse-kind entry.
-      const entry = await runScopedOn(base, ctx, (db) =>
-        tryResolveVaultEntry(db, input.credentialRef as string),
-      );
-      if (!entry) {
-        throw new AppError(
-          "credential ref not found in the vault",
-          400,
-          "errors.vaultRefNotFound",
+      // Validate: ref must resolve, in this tenant, and be a langfuse-kind entry.
+      // NOTE: requireVaultRef rather than tryResolveVaultEntry, which answered "not found" for two
+      // values that are something else. A lenient spelling (`vault:007`) resolved and was then
+      // stored verbatim, where it compares unequal against the id list the credential picker builds
+      // and reports a working credential as unavailable; and an entry created empty on purpose
+      // (credential_create) was refused for having no secret yet, which is the one case the write
+      // boundary admits deliberately. Both are the ref rule, so both answer to the ref check (#254).
+      const ref = input.credentialRef;
+      credentialRef = await runScopedOn(base, ctx, async (db) => {
+        const canonical = await requireVaultRef(
+          db,
+          ref,
+          "langfuse.credentialRef",
         );
-      }
-      if (entry.kind !== "langfuse") {
-        throw new AppError(
-          "credential must be of kind 'langfuse'",
-          400,
-          "errors.invalidCredentialKind",
-        );
-      }
-      credentialRef = input.credentialRef;
+        const entry = await db.vaultEntry.findFirst({
+          where: vaultRefWhere(canonical),
+          select: { kind: true },
+        });
+        if (entry?.kind !== "langfuse") {
+          throw new AppError(
+            "credential must be of kind 'langfuse'",
+            400,
+            "errors.invalidCredentialKind",
+            undefined,
+            "langfuse.credentialRef",
+          );
+        }
+        return canonical;
+      });
     }
   }
 

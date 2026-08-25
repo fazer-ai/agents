@@ -94,7 +94,7 @@ export const tenantSettingsController = new Elysia({
         credentialRef: t.Optional(
           t.Union([t.String(), t.Null()], {
             description:
-              "Vault entry reference for the provider key (null clears it).",
+              "Vault reference (`vault:<id>`, from GET /v1/vault) for the provider key. Never the secret itself, and never an entry name; null clears it.",
           }),
         ),
         baseURL: t.Optional(
@@ -135,7 +135,7 @@ export const tenantSettingsController = new Elysia({
           t.Nullable(
             t.String({
               description:
-                "Vault entry reference for the Langfuse credential (null clears it).",
+                "Vault reference (`vault:<id>`, from GET /v1/vault) for the Langfuse credential. Never the secret itself, and never an entry name; null clears it.",
             }),
           ),
         ),

@@ -12,6 +12,7 @@ import {
   TenantTargetRequiredError,
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
@@ -25,6 +26,7 @@ import {
   getToolpackToolNames,
   getToolpackToolViews,
 } from "@/modules/integrations/toolpacks";
+import { requireVaultRef } from "@/modules/vault/service";
 
 // Agent configuration CRUD — the config the whole system orbits (the same core the UI config
 // screen and the MCP `prompt_get/set` tools project over). All reads/writes are tenant-scoped;
@@ -282,6 +284,24 @@ export function assertSettingsTextSizes(
   }
 }
 
+// The write boundary for the agent's credential refs, and the only place a `vault:<id>` enters
+// either JSON bag. `requireVaultRef` is what the other six ref columns have been held to since #124;
+// the agent's two bags were left out of that sweep because they have no column to grep for, so a
+// PATCH carrying a vault entry NAME answered 200 and the agent then produced nothing at all — no
+// reply in production, "no runnable model configured" in the playground (#254).
+//
+// Canonical on the way in, not merely valid: requireVaultRef returns the one spelling every reader
+// agrees on, and it is written back where the ref was found.
+async function assertCredentialRefsResolve(
+  db: ScopedDb,
+  next: { modelConfig?: unknown; settings?: unknown },
+  stored: { modelConfig?: unknown; settings?: unknown },
+): Promise<void> {
+  for (const write of collectCredentialRefWrites(next, stored)) {
+    write.replace(await requireVaultRef(db, write.ref, write.path));
+  }
+}
+
 // Allowlist of editable fields. tenantId/id are never touched; modelConfig/settings must be
 // objects (the runtime's own parser validates their inner shape at load time).
 // NOTE: The EFFECTIVE follow-up state: an ENABLED agent with followUp.enabled, in ANY mode — the
@@ -383,10 +403,6 @@ export async function updateAgent(
       }
     }
     const updateData: Record<string, unknown> = { ...rest };
-    // NOTE: See normalizeSettingsForStorage — the host list is reduced to hosts on the way IN, on
-    // every write path, not only when it is read back.
-    const normalizedSettings = normalizeSettingsForStorage(rest.settings);
-    if (normalizedSettings) updateData.settings = normalizedSettings;
     if (hasBh) updateData.businessHoursId = bhId;
     if (hasFuh) updateData.followUpHoursId = fuhId;
     // NOTE: Arm the follow-up backlog fence on the OFF→ON transition of the effective state. The row
@@ -399,9 +415,10 @@ export async function updateAgent(
         enabled: boolean;
         mode: string;
         settings: unknown;
+        model_config: unknown;
         updated_at: Date;
       }>
-    >`SELECT enabled, mode, settings, updated_at FROM agents WHERE id = ${id} FOR UPDATE`;
+    >`SELECT enabled, mode, settings, model_config, updated_at FROM agents WHERE id = ${id} FOR UPDATE`;
     const before = beforeRows[0];
     // NOTE: The optimistic-concurrency check comes FIRST, on the locked row. A stale editor resends
     // the settings it loaded, so if the other writer edited a capped field our copy of it is an edit
@@ -422,6 +439,17 @@ export async function updateAgent(
     // NOTE: Inside the lock, against the row this write replaces — reading the stored bag separately
     // would compare against a value another writer could have changed in between.
     assertSettingsTextSizes(rest.settings, before?.settings);
+    // NOTE: Inside the lock and against the same row, for the reason above: "did this write change
+    // the ref" has to be asked of the value this write replaces. It also rewrites `rest` in place,
+    // so the normalization below copies the canonical bag rather than the submitted one.
+    await assertCredentialRefsResolve(db, rest, {
+      modelConfig: before?.model_config,
+      settings: before?.settings,
+    });
+    // NOTE: See normalizeSettingsForStorage — the host list is reduced to hosts on the way IN, on
+    // every write path, not only when it is read back.
+    const normalizedSettings = normalizeSettingsForStorage(rest.settings);
+    if (normalizedSettings) updateData.settings = normalizedSettings;
     if (before) {
       const after = {
         enabled: rest.enabled !== undefined ? rest.enabled : before.enabled,
@@ -574,6 +602,9 @@ export async function createAgent(
         );
       }
     }
+    // NOTE: Nothing is stored yet, so every ref the payload carries is one this write introduces.
+    // Rewrites `data` in place; both bags below read from it.
+    await assertCredentialRefsResolve(db, data, {});
     const createShape = {
       enabled: data.enabled ?? true,
       // NOTE: New agents are born in test mode (operator opt-in before going live).

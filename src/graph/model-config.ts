@@ -77,7 +77,9 @@ export const modelConfigSchema = z
     // openai-compatible: single-model servers (llama.cpp) ignore the requested name, so forcing a
     // pick there is pure friction. Every other provider requires an explicit model.
     model: z.string().default(""),
-    // Vault entry name holding the API key (resolved by the runtime, never stored here).
+    // Vault reference (`vault:<id>`) for the API key, never the key and never an entry name:
+    // `vaultRefWhere` turns anything else into a filter that matches nothing, so the runtime
+    // finds no credential and the agent produces nothing. Refused at the write boundary (#254).
     credentialRef: z.string().min(1).optional(),
     baseURL: z.string().url().optional(),
     temperature: z.number().min(0).max(2).optional(),

@@ -111,3 +111,81 @@ export function remapCredRefAt(
 export type CredentialFieldTab =
   | "general"
   | (typeof SETTINGS_CREDENTIAL_PATHS)[number]["tab"];
+
+export interface CredentialRefWrite {
+  // Dotted path from the agent row, so a refusal names the field the editor shows rather than the
+  // bag it lives in: `modelConfig.credentialRef`, `settings.tts.normalizeCredentialRef`.
+  path: string;
+  ref: string;
+  // Writes the canonical spelling back where the ref was found. In place, for the same reason
+  // clampOversizedTextInPlace is: the caller owns a freshly parsed payload whose bags hold keys this
+  // module knows nothing about, and rebuilding them from the paths listed here would drop the rest.
+  replace: (canonical: string) => void;
+}
+
+function bagOf(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+}
+
+// Every credential ref a write INTRODUCES or CHANGES, over the eight fields an agent keeps one in
+// (modelConfig plus the seven settings paths above). A bag the write does not send is a bag it does
+// not touch, and a ref equal to the stored one is not a write at all.
+//
+// Only what changes, and that is the whole design. These eight fields sit on three editor tabs and
+// several of them are only rendered with their section switched on, so a check over the whole bag
+// could answer 400 naming a field the operator has no way to open — and one deleted vault entry
+// would then freeze every agent that named it, down to the switch that turns the agent off. What a
+// write leaves alone is REPORTED rather than refused: configHealth already raises it as
+// `unresolved` on the field itself. Same rule, same reason as collectOversizedTextChanges.
+export function collectCredentialRefWrites(
+  next: { modelConfig?: unknown; settings?: unknown },
+  stored: { modelConfig?: unknown; settings?: unknown },
+): CredentialRefWrite[] {
+  const out: CredentialRefWrite[] = [];
+  const add = (
+    path: string,
+    holder: Record<string, unknown>,
+    key: string,
+    storedRef: unknown,
+  ): void => {
+    const ref = holder[key];
+    if (typeof ref !== "string" || !ref || ref === storedRef) return;
+    out.push({
+      path,
+      ref,
+      replace: (canonical) => {
+        holder[key] = canonical;
+      },
+    });
+  };
+
+  const nextModel =
+    next.modelConfig === undefined ? null : bagOf(next.modelConfig);
+  if (nextModel) {
+    add(
+      "modelConfig.credentialRef",
+      nextModel,
+      "credentialRef",
+      bagOf(stored.modelConfig)?.credentialRef,
+    );
+  }
+  const nextSettings =
+    next.settings === undefined ? null : bagOf(next.settings);
+  if (nextSettings) {
+    const storedSettings = bagOf(stored.settings);
+    for (const { path } of SETTINGS_CREDENTIAL_PATHS) {
+      const slot = credRefSlot(nextSettings, path);
+      if (!slot) continue;
+      const storedSlot = credRefSlot(storedSettings, path);
+      add(
+        `settings.${path.join(".")}`,
+        slot.holder,
+        slot.key,
+        storedSlot ? storedSlot.holder[storedSlot.key] : undefined,
+      );
+    }
+  }
+  return out;
+}

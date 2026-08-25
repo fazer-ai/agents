@@ -411,13 +411,13 @@ export const agentsController = new Elysia({
         modelConfig: t.Optional(
           t.Record(t.String(), t.Unknown(), {
             description:
-              "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
+              "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.). `credentialRef` is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
           }),
         ),
         settings: t.Optional(
           t.Record(t.String(), t.Unknown(), {
             description:
-              "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar).",
+              "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar). Every `credentialRef` in it is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
           }),
         ),
         businessHoursId: t.Optional(
@@ -497,13 +497,13 @@ export const agentsController = new Elysia({
         modelConfig: t.Optional(
           t.Record(t.String(), t.Unknown(), {
             description:
-              "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
+              "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.). `credentialRef` is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
           }),
         ),
         settings: t.Optional(
           t.Record(t.String(), t.Unknown(), {
             description:
-              "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar).",
+              "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar). Every `credentialRef` in it is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
           }),
         ),
         businessHoursId: t.Optional(

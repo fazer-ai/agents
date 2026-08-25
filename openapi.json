@@ -5417,14 +5417,14 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.). `credentialRef` is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
                     }
                   },
                   "settings": {
-                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar).",
+                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar). Every `credentialRef` in it is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -5488,14 +5488,14 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.). `credentialRef` is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
                     }
                   },
                   "settings": {
-                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar).",
+                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar). Every `credentialRef` in it is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -5559,14 +5559,14 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.). `credentialRef` is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
                     }
                   },
                   "settings": {
-                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar).",
+                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar). Every `credentialRef` in it is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -5865,14 +5865,14 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.). `credentialRef` is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
                     }
                   },
                   "settings": {
-                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar).",
+                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar). Every `credentialRef` in it is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -5937,14 +5937,14 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.). `credentialRef` is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
                     }
                   },
                   "settings": {
-                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar).",
+                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar). Every `credentialRef` in it is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -6009,14 +6009,14 @@
                     "type": "boolean"
                   },
                   "modelConfig": {
-                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.); secrets are referenced, never inlined.",
+                    "description": "Model settings (provider, model, credentialRef, temperature, reasoningEffort, etc.). `credentialRef` is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
                     }
                   },
                   "settings": {
-                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar).",
+                    "description": "Behavior settings bag (debounce, stt, tts, split, serviceWindow, and similar). Every `credentialRef` in it is a vault reference (`vault:<id>`, from GET /v1/vault): never the secret itself, and never an entry name.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -17742,7 +17742,7 @@
                     "type": "string"
                   },
                   "credentialRef": {
-                    "description": "Vault entry reference for the provider key (null clears it).",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the provider key. Never the secret itself, and never an entry name; null clears it.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -17784,7 +17784,7 @@
                     "type": "string"
                   },
                   "credentialRef": {
-                    "description": "Vault entry reference for the provider key (null clears it).",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the provider key. Never the secret itself, and never an entry name; null clears it.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -17826,7 +17826,7 @@
                     "type": "string"
                   },
                   "credentialRef": {
-                    "description": "Vault entry reference for the provider key (null clears it).",
+                    "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the provider key. Never the secret itself, and never an entry name; null clears it.",
                     "anyOf": [
                       {
                         "type": "string"
@@ -17957,7 +17957,7 @@
                   "credentialRef": {
                     "anyOf": [
                       {
-                        "description": "Vault entry reference for the Langfuse credential (null clears it).",
+                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the Langfuse credential. Never the secret itself, and never an entry name; null clears it.",
                         "type": "string"
                       },
                       {
@@ -17987,7 +17987,7 @@
                   "credentialRef": {
                     "anyOf": [
                       {
-                        "description": "Vault entry reference for the Langfuse credential (null clears it).",
+                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the Langfuse credential. Never the secret itself, and never an entry name; null clears it.",
                         "type": "string"
                       },
                       {
@@ -18017,7 +18017,7 @@
                   "credentialRef": {
                     "anyOf": [
                       {
-                        "description": "Vault entry reference for the Langfuse credential (null clears it).",
+                        "description": "Vault reference (`vault:<id>`, from GET /v1/vault) for the Langfuse credential. Never the secret itself, and never an entry name; null clears it.",
                         "type": "string"
                       },
                       {

@@ -76,12 +76,15 @@ export async function listCredentialDriveFolders(
       runScopedOn(base, ctx, (db) => tryResolveVaultEntry<unknown>(db, ref)));
   const entry = await resolveEntry(credentialRef);
   if (!entry)
-    throw new NotFoundError("Credential not found.", "errors.notFound");
+    throw new NotFoundError(
+      "Credential not found.",
+      "errors.googleCredentialNotFound",
+    );
   if (entry.kind !== "google_oauth") {
     throw new AppError(
       "Credential is not a connected Google account.",
       400,
-      "errors.badRequest",
+      "errors.googleCredentialNotConnected",
     );
   }
   const entryId = credentialRef.startsWith("vault:")
@@ -91,7 +94,7 @@ export async function listCredentialDriveFolders(
     throw new AppError(
       "Invalid credential reference.",
       400,
-      "errors.badRequest",
+      "errors.invalidCredentialRef",
     );
   }
   const token = deps.resolveToken
@@ -133,13 +136,14 @@ export async function listCredentialDriveFolders(
       throw new AppError(
         "Google Drive denied the request. Reconnect the credential granting the 'Drive (read-only)' or 'Drive (full access)' scope (the 'Drive (app files)' scope cannot list existing folders).",
         502,
-        "errors.upstream",
+        "errors.googleDriveScopeDenied",
       );
     }
     throw new AppError(
       `Google Drive returned HTTP ${status}.`,
       502,
-      "errors.upstream",
+      "errors.integrationHttpError",
+      { provider: "Google Drive", status },
     );
   }
   return mapDriveFolderListResponse(json);

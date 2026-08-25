@@ -33,6 +33,26 @@ import {
   syncInboxes,
 } from "@/modules/chatwoot/management";
 
+// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
+// src/api/locales/*.json from these lines and prunes anything nothing references, and
+// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
+// throw site rather than an English sentence on a pt-BR caller's screen.
+// translate('errors.chatwootAccountDisconnected', 'This account is disconnected. Reconnect it before assigning an agent.')
+// translate('errors.chatwootAccountTaken', 'This Chatwoot account is already connected to another tenant; one account belongs to a single tenant.')
+// NOTE: the bind and the REbind refuse differently, and so do the two confirmations. One key per
+// pair would answer "the confirmation does not match" to someone who typed the domain, with no
+// way to tell which of the two fields they got wrong.
+// translate('errors.chatwootBindFailed', 'The bot could not be synced with Chatwoot.')
+// translate('errors.chatwootDomainConfirmMismatch', 'The domain confirmation does not match.')
+// translate('errors.chatwootNameConfirmMismatch', 'The name confirmation does not match.')
+// translate('errors.chatwootRebindFailed', 'The bot could not be reconnected to Chatwoot.')
+// translate('errors.chatwootDeploymentNotFound', 'No Chatwoot deployment is connected.')
+// translate('errors.chatwootDifferentDeployment', 'This tenant is already connected to a different Chatwoot deployment. Disconnect it first to switch servers.')
+// translate('errors.chatwootInstanceNotFound', 'Chatwoot instance not found.')
+// translate('errors.chatwootProfileFailed', 'Chatwoot could not be reached with the URL and token provided.')
+// translate('errors.inboxNotBound', 'This inbox has no agent to reconnect.')
+// translate('errors.inboxNotFound', 'Inbox not found.')
+
 // Chatwoot instance + inbox management (per-tenant). TENANT_ADMIN. SEPARATE from the public webhook
 // receiver controller (same /v1/chatwoot prefix; no path overlap: /instances* + /inboxes* here vs
 // /webhook/:routeToken there). Tokens are write-only — never returned. The inbox→agent binding is
@@ -153,7 +173,7 @@ export const chatwootAdminController = new Elysia({
         throw new AppError(
           "domain confirmation does not match",
           400,
-          "errors.chatwootConfirmMismatch",
+          "errors.chatwootDomainConfirmMismatch",
         );
       }
       const user = ctx.userId ? await getUserById(ctx.userId) : null;
@@ -290,7 +310,7 @@ export const chatwootAdminController = new Elysia({
         throw new AppError(
           "name confirmation does not match",
           400,
-          "errors.chatwootConfirmMismatch",
+          "errors.chatwootNameConfirmMismatch",
         );
       }
       const user = ctx.userId ? await getUserById(ctx.userId) : null;

@@ -14,9 +14,13 @@ import { invalidDocumentTemplate } from "@/modules/documents/validate";
 // Asserted THROUGH the translation, not on the error object, because the masking happened in that
 // step: an assertion on `error.message` passes with or without the fix.
 function shown(err: AppError, locale: "en" | "pt-BR"): string {
+  // No key means nothing to resolve, and the message IS the answer. Spelled as a branch rather than
+  // a `?? ""`, which used to hand i18next a key it could never resolve and got the same string by
+  // accident.
+  if (!err.translationKey) return err.message;
   return translateWithLocale(
     locale,
-    err.translationKey ?? "",
+    err.translationKey,
     err.message,
     err.translationParams,
   );

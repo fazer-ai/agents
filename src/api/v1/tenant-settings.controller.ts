@@ -24,6 +24,12 @@ import {
   updateLangfuse,
 } from "@/modules/tenant-settings/service";
 
+// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
+// src/api/locales/*.json from these lines and prunes anything nothing references, and
+// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
+// throw site rather than an English sentence on a pt-BR caller's screen.
+// translate('errors.invalidCredentialKind', 'This setting requires a credential of kind {{kind}}.')
+
 // Per-tenant feature settings (TENANT_ADMIN). Embedding (provider/model/credential for RAG) and
 // Langfuse (tracing) configs live in Tenant.settings. Secret VALUES are never returned. The langfuse
 // credential is now a standard vault entry (kind `langfuse`) created via the vault UI — this endpoint

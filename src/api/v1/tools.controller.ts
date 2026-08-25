@@ -15,6 +15,13 @@ import {
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
 
+// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
+// src/api/locales/*.json from these lines and prunes anything nothing references, and
+// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
+// throw site rather than an English sentence on a pt-BR caller's screen.
+// translate('errors.toolDefinitionNotFound', 'Tool definition not found.')
+// translate('errors.toolNameTaken', 'That tool name is already in use.')
+
 // Custom HTTP tool definitions (per-tenant). TENANT_ADMIN; the scoped service is the hard
 // boundary. The deeper field validation lives in the service zod schema; the credential is a vault
 // reference (never the secret itself).

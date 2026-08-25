@@ -16,6 +16,18 @@ import {
   updateMcpConnection,
 } from "@/modules/mcp-connections/service";
 
+// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
+// src/api/locales/*.json from these lines and prunes anything nothing references, and
+// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
+// throw site rather than an English sentence on a pt-BR caller's screen.
+// translate('errors.mcpCommandInvalid', 'The stdio command contains unsupported characters.')
+// translate('errors.mcpCommandRequired', 'The stdio transport requires a command.')
+// translate('errors.mcpConnectionNotFound', 'MCP connection not found.')
+// translate('errors.mcpLauncherInvalid', 'The stdio command must start with a supported launcher ({{launchers}}).')
+// translate('errors.mcpNameTaken', 'That MCP connection name is already in use.')
+// translate('errors.mcpStdioDisabled', 'The stdio transport is disabled on this server.')
+// translate('errors.mcpUrlRequired', 'The http/sse transport requires a URL.')
+
 // Consumed MCP server connections (per-tenant). TENANT_ADMIN. Mounted at /v1/mcp-connections, NOT
 // /v1/mcp (that prefix is the MCP transport this app EXPOSES). `discover` connects to the server to
 // list its tool names for the per-agent allowlist UI.

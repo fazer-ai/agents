@@ -2,7 +2,12 @@ import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { DEFAULT_TIMEZONE } from "@/graph/time";
-import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
+import {
+  AppError,
+  ConflictError,
+  type ErrorTranslationKey,
+  NotFoundError,
+} from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { unstorableProblem } from "@/lib/text";
 import {
@@ -64,7 +69,9 @@ export {
 // "A document template with this identifier already exists" on the way out.
 interface Refusal {
   message: string;
-  key: string;
+  // Typed, not `string`: this struct is the ONLY thing `refuse` passes to `AppError`, so an
+  // unregistered key would reach the wire through here without any throw site spelling it.
+  key: ErrorTranslationKey;
   params: Record<string, string>;
   // Which of the two inputs the operator has to go and change. This module already decided it before
   // the wire could carry it: `conflictTarget` reads which index fired, and `slugRefusal` re-points a

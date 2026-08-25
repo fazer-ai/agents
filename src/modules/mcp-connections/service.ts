@@ -110,6 +110,7 @@ async function assertTransportValid(effective: {
         `stdio command must start with a supported launcher (${MCP_STDIO_LAUNCHERS.join(", ")})`,
         400,
         "errors.mcpLauncherInvalid",
+        { launchers: MCP_STDIO_LAUNCHERS.join(", ") },
       );
     }
     // Defense in depth: reject shell metacharacters / control chars / over-long input. The spawn is

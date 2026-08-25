@@ -301,6 +301,7 @@ export async function transcribePlaygroundAudio(
       `transcription failed: ${detail}`,
       502,
       "errors.sttFailed",
+      { detail },
     );
   }
   return cleanTranscription(raw);

@@ -17,6 +17,26 @@ import {
 } from "@/modules/integrations/service";
 import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
 
+// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
+// src/api/locales/*.json from these lines and prunes anything nothing references, and
+// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
+// throw site rather than an English sentence on a pt-BR caller's screen.
+//
+// NOTE: `errors.badRequest`, `errors.notFound` and `errors.upstream` were here and are gone on
+// purpose. One generic sentence per HTTP class read as an answer and was not one: the four sites
+// behind `badRequest` said two different things ("not a connected Google account" / "invalid
+// credential reference") and the Drive 403 behind `upstream` carried the ONLY instruction that
+// resolves it, naming which OAuth scope to reconnect with. Registering the generic key made the
+// catalog win over `AppError.message` in `refusalBody`, so those sentences stopped reaching anyone,
+// in English too. Each fact now has its own key, and the ones that vary carry params.
+// translate('errors.googleCredentialNotConnected', 'This credential is not a connected Google account.')
+// translate('errors.googleCredentialNotFound', 'The credential this integration needs was not found.')
+// translate('errors.googleDriveScopeDenied', "Google Drive denied the request. Reconnect the credential granting the 'Drive (read-only)' or 'Drive (full access)' scope; 'Drive (app files)' cannot list existing folders.")
+// translate('errors.integrationHttpError', '{{provider}} returned HTTP {{status}}.')
+// translate('errors.integrationInstanceNotFound', 'Integration instance not found.')
+// translate('errors.integrationNoInboundWebhook', 'The {{integration}} integration has no inbound webhook.')
+// translate('errors.invalidCredentialRef', 'The credential reference is not valid.')
+
 // Integration-instance management (per-tenant). TENANT_ADMIN. Separate from the PUBLIC inbound
 // receptor controller (same /v1/integrations prefix, no path overlap: /catalog + /instances* here
 // vs /inbound/:routeToken there) so the high-volume webhook path stays free of the session lookup.

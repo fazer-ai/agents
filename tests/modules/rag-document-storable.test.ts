@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { translateWithLocale } from "@/api/lib/i18n";
-import { AppError } from "@/lib/errors";
+import { AppError, type ErrorTranslationKey } from "@/lib/errors";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   knowledgeCreate,
@@ -296,7 +296,7 @@ describe("the refusal answers in the caller's language", () => {
     const err = caught as AppError;
     return translateWithLocale(
       locale,
-      err.translationKey as string,
+      err.translationKey as ErrorTranslationKey,
       err.message,
       err.translationParams,
     );

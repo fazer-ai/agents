@@ -1406,9 +1406,9 @@
   },
   "knowledge": {
     "add": "New base",
-    "addContent": "Adicionar conteúdo",
-    "addContentAction": "Adicionar",
-    "addContentTitle": "Adicionar conteúdo em {{name}}",
+    "addContent": "Add content",
+    "addContentAction": "Add",
+    "addContentTitle": "Add content to {{name}}",
     "addedQueued": "Document queued for processing.",
     "addError": "Could not add document.",
     "addTitle": "New knowledge base",
@@ -1423,7 +1423,7 @@
     "chunkSize": "Chunk size (chars)",
     "chunkSizeError": "Must be between 100 and 8000.",
     "chunkSizeHint": "Controls how large each indexed text chunk is. Smaller chunks give more precision; larger chunks preserve more context.",
-    "clearFile": "Limpar arquivo",
+    "clearFile": "Clear file",
     "created": "Knowledge base created.",
     "createError": "Could not create.",
     "deleted": "Deleted.",
@@ -1443,13 +1443,14 @@
     "docEditTitle": "Edit: {{title}}",
     "docError": {
       "embeddingEmpty": "The embedding credential is empty. Fill it in, then index again.",
-      "embeddingNotConfigured": "The embedding credential is not configured for this workspace. Set it under Components, then index again."
+      "embeddingNotConfigured": "The embedding credential is not configured for this workspace. Set it under Components, then index again.",
+      "embeddingPending": "The embedding credential has not been filled in yet. Fill it in, then index again."
     },
     "docStatus": {
       "FAILED": "Failed",
       "PENDING": "Pending",
       "PROCESSING": "Processing...",
-      "READY": "{{n}} trechos",
+      "READY": "{{n}} chunks",
       "UNINDEXED": "Not indexed",
       "UNINDEXED_BLOCKED": "Not indexed: blocked"
     },
@@ -1461,7 +1462,7 @@
     "documentsTitleWithCount_other": "Documents in {{name}} ({{count}})",
     "docUpdated": "Document updated.",
     "docUpdateError": "Could not update the document.",
-    "dropHint": "Arraste e solte um arquivo aqui, ou clique para escolher",
+    "dropHint": "Drag and drop files here, or click to choose",
     "editTitle": "Edit knowledge base",
     "embeddingBlock": {
       "empty": "The embedding credential is empty. Fill it in, then index again.",
@@ -1488,8 +1489,8 @@
     "retry": "Retry",
     "retryError": "Could not retry.",
     "subtitle": "Knowledge bases your agents can search to answer questions.",
-    "tabArquivo": "Arquivo",
-    "tabTexto": "Texto",
+    "tabArquivo": "File",
+    "tabTexto": "Text",
     "text": "Text",
     "unindexedNote": "Some documents aren't indexed yet and won't be searchable until you index them.",
     "updated": "Knowledge base updated.",

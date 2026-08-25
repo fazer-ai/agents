@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { translateWithLocale } from "@/api/lib/i18n";
+import type { ErrorTranslationKey } from "@/lib/errors";
 
 // NOTE: the AppError → onError localization seam: translationKey + translationParams resolve
 // to a localized, interpolated message (the exact call `onError` makes).
@@ -26,8 +27,13 @@ describe("translateWithLocale", () => {
     );
   });
 
+  // The runtime half of the guard the TYPE now enforces: `ErrorTranslationKey` makes an
+  // unregistered key a compile error at every real call site, and the cast here is what it takes to
+  // reach this path on purpose. Kept because the fallback is what makes an unregistered key
+  // INVISIBLE rather than loud, which is the property the type exists to compensate for.
   test("unknown key falls back to the provided default", () => {
-    expect(translateWithLocale("pt-BR", "errors.__nope__", "the default")).toBe(
+    const unregistered = "errors.__nope__" as ErrorTranslationKey;
+    expect(translateWithLocale("pt-BR", unregistered, "the default")).toBe(
       "the default",
     );
   });

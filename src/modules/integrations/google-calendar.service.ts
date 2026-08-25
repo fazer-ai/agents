@@ -77,12 +77,15 @@ export async function listCredentialCalendars(
       runScopedOn(base, ctx, (db) => tryResolveVaultEntry<unknown>(db, ref)));
   const entry = await resolveEntry(credentialRef);
   if (!entry)
-    throw new NotFoundError("Credential not found.", "errors.notFound");
+    throw new NotFoundError(
+      "Credential not found.",
+      "errors.googleCredentialNotFound",
+    );
   if (entry.kind !== "google_oauth") {
     throw new AppError(
       "Credential is not a connected Google account.",
       400,
-      "errors.badRequest",
+      "errors.googleCredentialNotConnected",
     );
   }
   const entryId = credentialRef.startsWith("vault:")
@@ -92,7 +95,7 @@ export async function listCredentialCalendars(
     throw new AppError(
       "Invalid credential reference.",
       400,
-      "errors.badRequest",
+      "errors.invalidCredentialRef",
     );
   }
   const token = deps.resolveToken
@@ -130,7 +133,8 @@ export async function listCredentialCalendars(
     throw new AppError(
       `Google Calendar returned HTTP ${status}.`,
       502,
-      "errors.upstream",
+      "errors.integrationHttpError",
+      { provider: "Google Calendar", status },
     );
   }
   return mapCalendarListResponse(json);

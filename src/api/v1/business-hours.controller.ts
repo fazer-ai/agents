@@ -14,6 +14,20 @@ import {
   updateBusinessHours,
 } from "@/modules/business-hours/service";
 
+// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
+// src/api/locales/*.json from these lines and prunes anything nothing references, and
+// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
+// throw site rather than an English sentence on a pt-BR caller's screen.
+// translate('errors.businessHoursNotFound', 'Business hours not found.')
+// NOTE: one key per refusal, not one per validator. The three exception checks refuse three
+// different things and each names the date or the range it refused, because the operator is
+// looking at a form with several of them and a sentence that does not say WHICH is not an answer.
+// translate('errors.invalidBusinessHoursDate', '{{date}} is not a calendar date.')
+// translate('errors.invalidBusinessHoursRange', 'The range on {{date}} must end after it starts ({{start}} to {{end}}).')
+// translate('errors.invalidBusinessHoursSpan', 'The exception starting {{start}} must not end before it ({{end}}).')
+// translate('errors.invalidBusinessHoursWindow', 'The window for day {{day}} must end after it starts ({{start}} to {{end}}).')
+// translate('errors.invalidTimezone', 'Unknown timezone: {{timezone}}.')
+
 // Business-hours schedules (per-tenant). TENANT_ADMIN.
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {

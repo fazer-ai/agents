@@ -23,17 +23,19 @@ import {
 // NOTE: these AppError translationKeys are localized centrally in `onError` (not via literal
 // translate() calls), so they are declared here for the i18n extractor (keepRemoved: false). Keep
 // the defaults in sync with src/api/locales/*.json.
-// translate('errors.vaultNameInUse', 'A secret with this name and type already exists')
-// translate('errors.invalidVaultName', 'Name must be 1 to 128 characters')
-// translate('errors.invalidVaultValue', 'Invalid secret value for this credential type')
-// translate('errors.invalidVaultBaseUrl', 'Base URL must be a valid http(s) URL')
-// translate('errors.vaultParamNameRequired', 'Param name is required for this credential type')
-// translate('errors.invalidVaultParamName', 'Param name contains invalid characters')
-// translate('errors.vaultBaseUrlRequired', 'This credential type requires a base URL.')
-// translate('errors.invalidVaultRef', 'Not a vault reference: expected vault:<id>, not a credential name')
-// translate('errors.vaultRefNotFound', 'That vault reference does not point to any credential')
 // translate('errors.credentialPending', 'This credential has not been filled yet')
 // translate('errors.credentialPendingUnsupportedKind', 'This credential type is set up via a connect flow and cannot be created as a pending reference')
+// translate('errors.emptyVaultSecret', 'A vault secret must not be empty.')
+// translate('errors.invalidSecretType', 'That secret type is not valid.')
+// translate('errors.invalidVaultBaseUrl', 'Base URL must be a valid http(s) URL')
+// translate('errors.invalidVaultName', 'Name must be 1 to 128 characters')
+// translate('errors.invalidVaultParamName', 'Param name contains invalid characters')
+// translate('errors.invalidVaultRef', 'Not a vault reference: expected vault:<id>, not a credential name')
+// translate('errors.invalidVaultValue', 'Invalid secret value for this credential type')
+// translate('errors.vaultBaseUrlRequired', 'This credential type requires a base URL.')
+// translate('errors.vaultNameInUse', 'A secret with this name and type already exists')
+// translate('errors.vaultParamNameRequired', 'Param name is required for this credential type')
+// translate('errors.vaultRefNotFound', 'That vault reference does not point to any credential')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();

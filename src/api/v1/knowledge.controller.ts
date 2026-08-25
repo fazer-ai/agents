@@ -39,10 +39,14 @@ import type { ChunkHit } from "@/modules/rag/sql";
 // i18n anchor — keys referenced via AppError third argument (not direct translate() calls),
 // so they are declared here for the i18n extractor (keepRemoved: false). Keep in sync with
 // src/modules/rag/loaders.ts and src/modules/rag/documents.ts.
-// translate('errors.noExtractableText', 'No extractable text found in this file')
-// translate('errors.unsupportedFileType', 'Unsupported file type')
 // translate('errors.documentTooLarge', 'Document is too large to process')
+// translate('errors.embeddingEmpty', 'The embedding credential is empty.')
+// translate('errors.embeddingNotConfigured', 'Embeddings are not configured for this workspace.')
+// translate('errors.embeddingPending', 'The embedding credential is not filled in yet.')
+// translate('errors.knowledgeBaseNotFound', 'Knowledge base not found.')
+// translate('errors.noExtractableText', 'No extractable text found in this file')
 // translate('errors.unstorableText', '{{field}} contains characters that cannot be stored ({{codePoints}})')
+// translate('errors.unsupportedFileType', 'Unsupported file type')
 
 function tenantId(ctx: TenantContext | null): bigint {
   if (!ctx) throw new ForbiddenError();

@@ -8,6 +8,7 @@ import { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } from "@/graph/tools/catalog";
 import { parseDbId } from "@/lib/db-id";
 import {
   AppError,
+  type ErrorTranslationKey,
   NotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
@@ -337,7 +338,7 @@ export const agentUpdateSchema = z
 
 export type AgentUpdate = z.infer<typeof agentUpdateSchema>;
 
-function refOrThrow(v: string, notFoundKey: string): bigint {
+function refOrThrow(v: string, notFoundKey: ErrorTranslationKey): bigint {
   try {
     return BigInt(v);
   } catch {
@@ -539,7 +540,8 @@ function validateModelConfigForWrite(raw: unknown): void {
     throw new AppError(
       `invalid model config: ${parsed.error.message}`,
       400,
-      "errors.invalidModelConfig",
+      "errors.invalidModelConfigDetail",
+      { reason: parsed.error.message },
     );
   }
 }
@@ -847,8 +849,8 @@ function bigOrThrow(v: string | null | undefined, field: string): bigint {
     throw new AppError(
       `${field} is required`,
       400,
-      "errors.invalidToolGrant",
-      undefined,
+      "errors.toolGrantIdRequired",
+      { field },
       field,
     );
   }
@@ -857,8 +859,8 @@ function bigOrThrow(v: string | null | undefined, field: string): bigint {
     throw new AppError(
       `${field} must be a numeric id`,
       400,
-      "errors.invalidToolGrant",
-      undefined,
+      "errors.toolGrantIdInvalid",
+      { field },
       field,
     );
   }
@@ -887,7 +889,8 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           throw new AppError(
             "duplicate NATIVE grant",
             400,
-            "errors.invalidToolGrant",
+            "errors.toolGrantDuplicate",
+            { source: "NATIVE" },
           );
         }
         sawNative = true;
@@ -896,7 +899,8 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           throw new AppError(
             `unknown native tool: ${bad}`,
             400,
-            "errors.invalidToolGrant",
+            "errors.toolGrantUnknownTool",
+            { tool: bad, source: "NATIVE" },
           );
         }
         out.push({
@@ -915,7 +919,8 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           throw new AppError(
             "duplicate RAG grant",
             400,
-            "errors.invalidToolGrant",
+            "errors.toolGrantDuplicate",
+            { source: "RAG" },
           );
         }
         sawRag = true;
@@ -924,7 +929,8 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           throw new AppError(
             `unknown rag tool: ${bad}`,
             400,
-            "errors.invalidToolGrant",
+            "errors.toolGrantUnknownTool",
+            { tool: bad, source: "RAG" },
           );
         }
         const knowledgeBaseIds = (g.knowledgeBaseIds ?? []).map((k) =>
@@ -955,7 +961,8 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           throw new AppError(
             "duplicate HTTP grant",
             400,
-            "errors.invalidToolGrant",
+            "errors.toolGrantDuplicate",
+            { source: "HTTP" },
           );
         }
         httpSeen.add(String(id));
@@ -976,7 +983,8 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           throw new AppError(
             "duplicate MCP grant",
             400,
-            "errors.invalidToolGrant",
+            "errors.toolGrantDuplicate",
+            { source: "MCP" },
           );
         }
         mcpSeen.add(String(id));
@@ -997,7 +1005,8 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           throw new AppError(
             "duplicate INTEGRATION grant",
             400,
-            "errors.invalidToolGrant",
+            "errors.toolGrantDuplicate",
+            { source: "INTEGRATION" },
           );
         }
         intSeen.add(String(id));
@@ -1018,7 +1027,8 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           throw new AppError(
             "duplicate DOCUMENT grant",
             400,
-            "errors.invalidToolGrant",
+            "errors.toolGrantDuplicate",
+            { source: "DOCUMENT" },
           );
         }
         docSeen.add(String(id));
@@ -1040,7 +1050,8 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
         throw new AppError(
           `unknown tool source: ${g.source}`,
           400,
-          "errors.invalidToolGrant",
+          "errors.toolGrantUnknownSource",
+          { source: String(g.source) },
         );
     }
   }
@@ -1334,7 +1345,8 @@ export async function replaceAgentToolSelections(
           throw new AppError(
             `tool ${bad} is not available for integration ${catalogType}`,
             400,
-            "errors.invalidToolGrant",
+            "errors.toolGrantToolNotInIntegration",
+            { tool: bad, integration: String(catalogType) },
           );
         }
       }

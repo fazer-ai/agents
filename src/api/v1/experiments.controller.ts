@@ -14,6 +14,12 @@ import {
   type Variant,
 } from "@/modules/experiments/service";
 
+// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
+// src/api/locales/*.json from these lines and prunes anything nothing references, and
+// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
+// throw site rather than an English sentence on a pt-BR caller's screen.
+// translate('errors.experimentNotFound', 'Experiment not found.')
+
 // Prompt A/B experiments (per-tenant). TENANT_ADMIN. Variant assignment is deterministic per
 // thread; /results joins assignments with ConversionEvents for the win-rate breakdown.
 

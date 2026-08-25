@@ -937,7 +937,7 @@ export async function reconnectInbox(
     throw new AppError(
       "could not reconnect the bot with Chatwoot",
       502,
-      "errors.chatwootBindFailed",
+      "errors.chatwootRebindFailed",
     );
   }
   return runScopedOn(base, ctx, async (db) => {

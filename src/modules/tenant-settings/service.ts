@@ -285,7 +285,7 @@ export async function updateLangfuse(
             "credential must be of kind 'langfuse'",
             400,
             "errors.invalidCredentialKind",
-            undefined,
+            { kind: "langfuse" },
             "langfuse.credentialRef",
           );
         }

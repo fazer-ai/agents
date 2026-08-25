@@ -324,6 +324,7 @@ export async function rotateIntegrationRouteToken(
         `integration ${current.catalogType} has no inbound webhook`,
         400,
         "errors.integrationNoInboundWebhook",
+        { integration: current.catalogType },
       );
     }
     const minted = generateRouteToken();

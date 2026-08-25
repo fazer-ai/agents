@@ -31,6 +31,14 @@ import {
 } from "./tenants.admin.service";
 import { getTenant, listTenants, type TenantUpdate } from "./tenants.service";
 
+// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
+// src/api/locales/*.json from these lines and prunes anything nothing references, and
+// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
+// throw site rather than an English sentence on a pt-BR caller's screen.
+// translate('errors.conversationNotFound', 'Conversation not found.')
+// translate('errors.reengageNoAgent', 'No agent is bound to the inbox of this conversation.')
+// translate('errors.tenantConfirmMismatch', 'The name confirmation does not match.')
+
 // NOTE: requireAuth guarantees a user, and tenancyPlugin derives tenantContext from it, so
 // a null context here is an impossible state — throw (handled by onError as 403) rather
 // than return an error body, keeping each success response a single shape for the treaty.

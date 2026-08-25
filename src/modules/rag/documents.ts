@@ -2,6 +2,10 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { broadcastDocumentEvent } from "@/api/features/realtime/realtime.service";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import {
+  EMBEDDING_BLOCK_KEY,
+  type EmbeddingBlockReason,
+} from "@/lib/embedding-block";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -76,9 +80,10 @@ export async function resolveEmbeddingStatus(
 }
 
 // NOTE: The English message carries the reason, and is not allowed to collapse into one generic
-// sentence. MCP hands `AppError.message` to the caller verbatim and the translation key has no
-// server-side locale entry, so outside the console the message is the only thing that says which of
-// the three happened.
+// sentence. The three keys DO have server-side entries now (EMBEDDING_BLOCK_KEY, issue #256), but
+// only the console reads them: MCP hands `AppError.message` to the caller verbatim, on a surface
+// with no locale and no structured error channel, so outside the console this message is still the
+// only thing that says which of the three happened.
 function embeddingBlockMessage(
   status: Exclude<EmbeddingStatus, { ok: true }>,
 ): string {
@@ -99,7 +104,7 @@ export async function resolveEmbeddingConfig(
   throw new AppError(
     embeddingBlockMessage(status),
     400,
-    `errors.embedding.${embeddingBlock(status).reason}`,
+    EMBEDDING_BLOCK_KEY[embeddingBlock(status).reason],
   );
 }
 
@@ -415,10 +420,7 @@ export async function retryDocument(
 // read the console renders from. `credential_empty` joined it so all three resolvable reasons have a
 // name here instead of two of them collapsing into one.
 export interface EmbeddingBlock {
-  reason:
-    | "embedding_not_configured"
-    | "credential_pending"
-    | "credential_empty";
+  reason: EmbeddingBlockReason;
   credentialRef?: string;
   vaultId?: string;
 }

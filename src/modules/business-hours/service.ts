@@ -74,6 +74,7 @@ function assertValidTimezone(tz: string): void {
       `invalid timezone: ${tz}`,
       400,
       "errors.invalidTimezone",
+      { timezone: tz },
     );
   }
 }
@@ -88,6 +89,7 @@ function assertValidWindows(windows: WindowSpec[]): void {
         `invalid window for day ${w.day}: end (${w.end}) must be after start (${w.start})`,
         400,
         "errors.invalidBusinessHoursWindow",
+        { day: w.day, start: w.start, end: w.end },
       );
     }
   }
@@ -103,14 +105,16 @@ function assertValidExceptions(exceptions: ScheduleException[]): void {
       throw new AppError(
         `invalid exception date: ${e.dateEnd ? `${e.date}..${e.dateEnd}` : e.date} is not a calendar date`,
         400,
-        "errors.invalidBusinessHoursException",
+        "errors.invalidBusinessHoursDate",
+        { date: e.dateEnd ? `${e.date}..${e.dateEnd}` : e.date },
       );
     }
     if (e.dateEnd && !e.recurring && e.dateEnd < e.date) {
       throw new AppError(
         `invalid exception span: end (${e.dateEnd}) is before start (${e.date})`,
         400,
-        "errors.invalidBusinessHoursException",
+        "errors.invalidBusinessHoursSpan",
+        { start: e.date, end: e.dateEnd },
       );
     }
     for (const r of e.ranges) {
@@ -118,7 +122,8 @@ function assertValidExceptions(exceptions: ScheduleException[]): void {
         throw new AppError(
           `invalid range on ${e.date}: end (${r.end}) must be after start (${r.start})`,
           400,
-          "errors.invalidBusinessHoursException",
+          "errors.invalidBusinessHoursRange",
+          { date: e.date, start: r.start, end: r.end },
         );
       }
     }

@@ -79,7 +79,7 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
         });
         return null;
       }
-      // Written even when nothing is placed, and that is the whole of "the capture is also the
+      // NOTE: written even when nothing is placed, and that is the whole of "the capture is also the
       // clear": a mark left over from a refusal the server has stopped making would sit on a control
       // while the toast says something else.
       setHeld(null);

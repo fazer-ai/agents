@@ -22,6 +22,7 @@ import {
   WebhookSubscriptionModal,
 } from "@/client/components/webhooks/WebhookSubscriptionModal";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { formatDate } from "@/client/lib/utils";
 import { webhookEventLabel } from "@/client/lib/webhookEvents";
 
@@ -79,7 +80,8 @@ export function WebhooksPage() {
         prev.map((s) => (s.id === sub.id ? { ...s, enabled: sub.enabled } : s)),
       );
       showToast(
-        t("webhooks.saveFailed", "Could not save the subscription"),
+        apiErrorMessage(err) ||
+          t("webhooks.saveFailed", "Could not save the subscription"),
         "error",
       );
     }
@@ -93,7 +95,11 @@ export function WebhooksPage() {
         .test.post();
       const result = data?.result;
       if (err || !result) {
-        showToast(t("webhooks.testFailed", "Test delivery failed"), "error");
+        showToast(
+          apiErrorMessage(err) ||
+            t("webhooks.testFailed", "Test delivery failed"),
+          "error",
+        );
         return;
       }
       if (result.ok) {
@@ -104,6 +110,9 @@ export function WebhooksPage() {
           "success",
         );
       } else {
+        // A 200 carrying the TARGET's rejection, not a refusal of ours: `err` is null by the guard
+        // above, and `result.error` is the reason the endpoint gave. Reading `err` here would be the
+        // sweep's own idiom applied where it can only ever answer null.
         showToast(
           t("webhooks.testFailedReason", "Test failed: {{reason}}", {
             reason: result.error ?? String(result.status ?? "unknown"),
@@ -133,7 +142,8 @@ export function WebhooksPage() {
           .delete();
         if (err) {
           showToast(
-            t("webhooks.deleteFailed", "Could not delete the subscription"),
+            apiErrorMessage(err) ||
+              t("webhooks.deleteFailed", "Could not delete the subscription"),
             "error",
           );
           throw new Error("delete failed");

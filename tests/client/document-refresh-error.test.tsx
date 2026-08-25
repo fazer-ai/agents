@@ -44,6 +44,9 @@ const json = (body: unknown) =>
 
 // Which GET the NEXT load should fail. The first load always succeeds: this is about a refresh.
 let failSettings = false;
+// What the server says when it does. A sentence no catalogue in this tree contains, so finding it on
+// screen can only mean it travelled from the response.
+let settingsRefusal = "boom";
 
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(
@@ -65,7 +68,9 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   }
   if (url.pathname.endsWith("/tenant-settings")) {
     if (failSettings) {
-      return new Response(JSON.stringify({ error: "boom" }), { status: 500 });
+      return new Response(JSON.stringify({ error: settingsRefusal }), {
+        status: 500,
+      });
     }
     return json({
       company: {
@@ -85,6 +90,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 
 beforeEach(() => {
   failSettings = false;
+  settingsRefusal = "boom";
 });
 afterEach(cleanup);
 const startingLanguage = i18n.language;
@@ -148,4 +154,43 @@ test("a failed FIRST load still shows the retry card", async () => {
   await waitFor(() => {
     expect(screen.queryAllByText(/Retry/).length).toBeGreaterThan(0);
   });
+});
+
+// #233. A failed refresh keeps the screen (above) AND says what the server said. The toast lives in
+// `failed`, a callback that awaits nothing — `load` is the one that knows WHICH of the four requests
+// refused, so the response travels to it as an argument. That wiring is what this proves: the static
+// fence judges the SHAPE of the call, not that the reason arrives.
+test("a failed refresh shows the reason the server sent", async () => {
+  await i18n.changeLanguage("en");
+  settingsRefusal = "Your plan does not include letterheads.";
+  render(
+    <MemoryRouter initialEntries={["/recursos/documentos"]}>
+      <ToastProvider>
+        <DocumentsPanel />
+      </ToastProvider>
+    </MemoryRouter>,
+  );
+  await screen.findByRole("button", { name: /^(edit|fill in)$/i });
+
+  failSettings = true;
+  await act(async () => {
+    await i18n.changeLanguage("pt-BR");
+  });
+
+  // Both sentences are searched for, in both languages: the refresh that fires here is the one the
+  // language switch caused, so the fallback would come out in pt-BR. Searching only for the English
+  // one would fail by TIMEOUT instead of by showing what was on screen, which is a worse failure —
+  // it cannot tell "the wrong sentence" from "no toast at all".
+  const anyToast = /letterheads|Could not refresh|atualizar esta página/;
+  // Reduced to a string before the expectation: a failing assertion holding a happy-dom node
+  // serializes a cyclic tree and stalls the runner.
+  await waitFor(() => {
+    expect(screen.queryAllByText(anyToast).length).toBeGreaterThan(0);
+  });
+  const shown = screen
+    .queryAllByText(anyToast)
+    .map((n) => n.textContent ?? "")
+    .join(" | ");
+  expect(shown).toContain("Your plan does not include letterheads.");
+  expect(shown).not.toContain("atualizar esta página");
 });

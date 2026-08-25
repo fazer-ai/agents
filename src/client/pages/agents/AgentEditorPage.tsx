@@ -2435,8 +2435,11 @@ function AgentEditor() {
       a.download = `agents-agent-${slugify(data.export.agent.name) || "agent"}.json`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch {
-      showToast(t("editor.exportError", "Could not export."), "error");
+    } catch (caught) {
+      showToast(
+        apiErrorMessage(caught) || t("editor.exportError", "Could not export."),
+        "error",
+      );
     }
   }
 
@@ -2500,10 +2503,11 @@ function AgentEditor() {
           .delete({ confirmName, password });
         if (err) {
           showToast(
-            t(
-              "editor.deleteError",
-              "Could not delete. Check your password and try again.",
-            ),
+            apiErrorMessage(err) ||
+              t(
+                "editor.deleteError",
+                "Could not delete. Check your password and try again.",
+              ),
             "error",
           );
           throw err; // keep the dialog open

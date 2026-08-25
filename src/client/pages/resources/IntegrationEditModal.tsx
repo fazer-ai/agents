@@ -34,6 +34,7 @@ import {
 } from "@/client/components";
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { credentialCompat } from "@/client/lib/credentialCompat";
 import {
   toolpackToolMeta,
@@ -809,8 +810,11 @@ export function IntegrationEditModal({
           });
         }
       }
-    } catch {
-      showToast(t("integrations.saveError", "Could not save."), "error");
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) || t("integrations.saveError", "Could not save."),
+        "error",
+      );
     } finally {
       setSaving(false);
     }
@@ -856,7 +860,8 @@ export function IntegrationEditModal({
           tokenModal.open({ url: inboundUrl(data.routeToken) });
         } catch (e) {
           showToast(
-            t("integrations.webhook.rotateError", "Could not generate."),
+            apiErrorMessage(e) ||
+              t("integrations.webhook.rotateError", "Could not generate."),
             "error",
           );
           // NOTE: Rethrow — ConfirmDialog's contract is that a throwing onConfirm keeps the dialog

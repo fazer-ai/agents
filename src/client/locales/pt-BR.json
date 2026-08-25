@@ -2016,7 +2016,8 @@
   },
   "toolpackTools": {
     "argNote": {
-      "calendarId": "O agente só recebe este argumento quando a integração permite vários calendários; com um só, ele é usado automaticamente."
+      "calendarId": "O agente só recebe este argumento quando a integração permite vários calendários; com um só, ele é usado automaticamente.",
+      "slotDurationMinutes": "O agente só recebe este argumento quando a duração do agendamento está em \"Deixar a IA escolher\"; uma duração fixa vale sempre e não muda por conversa."
     },
     "asaas_create_pix_charge": {
       "desc": "Abre uma cobrança PIX e retorna o código copia-e-cola e a página de pagamento.",

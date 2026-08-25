@@ -2008,7 +2008,8 @@
   },
   "toolpackTools": {
     "argNote": {
-      "calendarId": "The agent only receives this argument when the integration allows several calendars; with a single one it is used automatically."
+      "calendarId": "The agent only receives this argument when the integration allows several calendars; with a single one it is used automatically.",
+      "slotDurationMinutes": "The agent only receives this argument when the appointment length is set to \"Let the AI choose\"; a fixed length always applies and cannot be changed per conversation."
     },
     "asaas_create_pix_charge": {
       "desc": "Open a PIX charge and return the copy-and-paste code plus the payment page.",

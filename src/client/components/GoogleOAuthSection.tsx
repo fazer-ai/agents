@@ -9,6 +9,7 @@ import { useModalController } from "@/client/components/Modal";
 import { useToast } from "@/client/components/Toast";
 import { Tooltip } from "@/client/components/Tooltip";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { watchOAuthPopup } from "@/client/lib/oauthPopup";
 
 // Derived from the treaty response; never hand-mirrored (see docs/eden-treaty.md).
@@ -361,10 +362,11 @@ export function GoogleOAuthSection({
         .oauth.google.authorize.post({ scopes });
       if (err || !data) {
         showToast(
-          t(
-            "vault.googleOAuth.connectError",
-            "Could not start the authorization flow.",
-          ),
+          apiErrorMessage(err) ||
+            t(
+              "vault.googleOAuth.connectError",
+              "Could not start the authorization flow.",
+            ),
           "error",
         );
         setConnecting(false);

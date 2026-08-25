@@ -134,24 +134,43 @@ async function generateLines(convId: number) {
   });
 }
 
-// The trail is written fire-and-forget, so wait for it before judging it.
+const isTrim = (r: { detail: unknown }) =>
+  typeof (r.detail as Record<string, unknown> | null)?.historyDropped ===
+  "number";
+
+// The two questions this file asks of the trail are NOT the same question, and one reader cannot
+// wait correctly for both. A trimmed turn writes TWO `generate`/`info` rows, its ordinary one and a
+// separate one for the trim (`onHistoryTrim` is its own `emitFlowEvent` in src/graph/runtime.ts).
+// Measured on this file: the no-ceiling thread produces 6 rows and 0 trims, the ceiling thread 8 and
+// 2. So a single reader waiting on the TOTAL count is satisfied by the six ordinary rows while both
+// trim writes are still in flight, and the positive test intermittently reads none.
+
+// "Did this thread trim?" — poll until a trim row lands. The line is what is being asserted, so
+// waiting for it is the whole job.
+async function waitForTrimLines(convId: number) {
+  let trims: Awaited<ReturnType<typeof generateLines>> = [];
+  for (let i = 0; i < 30 && trims.length === 0; i++) {
+    trims = (await generateLines(convId)).filter(isTrim);
+    if (trims.length === 0) await new Promise((r) => setTimeout(r, 100));
+  }
+  return trims;
+}
+
+// "Did this thread trim NOTHING?" — wait for the turns' own bookkeeping, then read once.
 //
-// NOTE: the wait is on the thread's own line COUNT, never on a trim line appearing. Polling for
-// something that must never arrive can only spend the whole timeout and then agree with itself,
-// which is what the no-ceiling assertion did: 3 of this file's 4 seconds were one test waiting out
-// 30 rounds to confirm an absence it already had the rows to prove.
-async function trimLines(convId: number, turns: number) {
+// NOTE: the landmark is the count of NON-trim rows, never a trim appearing: polling for something
+// that must never arrive can only spend the whole timeout and then agree with itself, which is what
+// this assertion used to do for 3 of the file's 4 seconds. And the landmark is sound rather than
+// approximate here, because `onHistoryTrim` fires only when the window actually dropped something
+// (src/graph/graph.ts): with the ceiling off there is no second write to lose a race to.
+async function trimLinesAfterTurns(convId: number, turns: number) {
   let rows: Awaited<ReturnType<typeof generateLines>> = [];
   for (let i = 0; i < 30; i++) {
     rows = await generateLines(convId);
-    if (rows.length >= turns) break;
+    if (rows.filter((r) => !isTrim(r)).length >= turns) break;
     await new Promise((r) => setTimeout(r, 100));
   }
-  return rows.filter(
-    (r) =>
-      typeof (r.detail as Record<string, unknown> | null)?.historyDropped ===
-      "number",
-  );
+  return rows.filter(isTrim);
 }
 
 describe.skipIf(!dbUp)("a turn under the agent's history ceiling", () => {
@@ -276,7 +295,7 @@ describe.skipIf(!dbUp)("a turn under the agent's history ceiling", () => {
       true,
     );
     // Six turns ran, so six lines are owed; among them, none may carry a trim.
-    expect(await trimLines(980, 6)).toHaveLength(0);
+    expect(await trimLinesAfterTurns(980, 6)).toHaveLength(0);
   });
 
   test("with a ceiling the oldest turns stop travelling, and the trail records it", async () => {
@@ -300,7 +319,7 @@ describe.skipIf(!dbUp)("a turn under the agent's history ceiling", () => {
     expect(last[0]?.getType()).toBe("system");
     expect(last[1]?.getType()).toBe("human");
 
-    const lines = await trimLines(981, 6);
+    const lines = await waitForTrimLines(981);
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) {
       // INFO, never warn: warn fans out to the alert channels, and a working ceiling trims on

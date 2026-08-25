@@ -1084,6 +1084,18 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // silently returned the PREVIOUS test's row: 8801 writes `taken_over`, 8802 asserts
   // `ownership_lost`, and whichever write won the race decided the result. That is the ~1-in-4 CI
   // failure this file kept producing, on a machine slower than a dev laptop.
+  // One read, for the assertion that a conversation has NO handoff row.
+  async function handoffRowNow(convId: number) {
+    const conversation = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+    });
+    return suDb.executionLog.findFirst({
+      where: { tenantId, stage: "handoff", conversationId: conversation.id },
+      orderBy: { id: "desc" },
+      select: { detail: true },
+    });
+  }
+
   async function handoffDetail(convId: number): Promise<unknown> {
     const conversation = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
@@ -1122,7 +1134,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     // 8804 exists but never ran a turn, so the tenant's newest handoff row belongs to 8803.
     await seedConversation(8804, null, null, "open");
-    expect(handoffDetail(8804)).rejects.toThrow();
+    // One read, and awaited. 8804 never ran a turn, so no handoff write is in flight and there is
+    // nothing to poll for: the waiting reader would spend its whole 3s to agree, and it would spend
+    // it AFTER this test returned, because the assertion it was handed to was never awaited (#258).
+    expect(await handoffRowNow(8804)).toBeNull();
   });
 
   test("a human assignee is reported as a real takeover", async () => {

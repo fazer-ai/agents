@@ -32,7 +32,12 @@ type Reader = {
 
 // The keys that name the row THIS test produced. `tenantId` is deliberately absent: it is the file's
 // fence, and a reader that has only it is exactly the defect.
-const SCOPE_KEYS = ["conversationId", "threadId", "turnId", "agentId"];
+const TURN_KEYS = ["conversationId", "threadId", "turnId"];
+
+// `agentId` is NOT one of them, and is accepted only where the ledger says the file's tests own an
+// agent each. It names a row's agent, not its turn, so in a file where every test drives the same
+// agent it fences nothing: `{ tenantId, agentId }` is the tenant filter with extra words.
+const AGENT_KEY = "agentId";
 
 /** Index of the closer matching the opener at `from`, or -1. */
 function matchDelimiter(s: string, from: number, open: string, close: string) {
@@ -97,10 +102,6 @@ export function flowlogReaders(source: string): Reader[] {
   return out;
 }
 
-export function isScoped(reader: Reader): boolean {
-  return reader.keys.some((k) => SCOPE_KEYS.includes(k));
-}
-
 //   turn        scoped to the row this test produced, by conversationId / threadId / turnId
 //   agent       scoped to an agent this test owns, where every test in the file shares one tenant
 //               but not one agent (playground-guardrails spells out why at the call site)
@@ -111,10 +112,16 @@ export function isScoped(reader: Reader): boolean {
 //               tenant can say. Safe because the file holds a single test.
 type Scoping = "turn" | "agent" | "seeded" | "tenant-wide";
 
-const FLOWLOG_READERS: Record<string, [number, Scoping | string]> = {
+export function isScoped(reader: Reader, scoping: Scoping): boolean {
+  const allowed =
+    scoping === "agent" ? [...TURN_KEYS, AGENT_KEY] : [...TURN_KEYS];
+  return reader.keys.some((k) => allowed.includes(k));
+}
+
+const FLOWLOG_READERS: Record<string, [number, Scoping]> = {
   "tests/graph/history-ceiling-turn.test.ts": [1, "turn"],
   "tests/graph/nudge.test.ts": [3, "turn"],
-  "tests/graph/runtime.test.ts": [6, "turn"],
+  "tests/graph/runtime.test.ts": [7, "turn"],
   "tests/graph/side-effect-flowlog.test.ts": [1, "turn"],
   "tests/graph/tool-flowlog.test.ts": [1, "turn"],
   "tests/modules/contact-auth-gate-e2e.test.ts": [2, "turn"],
@@ -169,6 +176,10 @@ describe("the scan can actually tell a scoped reader from an unscoped one", () =
     await suDb.executionLog.count({
       where: { tenantId, stage: "memory", threadId },
     });`;
+  const BY_AGENT = `
+    await suDb.executionLog.findFirst({
+      where: { tenantId, agentId },
+    });`;
   const NESTED_FILTER = `
     await suDb.executionLog.findFirst({
       where: { tenantId, detail: { path: ["outcome"], equals: "sent" } },
@@ -177,12 +188,12 @@ describe("the scan can actually tell a scoped reader from an unscoped one", () =
   test("it flags a reader filtered by tenant alone", () => {
     const [r] = flowlogReaders(UNSCOPED);
     expect(r?.keys).toEqual(["tenantId", "stage"]);
-    expect(r ? isScoped(r) : true).toBe(false);
+    expect(r ? isScoped(r, "turn") : true).toBe(false);
   });
 
   test("it accepts one carrying the thread it produced", () => {
     const [r] = flowlogReaders(SCOPED);
-    expect(r ? isScoped(r) : false).toBe(true);
+    expect(r ? isScoped(r, "turn") : false).toBe(true);
   });
 
   test("a shorthand key AFTER a value is still seen", () => {
@@ -190,6 +201,16 @@ describe("the scan can actually tell a scoped reader from an unscoped one", () =
     // keys, and a regex that consumes the separator loses everything after the first pair.
     const [r] = flowlogReaders(SHORTHAND_AFTER_A_VALUE);
     expect(r?.keys).toEqual(["tenantId", "stage", "threadId"]);
+  });
+
+  test("agentId counts only where the ledger says the tests own an agent each", () => {
+    // The hole this closes: accepting `agentId` for every entry let a reader in a file where all 74
+    // tests drive ONE agent pass the guard while still answering with a neighbour's rows. The key is
+    // sufficient in playground-guardrails and nowhere else, so the ledger decides, not the key.
+    const [r] = flowlogReaders(BY_AGENT);
+    expect(r?.keys).toEqual(["tenantId", "agentId"]);
+    expect(r ? isScoped(r, "agent") : false).toBe(true);
+    expect(r ? isScoped(r, "turn") : true).toBe(false);
   });
 
   test("a nested filter object does not leak its inner keys", () => {
@@ -216,11 +237,11 @@ describe("every flow-log reader in the suite is accounted for", () => {
     const found = await scanTests();
     const unscoped: string[] = [];
     for (const [file, readers] of found) {
-      const scoping = FLOWLOG_READERS[file]?.[1];
+      const scoping = FLOWLOG_READERS[file]?.[1] ?? "turn";
       // `seeded` and `tenant-wide` are the two answers that legitimately have no scope key.
       if (scoping === "seeded" || scoping === "tenant-wide") continue;
       for (const r of readers) {
-        if (!isScoped(r))
+        if (!isScoped(r, scoping))
           unscoped.push(`${file}:${r.line} { ${r.keys.join(", ")} }`);
       }
     }

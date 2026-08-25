@@ -4,6 +4,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import type { FlowContext } from "@/modules/flowlog/service";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 
 // LLM usage capture AT THE SOURCE (not mirrored from Langfuse): a LangChain callback that
@@ -159,6 +160,68 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
     cachedReadTokens: 0,
     cacheCreationTokens: 0,
   };
+}
+
+// The attribution a SECONDARY billed call inherits from the turn it belongs to. A turn's own call
+// gets these from the loaded agent config; a call made beside it (the guardrail analysis, a vision
+// extraction) holds a FlowContext and nothing else, and that context already carries exactly the
+// five fields a row needs.
+//
+// Reading them from one place is what keeps the two apart from a third possibility, measured in
+// #316 and the reason this exists: a billed call attributed to NOTHING, because the code that made
+// it had no way to say where it came from and so wrote no row at all.
+export function usageAttribution(flow: FlowContext): {
+  tenantId: bigint;
+  agentId: bigint | null;
+  conversationId: bigint | null;
+  inboxId: bigint | null;
+  threadId: string | null;
+  source: UsageSource;
+  base?: PrismaClient;
+} {
+  return {
+    tenantId: flow.tenantId,
+    agentId: flow.agentId ?? null,
+    conversationId: flow.conversationId ?? null,
+    inboxId: flow.inboxId ?? null,
+    threadId: flow.threadId ?? null,
+    // FlowSource and UsageSource are the same two values ("inbox" | "playground") for the same
+    // reason: a row and a log line about one call must not disagree about which traffic it was.
+    source: flow.source,
+    base: flow.base,
+  };
+}
+
+// Records a billed call that did NOT go through LangChain, so no callback could have seen it: a
+// provider reached by raw fetch (vision). Best-effort, like the callback path — a ledger write
+// never breaks the call it is about.
+export async function recordDirectUsage(
+  flow: FlowContext,
+  row: {
+    model: string;
+    node: string;
+    promptTokens: number;
+    completionTokens: number;
+    cachedReadTokens?: number;
+    cacheCreationTokens?: number;
+  },
+  persist?: UsagePersist,
+): Promise<void> {
+  if (row.promptTokens === 0 && row.completionTokens === 0) return;
+  const attr = usageAttribution(flow);
+  try {
+    await (persist ?? defaultUsagePersist(attr.base))({
+      ...attr,
+      model: row.model,
+      node: row.node,
+      promptTokens: row.promptTokens,
+      completionTokens: row.completionTokens,
+      cachedReadTokens: row.cachedReadTokens ?? 0,
+      cacheCreationTokens: row.cacheCreationTokens ?? 0,
+    });
+  } catch (err) {
+    logger.warn({ err, node: row.node }, "usage: direct capture failed");
+  }
 }
 
 export interface UsageCaptureParams {

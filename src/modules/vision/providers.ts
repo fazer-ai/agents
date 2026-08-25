@@ -17,12 +17,39 @@ export interface VisionRequest {
   fetchImpl: typeof fetch;
 }
 
+// What a vision call cost, in the provider's own numbers. Every one of the three endpoints below
+// returns this alongside the text; the contract used to be `Promise<string>`, which made it
+// unrepresentable, so it was parsed away and the spend reached no ledger (issue #316). Optional
+// because an endpoint may omit the block, and an absent count must not be recorded as zero spend.
+export interface VisionUsage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export interface VisionResult {
+  text: string;
+  usage: VisionUsage | null;
+}
+
 export interface VisionProvider {
   defaultModel: string;
   // Whether the provider can extract from PDFs (all support images). OpenAI chat vision is
   // image-only; Gemini and Anthropic accept PDF documents inline.
   supportsDocuments: boolean;
-  extract(req: VisionRequest): Promise<string>;
+  extract(req: VisionRequest): Promise<VisionResult>;
+}
+
+function num(v: unknown): number {
+  const n = Number(v ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+// A usage block is only reported when the endpoint actually sent counts. Returning zeros for a
+// missing block would write a row saying the call was free.
+function usageOf(prompt: unknown, completion: unknown): VisionUsage | null {
+  const p = num(prompt);
+  const c = num(completion);
+  return p === 0 && c === 0 ? null : { promptTokens: p, completionTokens: c };
 }
 
 export class VisionError extends Error {
@@ -47,7 +74,7 @@ async function chatCompletionsExtract(
   req: VisionRequest,
   providerName: string,
   defaultBase: string,
-): Promise<string> {
+): Promise<VisionResult> {
   const base = (req.baseURL ?? defaultBase).replace(/\/+$/, "");
   const dataUri = `data:${req.mimeType};base64,${base64(req.bytes)}`;
   const body = {
@@ -75,15 +102,19 @@ async function chatCompletionsExtract(
   if (!res.ok) throw new VisionError(providerName, res.status);
   const json = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
-  return (json.choices?.[0]?.message?.content ?? "").trim();
+  return {
+    text: (json.choices?.[0]?.message?.content ?? "").trim(),
+    usage: usageOf(json.usage?.prompt_tokens, json.usage?.completion_tokens),
+  };
 }
 
-async function openaiExtract(req: VisionRequest): Promise<string> {
+async function openaiExtract(req: VisionRequest): Promise<VisionResult> {
   return chatCompletionsExtract(req, "openai", "https://api.openai.com/v1");
 }
 
-async function openrouterExtract(req: VisionRequest): Promise<string> {
+async function openrouterExtract(req: VisionRequest): Promise<VisionResult> {
   return chatCompletionsExtract(
     req,
     "openrouter",
@@ -94,13 +125,15 @@ async function openrouterExtract(req: VisionRequest): Promise<string> {
 // Self-hosted / third-party OpenAI-compatible vision endpoint (e.g. a Qwen-VL server). The base URL is
 // REQUIRED (there is no canonical default); the model id is whatever the endpoint serves. Image-only
 // (chat-completions image_url), mirroring the stt `openai-compatible` provider.
-async function openaiCompatibleExtract(req: VisionRequest): Promise<string> {
+async function openaiCompatibleExtract(
+  req: VisionRequest,
+): Promise<VisionResult> {
   if (!req.baseURL) throw new VisionError("openai-compatible", 400);
   return chatCompletionsExtract(req, "openai-compatible", req.baseURL);
 }
 
 // Google Gemini generateContent with the file inlined as base64. Handles images AND PDFs.
-async function geminiExtract(req: VisionRequest): Promise<string> {
+async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
   const base = (
     req.baseURL ?? "https://generativelanguage.googleapis.com/v1beta"
   ).replace(/\/+$/, "");
@@ -131,16 +164,26 @@ async function geminiExtract(req: VisionRequest): Promise<string> {
   if (!res.ok) throw new VisionError("gemini", res.status);
   const json = (await res.json()) as {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    usageMetadata?: {
+      promptTokenCount?: number;
+      candidatesTokenCount?: number;
+    };
   };
   const parts = json.candidates?.[0]?.content?.parts ?? [];
-  return parts
-    .map((p) => p.text ?? "")
-    .join("")
-    .trim();
+  return {
+    text: parts
+      .map((p) => p.text ?? "")
+      .join("")
+      .trim(),
+    usage: usageOf(
+      json.usageMetadata?.promptTokenCount,
+      json.usageMetadata?.candidatesTokenCount,
+    ),
+  };
 }
 
 // Anthropic messages API. Images use an `image` content block; PDFs use a `document` block.
-async function anthropicExtract(req: VisionRequest): Promise<string> {
+async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
   const base = (req.baseURL ?? "https://api.anthropic.com/v1").replace(
     /\/+$/,
     "",
@@ -178,11 +221,15 @@ async function anthropicExtract(req: VisionRequest): Promise<string> {
   if (!res.ok) throw new VisionError("anthropic", res.status);
   const json = (await res.json()) as {
     content?: Array<{ type?: string; text?: string }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
   };
-  return (json.content ?? [])
-    .map((c) => (c.type === "text" ? (c.text ?? "") : ""))
-    .join("")
-    .trim();
+  return {
+    text: (json.content ?? [])
+      .map((c) => (c.type === "text" ? (c.text ?? "") : ""))
+      .join("")
+      .trim(),
+    usage: usageOf(json.usage?.input_tokens, json.usage?.output_tokens),
+  };
 }
 
 const PROVIDERS: Record<string, VisionProvider> = {

@@ -56,7 +56,7 @@ describe("vision providers", () => {
       );
     }) as unknown as typeof fetch;
 
-    const text = await getVisionProvider("openrouter")?.extract({
+    const out = await getVisionProvider("openrouter")?.extract({
       bytes: new ArrayBuffer(4),
       mimeType: "image/png",
       kind: "image",
@@ -67,7 +67,7 @@ describe("vision providers", () => {
       fetchImpl,
     });
 
-    expect(text).toBe("um gato");
+    expect(out?.text).toBe("um gato");
     expect(calls[0]?.url).toBe("https://openrouter.ai/api/v1/chat/completions");
     const headers = calls[0]?.init.headers as Record<string, string>;
     expect(headers.authorization).toBe("Bearer sk-or");

@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage } from "@langchain/core/messages";
+import type { ChatResult } from "@langchain/core/outputs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -258,6 +261,25 @@ describe("the start a reminder is judged and worded by", () => {
       snapshot: AHEAD,
       started: false,
       displayed: AHEAD,
+    },
+    {
+      // The repo already learned this one on the sweep's side: `Date.parse` rolls 31 February forward
+      // into March instead of refusing it, and a start reaches the payload from the model's own tool
+      // input. Judged against a day that does not exist, a reminder is dropped as "already started".
+      name: "an impossible calendar date never counts as started",
+      live: undefined,
+      snapshot: "2026-02-31T09:00:00Z",
+      started: false,
+      displayed: "2026-02-31T09:00:00Z",
+    },
+    {
+      // Offset-less, and read as UTC by the same parser the sweep uses. Two readings of one string is
+      // how one side drops a reminder the other keeps.
+      name: "an offset-less timestamp is read as UTC, like the sweep reads it",
+      live: undefined,
+      snapshot: "2026-08-25T11:00:00",
+      started: true,
+      displayed: "2026-08-25T11:00:00",
     },
     {
       name: "an unreadable snapshot never counts as started",
@@ -634,6 +656,48 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
   // The control for the one above: the same handler, the same absence of a credential, a start that
   // is still ahead. Without it, "sent nothing" would also be satisfied by a check that drops every
   // reminder.
+  // The ceiling has to hold across the model call, not only before it. A retry can be scheduled
+  // minutes before the start, and a turn that begins in time can finish out of it.
+  test("an appointment that starts during the model call sends nothing", async () => {
+    const job = await armed("reminder:evt-crosses-start:60", {
+      isLast: true,
+      startISO: new Date(Date.now() + 1_000).toISOString(),
+    });
+    const s = stubClient();
+    let invoked = 0;
+    class SlowModel extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "slow-fake";
+      }
+      async _generate(): Promise<ChatResult> {
+        invoked += 1;
+        await Bun.sleep(2_000);
+        return {
+          generations: [
+            { text: "Lembrete!", message: new AIMessage("Lembrete!") },
+          ],
+        };
+      }
+    }
+
+    const result = await appointmentReminderHandler(job, appDb, {
+      makeModel: () => new SlowModel(),
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+
+    // The model RAN, which is what separates this from the pre-call check dropping the job: this
+    // test would otherwise pass for the wrong reason on a slow machine.
+    expect(invoked).toBe(1);
+    expect(s.sent).toEqual([]);
+    // Nothing to retry either: the appointment happened.
+    expect(result).toEqual({ outcome: "done" });
+  });
+
   test("a run before the appointment still reminds", async () => {
     const job = await armed("reminder:evt-ahead:60", {
       isLast: true,

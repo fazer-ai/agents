@@ -6,7 +6,10 @@ import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { loadAppointmentContext } from "@/modules/appointments/context";
+import {
+  loadAppointmentContext,
+  parseStartMs,
+} from "@/modules/appointments/context";
 import {
   type ClaimedJob,
   cancelPendingJobsByPrefix,
@@ -320,7 +323,7 @@ async function fetchEventStatus(
     return {
       cancelled: data.status === "cancelled",
       startISO:
-        startStr && !Number.isNaN(Date.parse(startStr)) ? startStr : null,
+        startStr && !Number.isNaN(parseStartMs(startStr)) ? startStr : null,
       summary: typeof data.summary === "string" ? data.summary : "",
     };
   } catch {
@@ -352,15 +355,23 @@ export function authoritativeReminderStart(
 // `start - offset`, so the start was ahead by construction. A retry can land hours later, and a
 // Google GET failing at that moment used to leave nothing between it and the customer.
 //
-// An absent or unparseable start is NOT "started", and that falls out of the comparison rather than
-// needing a guard: `Date.parse` answers NaN, and every comparison with NaN is false. Refusing to
-// remind on a date nobody can read would drop a customer-facing message over a field the agent wrote.
+// An absent or unreadable start is NOT "started", and that falls out of the comparison rather than
+// needing a guard: the parser answers NaN, and every comparison with NaN is false. Refusing to remind
+// on a date nobody can read would drop a customer-facing message over a field the agent wrote.
+//
+// `parseStartMs`, never a bare `Date.parse`: this repo already learned that one (issue #39's
+// neighbours). A start can reach a payload from the model's own tool input, and `Date.parse` rolls an
+// impossible date forward instead of refusing it, so `2026-02-31` becomes March and a reminder is
+// judged against a day that does not exist. The same parser reads the sweep's side, and the two
+// answering differently is how a reminder gets dropped by one and kept by the other.
 export function reminderAlreadyStarted(
   live: { startISO: string | null } | undefined,
   snapshotStartISO: string,
   now: number,
 ): boolean {
-  return Date.parse(authoritativeReminderStart(live, snapshotStartISO)) <= now;
+  return (
+    parseStartMs(authoritativeReminderStart(live, snapshotStartISO)) <= now
+  );
 }
 
 export async function appointmentReminderHandler(
@@ -441,8 +452,13 @@ export async function appointmentReminderHandler(
     // And once more inside, where the nudge re-asks its own questions across the model call. Three
     // reads is not belt-and-braces: each covers a different slow step (the Google fetch, the nudge's
     // setup, the judge's call), and the stamp can land in any of them.
+    // Two questions, asked at every point the nudge re-asks anything, because a model turn is long
+    // enough for either answer to change inside it. The appointment ceiling is the new one: a retry
+    // scheduled minutes before the start would otherwise pass the check above and still be composing
+    // when the start arrives, which is precisely the message this handler must never send.
     stillWanted: async ({ strict }) =>
-      !(await (strict ? retiredStrict() : retired())),
+      !(await (strict ? retiredStrict() : retired())) &&
+      !reminderAlreadyStarted(live, startISO, Date.now()),
     nudge: reminderNudge({
       isLast,
       askConfirmation,

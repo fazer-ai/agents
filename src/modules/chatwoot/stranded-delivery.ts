@@ -36,6 +36,18 @@ export interface StrandedDeliveryPolicy {
   // The conversation's handled watermark, or null when the mirror does not know the conversation.
   // Null is treated as "not answered": the safe reading of a question that cannot be answered is
   // the one that puts the row in front of an operator instead of closing it quietly.
+  //
+  // STRICTLY PAST the message, never level with it, and the difference is a real crash window. The
+  // watermark is an at-most-once CLAIM taken in `shouldPost` BEFORE the reply is sent (the debounce
+  // handler says so in as many words), so a process that dies in between leaves a watermark that
+  // records an intention nobody carried out. A watermark level with this row's own message is that
+  // case: nothing else could have put it exactly there, because a later burst advances to a LATER
+  // message. Strictly past means some other burst went by, and that burst re-fetched everything
+  // above the watermark, so this message was in it.
+  //
+  // The granularity that buys is the CONVERSATION, not the message. If that later burst died before
+  // posting too, its own row is stranded and level with the watermark, so the conversation is
+  // reported — by one row instead of two, which is enough for the only action there is.
   handledMessageId: number | null;
   // Whether this conversation's agent COALESCES. It decides what a later watermark proves, which is
   // not the same question as how far the watermark got.
@@ -46,6 +58,9 @@ export interface StrandedDeliveryPolicy {
   // moves the watermark past the stranded one without the model ever having seen it, and reading
   // that as "answered" would close a real loss (measured on this repo's direct path, which is the
   // one an agent with `settings.debounce.enabled = false` takes).
+  //
+  // The sweep reads this from the agent's CURRENT settings, which is the one thing here that is not
+  // exact — see the note at its call site for which direction that can be wrong in.
   coalesces: boolean;
 }
 
@@ -71,7 +86,7 @@ export function classifyStrandedDelivery(
   if (
     policy.coalesces &&
     policy.handledMessageId !== null &&
-    policy.handledMessageId >= row.inboundMessageId
+    policy.handledMessageId > row.inboundMessageId
   ) {
     return "already-answered";
   }

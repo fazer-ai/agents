@@ -3,7 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { readDebounceConfig } from "@/modules/debounce/settings";
-import { emitFlowEvent } from "@/modules/flowlog/service";
+import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
@@ -115,10 +115,20 @@ async function mirrorOf(
       inboxId: conv.inboxId,
       agentId: inbox?.agentId ?? null,
       handledMessageId: conv.lastHandledMessageId,
-      // Read now rather than recorded then, which is the one thing this cannot be exact about: an
-      // operator who switched debouncing off since the strand makes it read the stricter way, and
-      // the stricter way reports a loss that may have been answered. That direction is the right
-      // one to be wrong in.
+      // Read NOW, not recorded THEN, and this is the one inexactness left in the sweep. It can be
+      // wrong in both directions, and only one of them is harmless:
+      //
+      //   * debouncing on at the strand, off now → reads the stricter way and reports a loss that
+      //     was answered. A false line in the list, which costs an operator one look;
+      //   * debouncing OFF at the strand, on now → reads the looser way and closes a row that
+      //     really did lose a message. A false silence, which is the failure this whole sweep
+      //     exists to remove.
+      //
+      // Recording the path on the row at delivery time is what would close it, and it is a column
+      // plus a write on the ack-adjacent path. Left undone deliberately: the second direction needs
+      // an operator to have enabled debouncing in the half hour between a strand and the sweep, and
+      // the strict watermark comparison above already catches the case where the stranded row is
+      // the one that claimed the watermark.
       coalesces: readDebounceConfig(agent?.settings).enabled,
     };
   });
@@ -239,27 +249,17 @@ async function record(
     return;
   }
 
-  if (!(await finish(row, tenantId, "DEAD", base))) {
-    counts.raced += 1;
-    return;
-  }
-  counts.lost += 1;
-  logger.error(
-    "chatwoot delivery sweep: %s stranded on %s; the customer's message %s on conversation %s was never answered",
-    label,
-    row.status,
-    String(row.inboundMessageId),
-    String(row.conversationId),
-  );
-  // The operator-facing half, and the reason this is worth shipping without the recovery: an error
-  // line on the conversation is what the Logs page reads and what the alert channels dispatch, so
-  // the silence stops being silent even though the message stays unanswered. Filed WITHOUT a
-  // conversation when the mirror does not know it — the line is still the only trace there is.
-  emitFlowEvent(
+  // The line goes FIRST, and awaited. `finish` retires the ledger row, which is the line's only
+  // other trace: no later pass sees a terminal row, so a fire-and-forget emit that failed after the
+  // row went DEAD would lose the report permanently — the exact silence this sweep exists to
+  // remove. Written first, a failure leaves the row non-terminal and the next pass tries again.
+  const written = await writeFlowEvent(
     {
       tenantId,
       turnId: crypto.randomUUID(),
       source: "inbox",
+      // Filed WITHOUT a conversation when the mirror does not know it — the line is still the only
+      // trace there is.
       conversationId: mirror?.conversationRowId ?? null,
       agentId: mirror?.agentId ?? null,
       inboxId: mirror?.inboxId ?? null,
@@ -278,6 +278,26 @@ async function record(
         knownToMirror: mirror !== null,
       },
     },
+  );
+  if (!written.delivered) {
+    logger.warn(
+      "chatwoot delivery sweep: could not record the loss for %s; leaving the row for the next pass",
+      label,
+    );
+    return;
+  }
+
+  if (!(await finish(row, tenantId, "DEAD", base))) {
+    counts.raced += 1;
+    return;
+  }
+  counts.lost += 1;
+  logger.error(
+    "chatwoot delivery sweep: %s stranded on %s; the customer's message %s on conversation %s was never answered",
+    label,
+    row.status,
+    String(row.inboundMessageId),
+    String(row.conversationId),
   );
 }
 

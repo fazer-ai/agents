@@ -95,11 +95,15 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "already-answered",
     },
     {
-      name: "the watermark exactly at the message counts as answered",
+      // The watermark is an at-most-once CLAIM taken before the reply is sent, so level with this
+      // row's own message means its own flush took the claim and then died — an intention nobody
+      // carried out. Nothing else could put it exactly there: a later burst advances to a LATER
+      // message.
+      name: "the watermark level with the message is a claim, not an answer",
       ageMs: STALE_MS * 3,
       inboundMessageId: 50,
       handledMessageId: 50,
-      expected: "already-answered",
+      expected: "lost",
     },
     {
       name: "one below the message is not answered",
@@ -120,12 +124,19 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "lost",
     },
     {
-      name: "and it still proves nothing when it sits exactly on the message",
+      name: "and a watermark level with the message is lost either way",
       ageMs: STALE_MS * 3,
       inboundMessageId: 50,
       handledMessageId: 50,
       coalesces: false,
       expected: "lost",
+    },
+    {
+      name: "one past the message is the only watermark that answers it",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: 50,
+      handledMessageId: 51,
+      expected: "already-answered",
     },
     {
       // The delivery died before the mirror write, so there is no watermark to compare against. The

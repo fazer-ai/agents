@@ -131,7 +131,7 @@ async function deliveryLines(convDbId: bigint | null, waitMs = 2000) {
         stage: "delivery",
         ...(convDbId !== null ? { conversationId: convDbId } : {}),
       },
-      select: { level: true, status: true, detail: true },
+      select: { level: true, status: true, source: true, detail: true },
     });
     if (rows.length > 0 || Date.now() - started > waitMs) return rows;
     await Bun.sleep(25);
@@ -297,6 +297,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     const line = lines[0];
     if (line === undefined) throw new Error("no delivery line was written");
     expect(line.level).toBe("error");
+    // `inbox`, and it is load-bearing: `dispatchAlertsForEvent` fans out warn/error lines to the
+    // Discord and webhook channels ONLY for inbox traffic, because a playground error must not
+    // page. Filed as playground, the row would still render on the Logs page and reach nobody.
+    expect(line.source).toBe("inbox");
     const detail = line.detail as Record<string, unknown>;
     expect(detail.outcome).toBe("stranded");
     expect(detail.messageId).toBe(messageId);
@@ -348,8 +352,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // must not appear in the loss list.
     const convId = 8805;
     const messageId = 9401;
+    // STRICTLY past: level with the message would mean this row's own flush took the at-most-once
+    // claim and then died, which is a loss rather than an answer.
     const conv = await seedConversation(convId, {
-      lastHandledMessageId: messageId,
+      lastHandledMessageId: messageId + 1,
     });
     const rowId = await seedStrandedDelivery({
       conversationId: convId,
@@ -402,6 +408,29 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         contactInboxId: 61_000 + convId,
       },
       select: { id: true },
+    });
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      inboundMessageId: messageId,
+    });
+
+    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(counts.lost).toBe(1);
+    expect(counts.closed).toBe(0);
+    expect((await statusOf(rowId)).status).toBe("DEAD");
+    expect((await deliveryLines(conv.id))[0]?.level).toBe("error");
+  });
+
+  test("reports the strand whose own flush claimed the watermark and died", async () => {
+    // `shouldPost` advances the watermark BEFORE the reply is sent, so a process that dies in
+    // between leaves a watermark recording an intention nobody carried out. Level with this row's
+    // own message is exactly that case — and it is the crash window the sweep exists to catch, so
+    // reading it as "answered" would close the very thing being monitored.
+    const convId = 8815;
+    const messageId = 9481;
+    const conv = await seedConversation(convId, {
+      lastHandledMessageId: messageId,
     });
     const rowId = await seedStrandedDelivery({
       conversationId: convId,
@@ -488,6 +517,25 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect((await statusOf(rowId)).status).toBe("PROCESSING");
 
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+  });
+
+  test("writes the loss line before retiring the row that is its only other trace", async () => {
+    // ORDERING, and it only shows on failure: `finish` retires the ledger row, and no later pass
+    // sees a terminal one — so a line written after it and lost takes the report with it, which is
+    // the exact silence this sweep removes. Written first, a failed write leaves the row for the
+    // next pass. There is no seam to make the flow write fail against a real database without
+    // faking the client out from under `runScopedOn`, so the order is asserted where it is written.
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/delivery-sweep.ts", import.meta.url),
+    ).text();
+    const body = src.slice(src.indexOf("async function record("));
+    const write = body.indexOf("await writeFlowEvent(");
+    const retire = body.indexOf('finish(row, tenantId, "DEAD", base)');
+    expect(write).toBeGreaterThan(-1);
+    expect(retire).toBeGreaterThan(-1);
+    expect(write).toBeLessThan(retire);
+    // And a failed write has to stop, not fall through to the retirement.
+    expect(body.slice(write, retire)).toContain("if (!written.delivered)");
   });
 
   test("is armed when a Chatwoot account is connected, not only at boot", async () => {

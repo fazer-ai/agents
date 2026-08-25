@@ -611,28 +611,6 @@ async function episodeActivationForWidget(
   });
 }
 
-async function isTestConversationActivated(params: {
-  tenantId: bigint;
-  instanceId: bigint;
-  conversationId: number | null;
-  base: PrismaClient;
-}): Promise<boolean> {
-  if (params.conversationId === null) return false;
-  const row = await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
-    db.conversation.findUnique({
-      where: {
-        tenantId_chatwootInstanceId_chatwootConversationId: {
-          tenantId: params.tenantId,
-          chatwootInstanceId: params.instanceId,
-          chatwootConversationId: params.conversationId as number,
-        },
-      },
-      select: { testActivatedAt: true },
-    }),
-  );
-  return row?.testActivatedAt != null;
-}
-
 // Eager media analysis: transcribe an incoming voice note (STT) and extract an incoming image/document
 // (vision) BEFORE arming/answering, writing the result back to Chatwoot and stashing it on the
 // in-memory event (the direct path reads it; the debounce flush re-reads from the attachment meta).
@@ -1447,6 +1425,34 @@ async function maybeConsumeCommandOrGate(params: {
       });
       ctx.conv.testActivatedAt = linked.testActivatedAt;
     }
+  }
+
+  // The EPISODE's activation, not this row's, for every gate below (issue #261). `/teste` means "this
+  // is me, testing", and a redirect episode is two conversations of one person: the stamp lands on the
+  // row it was typed in, and the one bridge that copies it (above) runs ONCE, at link time, in one
+  // direction. Outside that instant the two halves disagree, and the gates below — `/reset` and the
+  // test-mode silence — judged by whichever row they happened to hold.
+  //
+  // Resolved into the field the gates already read, which is what the propagation directly above does
+  // too, so this adds a source of truth rather than a second question. Safe for `/teste` itself: that
+  // branch writes a fresh stamp without reading this value.
+  //
+  // Costs nothing on the ordinary path — `needsEpisodeLookup` is false for a production agent, for a
+  // row already stamped, and for any conversation outside a redirect episode — and this gate runs on
+  // every inbound message.
+  if (ctx.agentSettings != null) {
+    ctx.conv.testActivatedAt = await episodeTestActivatedAt({
+      tenantId,
+      instanceId,
+      cfg: readChannelRedirectConfig(ctx.agentSettings),
+      agentMode: ctx.mode,
+      conv: {
+        testActivatedAt: ctx.conv.testActivatedAt,
+        contactId: ctx.conv.contactId,
+        chatwootInboxId: ctx.inboxChatwootId,
+      },
+      base,
+    });
   }
 
   // ── /teste: activate test mode for THIS conversation, ACK, consume. ──
@@ -2826,18 +2832,23 @@ export async function processChatwootDelivery(
   // Production analyzes every new incoming message. Some transports attach the audio just after
   // message_created, so the first useful attachment arrives on message_updated; analyze that update
   // without arming debounce or a second turn. Test mode keeps its cost fence and only analyzes a late
-  // attachment when this conversation was explicitly activated.
+  // attachment on an activated EPISODE (issue #261) — the unit the other two gates use. Asked of the
+  // row alone, an episode activated on the WhatsApp side got no transcription on the widget side, and
+  // the agent then answered a message it never heard.
   const activatedTestLateMedia =
     hasLateMedia &&
     rt?.enabled === true &&
     rt.mode === "test" &&
     act &&
-    (await isTestConversationActivated({
-      tenantId: params.tenantId,
-      instanceId: params.instanceId,
-      conversationId: n.conversationId,
+    n.conversationId !== null &&
+    (await episodeActivationForWidget(
+      params.tenantId,
+      params.instanceId,
+      n.conversationId,
+      readChannelRedirectConfig(rt.settings),
+      rt.mode,
       base,
-    }));
+    )) !== null;
   if (
     rt?.enabled &&
     ((isNewIncoming && rt.mode === "production") ||

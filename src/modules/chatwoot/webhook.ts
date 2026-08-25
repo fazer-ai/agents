@@ -1427,7 +1427,7 @@ async function maybeConsumeCommandOrGate(params: {
     }
   }
 
-  // The EPISODE's activation, not this row's, for every gate below (issue #261). `/teste` means "this
+  // NOTE: The EPISODE's activation, not this row's, for every gate below (issue #261). `/teste` means "this
   // is me, testing", and a redirect episode is two conversations of one person: the stamp lands on the
   // row it was typed in, and the one bridge that copies it (above) runs ONCE, at link time, in one
   // direction. Outside that instant the two halves disagree, and the gates below — `/reset` and the

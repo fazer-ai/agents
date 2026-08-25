@@ -35,6 +35,8 @@ type Reader = {
   line: number;
   /** Top-level keys of the call's `where: { ... }`, in source order. */
   keys: string[];
+  /** The `flowlog-scope:` marker above the call, when it declares something other than a turn. */
+  marker: Scoping | null;
 };
 
 // The keys that name the row THIS test produced. `tenantId` is deliberately absent: it is the file's
@@ -76,6 +78,28 @@ function splitTopLevel(s: string): string[] {
   return parts.map((p) => p.trim()).filter(Boolean);
 }
 
+// The exemption is declared AT the reader, never at a position in the ledger. A per-file exemption
+// travels to readers written later, and a per-INDEX one is worse than it looks: inserting a reader
+// above an exempt one silently hands it the exemption, which is what the array version did when a
+// `{ tenantId, stage }` reader was added at the top of guardrail-health and the suite stayed green.
+// A marker on the call site moves with the call site.
+const MARKER = /\/\/\s*flowlog-scope:\s*(turn|agent|seeded|tenant-wide)\b/;
+
+// NOTE: the marker is looked for in the comment block IMMEDIATELY above the call — consecutive
+// comment/blank lines and nothing else — so it cannot be inherited from a neighbouring reader's
+// explanation several statements up.
+function markerAbove(source: string, line: number): Scoping | null {
+  const lines = source.split("\n");
+  for (let i = line - 2; i >= 0; i--) {
+    const text = (lines[i] ?? "").trim();
+    if (text === "") continue;
+    if (!text.startsWith("//") && !text.startsWith("*")) return null;
+    const hit = MARKER.exec(text);
+    if (hit) return hit[1] as Scoping;
+  }
+  return null;
+}
+
 // NOTE: written against the delimiters rather than as one regex on purpose. The first version of
 // this scan matched `where` keys with `/(?:^|,|\{)\s*(\w+)\s*[,:}]/g`, which reads correctly and is
 // wrong: `findall` cannot overlap, so the comma that ends one key is consumed and the key after it
@@ -101,9 +125,15 @@ export function flowlogReaders(source: string): Reader[] {
         );
       }
     }
+    const line = source.slice(0, m.index).split("\n").length;
+    // Inside the call OR in the comment block above it. The first is what survives the formatter:
+    // it moved a marker off `await suDb.executionLog.findFirst({` onto the `(` the wrapper opened,
+    // and a marker the formatter can detach is a marker that silently stops applying.
+    const inside = MARKER.exec(args);
     out.push({
-      line: source.slice(0, m.index).split("\n").length,
+      line,
       keys,
+      marker: (inside?.[1] as Scoping | undefined) ?? markerAbove(source, line),
     });
   }
   return out;
@@ -125,26 +155,26 @@ export function isScoped(reader: Reader, scoping: Scoping): boolean {
   return reader.keys.some((k) => allowed.includes(k));
 }
 
-const FLOWLOG_READERS: Record<string, [number, Scoping]> = {
-  "tests/graph/history-ceiling-turn.test.ts": [1, "turn"],
-  "tests/graph/nudge.test.ts": [3, "turn"],
-  "tests/graph/runtime.test.ts": [7, "turn"],
-  "tests/graph/side-effect-flowlog.test.ts": [1, "turn"],
-  "tests/graph/tool-flowlog.test.ts": [1, "turn"],
-  "tests/modules/chatwoot-gate-trail.test.ts": [1, "turn"],
-  "tests/modules/contact-auth-gate-e2e.test.ts": [3, "turn"],
-  "tests/modules/debounce.test.ts": [1, "turn"],
-  "tests/modules/flowlog-astral-detail.test.ts": [1, "turn"],
-  "tests/modules/flowlog-detail-pii.test.ts": [1, "turn"],
-  "tests/modules/flowlog-retention.test.ts": [1, "tenant-wide"],
-  "tests/modules/flowlog.test.ts": [1, "turn"],
-  "tests/modules/guardrail-health.test.ts": [1, "seeded"],
-  "tests/modules/memory-compaction.test.ts": [3, "turn"],
-  "tests/modules/memory-dead-letter.test.ts": [1, "turn"],
-  "tests/modules/playground-guardrails.test.ts": [1, "agent"],
-  "tests/modules/stt.test.ts": [1, "turn"],
-  "tests/modules/tts-normalize-observability.test.ts": [1, "turn"],
-  "tests/modules/tts.test.ts": [2, "turn"],
+const FLOWLOG_READERS: Record<string, number> = {
+  "tests/graph/history-ceiling-turn.test.ts": 1,
+  "tests/graph/nudge.test.ts": 3,
+  "tests/graph/runtime.test.ts": 7,
+  "tests/graph/side-effect-flowlog.test.ts": 1,
+  "tests/graph/tool-flowlog.test.ts": 1,
+  "tests/modules/chatwoot-gate-trail.test.ts": 1,
+  "tests/modules/contact-auth-gate-e2e.test.ts": 3,
+  "tests/modules/debounce.test.ts": 1,
+  "tests/modules/flowlog-astral-detail.test.ts": 1,
+  "tests/modules/flowlog-detail-pii.test.ts": 1,
+  "tests/modules/flowlog-retention.test.ts": 1,
+  "tests/modules/flowlog.test.ts": 1,
+  "tests/modules/guardrail-health.test.ts": 1,
+  "tests/modules/memory-compaction.test.ts": 3,
+  "tests/modules/memory-dead-letter.test.ts": 1,
+  "tests/modules/playground-guardrails.test.ts": 1,
+  "tests/modules/stt.test.ts": 1,
+  "tests/modules/tts-normalize-observability.test.ts": 1,
+  "tests/modules/tts.test.ts": 2,
 };
 
 // Lives beside the rest of the flowlog family rather than in tests/tooling/, which the manifest
@@ -185,6 +215,11 @@ describe("the scan can actually tell a scoped reader from an unscoped one", () =
     await suDb.executionLog.count({
       where: { tenantId, stage: "memory", threadId },
     });`;
+  const MARKED = `
+    const rows = await suDb.executionLog.findMany({
+      // flowlog-scope: tenant-wide — the subject is the table, not one turn.
+      where: { tenantId },
+    });`;
   const BY_AGENT = `
     await suDb.executionLog.findFirst({
       where: { tenantId, agentId },
@@ -222,6 +257,20 @@ describe("the scan can actually tell a scoped reader from an unscoped one", () =
     expect(r ? isScoped(r, "turn") : true).toBe(false);
   });
 
+  test("a marker inside the call declares that reader's exemption", () => {
+    const [r] = flowlogReaders(MARKED);
+    expect(r?.marker).toBe("tenant-wide");
+  });
+
+  test("a marker does not reach the reader after it", () => {
+    // The failure the marker exists to prevent, in miniature. A per-file or per-index exemption
+    // hands itself to whatever is written next; this asserts the second reader is judged on its own.
+    const rs = flowlogReaders(`${MARKED}\n${UNSCOPED}`);
+    expect(rs.length).toBe(2);
+    expect(rs[1]?.marker).toBeNull();
+    expect(rs[1] ? isScoped(rs[1], "turn") : true).toBe(false);
+  });
+
   test("a nested filter object does not leak its inner keys", () => {
     // `path` and `equals` belong to the filter, not to the row, and counting them would let a reader
     // pass by naming a JSON path that happens to spell a scope key.
@@ -236,9 +285,7 @@ describe("every flow-log reader in the suite is accounted for", () => {
     const counts = Object.fromEntries(
       [...found].map(([f, rs]) => [f, rs.length]),
     );
-    const expected = Object.fromEntries(
-      Object.entries(FLOWLOG_READERS).map(([f, [n]]) => [f, n]),
-    );
+    const expected = { ...FLOWLOG_READERS };
     expect(counts).toEqual(expected);
   });
 
@@ -246,10 +293,12 @@ describe("every flow-log reader in the suite is accounted for", () => {
     const found = await scanTests();
     const unscoped: string[] = [];
     for (const [file, readers] of found) {
-      const scoping = FLOWLOG_READERS[file]?.[1] ?? "turn";
-      // `seeded` and `tenant-wide` are the two answers that legitimately have no scope key.
-      if (scoping === "seeded" || scoping === "tenant-wide") continue;
       for (const r of readers) {
+        // `turn` is the default precisely because it is the strict one: a reader that declares
+        // nothing is held to the strictest rule, and the three that are something else say so at
+        // their own call site.
+        const scoping = r.marker ?? "turn";
+        if (scoping === "seeded" || scoping === "tenant-wide") continue;
         if (!isScoped(r, scoping))
           unscoped.push(`${file}:${r.line} { ${r.keys.join(", ")} }`);
       }

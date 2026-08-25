@@ -89,6 +89,8 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
     if (result.outcome === "reschedule") {
       expect(result.runAt.getTime()).toBeGreaterThan(Date.now() + 60_000);
     }
+    // flowlog-scope: tenant-wide — the assertion is WHICH rows survived the sweep, so it has to
+    // read the tenant exhaustively; a scoped read could not say that old1/old2 are gone.
     const remaining = await suDb.executionLog.findMany({
       where: { tenantId },
       select: { turnId: true },

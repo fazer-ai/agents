@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { runScopedOn } from "@/lib/tenancy";
 import {
   episodeTestActivatedAt,
   needsEpisodeLookup,
@@ -324,6 +325,41 @@ describe.skipIf(!dbUp)("episodeTestActivatedAt", () => {
   // unknown answer means silence, because the cost is a test agent messaging a real lead — and it is
   // exactly the behaviour this call replaced, so a failed read can lose the fix, never invent a
   // refusal.
+  // The reason this module takes the caller's connection at all, measured rather than argued. Every
+  // call site asks from inside a scoped transaction, and `runScopedOn` PINS a pooled connection for
+  // the length of it — the ladder's fences hold an advisory lock in that same transaction. A sibling
+  // read that opens its OWN asks a pinned pool for a second connection, and `DB_POOL_MAX=1` is a
+  // supported setting.
+  //
+  // What makes that worth a test rather than a comment is the failure being SILENT. The read is
+  // swallowed as "no activation" (the test above), so on that setting the agent goes straight back
+  // to judging by the row alone: the very defect this module exists to fix, reintroduced by the
+  // connection it asked on, with nothing failing anywhere to say so.
+  test("the sibling read answers inside a pinned transaction, on a pool of one", async () => {
+    const at = new Date("2026-08-20T17:00:00Z");
+    await stampEntry(ENTRY_CONV, at);
+    const onePool = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl as string, max: 1 }),
+    });
+    try {
+      const answers = await runScopedOn(
+        onePool,
+        { tenantId, userId: null, role: "TENANT_ADMIN" } as never,
+        async (scoped) => ({
+          // Handed the transaction's own connection: reads the sibling and sees the activation.
+          shared: await askFromWidget(null, { base: onePool, scoped }),
+          // Opening its own from in here is the bug, and the swallow turns it into "not activated".
+          own: await askFromWidget(null, { base: onePool }),
+        }),
+      );
+      expect(answers.shared?.toISOString()).toBe(at.toISOString());
+      expect(answers.own).toBeNull();
+    } finally {
+      await onePool.$disconnect();
+      await clearEntries();
+    }
+  });
+
   test("a sibling read that fails leaves the row's own answer standing", async () => {
     const at = new Date("2026-08-20T16:00:00Z");
     await stampEntry(ENTRY_CONV, at);

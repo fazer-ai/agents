@@ -38,7 +38,11 @@ The mark then expires **by value**: `at(field, value)` shows the message only wh
 
 Declared rather than discovered, because the submit handler needs the answer *before* the next render; matched exactly rather than by prefix, so a form rendering a parent path does not claim every leaf under it. The state is per form instance: a modal over the panel that opened it has its own, and both have a `name`.
 
-Reference wiring: `pages/resources/documents/CompanyProfileCard.tsx`. The 106 remaining call sites are the sweep in issue #233.
+Reference wiring: `pages/resources/documents/CompanyProfileCard.tsx`.
+
+**Where the console actually stands**, because the two paragraphs above describe the destination and not today. Every error toast now shows the server's sentence when there is one — `tests/client/error-toast-reason.test.ts` holds that as a rule, and a handler that discards an error it has fails the suite. Rendering the refusal **at the input** it names is wired on that one card and nowhere else: `AdvancedPanel`, the vault picker, Channels and the admin surfaces all receive a `field` today (`requireVaultRef` names `embedding.credentialRef`, `SettingsTextTooLongError` names the settings path) and all of them still show it in a toast. Issue #320 tracks that, per screen, and it is deliberately separate: declaring the server's names for a form's inputs has to be read screen by screen, and doing it inside the sentence sweep would have meant editing the same handlers twice.
+
+Refusals rendered into **local error state** rather than a toast are a third population, unswept and unfenced: issue #329.
 
 ## i18n gotchas
 

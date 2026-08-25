@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { runAgentTurn } from "@/graph/runtime";
+import { NON_AGENT_TURN_NODES, USAGE_NODE_IS_AGENT_TURN } from "@/graph/usage";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { getVisionProvider } from "@/modules/vision/providers";
@@ -446,6 +447,59 @@ describe("every model invocation carries a usage sink", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+// A second sweep, over the other half of the same defect. Completing the ledger did not only add
+// rows: it added a KIND of row, and `getKpis` was reading "this conversation has a billed call" as
+// "the agent took this conversation". That held only while the calls the agent did not make had no
+// row. Vision is the first node that bills before the bot-ownership gate, and it will not be the
+// last, so the classification is total and this is what keeps it total.
+//
+// The predicate is the writer's grammar: a `node:` key resolving to a string literal, inside a file
+// that builds a ledger sink. Scoping it to sink files is what keeps unrelated `node:` keys (an n8n
+// workflow graph names its steps that way) out of the vocabulary.
+const SINK_FILE = /new UsageCapture\(|recordDirectUsage\(|buildCallbacks\(/;
+const NODE_LITERAL = /\bnode:\s*[^,\n}]*?"([a-z_]+)"/g;
+
+function nodesWritten(source: string): string[] {
+  if (!SINK_FILE.test(source)) return [];
+  return [...source.matchAll(NODE_LITERAL)].map((m) => m[1] as string);
+}
+
+describe("every node the ledger writes is classified for the involvement KPI", () => {
+  // Without this, a sweep that classifies nothing passes exactly like one that classifies
+  // everything. The fixture is the shape the next offender has: a new billed call, a new label.
+  test("the predicate finds a node a sink file writes, and ignores one it does not", () => {
+    const sink = `
+      await recordDirectUsage(params.flow, {
+        model: cfg.model,
+        node: "brand_new_node",
+      });`;
+    const notASink = `
+      const wf = { main: [[{ node: "HTTP Request", type: "main", index: 0 }]] };`;
+    expect(nodesWritten(sink)).toEqual(["brand_new_node"]);
+    expect(nodesWritten(notASink)).toEqual([]);
+    expect(USAGE_NODE_IS_AGENT_TURN.brand_new_node).toBeUndefined();
+  });
+
+  test("no node reaches a row without an answer to 'did the agent run'", async () => {
+    const found = new Set<string>();
+    for (const file of await tsFilesUnder(
+      new URL("../../src", import.meta.url).pathname,
+    )) {
+      for (const node of nodesWritten(await Bun.file(file).text())) {
+        found.add(node);
+      }
+    }
+    // Both directions. A node written but unclassified is the hole vision just opened; a node
+    // classified but no longer written is a rule about code that is gone, and the map is what a
+    // reader trusts to be the whole vocabulary.
+    expect([...found].sort()).toEqual(
+      Object.keys(USAGE_NODE_IS_AGENT_TURN).sort(),
+    );
+    // The claim the KPI actually rests on, spelled out where it can go red.
+    expect([...NON_AGENT_TURN_NODES].sort()).toEqual(["vision"]);
   });
 });
 

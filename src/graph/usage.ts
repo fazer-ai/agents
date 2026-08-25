@@ -35,6 +35,36 @@ export interface UsageRow {
 
 export type UsagePersist = (row: UsageRow) => Promise<void>;
 
+// Every `node` the ledger can carry, against the one question a reader asking about the AGENT has to
+// settle first: did the agent take the turn this call was billed for?
+//
+// "There is a billed call on this conversation" is not that question, and the two came apart the
+// moment the ledger got complete (#316). Vision runs on the incoming attachment BEFORE the
+// bot-ownership gate decides anything, so an image sent into a conversation a human owns bills the
+// tenant while the agent never speaks. Every other node is downstream of a turn that did run.
+//
+// The map is TOTAL on purpose, and the fence in tests/modules/billed-call-usage.test.ts keeps it
+// that way: a node value missing from it is a red test, never a silent default. Defaulting to true
+// inflates involvement exactly the way vision just did; defaulting to false deflates it as quietly.
+export const USAGE_NODE_IS_AGENT_TURN: Readonly<Record<string, boolean>> =
+  Object.freeze({
+    agent: true,
+    nudge: true,
+    guardrail: true,
+    tts_normalize: true,
+    memory_compact: true,
+    vision: false,
+  });
+
+// Consumed as an EXCLUSION, with `node: null` kept beside it: a row from before this column was
+// always written is an agent turn, because the agent path was the only one in the ledger then. An
+// inclusion list would drop those rows instead, and move every historical involvement number.
+export const NON_AGENT_TURN_NODES: readonly string[] = Object.freeze(
+  Object.entries(USAGE_NODE_IS_AGENT_TURN)
+    .filter(([, isTurn]) => !isTurn)
+    .map(([node]) => node),
+);
+
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }

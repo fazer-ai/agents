@@ -1,6 +1,6 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
-import type { UsageSource } from "@/graph/usage";
+import { NON_AGENT_TURN_NODES, type UsageSource } from "@/graph/usage";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { classifyOutcome } from "@/modules/conversations/resolution-origin";
 
@@ -254,6 +254,14 @@ export async function getKpis(
         // mirror conversation (conversationId stays null), and source="inbox" makes that explicit.
         conversationId: { not: null },
         source: "inbox",
+        // A billed call is not the same claim as "the agent took this conversation", and this is
+        // the only reader that makes the second one. Vision runs on the incoming attachment before
+        // the bot-ownership gate decides anything, so an image sent into a conversation a human
+        // handled start to finish would otherwise land here as bot involvement.
+        //   The null arm is not a formality: Prisma renders `notIn` as plain SQL `NOT IN`, which
+        // drops NULL rows rather than keeping them (measured), and a legacy row with no node is an
+        // agent turn. Without it this filter would quietly shrink every historical figure.
+        OR: [{ node: null }, { node: { notIn: [...NON_AGENT_TURN_NODES] } }],
         ...(filter.since ? { createdAt: { gte: filter.since } } : {}),
       },
       select: { conversationId: true },

@@ -36,6 +36,10 @@ export interface StrandedDeliveryRow {
   // legitimate delivery — and a redelivery is allowed to claim a row left stranded on PENDING, so an
   // attempt that started a minute ago must not be judged by a receipt from an hour ago.
   claimedAt: Date | null;
+  // The conversation this delivery was about. Written at INSERT by every build that has the column,
+  // for every event that names one — which, on the receiver, is every event that reaches the ledger
+  // at all. Null therefore means one of two things, and the pair below tells them apart.
+  conversationId: number | null;
   // The INBOUND message this delivery carried, when it carried one. Null on every event that is not
   // a customer message — a conversation update, the bot's own reply coming back around — and those
   // are the rows where nothing was lost no matter how long they sat.
@@ -70,16 +74,21 @@ export function classifyStrandedDelivery(
   const age =
     policy.now.getTime() - (row.claimedAt ?? row.receivedAt).getTime();
   if (age < policy.staleAfterMs) return "in-flight";
-  // A row PROCESSING without a claim stamp was claimed by a build that predates the column, which
-  // during a rolling deploy is the container still serving while the new one migrates. Its nulls are
-  // UNRECORDED, not "nothing was there", so the question below cannot be asked of it: read the
-  // literal way, every message the old container lost would be closed as carrying none — the exact
-  // silence this sweep exists to remove, on the rows a deploy is most likely to strand.
+  // A row this build never touched, whose nulls are UNRECORDED rather than "nothing was there". Read
+  // the literal way, every message the previous release lost would be closed as carrying none — the
+  // exact silence this sweep exists to remove, on the rows a deploy is most likely to strand, since
+  // the migration runs while that release is still serving and it writes none of these columns.
   //
-  // Only PROCESSING carries that promise. tx1 stamps the claim on every row this build works, so a
-  // missing stamp there is provenance; on PENDING nothing has claimed yet and there is nothing to
-  // infer from its absence.
-  if (row.status === "PROCESSING" && row.claimedAt === null) return "lost";
+  // Two signatures, one per state, because each state promises a different column. tx1 stamps the
+  // claim on every row this build works, so a PROCESSING row without one was claimed by an older
+  // build. Nothing has claimed a PENDING row, so the stamp says nothing there — what does is the
+  // conversation, written at INSERT for every event that reaches the ledger.
+  if (
+    row.claimedAt === null &&
+    (row.status === "PROCESSING" || row.conversationId === null)
+  ) {
+    return "lost";
+  }
   if (row.inboundMessageId === null) return "no-message";
   return "lost";
 }

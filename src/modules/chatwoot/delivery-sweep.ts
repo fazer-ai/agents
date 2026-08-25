@@ -81,6 +81,12 @@ export async function retireCoveredDeliveries(params: {
   // The mirror's own row id, for filing the correction line below against the conversation. Null
   // only where the mirror does not know it, which is the same reading the sweep's own line uses.
   conversationRowId: bigint | null;
+  // What actually happened to the customer, and it has to come from the caller because only the
+  // caller knows. "answered" is a reply that posted; "consumed" is every deliberate silence — a gate
+  // that took the message, a model that produced nothing, a human who took the conversation
+  // mid-turn. Assuming the first would tell an operator their customer was answered when nobody
+  // replied, which is the same class of lie this whole sweep exists to remove.
+  settlement: "answered" | "consumed";
   // Which messages the decision covered, in the shape the caller can actually state it.
   //
   // `messageIds` is the burst a turn ran over, known exactly because the thread was re-fetched.
@@ -100,68 +106,72 @@ export async function retireCoveredDeliveries(params: {
         ? { in: params.messageIds }
         : { lte: params.upToMessageId, not: null },
   };
-  // Rows the sweep already called a loss, read BEFORE they are corrected, so the correction can be
-  // said out loud. Normally none: this is the sweep having fired in the sliver between a turn
-  // posting and this write.
-  const reported = await runScopedOn(
+
+  // TWO writes, and the split is what makes the correction exact rather than nearly exact.
+  //
+  // The rows that need a closing line are the ones that were DEAD, and READING them first would race
+  // the sweep in both directions: a row turning DEAD between the read and the write loses its
+  // correction, and two retirees reading the same DEAD row both write one. An UPDATE that names DEAD
+  // in its own predicate and returns what it moved answers both at once — only one statement can
+  // move a given row out of DEAD, and it is the one holding the rows.
+  //
+  // DEAD is a correction rather than a contradiction. The sweep reaches its verdict by INFERENCE —
+  // nothing has moved this row — while a turn that ran over the message is direct evidence, and it
+  // wins. Nothing is erased: `WHERE status = 'DEAD'` is what is STILL unanswered, and the line that
+  // reported the loss stays where it was written, joined by the one below saying how it ended.
+  const corrected = await runScopedOn(
     params.base,
     sysCtx(params.tenantId),
     (db) =>
-      db.chatwootWebhookDelivery.findMany({
+      db.chatwootWebhookDelivery.updateManyAndReturn({
         where: { ...where, status: "DEAD" },
+        data: { status: "PROCESSED", processedAt: new Date() },
         select: { deliveryId: true, inboundMessageId: true },
       }),
   );
+
+  // And the ordinary case. PROCESSING only, and never PENDING: that is the state whose owner has not
+  // arrived yet, and this write cannot tell "abandoned before the claim" from "claimed a millisecond
+  // from now". The ack is spent before the row is even inserted, so a burst re-read from Chatwoot
+  // legitimately contains a message whose own delivery sits between its insert and its CAS —
+  // retiring it makes that CAS match nothing and the delivery return "skipped", so the mirror write
+  // never runs and `lastInboundAt`, the contact and the attribute bags stay behind. That is
+  // preempting a delivery rather than rescuing one. A PROCESSING row is already claimed, so retiring
+  // it preempts nothing: its own tx2 writes PROCESSED over this a moment later. What it leaves out
+  // is a delivery that died in the sliver between its insert and its CAS, reported as a loss even
+  // though a later burst answered it — two statements wide, against a whole turn for PROCESSING.
   const { count } = await runScopedOn(
     params.base,
     sysCtx(params.tenantId),
     (db) =>
       db.chatwootWebhookDelivery.updateMany({
-        where: {
-          ...where,
-          // PROCESSING ONLY, and never PENDING. A PENDING row has not been claimed yet, and this
-          // write cannot tell "abandoned before the claim" from "claimed a millisecond from now":
-          // the ack is spent before the row is even inserted, so a burst re-read from Chatwoot can
-          // legitimately contain a message whose own delivery is between its insert and its CAS.
-          // Retiring that row makes the delivery's CAS match nothing and return "skipped", so the
-          // mirror write never runs and `lastInboundAt`, the contact and the attribute bags all go
-          // stale — this write would be preempting a delivery rather than rescuing one.
-          //
-          // A PROCESSING row is already claimed, so retiring it preempts nothing: its own tx2 writes
-          // PROCESSED over this a moment later, and until then the row says the message was covered,
-          // which it was. The cost is the one case left out — a delivery that died in the sliver
-          // between its insert and its CAS is reported as a loss even though a later burst answered
-          // it. That window is two statements wide, against the whole turn for PROCESSING.
-          //
-          // DEAD is taken as well, and that is a correction rather than a contradiction. The sweep
-          // reaches its verdict by INFERENCE — nothing has moved this row — while a turn that ran
-          // over the message is direct evidence, and it wins. Two ways it happens: the sweep fired
-          // in the sliver between a turn posting and this write, or a message reported long ago is
-          // finally answered by a burst that reached back past it. In both the customer has a reply
-          // and the row must leave the worklist. Nothing is erased: `WHERE status = 'DEAD'` is what
-          // is STILL unanswered, and the flow line that reported the loss stays where it was
-          // written, joined by the one below saying how it ended.
-          status: { in: ["PROCESSING", "DEAD"] },
-        },
+        where: { ...where, status: "PROCESSING" },
         data: { status: "PROCESSED", processedAt: new Date() },
       }),
   );
-  if (count > 0) {
+
+  const answered = params.settlement === "answered";
+  const total = count + corrected.length;
+  if (total > 0) {
     logger.info(
-      "chatwoot: a turn covered %d stranded deliver%s on conversation %d",
-      count,
-      count === 1 ? "y" : "ies",
+      "chatwoot: a turn %s %d stranded deliver%s on conversation %d",
+      answered ? "answered" : "consumed",
+      total,
+      total === 1 ? "y" : "ies",
       params.conversationId,
     );
   }
+
   // A loss that was ALREADY reported ends with a line of its own. The alert for it has been
   // dispatched and cannot be recalled, so the only honest close is a second line saying how it
   // ended — without it the row simply leaves the list and an operator is left holding a page about
-  // a customer nobody can find any more.
-  for (const row of reported) {
+  // a customer nobody can find any more. A rescue nobody had reported yet writes nothing: a
+  // correction for an alert that never fired is noise.
+  for (const row of corrected) {
     logger.warn(
-      "chatwoot: %s was reported as a lost message and has now been answered on conversation %d",
+      "chatwoot: %s was reported as a lost message and has now been %s on conversation %d",
       row.deliveryId,
+      answered ? "answered" : "consumed deliberately",
       params.conversationId,
     );
     await writeFlowEvent(
@@ -177,15 +187,14 @@ export async function retireCoveredDeliveries(params: {
         level: "warn",
         status: "ok",
         detail: {
-          outcome: "answered_late",
-          deliveryEvent: "message_created",
+          outcome: answered ? "answered_late" : "consumed_late",
           messageId: row.inboundMessageId,
           conversationId: params.conversationId,
         },
       },
     );
   }
-  return count;
+  return total;
 }
 
 interface StrandedRow {

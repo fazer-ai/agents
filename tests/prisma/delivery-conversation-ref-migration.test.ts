@@ -77,6 +77,10 @@ async function resetStates(): Promise<void> {
       [s, String(ids[s])],
     );
   }
+  await suDb.query(
+    `UPDATE "chatwoot_webhook_deliveries" SET status = 'PENDING', processed_at = NULL, received_at = now() WHERE id = $1`,
+    [String(ids.LIVE)],
+  );
 }
 
 describe.skipIf(!dbUp)("migration: the stranded-delivery backfill", () => {
@@ -100,11 +104,26 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery backfill", () => {
           deliveryId: `bf-${process.pid}-${status}`,
           event: "message_created",
           status,
+          // Old enough to be abandoned by the backfill's own definition. A row received seconds ago
+          // is deliberately out of its reach — see the fence's own case below.
+          receivedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
         },
         select: { id: true },
       });
       ids[status] = row.id;
     }
+    // And one the PREVIOUS release inserted while this migration ran: about to be claimed by it.
+    const live = await db.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `bf-${process.pid}-LIVE`,
+        event: "message_created",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    ids.LIVE = live.id;
   });
 
   afterAll(async () => {
@@ -123,6 +142,11 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery backfill", () => {
     // A row that already finished is not a loss, and a row already reported as one stays reported.
     expect(await statusOf("PROCESSED")).toBe("PROCESSED");
     expect(await statusOf("DEAD")).toBe("DEAD");
+    // And the fence that keeps the upgrade from eating a live message: this migration runs while the
+    // PREVIOUS release is still serving, so a row it inserted seconds ago is about to be claimed by
+    // it. Closed here, that `PENDING -> PROCESSING` CAS matches nothing, the delivery returns
+    // "skipped", and a customer message is discarded by the upgrade itself.
+    expect(await statusOf("LIVE")).toBe("PENDING");
   });
 
   // The negative twin, run through the FILE rather than a copy of the UPDATE, so deleting the

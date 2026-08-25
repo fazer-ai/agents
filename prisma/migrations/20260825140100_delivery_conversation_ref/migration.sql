@@ -44,8 +44,15 @@ ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "claimed_at" TIMESTAMP(3);
 -- and closing them as PROCESSED would hide real losses in exactly the list that exists to surface
 -- them. Marked DEAD once, here, so they appear in it instead.
 --
--- A delivery genuinely in flight during this migration is being stranded by the same deploy that
--- runs it, so DEAD is the right answer for it too.
+-- The age fence is not cosmetic: this migration runs while the PREVIOUS release is still serving.
+-- A row that old release inserted seconds ago is about to be claimed by it, and closing it here
+-- makes that `PENDING -> PROCESSING` CAS match nothing — the delivery returns "skipped" and a live
+-- customer message is discarded by the upgrade. Thirty minutes is the same threshold the sweep uses
+-- to call a row abandoned, so what this closes is exactly what the sweep would have.
+--
+-- A delivery genuinely in flight and older than that is being stranded by the same deploy, so DEAD
+-- is the right answer for it. A younger one is left where it is: if the deploy strands it, the sweep
+-- reaches it half an hour later and reads it by the rules below rather than by this blanket.
 --
 -- These rows land in the DEAD list WITHOUT the conversation-level log line and alert the sweep
 -- writes, and that is deliberate rather than an oversight. Nothing here knows what they carried:
@@ -72,6 +79,7 @@ SET app.is_super_admin = 'on';
 
 UPDATE "chatwoot_webhook_deliveries"
    SET status = 'DEAD', processed_at = now()
- WHERE status IN ('PENDING', 'PROCESSING');
+ WHERE status IN ('PENDING', 'PROCESSING')
+   AND received_at < now() - interval '30 minutes';
 
 RESET app.is_super_admin;

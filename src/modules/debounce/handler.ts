@@ -273,6 +273,10 @@ export async function coalesceAndRunTurn(
         instanceId,
         conversationId,
         conversationRowId: convDbId,
+        // "posted" is the only outcome that reached the customer. Every other one here consumed the
+        // burst deliberately — an empty reply, a guardrail going silent, a human taking over
+        // mid-turn — and calling those answered would be the lie the parameter exists to prevent.
+        settlement: outcome === "posted" ? "answered" : "consumed",
         messageIds: pending.map((m) => m.id),
         base,
       });
@@ -326,6 +330,8 @@ async function settleGateExit(params: {
       instanceId: params.instanceId,
       conversationId: params.conversationId,
       conversationRowId: params.conversationRowId,
+      // A gate exit is a deliberate silence by definition: it decided before any model call.
+      settlement: "consumed",
       upToMessageId: params.upToMessageId,
       base: params.base,
     });

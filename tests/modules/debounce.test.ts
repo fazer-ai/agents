@@ -775,6 +775,137 @@ describe.skipIf(!dbUp)("debounce", () => {
     });
   });
 
+  test("an EMPTY turn closes a reported loss the same way: consumed, not answered", async () => {
+    // The gate exits are silence by construction, but the flush's own success path is not: it fires
+    // for every outcome that consumed the burst, and only "posted" reached the customer. An empty
+    // model reply consumed the message and sent nothing, so the correction has to say consumed —
+    // otherwise the one caller that CAN tell the difference is the one that reports it wrong.
+    const convId = 888;
+    await seedConversation(convId);
+    const reported = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `empty-corrects-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        processedAt: new Date(Date.now() - 60_000),
+        receivedAt: new Date(Date.now() - 120_000),
+        conversationId: convId,
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: makeStub({
+          pages: [page([{ id: 1, content: "oi" }])],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent).toEqual([]);
+
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const deadline = Date.now() + 2000;
+    let lines: Array<{ detail: unknown }> = [];
+    while (Date.now() < deadline) {
+      lines = await suDb.executionLog.findMany({
+        where: { tenantId, conversationId: conv.id, stage: "delivery" },
+        select: { detail: true },
+      });
+      if (lines.length > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(lines).toHaveLength(1);
+    const line = lines[0];
+    if (line === undefined) throw new Error("no correction line was written");
+    expect((line.detail as Record<string, unknown>).outcome).toBe(
+      "consumed_late",
+    );
+
+    await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
+  });
+
+  test("a gate exit closes a reported loss WITHOUT claiming the customer was answered", async () => {
+    // The correction line has to say which thing happened. A gate exit is a deliberate silence by
+    // definition — it decides before any model call — so closing a reported loss from one and
+    // logging "answered late" would hand an operator a resolution nobody delivered, which is the
+    // same class of lie as hiding the loss in the first place.
+    const convId = 887;
+    await seedConversation(convId, { assigneeType: "User" });
+    const reported = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `gate-corrects-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        processedAt: new Date(Date.now() - 60_000),
+        receivedAt: new Date(Date.now() - 120_000),
+        conversationId: convId,
+        inboundMessageId: 3,
+      },
+      select: { id: true },
+    });
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 5 }),
+      base: appDb,
+      deps: {
+        makeModel: () => {
+          throw new Error("the gate must close before any model call");
+        },
+        makeClient: async () => {
+          throw new Error("the gate must close before any Chatwoot fetch");
+        },
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+          where: { id: reported.id },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("PROCESSED");
+
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const deadline = Date.now() + 2000;
+    let lines: Array<{ detail: unknown }> = [];
+    while (Date.now() < deadline) {
+      lines = await suDb.executionLog.findMany({
+        where: { tenantId, conversationId: conv.id, stage: "delivery" },
+        select: { detail: true },
+      });
+      if (lines.length > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(lines).toHaveLength(1);
+    const line = lines[0];
+    if (line === undefined) throw new Error("no correction line was written");
+    expect((line.detail as Record<string, unknown>).outcome).toBe(
+      "consumed_late",
+    );
+
+    await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
+  });
+
   test("a flush does not consume a PENDING row it has not been claimed from", async () => {
     // The retirement is a blind write into a state machine somebody else owns, and PENDING is the
     // state where that owner has not arrived yet. The ack is spent before the ledger row is even

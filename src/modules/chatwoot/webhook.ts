@@ -2915,6 +2915,9 @@ export async function processChatwootDelivery(
   // lost — a delivery that armed a flush has NOT settled it, because the flush is what will, and it
   // retires the row itself when it does.
   let settledMessageId: number | null = null;
+  // ...and whether the customer actually got a reply. A gate that consumed the message is silence by
+  // design, so the default says so and only a posted turn overrides it.
+  let settledAs: "answered" | "consumed" = "consumed";
   let consumed = false;
   // What the contact-authorization gate below learned about this contact, for the direct turn's
   // prompt. Null when the gate is off, or when the delivery never reaches a turn.
@@ -3041,6 +3044,7 @@ export async function processChatwootDelivery(
             n.message?.id != null
           ) {
             settledMessageId = n.message.id;
+            settledAs = outcome === "posted" ? "answered" : "consumed";
           }
           // Recovered: a successful answer clears any previously surfaced turn error (item 6).
           if (outcome === "posted" && n.conversationId !== null) {
@@ -3240,6 +3244,7 @@ export async function processChatwootDelivery(
         instanceId: params.instanceId,
         conversationId: n.conversationId,
         conversationRowId: mirror.conversationRowId,
+        settlement: settledAs,
         messageIds: [settledMessageId],
         base,
       });

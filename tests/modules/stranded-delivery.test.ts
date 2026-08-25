@@ -29,6 +29,9 @@ function verdict(row: {
   status?: "PENDING" | "PROCESSING";
   // Whether the age above is a CLAIM (the default, the common case) or only a receipt.
   claimed?: boolean;
+  // The conversation the row names. Present by default: every event that reaches the ledger names
+  // one, so its absence is a row an older build wrote.
+  conversationId?: number | null;
   // When the two clocks disagree: how long ago the row was RECEIVED, against `ageMs` as the claim.
   receivedAgoMs?: number;
 }): StrandedVerdict {
@@ -39,6 +42,8 @@ function verdict(row: {
       status: row.status ?? "PROCESSING",
       receivedAt: new Date(NOW.getTime() - (row.receivedAgoMs ?? row.ageMs)),
       claimedAt: claimed ? at : null,
+      conversationId:
+        row.conversationId === undefined ? 41 : row.conversationId,
       inboundMessageId: row.inboundMessageId,
     },
     { now: NOW, staleAfterMs: STALE_MS },
@@ -52,6 +57,7 @@ describe("classifying a delivery stranded non-terminal", () => {
     inboundMessageId: number | null;
     status?: "PENDING" | "PROCESSING";
     claimed?: boolean;
+    conversationId?: number | null;
     receivedAgoMs?: number;
     expected: StrandedVerdict;
   }> = [
@@ -122,13 +128,26 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "lost",
     },
     {
-      // PENDING makes no such promise: nothing has claimed it, so the missing stamp says nothing.
-      name: "PENDING with no claim stamp and no message is still just an empty delivery",
+      // PENDING makes no promise about the CLAIM: nothing has claimed it. What it does promise is
+      // the conversation, written at insert, so a row naming one was written by a build that had
+      // the columns and its null message id means what it says.
+      name: "PENDING with no claim stamp but a conversation is still just an empty delivery",
       ageMs: STALE_MS * 3,
       inboundMessageId: null,
       status: "PENDING",
       claimed: false,
       expected: "no-message",
+    },
+    {
+      // And the old release's PENDING row: no claim, no conversation, nothing to read. It gets
+      // inserted DURING the upgrade, after the backfill has already run past it.
+      name: "PENDING naming no conversation at all is a build we cannot read",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      conversationId: null,
+      status: "PENDING",
+      claimed: false,
+      expected: "lost",
     },
     {
       name: "stranded with a customer message is a loss",
@@ -154,6 +173,7 @@ describe("classifying a delivery stranded non-terminal", () => {
           inboundMessageId: c.inboundMessageId,
           status: c.status,
           claimed: c.claimed,
+          conversationId: c.conversationId,
           receivedAgoMs: c.receivedAgoMs,
         }),
       ).toBe(c.expected);

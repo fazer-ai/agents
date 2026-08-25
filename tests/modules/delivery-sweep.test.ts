@@ -706,6 +706,22 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       data: { settings: { debounce: { enabled: false } } },
     });
 
+    // A second sibling the sweep had ALREADY reported, so the correction path runs too.
+    const reportedSibling = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `direct-reported-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        processedAt: new Date(Date.now() - 60_000),
+        receivedAt: new Date(Date.now() - 120_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+
     const sent: Array<[number, string]> = [];
     const client = {
       getMessages: async () => ({ payload: [] }),
@@ -765,13 +781,36 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
 
     expect(sent).toEqual([[convId, "claro!"]]);
     expect((await statusOf(sibling.id)).status).toBe("PROCESSED");
+    // The reply DID reach the customer, so a row this turn takes back out of the loss list is closed
+    // as answered — the one caller that can tell the difference has to report it.
+    expect((await statusOf(reportedSibling.id)).status).toBe("PROCESSED");
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const deadline = Date.now() + 2000;
+    let lines: Array<{ detail: unknown }> = [];
+    while (Date.now() < deadline) {
+      lines = await suDb.executionLog.findMany({
+        where: { tenantId, conversationId: conv.id, stage: "delivery" },
+        select: { detail: true },
+      });
+      if (lines.length > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(lines).toHaveLength(1);
+    const line = lines[0];
+    if (line === undefined) throw new Error("no correction line was written");
+    expect((line.detail as Record<string, unknown>).outcome).toBe(
+      "answered_late",
+    );
 
     await suDb.agent.update({
       where: { id: agentDbId },
       data: { settings: {} },
     });
     await suDb.chatwootWebhookDelivery.deleteMany({
-      where: { id: { in: [own.id, sibling.id] } },
+      where: { id: { in: [own.id, sibling.id, reportedSibling.id] } },
     });
     await suDb.executionLog.deleteMany({ where: { tenantId } });
     await suDb.schedulerJob.deleteMany({ where: { tenantId } });

@@ -126,6 +126,15 @@ export async function retireCoveredDeliveries(params: {
 
   // TWO writes, and the split is what makes the correction exact rather than nearly exact.
   //
+  // NOTE: the pair is not a transaction, and neither is the watermark advance that precedes every
+  // caller of this. Every window between those writes leaves a state that is WRONG AND VISIBLE — a
+  // row still in the worklist for a message something did handle, a correction with no closing line
+  // — never a loss that goes quiet, which is the one failure this whole sweep exists to prevent.
+  // Alert dispatch happens inside `writeFlowEvent`, so a transaction spanning it would hold a
+  // database write open across somebody else's HTTP endpoint. They are named in the PR's validation
+  // scope instead, next to the sibling window this design already accepts on purpose (a delivery
+  // that dies between its insert and its CAS).
+  //
   // The rows that need a closing line are the ones that were DEAD, and READING them first would race
   // the sweep in both directions: a row turning DEAD between the read and the write loses its
   // correction, and two retirees reading the same DEAD row both write one. An UPDATE that names DEAD
@@ -191,7 +200,7 @@ export async function retireCoveredDeliveries(params: {
       answered ? "answered" : "consumed deliberately",
       params.conversationId,
     );
-    await writeFlowEvent(
+    const written = await writeFlowEvent(
       {
         tenantId: params.tenantId,
         turnId: crypto.randomUUID(),
@@ -210,6 +219,16 @@ export async function retireCoveredDeliveries(params: {
         },
       },
     );
+    if (!written.delivered) {
+      // The row has already left the worklist, so this line was the only thing left that could
+      // close the alert an operator is holding. Loud, because nothing retries it: unlike the loss
+      // itself, which the DEAD row keeps stating until something corrects it, a correction that
+      // fails to write leaves no trace of its own anywhere.
+      logger.error(
+        "chatwoot delivery sweep: %s was corrected out of the loss list but its closing line could not be written; the alert for it stands with nothing to close it",
+        row.deliveryId,
+      );
+    }
   }
   return total;
 }
@@ -409,6 +428,11 @@ async function record(
     return;
   }
 
+  // NOTE: a rescue landing between this CAS and the line below writes its own correction (the row
+  // was DEAD when it looked), so both lines end up on the conversation — the loss and the
+  // `answered_late` closing it, out of order but complete. What is not possible is the loss going
+  // unreported.
+  //
   // The CAS goes FIRST, and the line only if it wins. Ordering it the other way (an earlier round of
   // this PR did) trades a real failure for a worse one: `writeFlowEvent` DISPATCHES the alert as it
   // writes — Discord, webhook, an operator's phone — and nothing can retract that, so a line written

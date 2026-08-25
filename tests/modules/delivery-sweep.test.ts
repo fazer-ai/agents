@@ -604,6 +604,30 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(body.lastIndexOf("await settleDelivery(")).toBeLessThan(ingest);
   });
 
+  test("a flow write that fails is never swallowed, on either line", async () => {
+    // Both lines this file writes are the only trace of something an operator has to see, and both
+    // are written after the row has already moved — so a failed write loses the trace for good and
+    // nothing retries it. Neither branch can be reached behaviourally: making `writeFlowEvent` fail
+    // against a real database means faking the client out from under `runScopedOn`, which proves
+    // nothing about the shipped code. Asserted where it is written instead.
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/delivery-sweep.ts", import.meta.url),
+    ).text();
+    // The loss line: the row is DEAD by then and stays in the list, so this degrades a notification.
+    const record = src.slice(src.indexOf("async function record("));
+    expect(record).toContain("if (!written.delivered)");
+    // The correction line: the row has LEFT the list, so this one is the only thing that could have
+    // closed the alert already dispatched. Error, not warn.
+    const retire = src.slice(
+      src.indexOf("export async function retireCoveredDeliveries("),
+      src.indexOf("async function record("),
+    );
+    expect(retire).toContain("if (!written.delivered)");
+    expect(retire.slice(retire.indexOf("if (!written.delivered)"))).toContain(
+      "logger.error(",
+    );
+  });
+
   test("is armed when a Chatwoot account is connected, not only at boot", async () => {
     // The boot arm alone leaves a first-run install with nothing: `/setup` creates the tenant after
     // boot has already counted zero tenants, and there is no second arming point.

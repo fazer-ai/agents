@@ -7,7 +7,7 @@ export const FLOW_STAGES = [
   "stt", // inbound voice-note transcription
   "vision", // inbound image/document extraction
   "embed", // RAG embedding (search / ingest)
-  "delivery", // an inbound delivery that never reached a turn (stranded by a process death)
+  "delivery", // an inbound delivery a process death interrupted: lost, or answered late
   "debounce", // inbound burst coalesced before a turn (one line per flush)
   "contact_auth", // external contact-authorization gate (allowed/denied/error before the turn)
   "generate", // the LLM turn (graph.invoke)

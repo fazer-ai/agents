@@ -78,6 +78,9 @@ export async function retireCoveredDeliveries(params: {
   instanceId: bigint;
   // Chatwoot display id, which is what the ledger column holds.
   conversationId: number;
+  // The mirror's own row id, for filing the correction line below against the conversation. Null
+  // only where the mirror does not know it, which is the same reading the sweep's own line uses.
+  conversationRowId: bigint | null;
   // Which messages the decision covered, in the shape the caller can actually state it.
   //
   // `messageIds` is the burst a turn ran over, known exactly because the thread was re-fetched.
@@ -89,18 +92,33 @@ export async function retireCoveredDeliveries(params: {
   upToMessageId?: number;
   base: PrismaClient;
 }): Promise<number> {
+  const where = {
+    chatwootInstanceId: params.instanceId,
+    conversationId: params.conversationId,
+    inboundMessageId:
+      params.messageIds !== undefined
+        ? { in: params.messageIds }
+        : { lte: params.upToMessageId, not: null },
+  };
+  // Rows the sweep already called a loss, read BEFORE they are corrected, so the correction can be
+  // said out loud. Normally none: this is the sweep having fired in the sliver between a turn
+  // posting and this write.
+  const reported = await runScopedOn(
+    params.base,
+    sysCtx(params.tenantId),
+    (db) =>
+      db.chatwootWebhookDelivery.findMany({
+        where: { ...where, status: "DEAD" },
+        select: { deliveryId: true, inboundMessageId: true },
+      }),
+  );
   const { count } = await runScopedOn(
     params.base,
     sysCtx(params.tenantId),
     (db) =>
       db.chatwootWebhookDelivery.updateMany({
         where: {
-          chatwootInstanceId: params.instanceId,
-          conversationId: params.conversationId,
-          inboundMessageId:
-            params.messageIds !== undefined
-              ? { in: params.messageIds }
-              : { lte: params.upToMessageId, not: null },
+          ...where,
           // PROCESSING ONLY, and never PENDING. A PENDING row has not been claimed yet, and this
           // write cannot tell "abandoned before the claim" from "claimed a millisecond from now":
           // the ack is spent before the row is even inserted, so a burst re-read from Chatwoot can
@@ -114,7 +132,16 @@ export async function retireCoveredDeliveries(params: {
           // which it was. The cost is the one case left out — a delivery that died in the sliver
           // between its insert and its CAS is reported as a loss even though a later burst answered
           // it. That window is two statements wide, against the whole turn for PROCESSING.
-          status: "PROCESSING",
+          //
+          // DEAD is taken as well, and that is a correction rather than a contradiction. The sweep
+          // reaches its verdict by INFERENCE — nothing has moved this row — while a turn that ran
+          // over the message is direct evidence, and it wins. Two ways it happens: the sweep fired
+          // in the sliver between a turn posting and this write, or a message reported long ago is
+          // finally answered by a burst that reached back past it. In both the customer has a reply
+          // and the row must leave the worklist. Nothing is erased: `WHERE status = 'DEAD'` is what
+          // is STILL unanswered, and the flow line that reported the loss stays where it was
+          // written, joined by the one below saying how it ended.
+          status: { in: ["PROCESSING", "DEAD"] },
         },
         data: { status: "PROCESSED", processedAt: new Date() },
       }),
@@ -125,6 +152,37 @@ export async function retireCoveredDeliveries(params: {
       count,
       count === 1 ? "y" : "ies",
       params.conversationId,
+    );
+  }
+  // A loss that was ALREADY reported ends with a line of its own. The alert for it has been
+  // dispatched and cannot be recalled, so the only honest close is a second line saying how it
+  // ended — without it the row simply leaves the list and an operator is left holding a page about
+  // a customer nobody can find any more.
+  for (const row of reported) {
+    logger.warn(
+      "chatwoot: %s was reported as a lost message and has now been answered on conversation %d",
+      row.deliveryId,
+      params.conversationId,
+    );
+    await writeFlowEvent(
+      {
+        tenantId: params.tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: params.conversationRowId,
+        base: params.base,
+      },
+      {
+        stage: "delivery",
+        level: "warn",
+        status: "ok",
+        detail: {
+          outcome: "answered_late",
+          deliveryEvent: "message_created",
+          messageId: row.inboundMessageId,
+          conversationId: params.conversationId,
+        },
+      },
     );
   }
   return count;

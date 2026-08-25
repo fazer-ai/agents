@@ -682,6 +682,20 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(row.status).toBe("PROCESSED");
     expect(row.processedAt).not.toBeNull();
 
+    // And QUIETLY. The correction line exists to close an alert that already went out, so an
+    // ordinary rescue — a row nobody had reported yet — must not write one, or every burst that
+    // happens to cover a strand pages somebody about a problem they never heard of.
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(
+      await suDb.executionLog.count({
+        where: { tenantId, conversationId: conv.id, stage: "delivery" },
+      }),
+    ).toBe(0);
+
     await suDb.chatwootWebhookDelivery.delete({ where: { id: stranded.id } });
   });
 
@@ -929,11 +943,21 @@ describe.skipIf(!dbUp)("debounce", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: stranded.id } });
   });
 
-  test("a flush does not resurrect a row already reported as a loss", async () => {
-    // The sweep may have run first and put this message in the operator's DEAD list. A later flush
-    // that happens to re-read the same page must not quietly flip it to PROCESSED and take it back
-    // out: the operator was told a customer went unanswered, and either that stands or a human
-    // decides otherwise.
+  test("a flush CORRECTS a row already reported as a loss, and says so", async () => {
+    // An earlier round of this PR asserted the opposite, and had confused the RECORD with the
+    // WORKLIST. The record is the flow line, written once and never rewritten; `WHERE status =
+    // 'DEAD'` is the worklist, and it answers "who is still unanswered". A turn that ran over the
+    // message is direct evidence against a verdict the sweep reached by INFERENCE — nothing has
+    // moved this row — so the evidence wins and the row leaves the worklist.
+    //
+    // It happens two ways: the sweep firing in the sliver between a turn posting and the retirement,
+    // and a long-reported message finally answered by a burst that reached back past it. In both the
+    // customer has a reply, and leaving the row in the list sends an operator to a conversation
+    // where there is nothing to do.
+    //
+    // Nothing is erased. The loss line stays, and a second line joins it saying how it ended —
+    // without that, the row would simply vanish from the list while the alert an operator already
+    // received stands with nothing to close it.
     const convId = 883;
     await seedConversation(convId);
     const reported = await suDb.chatwootWebhookDelivery.create({
@@ -968,8 +992,33 @@ describe.skipIf(!dbUp)("debounce", () => {
       where: { id: reported.id },
       select: { status: true },
     });
-    expect(row.status).toBe("DEAD");
+    expect(row.status).toBe("PROCESSED");
 
+    // And the correction is on the record, at warn rather than error: something did go wrong, and
+    // it ended with the customer answered.
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const deadline = Date.now() + 2000;
+    let lines: Array<{ level: string; detail: unknown }> = [];
+    while (Date.now() < deadline) {
+      lines = await suDb.executionLog.findMany({
+        where: { tenantId, conversationId: conv.id, stage: "delivery" },
+        select: { level: true, detail: true },
+      });
+      if (lines.length > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(lines).toHaveLength(1);
+    const line = lines[0];
+    if (line === undefined) throw new Error("no correction line was written");
+    expect(line.level).toBe("warn");
+    expect((line.detail as Record<string, unknown>).outcome).toBe(
+      "answered_late",
+    );
+
+    await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
   });
 

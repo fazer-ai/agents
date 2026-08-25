@@ -1552,7 +1552,7 @@
     "stage": {
       "contact_auth": "Contact authorization",
       "debounce": "Message grouping",
-      "delivery": "Message never delivered",
+      "delivery": "Interrupted delivery",
       "embed": "Embedding",
       "generate": "Generation",
       "handoff": "Handoff",

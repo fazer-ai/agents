@@ -3239,6 +3239,7 @@ export async function processChatwootDelivery(
         tenantId: params.tenantId,
         instanceId: params.instanceId,
         conversationId: n.conversationId,
+        conversationRowId: mirror.conversationRowId,
         messageIds: [settledMessageId],
         base,
       });

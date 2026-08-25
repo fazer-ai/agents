@@ -272,6 +272,7 @@ export async function coalesceAndRunTurn(
         tenantId,
         instanceId,
         conversationId,
+        conversationRowId: convDbId,
         messageIds: pending.map((m) => m.id),
         base,
       });
@@ -314,6 +315,7 @@ async function settleGateExit(params: {
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
+  conversationRowId: bigint;
   upToMessageId: number;
   base: PrismaClient;
   label: string;
@@ -323,6 +325,7 @@ async function settleGateExit(params: {
       tenantId: params.tenantId,
       instanceId: params.instanceId,
       conversationId: params.conversationId,
+      conversationRowId: params.conversationRowId,
       upToMessageId: params.upToMessageId,
       base: params.base,
     });
@@ -468,6 +471,7 @@ export async function flushDebounceJob(
         tenantId,
         instanceId,
         conversationId,
+        conversationRowId: ctx.convDbId,
         upToMessageId: last,
         base,
         label: "debounce flush",
@@ -540,6 +544,7 @@ export async function flushDebounceJob(
           tenantId,
           instanceId,
           conversationId,
+          conversationRowId: ctx.convDbId,
           upToMessageId: last,
           base,
           label: "debounce flush",
@@ -619,6 +624,7 @@ export async function flushDebounceJob(
           tenantId,
           instanceId,
           conversationId,
+          conversationRowId: ctx.convDbId,
           upToMessageId: last,
           base,
           label: "debounce flush",

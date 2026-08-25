@@ -129,6 +129,8 @@ export async function coalesceAndRunTurn(
   overlayMediaAnnotations(tenantId, instanceId, messages);
   let pending = await ctx.selectPending(messages);
   if (pending.length === 0) return "empty";
+  // The messages the burst cap takes OUT, below. Answered by nobody, on purpose.
+  let dropped: typeof pending = [];
 
   const cfg = readDebounceConfig(ctx.settings);
   if (pending.length > cfg.maxMessagesPerBurst) {
@@ -139,6 +141,13 @@ export async function coalesceAndRunTurn(
       cfg.maxMessagesPerBurst,
       String(conversationId),
     );
+    // Kept, because the watermark below advances past them all the same and the ledger has to say
+    // the same thing the watermark does. These messages were LOOKED AT and deliberately left out —
+    // that is what the cap is — so a row of theirs still sitting non-terminal is a deliberate
+    // silence, not a delivery nothing ever reached. Left open, every capped burst that contains a
+    // strand reports it as a customer nobody answered, which is true only in the sense that makes
+    // the loss list worthless: nobody was ever going to.
+    dropped = pending.slice(0, pending.length - cfg.maxMessagesPerBurst);
     pending = pending.slice(pending.length - cfg.maxMessagesPerBurst);
   }
   const targetWatermark = pending[pending.length - 1]?.id as number;
@@ -281,6 +290,20 @@ export async function coalesceAndRunTurn(
         messageIds: pending.map((m) => m.id),
         base,
       });
+      // And the ones the cap took out, which the watermark above just declared handled. Separate
+      // call rather than a wider id list, because the WORD differs: a posted reply answered the
+      // burst it was given, and never these.
+      if (dropped.length > 0) {
+        await retireCoveredDeliveries({
+          tenantId,
+          instanceId,
+          conversationId,
+          conversationRowId: convDbId,
+          settlement: "consumed",
+          messageIds: dropped.map((m) => m.id),
+          base,
+        });
+      }
     } catch (e) {
       logger.warn(
         "%s: could not retire the covered deliveries (conv=%s): %s",

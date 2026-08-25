@@ -359,7 +359,7 @@ const BARE_SLICES: Record<
   "src/modules/business-hours/hours.ts": [1, "fixed-format"],
   "src/modules/chatwoot/attributes.ts": [1, "array"],
   "src/modules/conversations/service.ts": [1, "array"],
-  "src/modules/debounce/handler.ts": [1, "array"],
+  "src/modules/debounce/handler.ts": [2, "array"],
   // The logo's one-shot download token is hex from randomUUID.
   "src/modules/documents/company.ts": [1, "ascii"],
   // The legacy date fallback reads a fixed ISO prefix; the file name was already reduced to

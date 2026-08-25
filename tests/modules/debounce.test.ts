@@ -732,6 +732,94 @@ describe.skipIf(!dbUp)("debounce", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: stranded.id } });
   });
 
+  test("the burst CAP takes messages out, and the ledger says so too", async () => {
+    // The cap is a deliberate omission: the flush re-read the thread, LOOKED at these messages and
+    // answered only the newest N. The watermark advances past the whole burst all the same, so the
+    // dropped ones are declared handled by the conversation and would be declared lost by the
+    // ledger — and the sweep's whole worth is that a row in its list is a customer nothing reached.
+    // Reporting a message the product deliberately dropped is the same lie from the other side.
+    const convId = 889;
+    await seedConversation(convId);
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentDbId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: {
+        settings: {
+          ...(before.settings as object),
+          debounce: {
+            enabled: true,
+            windowSeconds: 15,
+            maxMessagesPerBurst: 1,
+            maxWindowSeconds: 60,
+          },
+        },
+      },
+    });
+    // Message 1's own delivery died mid-processing. The cap then drops it from the burst this
+    // flush answers, so nothing will ever reply to it — deliberately.
+    const capped = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-capped-${process.pid}`,
+        event: "message_created",
+        // DEAD: the sweep already reported this one and an operator is holding the alert. That is
+        // what makes the settlement WORD observable — and the reply that went out answered the
+        // burst it was GIVEN, never this message, so the correction has to say consumed.
+        status: "DEAD",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    try {
+      const out = await flushDebounceJob({
+        job: jobFor(convId),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            pages: [
+              page([
+                { id: 1, content: "oi" },
+                { id: 2, content: "tem horário?" },
+              ]),
+            ],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(sent).toEqual([[convId, REPLY]]);
+      expect(
+        (
+          await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+            where: { id: capped.id },
+            select: { status: true },
+          })
+        ).status,
+      ).toBe("PROCESSED");
+      expect((await correctionLine(convId)).detail).toMatchObject({
+        outcome: "consumed_late",
+      });
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { settings: before.settings as object },
+      });
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: capped.id } });
+      await suDb.executionLog.deleteMany({ where: { tenantId } });
+    }
+  });
+
   test("a flush stopped by a closed gate settles the ledger too", async () => {
     // The gate exits decide before any Chatwoot fetch: they advance the watermark from the payload's
     // own lastMessageId and return. A delivery that armed this flush and then died is sitting

@@ -353,14 +353,26 @@ describe.skipIf(!dbUp)("#307 removing the mirror of a deleted inbox", () => {
 
   // The row is read, THEN the network is asked, so a second removal can land inside that window. It
   // must not answer a 500: both callers asked for the row to be gone and the row is gone.
-  test("a second removal racing inside the probe window still succeeds", async () => {
+  //
+  // The window is opened DETERMINISTICALLY, from inside the probe, rather than by firing two real
+  // removals and hoping the scheduler interleaves them. Two concurrent flows open four scoped
+  // transactions between them, and under a contended pool the loser fails to start one at all — so
+  // the concurrent version failed on CI for a reason that has nothing to do with the rule under test
+  // (and would have passed locally forever). Injecting the interleaving at the seam asserts the
+  // rule itself, and it is what mutating `deleteMany` back to `delete` still trips.
+  test("a removal whose row vanished inside the probe window still succeeds", async () => {
     const inbox = await seedInbox(7308);
-    const cw = fakeChatwoot([]);
-    const both = await Promise.allSettled([
-      removeInbox(ctx(tenant), inbox.id, { makeClient: cw.makeClient }, appDb),
-      removeInbox(ctx(tenant), inbox.id, { makeClient: cw.makeClient }, appDb),
-    ]);
-    expect(both.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    const deps = {
+      makeClient: async () =>
+        ({
+          getInbox: async () => {
+            // another operator's removal lands while this one is asking Chatwoot
+            await suDb.inbox.deleteMany({ where: { id: inbox.id } });
+            throw new ChatwootApiError(404, "GET /inboxes/7308");
+          },
+        }) as unknown as ChatwootClient,
+    };
+    await removeInbox(ctx(tenant), inbox.id, deps, appDb);
     expect(await exists(inbox.id)).toBe(false);
   });
 

@@ -3,11 +3,10 @@
 //
 // Four facts make this more than "write the column if it is empty":
 //
-//   1. A conversation that already existed when these columns were added has traffic we never
-//      watermarked. Its next customer message is NOT its first, and dating it as one would drop a
-//      mid-conversation interval into the response-time sample. `lastInboundAt` non-null with
-//      `firstInboundAt` still null is exactly that row: every conversation seen from the start
-//      writes the two together, so the pair distinguishes "not tracked yet" from "no inbound yet".
+//   1. A conversation that existed before the columns, or that an integration first discovers
+//      through a message, has source traffic we cannot prove we observed from the start. Its next
+//      customer message is NOT necessarily its first. `attendanceTrackedFromStart` is the durable
+//      provenance: only a row born from conversation_created is eligible, and /reset cannot forge it.
 //   2. Chatwoot retries deliver out of order, and `decideConversationWrites` refuses a stale event
 //      for the CONVERSATION STATE it carries. A message it mentions still happened, so the earliest
 //      reading has to win even when it arrives last — otherwise the anchor is whichever delivery got
@@ -37,6 +36,7 @@
 // conversation count can be seen rather than assumed away.
 
 export interface StoredAttendance {
+  attendanceTrackedFromStart: boolean;
   firstInboundAt: Date | null;
   lastInboundAt: Date | null;
   firstHumanReplyAt: Date | null;
@@ -72,11 +72,13 @@ export function decideAttendanceWatermarks(
       // Anchored already: an earlier reading lowers it, a later one is just another message.
       if (seen.inboundAt < stored.firstInboundAt)
         writes.firstInboundAt = seen.inboundAt;
-    } else if (stored.lastInboundAt === null) {
-      // Never watermarked an inbound on this conversation: this one is the first.
+    } else if (stored.attendanceTrackedFromStart) {
+      // The mirror saw conversation_created before it accepted any message for this row, so this
+      // inbound is eligible to become the source-backed first anchor. Unlike lastInboundAt, this
+      // provenance survives /reset and cannot be manufactured by onboarding mid-conversation.
       writes.firstInboundAt = seen.inboundAt;
     }
-    // else: fact 1 — traffic predates the columns, so this conversation gets no anchor, ever.
+    // else: traffic may predate local observation, so this conversation gets no anchor, ever.
   }
 
   // What a reply is measured against. The stored anchor and nothing else: one event cannot carry

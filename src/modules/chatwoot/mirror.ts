@@ -155,6 +155,7 @@ export async function mirrorChatwootEvent(
           firstHumanReplyAt: true,
           lastHumanReplyAt: true,
           firstHumanMessageAt: true,
+          attendanceTrackedFromStart: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -251,10 +252,14 @@ export async function mirrorChatwootEvent(
             chatwootStatusAt: decision.statusAt,
             chatwootAssigneeAt: decision.assigneeAt,
             lastInboundAt: inboundAt,
+            // Creation by a message proves only that this is the first message WE observed. Only
+            // conversation_created proves the mirror was present before source traffic began.
+            attendanceTrackedFromStart: n.event === "conversation_created",
             // The same rule as the two branches below, asked with nothing stored: a row we are
             // creating has been observed from before its first message by construction.
             ...decideAttendanceWatermarks(
               {
+                attendanceTrackedFromStart: n.event === "conversation_created",
                 firstInboundAt: null,
                 lastInboundAt: null,
                 firstHumanReplyAt: null,

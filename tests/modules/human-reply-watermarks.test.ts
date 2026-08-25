@@ -171,6 +171,10 @@ describe.skipIf(!dbUp)("the attendance watermarks", () => {
 
   test("dates the customer's first message and the team's first and last answer", async () => {
     await deliver(
+      { event: "conversation_created", ...convPayload() },
+      "conversation-created",
+    );
+    await deliver(
       {
         event: "message_created",
         id: 6001,
@@ -380,13 +384,90 @@ describe.skipIf(!dbUp)("the attendance watermarks", () => {
     expect(row.lastHumanReplyAt).not.toBeNull();
   });
 
+  test("reset cannot turn an integration-onboarding row into a first-response sample", async () => {
+    const onboardingId = CONV_ID + 3;
+    const payload = (lastActivity: number) =>
+      convPayload({
+        id: onboardingId,
+        contact_inbox: { id: 70_000 + onboardingId },
+        last_activity_at: lastActivity,
+      });
+    const base = Math.floor(Date.now() / 1000) - 120;
+
+    // The integration first discovers an already-active source conversation through a message.
+    // That proves only the first LOCAL observation, never the first source message.
+    await deliver(
+      {
+        event: "message_created",
+        id: 6301,
+        content: "mais uma dúvida sobre o pedido",
+        message_type: "incoming",
+        private: false,
+        conversation: payload(base),
+      },
+      "onboarding-mid-conversation",
+    );
+    const discovered = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: onboardingId },
+    });
+    expect(discovered.attendanceTrackedFromStart).toBe(false);
+    expect(discovered.firstInboundAt).toBeNull();
+
+    // /reset and /teste deliberately clear the operational lastInboundAt watermark. The durable
+    // provenance bit must still keep the next exchange out of the first-response population.
+    await suDb.conversation.update({
+      where: { id: discovered.id },
+      data: { lastInboundAt: null },
+    });
+    await deliver(
+      {
+        event: "message_created",
+        id: 6302,
+        content: "conseguiu verificar?",
+        message_type: "incoming",
+        private: false,
+        conversation: payload(base + 30),
+      },
+      "onboarding-after-reset",
+    );
+    await deliver(
+      {
+        event: "message_created",
+        id: 6303,
+        content: "sim, seu pedido sai hoje",
+        message_type: "outgoing",
+        private: false,
+        sender: { id: 31, name: "Ana", type: "user" },
+        conversation: payload(base + 60),
+      },
+      "onboarding-reply",
+    );
+    const after = await suDb.conversation.findFirstOrThrow({
+      where: { id: discovered.id },
+    });
+    expect(after.firstInboundAt).toBeNull();
+    expect(after.firstHumanReplyAt).toBeNull();
+  });
+
   // Chatwoot retries out of order, and the state ordering refuses an event carrying an older clock
   // than what is stored. The message it mentions still happened, and for the anchor of an
   // attendance the earliest reading has to win even when it is the last to arrive.
   test("a first message that arrives after a newer event still anchors the attendance", async () => {
     const lateConvId = CONV_ID + 2;
     const conversationOpenedAt = Math.floor(Date.now() / 1000) - 600;
-    // A conversation event got through first and moved the row's clock forward.
+    // The source-created event establishes that local tracking began before its messages.
+    await deliver(
+      {
+        event: "conversation_created",
+        ...convPayload({
+          id: lateConvId,
+          contact_inbox: { id: 70_000 + lateConvId },
+          last_activity_at: conversationOpenedAt,
+        }),
+      },
+      "late-created",
+    );
+    // A newer conversation event then moves the row's state clock forward.
     await deliver(
       {
         event: "conversation_updated",
@@ -460,6 +541,14 @@ describe.skipIf(!dbUp)("the first-response KPI", () => {
       channel: "Channel::Api",
       ...over,
     });
+    await deliver(
+      {
+        event: "conversation_created",
+        ...conv({ last_activity_at: inboundAtSec }),
+      },
+      `agg-${convId}-created`,
+      on(),
+    );
     await deliver(
       {
         event: "message_created",
@@ -571,6 +660,15 @@ describe.skipIf(!dbUp)("the first-response KPI", () => {
     };
     await deliver(
       {
+        event: "conversation_created",
+        ...openedConv,
+        last_activity_at: base,
+      },
+      `agg-${opened}-created`,
+      on(),
+    );
+    await deliver(
+      {
         event: "message_created",
         id: opened * 10,
         content: "bom dia, seu pedido chegou",
@@ -674,6 +772,15 @@ describe.skipIf(!dbUp)("the first-response KPI", () => {
       },
       channel: "Channel::Api",
     };
+    await deliver(
+      {
+        event: "conversation_created",
+        ...lateConv,
+        last_activity_at: base,
+      },
+      `agg-${late}-created`,
+      on(),
+    );
     await deliver(
       {
         event: "message_created",

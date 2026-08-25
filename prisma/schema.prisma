@@ -523,6 +523,11 @@ model Conversation {
   // the unanchored one cannot tell an answer from the business opening the conversation. The KPI
   // takes the EARLIER of the two, admitting this one only when it is itself at or after the anchor.
   firstHumanMessageAt    DateTime? @map("first_human_message_at")
+  // Provenance bit for the first-response sample. True only when the local mirror was created by
+  // Chatwoot's conversation_created event, before any message could be accepted for that row.
+  // Migration rows and rows first discovered through a message stay false permanently: neither a
+  // later inbound nor /reset can turn mid-conversation traffic into a first-response sample.
+  attendanceTrackedFromStart Boolean @default(false) @map("attendance_tracked_from_start")
   // Watermark for follow-up single-shot semantics: set after each follow-up (sent or silenced).
   // Another follow-up can only fire once the client speaks again (lastInboundAt > lastFollowUpAt).
   // NULL = no follow-up has ever been attempted for this conversation.

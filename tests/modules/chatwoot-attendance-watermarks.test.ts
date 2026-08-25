@@ -15,6 +15,7 @@ const T2 = new Date("2026-08-25T12:00:20.000Z");
 
 function stored(over: Partial<StoredAttendance> = {}): StoredAttendance {
   return {
+    attendanceTrackedFromStart: true,
     firstInboundAt: null,
     lastInboundAt: null,
     firstHumanReplyAt: null,
@@ -58,9 +59,14 @@ const cases: {
   },
   {
     name: "a conversation whose traffic predates the columns is never anchored",
-    // lastInboundAt without firstInboundAt is the migration's own signature: the row existed, and
-    // customer messages were mirrored onto it, before there was anywhere to date the first one.
-    stored: stored({ lastInboundAt: T0 }),
+    // The migration leaves existing rows explicitly ineligible regardless of their watermarks.
+    stored: stored({ attendanceTrackedFromStart: false, lastInboundAt: T0 }),
+    seen: seen({ inboundAt: T1 }),
+    want: {},
+  },
+  {
+    name: "a reset watermark cannot make an untracked conversation eligible",
+    stored: stored({ attendanceTrackedFromStart: false, lastInboundAt: null }),
     seen: seen({ inboundAt: T1 }),
     want: {},
   },

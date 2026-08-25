@@ -110,11 +110,13 @@ export function WebhooksPage() {
           "success",
         );
       } else {
+        // A 200 carrying the TARGET's rejection, not a refusal of ours: `err` is null by the guard
+        // above, and `result.error` is the reason the endpoint gave. Reading `err` here would be the
+        // sweep's own idiom applied where it can only ever answer null.
         showToast(
-          apiErrorMessage(err) ||
-            t("webhooks.testFailedReason", "Test failed: {{reason}}", {
-              reason: result.error ?? String(result.status ?? "unknown"),
-            }),
+          t("webhooks.testFailedReason", "Test failed: {{reason}}", {
+            reason: result.error ?? String(result.status ?? "unknown"),
+          }),
           "error",
         );
       }

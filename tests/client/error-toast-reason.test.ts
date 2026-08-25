@@ -354,6 +354,59 @@ export interface Offender {
   shown: string;
 }
 
+// The `}` that closes the block opened at `start`, or -1 when it is still open at the end of `code`.
+function blockEnd(code: string, start: number): number {
+  let depth = 0;
+  for (let i = start; i < code.length; i++) {
+    if (code[i] === "{") depth++;
+    else if (code[i] === "}" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+// Is `name` provably falsy where this toast is raised?
+//
+// `apiErrorMessage(err)` reads as compliance, and the fence took it as such — from the ARGUMENT TEXT,
+// which says nothing about whether the argument can still hold anything. This sweep put one of those
+// in by hand: `WebhooksPage.runTest` guards with `if (err || !result) { … return; }` and then reads
+// `err` again in the branch below, where the guard has proved it null. The toast looked swept and
+// showed the fixed sentence for every refusal, which is the defect this issue is about wearing the
+// costume of the fix for it. Found by review.
+//
+// The discriminator is whether the guard's block CLOSED before the toast: a toast inside
+// `if (err || !data) { … }` is exactly where the binding is live, and it is also the commonest shape
+// in this tree, so getting that backwards would accuse every correct site at once.
+function bindingIsDead(body: string, name: string): boolean {
+  for (const m of body.matchAll(
+    new RegExp(`\\bif\\s*\\(\\s*${name}\\b`, "g"),
+  )) {
+    const paren = body.indexOf("(", m.index);
+    let depth = 0;
+    let close = -1;
+    for (let i = paren; i < body.length; i++) {
+      if (body[i] === "(") depth++;
+      else if (body[i] === ")" && --depth === 0) {
+        close = i;
+        break;
+      }
+    }
+    if (close < 0) continue;
+    let i = close + 1;
+    while (i < body.length && /\s/.test(body[i] as string)) i++;
+    if (body[i] === "{") {
+      const end = blockEnd(body, i);
+      // Still open here ⇒ the toast is INSIDE the guard, which is where the binding is live.
+      if (end < 0) continue;
+      if (/\b(return|throw)\b[^;]*;\s*$/.test(body.slice(i, end))) return true;
+    } else {
+      const semi = body.indexOf(";", i);
+      if (semi >= 0 && /\b(return|throw)\b/.test(body.slice(i, semi)))
+        return true;
+    }
+  }
+  return false;
+}
+
 // Every error toast in one file, each with the verdict the rules above reach about it. One walker
 // rather than two: the filter chain was copied once, and a rule added to one copy and not the other
 // is how a fence starts claiming an invariant it does not hold — which is the defect this whole file
@@ -366,7 +419,9 @@ type Verdict =
   // its handler awaits nothing AND has no name, so there is no call site to put the question to
   | "unasked"
   // a fixed sentence where the server had sent one
-  | "offender";
+  | "offender"
+  // it calls apiErrorMessage, but on a binding a guard above has already proved falsy
+  | "dead-read";
 
 function verdicts(
   src: string,
@@ -390,18 +445,26 @@ function verdicts(
     };
     const say = (verdict: Verdict) => out.push({ verdict, at });
 
+    const chain = openBlocks(code, m.index);
+    if (!chain.length) {
+      say("nothing-to-read");
+      continue;
+    }
+
     // `.value.error` is the same read by hand, and one screen does it on purpose: `mapSaveError`
     // (CredentialForm) answers a LOCALIZED sentence for 409 and the server's own for 400, which is a
     // policy, not an oversight. A fence that only knows the helper's name calls that an offender and
     // the sweep then overrides the 409 branch.
     if (/apiErrorMessage|refusal\.|\.value\??\.error/.test(args)) {
-      say("reads");
-      continue;
-    }
-
-    const chain = openBlocks(code, m.index);
-    if (!chain.length) {
-      say("nothing-to-read");
+      const read = args.match(/apiErrorMessage\(\s*(\w+)\s*\)/);
+      const scope = enclosingHandler(code, chain);
+      say(
+        read &&
+          scope &&
+          bindingIsDead(code.slice(scope.start, m.index), read[1] as string)
+          ? "dead-read"
+          : "reads",
+      );
       continue;
     }
 
@@ -459,6 +522,14 @@ function verdicts(
     );
   }
   return out;
+}
+
+// Toasts that call `apiErrorMessage` on a binding a guard above has already proved falsy. Swept in
+// appearance, unswept in fact.
+export function deadReads(src: string, file = "<memory>"): Offender[] {
+  return verdicts(src, file)
+    .filter((v) => v.verdict === "dead-read")
+    .map((v) => v.at);
 }
 
 export function unreadRefusals(src: string, file = "<memory>"): Offender[] {
@@ -542,6 +613,8 @@ const WAIVED: Record<string, string> = {
     "Same as the Google section: the browser blocked the popup before any request.",
   "components/McpOAuthSection.tsx :: vault.mcpOAuth.authFailed":
     "Same as the Google section: the popup outcome, decided in the browser.",
+  "pages/WebhooksPage.tsx :: webhooks.testFailedReason":
+    "A 200 carrying the TARGET's rejection, not a refusal of ours — same class as `approvals.editGone`. `err` is null by the guard above, and the reason shown is `result.error`, which is the endpoint's own. The sweep put `apiErrorMessage(err)` here and it could only ever answer null.",
   "pages/agents/AgentEditorPage.tsx :: editor.conflictToast":
     "Gated on `status === 409`, and all three 409s these routes answer are the same `errors.agentModifiedElsewhere`. The client's sentence says the same thing plus the affordance the server cannot know about — the banner's `save again to overwrite` — so passing the server's through would make the toast WORSE.",
 };
@@ -801,6 +874,58 @@ describe("an error toast shows what the server said", () => {
     expect(unreadRefusals(shared)).toEqual([]);
   });
 
+  test("a read of a binding the guard already killed is not a read", () => {
+    // The sweep's own idiom applied one branch too far, verbatim from `WebhooksPage.runTest`: the
+    // guard proves `err` null and returns, and the branch below reads it again. It looks swept and
+    // shows the fixed sentence for every refusal — the defect this issue is about, wearing the
+    // costume of the fix for it.
+    const dead = `
+      async function runTest() {
+        const { data, error: err } = await api.api.v1.things.test.post();
+        const result = data?.result;
+        if (err || !result) {
+          showToast(apiErrorMessage(err) || t("x.failed", "Failed."), "error");
+          return;
+        }
+        if (!result.ok) {
+          showToast(apiErrorMessage(err) || t("x.failedReason", "Failed."), "error");
+        }
+      }`;
+    expect(deadReads(dead).map((o) => o.line)).toEqual([10]);
+  });
+
+  test("a read inside the guard that proved it is a live read", () => {
+    // The discriminator, and the direction that matters: a toast INSIDE `if (err || !data) { … }` is
+    // exactly where the binding is live, and it is the commonest shape in this tree. Getting this
+    // backwards accuses every correct site at once.
+    const live = `
+      async function save() {
+        const { data, error: err } = await api.api.v1.things.post(body);
+        if (err || !data) {
+          showToast(apiErrorMessage(err) || t("x.saveError", "Could not save."), "error");
+          return;
+        }
+      }`;
+    expect(deadReads(live)).toEqual([]);
+  });
+
+  test("a guard that does not leave keeps the binding live", () => {
+    // The other half of the discriminator. `if (err) { … }` without a `return` proves nothing about
+    // `err` below it, so the read there is a real one. Without this control the rule reads "any
+    // earlier `if (err)` kills the binding", which is how a fence starts refusing correct code.
+    const kept = `
+      async function save() {
+        const { data, error: err } = await api.api.v1.things.post(body);
+        if (err) {
+          setBanner(true);
+        }
+        if (!data) {
+          showToast(apiErrorMessage(err) || t("x.saveError", "Could not save."), "error");
+        }
+      }`;
+    expect(deadReads(kept)).toEqual([]);
+  });
+
   test("a handler that reads the sentence is not an offender", () => {
     const reads = `
       async function save() {
@@ -868,7 +993,7 @@ describe("an error toast shows what the server said", () => {
   // The ledger may only shrink, and its size is the anchor the tree cannot supply: appending a name
   // silences a new offender AND satisfies every other rule here.
   test("the waiver ledger is pinned to its size", () => {
-    expectWaiverLedger("WAIVED", WAIVED, 7);
+    expectWaiverLedger("WAIVED", WAIVED, 8);
   });
 
   test("every toast the scanner cannot ask about is named", () => {
@@ -883,5 +1008,15 @@ describe("an error toast shows what the server said", () => {
 
   test("the abstention ledger is pinned to its size", () => {
     expectWaiverLedger("UNASKED", UNASKED, 2);
+  });
+
+  test("no toast reads a binding a guard above already killed", () => {
+    const dead = sources(ROOT).flatMap((f) =>
+      deadReads(readFileSync(f, "utf8"), f),
+    );
+    expect(
+      dead.map((o) => `${o.file}:${o.line}  ${o.shown}`),
+      "`apiErrorMessage` here is called on a binding the guard above proved falsy: it always answers null and the fixed sentence always wins",
+    ).toEqual([]);
   });
 });

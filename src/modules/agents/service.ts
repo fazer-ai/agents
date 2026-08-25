@@ -16,6 +16,7 @@ import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
+import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
 import { documentToolName } from "@/modules/documents/slug";
 import { parseTemplateContent } from "@/modules/documents/validate";
 import { ensureTenantSweep } from "@/modules/followups/handlers";
@@ -663,6 +664,10 @@ export async function deleteAgent(
       throw new NotFoundError("agent not found", "errors.agentNotFound");
     }
   });
+  // NOTE: ChatwootAgentBot cascades off the agent (schema.prisma: `onDelete: Cascade`), so deleting a
+  // persona retires its route token without this module ever naming one. The receiver caches
+  // resolutions by token hash and would keep authenticating the retired one from memory.
+  invalidateRouteTokenCache();
 }
 
 export async function cloneAgent(

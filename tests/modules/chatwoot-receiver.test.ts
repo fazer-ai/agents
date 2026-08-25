@@ -13,7 +13,13 @@ import {
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { ensureAgentBot } from "@/modules/chatwoot/provisioning";
-import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
+import {
+  invalidateRouteTokenCache,
+  noteRouteTokenLookup,
+  ROUTE_TOKEN_CACHE_TTL_MS,
+  ROUTE_TOKEN_REFRESH_WAIT_MS,
+  writeRouteTokenCache,
+} from "@/modules/chatwoot/route-token-cache";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import {
   outOfHoursGate,
@@ -24,7 +30,10 @@ import {
   CHATWOOT_WEBHOOK_MOUNT,
   chatwootOutgoingUrl,
 } from "@/modules/chatwoot/webhook-mount";
-import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
+import {
+  generateRouteToken,
+  hashRouteToken,
+} from "@/modules/webhooks/inbound/route-token";
 import { seedChatwootInstance, withRunNamespace } from "../utils/chatwoot";
 
 // ── mount constant + outgoing_url derivation (unit) ──
@@ -578,6 +587,400 @@ describe.skipIf(!dbUp)("chatwoot webhook receiver", () => {
     });
     expect(row.status).toBe("PROCESSED");
   });
+
+  // The warm case above is the easy half. THE HARD HALF IS THE COLD ONE, and it is the common one:
+  // the entry lives 30s, so an instance quieter than that is cold on every single message, and the
+  // message that finds it cold is the first of a conversation, the one that starts the turn. If the
+  // TTL meant a miss, this path would put an interactive transaction back inside the 5s budget on
+  // exactly the traffic that cannot afford it.
+  test("an entry past its TTL still acks without waiting on Postgres", async () => {
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 51,
+      inbox_id: 7,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+
+    // Exactly the state of an instance that went quiet: resolved once, then nothing for longer than
+    // the TTL. Back-dated rather than slept for, so the test is not a timer.
+    invalidateRouteTokenCache();
+    writeRouteTokenCache(
+      hashRouteToken(routeToken),
+      {
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        webhookSecret: encryptJson(SECRET),
+      },
+      { now: Date.now() - ROUTE_TOKEN_CACHE_TTL_MS - 1 },
+    );
+
+    const refuses = {
+      $transaction: () => {
+        throw new Error("the ack path opened a transaction");
+      },
+      $extends: () => refuses,
+    } as unknown as PrismaClient;
+
+    const r = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, NOW, "uuid-cold"),
+      nowSeconds: NOW,
+      base: refuses,
+    });
+    expect(r.outcome).toBe("queued");
+    expect(r.normalized?.conversationId).toBe(51);
+
+    // THE REFRESH IT FIRED BEHIND THE ACK FAILED, AND THAT CHANGES THE NEXT ANSWER. A 200 is a
+    // promise: Chatwoot does not retry a 2xx and the payload is not stored, so answering out of a
+    // cache the database can no longer back loses the event in silence. The failed refresh has
+    // already marked lookups unhealthy, so the next request takes the blocking path and fails
+    // honestly, which is what puts the event back on Chatwoot's retry ladder.
+    await expect(
+      receiveChatwootWebhook({
+        routeToken,
+        rawBody: body,
+        getHeader: signedHeaders(body, NOW, "uuid-cold-2"),
+        nowSeconds: NOW,
+        base: refuses,
+      }),
+    ).rejects.toThrow();
+
+    // AND IT HAS TO COME BACK. `lookupHealthy` only ever flips false on its own, so without a
+    // successful lookup restoring it, one transient blip would disable the shield for the lifetime
+    // of the process and every cold ack after it would pay for a transaction again.
+    invalidateRouteTokenCache();
+    await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, NOW, "uuid-cold-heal"),
+      nowSeconds: NOW,
+      base: appDb,
+    });
+    writeRouteTokenCache(
+      hashRouteToken(routeToken),
+      {
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        webhookSecret: encryptJson(SECRET),
+      },
+      { now: Date.now() - ROUTE_TOKEN_CACHE_TTL_MS - 1 },
+    );
+    const healed = await receiveChatwootWebhook({
+      routeToken,
+      rawBody: body,
+      getHeader: signedHeaders(body, NOW, "uuid-cold-3"),
+      nowSeconds: NOW,
+      base: refuses,
+    });
+    expect(healed.outcome).toBe("queued");
+
+    invalidateRouteTokenCache();
+    noteRouteTokenLookup(true);
+  });
+
+  // Q: what happens to the requests that arrive WHILE the refresh is deciding? They wait on it. On a
+  // healthy database that costs a millisecond and saves a lookup, which is the burst the cache exists
+  // to keep off Postgres; on a dead one it is the difference between one acked-and-lost event and all
+  // of them, since Chatwoot never redelivers a 2xx.
+  test("a request arriving during the refresh waits for it instead of looking up again", async () => {
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 53,
+      inbox_id: 7,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+
+    invalidateRouteTokenCache();
+    noteRouteTokenLookup(true);
+    writeRouteTokenCache(
+      hashRouteToken(routeToken),
+      {
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        webhookSecret: encryptJson(SECRET),
+      },
+      { now: Date.now() - ROUTE_TOKEN_CACHE_TTL_MS - 1 },
+    );
+
+    // A real lookup, held open until released, so the window is a fact rather than a race.
+    let lookups = 0;
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const wrap = (client: unknown): unknown =>
+      new Proxy(client as object, {
+        get(target, prop, recv) {
+          if (prop === "$transaction") {
+            const orig = Reflect.get(target, prop, recv) as (
+              ...a: unknown[]
+            ) => Promise<unknown>;
+            return async (...args: unknown[]) => {
+              lookups++;
+              await gate;
+              return orig.apply(target, args);
+            };
+          }
+          if (prop === "$extends") {
+            const orig = Reflect.get(target, prop, recv) as (
+              ...a: unknown[]
+            ) => unknown;
+            return (...args: unknown[]) => wrap(orig.apply(target, args));
+          }
+          return Reflect.get(target, prop, recv);
+        },
+      });
+    const held = wrap(appDb) as PrismaClient;
+
+    const send = (uuid: string, base: PrismaClient) =>
+      receiveChatwootWebhook({
+        routeToken,
+        rawBody: body,
+        getHeader: signedHeaders(body, NOW, uuid),
+        nowSeconds: NOW,
+        base,
+      });
+
+    // The first is served stale and starts the one refresh.
+    expect((await send("uuid-race-1", held)).outcome).toBe("queued");
+    const second = send("uuid-race-2", held);
+    release();
+    expect((await second).outcome).toBe("queued");
+    // ONE lookup between them. Without the wait the second would find the entry withheld (a refresh
+    // is deciding) and open its own, which is the burst, at the moment the pool can least afford it.
+    expect(lookups).toBe(1);
+
+    invalidateRouteTokenCache();
+    noteRouteTokenLookup(true);
+  });
+
+  // AND WHEN THAT REFRESH FAILS, THE WAIT MUST NOT READ AS A GREEN LIGHT. The waiters resume into a
+  // cache the failure just closed, so each one would take the blocking path and open its OWN
+  // transaction — a burst against the pool at the exact moment the pool is what is broken, which is
+  // the amplification this whole module exists to prevent. They inherit the failure instead: one
+  // lookup for all of them, and every one of them fails honestly onto Chatwoot's retry ladder.
+  test("a failed refresh is inherited by the requests waiting on it", async () => {
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 54,
+      inbox_id: 7,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+
+    invalidateRouteTokenCache();
+    noteRouteTokenLookup(true);
+    writeRouteTokenCache(
+      hashRouteToken(routeToken),
+      {
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        webhookSecret: encryptJson(SECRET),
+      },
+      { now: Date.now() - ROUTE_TOKEN_CACHE_TTL_MS - 1 },
+    );
+
+    // Held open, then failed: the window is a fact rather than a race, and what ends it is the
+    // outage, not a timer.
+    let lookups = 0;
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const wrap = (client: unknown): unknown =>
+      new Proxy(client as object, {
+        get(target, prop, recv) {
+          if (prop === "$transaction") {
+            return async () => {
+              lookups++;
+              await gate;
+              throw new Error("pool exhausted");
+            };
+          }
+          if (prop === "$extends") {
+            const orig = Reflect.get(target, prop, recv) as (
+              ...a: unknown[]
+            ) => unknown;
+            return (...args: unknown[]) => wrap(orig.apply(target, args));
+          }
+          return Reflect.get(target, prop, recv);
+        },
+      });
+    const failing = wrap(appDb) as PrismaClient;
+
+    const send = (uuid: string, base: PrismaClient) =>
+      receiveChatwootWebhook({
+        routeToken,
+        rawBody: body,
+        getHeader: signedHeaders(body, NOW, uuid),
+        nowSeconds: NOW,
+        base,
+      });
+
+    // The first is served stale and starts the one refresh; it is already acked when the refresh
+    // fails, and that residual event is what issue #228 tracks.
+    expect((await send("uuid-fail-1", failing)).outcome).toBe("queued");
+    const second = send("uuid-fail-2", failing);
+    release();
+    await expect(second).rejects.toThrow();
+    // ONE lookup, the refresh's. The waiter did not add a second one to a pool that just refused.
+    expect(lookups).toBe(1);
+
+    invalidateRouteTokenCache();
+    noteRouteTokenLookup(true);
+  });
+
+  // THE BURST AT TTL EXPIRY, which is the case the coalescing exists for and the one the wait alone
+  // does not cover. Deliveries that arrive together all find no refresh in flight and pass the wait;
+  // the first then registers one, and every other reads a MISS — the cache withholds a stale answer
+  // while a refresh decides — and falls through to open its own transaction. N deliveries, N-1
+  // needless interactive transactions, at the moment the pool is tightest.
+  test("a burst at expiry opens one lookup between all of them", async () => {
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 56,
+      inbox_id: 7,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+
+    invalidateRouteTokenCache();
+    noteRouteTokenLookup(true);
+    writeRouteTokenCache(
+      hashRouteToken(routeToken),
+      {
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        webhookSecret: encryptJson(SECRET),
+      },
+      { now: Date.now() - ROUTE_TOKEN_CACHE_TTL_MS - 1 },
+    );
+
+    let lookups = 0;
+    const wrap = (client: unknown): unknown =>
+      new Proxy(client as object, {
+        get(target, prop, recv) {
+          if (prop === "$transaction") {
+            const orig = Reflect.get(target, prop, recv) as (
+              ...a: unknown[]
+            ) => Promise<unknown>;
+            return async (...args: unknown[]) => {
+              lookups++;
+              return orig.apply(target, args);
+            };
+          }
+          if (prop === "$extends") {
+            const orig = Reflect.get(target, prop, recv) as (
+              ...a: unknown[]
+            ) => unknown;
+            return (...args: unknown[]) => wrap(orig.apply(target, args));
+          }
+          return Reflect.get(target, prop, recv);
+        },
+      });
+    const counted = wrap(appDb) as PrismaClient;
+
+    const results = await Promise.all(
+      ["b1", "b2", "b3", "b4"].map((uuid) =>
+        receiveChatwootWebhook({
+          routeToken,
+          rawBody: body,
+          getHeader: signedHeaders(body, NOW, `uuid-burst-${uuid}`),
+          nowSeconds: NOW,
+          base: counted,
+        }),
+      ),
+    );
+
+    expect(results.every((r) => r.outcome === "queued")).toBe(true);
+    // ONE lookup for the whole burst: the one refresh they all coalesce onto.
+    expect(lookups).toBe(1);
+
+    invalidateRouteTokenCache();
+    noteRouteTokenLookup(true);
+  });
+
+  // AND THE BOUND IS THE RECEIVER'S, not merely the cache module's. A unit test of
+  // `awaitRouteTokenRefresh` proves the helper and says nothing about whether the ack path calls it:
+  // reading the map directly would compile, pass every other test here, and wedge this bot's webhook
+  // behind a lookup that never answers. So this asks the question where it is answered.
+  test("a refresh that never answers does not wedge the next delivery", async () => {
+    const body = JSON.stringify({
+      event: "conversation_updated",
+      id: 55,
+      inbox_id: 7,
+      status: "pending",
+      meta: { assignee_type: "AgentBot", assignee: { id: 9 } },
+    });
+
+    invalidateRouteTokenCache();
+    noteRouteTokenLookup(true);
+    writeRouteTokenCache(
+      hashRouteToken(routeToken),
+      {
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        webhookSecret: encryptJson(SECRET),
+      },
+      { now: Date.now() - ROUTE_TOKEN_CACHE_TTL_MS - 1 },
+    );
+
+    // A lookup that hangs rather than failing: the socket is up, the answer never comes.
+    const wrap = (client: unknown): unknown =>
+      new Proxy(client as object, {
+        get(target, prop, recv) {
+          if (prop === "$transaction") return () => new Promise(() => {});
+          if (prop === "$extends") {
+            const orig = Reflect.get(target, prop, recv) as (
+              ...a: unknown[]
+            ) => unknown;
+            return (...args: unknown[]) => wrap(orig.apply(target, args));
+          }
+          return Reflect.get(target, prop, recv);
+        },
+      });
+    const hanging = wrap(appDb) as PrismaClient;
+
+    const send = (uuid: string) =>
+      receiveChatwootWebhook({
+        routeToken,
+        rawBody: body,
+        getHeader: signedHeaders(body, NOW, uuid),
+        nowSeconds: NOW,
+        base: hanging,
+      });
+
+    // The first is served stale and starts the refresh that will never answer.
+    expect((await send("uuid-hang-1")).outcome).toBe("queued");
+
+    // The second must come back one way or the other, well inside Chatwoot's budget.
+    const started = Date.now();
+    const settled = await Promise.race([
+      send("uuid-hang-2").then(
+        () => "resolved" as const,
+        () => "rejected" as const,
+      ),
+      new Promise<"wedged">((r) =>
+        setTimeout(() => r("wedged"), ROUTE_TOKEN_REFRESH_WAIT_MS + 2_000),
+      ),
+    ]);
+    expect(settled).not.toBe("wedged");
+    expect(Date.now() - started).toBeLessThan(
+      ROUTE_TOKEN_REFRESH_WAIT_MS + 1_500,
+    );
+
+    invalidateRouteTokenCache();
+    noteRouteTokenLookup(true);
+  }, 15_000);
 
   test("a delivery stranded on PENDING is recovered by the redelivery", async () => {
     const body = JSON.stringify({

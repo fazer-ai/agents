@@ -49,6 +49,8 @@ The realtime pub/sub, the scheduler tick, the debounce worker, the outbound-webh
 
 `/reset` is the one member that still holds a transaction across the checkpointer, deliberately: there the rollback is what keeps a failed checkpoint delete from leaving an operator told the memory was cleared while the thread still answers from it (`src/modules/memory/reset.ts`).
 
+> **Route-token invalidation is process-local.** The Chatwoot receiver caches what a route token resolves to, and every writer that retires one (disconnect, reconnect, re-provision, instance or agent or deployment deletion) clears the cache in **its own** process. With extra web replicas, a change handled by replica A leaves replica B holding the old answer until B's own entry ages past its TTL, at which point B serves that one delivery from the retired route and the refresh it fires behind the ack corrects it. One delivery per replica per change, self-healing. Closing it needs the same cross-replica bridge as the rest of this section. Note the alternative is worse, not better: a longer hard TTL widens the same window instead of correcting it, and a shorter one puts a Postgres round trip back inside the 5s ack budget, which is the failure the cache exists to prevent.
+
 ### 5. CSP / build
 
 Production serves `dist/index.html`; its inline-script hashes are baked into the CSP at build time. Rebuild (`bun run build`) after editing any inline script. Per-tenant theming uses `setProperty` (DOM API, no inline `<style>`) precisely so it does not break the CSP hash.

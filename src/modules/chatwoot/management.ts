@@ -174,6 +174,9 @@ export async function disconnectChatwootDeployment(
     await db.contact.deleteMany({});
     await db.chatwootDeployment.delete({ where: { id: dep.id } });
   });
+  // NOTE: "Everything else" includes every ChatwootAgentBot of the tenant, two cascades down
+  // (deployment -> instance -> bot), so this retires every route token the tenant owned.
+  invalidateRouteTokenCache();
 }
 
 // Canonicalize a Chatwoot base URL for storage + global uniqueness: lowercase the origin (URL parse
@@ -376,7 +379,7 @@ async function connectAccount(
     serverKey,
     accountId,
   );
-  return runScopedOn(base, ctx, async (db) => {
+  const result = await runScopedOn(base, ctx, async (db) => {
     const existing = await db.chatwootInstance.findFirst({
       where: { accountId },
       select: { id: true },
@@ -386,17 +389,14 @@ async function connectAccount(
         where: { id: existing.id },
         data: { disconnectedAt: null, deploymentId, accountName, serverKey },
       });
-      // The receiver refuses events for a disconnected instance and caches that refusal by route
-      // token. Reconnecting has to take effect now, not at the end of the cache's TTL.
-      invalidateRouteTokenCache();
-      return existing.id;
+      return { id: existing.id, reconnected: true };
     }
     try {
       const row = await db.chatwootInstance.create({
         data: { tenantId, deploymentId, accountId, accountName, serverKey },
         select: { id: true },
       });
-      return row.id;
+      return { id: row.id, reconnected: false };
     } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -407,6 +407,12 @@ async function connectAccount(
       throw err;
     }
   });
+  // NOTE: AFTER THE COMMIT, never inside it. The receiver refuses events for a disconnected instance and
+  // caches that refusal by route token; clearing the cache while `disconnectedAt` is still uncommitted
+  // lets an event arriving in that window read the old row and cache the refusal all over again, so
+  // the reconnect would not take effect until the entry expires.
+  if (result.reconnected) invalidateRouteTokenCache();
+  return result.id;
 }
 
 function accountTakenError(): ConflictError {
@@ -571,7 +577,7 @@ export async function reconnectChatwootInstance(
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<ChatwootInstanceDto> {
-  return runScopedOn(base, ctx, async (db) => {
+  const dto = await runScopedOn(base, ctx, async (db) => {
     const inst = await db.chatwootInstance.findUnique({
       where: { id },
       select: { id: true },
@@ -589,11 +595,12 @@ export async function reconnectChatwootInstance(
       data: { disconnectedAt: null },
       select: SELECT,
     });
-    // Mirrors the disconnect: the receiver caches the refusal too, and reconnecting has to take
-    // effect now rather than at the end of the entry's TTL.
-    invalidateRouteTokenCache();
     return toDto(row);
   });
+  // NOTE: Mirrors the disconnect, and outside the transaction for the same reason: an event arriving
+  // between the clear and the commit would re-cache the refusal it just read.
+  invalidateRouteTokenCache();
+  return dto;
 }
 
 // HARD-remove ONE account: delete the ChatwootInstance row (cascading its inboxes / conversations /
@@ -621,6 +628,11 @@ export async function removeChatwootInstance(
     }
     await db.chatwootInstance.delete({ where: { id } });
   });
+  // NOTE: The delete cascades this instance's ChatwootAgentBot rows (schema.prisma: `onDelete: Cascade`),
+  // so every route token it owned now resolves to nothing. Without this the receiver keeps
+  // authenticating a retired token from memory, and the detached processing behind it fails on rows
+  // that are gone.
+  invalidateRouteTokenCache();
 }
 
 export interface InboxDto {

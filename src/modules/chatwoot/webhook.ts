@@ -118,7 +118,15 @@ import {
 } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
 import { renderAttendantMessage, renderInboundMessage } from "./render";
-import { readRouteTokenCache, writeRouteTokenCache } from "./route-token-cache";
+import {
+  awaitRouteTokenRefresh,
+  noteRouteTokenLookup,
+  type RouteTokenCacheHit,
+  readRouteTokenCache,
+  routeTokenCacheGeneration,
+  trackRouteTokenRefresh,
+  writeRouteTokenCache,
+} from "./route-token-cache";
 import {
   CHATWOOT_DELIVERY_HEADER,
   CHATWOOT_SIGNATURE_HEADER,
@@ -212,10 +220,57 @@ async function resolveBotByRouteToken(
 ): Promise<ResolvedChatwootBot | null> {
   // Cached in process: see route-token-cache.ts for why the ack path cannot afford this query.
   const webhookRouteTokenHash = hashRouteToken(token);
-  const cached = readRouteTokenCache(webhookRouteTokenHash);
-  if (cached !== undefined) return cached;
+  // NOTE: A refresh already in flight means this entry is being questioned right now. Waiting on it costs a
+  // millisecond on a healthy database and is what keeps an outage from being acked: without it every
+  // request arriving before the refresh reports back would be served stale and lost, since Chatwoot
+  // does not redeliver a 2xx. The request that STARTED the refresh is still served stale, and that
+  // one event is the residual this design cannot close without a durable payload store (issue #228).
+  //
+  // BOUNDED, because a lookup that hangs is not a lookup that fails: an unbounded wait would put every
+  // later delivery for this token behind a promise that never answers, which is the whole bot rather
+  // than one event. Overrunning it throws, and the ack fails the same way rule three fails.
+  // TWICE, and the second pass is what makes the coalescing hold under a BURST. Deliveries that
+  // arrive together all find no refresh in flight and clear the wait as one; the first then registers
+  // the refresh, and the cache withholds a stale answer while a refresh decides — so every other one
+  // reads a miss and would fall through to open its own transaction. N deliveries, N-1 needless
+  // interactive transactions, at exactly the moment the pool is tightest, which is the burst this
+  // module exists to keep off Postgres. A miss that finds a refresh registered means somebody else
+  // asked between our wait and our read: wait for THAT one instead of starting another.
+  let cached = await servedFromCache(webhookRouteTokenHash, base);
+  // A miss can mean somebody registered a refresh between our wait and our read, so look once more.
+  // The second wait costs nothing when there is no refresh to wait on: it returns immediately.
+  if (cached === undefined) {
+    cached = await servedFromCache(webhookRouteTokenHash, base);
+  }
+  if (cached !== undefined) return cached.bot;
 
-  const row = await asSuperAdminOn(base, (db) =>
+  return queryRouteToken(webhookRouteTokenHash, base);
+}
+
+// One pass of "wait for whoever is deciding, then read". Returns undefined on a miss, which is the
+// caller's cue to look again or to go to Postgres itself.
+async function servedFromCache(
+  webhookRouteTokenHash: string,
+  base: PrismaClient,
+): Promise<RouteTokenCacheHit | undefined> {
+  await awaitRouteTokenRefresh(webhookRouteTokenHash);
+  const hit = readRouteTokenCache(webhookRouteTokenHash);
+  // NOTE: A STALE ENTRY IS ANSWERED FROM MEMORY AND REFRESHED BEHIND THE ACK. Expiring into a blocking
+  // query would put the lookup back inside the 5s budget on exactly the traffic that cannot
+  // afford it: an instance quiet for longer than the TTL is cold on EVERY message, so the
+  // first message of every conversation, the one that starts the turn, would pay for it.
+  // The cache only reports `stale` while the last lookup reached Postgres, so this never acks on
+  // the strength of a row the detached half will not be able to act on.
+  if (hit?.stale) {
+    void refreshRouteToken(webhookRouteTokenHash, base).catch((err) => {
+      logger.warn("chatwoot: route token refresh failed: %s", errMsg(err));
+    });
+  }
+  return hit;
+}
+
+function readRouteTokenRow(webhookRouteTokenHash: string, base: PrismaClient) {
+  return asSuperAdminOn(base, (db) =>
     db.chatwootAgentBot.findUnique({
       where: { webhookRouteTokenHash },
       select: {
@@ -231,6 +286,27 @@ async function resolveBotByRouteToken(
       },
     }),
   );
+}
+
+// The lookup itself, with the cache write. Separated from `resolveBotByRouteToken` because the
+// stale path calls it detached, where there is no caller to return to.
+async function queryRouteToken(
+  webhookRouteTokenHash: string,
+  base: PrismaClient,
+): Promise<ResolvedChatwootBot | null> {
+  // NOTE: Snapshotted BEFORE the read: an invalidation landing while this query is in flight has to win,
+  // because the writer that invalidated already committed and this row predates that commit.
+  const generation = routeTokenCacheGeneration();
+  let row: Awaited<ReturnType<typeof readRouteTokenRow>>;
+  try {
+    row = await readRouteTokenRow(webhookRouteTokenHash, base);
+    noteRouteTokenLookup(true);
+  } catch (err) {
+    // NOTE: A lookup that could not reach Postgres closes the stale window for EVERY token, so the next
+    // ack blocks and fails instead of promising a 200 nothing can honour.
+    noteRouteTokenLookup(false);
+    throw err;
+  }
   const bot: ResolvedChatwootBot | null =
     !row?.instance || row.instance.disconnectedAt !== null
       ? null
@@ -240,8 +316,23 @@ async function resolveBotByRouteToken(
           agentBotId: row.chatwootAgentBotId,
           webhookSecret: row.webhookSecret,
         };
-  writeRouteTokenCache(webhookRouteTokenHash, bot);
+  writeRouteTokenCache(webhookRouteTokenHash, bot, { generation });
   return bot;
+}
+
+// One refresh per token, and later arrivals wait on it rather than starting their own. THE FAILURE
+// TRAVELS WITH THE PROMISE, because the waiters resume into a cache the failure just closed: swallow
+// it here and each of them takes the blocking path and opens its own transaction, which is a burst
+// against the pool at the moment the pool is what is broken. Inheriting it costs them one shared
+// lookup and puts every one of their events on Chatwoot's retry ladder. The log belongs to the
+// detached starter, which is the one caller with nowhere to return the failure to.
+function refreshRouteToken(
+  webhookRouteTokenHash: string,
+  base: PrismaClient,
+): Promise<void> {
+  return trackRouteTokenRefresh(webhookRouteTokenHash, async () => {
+    await queryRouteToken(webhookRouteTokenHash, base);
+  });
 }
 
 export interface ReceiveChatwootResult {

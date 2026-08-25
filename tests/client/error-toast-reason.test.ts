@@ -364,6 +364,21 @@ function blockEnd(code: string, start: number): number {
   return -1;
 }
 
+// Would `name` being truthy, on its own, have entered this condition? True for `err` and for
+// `err || anything`; false for `err && anything`, whose exit says nothing about `err`.
+function entersOnItsOwn(condition: string, name: string): boolean {
+  let depth = 0;
+  for (let i = 0; i < condition.length; i++) {
+    const c = condition[i];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    else if (depth === 0 && c === "|" && condition[i + 1] === "|")
+      return condition.slice(0, i).trim() === name;
+    else if (depth === 0 && c === "&" && condition[i + 1] === "&") return false;
+  }
+  return condition.trim() === name;
+}
+
 // Is `name` provably falsy where this toast is raised?
 //
 // `apiErrorMessage(err)` reads as compliance, and the fence took it as such — from the ARGUMENT TEXT,
@@ -391,6 +406,11 @@ function bindingIsDead(body: string, name: string): boolean {
       }
     }
     if (close < 0) continue;
+    // Leaving proves the binding falsy only when the binding ALONE would have entered: `if (err)` and
+    // `if (err || !data)` do, `if (err && err.status === 409)` does not — its exit is compatible with
+    // a truthy `err`, and the read below it is real. One such guard on this tree
+    // (`AgentEditorPage.handleConflict`), so this is a rule about correctness, not a count.
+    if (!entersOnItsOwn(body.slice(paren + 1, close), name)) continue;
     let i = close + 1;
     while (i < body.length && /\s/.test(body[i] as string)) i++;
     if (body[i] === "{") {
@@ -907,6 +927,26 @@ describe("an error toast shows what the server said", () => {
         }
       }`;
     expect(deadReads(live)).toEqual([]);
+  });
+
+  test("a guard with a second condition proves nothing", () => {
+    // `if (err && err.status === 409) return;` exits on ONE kind of error and leaves every other kind
+    // truthy below it. A rule that matched any condition starting with the binding called that read
+    // dead and would have refused correct code — the direction that shouts instead of going quiet,
+    // and the only one of this predicate's bugs to point that way. The shape is real:
+    // `AgentEditorPage.handleConflict` is exactly it.
+    const partial = `
+      async function save() {
+        const { data, error: err } = await api.api.v1.things.post(body);
+        if (err && err.status === 409) {
+          setStale(true);
+          return;
+        }
+        if (err || !data) {
+          showToast(apiErrorMessage(err) || t("x.saveError", "Could not save."), "error");
+        }
+      }`;
+    expect(deadReads(partial)).toEqual([]);
   });
 
   test("a guard that does not leave keeps the binding live", () => {

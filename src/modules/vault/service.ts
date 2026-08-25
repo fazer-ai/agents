@@ -353,6 +353,42 @@ function validateParamName(raw: string, kind: string): string {
   return trimmed;
 }
 
+// A credential is pasted, and a paste out of a provider's panel routinely carries a newline or a
+// space. Nothing downstream can recover from it, because the comparison is asymmetric by protocol:
+// an HTTP field value has its surrounding whitespace stripped before any handler sees it, so the
+// whitespace can live on our side and can never arrive from the other one. The refusal that follows
+// is byte-identical to a wrong token, so the operator retypes the value on the provider's side and
+// nothing changes (issue #338).
+//
+// Normalizing HERE rather than in the form is what makes the stored shape an invariant: the REST
+// controller and the MCP write surface both land on createVaultEntry/updateVaultEntry, and the MCP
+// one never had a form to trim in.
+//
+// It runs BEFORE validateVaultValue, so a value that is only whitespace becomes "" and is refused as
+// empty instead of being stored as a secret nothing can match. Anything this cannot narrow is
+// returned untouched, for validation to refuse by shape.
+export function normalizeVaultValue(kind: string, value: unknown): unknown {
+  if (typeof value === "string") return value.trim();
+  // Managed-blob kinds hold a server-managed object with no operator-typed fields.
+  if (secretTypeIsManagedBlob(kind)) return value;
+  const fields = getSecretTypeFields(kind);
+  if (
+    !fields ||
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value)
+  ) {
+    return value;
+  }
+  const rec = value as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...rec };
+  for (const { key } of fields) {
+    const v = rec[key];
+    if (typeof v === "string") out[key] = v.trim();
+  }
+  return out;
+}
+
 // Validates the secret value against the kind's declared shape.
 // - kinds with `fields` declared: must be a Record<string, string> with exactly those keys, all non-empty.
 // - all other kinds: must be a non-empty string.
@@ -538,8 +574,9 @@ export async function createVaultEntry(
 
   const normalizedKind = rawKind ?? "generic";
 
-  // Validate value shape for the kind.
-  validateVaultValue(normalizedKind, rawValue);
+  // Normalize before validating: whitespace-only becomes "" and is refused as empty.
+  const normalizedValue = normalizeVaultValue(normalizedKind, rawValue);
+  validateVaultValue(normalizedKind, normalizedValue);
 
   // Validate and normalize baseUrl.
   let normalizedBaseUrl: string | null = null;
@@ -581,7 +618,7 @@ export async function createVaultEntry(
         "errors.vaultNameInUse",
       );
     }
-    const blob = encryptJson(rawValue);
+    const blob = encryptJson(normalizedValue);
     try {
       const created = await db.vaultEntry.create({
         data: {
@@ -763,8 +800,9 @@ export async function updateVaultEntry(
     }
 
     if (patch.value !== undefined) {
-      validateVaultValue(entry.kind, patch.value);
-      data.secret = encryptJson(patch.value);
+      const normalizedValue = normalizeVaultValue(entry.kind, patch.value);
+      validateVaultValue(entry.kind, normalizedValue);
+      data.secret = encryptJson(normalizedValue);
       // Writing a real value promotes a pending entry (reference-only) to active. No-op for entries
       // already active. This is how "filling" a pending credential in the UI completes it.
       data.status = "active";

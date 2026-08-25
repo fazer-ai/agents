@@ -22,6 +22,13 @@ import { describe, expect, test } from "bun:test";
 // reader in an already-listed file trips this too, not only a new file. The classification is the
 // point of the ledger. `tenant-wide` is a real answer for a reader whose subject is the TABLE rather
 // than one turn's trail, and it is written down so it stays a decision instead of an omission.
+//
+// NOTE: the price of a ledger over the whole test tree is that ANY branch adding a reader anywhere
+// has to touch this file, and it will find out from this test rather than from review. That is the
+// intended cost — it is the same trade tests/lib/storable-write-sweep.test.ts makes over `src/` —
+// but it has one edge the other does not: an entry in a file the derivation drops from an edition
+// would make this red in that edition and green here. Every file listed below survives into both
+// today, and a reader added inside a `@full-only` test file is the case to watch for.
 
 type Reader = {
   /** 1-indexed line of the `executionLog.<method>(` that opens the call. */
@@ -124,7 +131,9 @@ const FLOWLOG_READERS: Record<string, [number, Scoping]> = {
   "tests/graph/runtime.test.ts": [7, "turn"],
   "tests/graph/side-effect-flowlog.test.ts": [1, "turn"],
   "tests/graph/tool-flowlog.test.ts": [1, "turn"],
-  "tests/modules/contact-auth-gate-e2e.test.ts": [2, "turn"],
+  "tests/modules/chatwoot-gate-trail.test.ts": [1, "turn"],
+  "tests/modules/contact-auth-gate-e2e.test.ts": [3, "turn"],
+  "tests/modules/debounce.test.ts": [1, "turn"],
   "tests/modules/flowlog-astral-detail.test.ts": [1, "turn"],
   "tests/modules/flowlog-detail-pii.test.ts": [1, "turn"],
   "tests/modules/flowlog-retention.test.ts": [1, "tenant-wide"],

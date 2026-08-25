@@ -150,7 +150,7 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
         const input = num(meta.input_tokens);
         const generated = num(meta.output_tokens);
         promptTokens += input;
-        // The remainder of the provider's OWN total is generation the integration could not name,
+        // NOTE: the remainder of the provider's OWN total is generation the integration could not name,
         // and it is billed all the same. Gemini is the live case: `convertUsageMetadata` maps
         // `output_tokens` from `candidatesTokenCount` alone and reads `thoughtsTokenCount` nowhere,
         // so with thinking on (the default of the current generation) every turn recorded less
@@ -197,9 +197,9 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
   }
   const u = out.usage;
   if (u && (u.input_tokens != null || u.output_tokens != null)) {
-    // Anthropic raw exposes cache read/write as their own counters, and they are ADDITIVE here:
-    // `input_tokens` is documented as the tokens that were NOT read from or used to create a cache,
-    // so the billed input is the sum of the three. That is the opposite of what this row means by
+    // NOTE: Anthropic raw exposes cache read/write as their own counters, and they are ADDITIVE
+    // here. `input_tokens` is documented as the tokens that were NOT read from or used to create a
+    // cache, so the billed input is the sum of the three. That is the opposite of what this row means by
     // `cachedReadTokens` (a discounted SUBSET of `promptTokens`), which is why the sum happens here
     // rather than at the reader — and it is what `ChatAnthropic` itself does in `buildUsageMetadata`
     // before handing over the normalized path above.

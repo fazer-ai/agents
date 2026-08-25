@@ -66,7 +66,7 @@ const geminiUsage = {
     promptTokenCount: 1200,
     candidatesTokenCount: 180,
     thoughtsTokenCount: 640,
-    // The API reference defines this as prompt + thoughts + candidates.
+    // NOTE: the API reference defines this as prompt + thoughts + candidates.
     totalTokenCount: 2020,
   },
   plain: {
@@ -102,7 +102,8 @@ const anthropicServer = serving(() => ({
   model: "claude-haiku-4-5",
   content: [{ type: "text", text: "olá" }],
   stop_reason: "end_turn",
-  // The three are ADDITIVE: `input_tokens` counts what was neither read from nor written to cache.
+  // NOTE: the three are ADDITIVE — `input_tokens` counts what was neither read from nor written
+  // to cache.
   usage: {
     input_tokens: 30,
     output_tokens: 12,
@@ -124,8 +125,8 @@ const openaiServer = serving(() => ({
       finish_reason: "stop",
     },
   ],
-  // `prompt_tokens` already contains the cached part, and `completion_tokens` already contains the
-  // reasoning. Both details are SUBSETS, and adding either is the mirror-image mistake.
+  // NOTE: `prompt_tokens` already contains the cached part, and `completion_tokens` already
+  // contains the reasoning. Both details are SUBSETS, and adding either is the mirror-image mistake.
   usage: {
     prompt_tokens: 1000,
     completion_tokens: 200,
@@ -146,7 +147,8 @@ describe("the ledger records what the provider billed", () => {
     geminiMode = "thinking";
     const row = await rowFor(gemini(), "gemini-3.5-flash");
     expect(row.promptTokens).toBe(1200);
-    // 180 candidates + 640 thoughts. Red before the fix: 180, and the 640 were billed to nobody.
+    // NOTE: 180 candidates + 640 thoughts. Red before the fix: 180, and the 640 were billed to
+    // nobody.
     expect(row.completionTokens).toBe(820);
   });
 
@@ -154,7 +156,8 @@ describe("the ledger records what the provider billed", () => {
     geminiMode = "plain";
     const row = await rowFor(gemini(), "gemini-3.5-flash");
     expect(row.promptTokens).toBe(1200);
-    // The control that keeps the repair from being a blanket addition: with no gap, nothing is added.
+    // NOTE: the control that keeps the repair from being a blanket addition — with no gap, nothing
+    // is added.
     expect(row.completionTokens).toBe(180);
   });
 
@@ -167,8 +170,8 @@ describe("the ledger records what the provider billed", () => {
       }),
       "claude-haiku-4-5",
     );
-    // 30 + 800 + 120: what the adapter itself sums in `buildUsageMetadata`, and what the row means
-    // by `promptTokens` (a total, of which the cached counts are a discounted subset).
+    // NOTE: 30 + 800 + 120, what the adapter itself sums in `buildUsageMetadata`, and what the row
+    // means by `promptTokens` (a total, of which the cached counts are a discounted subset).
     expect(row.promptTokens).toBe(950);
     expect(row.completionTokens).toBe(12);
     expect(row.cachedReadTokens).toBe(800);
@@ -185,8 +188,8 @@ describe("the ledger records what the provider billed", () => {
       "gpt-5.4-nano",
     );
     expect(row.promptTokens).toBe(1000);
-    // 200, NOT 350: reasoning is already inside completion_tokens, and total is prompt + completion
-    // exactly, so the Gemini repair must find no gap here.
+    // NOTE: 200, NOT 350 — reasoning is already inside completion_tokens, and total is prompt +
+    // completion exactly, so the Gemini repair must find no gap here.
     expect(row.completionTokens).toBe(200);
     expect(row.cachedReadTokens).toBe(800);
   });
@@ -214,7 +217,7 @@ async function tsFilesUnder(dir: string): Promise<string[]> {
 }
 
 describe("no Gemini built-in tool is enabled", () => {
-  // A sweep that finds nothing passes whether the premise holds or the pattern is broken.
+  // NOTE: a sweep that finds nothing passes whether the premise holds or the pattern is broken.
   test("the predicate recognises a built-in tool declaration", () => {
     expect(
       declaresBuiltinTool(`const g = model.bindTools([{ googleSearch: {} }]);`),
@@ -238,8 +241,8 @@ describe("no Gemini built-in tool is enabled", () => {
         offenders.push(file.split("/src/")[1] as string);
       }
     }
-    // Turning one on is allowed — but then `extractTokenUsage` has to stop attributing the whole
-    // gap to generation, so this must be answered, not deleted.
+    // NOTE: turning one on is allowed, but then `extractTokenUsage` has to stop attributing the
+    // whole gap to generation, so this must be answered, not deleted.
     expect(offenders).toEqual([]);
   });
 });

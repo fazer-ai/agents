@@ -159,14 +159,16 @@ export async function upsertJobRow(
       runAt: params.runAt,
       status: "PENDING",
       lastError: null,
-      // Re-arming with a payload is authoritative (the latest enqueue wins): this resets a stale
-      // payload on a reused row, e.g. the follow-up sweep restarting a sequence at step 0 on a row
-      // a prior run had advanced to a later step. A payload-less re-enqueue preserves the existing.
+      // NOTE: Re-arming with a payload is authoritative (the latest enqueue wins): this resets a
+      // stale payload on a reused row, e.g. the follow-up sweep restarting a sequence at step 0 on
+      // a row a prior run had advanced to a later step. A payload-less re-enqueue preserves the
+      // existing.
       ...(params.payload !== undefined
         ? { payload: params.payload as Prisma.InputJsonValue }
         : {}),
-      // Re-armed together with the payload it belongs to: the two halves describe one message, and
-      // a re-enqueue that refreshed only the JSON would leave a body from the previous arming.
+      // NOTE: Re-armed together with the payload it belongs to: the two halves describe one
+      // message, and a re-enqueue that refreshed only the JSON would leave a body from the previous
+      // arming.
       ...(params.payload !== undefined
         ? { payloadSecret: params.payloadSecret ?? null }
         : {}),
@@ -671,17 +673,19 @@ export async function completeJob(
         })
       : db.schedulerJob.updateMany({
           where: { id, status: "CLAIMED", claimSeq },
-          // `attempts` is cleared for the same reason rescheduleJob clears it (issue #287): reaching
-          // here means the handler neither threw nor reported failure, so the pass proved the job
-          // works and the budget it spent was for a state it is no longer in. DONE is simply the
-          // other ending of that same pass, and leaving the count on the row is what made a kind
-          // whose dedupeKey is permanent (one row per thread, per document, reused forever) inherit
-          // failures across months of healthy work and retire on the fifth (issue #339).
+          // NOTE: `attempts` is cleared for the same reason rescheduleJob clears it (issue #287):
+          // reaching here means the handler neither threw nor reported failure, so the pass proved
+          // the job works and the budget it spent was for a state it is no longer in. DONE is
+          // simply the other ending of that same pass, and leaving the count on the row is what
+          // made a kind whose dedupeKey is permanent (one row per thread, per document, reused
+          // forever) inherit failures across months of healthy work and retire on the fifth (issue
+          // #339).
           //
-          // `lastError` deliberately stays: a DONE row is the RECORD that the work happened, the last
-          // error is part of that record, and nothing reads it as state here. The two future-dated
-          // PENDING states that `lastError` does tell apart (backoff vs stood down) are rescheduleJob's
-          // problem, and a re-arm clears it before the row is claimable again anyway.
+          // `lastError` deliberately stays: a DONE row is the RECORD that the work happened, the
+          // last error is part of that record, and nothing reads it as state here. The two future-
+          // dated PENDING states that `lastError` does tell apart (backoff vs stood down) are
+          // rescheduleJob's problem, and a re-arm clears it before the row is claimable again
+          // anyway.
           data: { status: "DONE", attempts: 0 },
         }),
   );

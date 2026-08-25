@@ -34,9 +34,9 @@ async function ensureTenantHeartbeat(
     tenantId,
     kind: "HEARTBEAT",
     dedupeKey: HEARTBEAT_DEDUPE_KEY,
-    // One perpetual row per tenant, re-armed by every subscription mutation. Reconciliation is not
-    // new work: a heartbeat that keeps failing would otherwise get five fresh attempts each time a
-    // subscription is toggled. A pass that ran clears the count on its own.
+    // NOTE: One perpetual row per tenant, re-armed by every subscription mutation. Reconciliation
+    // is not new work: a heartbeat that keeps failing would otherwise get five fresh attempts each
+    // time a subscription is toggled. A pass that ran clears the count on its own.
     rearm: "same-work",
     runAt: new Date(Date.now() + config.heartbeat.intervalMs),
     base,

@@ -92,9 +92,10 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         where: { kind: "DEBOUNCE", dedupeKey },
         select: { status: true, payload: true },
       });
-      // A live PENDING row is the burst this message joins; anything else (no row, DONE, DEAD, or a
-      // claim in flight) means the previous flush is finished business and this message opens a new
-      // burst. Every question below reads that one fact, so they cannot answer it differently.
+      // NOTE: A live PENDING row is the burst this message joins; anything else (no row, DONE,
+      // DEAD, or a claim in flight) means the previous flush is finished business and this message
+      // opens a new burst. Every question below reads that one fact, so they cannot answer it
+      // differently.
       const continuingBurst = existing?.status === "PENDING";
       const prevBurst = continuingBurst
         ? readBurstStart(existing.payload)
@@ -122,9 +123,9 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         dedupeKey,
         runAt: new Date(runAtMs),
         payload,
-        // A new burst is new work; a message joining the burst already open is the SAME flush being
-        // pushed out, and one waiting on its backoff must not be handed five more attempts by every
-        // message the contact types.
+        // NOTE: A new burst is new work; a message joining the burst already open is the SAME flush
+        // being pushed out, and one waiting on its backoff must not be handed five more attempts by
+        // every message the contact types.
         //
         // The key is the THREAD, reused by every burst this contact ever sends, so before this a
         // flush that dead-lettered left every later burst on that thread with one attempt (#339).

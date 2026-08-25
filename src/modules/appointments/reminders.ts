@@ -104,9 +104,9 @@ export async function enqueueAppointmentReminders(
       tenantId: args.tenantId,
       kind: "APPOINTMENT_REMINDER",
       dedupeKey: `${reminderPrefix(args.eventId)}${j.offsetHours}`,
-      // Armed when a customer books or reschedules, so the row being reused means the appointment
-      // MOVED: the previous arm was cancelled (cancelAppointmentReminders) and this is a different
-      // send, at a different time, for a start the previous one no longer describes.
+      // NOTE: Armed when a customer books or reschedules, so the row being reused means the
+      // appointment MOVED: the previous arm was cancelled (cancelAppointmentReminders) and this is
+      // a different send, at a different time, for a start the previous one no longer describes.
       rearm: "new-work",
       runAt: j.runAt,
       payload: {

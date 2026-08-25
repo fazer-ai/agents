@@ -1,30 +1,35 @@
-import { useCallback, useMemo, useState } from "react";
-import {
-  placeRefusal,
-  type Refusal,
-  readRefusal,
-} from "@/client/lib/fieldRefusal";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { placeRefusal, readRefusal } from "@/client/lib/fieldRefusal";
 
-// A form's held refusal: which input the server refused, and what it said about it.
+// A form's held refusal: which input the server refused, what it said about it, and the value it was
+// about.
 //
 // PER FORM, not per page and not in a context. Two forms are on screen together all the time here — a
 // modal over the panel that opened it — and both have a `name`. A shared store would mark the page
 // behind the modal, and a store that outlives the form would still be holding a refusal when the
 // operator closes a modal and opens it again.
 export interface FieldRefusal {
-  // The message to render at `field`, or null when this input is not the one refused. Goes straight
-  // into `<FormField error={...}>`, which already has the slot.
-  at: (field: string) => string | null;
-  // Take a failed call. Returns the sentence the caller must TOAST, or null when it landed on an
-  // input and the toast must stay silent. One line at the call site, because the sweep that follows
-  // (#233) applies it a hundred times and a two-line idiom is one that gets applied unevenly.
-  capture: (e: unknown, fallback: string) => string | null;
-  // Drop the mark: one input (the operator edited it) or all of them (the save went through).
+  // The message to render at `field`, or null when this input is not the one refused — or no longer
+  // holds the value that was.
   //
-  // A refused resubmit needs no clear — `capture` is the only writer of this state and always
-  // replaces it, so the refusal on screen is always the one the server last answered. Two marks
-  // would claim it refused twice.
-  clear: (field?: string) => void;
+  // Keyed by VALUE rather than cleared by a call: an edit takes the mark off because the box stops
+  // holding what the server refused, so there is no `onChange` line to forget. Forgetting the
+  // argument is a type error; forgetting a `clear(field)` was invisible.
+  at: (field: string, value: unknown) => string | null;
+  // Take a failed call. Returns the sentence the caller must TOAST, or null when it landed on an
+  // input and the toast must stay silent. `sent` is what this request carried and `current` is what
+  // the inputs hold now — the placement is refused when they disagree about the refused field, or
+  // when this form is already gone, because both render the mark unreadable.
+  capture: (
+    e: unknown,
+    fallback: string,
+    sent: Record<string, unknown>,
+    current: Record<string, unknown>,
+  ) => string | null;
+  // Drop the mark. Needed for the save that GOES THROUGH: the operator can resubmit the same value
+  // after the server changes its mind (a duplicate name freed, a cap raised), and the value key
+  // cannot tell that apart from the refusal still standing.
+  clear: () => void;
   // The input currently marked, for a caller that has to go somewhere to show it: the agent editor's
   // fields live behind tabs, and a mark on a tab nobody is looking at is not yet visible. Nothing
   // here navigates — which tab holds which path is the screen's knowledge, not this hook's.
@@ -32,7 +37,22 @@ export interface FieldRefusal {
 }
 
 export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
-  const [held, setHeld] = useState<Required<Refusal> | null>(null);
+  const [held, setHeld] = useState<{
+    field: string;
+    message: string;
+    value: unknown;
+  } | null>(null);
+  // Read from inside a request that may outlive the form. A ref and not state: the answer is needed
+  // in a callback that runs after the unmount, where a state read would be the value from the last
+  // render this component ever had — which is `true`.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   // The declared list is a literal at almost every call site (`COMPANY_FIELDS`), but a caller that
   // builds it inline would otherwise hand `capture` a new identity on every render.
   const key = rendered.join(" ");
@@ -40,10 +60,23 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
   const fields = useMemo(() => rendered.slice(), [key]);
 
   const capture = useCallback(
-    (e: unknown, fallback: string) => {
-      const placed = placeRefusal(readRefusal(e), fields, fallback);
+    (
+      e: unknown,
+      fallback: string,
+      sent: Record<string, unknown>,
+      current: Record<string, unknown>,
+    ) => {
+      const placed = placeRefusal(readRefusal(e), fields, fallback, {
+        mounted: mounted.current,
+        sent,
+        current,
+      });
       if (placed.at !== undefined) {
-        setHeld({ field: placed.at, message: placed.message });
+        setHeld({
+          field: placed.at,
+          message: placed.message,
+          value: placed.value,
+        });
         return null;
       }
       // Written even when nothing is placed, and that is the whole of "the capture is also the
@@ -55,16 +88,11 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
     [fields],
   );
 
-  const clear = useCallback((field?: string) => {
-    setHeld((current) =>
-      !current || field === undefined || current.field === field
-        ? null
-        : current,
-    );
-  }, []);
+  const clear = useCallback(() => setHeld(null), []);
 
   const at = useCallback(
-    (field: string) => (held?.field === field ? held.message : null),
+    (field: string, value: unknown) =>
+      held?.field === field && held.value === value ? held.message : null,
     [held],
   );
 

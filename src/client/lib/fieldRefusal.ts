@@ -37,9 +37,28 @@ export function readRefusal(e: unknown): Refusal | null {
 // that holds every refusal at an input holds the ones it has no input for as well, and the operator
 // gets a save button that does nothing. And a message rendered at the control AND repeated in a
 // toast is the noise that trains people to dismiss toasts without reading them.
+//
+// `value` travels with a placement because the mark expires by VALUE and not by a call: `at` shows
+// it only while the input still holds what was refused (see the hook).
 export type RefusalPlacement =
-  | { at: string; message: string }
+  | { at: string; message: string; value: unknown }
   | { at?: undefined; toast: string };
+
+// What the form was doing when the answer landed. The first round of review on #313 found three ways
+// a placement can be held and never read, and they are all this: the question is not "is this input
+// one the form declared" but "will the operator actually read this".
+export interface FormAtAnswer {
+  // False once the form is gone. A modal body can unmount while its own save is in flight — this
+  // card's own comments record that the operator does exactly that — and a mark written to state
+  // nobody renders is silence, with `capture` having already reported "it is on the control".
+  mounted: boolean;
+  // What the request carried. A refusal is about the value that was SENT.
+  sent: Record<string, unknown>;
+  // What the inputs hold now. If they no longer hold what was sent, the operator changed it while
+  // the request was out, and marking the box would put "this is not valid" under a value the server
+  // never saw.
+  current: Record<string, unknown>;
+}
 
 // `rendered` is what the FORM declares it can show, by the server's names.
 //
@@ -55,10 +74,17 @@ export function placeRefusal(
   refusal: Refusal | null,
   rendered: readonly string[],
   fallback: string,
+  form: FormAtAnswer,
 ): RefusalPlacement {
   if (!refusal) return { toast: fallback };
-  if (refusal.field && rendered.includes(refusal.field)) {
-    return { at: refusal.field, message: refusal.message };
+  const { field, message } = refusal;
+  if (!field || !rendered.includes(field)) return { toast: message };
+  if (!form.mounted) return { toast: message };
+  // Only when the request carried this field. A refusal about a value this write did not change is
+  // about what is stored, and the input has not moved relative to it, so there is nothing stale.
+  const carried = Object.hasOwn(form.sent, field);
+  if (carried && form.sent[field] !== form.current[field]) {
+    return { toast: message };
   }
-  return { toast: refusal.message };
+  return { at: field, message, value: form.current[field] };
 }

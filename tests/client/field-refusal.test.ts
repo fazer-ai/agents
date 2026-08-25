@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type FormAtAnswer,
   placeRefusal,
   type Refusal,
   type RefusalPlacement,
@@ -81,16 +82,25 @@ describe("placeRefusal", () => {
   const RENDERED = ["name", "document", "guardrails.output.templateMessage"];
   const FALLBACK = "Could not save.";
 
+  // A form that is on screen and whose inputs still hold exactly what the request carried: the
+  // ordinary case, so the rows that are about WHERE a refusal goes are not also about staleness.
+  const STEADY: FormAtAnswer = {
+    mounted: true,
+    sent: { document: "12.345", name: "ACME" },
+    current: { document: "12.345", name: "ACME" },
+  };
+
   const cases: Array<{
     name: string;
     refusal: Refusal | null;
     rendered?: readonly string[];
+    form?: FormAtAnswer;
     want: RefusalPlacement;
   }> = [
     {
       name: "an input this form renders takes the message",
       refusal: { message: "bad character", field: "document" },
-      want: { at: "document", message: "bad character" },
+      want: { at: "document", message: "bad character", value: "12.345" },
     },
     {
       // A dotted path is a name like any other. Nothing here parses it.
@@ -99,9 +109,12 @@ describe("placeRefusal", () => {
         message: "too long",
         field: "guardrails.output.templateMessage",
       },
+      // The request did not carry this field, so there is nothing to compare it against and nothing
+      // stale: the refusal is about what is STORED, not about a value this write changed.
       want: {
         at: "guardrails.output.templateMessage",
         message: "too long",
+        value: undefined,
       },
     },
     {
@@ -143,13 +156,64 @@ describe("placeRefusal", () => {
       rendered: [],
       want: { toast: "bad character" },
     },
+    {
+      // A modal body can unmount while its own save is out. The mark would be written to state
+      // nobody renders, and `capture` would have reported "it is on the control" — silence.
+      name: "a form that is gone renders nothing, so the message is a toast",
+      refusal: { message: "bad character", field: "document" },
+      form: { ...STEADY, mounted: false },
+      want: { toast: "bad character" },
+    },
+    {
+      // The operator corrected the value while the request was out. The refusal is about what was
+      // SENT, and marking the box would blame a value the server never saw.
+      name: "a value the operator has already replaced is a toast",
+      refusal: { message: "bad character", field: "document" },
+      form: {
+        ...STEADY,
+        current: { document: "12.345", name: "ACME" },
+        sent: { document: "12.345 x" },
+      },
+      want: { toast: "bad character" },
+    },
+    {
+      // The guard on the comparison, and it needs a row of its own: a refusal about a field this
+      // write never carried is about what is STORED, so there is no submitted value to be stale
+      // against. Comparing anyway reads `undefined` out of `sent`, finds it different from what the
+      // input holds, and toasts every one of them.
+      name: "a field the request never carried is not stale, it is just not sent",
+      refusal: { message: "too long", field: "name" },
+      form: {
+        mounted: true,
+        sent: { document: "12.345" },
+        current: { document: "12.345", name: "ACME" },
+      },
+      want: { at: "name", message: "too long", value: "ACME" },
+    },
+    {
+      // The same comparison the other way: unchanged since the request went out, so the mark is
+      // about the value in the box.
+      name: "a value still in the box takes the mark",
+      refusal: { message: "bad character", field: "document" },
+      form: {
+        mounted: true,
+        sent: { document: "12.345 x" },
+        current: { document: "12.345 x" },
+      },
+      want: { at: "document", message: "bad character", value: "12.345 x" },
+    },
   ];
 
   for (const c of cases) {
     test(c.name, () => {
-      expect(placeRefusal(c.refusal, c.rendered ?? RENDERED, FALLBACK)).toEqual(
-        c.want,
-      );
+      expect(
+        placeRefusal(
+          c.refusal,
+          c.rendered ?? RENDERED,
+          FALLBACK,
+          c.form ?? STEADY,
+        ),
+      ).toEqual(c.want);
     });
   }
 
@@ -157,7 +221,12 @@ describe("placeRefusal", () => {
   // never neither. A future row that answered `{ at, toast }` would read as correct in its own line.
   test("exactly one channel fires, on every row", () => {
     for (const c of cases) {
-      const placed = placeRefusal(c.refusal, c.rendered ?? RENDERED, FALLBACK);
+      const placed = placeRefusal(
+        c.refusal,
+        c.rendered ?? RENDERED,
+        FALLBACK,
+        c.form ?? STEADY,
+      );
       const at = "at" in placed && placed.at !== undefined;
       const toast = "toast" in placed;
       expect([c.name, at !== toast]).toEqual([c.name, true]);

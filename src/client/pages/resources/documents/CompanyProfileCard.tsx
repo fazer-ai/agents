@@ -138,9 +138,15 @@ export function CompanyProfileCard({
         //
         // A sentence back means the refusal is about nothing this form renders (or there was no
         // server at all); null means it is already on the control and repeating it would be noise.
+        //
+        // `sent` against the CURRENT draft, read from the ref: the operator can type during the
+        // request, and a refusal about a value they have already replaced belongs in a toast rather
+        // than under a box that no longer holds it.
         const toast = refusal.capture(
           error,
           t("documents.company.saveError", "Could not save."),
+          sent,
+          formRef.current.draft,
         );
         if (toast) showToast(toast, "error");
         return;
@@ -163,11 +169,25 @@ export function CompanyProfileCard({
       // `session` as captured when the request STARTED: it is the opening this save belongs to, and
       // the parent decides whether that opening is still the one on screen.
       if (clean) onSaved?.(session);
-    } catch {
+    } catch (e) {
       // Eden RESOLVES an HTTP error as `{ error }` and REJECTS on a transport failure — offline, a
       // reset connection. Only the first half was handled, so the second left the operator with a
       // button that did nothing and an unhandled rejection in the console.
-      showToast(t("documents.company.saveError", "Could not save."), "error");
+      //
+      // Through `capture` as well, so it stays the only writer of the held refusal. Measured: an
+      // offline save on this route RESOLVES here (the branch above runs and already clears), so this
+      // is not a path a mark was observed surviving — it is a path that could bypass the single
+      // writer, and routing it costs one argument.
+      const toast = refusal.capture(
+        e,
+        t("documents.company.saveError", "Could not save."),
+        sent,
+        formRef.current.draft,
+      );
+      showToast(
+        toast ?? t("documents.company.saveError", "Could not save."),
+        "error",
+      );
     } finally {
       setBusy(null);
     }
@@ -257,19 +277,21 @@ export function CompanyProfileCard({
           they all get the short one's width. */}
       <div className="grid gap-3">
         {FIELDS.map((field) => (
-          <FormField key={field} label={label[field]} error={refusal.at(field)}>
+          <FormField
+            key={field}
+            label={label[field]}
+            // The value the mark is keyed on: the message shows while this box still holds what the
+            // server refused, and stops the keystroke it changes. No `onChange` line to forget.
+            error={refusal.at(field, draft[field])}
+          >
             <Input
               value={draft[field]}
-              onChange={(e) => {
-                // The operator has acted on what the message asked for, so the mark comes off before
-                // the next save answers. Leaving it would keep a refusal on screen about a value the
-                // server has not seen.
-                refusal.clear(field);
+              onChange={(e) =>
                 setForm((current) => ({
                   ...current,
                   draft: { ...current.draft, [field]: e.target.value },
-                }));
-              }}
+                }))
+              }
             />
           </FormField>
         ))}

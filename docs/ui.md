@@ -28,9 +28,13 @@ The API answers a refusal as `{ error, field? }` (`src/api/lib/refusal.ts`): the
 Two client pieces read it, and which one a call site wants depends on whether it is a form:
 
 - **`apiErrorMessage(e)`** (`lib/apiError.ts`) → the sentence, or `null` for a transport failure with no server behind it. For actions that are not a form (a delete, a retry, a connection test), where a toast is the answer either way.
-- **`useFieldRefusal(fields)`** (`hooks/useFieldRefusal.ts`) for a form. The form **declares** the server names it can render (`useFieldRefusal(COMPANY_FIELDS)`), passes `error={refusal.at(name)}` to each `<FormField>`, and its submit handler does `const toast = refusal.capture(error, fallback); if (toast) showToast(toast, "error")`.
+- **`useFieldRefusal(fields)`** (`hooks/useFieldRefusal.ts`) for a form. The form **declares** the server names it can render (`useFieldRefusal(COMPANY_FIELDS)`), passes `error={refusal.at(name, draft[name])}` to each `<FormField>`, and its submit handler does `const toast = refusal.capture(error, fallback, sent, current); if (toast) showToast(toast, "error")` — `sent` being what the request carried and `current` what the inputs hold now.
 
 The rule the mechanism holds is that the two channels are **exclusive and exhaustive**: a refusal about a declared input renders at that control and raises no toast; a refusal about anything else — another screen's field, no field at all, or no server at all — is a toast. Silence is the outcome that must never happen, and a message shown at the control *and* in a toast is the noise that teaches people to dismiss toasts unread. `placeRefusal` (`lib/fieldRefusal.ts`) is that decision as a pure function, with the table in `tests/client/field-refusal.test.ts`.
+
+The decision is about whether the operator will actually **read** the message, not merely whether the field was declared, and three cases separate those. The form may have unmounted while its own save was out (a modal body does this), in which case the mark goes to state nobody renders. The operator may have corrected the value while the request was out, in which case marking the box blames a value the server never saw. And a refusal about a field the request never carried is about what is *stored*, so there is nothing to be stale against and the mark stands. All three are rows in the same table.
+
+The mark then expires **by value**: `at(field, value)` shows the message only while the input still holds what was refused, so an edit takes it off with no `onChange` line to forget. `clear()` exists for the save that goes through, which the value key cannot recognise on its own.
 
 Declared rather than discovered, because the submit handler needs the answer *before* the next render; matched exactly rather than by prefix, so a form rendering a parent path does not claim every leaf under it. The state is per form instance: a modal over the panel that opened it has its own, and both have a `name`.
 

@@ -309,3 +309,91 @@ test("a save that goes through takes the mark off", async () => {
     expect(shownAnywhere(reason)).toBe(0);
   });
 });
+
+// ── The three ways a mark can be held and never seen ──────────────────────────────────────────
+//
+// `capture` answers "is this input one the form declared", and the invariant needs "will the
+// operator actually read this". The three below are where those diverge, all found by review on the
+// first round of #313 and all the same defect: a placement that renders nothing is silence, and
+// silence is the one outcome this mechanism may not produce.
+
+// A `fetch` whose answer is released by hand, so the test can act between the click and the reply.
+function deferredPut(body: { error: string; field?: string }) {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? "GET").toUpperCase() !== "PUT") {
+      return new Response("{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    await gate;
+    return new Response(JSON.stringify(body), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return () => release();
+}
+
+// The modal case, mounted the way it really is: the card goes away and the ToastProvider does NOT.
+// Unmounting the whole tree instead would take the toast viewport with it and the test could only
+// ever observe zero, whatever the code did.
+function DismissableCompany({ gone }: { gone: boolean }) {
+  return (
+    <MemoryRouter>
+      <NavGuardProvider>
+        <ToastProvider>
+          {gone ? null : (
+            <CompanyProfileCard
+              company={COMPANY as never}
+              onChanged={() => undefined}
+              session={1}
+            />
+          )}
+        </ToastProvider>
+      </NavGuardProvider>
+    </MemoryRouter>
+  );
+}
+
+test("a refusal that arrives after the form is gone still reaches the operator", async () => {
+  // This card is a modal body, and the file already records that a save is slow enough for the
+  // operator to close the modal while the request is out. Closing it unmounts the hook, so the mark
+  // is written to state nobody renders — and `capture` had already reported "it is on the control".
+  const reason =
+    "document contains a character the document fonts cannot print";
+  const release = deferredPut({ error: reason, field: "document" });
+  const view = render(<DismissableCompany gone={false} />);
+
+  fireEvent.change(inputFor("document"), { target: { value: "12.345" } });
+  save();
+  view.rerender(<DismissableCompany gone={true} />);
+  release();
+
+  await waitFor(() => {
+    expect(toastCount()).toBe(1);
+  });
+});
+
+test("a refusal about a value the operator has already changed is a toast, not a mark", async () => {
+  // Marking the input would put "this is not valid" under a value the server never saw. The refusal
+  // is about what was SENT, and what was sent is no longer in the box.
+  const reason =
+    "document contains a character the document fonts cannot print";
+  const release = deferredPut({ error: reason, field: "document" });
+  mountCompany();
+
+  fireEvent.change(inputFor("document"), { target: { value: "12.345 x" } });
+  save();
+  fireEvent.change(inputFor("document"), { target: { value: "12.345" } });
+  release();
+
+  await waitFor(() => {
+    expect(toastCount()).toBe(1);
+  });
+  expect(shownInsideFieldOf("document", reason)).toBe(0);
+});

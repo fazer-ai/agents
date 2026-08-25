@@ -59,6 +59,7 @@ import {
   buildToolset,
   loadAgentConfig,
 } from "./prepare";
+import { undoRefusedTurn } from "./refused-turn";
 import type { RuntimeDeps } from "./runtime";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 import { buildNativeTools, handoffAnsweredTheTurn } from "./tools/native";
@@ -1147,6 +1148,42 @@ export async function runAgentNudge(
   } finally {
     if (claimedGraphThread) clearTurnInFlight(graphThreadId);
   }
+  // Every refusal from here on suppresses the send and leaves the generated pair checkpointed, which
+  // is what `refuse` is for: it takes the outcome back out through the rollback instead of returning
+  // it straight. Written as one closure and used at every post-generation refusal rather than inlined
+  // at each, so a ninth refusal that forgets it is a diff a reader can see, and one a source sweep
+  // can fail on (tests/graph/refused-turn-callsites.test.ts). Issue #251.
+  //
+  // It never decides WHETHER to roll back. `undoRefusedTurn` reads the channel and answers that, so a
+  // turn that ran a tool, or one whose messages another writer already took, keeps what it has.
+  const refuse = async (
+    outcome: RunAgentNudgeOutcome,
+  ): Promise<RunAgentNudgeOutcome> => {
+    const plan = await undoRefusedTurn({
+      checkpointer,
+      graphThreadId,
+      produced: result.messages,
+    }).catch((err) => {
+      // Best-effort, and loudly: the send was already suppressed, so a failed rollback costs the next
+      // turn a message the customer never saw, which is the defect this exists to close, and nothing more.
+      // Throwing would turn a correct refusal into a retried job.
+      logger.warn(
+        { err, conversationId: String(conversationId) },
+        "agentNudge: could not roll back the refused turn",
+      );
+      return null;
+    });
+    if (plan?.action === "remove") {
+      logger.info(
+        "agentNudge rolled back a refused turn: conv=%s outcome=%s messages=%d",
+        String(conversationId),
+        outcome,
+        plan.ids.length,
+      );
+    }
+    return outcome;
+  };
+
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
   const replyRaw = lastAssistantText(result.messages);
@@ -1183,7 +1220,7 @@ export async function runAgentNudge(
   //
   // The later checks answer for later model calls — the guardrail judge's, and the screening inside
   // deliverPromisedLine — not for this one.
-  if (!(await stillWanted())) return "stale";
+  if (!(await stillWanted())) return refuse("stale");
 
   let canMessagePost: boolean;
   if (handedOff) {
@@ -1195,13 +1232,14 @@ export async function runAgentNudge(
     // check above this block answers for the model call, not for this round trip. Above the
     // `unavailable` return as well, so a retired run reports what it is rather than asking for a
     // retry it must not get.
-    if (!(await stillWanted())) return "stale";
+    if (!(await stillWanted())) return refuse("stale");
     // Fail closed: nothing has been posted yet, so a probe that could not run costs a retry and
     // nothing else.
-    if (owned === "unavailable") return "live-unavailable";
+    if (owned === "unavailable") return refuse("live-unavailable");
     // The live-gated caller asked for certainty and gets an abort; an event nudge downgrades to a
     // private note instead, which is the shape it has always had.
-    if (owned === "not-ours" && params.requireLiveBotOwnership) return "stale";
+    if (owned === "not-ours" && params.requireLiveBotOwnership)
+      return refuse("stale");
     canMessagePost = owned === "ours";
   }
 
@@ -1225,7 +1263,7 @@ export async function runAgentNudge(
   // just cleared and re-armed the sequence the command ended — and the post-actions below would have
   // relabelled and resolved it on the way out. The transfer itself still stands: the tool ran inside
   // the graph and this fence was never able to reverse it.
-  if (promised === "stale") return "stale";
+  if (promised === "stale") return refuse("stale");
   if (promised) {
     if (promised !== "silent") markFollowUp(promised);
     await applyPostActions({ canMessage: canMessagePost });
@@ -1300,12 +1338,12 @@ export async function runAgentNudge(
         !guardrailLeftAMark(decision) &&
         params.requireLiveBotOwnership
       ) {
-        return "live-unavailable";
+        return refuse("live-unavailable");
       }
       // A KNOWN takeover ends the episode either way: that outcome does not retry, so it costs no
       // repetition — and "the human owns it" is a different fact from "we could not ask".
       if (owned === "not-ours" && params.requireLiveBotOwnership)
-        return "stale";
+        return refuse("stale");
       canMessagePost = owned === "ours";
     }
 
@@ -1315,7 +1353,7 @@ export async function runAgentNudge(
     // ABOVE the suppression branch, for the reason the check outside this block sits above the silent
     // one: suppression posts no message but still fires the post-actions, so a check placed after it
     // guards only the sends and lets the judge's stretch of time reach the labels and the resolve.
-    if (!(await stillWanted())) return "stale";
+    if (!(await stillWanted())) return refuse("stale");
     if (screened === null) {
       await applyPostActions({ canMessage: canMessagePost });
       return "silent";

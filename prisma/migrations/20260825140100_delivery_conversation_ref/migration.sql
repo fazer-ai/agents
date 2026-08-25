@@ -14,10 +14,16 @@ ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "conversation_id" INTEGER;
 -- transient (in-flight deliveries plus strands), so this index stays small next to the table.
 CREATE INDEX "chatwoot_webhook_deliveries_status_received_at_idx" ON "chatwoot_webhook_deliveries"("status", "received_at");
 
+
 -- The INBOUND message the delivery carried, for the same reason and with the same discipline: an id,
 -- never the content. Null on every event that is not a customer message, which is what lets the
 -- sweep tell a row where nothing was lost from one where a customer went unanswered.
 ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "inbound_message_id" INTEGER;
+-- Serves the other half of the same contract: when a turn answers a burst it retires the ledger rows
+-- of the messages that burst contained, matched by conversation and message id. That write is what
+-- lets the sweep ask "did anything cover this message" of the ROW rather than inferring it from the
+-- conversation's watermarks, which cannot answer a per-message question.
+CREATE INDEX "chatwoot_webhook_deliveries_conversation_message_idx" ON "chatwoot_webhook_deliveries"("conversation_id", "inbound_message_id");
 
 -- When the CURRENT attempt claimed the row, stamped by the tx1 CAS `PENDING -> PROCESSING`.
 --
@@ -31,21 +37,6 @@ ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "inbound_message_id" INTEGE
 -- Null on a row never claimed, where receipt is the only clock there is and the right one.
 ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "claimed_at" TIMESTAMP(3);
 
--- How far a TURN THAT RAN got: it reached the point of posting covering up to this message. Claimed
--- by the two post gates through the same CAS that advances `last_handled_message_id`.
---
--- A second column rather than a reading of the first, because the first cannot carry this. The
--- handled watermark means "never re-ANSWER this", and most of its writers advance it precisely
--- because no turn is running: a contact that failed authorization, a human taking the conversation
--- mid-turn, a conversation that was already human-owned when the message arrived. A reader that
--- takes a larger handled mark as proof that something processed the message concludes a customer
--- was served when nothing looked at it — which for the sweep means closing a real loss quietly, the
--- exact failure it exists to remove.
---
--- NOT backfilled from `last_handled_message_id`: that copy would assert the very thing this column
--- exists because the other one cannot prove. Null reads as "no turn on record", which puts a
--- stranded delivery in front of an operator instead of closing it.
-ALTER TABLE "conversations" ADD COLUMN "last_answered_message_id" INTEGER;
 
 -- Every row still non-terminal at this moment is, by definition, abandoned: nothing but
 -- `processChatwootDelivery` moves these, and the process that would have is long gone. They predate

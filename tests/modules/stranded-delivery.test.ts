@@ -6,14 +6,19 @@ import {
 
 // Whether a ledger row stuck non-terminal means a customer went unanswered, as a table.
 //
-// Stated here rather than exercised only through the sweep because the sweep's own test drives one
-// row at a time through a database: the boundaries (a row one millisecond short of stale, a message
-// exactly at the answered mark) are cheap here and expensive there, and the ORDER of the questions —
-// which is a decision, not an implementation detail — has no other place that states it.
+// The table is short, and it got that way by deletion. It used to carry an "already answered"
+// verdict decided by comparing the conversation's watermarks, and three review rounds of PR #282
+// each found a different way that comparison closes a real loss — a watermark is a per-CONVERSATION
+// high-water mark and the question is per-MESSAGE. That fact now comes from the ledger itself: a
+// turn that runs over a message retires its row, so a row this function ever sees is one nothing
+// covered. The effect is proved in delivery-sweep.test.ts, where a real turn retires a real row.
+//
+// What is left here is the age fence and the ORDER of the two questions, which is a decision. The
+// boundaries are cheap here and expensive through a database.
 //
 // `ageMs` is the age of the current ATTEMPT, not of the receipt. The sweep resolves which clock that
-// is before calling (a claimed row is measured from its claim), and the distinction has its own case
-// in the sweep's test, where a real row can carry both timestamps.
+// is before calling (a claimed row is measured from its claim), and that distinction has its own
+// case in the sweep's test, where a real row can carry both timestamps.
 
 const STALE_MS = 30 * 60 * 1000;
 const NOW = new Date("2026-08-25T12:00:00.000Z");
@@ -21,20 +26,13 @@ const NOW = new Date("2026-08-25T12:00:00.000Z");
 function verdict(row: {
   ageMs: number;
   inboundMessageId: number | null;
-  answeredMessageId: number | null;
-  coalesces?: boolean;
 }): StrandedVerdict {
   return classifyStrandedDelivery(
     {
       attemptStartedAt: new Date(NOW.getTime() - row.ageMs),
       inboundMessageId: row.inboundMessageId,
     },
-    {
-      now: NOW,
-      staleAfterMs: STALE_MS,
-      answeredMessageId: row.answeredMessageId,
-      coalesces: row.coalesces ?? true,
-    },
+    { now: NOW, staleAfterMs: STALE_MS },
   );
 }
 
@@ -43,36 +41,32 @@ describe("classifying a delivery stranded non-terminal", () => {
     name: string;
     ageMs: number;
     inboundMessageId: number | null;
-    answeredMessageId: number | null;
-    coalesces?: boolean;
     expected: StrandedVerdict;
   }> = [
     {
-      name: "received a moment ago: a live process may still be working it",
+      name: "the attempt started a moment ago: a live process may still be working it",
       ageMs: 1_000,
       inboundMessageId: 50,
-      answeredMessageId: 10,
       expected: "in-flight",
     },
     {
       name: "one millisecond short of the threshold is still in flight",
       ageMs: STALE_MS - 1,
       inboundMessageId: 50,
-      answeredMessageId: 10,
       expected: "in-flight",
     },
     {
       name: "exactly at the threshold is stranded",
       ageMs: STALE_MS,
       inboundMessageId: 50,
-      answeredMessageId: 10,
       expected: "lost",
     },
     {
-      name: "fresh outranks every other question",
+      // The order is the decision: a fresh row is left alone whatever it carries, because something
+      // may still be working it and a verdict now would be about a live delivery.
+      name: "fresh outranks the question about the message",
       ageMs: 1_000,
       inboundMessageId: null,
-      answeredMessageId: null,
       expected: "in-flight",
     },
     {
@@ -81,74 +75,20 @@ describe("classifying a delivery stranded non-terminal", () => {
       name: "carried no inbound message: nothing was lost",
       ageMs: STALE_MS * 3,
       inboundMessageId: null,
-      answeredMessageId: null,
       expected: "no-message",
     },
     {
-      name: "no inbound message outranks an unanswered mark",
-      ageMs: STALE_MS * 3,
-      inboundMessageId: null,
-      answeredMessageId: 1,
-      expected: "no-message",
-    },
-    {
-      name: "the message is below the answered mark: a posted reply covered it",
+      name: "stranded with a customer message is a loss",
       ageMs: STALE_MS * 3,
       inboundMessageId: 50,
-      answeredMessageId: 90,
-      expected: "already-answered",
-    },
-    {
-      // The mark is an at-most-once CLAIM taken before the reply is sent, so level with this row's
-      // own message means its own flush took the claim and then died — an intention nobody carried
-      // out. Nothing else could put it exactly there: a later burst claims a LATER message.
-      name: "the mark level with the message is a claim, not an answer",
-      ageMs: STALE_MS * 3,
-      inboundMessageId: 50,
-      answeredMessageId: 50,
       expected: "lost",
     },
     {
-      name: "one below the message is not answered",
+      // Chatwoot ids start at 1, but the guard is on null and not on falsiness — a 0 would be a
+      // message like any other, and reading it as "no message" would drop a loss from the list.
+      name: "message id zero is a message, not an absence",
       ageMs: STALE_MS * 3,
-      inboundMessageId: 50,
-      answeredMessageId: 49,
-      expected: "lost",
-    },
-    {
-      // The mark is proof only where the path COALESCES. With debouncing off each delivery answers
-      // its own message directly, so a later message moves the mark past the stranded one without
-      // the model ever having seen it — reading that as answered closes a real loss.
-      name: "a later mark proves nothing when the agent does not coalesce",
-      ageMs: STALE_MS * 3,
-      inboundMessageId: 50,
-      answeredMessageId: 90,
-      coalesces: false,
-      expected: "lost",
-    },
-    {
-      name: "and a mark level with the message is lost either way",
-      ageMs: STALE_MS * 3,
-      inboundMessageId: 50,
-      answeredMessageId: 50,
-      coalesces: false,
-      expected: "lost",
-    },
-    {
-      name: "one past the message is the only mark that answers it",
-      ageMs: STALE_MS * 3,
-      inboundMessageId: 50,
-      answeredMessageId: 51,
-      expected: "already-answered",
-    },
-    {
-      // The delivery died before the mirror write, so there is no mark to compare against. The
-      // safe reading of a question that cannot be answered is the one that puts the row in front of
-      // an operator instead of closing it quietly.
-      name: "an unknown conversation reads as unanswered, not as closed",
-      ageMs: STALE_MS * 3,
-      inboundMessageId: 50,
-      answeredMessageId: null,
+      inboundMessageId: 0,
       expected: "lost",
     },
   ];
@@ -156,12 +96,7 @@ describe("classifying a delivery stranded non-terminal", () => {
   for (const c of cases) {
     test(c.name, () => {
       expect(
-        verdict({
-          ageMs: c.ageMs,
-          inboundMessageId: c.inboundMessageId,
-          answeredMessageId: c.answeredMessageId,
-          coalesces: c.coalesces,
-        }),
+        verdict({ ageMs: c.ageMs, inboundMessageId: c.inboundMessageId }),
       ).toBe(c.expected);
     });
   }

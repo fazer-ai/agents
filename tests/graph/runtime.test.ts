@@ -3014,15 +3014,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent).toEqual([[972, REPLY]]);
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: 972 },
-      select: { lastHandledMessageId: true, lastAnsweredMessageId: true },
+      select: { lastHandledMessageId: true },
     });
     expect(conv.lastHandledMessageId).toBe(1);
-    // The direct path's post gate claims the ANSWERED mark as well, and the two are separate
-    // columns for a reason: the watermark also advances on every message this path retires WITHOUT
-    // running a turn (a human-owned conversation, a consumed command), so a reader that needs to
-    // know whether anything looked at a message cannot use it. The stranded-delivery sweep is that
-    // reader (issue #228). The flush's own gate is asserted in tests/modules/debounce.test.ts.
-    expect(conv.lastAnsweredMessageId).toBe(1);
   });
 
   test("non-incoming (outgoing) message is skipped before any LLM call", async () => {

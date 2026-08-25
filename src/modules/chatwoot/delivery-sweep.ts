@@ -2,7 +2,6 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { readDebounceConfig } from "@/modules/debounce/settings";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -46,6 +45,55 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
+// Retire the ledger rows of the messages a turn just ran over.
+//
+// This is the half that makes the sweep's question answerable. A delivery row records ONE message,
+// and the question the sweep asks is about that message: did anything ever process it? Answering it
+// by comparing the conversation's watermarks cannot work, and three review rounds of this PR each
+// found a different way it fails — the watermark is a per-CONVERSATION high-water mark and the
+// question is per-MESSAGE, so any scalar reading of it either closes real losses (a later
+// deliberate skip moves it past an unanswered message) or reports answered ones.
+//
+// So the turn says so directly. A burst re-fetched from Chatwoot may contain messages whose own
+// delivery DIED before finishing — that is exactly what the flush rescues, since it re-reads every
+// message above the watermark rather than the one that armed it — and those rows are the ones this
+// retires. In the ordinary case it updates nothing: a delivery that completed already reached
+// PROCESSED on its own.
+//
+// It runs AFTER the turn, never at the post gate: the gate claims before the reply is sent, and
+// retiring there would erase the evidence of precisely the crash window the sweep exists to catch.
+export async function retireCoveredDeliveries(params: {
+  tenantId: bigint;
+  // Chatwoot display id, which is what the ledger column holds.
+  conversationId: number;
+  // Chatwoot ids of the messages the turn ran over.
+  messageIds: number[];
+  base: PrismaClient;
+}): Promise<number> {
+  const { count } = await runScopedOn(
+    params.base,
+    sysCtx(params.tenantId),
+    (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: {
+          conversationId: params.conversationId,
+          inboundMessageId: { in: params.messageIds },
+          status: { in: ["PENDING", "PROCESSING"] },
+        },
+        data: { status: "PROCESSED", processedAt: new Date() },
+      }),
+  );
+  if (count > 0) {
+    logger.info(
+      "chatwoot: a turn covered %d stranded deliver%s on conversation %d",
+      count,
+      count === 1 ? "y" : "ies",
+      params.conversationId,
+    );
+  }
+  return count;
+}
+
 interface StrandedRow {
   id: bigint;
   status: "PENDING" | "PROCESSING";
@@ -69,8 +117,7 @@ function attemptStartedAt(row: StrandedRow): Date {
 export interface SweepCounts {
   // Received too recently to call abandoned.
   tooFresh: number;
-  // Terminal, nothing lost: the delivery carried no inbound message, or a later turn posted a reply
-  // that covered the one it carried.
+  // Terminal, nothing lost: the delivery carried no inbound message at all.
   closed: number;
   // Terminal, a customer message lost.
   lost: number;
@@ -78,10 +125,12 @@ export interface SweepCounts {
   raced: number;
 }
 
-// The conversation's mirror row, for the answered mark and for the ids the flow line is filed under.
-// Null when the mirror does not know this conversation — a delivery that died before the mirror
-// write — which the classifier reads as "not answered", because it is the reading that puts the row
-// in front of an operator rather than closing it quietly.
+// The conversation's mirror row, for the ids the flow line is filed under. Null when the mirror does
+// not know this conversation — a delivery that died before the mirror write — in which case the line
+// is filed without one, because it is still worth writing.
+//
+// It no longer reads any watermark, and that is the point of the retirement above: the question
+// "did anything cover this message" is answered by the row's own status, not inferred here.
 async function mirrorOf(
   row: StrandedRow,
   tenantId: bigint,
@@ -90,8 +139,6 @@ async function mirrorOf(
   conversationRowId: bigint;
   inboxId: bigint | null;
   agentId: bigint | null;
-  answeredMessageId: number | null;
-  coalesces: boolean;
 } | null> {
   if (row.conversationId === null) return null;
   const conversationId = row.conversationId;
@@ -104,7 +151,7 @@ async function mirrorOf(
           chatwootConversationId: conversationId,
         },
       },
-      select: { id: true, inboxId: true, lastAnsweredMessageId: true },
+      select: { id: true, inboxId: true },
     });
     if (!conv) return null;
     const inbox = conv.inboxId
@@ -113,35 +160,10 @@ async function mirrorOf(
           select: { agentId: true },
         })
       : null;
-    const agent = inbox?.agentId
-      ? await db.agent.findUnique({
-          where: { id: inbox.agentId },
-          select: { settings: true },
-        })
-      : null;
     return {
       conversationRowId: conv.id,
       inboxId: conv.inboxId,
       agentId: inbox?.agentId ?? null,
-      // The ANSWERED mark, never the handled watermark. That one means "never re-ANSWER this" and
-      // most of its writers advance it because no answer is coming, so reading it here closes real
-      // losses quietly — see the field's own note in ./stranded-delivery.ts.
-      answeredMessageId: conv.lastAnsweredMessageId,
-      // Read NOW, not recorded THEN, and this is the one inexactness left in the sweep. It can be
-      // wrong in both directions, and only one of them is harmless:
-      //
-      //   * debouncing on at the strand, off now → reads the stricter way and reports a loss that
-      //     was answered. A false line in the list, which costs an operator one look;
-      //   * debouncing OFF at the strand, on now → reads the looser way and closes a row that
-      //     really did lose a message. A false silence, which is the failure this whole sweep
-      //     exists to remove.
-      //
-      // Recording the path on the row at delivery time is what would close it, and it is a column
-      // plus a write on the ack-adjacent path. Left undone deliberately: the second direction needs
-      // an operator to have enabled debouncing in the half hour between a strand and the sweep, and
-      // the strict comparison above already catches the case where the stranded row is the one that
-      // claimed the mark.
-      coalesces: readDebounceConfig(agent?.settings).enabled,
     };
   });
 }
@@ -205,46 +227,21 @@ export async function sweepStrandedDeliveries(
   )) as StrandedRow[];
 
   for (const row of rows) {
-    // Read the mirror only for a row that is actually stale, and only when it carried a message:
-    // the fresh rows are the common case and the whole point of the age fence is not to touch them.
-    const preliminary = classifyStrandedDelivery(
-      {
-        attemptStartedAt: attemptStartedAt(row),
-        inboundMessageId: row.inboundMessageId,
-      },
-      {
-        now,
-        staleAfterMs: STALE_AFTER_MS,
-        answeredMessageId: null,
-        coalesces: false,
-      },
-    );
-    if (preliminary === "in-flight") {
-      counts.tooFresh += 1;
-      continue;
-    }
-    const mirror =
-      preliminary === "no-message" ? null : await mirrorOf(row, tenantId, base);
     const verdict = classifyStrandedDelivery(
       {
         attemptStartedAt: attemptStartedAt(row),
         inboundMessageId: row.inboundMessageId,
       },
-      {
-        now,
-        staleAfterMs: STALE_AFTER_MS,
-        answeredMessageId: mirror?.answeredMessageId ?? null,
-        coalesces: mirror?.coalesces ?? false,
-      },
+      { now, staleAfterMs: STALE_AFTER_MS },
     );
-    // Not reachable: the same row already answered "not in-flight" a few lines up, against the same
-    // clock and the same threshold — the second call only adds the answered mark, which no branch
-    // above the age fence reads. Narrowed rather than asserted because the alternative is a throw on
-    // a path that cannot be taken.
     if (verdict === "in-flight") {
       counts.tooFresh += 1;
       continue;
     }
+    // Read the mirror only for a row that is going in the loss list: it is where the line is filed,
+    // and a row that carried no message writes no line.
+    const mirror =
+      verdict === "no-message" ? null : await mirrorOf(row, tenantId, base);
     await record(verdict, row, tenantId, mirror, counts, base);
   }
   return counts;

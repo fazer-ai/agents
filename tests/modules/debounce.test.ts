@@ -223,17 +223,6 @@ async function watermarkOf(convId: number): Promise<number | null> {
   return row.lastHandledMessageId;
 }
 
-// How far a turn got to POSTING, which is the strictly smaller question the watermark cannot answer:
-// most advances of the watermark mean the messages are being retired UNANSWERED. Only the post gate
-// moves this one.
-async function answeredMarkOf(convId: number): Promise<number | null> {
-  const row = await suDb.conversation.findFirstOrThrow({
-    where: { tenantId, chatwootConversationId: convId },
-    select: { lastAnsweredMessageId: true },
-  });
-  return row.lastAnsweredMessageId;
-}
-
 describe.skipIf(!dbUp)("debounce", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
@@ -638,10 +627,217 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([[800, REPLY]]);
     expect(await watermarkOf(800)).toBe(2);
-    // The post gate claimed the ANSWERED mark too, and this is the only kind of advance that does.
-    // The stranded-delivery sweep reads that mark and not the watermark, because the watermark also
-    // advances on every burst that is retired WITHOUT a reply (issue #228).
-    expect(await answeredMarkOf(800)).toBe(2);
+  });
+
+  test("a flush retires the ledger row of a message it rescued", async () => {
+    // The half of issue #228 that makes the sweep's question answerable, and the reason there is no
+    // watermark arithmetic left in the classifier.
+    //
+    // Message 1's delivery died mid-processing, so its ledger row sits non-terminal with nothing
+    // working it. Message 2 arrives and arms a flush, and the flush re-reads the WHOLE thread from
+    // Chatwoot rather than the message that armed it — so message 1 is in the burst and does get
+    // answered. Nothing about the conversation's watermarks can express that afterwards, but the
+    // turn knows it, so it says so on the row.
+    const convId = 880;
+    await seedConversation(convId);
+    const stranded = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-rescue-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    const out = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "oi" },
+              { id: 2, content: "tem horário?" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([[convId, REPLY]]);
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: stranded.id },
+      select: { status: true, processedAt: true },
+    });
+    expect(row.status).toBe("PROCESSED");
+    expect(row.processedAt).not.toBeNull();
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: stranded.id } });
+  });
+
+  test("a flush leaves a strand the burst did NOT contain alone", async () => {
+    // The regression test for the finding that killed the watermark design for good. Message 1's
+    // delivery died. Message 2 arrived while the conversation was human-owned, so the webhook
+    // advanced the handled watermark past BOTH without answering either. Message 3 then arms a
+    // flush, and the burst floor is now the watermark — so the burst is {3} and message 1 is NOT in
+    // it. Nothing covered message 1, and its row must stay non-terminal to say so.
+    //
+    // Every version of this that read a watermark closed this row: the mark ends up past message 1
+    // whether it counts skips or only posts, because the burst that posted started ABOVE it.
+    const convId = 882;
+    await seedConversation(convId);
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: (
+        await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: convId },
+          select: { id: true },
+        })
+      ).id,
+      toMessageId: 2,
+      base: appDb,
+    });
+    const stranded = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-excluded-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 3 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "oi" },
+              { id: 2, content: "alguém aí?" },
+              { id: 3, content: "por favor" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // The reply went out, for message 3 alone.
+    expect(sent).toEqual([[convId, REPLY]]);
+    // And message 1 is still on the books as unanswered, which is the whole point.
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: stranded.id },
+      select: { status: true },
+    });
+    expect(row.status).toBe("PROCESSING");
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: stranded.id } });
+  });
+
+  test("a flush does not resurrect a row already reported as a loss", async () => {
+    // The sweep may have run first and put this message in the operator's DEAD list. A later flush
+    // that happens to re-read the same page must not quietly flip it to PROCESSED and take it back
+    // out: the operator was told a customer went unanswered, and either that stands or a human
+    // decides otherwise.
+    const convId = 883;
+    await seedConversation(convId);
+    const reported = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-already-dead-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        processedAt: new Date(Date.now() - 60_000),
+        receivedAt: new Date(Date.now() - 120_000),
+        conversationId: convId,
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 1, content: "oi" }])],
+          sent: [],
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: reported.id },
+      select: { status: true },
+    });
+    expect(row.status).toBe("DEAD");
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
+  });
+
+  test("a flush leaves a stranded row on ANOTHER conversation alone", async () => {
+    // The retirement is scoped by conversation as well as by message id, and a Chatwoot message id
+    // is unique per account rather than per conversation — but the ids in a test fixture are not, and
+    // neither are they across instances. Without the conversation in the WHERE, a burst would retire
+    // a neighbour's strand and hide a real loss.
+    const convId = 881;
+    await seedConversation(convId);
+    const other = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-neighbour-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        // A DIFFERENT conversation, carrying a message id the burst below also contains.
+        conversationId: 9_999,
+        inboundMessageId: 1,
+      },
+      select: { id: true },
+    });
+    await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 1, content: "oi" }])],
+          sent: [],
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: other.id },
+      select: { status: true },
+    });
+    expect(row.status).toBe("PROCESSING");
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: other.id } });
   });
 
   test("a re-flush with nothing past the watermark posts nothing (idempotent)", async () => {
@@ -1272,10 +1468,6 @@ describe.skipIf(!dbUp)("debounce", () => {
       // come back for the same messages.
       expect(calls.getMessages).toBe(0);
       expect(await watermarkOf(840)).toBe(7);
-      // And the other mark did NOT move: nothing replied to message 7. This is the pair that makes
-      // the two columns worth having — read the watermark here and a reader concludes the customer
-      // was served.
-      expect(await answeredMarkOf(840)).toBeNull();
     });
 
     // The authorization call is a round-trip to somebody else's endpoint with a ten-second ceiling.
@@ -1422,7 +1614,7 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(await watermarkOf(803)).toBe(8);
   });
 
-  test("an empty reply claims the post gate: the turn RAN over the burst", async () => {
+  test("an empty reply still advances the watermark (the burst was consumed)", async () => {
     await seedConversation(804);
     const sent: Array<[number, string]> = [];
     const calls = { getMessages: 0 };
@@ -1447,14 +1639,6 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([]);
     expect(await watermarkOf(804)).toBe(2);
-    // And the answered mark moves TOO, which is the boundary of what that column means. The post
-    // gate is claimed before delivery (it has to be, or the claim is not at-most-once), so an empty
-    // model reply claims it and then sends nothing. The mark says "a turn reached the post gate
-    // covering up to here", not "a reply reached the customer" — and for the reader it exists for
-    // that is the right question: the stranded-delivery sweep asks whether a message was lost to a
-    // PROCESS DEATH, and a burst the model saw and chose to answer with nothing was not lost. The
-    // same holds for a guardrail suppressing the send.
-    expect(await answeredMarkOf(804)).toBe(2);
   });
 
   test("a human takeover mid-turn advances the watermark (no re-answer after the return)", async () => {

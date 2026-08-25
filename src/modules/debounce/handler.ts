@@ -9,6 +9,7 @@ import {
 } from "@/graph/runtime";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
+import { retireCoveredDeliveries } from "@/modules/chatwoot/delivery-sweep";
 import { describeClosedGate } from "@/modules/chatwoot/gate-close";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
@@ -193,9 +194,6 @@ export async function coalesceAndRunTurn(
       tenantId,
       conversationDbId: convDbId,
       toMessageId: targetWatermark,
-      // A post gate, and the only advance on this path that means a reply is going out. The tail
-      // advance below covers the outcomes where one is not.
-      answered: true,
       base,
     });
   };
@@ -263,6 +261,27 @@ export async function coalesceAndRunTurn(
       toMessageId: targetWatermark,
       base,
     });
+    // And say so on the LEDGER, for the messages this burst actually contained. A burst re-fetched
+    // from Chatwoot can carry a message whose own delivery died mid-processing — rescuing those is
+    // what re-reading the thread buys — and that row is still sitting non-terminal with nothing
+    // working it. Retired here, the stranded-delivery sweep needs no watermark arithmetic to tell a
+    // message a turn covered from one nothing ever looked at (issue #228). Normally updates nothing.
+    // Best-effort: a miss costs a line in the loss list, never a reply.
+    try {
+      await retireCoveredDeliveries({
+        tenantId,
+        conversationId,
+        messageIds: pending.map((m) => m.id),
+        base,
+      });
+    } catch (e) {
+      logger.warn(
+        "%s: could not retire the covered deliveries (conv=%s): %s",
+        ctx.label,
+        String(conversationId),
+        err(e),
+      );
+    }
   }
   logger.info(
     "%s: conv=%s msgs=%d watermark→%d outcome=%s",

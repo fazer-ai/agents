@@ -349,7 +349,7 @@ model ChatwootWebhookDelivery {
   // The INBOUND message this delivery carried, when it carried one. Null on every event that is not
   // a customer message — a conversation update, the bot's own reply coming back around — which is
   // what lets the sweep tell a row where nothing was lost from one where a customer went unanswered.
-  // Compared against the conversation's ANSWERED mark, never read for content: an id, like the
+  // Matched by id when a turn retires the rows it covered, never read for content: an id, like the
   // column above, and nothing here can hold what the customer wrote.
   inboundMessageId   Int?                  @map("inbound_message_id")
 
@@ -360,6 +360,9 @@ model ChatwootWebhookDelivery {
   @@index([tenantId])
   // Serves the stranded-delivery sweep, which asks for the oldest non-terminal rows.
   @@index([status, receivedAt])
+  // Serves the other half of the same contract: a turn retiring the rows of the messages it just ran
+  // over, by conversation and message id (`retireCoveredDeliveries`).
+  @@index([conversationId, inboundMessageId])
   @@map("chatwoot_webhook_deliveries")
 }
 
@@ -509,19 +512,6 @@ model Conversation {
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.
   lastHandledMessageId   Int?      @map("last_handled_message_id")
-  // How far a TURN THAT RAN got, claimed by the two post gates through the same CAS as the mark
-  // above and never ahead of it. Precisely: a turn reached the point of posting covering up to this
-  // message. Not "a reply reached the customer" — the claim has to precede the send to be
-  // at-most-once, so an empty model reply or a guardrail suppression claims it and sends nothing.
-  //
-  // A separate column because the two answer different questions and most writers of the handled
-  // mark advance it precisely because NO TURN IS RUNNING (unauthorized contact, human takeover, a
-  // conversation that was already human-owned when the message arrived), so "handled" read as "a
-  // turn covered this" concludes a message was processed when nothing looked at it. The
-  // stranded-delivery sweep is the reader that needs the difference: it asks whether a message was
-  // lost to a PROCESS DEATH, and a burst a turn ran over was not (issue #228). NULL = no turn has
-  // ever reached the post gate here.
-  lastAnsweredMessageId  Int?      @map("last_answered_message_id")
   // Timestamp of the last INCOMING customer message — the WhatsApp 24h service-window anchor. A
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.

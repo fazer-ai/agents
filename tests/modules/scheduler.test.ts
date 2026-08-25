@@ -344,6 +344,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
       new Date(Date.now() + 10_800_000),
       undefined,
       appDb,
+      undefined,
       true,
     );
     const s = await statusOf(id);

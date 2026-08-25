@@ -401,6 +401,8 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     for (let i = 0; i < 50 && !detail; i++) {
       detail = (
         await suDb.executionLog.findFirst({
+          // flowlog-scope: agent — every test here shares the tenant but owns its agent, which is
+          // what fences this read (the note above says which neighbour it would otherwise take).
           where: {
             tenantId,
             agentId: agentDeadCredential,

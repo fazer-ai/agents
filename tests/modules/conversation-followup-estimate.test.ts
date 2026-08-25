@@ -1095,6 +1095,87 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
   // The distinction the flag exists for: a sequence whose last step is configured to resolve the
   // conversation ends with the bot no longer owning it. That is a COMPLETED sequence, and the console
   // still has to draw its completion marker — liveness alone cannot tell it from an abandoned one.
+  // Issue #261, at the reader the OPERATOR looks at. The gates in `webhook.ts` answer the episode's
+  // question, so on the unstamped half of an activated episode the agent replies — and this endpoint,
+  // asking the row, would still hand the console "awaiting /teste". A badge that contradicts what the
+  // operator can read in the conversation is worse than no badge.
+  test("the detail of an episode's unstamped half reports the activation", async () => {
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId: tenant,
+        name: "FU Episode",
+        systemPrompt: "x",
+        mode: "test",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: {
+          channelRedirect: {
+            enabled: true,
+            entryInboxId: 96,
+            widgetInboxId: 97,
+          },
+        },
+      },
+    });
+    const mk = (chatwootInboxId: number, name: string) =>
+      suDb.inbox.create({
+        data: {
+          tenantId: tenant,
+          chatwootInstanceId: inst,
+          chatwootInboxId,
+          name,
+          agentId: agent.id,
+        },
+      });
+    const entryInbox = await mk(96, "WhatsApp");
+    const widgetInbox = await mk(97, "Site");
+    const contact = await suDb.contact.create({
+      data: {
+        tenantId: tenant,
+        chatwootInstanceId: inst,
+        chatwootContactId: 9601,
+        name: "Cliente",
+      },
+    });
+    const at = new Date("2026-06-19T10:00:00Z");
+    const mkConv = (
+      chatwootConversationId: number,
+      inboxId: bigint,
+      stamp: Date | null,
+    ) =>
+      suDb.conversation.create({
+        data: {
+          tenantId: tenant,
+          chatwootInstanceId: inst,
+          chatwootConversationId,
+          inboxId,
+          contactId: contact.id,
+          status: "pending",
+          threadId: `${tenant}:${inst}:${chatwootConversationId}`,
+          lastEventAt: at,
+          testActivatedAt: stamp,
+        },
+      });
+    // `/teste` typed on WhatsApp after the link: the entry row carries it, the widget row does not.
+    await mkConv(9602, entryInbox.id, at);
+    const widget = await mkConv(9603, widgetInbox.id, null);
+    try {
+      const d = await getConversationDetail(ctx(tenant), widget.id, appDb);
+      expect(d.testActivatedAt).toBe(at.toISOString());
+    } finally {
+      await suDb.conversation.deleteMany({
+        where: {
+          tenantId: tenant,
+          chatwootConversationId: { in: [9602, 9603] },
+        },
+      });
+      await suDb.contact.delete({ where: { id: contact.id } });
+      await suDb.inbox.deleteMany({
+        where: { id: { in: [entryInbox.id, widgetInbox.id] } },
+      });
+      await suDb.agent.delete({ where: { id: agent.id } });
+    }
+  });
+
   test("a sequence that finished by resolving the conversation is complete, not abandoned", async () => {
     const d = await getConversationDetail(
       ctx(tenant),

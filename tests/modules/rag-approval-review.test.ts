@@ -9,6 +9,14 @@ import {
   editApprovalItem,
 } from "@/modules/rag/service";
 
+// The context these calls take: the tenant id came from a row this test created, so it carries
+// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+const ctxOf = (tenantId: bigint): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
+
 // Issue #81: the composition, not any single piece. A suggestion the agent hedged is copied into the
 // knowledge base verbatim on approval, so the hedge is embedded and every later answer on the
 // subject inherits it. These pin the two halves the fix leans on: the reviewer's revision is what
@@ -110,7 +118,7 @@ describe.skipIf(!dbUp)("approval review before approval", () => {
   test("an edited suggestion is approved as edited, not as proposed", async () => {
     await seed();
     const item = await createSuggestion({
-      tenantId,
+      ctx: ctxOf(tenantId),
       knowledgeBaseId: kbId,
       proposedContent: HEDGED,
       proposedTitle: "Prazo",
@@ -118,14 +126,14 @@ describe.skipIf(!dbUp)("approval review before approval", () => {
       base: appDb,
     });
     const edited = await editApprovalItem({
-      tenantId,
+      ctx: ctxOf(tenantId),
       id: item.id,
       proposedContent: REVISED,
       base: appDb,
     });
     expect(edited).toBe("updated");
     const res = await approveApprovalItem({
-      tenantId,
+      ctx: ctxOf(tenantId),
       id: item.id,
       demoMode: true,
       base: appDb,
@@ -141,7 +149,7 @@ describe.skipIf(!dbUp)("approval review before approval", () => {
   test("the rationale never reaches the knowledge base", async () => {
     await seed();
     const item = await createSuggestion({
-      tenantId,
+      ctx: ctxOf(tenantId),
       knowledgeBaseId: kbId,
       proposedContent: REVISED,
       proposedTitle: "Prazo 2",
@@ -149,7 +157,7 @@ describe.skipIf(!dbUp)("approval review before approval", () => {
       base: appDb,
     });
     await approveApprovalItem({
-      tenantId,
+      ctx: ctxOf(tenantId),
       id: item.id,
       demoMode: true,
       base: appDb,
@@ -166,7 +174,7 @@ describe.skipIf(!dbUp)("approval review before approval", () => {
   test("the claim returns the text the row holds at claim time, not an earlier read", async () => {
     await seed();
     const item = await createSuggestion({
-      tenantId,
+      ctx: ctxOf(tenantId),
       knowledgeBaseId: kbId,
       proposedContent: HEDGED,
       proposedTitle: "Prazo 3",
@@ -174,12 +182,16 @@ describe.skipIf(!dbUp)("approval review before approval", () => {
     });
     // Stands in for the concurrent reviewer: the edit lands before the claim runs.
     await editApprovalItem({
-      tenantId,
+      ctx: ctxOf(tenantId),
       id: item.id,
       proposedContent: REVISED,
       base: appDb,
     });
-    const claimed = await claimApprovalForStorage(tenantId, item.id, appDb);
+    const claimed = await claimApprovalForStorage(
+      ctxOf(tenantId),
+      item.id,
+      appDb,
+    );
     expect(claimed?.proposedContent).toBe(REVISED);
     expect(claimed?.knowledgeBaseId).toBe(kbId);
   });
@@ -187,15 +199,17 @@ describe.skipIf(!dbUp)("approval review before approval", () => {
   test("a second claim on the same item gets nothing", async () => {
     await seed();
     const item = await createSuggestion({
-      tenantId,
+      ctx: ctxOf(tenantId),
       knowledgeBaseId: kbId,
       proposedContent: REVISED,
       base: appDb,
     });
     expect(
-      await claimApprovalForStorage(tenantId, item.id, appDb),
+      await claimApprovalForStorage(ctxOf(tenantId), item.id, appDb),
     ).not.toBeNull();
-    expect(await claimApprovalForStorage(tenantId, item.id, appDb)).toBeNull();
+    expect(
+      await claimApprovalForStorage(ctxOf(tenantId), item.id, appDb),
+    ).toBeNull();
   });
 
   // Editing is a review step, so it must be closed once the item leaves review — otherwise a second
@@ -203,20 +217,20 @@ describe.skipIf(!dbUp)("approval review before approval", () => {
   test("an approved item can no longer be edited", async () => {
     await seed();
     const item = await createSuggestion({
-      tenantId,
+      ctx: ctxOf(tenantId),
       knowledgeBaseId: kbId,
       proposedContent: REVISED,
       base: appDb,
     });
     await approveApprovalItem({
-      tenantId,
+      ctx: ctxOf(tenantId),
       id: item.id,
       demoMode: true,
       base: appDb,
     });
     expect(
       await editApprovalItem({
-        tenantId,
+        ctx: ctxOf(tenantId),
         id: item.id,
         proposedContent: "tarde demais",
         base: appDb,

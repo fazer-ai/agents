@@ -336,7 +336,7 @@
     "previous": "Anterior",
     "rateLimited": "Muitas requisições. Aguarde um instante e tente de novo.",
     "refresh": "Atualizar",
-    "reload": "Reload",
+    "reload": "Recarregar",
     "remove": "Remover",
     "retry": "Tentar novamente",
     "role": "Função",
@@ -1448,7 +1448,8 @@
     "docEditTitle": "Editar: {{title}}",
     "docError": {
       "embeddingEmpty": "A credencial de embedding está vazia. Preencha-a e indexe novamente.",
-      "embeddingNotConfigured": "A credencial de embedding não está configurada neste workspace. Configure em Componentes e indexe novamente."
+      "embeddingNotConfigured": "A credencial de embedding não está configurada neste workspace. Configure em Componentes e indexe novamente.",
+      "embeddingPending": "A credencial de embedding ainda não foi preenchida. Preencha-a e indexe novamente."
     },
     "docStatus": {
       "FAILED": "Falhou",
@@ -1563,6 +1564,7 @@
       "generate": "Geração",
       "handoff": "Transferência",
       "normalize": "Reescrita para fala",
+      "route": "Roteamento",
       "split": "Entrega",
       "stt": "Transcrição",
       "tool": "Chamada de ferramenta",

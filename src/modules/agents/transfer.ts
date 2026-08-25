@@ -1490,6 +1490,7 @@ async function createMissingComponents(
     //
     // Asked AFTER the validity gate, and the order is the message: a bundle carrying a template that
     // is both unreadable and named like an existing one is more usefully told about the first.
+    // not-caller-input: a name read off the template being imported, not a value from this request
     const approvedName = templateNameSchema.parse(tpl.name);
     const nameHolder = await db.documentTemplate.findFirst({
       where: { name: approvedName },

@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { recordDirectUsage } from "@/graph/usage";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
@@ -15,6 +16,7 @@ import { tryResolveVaultEntry } from "@/modules/vault/service";
 import {
   getVisionProvider,
   type VisionKind,
+  type VisionResult,
   visionKindForMime,
 } from "./providers";
 import { readVisionConfig, type VisionConfig } from "./settings";
@@ -165,35 +167,33 @@ export async function extractInboundFile(
   if (kind === "document" && !provider.supportsDocuments)
     return skip("document_not_supported");
 
-  let text: string;
+  let extracted: VisionResult;
   try {
-    text = (
-      await withFlowStage(
-        params.flow,
-        "vision",
-        {
-          provider: cfg.provider,
+    extracted = await withFlowStage(
+      params.flow,
+      "vision",
+      {
+        provider: cfg.provider,
+        model: cfg.model || provider.defaultModel,
+        detail: { kind },
+        // Recovered (→ "couldn't extract" marker), so a failure reads as an advisory, not a red
+        // error — same contract as TTS.
+        errorLevel: "warn",
+      },
+      () =>
+        provider.extract({
+          bytes,
+          mimeType:
+            contentType ??
+            (kind === "image" ? "image/jpeg" : "application/pdf"),
+          kind,
+          prompt: cfg.extractionPrompt,
           model: cfg.model || provider.defaultModel,
-          detail: { kind },
-          // Recovered (→ "couldn't extract" marker), so a failure reads as an advisory, not a red
-          // error — same contract as TTS.
-          errorLevel: "warn",
-        },
-        () =>
-          provider.extract({
-            bytes,
-            mimeType:
-              contentType ??
-              (kind === "image" ? "image/jpeg" : "application/pdf"),
-            kind,
-            prompt: cfg.extractionPrompt,
-            model: cfg.model || provider.defaultModel,
-            apiKey: entry.secret,
-            baseURL: entry.baseUrl ?? cfg.baseURL,
-            fetchImpl: params.deps?.fetchImpl ?? fetch,
-          }),
-      )
-    ).trim();
+          apiKey: entry.secret,
+          baseURL: entry.baseUrl ?? cfg.baseURL,
+          fetchImpl: params.deps?.fetchImpl ?? fetch,
+        }),
+    );
   } catch (e) {
     // Best-effort: a provider error must not strand delivery. Log at error-level (ops alert channel)
     // and leave the attachment unextracted → the agent sees the "couldn't extract" marker.
@@ -208,6 +208,17 @@ export async function extractInboundFile(
       "inbound vision extraction failed; leaving attachment unextracted",
     );
     return null;
+  }
+  const text = extracted.text.trim();
+  // The row is written whether or not the extraction yielded text: a call that came back empty was
+  // billed exactly like one that came back full, and the early return below used to end the
+  // function before anything could record it.
+  if (params.flow && extracted.usage) {
+    await recordDirectUsage(params.flow, {
+      model: cfg.model || provider.defaultModel,
+      node: "vision",
+      ...extracted.usage,
+    });
   }
   if (!text) return null;
 
@@ -323,32 +334,37 @@ export async function extractPlaygroundFile(
   }
 
   try {
-    const text = (
-      await withFlowStage(
-        params.flow,
-        "vision",
-        {
-          provider: cfg.provider,
+    const extracted = await withFlowStage(
+      params.flow,
+      "vision",
+      {
+        provider: cfg.provider,
+        model: cfg.model || provider.defaultModel,
+        detail: { kind },
+        errorLevel: "warn",
+      },
+      () =>
+        provider.extract({
+          bytes: params.file,
+          mimeType:
+            params.mimeType ??
+            (kind === "image" ? "image/jpeg" : "application/pdf"),
+          kind,
+          prompt: cfg.extractionPrompt,
           model: cfg.model || provider.defaultModel,
-          detail: { kind },
-          errorLevel: "warn",
-        },
-        () =>
-          provider.extract({
-            bytes: params.file,
-            mimeType:
-              params.mimeType ??
-              (kind === "image" ? "image/jpeg" : "application/pdf"),
-            kind,
-            prompt: cfg.extractionPrompt,
-            model: cfg.model || provider.defaultModel,
-            apiKey: entry.secret,
-            baseURL: entry.baseUrl ?? cfg.baseURL,
-            fetchImpl: params.deps?.fetchImpl ?? fetch,
-          }),
-      )
-    ).trim();
-    return { kind, text };
+          apiKey: entry.secret,
+          baseURL: entry.baseUrl ?? cfg.baseURL,
+          fetchImpl: params.deps?.fetchImpl ?? fetch,
+        }),
+    );
+    if (params.flow && extracted.usage) {
+      await recordDirectUsage(params.flow, {
+        model: cfg.model || provider.defaultModel,
+        node: "vision",
+        ...extracted.usage,
+      });
+    }
+    return { kind, text: extracted.text.trim() };
   } catch (e) {
     // Provider error (bad file, model refusal, timeout) must NOT interrupt the turn: log at
     // error-level (the ops alert channel — no Sentry here) and degrade to the "couldn't extract"

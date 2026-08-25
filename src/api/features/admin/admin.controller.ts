@@ -191,7 +191,7 @@ export const adminController = new Elysia({
         "Update user role",
         "Change a user's role within the caller's tenant scope.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   // Permanently delete a user (within the caller's tenant scope). Step-up: the acting admin re-enters
@@ -261,7 +261,7 @@ export const adminController = new Elysia({
         "Delete user",
         "Permanently delete a user within the caller's tenant scope. Requires the acting admin's password; cannot delete yourself or the last admin.",
       ),
-      response: errors(401, 403, 404, 409),
+      response: errors(401, 403, 404, 409, 422),
     },
   )
   // Invite a user into a tenant. A SUPER_ADMIN targets one explicitly via body.tenantId (400 if
@@ -337,7 +337,7 @@ export const adminController = new Elysia({
         "Create invitation",
         "Invite a user into a tenant and return an accept link.",
       ),
-      response: errors(400, 401, 403, 409),
+      response: errors(400, 401, 403, 409, 422),
     },
   )
   .get(

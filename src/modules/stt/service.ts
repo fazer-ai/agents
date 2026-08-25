@@ -278,7 +278,7 @@ export async function transcribePlaygroundAudio(
   const effectiveBaseURL = entry.baseUrl ?? cfg.baseURL;
   if (provider.requiresBaseURL && !effectiveBaseURL) {
     throw new AppError(
-      "provider requires a base URL",
+      "A base URL is required for this provider.",
       400,
       "errors.baseUrlRequired",
     );
@@ -301,6 +301,7 @@ export async function transcribePlaygroundAudio(
       `transcription failed: ${detail}`,
       502,
       "errors.sttFailed",
+      { detail },
     );
   }
   return cleanTranscription(raw);

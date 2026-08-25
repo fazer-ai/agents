@@ -36,6 +36,14 @@ import {
 } from "@/modules/webhooks/outbound/subscriptions";
 import { outboundUrl } from "../../utils/outbound";
 
+// The context these calls take: the tenant id came from a row this test created, so it carries
+// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+const ctxOf = (tenantId: bigint): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
+
 // Every column that stores a `vault:<id>`, held to the same rule on the way in. A bare NAME was the
 // value that got stored and could never resolve: `vaultRefWhere` turns it into a filter matching
 // nothing, so the feature behaves as if nothing were configured — silently for five of these, and as
@@ -96,7 +104,7 @@ const boundaries: Boundary[] = [
     create: async (ref) =>
       (
         await createIntegrationInstance(
-          tenantId,
+          ctxOf(tenantId),
           {
             catalogType: "ASAAS",
             name: uniq("inbound"),
@@ -121,7 +129,7 @@ const boundaries: Boundary[] = [
     create: async (ref) =>
       (
         await createIntegrationInstance(
-          tenantId,
+          ctxOf(tenantId),
           {
             catalogType: "ASAAS",
             name: uniq("outbound"),

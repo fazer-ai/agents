@@ -285,6 +285,56 @@ async function sendReset(
   });
 }
 
+// A `message_updated` carrying the audio that was not attached at creation time — the shape
+// `hasPendingInboundMediaUpdate` recognises. Eligible for eager STT only: it drives no turn.
+async function sendLateAudio(
+  convId: number,
+  inboxId: number,
+  audioUrl: string,
+): Promise<void> {
+  deliverySeq += 1;
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const body = JSON.stringify({
+    event: "message_updated",
+    id: 9500 + deliverySeq,
+    content: "",
+    message_type: "incoming",
+    private: false,
+    attachments: [
+      { id: 77, file_type: "audio", data_url: audioUrl, transcribed_text: "" },
+    ],
+    conversation: {
+      id: convId,
+      inbox_id: inboxId,
+      status: "pending",
+      contact_inbox: { id: 301 },
+      meta: { assignee_type: null, assignee: null },
+    },
+  });
+  const r = await receiveChatwootWebhook({
+    routeToken,
+    rawBody: body,
+    getHeader: (name: string) =>
+      ({
+        "x-chatwoot-signature": `sha256=${createHmac("sha256", SECRET)
+          .update(`${nowSeconds}.${body}`)
+          .digest("hex")}`,
+        "x-chatwoot-timestamp": String(nowSeconds),
+        "x-chatwoot-delivery": `late-audio-${deliverySeq}`,
+      })[name.toLowerCase()] ?? null,
+    nowSeconds,
+    base: appDb,
+  });
+  await recordAndProcessChatwootDelivery({
+    tenantId,
+    instanceId: r.instanceId as bigint,
+    deliveryId: r.deliveryId as string,
+    agentBotId: r.agentBotId ?? null,
+    normalized: r.normalized as NonNullable<typeof r.normalized>,
+    base: appDb,
+  });
+}
+
 const attributeCalls = (calls: CwCall[]) =>
   calls.filter((c) => c.path.endsWith("/custom_attributes"));
 const ackCalls = (calls: CwCall[]) =>
@@ -1442,6 +1492,126 @@ describe.skipIf(!dbUp)(
         });
       }
     };
+
+    // Issue #261's third reader, and the one that is not a send gate at all: a COST fence. A test
+    // agent only pays for transcribing a late attachment on a conversation "explicitly activated",
+    // and it asks the row rather than the episode — so an episode activated on WhatsApp does not get
+    // its voice notes transcribed on the widget side, and the agent later answers a message it never
+    // heard.
+    test("a late voice note is transcribed when the episode is activated on the other half", async () => {
+      await withRedirectPair(async (_convId, _widgetThread) => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 44 },
+          data: { testActivatedAt: null },
+        });
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          data: { testActivatedAt: new Date() },
+        });
+        // The fence only has an observable if STT is runnable at all: without it `resolveSttConfig`
+        // answers null and nothing is downloaded whatever the fence decides.
+        const mine = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          select: { inbox: { select: { agentId: true } } },
+        });
+        const agentId = mine.inbox?.agentId as bigint;
+        const sttKey = await suDb.vaultEntry.create({
+          data: {
+            tenantId,
+            name: `stt-key-${Date.now()}`,
+            secret: encryptJson("sk-test"),
+          },
+          select: { id: true },
+        });
+        const withStt = await suDb.agent.findUniqueOrThrow({
+          where: { id: agentId },
+          select: { settings: true },
+        });
+        await suDb.agent.update({
+          where: { id: agentId },
+          data: {
+            settings: {
+              ...(withStt.settings as Record<string, unknown>),
+              stt: {
+                enabled: true,
+                provider: "openai",
+                model: "whisper-1",
+                credentialRef: `vault:${sttKey.id}`,
+              },
+            },
+          },
+        });
+        const cw = fakeChatwoot();
+        globalThis.fetch = cw.impl;
+        const audioUrl = "https://203.0.113.9:9/late-note.ogg";
+        await sendLateAudio(44, WIDGET_INBOX_ID, audioUrl);
+        // The fence's only observable is whether the analysis was paid for at all: eager media
+        // downloads the attachment. Before the fix nothing is fetched.
+        expect(cw.calls.some((c) => c.path.endsWith("/late-note.ogg"))).toBe(
+          true,
+        );
+      });
+    });
+
+    // Issue #261, the same wrong unit one gate earlier. An ordinary message on the widget half of an
+    // activated episode is met with the not-activated notice — telling an operator who activated the
+    // agent one message ago, on the other channel, to go and activate it.
+    //
+    // The gate spells its predicate inline (`ctx.mode === "test" && ctx.conv.testActivatedAt ===
+    // null`) instead of going through `isTestSilenced`, which is why a sweep for the shared predicate
+    // does not turn it up.
+    test("an ordinary message is not met with the not-activated notice when the episode is activated", async () => {
+      await withRedirectPair(async (_convId, _widgetThread) => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 44 },
+          data: { testActivatedAt: null, testNoticeSentAt: null },
+        });
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          data: { testActivatedAt: new Date() },
+        });
+        const cw = fakeChatwoot();
+        globalThis.fetch = cw.impl;
+        await sendReset("oi, ainda tá aí?", 44, { inboxId: WIDGET_INBOX_ID });
+        const notices = ackCalls(cw.calls).filter((c) =>
+          JSON.stringify(c.body ?? {}).includes("modo teste"),
+        );
+        // Before the fix this is the one-shot notice, posted on an episode that IS activated.
+        expect(notices).toEqual([]);
+      });
+    });
+
+    // Issue #261: the activation the operator gave is on the OTHER half of the episode. `/teste` was
+    // typed on WhatsApp after the link, so the ENTRY row carries the stamp and the widget row — the
+    // one this command is typed on — has none.
+    //
+    // `shouldRunReset` reads that row alone, answers false, and the command falls through to the
+    // test-mode gate. That gate's notice is one-shot and an earlier message already spent it, so what
+    // the operator gets back for a typed command is NOTHING AT ALL: no ack, no cleanup, no reason.
+    test("/reset runs when the activation is on the episode's other half", async () => {
+      await withRedirectPair(async (_convId, _widgetThread) => {
+        // The mirror image of what the helper seeds: the widget unstamped, the entry activated.
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 44 },
+          data: { testActivatedAt: null },
+        });
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          data: { testActivatedAt: new Date() },
+        });
+        // The one shot is already spent, which is what makes the silence total rather than merely
+        // wrong: without this the gate would at least repeat the not-activated notice.
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 44 },
+          data: { testNoticeSentAt: new Date() },
+        });
+        const cw = fakeChatwoot();
+        globalThis.fetch = cw.impl;
+        await sendReset("/reset", 44, { inboxId: WIDGET_INBOX_ID });
+        // A typed command has to answer something. Before the fix this array is empty.
+        expect(ackCalls(cw.calls)).not.toEqual([]);
+      });
+    });
 
     // A ladder the worker had ALREADY picked up. Cancelling reaches PENDING rows only, so the row
     // survives — and this ladder's terminal stage posts a closing on both conversations and resolves

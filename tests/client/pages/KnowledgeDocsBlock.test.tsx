@@ -19,6 +19,8 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { ToastProvider } from "@/client/components";
+import clientEn from "@/client/locales/en.json";
+import clientPt from "@/client/locales/pt-BR.json";
 
 // Issue #80, review finding of round 5: the embedding block is a READ-TIME answer about the
 // workspace's configuration, and the documents modal holds it as a snapshot taken when the list was
@@ -140,6 +142,27 @@ function json(body: unknown): Response {
   });
 }
 
+// The stub resolves against the REAL catalogs, and falls back to the call site's default only when
+// the key is missing — which is what i18next itself does. A stub that always answered the default
+// would render correctly for a key the catalog does not have, and that is precisely the failure
+// issue #256 is about: an unresolvable key is invisible at runtime. With the lookup in place, a
+// test asserting the CATALOG's sentence goes red when the key stops resolving.
+const CATALOGS: Record<string, Record<string, unknown>> = {
+  en: clientEn as Record<string, unknown>,
+  "pt-BR": clientPt as Record<string, unknown>,
+};
+// The locale the mounted tree renders in; a test flips it to read the other language.
+let uiLanguage = "en";
+
+function lookup(locale: string, key: string): string | undefined {
+  let node: unknown = CATALOGS[locale];
+  for (const part of key.split(".")) {
+    if (!node || typeof node !== "object") return undefined;
+    node = (node as Record<string, unknown>)[part];
+  }
+  return typeof node === "string" ? node : undefined;
+}
+
 mock.module("react-i18next", () => ({
   useTranslation: () => ({
     t: (
@@ -149,9 +172,12 @@ mock.module("react-i18next", () => ({
     ) => {
       const fb = typeof fallback === "string" ? fallback : key;
       const vars = (typeof fallback === "string" ? opts : fallback) ?? {};
-      return fb.replace(/\{\{(\w+)\}\}/g, (_m, k) => String(vars[k] ?? ""));
+      const template = lookup(uiLanguage, key) ?? fb;
+      return template.replace(/\{\{(\w+)\}\}/g, (_m, k) =>
+        String(vars[k] ?? ""),
+      );
     },
-    i18n: { language: "en" },
+    i18n: { language: uiLanguage },
   }),
   initReactI18next: { type: "3rdParty", init: () => {} },
 }));
@@ -670,11 +696,11 @@ describe("knowledge: a refusal the server phrased reaches the operator", () => {
   async function addText(body: unknown, status: number) {
     addDocResponse = { status, body };
     await openModal();
-    fireEvent.click(screen.getByRole("button", { name: /adicionar/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
     fireEvent.change(await screen.findByRole("textbox", { name: /text/i }), {
       target: { value: "some text" },
     });
-    const buttons = screen.getAllByRole("button", { name: /adicionar/i });
+    const buttons = screen.getAllByRole("button", { name: /^add$/i });
     fireEvent.click(buttons[buttons.length - 1] as HTMLElement);
   }
 
@@ -699,15 +725,15 @@ describe("knowledge: a refusal the server phrased reaches the operator", () => {
   async function uploadFile(body: unknown, status: number) {
     addDocResponse = { status, body };
     await openModal();
-    fireEvent.click(screen.getByRole("button", { name: /adicionar/i }));
-    fireEvent.click(screen.getByRole("tab", { name: /arquivo/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /^file$/i }));
     const input = document.querySelector(
       'input[type="file"]',
     ) as HTMLInputElement;
     const file = new File(["policy"], "policy.txt", { type: "text/plain" });
     Object.defineProperty(input, "files", { value: [file], writable: false });
     fireEvent.change(input);
-    const buttons = screen.getAllByRole("button", { name: /adicionar/i });
+    const buttons = screen.getAllByRole("button", { name: /^add$/i });
     fireEvent.click(buttons[buttons.length - 1] as HTMLElement);
   }
 
@@ -730,5 +756,196 @@ describe("knowledge: a refusal the server phrased reaches the operator", () => {
     fireEvent.focus(chip);
     await waitFor(() => expect(shows(/Unsupported file type/i)).toBe(true));
     expect(shows(/whatever the API said/)).toBe(false);
+  });
+});
+
+// THE SENTENCE ON SCREEN, IN THE LANGUAGE THE OPERATOR PICKED.
+//
+// Everything else about issue #256 is checked against data: the server's token matches the client's
+// map, the key exists in both catalogs, the two languages differ. None of that proves the sentence
+// reaches a reader, and the failure mode being fixed is exactly one that leaves no trace — i18next
+// answers an unresolvable key with the call site's default, so a broken key renders ENGLISH to a
+// pt-BR operator and nothing anywhere says so.
+//
+// This mounts the real component and reads the tooltip out of the DOM, in both languages, asserting
+// the CATALOG's sentence rather than the call site's default. The stub `t` above falls back to that
+// default when a key does not resolve, exactly as i18next does, which is what gives these
+// assertions their teeth: break the key and the default renders, and the pt-BR case goes red.
+describe("a failed document's reason, rendered", () => {
+  beforeEach(() => {
+    docsCalls = 0;
+    docsQueue = [];
+    blockCalls = 0;
+    blockQueue = [];
+    blockThrows = false;
+    reindexResponse = {};
+    onKnowledgeDocument = null;
+    gateOnCall = null;
+    gatedDocsCalls = [];
+    docsReleasers.clear();
+    addDocResponse = null;
+    uiLanguage = "en";
+    installFetchStub();
+  });
+
+  afterEach(() => {
+    cleanup();
+    uiLanguage = "en";
+  });
+
+  // The three tokens the ingest job stores, next to the sentence each catalog answers with. Read
+  // from the catalogs rather than pasted, so a reworded translation does not turn into a red test
+  // here; what is asserted is that the RENDERED text is the catalog's, not the fallback's.
+  function openTooltip(locale: "en" | "pt-BR") {
+    const badge = screen.getByText(
+      lookup(locale, "knowledge.docStatus.FAILED") as string,
+    );
+    fireEvent.pointerEnter(badge);
+    fireEvent.focus(badge);
+  }
+
+  const CASES = [
+    ["errors.embeddingNotConfigured", "embeddingNotConfigured"],
+    ["errors.embeddingPending", "embeddingPending"],
+    ["errors.embeddingEmpty", "embeddingEmpty"],
+  ] as const;
+
+  for (const [token, catalogKey] of CASES) {
+    for (const locale of ["en", "pt-BR"] as const) {
+      test(`${token} renders the ${locale} sentence`, async () => {
+        uiLanguage = locale;
+        docsQueue = [
+          {
+            documents: [doc({ status: "FAILED", error: token })],
+            embeddingBlock: null,
+          },
+        ];
+        await openModal();
+
+        const expected = lookup(locale, `knowledge.docError.${catalogKey}`);
+        // A missing catalog entry would make the assertion below compare against `undefined` and
+        // pass for the wrong reason; the sentence has to exist before it can be looked for.
+        expect(typeof expected).toBe("string");
+
+        // Radix renders the tooltip's content on hover, so the badge is opened rather than assumed.
+        // The badge itself is localized ("Failed" / "Falhou"), so it is looked up too — querying it
+        // by the English word is how this test would silently stop exercising pt-BR.
+        openTooltip(locale);
+        await waitFor(() => {
+          expect(shows(expected as string)).toBe(true);
+        });
+      });
+    }
+  }
+
+  // Over ALL THREE tokens, not one. The per-token tests above look for the sentence the catalog holds,
+  // so their expectation moves with the catalog: swapping a pt-BR entry for its English text keeps
+  // them green. This is the assertion that does not move, and it is the reason the swap goes red.
+  test.each(CASES)(
+    "%s renders a different sentence in each language",
+    async (token, catalogKey) => {
+      const seen: string[] = [];
+      for (const locale of ["en", "pt-BR"] as const) {
+        uiLanguage = locale;
+        docsQueue = [
+          {
+            documents: [doc({ status: "FAILED", error: token })],
+            embeddingBlock: null,
+          },
+        ];
+        await openModal();
+        openTooltip(locale);
+        const text = lookup(
+          locale,
+          `knowledge.docError.${catalogKey}`,
+        ) as string;
+        await waitFor(() => {
+          expect(shows(text)).toBe(true);
+        });
+        seen.push(text);
+        cleanup();
+        docsCalls = 0;
+      }
+      expect(seen[0]).not.toBe(seen[1]);
+    },
+  );
+
+  test("the two languages are not the same sentence on screen", async () => {
+    const seen: string[] = [];
+    for (const locale of ["en", "pt-BR"] as const) {
+      uiLanguage = locale;
+      docsQueue = [
+        {
+          documents: [
+            doc({ status: "FAILED", error: "errors.embeddingPending" }),
+          ],
+          embeddingBlock: null,
+        },
+      ];
+      await openModal();
+      openTooltip(locale);
+      const text = lookup(locale, "knowledge.docError.embeddingPending");
+      await waitFor(() => {
+        expect(shows(text as string)).toBe(true);
+      });
+      seen.push(text as string);
+      cleanup();
+      docsCalls = 0;
+    }
+    // The control: a screen that ignored the locale would put the same sentence in both slots and
+    // every assertion above would still pass.
+    expect(seen[0]).not.toBe(seen[1]);
+  });
+
+  // The stored column, in the shape a row written before issue #256 carries. Same render path, same
+  // tooltip — the alias only matters if it survives to the screen.
+  test("a row written before the rename renders the pt-BR sentence too", async () => {
+    uiLanguage = "pt-BR";
+    docsQueue = [
+      {
+        documents: [
+          doc({
+            status: "FAILED",
+            error: "errors.embedding.embedding_not_configured",
+          }),
+        ],
+        embeddingBlock: null,
+      },
+    ];
+    await openModal();
+    openTooltip("pt-BR");
+    const expected = lookup(
+      "pt-BR",
+      "knowledge.docError.embeddingNotConfigured",
+    ) as string;
+    expect(typeof expected).toBe("string");
+    await waitFor(() => {
+      expect(shows(expected)).toBe(true);
+    });
+    // …and it is not the English one, which is what a missing alias would have fallen back to.
+    expect(
+      shows(
+        lookup("en", "knowledge.docError.embeddingNotConfigured") as string,
+      ),
+    ).toBe(false);
+  });
+
+  // An unknown token is NOT localized: it is the worker's raw diagnostic, and showing it verbatim is
+  // the point (a translated "unknown error" would replace the only information there is).
+  test("a diagnostic the map does not know is shown verbatim", async () => {
+    uiLanguage = "pt-BR";
+    docsQueue = [
+      {
+        documents: [
+          doc({ status: "FAILED", error: "boom: connect ECONNREFUSED" }),
+        ],
+        embeddingBlock: null,
+      },
+    ];
+    await openModal();
+    openTooltip("pt-BR");
+    await waitFor(() => {
+      expect(shows("boom: connect ECONNREFUSED")).toBe(true);
+    });
   });
 });

@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { translateWithLocale } from "@/api/lib/i18n";
-import { AppError } from "@/lib/errors";
+import { AppError, type ErrorTranslationKey } from "@/lib/errors";
+import type { TenantContext } from "@/lib/tenancy";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   knowledgeCreate,
@@ -18,6 +19,14 @@ import {
   editApprovalItem,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
+
+// The context these calls take: the tenant id came from a row this test created, so it carries
+// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+const ctxOf = (tenantId: bigint): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
 
 // A DOCUMENT THE COLUMN CANNOT HOLD IS REFUSED BY NAME, NOT BY A 500.
 //
@@ -124,7 +133,7 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
   test("createDocument refuses the text, naming the field and the code point", async () => {
     const r = await refusal(() =>
       createDocument({
-        tenantId,
+        ctx: ctxOf(tenantId),
         knowledgeBaseId: kbId,
         title: "policy",
         text: `policy${NUL}text`,
@@ -141,7 +150,7 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
   test("createDocument refuses half a character in the title", async () => {
     const r = await refusal(() =>
       createDocument({
-        tenantId,
+        ctx: ctxOf(tenantId),
         knowledgeBaseId: kbId,
         title: "policy\ud800",
         text: "fine",
@@ -156,7 +165,7 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
   test("createDocument refuses a file name the column cannot hold", async () => {
     const r = await refusal(() =>
       createDocument({
-        tenantId,
+        ctx: ctxOf(tenantId),
         knowledgeBaseId: kbId,
         title: "policy",
         text: "fine",
@@ -173,7 +182,7 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
     const before = await suDb.knowledgeDocument.count({ where: { tenantId } });
     await refusal(() =>
       createDocument({
-        tenantId,
+        ctx: ctxOf(tenantId),
         knowledgeBaseId: kbId,
         title: "policy",
         text: `a${NUL}b`,
@@ -188,7 +197,7 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
 
   test("updateDocument refuses an edit the column cannot hold", async () => {
     const doc = await createDocument({
-      tenantId,
+      ctx: ctxOf(tenantId),
       knowledgeBaseId: kbId,
       title: "editable",
       text: "ORIGINAL",
@@ -196,7 +205,7 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
       base: appDb,
     });
     const r = await refusal(() =>
-      updateDocument(tenantId, doc.id, { text: `EDITED${NUL}` }, appDb),
+      updateDocument(ctxOf(tenantId), doc.id, { text: `EDITED${NUL}` }, appDb),
     );
     expect(r.status).toBe(400);
     expect(r.message).toContain("U+0000");
@@ -211,7 +220,7 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
   test("createKnowledgeBase refuses a name the column cannot hold", async () => {
     const r = await refusal(() =>
       createKnowledgeBase({
-        tenantId,
+        ctx: ctxOf(tenantId),
         name: `kb${NUL}`,
         base: appDb,
       }),
@@ -223,7 +232,7 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
   test("updateKnowledgeBase refuses a description the column cannot hold", async () => {
     const r = await refusal(() =>
       updateKnowledgeBase({
-        tenantId,
+        ctx: ctxOf(tenantId),
         id: kbId,
         description: "half\ud800",
         base: appDb,
@@ -236,7 +245,7 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
   test("editApprovalItem refuses an edit the column cannot hold", async () => {
     const r = await refusal(() =>
       editApprovalItem({
-        tenantId,
+        ctx: ctxOf(tenantId),
         id: 1n,
         proposedContent: `edited${NUL}`,
         base: appDb,
@@ -253,7 +262,7 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
   test("createSuggestion refuses content the column cannot hold", async () => {
     const r = await refusal(() =>
       createSuggestion({
-        tenantId,
+        ctx: ctxOf(tenantId),
         knowledgeBaseId: kbId,
         proposedContent: `learned${NUL}fact`,
         proposedTitle: "fact",
@@ -283,7 +292,7 @@ describe("the refusal answers in the caller's language", () => {
     let caught: unknown = null;
     try {
       await createDocument({
-        tenantId: 0n,
+        ctx: ctxOf(0n),
         knowledgeBaseId: 0n,
         title: "t",
         text: `a${NUL}b`,
@@ -296,7 +305,7 @@ describe("the refusal answers in the caller's language", () => {
     const err = caught as AppError;
     return translateWithLocale(
       locale,
-      err.translationKey as string,
+      err.translationKey as ErrorTranslationKey,
       err.message,
       err.translationParams,
     );

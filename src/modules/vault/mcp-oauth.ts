@@ -107,6 +107,7 @@ async function getJson<T>(url: string, opts: OAuthNetOpts): Promise<T> {
       `oauth discovery GET ${url} failed: ${res.status}`,
       502,
       "errors.mcpOAuthDiscoveryFailed",
+      { url, status: res.status },
     );
   }
   return (await res.json()) as T;
@@ -164,7 +165,7 @@ export async function discoverOAuthServer(
     throw new AppError(
       "protected-resource metadata has no authorization_servers",
       502,
-      "errors.mcpOAuthDiscoveryFailed",
+      "errors.mcpOAuthNoAuthorizationServer",
     );
   }
 
@@ -176,7 +177,7 @@ export async function discoverOAuthServer(
     throw new AppError(
       "authorization-server metadata is missing endpoints",
       502,
-      "errors.mcpOAuthDiscoveryFailed",
+      "errors.mcpOAuthMetadataIncomplete",
     );
   }
   if (
@@ -186,7 +187,7 @@ export async function discoverOAuthServer(
     throw new AppError(
       "authorization server does not support PKCE S256",
       400,
-      "errors.mcpOAuthDiscoveryFailed",
+      "errors.mcpOAuthPkceUnsupported",
     );
   }
 
@@ -268,6 +269,7 @@ export async function registerClient(params: {
       `dynamic client registration failed: ${json.error ?? res.status}`,
       502,
       "errors.mcpOAuthDcrFailed",
+      { reason: json.error ?? res.status },
     );
   }
   return {
@@ -394,7 +396,8 @@ async function postToken(
     throw new AppError(
       `mcp token endpoint error: ${json.error ?? res.status}`,
       json.error === "invalid_grant" ? 400 : 502,
-      "errors.mcpOAuthTokenExchangeFailed",
+      "errors.mcpOAuthTokenEndpointError",
+      { reason: String(json.error ?? res.status) },
     );
   }
   return json;
@@ -466,9 +469,9 @@ async function refreshNow(
     });
     if (!entry)
       throw new AppError(
-        `mcp_oauth credential ${entryId} not found`,
+        "mcp_oauth credential not found",
         404,
-        "errors.mcpOAuthNotConnected",
+        "errors.mcpOAuthCredentialNotFound",
       );
     if (entry.kind !== "mcp_oauth")
       throw new AppError(
@@ -512,7 +515,7 @@ async function refreshNow(
     throw new AppError(
       "mcp refresh response missing access_token",
       502,
-      "errors.mcpOAuthTokenExchangeFailed",
+      "errors.mcpOAuthRefreshFailed",
     );
   }
 

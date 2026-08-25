@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
+import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { isTestSilenced } from "@/modules/agents/test-mode";
@@ -646,7 +647,7 @@ export async function redirectFollowUpHandler(
 
   if (payload.stage === "chat") {
     if (cfg.chatFollowupEnabled) {
-      await runAgentNudge({
+      const outcome = await runAgentNudge({
         tenantId,
         threadId: payload.widgetThreadId,
         nudge: chatFollowupNudge(cfg.chatFollowupInstructions),
@@ -668,6 +669,42 @@ export async function redirectFollowUpHandler(
         stillWanted: async ({ strict }) => (await fence({ strict })) === "go",
         deps,
       });
+      // NOTE: This stage is the only one of the three that needs an agent to author anything, so it is
+      // the only one that can lose its turn to a refusal. Retry the SAME stage rather than advancing:
+      // the ladder's stages are an escalation, and spending the softest one on a message nobody
+      // received puts the lead one step closer to the closing for no reason.
+      //
+      // Asked through the same fence as `rescheduleTo`, which is what keeps this from re-deciding
+      // #219: an agent switched off is one of the states behind `agent-unavailable`, and the fence
+      // answers that one by ending the ladder instead of waiting for it to come back.
+      //
+      // On exhaustion, fall through to the advance below on purpose: the `whatsapp` and `closing`
+      // stages send fixed text with no model in the path, so a ladder that cannot author is still a
+      // ladder that can escalate.
+      if (isRepairableNudgeRefusal(outcome)) {
+        const retry = nextNudgeRetry(job.payload);
+        if (retry.retry) {
+          return (await fence()) !== "go"
+            ? { outcome: "done" }
+            : {
+                outcome: "reschedule",
+                runAt: retry.runAt,
+                payload: {
+                  stage: "chat",
+                  widgetThreadId: payload.widgetThreadId,
+                  agentId: payload.agentId,
+                  entryInboxId,
+                  nudgeRetries: retry.attempt,
+                },
+              };
+        }
+        logger.warn(
+          "redirectFollowUp: chat stage giving up after %d %s retries (thread=%s), escalating without it",
+          retry.attempt,
+          outcome,
+          payload.widgetThreadId,
+        );
+      }
     }
     if (cfg.waFollowupEnabled) {
       return await rescheduleTo(

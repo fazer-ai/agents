@@ -223,6 +223,39 @@ async function watermarkOf(convId: number): Promise<number | null> {
   return row.lastHandledMessageId;
 }
 
+// The single line a correction leaves for the conversation Chatwoot calls `convId`.
+//
+// Polled and scoped, the two obligations tests/modules/flowlog-reader-scope.test.ts states:
+// emitFlowEvent is fire-and-forget, so an unpolled read races the write it asserts and an unscoped
+// one answers with a neighbour's row. The count is asserted before the line is read, because a
+// second line would mean two corrections raced and `[0]` of that answers with whichever landed
+// first instead of failing.
+async function convRowId(convId: number) {
+  const conv = await suDb.conversation.findFirstOrThrow({
+    where: { tenantId, chatwootConversationId: convId },
+    select: { id: true },
+  });
+  return conv.id;
+}
+
+async function correctionLine(convId: number) {
+  const conversationId = await convRowId(convId);
+  const deadline = Date.now() + 2000;
+  let lines: Array<{ level: string; detail: unknown }> = [];
+  while (Date.now() < deadline) {
+    lines = await suDb.executionLog.findMany({
+      where: { tenantId, conversationId, stage: "delivery" },
+      select: { level: true, detail: true },
+    });
+    if (lines.length > 0) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  expect(lines).toHaveLength(1);
+  const line = lines[0];
+  if (line === undefined) throw new Error("no correction line was written");
+  return line;
+}
+
 describe.skipIf(!dbUp)("debounce", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
@@ -864,28 +897,14 @@ describe.skipIf(!dbUp)("debounce", () => {
     });
     expect(sent).toEqual([]);
 
-    const conv = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: convId },
-      select: { id: true },
-    });
-    const deadline = Date.now() + 2000;
-    let lines: Array<{ detail: unknown }> = [];
-    while (Date.now() < deadline) {
-      lines = await suDb.executionLog.findMany({
-        where: { tenantId, conversationId: conv.id, stage: "delivery" },
-        select: { detail: true },
-      });
-      if (lines.length > 0) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(lines).toHaveLength(1);
-    const line = lines[0];
-    if (line === undefined) throw new Error("no correction line was written");
+    const line = await correctionLine(convId);
     expect((line.detail as Record<string, unknown>).outcome).toBe(
       "consumed_late",
     );
 
-    await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
+    await suDb.executionLog.deleteMany({
+      where: { conversationId: await convRowId(convId) },
+    });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
   });
 
@@ -933,28 +952,14 @@ describe.skipIf(!dbUp)("debounce", () => {
       ).status,
     ).toBe("PROCESSED");
 
-    const conv = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: convId },
-      select: { id: true },
-    });
-    const deadline = Date.now() + 2000;
-    let lines: Array<{ detail: unknown }> = [];
-    while (Date.now() < deadline) {
-      lines = await suDb.executionLog.findMany({
-        where: { tenantId, conversationId: conv.id, stage: "delivery" },
-        select: { detail: true },
-      });
-      if (lines.length > 0) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(lines).toHaveLength(1);
-    const line = lines[0];
-    if (line === undefined) throw new Error("no correction line was written");
+    const line = await correctionLine(convId);
     expect((line.detail as Record<string, unknown>).outcome).toBe(
       "consumed_late",
     );
 
-    await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
+    await suDb.executionLog.deleteMany({
+      where: { conversationId: await convRowId(convId) },
+    });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
   });
 
@@ -1179,29 +1184,15 @@ describe.skipIf(!dbUp)("debounce", () => {
 
     // And the correction is on the record, at warn rather than error: something did go wrong, and
     // it ended with the customer answered.
-    const conv = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: convId },
-      select: { id: true },
-    });
-    const deadline = Date.now() + 2000;
-    let lines: Array<{ level: string; detail: unknown }> = [];
-    while (Date.now() < deadline) {
-      lines = await suDb.executionLog.findMany({
-        where: { tenantId, conversationId: conv.id, stage: "delivery" },
-        select: { level: true, detail: true },
-      });
-      if (lines.length > 0) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(lines).toHaveLength(1);
-    const line = lines[0];
-    if (line === undefined) throw new Error("no correction line was written");
+    const line = await correctionLine(convId);
     expect(line.level).toBe("warn");
     expect((line.detail as Record<string, unknown>).outcome).toBe(
       "answered_late",
     );
 
-    await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
+    await suDb.executionLog.deleteMany({
+      where: { conversationId: await convRowId(convId) },
+    });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
   });
 
@@ -1642,6 +1633,68 @@ describe.skipIf(!dbUp)("debounce", () => {
     }
     return null;
   }
+
+  async function routeRowOf(convId: number) {
+    const conversation = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    for (let i = 0; i < 40; i++) {
+      const row = await suDb.executionLog.findFirst({
+        where: { tenantId, stage: "route", conversationId: conversation.id },
+        orderBy: { id: "desc" },
+      });
+      if (row) return row;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return null;
+  }
+
+  // The OTHER unbound-inbox exit, and the one nothing recorded: the gate is OPEN, so this burst is
+  // the bot's to answer and there is simply no agent to answer it. It ended as a silent `done`
+  // (issue #318), which from the operator's side is indistinguishable from an agent that is quiet.
+  test("an unbound inbox with the gate open leaves the line that names the inbox", async () => {
+    await seedConversation(874);
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 7302,
+        name: "Recem-conectada",
+        agentId: null,
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 874 },
+      data: { inboxId: inbox.id },
+    });
+    const sent: Array<[number, string]> = [];
+    const out = await flushDebounceJob({
+      job: jobFor(874, { lastMessageId: 31 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 31, content: "oi" }])],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]);
+    const row = await routeRowOf(874);
+    expect(row?.level).toBe("warn");
+    expect(row?.status).toBe("skipped");
+    expect(row?.agentId).toBeNull();
+    expect(row?.inboxId).toBe(inbox.id);
+    expect(row?.detail).toEqual({ outcome: "no_agent", chatwootInboxId: 7302 });
+    // The burst is NOT consumed: an open gate on an inbox that gets bound later has to answer it,
+    // which is exactly what the bail's position below the gate buys. The line does not change that.
+    expect(await watermarkOf(874)).toBeNull();
+  });
 
   test("a gate closed by a human writes the handoff line that names the takeover", async () => {
     await seedConversation(870, { assigneeType: "User" });

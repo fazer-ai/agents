@@ -7,6 +7,21 @@
   <link rel="icon" href="./favicon-light.png" media="(prefers-color-scheme: light)" />
   <link rel="icon" href="./favicon-dark.png" media="(prefers-color-scheme: dark)" />
   <title>fazer.ai agents</title>
+  <!-- Stamp the operator's brand name onto the tab before the first paint: BrandingProvider only
+       reaches document.title after the bundle mounts, and until then the <title> above is what the
+       tab shows. Same cache and same trade-off the provider already accepts for the brand colors,
+       so a returning visitor reads the name written on the last load and only a cold cache waits. -->
+  <script>
+    (function () {
+      var name;
+      // No localStorage, no cache yet (JSON.parse(null) yields null and reading a property off it
+      // throws), corrupt entry: every miss leaves `name` undefined and the <title> above standing.
+      try { name = JSON.parse(localStorage.getItem("@app:branding")).brandName; } catch (_) { }
+      // Blank counts as unconfigured, as after mount. The value goes in untrimmed on purpose: the
+      // `document.title` getter strips and collapses whitespace itself.
+      if (typeof name === "string" && name.trim()) document.title = name;
+    })();
+  </script>
   <script>
     (function () {
       var stored;
@@ -16,6 +31,36 @@
         ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
         : pref;
       document.documentElement.dataset.theme = resolved;
+    })();
+  </script>
+
+  <!-- Apply the operator's icon before the first paint, for the same reason and from the same cache
+       as the title above. This one has to REMOVE the links declared above rather than add to them:
+       leaving them in place makes the browser fetch the bundled default too (measured in Chromium).
+       So it hands them to the bundle on the way out, which is what a cleared favicon restores.
+       Below the theme script on purpose: the variant follows the theme that script just resolved. -->
+  <script>
+    (function () {
+      var cfg;
+      try { cfg = JSON.parse(localStorage.getItem("@app:branding")); } catch (_) { }
+      var present = cfg && cfg.favicon;
+      if (!present) return;
+      var dark = document.documentElement.dataset.theme === "dark";
+      var variant = dark
+        ? (present.dark ? "dark" : present.light ? "light" : null)
+        : (present.light ? "light" : present.dark ? "dark" : null);
+      if (!variant) return;
+      var declared = [];
+      var links = document.querySelectorAll('link[rel~="icon"]');
+      for (var i = 0; i < links.length; i++) {
+        declared.push({ href: links[i].getAttribute("href") || "", media: links[i].getAttribute("media") });
+        links[i].remove();
+      }
+      window.__brandingDefaultFavicons = declared;
+      var link = document.createElement("link");
+      link.rel = "icon";
+      link.href = "/api/v1/branding/asset/favicon/" + variant + "?v=" + cfg.version;
+      document.head.appendChild(link);
     })();
   </script>
 </head>

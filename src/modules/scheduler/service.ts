@@ -658,10 +658,43 @@ export async function rescheduleJob(
   runAt: Date,
   payload?: Record<string, unknown>,
   base: PrismaClient = basePrisma,
+  // Merged into the row's CURRENT payload (jsonb `||`) inside the same compare-and-set, instead of
+  // replacing it. The difference matters on a row another writer stamps while the handler runs: the
+  // per-event reminder cancel merges `cancelledAt` onto rows of ANY status without bumping the claim
+  // token, so a replacement written from the claim-time snapshot passes the CAS and erases the
+  // tombstone, re-arming a cancelled reminder (issue #281's review). A handler that only needs to
+  // carry a counter forward has no business overwriting what it never read.
+  payloadPatch?: Record<string, unknown>,
   // Clears the failure budget. Opt-in, for the kinds that reschedule forever — see JobResult in
   // ../scheduler/worker.ts for why it cannot be the default.
   resetAttempts?: boolean,
 ): Promise<{ applied: boolean }> {
+  if (payloadPatch !== undefined) {
+    const patch = JSON.stringify(payloadPatch);
+    // The same opt-in as the branch below, spelled again because this one writes its own SET list.
+    // Leaving it out would make the two tails disagree on a flag the signature offers to both, and
+    // the disagreement would be SILENT: a caller that patches its payload and asks for the budget
+    // back gets the patch, no error, and a job still counting down to DEAD.
+    const budget = resetAttempts ? Prisma.sql`attempts = 0,` : Prisma.empty;
+    const count = await runScopedOn(
+      base,
+      sysCtx(tenantId),
+      (db) =>
+        db.$executeRaw`
+        UPDATE scheduler_jobs
+           SET status = 'PENDING'::"SchedulerJobStatus",
+               run_at = ${runAt},
+               last_error = NULL,
+               ${budget}
+               payload = payload || ${patch}::jsonb,
+               updated_at = now()
+         WHERE id = ${id}
+           AND tenant_id = ${tenantId}
+           AND status = 'CLAIMED'
+           AND claim_seq = ${claimSeq}`,
+    );
+    return { applied: count > 0 };
+  }
   const { count } = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.schedulerJob.updateMany({
       where: { id, status: "CLAIMED", claimSeq },

@@ -4,6 +4,7 @@ import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
@@ -11,7 +12,11 @@ import {
   type WidgetHealth,
   type WidgetHealthStatus,
 } from "@/modules/channel-redirect/link";
-import { type ChatwootClient, fetchChatwootProfile } from "./client";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+  fetchChatwootProfile,
+} from "./client";
 import { ensureDeliverySweep } from "./delivery-sweep";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
 import { chatwootAutoRepliesOutOfHours } from "./out-of-office";
@@ -224,7 +229,7 @@ export async function connectChatwootDeployment(
 }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const data = chatwootDeploymentConnectSchema.parse(input);
+  const data = parseInput(chatwootDeploymentConnectSchema, input);
   data.baseUrl = normalizeChatwootBaseUrl(data.baseUrl);
   await assertSafeOutboundUrl(data.baseUrl); // DNS lookup OUTSIDE the tx
   // Validate the credentials (and discover accounts) before persisting anything.
@@ -273,7 +278,11 @@ export async function rotateChatwootDeploymentToken(
   deps: ListAccountsDeps = {},
   base: PrismaClient = basePrisma,
 ): Promise<ChatwootDeploymentDto> {
-  const token = z.string().min(1).max(2000).parse(adminToken);
+  const token = parseInput(
+    z.string().min(1).max(2000),
+    adminToken,
+    "adminToken",
+  );
   const dep = await runScopedOn(base, ctx, (db) =>
     db.chatwootDeployment.findFirst({ select: { id: true, baseUrl: true } }),
   );
@@ -952,7 +961,7 @@ export async function reconnectInbox(
     throw new AppError(
       "could not reconnect the bot with Chatwoot",
       502,
-      "errors.chatwootBindFailed",
+      "errors.chatwootRebindFailed",
     );
   }
   return runScopedOn(base, ctx, async (db) => {
@@ -1197,6 +1206,17 @@ export async function listInboxCustomAttributes(
   return { attributes: [...byKey.values()], accountCount };
 }
 
+// An unbind asks Chatwoot for ONE state: no agent bot connected to this inbox. A 404 from
+// set_agent_bot means the inbox is not there to carry one, which already IS that state, so nothing is
+// left to desynchronize and the local binding may clear. Measured on the fork (4.16.0 and 4.17.0): a
+// deleted inbox answers 404 {"error":"Resource could not be found"}, a live one answers 200, and a
+// credential that lost access to the account answers 401 — so this route's only 404s are a missing
+// inbox and a missing account, and neither can be holding a bot of ours. Every other failure keeps
+// the fence, because it leaves a bot that may still be connected and delivering that inbox's events.
+export function unbindNeedsNothingRemote(err: unknown): boolean {
+  return err instanceof ChatwootApiError && err.status === 404;
+}
+
 // The load-bearing binding: which agent answers an inbox. This is the SINGLE operator action that
 // wires an inbox end-to-end — there is no separate "provision the bot" step. The bot is per-persona:
 //   - bind / switch (→ agent): lazily ensure THAT persona's Agent Bot exists, connect it to this
@@ -1284,7 +1304,11 @@ export async function bindInbox(
         inbox.chatwootInstanceId,
         { base, makeClient: deps.makeClient },
       );
-      await client.setInboxAgentBot(inbox.chatwootInboxId, null);
+      try {
+        await client.setInboxAgentBot(inbox.chatwootInboxId, null);
+      } catch (err) {
+        if (!unbindNeedsNothingRemote(err)) throw err;
+      }
     }
   } catch (err) {
     if (err instanceof AppError) throw err;
@@ -1428,7 +1452,7 @@ export async function listChatwootAccounts(
   input: ChatwootAccountsProbeInput,
   deps: ListAccountsDeps = {},
 ): Promise<ChatwootAccountSummary[]> {
-  const data = chatwootAccountsProbeSchema.parse(input);
+  const data = parseInput(chatwootAccountsProbeSchema, input);
   const fetchProfile = deps.fetchProfile ?? fetchChatwootProfile;
   let raw: unknown;
   try {

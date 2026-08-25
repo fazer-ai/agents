@@ -6,6 +6,7 @@ import {
   resolveRequestTenantContext,
   roleAtLeast,
 } from "@/lib/tenancy";
+import { expectWaiverLedger } from "@/tests/utils/ledger";
 
 const superAdmin = { id: 1n, tenantId: null, role: "SUPER_ADMIN" as const };
 const tenantAdmin = { id: 2n, tenantId: 3n, role: "TENANT_ADMIN" as const };
@@ -150,5 +151,13 @@ describe("every model with a tenant_id is accounted for", () => {
         (m) => registered.has(m) || !withTenantId.includes(m),
       ),
     ).toEqual([]);
+  });
+
+  // Both assertions above read `registered` out of the tree, so the ledger is the one input neither
+  // of them can contradict: a model added to it is excused AND is not stale. Pinned at the thirteen
+  // it was argued into. Seven of those are recorded as "pre-existing gap, not audited", which is
+  // exactly why this list must not be where the eighth goes. tests/utils/ledger.ts, issue #293.
+  test("the unregistered-model ledger may only shrink", () => {
+    expectWaiverLedger("KNOWN_UNREGISTERED", KNOWN_UNREGISTERED, 13);
   });
 });

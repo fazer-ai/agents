@@ -133,20 +133,47 @@ async function statusOf(rowId: bigint) {
 
 // Polled and scoped: emitFlowEvent is fire-and-forget, so an unpolled read races the write it is
 // asserting and an unscoped one answers with a neighbour's row.
-async function deliveryLines(convDbId: bigint | null, waitMs = 2000) {
+//
+// The conversation is REQUIRED, not optional-with-a-fallback. It used to be nullable, spreading the
+// filter in only when a caller had one, and that shape is a scoped read that quietly becomes a
+// tenant-wide one on the argument — the exact reader tests/modules/flowlog-reader-scope.test.ts
+// exists to catch. The line that names no conversation is a different subject and has its own
+// reader below.
+async function deliveryLines(convDbId: bigint, waitMs = 2000) {
   const started = Date.now();
   while (true) {
     const rows = await suDb.executionLog.findMany({
-      where: {
-        tenantId,
-        stage: "delivery",
-        ...(convDbId !== null ? { conversationId: convDbId } : {}),
-      },
+      where: { tenantId, stage: "delivery", conversationId: convDbId },
       select: { level: true, status: true, source: true, detail: true },
     });
     if (rows.length > 0 || Date.now() - started > waitMs) return rows;
     await Bun.sleep(25);
   }
+}
+
+// The `outcome` on the single line a correction leaves, for the conversation Chatwoot calls
+// `convId`. Same two obligations as the readers above, and it asserts the count before reading the
+// line: a second line would mean two corrections raced, and reading `[0]` of that would answer with
+// whichever landed first instead of failing.
+async function correctionOutcome(convId: number) {
+  const conv = await suDb.conversation.findFirstOrThrow({
+    where: { tenantId, chatwootConversationId: convId },
+    select: { id: true },
+  });
+  const deadline = Date.now() + 2000;
+  let lines: Array<{ detail: unknown }> = [];
+  while (Date.now() < deadline) {
+    lines = await suDb.executionLog.findMany({
+      where: { tenantId, conversationId: conv.id, stage: "delivery" },
+      select: { detail: true },
+    });
+    if (lines.length > 0) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  expect(lines).toHaveLength(1);
+  const line = lines[0];
+  if (line === undefined) throw new Error("no correction line was written");
+  return (line.detail as Record<string, unknown>).outcome;
 }
 
 // The line a strand leaves when the mirror does not know the conversation: no conversation id to
@@ -833,26 +860,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // The reply DID reach the customer, so a row this turn takes back out of the loss list is closed
     // as answered — the one caller that can tell the difference has to report it.
     expect((await statusOf(reportedSibling.id)).status).toBe("PROCESSED");
-    const conv = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: convId },
-      select: { id: true },
-    });
-    const deadline = Date.now() + 2000;
-    let lines: Array<{ detail: unknown }> = [];
-    while (Date.now() < deadline) {
-      lines = await suDb.executionLog.findMany({
-        where: { tenantId, conversationId: conv.id, stage: "delivery" },
-        select: { detail: true },
-      });
-      if (lines.length > 0) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(lines).toHaveLength(1);
-    const line = lines[0];
-    if (line === undefined) throw new Error("no correction line was written");
-    expect((line.detail as Record<string, unknown>).outcome).toBe(
-      "answered_late",
-    );
+    expect(await correctionOutcome(convId)).toBe("answered_late");
 
     await suDb.agent.update({
       where: { id: agentDbId },
@@ -1165,26 +1173,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
 
     // A gate is silence by construction: nobody replied, so the closing line must not say anyone
     // did. Claiming otherwise hands an operator a resolution that never happened.
-    const conv = await suDb.conversation.findFirstOrThrow({
-      where: { tenantId, chatwootConversationId: convId },
-      select: { id: true },
-    });
-    const deadline = Date.now() + 2000;
-    let lines: Array<{ detail: unknown }> = [];
-    while (Date.now() < deadline) {
-      lines = await suDb.executionLog.findMany({
-        where: { tenantId, conversationId: conv.id, stage: "delivery" },
-        select: { detail: true },
-      });
-      if (lines.length > 0) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(lines).toHaveLength(1);
-    const line = lines[0];
-    if (line === undefined) throw new Error("no correction line was written");
-    expect((line.detail as Record<string, unknown>).outcome).toBe(
-      "consumed_late",
-    );
+    expect(await correctionOutcome(convId)).toBe("consumed_late");
 
     await suDb.chatwootWebhookDelivery.deleteMany({
       where: { id: { in: [sibling.id, reported.id] } },

@@ -10,10 +10,10 @@ import { exportToolWorkflowForTenant } from "@/modules/n8n-export/service";
 // Export is a TENANT_ADMIN operation and is tenant-scoped — a tenant can only export its own
 // tools, and the service guarantees no credential is ever emitted.
 
-function tenantId(ctx: TenantContext | null): bigint {
+function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
   if (ctx.tenantId === null) throw new TenantTargetRequiredError();
-  return ctx.tenantId;
+  return ctx;
 }
 
 export const n8nExportController = new Elysia({
@@ -26,7 +26,7 @@ export const n8nExportController = new Elysia({
     async ({ tenantContext, params }) => ({
       instance: instanceIdentity,
       export: await exportToolWorkflowForTenant(
-        tenantId(tenantContext),
+        ctxOrThrow(tenantContext),
         BigInt(params.id),
       ),
     }),

@@ -74,7 +74,7 @@ export interface CreateIntegrationParams {
 // (Calendar/Drive) carry no token (routeTokenHash null, no inbound auth). Callers surface it to the
 // operator who pastes it into the provider; it stays re-readable via getIntegrationInstance.
 export async function createIntegrationInstance(
-  tenantId: bigint,
+  ctx: TenantContext,
   params: CreateIntegrationParams,
   base: PrismaClient = basePrisma,
 ): Promise<{ id: bigint; routeToken: string | null }> {
@@ -84,36 +84,33 @@ export async function createIntegrationInstance(
   }
   // Only inbound-capable catalog entries mint a route token; the rest get no inbound surface.
   const minted = entry.supportsInbound ? generateRouteToken() : null;
-  const created = await runScopedOn(
-    base,
-    { tenantId, userId: null, role: "TENANT_ADMIN" },
-    async (db) => {
-      const credentialRef = params.credentialRef
-        ? await requireVaultRef(db, params.credentialRef)
+  const tenantId = ctx.tenantId as bigint;
+  const created = await runScopedOn(base, ctx, async (db) => {
+    const credentialRef = params.credentialRef
+      ? await requireVaultRef(db, params.credentialRef)
+      : null;
+    const inboundSecretRef =
+      minted && params.inboundSecretRef
+        ? await requireVaultRef(db, params.inboundSecretRef)
         : null;
-      const inboundSecretRef =
-        minted && params.inboundSecretRef
-          ? await requireVaultRef(db, params.inboundSecretRef)
-          : null;
-      return db.integrationInstance.create({
-        data: {
-          tenantId,
-          catalogType: params.catalogType,
-          name: params.name,
-          enabled: params.enabled ?? true,
-          config: (params.config ?? {}) as Prisma.InputJsonValue,
-          credentialRef,
-          inboundAuthStrategy: minted
-            ? (params.inboundAuthStrategy ?? "NONE")
-            : "NONE",
-          inboundSecretRef,
-          routeTokenHash: minted?.hash ?? null,
-          routeToken: minted ? encryptJson(minted.token) : null,
-        },
-        select: { id: true },
-      });
-    },
-  );
+    return db.integrationInstance.create({
+      data: {
+        tenantId,
+        catalogType: params.catalogType,
+        name: params.name,
+        enabled: params.enabled ?? true,
+        config: (params.config ?? {}) as Prisma.InputJsonValue,
+        credentialRef,
+        inboundAuthStrategy: minted
+          ? (params.inboundAuthStrategy ?? "NONE")
+          : "NONE",
+        inboundSecretRef,
+        routeTokenHash: minted?.hash ?? null,
+        routeToken: minted ? encryptJson(minted.token) : null,
+      },
+      select: { id: true },
+    });
+  });
   return { id: created.id, routeToken: minted?.token ?? null };
 }
 
@@ -324,6 +321,7 @@ export async function rotateIntegrationRouteToken(
         `integration ${current.catalogType} has no inbound webhook`,
         400,
         "errors.integrationNoInboundWebhook",
+        { integration: current.catalogType },
       );
     }
     const minted = generateRouteToken();

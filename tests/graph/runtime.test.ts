@@ -20,6 +20,7 @@ import { armIngest } from "@/graph/ingest-job";
 import { isConversationDivider, stampedConversationId } from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { runAgentTurn } from "@/graph/runtime";
+import { buildThreadStateGraph } from "@/graph/thread-state";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
@@ -226,6 +227,30 @@ async function mirroredStatus(convId: number) {
   return row?.status ?? null;
 }
 
+// What the graph memory thread HOLDS after a turn, which is a different question from what the
+// customer received and the only one that shows a refused turn's residue (issues #251, #315). Read
+// through the same one-node graph the rollback writes with, so the test sees what the next invoke
+// will load.
+async function threadChannel(
+  checkpointer: MemorySaver,
+  convId: number,
+  // The guardrail suite runs on a tenant of its own, so the thread key cannot be taken from the
+  // module's; defaulted rather than passed everywhere, since every other caller is on this one.
+  scope?: { tenantId: bigint; instanceId: bigint },
+): Promise<Array<[string, string]>> {
+  const t = scope?.tenantId ?? tenantId;
+  const i = scope?.instanceId ?? instanceId;
+  const state = await buildThreadStateGraph(checkpointer).getState({
+    configurable: { thread_id: `${t}:${i}:${convId}` },
+  });
+  const messages = ((state.values as { messages?: BaseMessage[] })?.messages ??
+    []) as BaseMessage[];
+  return messages.map((m) => [
+    m.getType(),
+    typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+  ]);
+}
+
 async function seedConversation(
   convId: number,
   assigneeType: string | null,
@@ -373,7 +398,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     let retryLogged = false;
     for (let i = 0; i < 30 && !retryLogged; i++) {
       const rows = await suDb.executionLog.findMany({
-        where: { tenantId, stage: "generate", level: "warn" },
+        where: {
+          tenantId,
+          stage: "generate",
+          level: "warn",
+          threadId: `${tenantId}:${instanceId}:995`,
+        },
         select: { detail: true },
       });
       retryLogged = rows.some(
@@ -1049,6 +1079,44 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent).toEqual([]);
   });
 
+  // The sibling state, and the reason the two are not one word: a bound agent that is switched off
+  // is silent by the operator's own decision, while an unbound inbox is a channel nobody finished
+  // connecting. The caller writes an operator-facing line for the second and stays quiet for the
+  // first (issue #318), so the classification has to happen HERE, in the read that decides it — a
+  // caller re-reading the binding afterwards would answer about a later moment.
+  test("bound inbox whose agent is switched off → agent-unavailable (silent)", async () => {
+    const sent: Array<[number, string]> = [];
+    const bound = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 7 },
+      select: { agentId: true },
+    });
+    await suDb.agent.update({
+      where: { id: bound.agentId as bigint },
+      data: { enabled: false },
+    });
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 906, inboxId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("agent-unavailable");
+      expect(sent).toEqual([]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: bound.agentId as bigint },
+        data: { enabled: true },
+      });
+    }
+  });
+
   test("human took over during the LLM call → does not post", async () => {
     await seedConversation(901, "User");
     const sent: Array<[number, string]> = [];
@@ -1079,15 +1147,34 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // silently returned the PREVIOUS test's row: 8801 writes `taken_over`, 8802 asserts
   // `ownership_lost`, and whichever write won the race decided the result. That is the ~1-in-4 CI
   // failure this file kept producing, on a machine slower than a dev laptop.
+  // One read, for the assertion that a conversation has NO handoff row.
+  async function handoffRowNow(convId: number) {
+    const conversation = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+    });
+    return suDb.executionLog.findFirst({
+      where: { tenantId, stage: "handoff", conversationId: conversation.id },
+      orderBy: { id: "desc" },
+      select: { detail: true },
+    });
+  }
+
   async function handoffDetail(convId: number): Promise<unknown> {
     const conversation = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
     });
-    const row = await suDb.executionLog.findFirstOrThrow({
-      where: { tenantId, stage: "handoff", conversationId: conversation.id },
-      orderBy: { id: "desc" },
-    });
-    return row.detail;
+    // Scoped since #123; the wait is the other half. `findFirstOrThrow` on a row that has not landed
+    // yet does not answer wrong, it THROWS, so what the scoping converted was a silent wrong answer
+    // into a spurious failure. Poll for the row this conversation owes (#258).
+    for (let i = 0; i < 30; i++) {
+      const row = await suDb.executionLog.findFirst({
+        where: { tenantId, stage: "handoff", conversationId: conversation.id },
+        orderBy: { id: "desc" },
+      });
+      if (row) return row.detail;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`no handoff flow line for conv ${convId}`);
   }
 
   // NOTE: the guard for the reader above, not for the product. Before it was scoped, this returned
@@ -1110,7 +1197,15 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     // 8804 exists but never ran a turn, so the tenant's newest handoff row belongs to 8803.
     await seedConversation(8804, null, null, "open");
-    expect(handoffDetail(8804)).rejects.toThrow();
+    // The control has to be POSITIVE before the absence means anything: this test only detects an
+    // unscoped reader if there IS a neighbouring row for it to wrongly return, and 8803's row is
+    // written fire-and-forget, so without this wait the null below can mean "nothing has landed
+    // yet" and the test passes having proved nothing.
+    expect(await handoffDetail(8803)).toBeDefined();
+    // Then one read, awaited. 8804 never ran a turn, so no write of its own is in flight and there
+    // is nothing to poll for: the waiting reader would spend its whole 3s to agree, and would spend
+    // it AFTER this test returned, because the assertion it was handed to was never awaited (#258).
+    expect(await handoffRowNow(8804)).toBeNull();
   });
 
   test("a human assignee is reported as a real takeover", async () => {
@@ -1234,7 +1329,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     let resolvedLogged = false;
     for (let i = 0; i < 30 && !resolvedLogged; i++) {
       const rows = await suDb.executionLog.findMany({
-        where: { tenantId, stage: "handoff" },
+        where: {
+          tenantId,
+          stage: "handoff",
+          threadId: `${tenantId}:${instanceId}:910`,
+        },
         select: { detail: true },
       });
       resolvedLogged = rows.some(
@@ -2227,16 +2326,28 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ).toBe(true);
       // And the trail names the tool the operator granted, not a constant: an operator filtering for
       // it has to find the line it produced.
-      const flow = await suDb.executionLog.findMany({
-        where: { tenantId, stage: "tool" },
-        select: { detail: true },
-      });
-      const details = flow.map((f) => JSON.stringify(f.detail));
-      expect(
-        details.some(
-          (d) => d.includes("send_orcamento") && d.includes('"outcome":"sent"'),
-        ),
-      ).toBe(true);
+      // Scoped AND polled. This reader had neither, and the missing wait is the one that already
+      // cost a CI run on an unrelated PR: `emitFlowEvent` is fire-and-forget, so the `send_orcamento`
+      // line had simply not landed when the assertion read the table (#258).
+      let named = false;
+      for (let i = 0; i < 30 && !named; i++) {
+        const flow = await suDb.executionLog.findMany({
+          where: {
+            tenantId,
+            stage: "tool",
+            threadId: `${tenantId}:${instanceId}:941`,
+          },
+          select: { detail: true },
+        });
+        named = flow
+          .map((f) => JSON.stringify(f.detail))
+          .some(
+            (d) =>
+              d.includes("send_orcamento") && d.includes('"outcome":"sent"'),
+          );
+        if (!named) await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(named).toBe(true);
     } finally {
       await suDb.$executeRawUnsafe(
         `DELETE FROM agent_tool_selections WHERE tenant_id = ${tenantId}`,
@@ -2986,6 +3097,163 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent).toEqual([]);
   });
 
+  // ── issue #315: what a refusal below the invoke leaves in the thread ──
+  //
+  // The invoke checkpoints as it runs, so by the time any of these gates answers, the customer's
+  // message and the assistant's reply are both in the history. The send is suppressed and the reply
+  // stays — and on `superseded` the next flush is guaranteed to read it, because that outcome exists
+  // precisely so the re-armed flush answers the whole burst. It then has the abandoned sentence in
+  // its context and can write "as I said" about something nobody was shown.
+  //
+  // What each of these asserts is the CHANNEL, not the outcome: the outcome was already right before
+  // the rollback existed, which is why the defect was invisible.
+  describe("a refused reactive turn leaves the thread as the customer saw it", () => {
+    // The customer's own message SURVIVES, and that is the half that separates this from the
+    // proactive rollback: `superseded` hands the burst to the next flush, so removing it would lose
+    // the message the whole outcome exists to answer.
+    test("superseded: the reply goes, the message that asked for it stays", async () => {
+      await seedConversation(93151, null);
+      const checkpointer = new MemorySaver();
+      const sent: Array<[number, string]> = [];
+      const client = {
+        getMessages: async () => ({
+          payload: [
+            { id: 1, content: "oi", message_type: 0, private: false },
+            {
+              id: 2,
+              content: "na verdade, esquece",
+              message_type: 0,
+              private: false,
+            },
+          ],
+        }),
+        sendMessage: async (conversationId: number, content: string) => {
+          sent.push([conversationId, content]);
+          return {};
+        },
+      } as unknown as ChatwootClient;
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 93151 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: async () => client,
+          checkpointer,
+        },
+      });
+      expect(outcome).toBe("superseded");
+      expect(sent).toEqual([]);
+      expect(await threadChannel(checkpointer, 93151)).toEqual([
+        ["human", "oi"],
+      ]);
+    });
+
+    test("taken-over: a human owning the conversation leaves no reply behind either", async () => {
+      await seedConversation(93152, "User", 3);
+      const checkpointer = new MemorySaver();
+      const sent: Array<[number, string]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 93152 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStubClient(sent),
+          checkpointer,
+        },
+      });
+      expect(outcome).toBe("taken-over");
+      expect(sent).toEqual([]);
+      expect(await threadChannel(checkpointer, 93152)).toEqual([
+        ["human", "oi"],
+      ]);
+    });
+
+    // The row the PROACTIVE rollback answers the other way, and the reason the reactive plan is not
+    // the same function. `transfer_to_human` really handed the conversation over from inside the
+    // graph and no removal here undoes it, so its record stays — while the closing line, which the
+    // customer never received, does not go on to be read as something they were told.
+    test("a tool that acted keeps its record, and only the unsent sentence comes out", async () => {
+      await seedConversation(93153, null);
+      const checkpointer = new MemorySaver();
+      const sent: Array<[number, string]> = [];
+      const client = {
+        getMessages: async () => ({
+          payload: [
+            { id: 1, content: "oi", message_type: 0, private: false },
+            { id: 2, content: "deixa", message_type: 0, private: false },
+          ],
+        }),
+        sendMessage: async (conversationId: number, content: string) => {
+          sent.push([conversationId, content]);
+          return {};
+        },
+        assignToAgent: async () => ({}),
+        toggleStatus: async () => ({}),
+        unassignConversation: async () => ({}),
+        getConversation: async () => ({
+          id: 93153,
+          status: "pending",
+          meta: { assignee_type: null, assignee: null },
+        }),
+      } as unknown as ChatwootClient;
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 93153 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new HandoffThenReplyModel(
+              "Vou te transferir.",
+              "cliente quer atendente",
+            ) as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer,
+        },
+      });
+      expect(outcome).toBe("superseded");
+      // The transfer's own message DID reach the customer — that is the act the rollback must not
+      // erase the record of. The turn's closing line did not, and is the part that comes out.
+      expect(sent).toEqual([[93153, "cliente quer atendente"]]);
+      const channel = await threadChannel(checkpointer, 93153);
+      expect(channel.map(([type]) => type)).toEqual(["human", "ai", "tool"]);
+      expect(JSON.stringify(channel)).not.toContain("Vou te transferir");
+    });
+
+    // The control the three above cannot give: a turn that was NOT refused keeps its reply, so the
+    // rollback is proven to be about refusals rather than about running on every turn.
+    test("a turn that was delivered keeps its reply in the thread", async () => {
+      await seedConversation(93154, null);
+      const checkpointer = new MemorySaver();
+      const sent: Array<[number, string]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 93154 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStubClient(sent),
+          checkpointer,
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(sent).toEqual([[93154, REPLY]]);
+      expect(await threadChannel(checkpointer, 93154)).toEqual([
+        ["human", "oi"],
+        ["ai", REPLY],
+      ]);
+    });
+  });
+
   test("issue #49 guard: a clean direct turn still posts and lands the watermark", async () => {
     await seedConversation(972, null);
     const sent: Array<[number, string]> = [];
@@ -3430,6 +3698,65 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(outcome).toBe("blocked");
       expect(attachments).toEqual([]);
       expect(sent).toEqual([]);
+    });
+
+    // Issue #315, the fourth refusal. A suppressed reply is the one case where keeping the text has
+    // an argument — the operator gets a private note either way, so the record is not lost. It still
+    // comes out: the note is where the record belongs, and the thread is where the model READS. Left
+    // in, the sentence a judge just refused to let out travels in every prompt of this attendance,
+    // and the next turn treats it as something the customer was told.
+    test("output 'silent': the suppressed reply is not left in the thread", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "silent",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+        },
+      });
+      await seedConv(93155);
+      const checkpointer = new MemorySaver();
+      const sent: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "reply",
+      });
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 93155, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+            cfg.model === GUARD_MODEL
+              ? guardrailModel(async () => ({ content: verdict }))
+              : fakeModel(),
+          makeClient: guardStub(sent, notes, [], []),
+          checkpointer,
+        },
+      });
+      expect(outcome).toBe("blocked");
+      expect(sent).toEqual([]);
+      // The operator's copy survives the removal — the record is in the note, not in the channel.
+      expect(notes.length).toBeGreaterThan(0);
+      expect(
+        await threadChannel(checkpointer, 93155, {
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+        }),
+      ).toEqual([["human", "oi"]]);
     });
 
     // On the INPUT direction there is no assistant reply to rewrite — the analyzed text is the

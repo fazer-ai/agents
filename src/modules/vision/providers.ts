@@ -17,12 +17,68 @@ export interface VisionRequest {
   fetchImpl: typeof fetch;
 }
 
+// What a vision call cost, in the provider's own numbers. Every one of the three endpoints below
+// returns this alongside the text; the contract used to be `Promise<string>`, which made it
+// unrepresentable, so it was parsed away and the spend reached no ledger (issue #316). Optional
+// because an endpoint may omit the block, and an absent count must not be recorded as zero spend.
+export interface VisionUsage {
+  promptTokens: number;
+  completionTokens: number;
+  // Cached input: a discounted SUBSET of promptTokens, never additive. Same contract as
+  // `TokenUsage` in graph/usage.ts, because the two paths answer the same question and a reader
+  // summing both must not have to know which one wrote the row.
+  cachedReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+export interface VisionResult {
+  text: string;
+  usage: VisionUsage | null;
+}
+
 export interface VisionProvider {
   defaultModel: string;
   // Whether the provider can extract from PDFs (all support images). OpenAI chat vision is
   // image-only; Gemini and Anthropic accept PDF documents inline.
   supportsDocuments: boolean;
-  extract(req: VisionRequest): Promise<string>;
+  extract(req: VisionRequest): Promise<VisionResult>;
+}
+
+function num(v: unknown): number {
+  const n = Number(v ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+// A usage block is only reported when the endpoint actually sent counts. Returning zeros for a
+// missing block would write a row saying the call was free.
+//
+// The cached counters are what separate "carried the pair" from "carried what was billed": a cached
+// prompt is charged at a discount, so a row that reports the whole prompt as fresh input overstates
+// the spend it exists to measure.
+function usageOf(u: {
+  prompt: unknown;
+  completion: unknown;
+  cachedRead?: unknown;
+  cacheCreation?: unknown;
+  // Whether `prompt` already contains the cached counts. OpenAI and Gemini report a prompt total
+  // that includes them; Anthropic reports only what fell outside the cache, and its own docs give
+  // the total as cache_read + cache_creation + input_tokens. Reading one like the other undercounts
+  // every cached call on that provider, and the row would carry subsets larger than the whole.
+  promptExcludesCached?: boolean;
+}): VisionUsage | null {
+  const cachedReadTokens = num(u.cachedRead);
+  const cacheCreationTokens = num(u.cacheCreation);
+  const promptTokens = u.promptExcludesCached
+    ? num(u.prompt) + cachedReadTokens + cacheCreationTokens
+    : num(u.prompt);
+  const completionTokens = num(u.completion);
+  if (promptTokens === 0 && completionTokens === 0) return null;
+  return {
+    promptTokens,
+    completionTokens,
+    cachedReadTokens,
+    cacheCreationTokens,
+  };
 }
 
 export class VisionError extends Error {
@@ -47,7 +103,7 @@ async function chatCompletionsExtract(
   req: VisionRequest,
   providerName: string,
   defaultBase: string,
-): Promise<string> {
+): Promise<VisionResult> {
   const base = (req.baseURL ?? defaultBase).replace(/\/+$/, "");
   const dataUri = `data:${req.mimeType};base64,${base64(req.bytes)}`;
   const body = {
@@ -75,15 +131,30 @@ async function chatCompletionsExtract(
   if (!res.ok) throw new VisionError(providerName, res.status);
   const json = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      prompt_tokens_details?: { cached_tokens?: number };
+    };
   };
-  return (json.choices?.[0]?.message?.content ?? "").trim();
+  return {
+    text: (json.choices?.[0]?.message?.content ?? "").trim(),
+    usage: usageOf({
+      prompt: json.usage?.prompt_tokens,
+      completion: json.usage?.completion_tokens,
+      // NOTE: `completion_tokens_details.reasoning_tokens` is NOT read here on purpose: OpenAI
+      // counts reasoning INSIDE completion_tokens, so adding it would bill the same tokens twice.
+      // Gemini is the opposite case, and is handled as such below.
+      cachedRead: json.usage?.prompt_tokens_details?.cached_tokens,
+    }),
+  };
 }
 
-async function openaiExtract(req: VisionRequest): Promise<string> {
+async function openaiExtract(req: VisionRequest): Promise<VisionResult> {
   return chatCompletionsExtract(req, "openai", "https://api.openai.com/v1");
 }
 
-async function openrouterExtract(req: VisionRequest): Promise<string> {
+async function openrouterExtract(req: VisionRequest): Promise<VisionResult> {
   return chatCompletionsExtract(
     req,
     "openrouter",
@@ -94,13 +165,15 @@ async function openrouterExtract(req: VisionRequest): Promise<string> {
 // Self-hosted / third-party OpenAI-compatible vision endpoint (e.g. a Qwen-VL server). The base URL is
 // REQUIRED (there is no canonical default); the model id is whatever the endpoint serves. Image-only
 // (chat-completions image_url), mirroring the stt `openai-compatible` provider.
-async function openaiCompatibleExtract(req: VisionRequest): Promise<string> {
+async function openaiCompatibleExtract(
+  req: VisionRequest,
+): Promise<VisionResult> {
   if (!req.baseURL) throw new VisionError("openai-compatible", 400);
   return chatCompletionsExtract(req, "openai-compatible", req.baseURL);
 }
 
 // Google Gemini generateContent with the file inlined as base64. Handles images AND PDFs.
-async function geminiExtract(req: VisionRequest): Promise<string> {
+async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
   const base = (
     req.baseURL ?? "https://generativelanguage.googleapis.com/v1beta"
   ).replace(/\/+$/, "");
@@ -131,16 +204,36 @@ async function geminiExtract(req: VisionRequest): Promise<string> {
   if (!res.ok) throw new VisionError("gemini", res.status);
   const json = (await res.json()) as {
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    usageMetadata?: {
+      promptTokenCount?: number;
+      candidatesTokenCount?: number;
+      thoughtsTokenCount?: number;
+      cachedContentTokenCount?: number;
+    };
   };
   const parts = json.candidates?.[0]?.content?.parts ?? [];
-  return parts
-    .map((p) => p.text ?? "")
-    .join("")
-    .trim();
+  return {
+    text: parts
+      .map((p) => p.text ?? "")
+      .join("")
+      .trim(),
+    usage: usageOf({
+      prompt: json.usageMetadata?.promptTokenCount,
+      // Thinking tokens are billed output and are NOT part of candidatesTokenCount: the API
+      // reference defines totalTokenCount as "prompt + thoughts + response candidates", so a
+      // thinking model's reply would otherwise be recorded at a fraction of what it cost.
+      completion:
+        num(json.usageMetadata?.candidatesTokenCount) +
+        num(json.usageMetadata?.thoughtsTokenCount),
+      // promptTokenCount already INCLUDES the cached part ("the total effective prompt size"), so
+      // this is the discounted subset and never an addition.
+      cachedRead: json.usageMetadata?.cachedContentTokenCount,
+    }),
+  };
 }
 
 // Anthropic messages API. Images use an `image` content block; PDFs use a `document` block.
-async function anthropicExtract(req: VisionRequest): Promise<string> {
+async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
   const base = (req.baseURL ?? "https://api.anthropic.com/v1").replace(
     /\/+$/,
     "",
@@ -178,11 +271,26 @@ async function anthropicExtract(req: VisionRequest): Promise<string> {
   if (!res.ok) throw new VisionError("anthropic", res.status);
   const json = (await res.json()) as {
     content?: Array<{ type?: string; text?: string }>;
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
   };
-  return (json.content ?? [])
-    .map((c) => (c.type === "text" ? (c.text ?? "") : ""))
-    .join("")
-    .trim();
+  return {
+    text: (json.content ?? [])
+      .map((c) => (c.type === "text" ? (c.text ?? "") : ""))
+      .join("")
+      .trim(),
+    usage: usageOf({
+      prompt: json.usage?.input_tokens,
+      completion: json.usage?.output_tokens,
+      cachedRead: json.usage?.cache_read_input_tokens,
+      cacheCreation: json.usage?.cache_creation_input_tokens,
+      promptExcludesCached: true,
+    }),
+  };
 }
 
 const PROVIDERS: Record<string, VisionProvider> = {

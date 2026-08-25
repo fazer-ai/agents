@@ -53,6 +53,7 @@ export async function extractText(file: FileInput): Promise<{ text: string }> {
       `Unsupported file type: ${extension || mime}`,
       415,
       "errors.unsupportedFileType",
+      { type: extension || mime },
     );
   }
 
@@ -71,6 +72,7 @@ export async function extractText(file: FileInput): Promise<{ text: string }> {
         "No extractable text found in PDF",
         422,
         "errors.noExtractableText",
+        { kind: "PDF" },
       );
     }
   } else if (isDocx) {
@@ -80,9 +82,10 @@ export async function extractText(file: FileInput): Promise<{ text: string }> {
     text = normalize(result.value);
     if (!text) {
       throw new AppError(
-        "No extractable text found in document",
+        "No extractable text found in DOCX",
         422,
         "errors.noExtractableText",
+        { kind: "DOCX" },
       );
     }
   } else {

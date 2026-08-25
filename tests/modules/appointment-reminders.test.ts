@@ -1,16 +1,23 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage } from "@langchain/core/messages";
+import type { ChatResult } from "@langchain/core/outputs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { DATA_FENCE, renderNudge } from "@/graph/nudge";
+import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
 import {
   appointmentReminderHandler,
+  authoritativeReminderStart,
+  cancelAppointmentReminders,
   cancelThreadAppointmentReminders,
   computeReminderJobs,
   enqueueAppointmentReminders,
   hasLiveAppointment,
+  reminderAlreadyStarted,
   reminderNudge,
 } from "@/modules/appointments/reminders";
 import {
@@ -19,7 +26,12 @@ import {
   readAppointmentReminderConfig,
 } from "@/modules/appointments/settings";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import type { ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
+import {
+  type ClaimedJob,
+  type enqueueJob,
+  jobRetired,
+  rescheduleJob,
+} from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 describe("normalizeOffsets", () => {
@@ -184,6 +196,133 @@ describe("reminderNudge event identity", () => {
   });
 });
 
+describe("the start a reminder is judged and worded by", () => {
+  const NOW = Date.parse("2026-08-25T12:00:00.000Z");
+  const AHEAD = "2026-08-25T13:00:00.000Z";
+  const PASSED = "2026-08-25T11:00:00.000Z";
+
+  // Each row is a state a retry can land in, and each declares BOTH answers: whether the appointment
+  // has begun, and which start the sentence names. They are asserted together because the point of
+  // the shared unit is that the check and the wording cannot disagree. The row that decides the
+  // design is the third: the calendar says the event moved later, so the stale snapshot must neither
+  // veto the reminder nor supply the time it announces.
+  const rows: Array<{
+    name: string;
+    live: { startISO: string | null } | undefined;
+    snapshot: string;
+    started: boolean;
+    displayed: string;
+  }> = [
+    {
+      name: "the calendar says it already started",
+      live: { startISO: PASSED },
+      snapshot: AHEAD,
+      started: true,
+      displayed: PASSED,
+    },
+    {
+      name: "the calendar says it is still ahead",
+      live: { startISO: AHEAD },
+      snapshot: AHEAD,
+      started: false,
+      displayed: AHEAD,
+    },
+    {
+      name: "the calendar says ahead and the snapshot says passed: the event moved later",
+      live: { startISO: AHEAD },
+      snapshot: PASSED,
+      started: false,
+      displayed: AHEAD,
+    },
+    {
+      name: "the lookup could not answer and the snapshot has passed",
+      live: undefined,
+      snapshot: PASSED,
+      started: true,
+      displayed: PASSED,
+    },
+    {
+      name: "the lookup could not answer and the snapshot is ahead",
+      live: undefined,
+      snapshot: AHEAD,
+      started: false,
+      displayed: AHEAD,
+    },
+    {
+      name: "the calendar answered without a readable start, and the snapshot has passed",
+      live: { startISO: null },
+      snapshot: PASSED,
+      started: true,
+      displayed: PASSED,
+    },
+    {
+      name: "the calendar answered without a readable start, and the snapshot is ahead",
+      live: { startISO: null },
+      snapshot: AHEAD,
+      started: false,
+      displayed: AHEAD,
+    },
+    {
+      // The repo already learned this one on the sweep's side: `Date.parse` rolls 31 February forward
+      // into March instead of refusing it, and a start reaches the payload from the model's own tool
+      // input. Judged against a day that does not exist, a reminder is dropped as "already started".
+      name: "an impossible calendar date never counts as started",
+      live: undefined,
+      snapshot: "2026-02-31T09:00:00Z",
+      started: false,
+      displayed: "2026-02-31T09:00:00Z",
+    },
+    {
+      // Offset-less, and read as UTC by the same parser the sweep uses. Two readings of one string is
+      // how one side drops a reminder the other keeps.
+      name: "an offset-less timestamp is read as UTC, like the sweep reads it",
+      live: undefined,
+      snapshot: "2026-08-25T11:00:00",
+      started: true,
+      displayed: "2026-08-25T11:00:00",
+    },
+    {
+      name: "an unreadable snapshot never counts as started",
+      live: undefined,
+      snapshot: "not a date",
+      started: false,
+      displayed: "not a date",
+    },
+    {
+      name: "an absent snapshot never counts as started",
+      live: undefined,
+      snapshot: "",
+      started: false,
+      displayed: "",
+    },
+  ];
+
+  for (const row of rows) {
+    test(`${row.name} → ${row.started ? "started" : "still ahead"}`, () => {
+      expect(reminderAlreadyStarted(row.live, row.snapshot, NOW)).toBe(
+        row.started,
+      );
+      expect(authoritativeReminderStart(row.live, row.snapshot)).toBe(
+        row.displayed,
+      );
+    });
+  }
+
+  // The table proves the rule; this proves the handler obeys it, which is a separate claim: a pure
+  // unit can be correct and unused. Read from source because the only branch that separates the two
+  // starts needs a live Google lookup answering differently from the payload, and standing up an
+  // OAuth credential to assert one argument would test the harness instead of the rule.
+  test("the handler words the reminder with the authoritative start, not the payload's", async () => {
+    const src = await Bun.file("src/modules/appointments/reminders.ts").text();
+    // One consumer, so "the call site" is a thing that can be checked at all.
+    expect([...src.matchAll(/reminderNudge\(\{/g)]).toHaveLength(1);
+    const call = src.slice(src.indexOf("reminderNudge({"));
+    expect(call.slice(0, call.indexOf("})"))).toContain(
+      "startISO: authoritativeReminderStart(",
+    );
+  });
+});
+
 describe("enqueueAppointmentReminders", () => {
   function fakeEnqueue() {
     const calls: Array<Parameters<typeof enqueueJob>[0]> = [];
@@ -285,6 +424,7 @@ const suDb = su as PrismaClient;
 describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
   let tenantId = 0n;
   let instanceId = 0n;
+  let agentId = 0n;
   const CONV_ID = 4242;
   let threadId = "";
 
@@ -337,6 +477,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
         },
       },
     });
+    agentId = agent.id;
     await suDb.chatwootAgentBot.create({
       data: {
         tenantId,
@@ -377,7 +518,10 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     await suDb.tenant.delete({ where: { id: tenantId } }).catch(() => {});
   });
 
-  const armed = async (dedupeKey: string) => {
+  const armed = async (
+    dedupeKey: string,
+    extra: Record<string, unknown> = {},
+  ) => {
     const row = await suDb.schedulerJob.create({
       data: {
         tenantId,
@@ -387,7 +531,12 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
         runAt: new Date(),
         // No credentialRef: the Google check is skipped, so nothing but the fence stands between
         // the claim and the customer.
-        payload: { threadId, eventId: "evt-1", calendarId: "primary" },
+        payload: {
+          threadId,
+          eventId: "evt-1",
+          calendarId: "primary",
+          ...extra,
+        },
       },
     });
     // The payload the worker is holding — captured at claim time, which is exactly the moment
@@ -403,6 +552,258 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     };
     return job;
   };
+
+  // Issue #281. A reminder offset is spent exactly once, and it used to be spent even when the agent
+  // could not author a word: the handler discarded the outcome and answered `done`, so a credential
+  // that was broken at the wrong minute cost the customer the reminder outright.
+  // Restored on the way out: the tests below this one read the same agent row, and a credential left
+  // broken would make them fail for a reason that has nothing to do with what they assert.
+  async function withUnresolvableCredential<T>(
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { modelConfig: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-4o-mini",
+          credentialRef: "vault:999999999",
+        },
+      },
+    });
+    try {
+      return await fn();
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { modelConfig: before.modelConfig ?? {} },
+      });
+    }
+  }
+
+  test("an agent that cannot author gets the reminder retried, not consumed", async () => {
+    const job = await armed("reminder:evt-unavailable:60", { isLast: true });
+    const s = stubClient();
+
+    const result = await withUnresolvableCredential(() =>
+      appointmentReminderHandler(job, appDb, {
+        makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      }),
+    );
+
+    expect(result.outcome).toBe("reschedule");
+    if (result.outcome === "reschedule") {
+      expect(result.payloadPatch).toEqual({ nudgeRetries: 1 });
+    }
+    expect(s.sent).toEqual([]);
+  });
+
+  // The review of #281 caught this one: the retry above writes to a row another writer may stamp
+  // while the handler runs, and the per-event cancel is the writer that does it WITHOUT bumping the
+  // claim token (it merges the tombstone onto rows of any status). A payload written back from the
+  // claim-time snapshot therefore passes the compare-and-set and un-cancels the appointment.
+  // The design decision the retry rests on, and the reason there is no cross-job query anywhere: an
+  // earlier offset yields to the one behind it. Retrying it would let a 2h reminder come due beside
+  // the 1h one and deliver both back to back the moment a credential recovered.
+  test("an earlier offset is not retried: the next reminder carries the message", async () => {
+    const job = await armed("reminder:evt-not-last:120", { isLast: false });
+    const s = stubClient();
+
+    const result = await withUnresolvableCredential(() =>
+      appointmentReminderHandler(job, appDb, {
+        makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      }),
+    );
+
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+  });
+
+  // A retry can land hours after the row was armed, which a single-run job never could. With no
+  // credential to ask Google with, the payload's own start is the only thing that knows the
+  // appointment already began, and announcing it as upcoming is worse than not reminding at all.
+  test("a run landing after the appointment started sends nothing", async () => {
+    const job = await armed("reminder:evt-started:60", {
+      isLast: true,
+      startISO: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const s = stubClient();
+    const model = () => {
+      throw new Error("the model must not be invoked");
+    };
+
+    const result = await appointmentReminderHandler(job, appDb, {
+      makeModel: model,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+  });
+
+  // The control for the one above: the same handler, the same absence of a credential, a start that
+  // is still ahead. Without it, "sent nothing" would also be satisfied by a check that drops every
+  // reminder.
+  // The ceiling has to hold across the model call, not only before it. A retry can be scheduled
+  // minutes before the start, and a turn that begins in time can finish out of it.
+  test("an appointment that starts during the model call sends nothing", async () => {
+    const job = await armed("reminder:evt-crosses-start:60", {
+      isLast: true,
+      startISO: new Date(Date.now() + 1_000).toISOString(),
+    });
+    const s = stubClient();
+    let invoked = 0;
+    class SlowModel extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "slow-fake";
+      }
+      async _generate(): Promise<ChatResult> {
+        invoked += 1;
+        await Bun.sleep(2_000);
+        return {
+          generations: [
+            { text: "Lembrete!", message: new AIMessage("Lembrete!") },
+          ],
+        };
+      }
+    }
+
+    const result = await appointmentReminderHandler(job, appDb, {
+      makeModel: () => new SlowModel(),
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+
+    // The model RAN, which is what separates this from the pre-call check dropping the job: this
+    // test would otherwise pass for the wrong reason on a slow machine.
+    expect(invoked).toBe(1);
+    expect(s.sent).toEqual([]);
+    // Nothing to retry either: the appointment happened.
+    expect(result).toEqual({ outcome: "done" });
+  });
+
+  test("a run before the appointment still reminds", async () => {
+    const job = await armed("reminder:evt-ahead:60", {
+      isLast: true,
+      startISO: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const s = stubClient();
+
+    const result = await appointmentReminderHandler(job, appDb, {
+      makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent.length).toBeGreaterThan(0);
+  });
+
+  test("a cancel landing during the retry survives the reschedule", async () => {
+    const eventId = `evt-cancel-race-${process.pid}`;
+    const row = await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: `reminder:${eventId}:60`,
+        status: "CLAIMED",
+        runAt: new Date(),
+        payload: { threadId, eventId, calendarId: "primary", isLast: true },
+      },
+    });
+    const job: ClaimedJob = {
+      id: row.id,
+      tenantId,
+      kind: "APPOINTMENT_REMINDER",
+      payload: row.payload as Record<string, unknown>,
+      attempts: 0,
+      claimSeq: row.claimSeq,
+    };
+    const s = stubClient();
+
+    const result = await withUnresolvableCredential(() =>
+      appointmentReminderHandler(job, appDb, {
+        makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      }),
+    );
+    expect(result.outcome).toBe("reschedule");
+    if (result.outcome !== "reschedule") return;
+    // The claim-time payload is never written back, which is what makes the merge below possible.
+    expect(result.payload).toBeUndefined();
+    expect(result.payloadPatch).toEqual({ nudgeRetries: 1 });
+
+    // The operator cancels the appointment in the window the handler just spent. Neither the status
+    // nor the claim token moves, so the worker's compare-and-set below still matches.
+    await cancelAppointmentReminders(tenantId, eventId, appDb);
+
+    const { applied } = await rescheduleJob(
+      tenantId,
+      job.id,
+      job.claimSeq,
+      result.runAt,
+      result.payload,
+      appDb,
+      result.payloadPatch,
+    );
+    expect(applied).toBe(true);
+
+    const after = await suDb.schedulerJob.findUniqueOrThrow({
+      where: { id: row.id },
+      select: { payload: true, status: true },
+    });
+    const payload = after.payload as Record<string, unknown>;
+    // Both survive: the counter this run carried forward, and the tombstone it did not write.
+    expect(payload.nudgeRetries).toBe(1);
+    expect(payload.cancelledAt).toBeTruthy();
+    // And the next run stands down on it rather than reminding about a cancelled appointment.
+    expect(await jobRetired({ ...job, payload }, appDb)).toBe(true);
+  });
+
+  test("the retry is bounded: the reminder is dropped once the attempts run out", async () => {
+    const armedJob = await armed("reminder:evt-unavailable-bound:60", {
+      isLast: true,
+    });
+    const job: ClaimedJob = {
+      ...armedJob,
+      payload: {
+        ...armedJob.payload,
+        nudgeRetries: NUDGE_RETRY_LIMIT - 1,
+      },
+    };
+    const s = stubClient();
+
+    const result = await withUnresolvableCredential(() =>
+      appointmentReminderHandler(job, appDb, {
+        makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      }),
+    );
+
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+  });
 
   test("is not sent, even though the worker still holds the pre-cancel payload", async () => {
     const job = await armed("reminder:evt-1:60");

@@ -34,6 +34,35 @@ function attrs(v: unknown): Record<string, unknown> | undefined {
   return isRecord(v) ? v : undefined;
 }
 
+// Chatwoot serializes each event's own SUBJECT, and every subject renders its own table id under the
+// same `id` key: `Conversations::EventDataPresenter#push_data` puts the conversation's DISPLAY id
+// there, while `Message`, `Contact`, `ContactInbox`, `Inbox` and the Kanban card all put a primary
+// key. So the body only says which id it holds if you already know which object it is, and the event
+// name is the only thing that says so.
+//
+// Treating "not a message event" as "the body IS the conversation" put a foreign row id on
+// `conversationId`, and the mirror keys `chatwoot_conversation_id` off exactly that — which opened a
+// SECOND row for a conversation that already had one (issue #257; measured against the fork, 7 of 19
+// event shapes). Hence two allowlists and no fallback: an unknown event identifies no conversation,
+// the mirror writes nothing for it, and the next real event refreshes the row. Failing the other way
+// is what creates the duplicate, and a duplicate does not heal.
+
+// Bodies that ARE a conversation (`conversation.webhook_data`). conversation_created reaches only an
+// account webhook, never an agent bot, but its body is the same one and it costs nothing to name.
+const CONVERSATION_BODY_EVENTS = new Set([
+  "conversation_created",
+  "conversation_opened",
+  "conversation_resolved",
+  "conversation_status_changed",
+  "conversation_updated",
+]);
+
+// Bodies that are a MESSAGE (`Message#webhook_data`), carrying the conversation nested under
+// `conversation`. Deliberately NOT the account webhook's message_incoming/message_outgoing: they are
+// the same body redelivered under a second name, so accepting them would mirror each message twice
+// and hand `isNewIncomingMessage` a class of event it has never seen.
+const MESSAGE_BODY_EVENTS = new Set(["message_created", "message_updated"]);
+
 export function normalizeChatwootEvent(
   payload: unknown,
 ): NormalizedChatwootEvent | null {
@@ -41,12 +70,16 @@ export function normalizeChatwootEvent(
   const event = str(payload.event);
   if (!event) return null;
 
-  const isMessage = event === "message_created" || event === "message_updated";
+  const isMessage = MESSAGE_BODY_EVENTS.has(event);
+  // WHICH OBJECT the body is, decided by the event name and never by looking at the body. See
+  // CONVERSATION_BODY_EVENTS: an event we do not know is an event whose `id` we cannot name.
   const conv = isMessage
     ? isRecord(payload.conversation)
       ? payload.conversation
       : null
-    : payload;
+    : CONVERSATION_BODY_EVENTS.has(event)
+      ? payload
+      : null;
   const meta = conv && isRecord(conv.meta) ? conv.meta : null;
   const assignee = meta && isRecord(meta.assignee) ? meta.assignee : null;
   const sender = meta && isRecord(meta.sender) ? meta.sender : null;
@@ -54,6 +87,10 @@ export function normalizeChatwootEvent(
   // tolerate a flat contact_inbox_id scalar too. Same on both shapes (conv = payload | payload.conversation).
   const contactInbox =
     conv && isRecord(conv.contact_inbox) ? conv.contact_inbox : null;
+
+  // NOTE: The message's own inbox object (Message#webhook_data → inbox: {id, name}); conversation events
+  // do not carry it. Read for both halves: the name, and the id when the conversation scalar is gone.
+  const inboxObj = isMessage && isRecord(payload.inbox) ? payload.inbox : null;
 
   const normalized: NormalizedChatwootEvent = {
     event,
@@ -63,7 +100,13 @@ export function normalizeChatwootEvent(
       : conv
         ? num(conv.contact_inbox_id)
         : null,
-    inboxId: conv ? num(conv.inbox_id) : null,
+    // NOTE: `conversation.inbox_id` first, then the message's own top-level `inbox` object. They name the
+    // same inbox and the fork sends both, but only the second survives a payload that carries the
+    // message without the conversation's scalar — and an inbox the payload named at either spot is
+    // an answer, so nothing downstream should go looking for an older one (issue #270).
+    inboxId:
+      (conv ? num(conv.inbox_id) : null) ??
+      (inboxObj ? num(inboxObj.id) : null),
     status: conv ? str(conv.status) : null,
     // NOTE: No meta ⇒ undefined ("said nothing", the mirror preserves); meta without an assignee ⇒
     // explicit null (a real unassign). Mirrors the attrs() sentinel above.
@@ -145,8 +188,6 @@ export function normalizeChatwootEvent(
     ? attrs(kanbanTask.custom_attributes)
     : undefined;
   if (taskAttrs) normalized.kanbanAttributes = taskAttrs;
-  // Inbox name only ships on message events (Message#webhook_data → inbox: {id, name}).
-  const inboxObj = isMessage && isRecord(payload.inbox) ? payload.inbox : null;
   normalized.inboxName = inboxObj ? str(inboxObj.name) : null;
   // `channel` (channel_type) is exposed by EventDataPresenter on conversation events.
   normalized.channel = conv ? str(conv.channel) : null;

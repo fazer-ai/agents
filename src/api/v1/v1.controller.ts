@@ -31,6 +31,14 @@ import {
 } from "./tenants.admin.service";
 import { getTenant, listTenants, type TenantUpdate } from "./tenants.service";
 
+// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
+// src/api/locales/*.json from these lines and prunes anything nothing references, and
+// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
+// throw site rather than an English sentence on a pt-BR caller's screen.
+// translate('errors.conversationNotFound', 'Conversation not found.')
+// translate('errors.reengageNoAgent', 'No agent is bound to the inbox of this conversation.')
+// translate('errors.tenantConfirmMismatch', 'The name confirmation does not match.')
+
 // NOTE: requireAuth guarantees a user, and tenancyPlugin derives tenantContext from it, so
 // a null context here is an impossible state — throw (handled by onError as 403) rather
 // than return an error body, keeping each success response a single shape for the treaty.
@@ -131,7 +139,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ...doc("Update tenant", "Updates a tenant's mutable fields by id."),
         tags: ["Tenants"],
       },
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   // Permanently delete a tenant and ALL its data (cascade). HARD-gated: SUPER_ADMIN, re-typed tenant
@@ -155,11 +163,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         !user?.passwordHash ||
         !(await verifyPassword(b.password, user.passwordHash))
       ) {
-        throw new AppError(
-          "password verification failed",
-          403,
-          "errors.invalidPassword",
-        );
+        throw new AppError("Incorrect password", 403, "errors.invalidPassword");
       }
       await deleteTenant(ctx, id);
       return { instance: instanceIdentity, success: true };
@@ -187,7 +191,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Tenants"],
       },
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   // SUPER_ADMIN provisions a tenant; with adminEmail it also issues the first TENANT_ADMIN invite
@@ -249,7 +253,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Tenants"],
       },
-      response: errors(400, 401, 403, 409),
+      response: errors(400, 401, 403, 409, 422),
     },
   )
   .get(
@@ -302,7 +306,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Conversations"],
       },
-      response: errors(400, 401),
+      response: errors(400, 401, 404),
     },
   )
   .get(
@@ -420,7 +424,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Conversations"],
       },
-      response: errors(400, 401, 404),
+      response: errors(400, 401, 404, 422),
     },
   )
   .post(
@@ -462,7 +466,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Conversations"],
       },
-      response: errors(400, 401, 404),
+      response: errors(400, 401, 404, 422),
     },
   )
   .post(
@@ -498,7 +502,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Conversations"],
       },
-      response: errors(400, 401, 404),
+      response: errors(400, 401, 404, 422),
     },
   )
   .post(
@@ -592,7 +596,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Conversations"],
       },
-      response: errors(400, 401, 404),
+      response: errors(400, 401, 404, 422),
     },
   )
   .get(
@@ -629,7 +633,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(400, 401),
+      response: errors(400, 401, 404, 422),
     },
   )
   .get(
@@ -658,7 +662,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(401),
+      response: errors(401, 404),
     },
   )
   .get(
@@ -701,7 +705,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(400, 401),
+      response: errors(400, 401, 404, 422),
     },
   )
   .get(
@@ -730,6 +734,6 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(401),
+      response: errors(401, 404),
     },
   );

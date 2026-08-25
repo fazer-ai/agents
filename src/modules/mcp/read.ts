@@ -336,9 +336,8 @@ export async function knowledgeList(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   try {
-    const bases = await listKnowledgeBases(tenantId, base);
+    const bases = await listKnowledgeBases(ctx, base);
     return ok({
       knowledgeBases: bases.map((b) => ({ ...b, id: sid(b.id) })),
     });
@@ -355,7 +354,6 @@ export async function knowledgeSearch(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   let kbIds: bigint[] | undefined;
   if (args.knowledge_base_ids?.length) {
     try {
@@ -372,7 +370,7 @@ export async function knowledgeSearch(
   }
   try {
     const hits = await searchKnowledge({
-      tenantId,
+      ctx,
       query: args.query,
       knowledgeBaseIds: kbIds,
       limit: args.limit,
@@ -399,11 +397,10 @@ export async function knowledgeDocumentsList(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const kbId = parseMcpId(args.knowledge_base_id, "knowledge_base_id");
   if (typeof kbId !== "bigint") return kbId;
   try {
-    const docs = await listDocuments(tenantId, kbId, base);
+    const docs = await listDocuments(ctx, kbId, base);
     return ok({ documents: docs.map((d) => ({ ...d, id: sid(d.id) })) });
   } catch (e) {
     return failOf(e);
@@ -417,9 +414,8 @@ export async function knowledgeApprovalsList(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   try {
-    return ok({ approvals: await listPendingApprovals(tenantId, base) });
+    return ok({ approvals: await listPendingApprovals(ctx, base) });
   } catch (e) {
     return failOf(e);
   }
@@ -545,9 +541,8 @@ export async function experimentList(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   try {
-    const rows = await listExperiments(tenantId, base);
+    const rows = await listExperiments(ctx, base);
     return ok({
       experiments: rows.map((r) => ({
         ...r,
@@ -568,11 +563,10 @@ export async function experimentGet(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.experiment_id, "experiment_id");
   if (typeof id !== "bigint") return id;
   try {
-    const r = await getExperiment(tenantId, id, base);
+    const r = await getExperiment(ctx, id, base);
     return ok({
       experiment: { ...r, id: sid(r.id), agentId: sidn(r.agentId) },
     });
@@ -589,11 +583,10 @@ export async function experimentResultsGet(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.experiment_id, "experiment_id");
   if (typeof id !== "bigint") return id;
   try {
-    return ok({ results: await experimentResults(tenantId, id, base) });
+    return ok({ results: await experimentResults(ctx, id, base) });
   } catch (e) {
     return failOf(e);
   }

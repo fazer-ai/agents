@@ -30,7 +30,7 @@
     "i18n:extract": "bun scripts/i18n-extract.ts",
     "openapi:generate": "bun scripts/build-openapi.ts --write",
     "openapi:check": "bun scripts/build-openapi.ts",
-    "check": "bun run lint && bun run build-check && bun run build-check:worker && bun run openapi:check && bun run i18n:extract && bun run test",
+    "check": "bun run i18n:extract && bun run lint && bun run build-check && bun run build-check:worker && bun run openapi:check && bun run test",
     "prepare": "husky"
   },
   "dependencies": {

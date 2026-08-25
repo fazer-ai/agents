@@ -86,6 +86,7 @@ import {
 } from "@/modules/debounce/service";
 import { advanceHandledWatermark } from "@/modules/debounce/watermark";
 import { emitFlowEvent } from "@/modules/flowlog/service";
+import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
 import { armCompaction } from "@/modules/memory/compact";
 import { clearContactMemory } from "@/modules/memory/reset";
 import { readMemoryConfig } from "@/modules/memory/settings";
@@ -173,6 +174,10 @@ async function inboxAgentRuntime(
   base: PrismaClient,
 ): Promise<{
   agentId: bigint;
+  // The Inbox DB row id, not the Chatwoot one the caller passed in: it is what ExecutionLog.inbox_id
+  // and every other local column mean by "inbox". Selected here because this query already reads the
+  // row — a caller that needs it otherwise pays for a second lookup of the same record.
+  inboxId: bigint;
   enabled: boolean;
   mode: string;
   // The agent's raw settings JSON, carried through so a caller that already pays for this query can
@@ -192,7 +197,7 @@ async function inboxAgentRuntime(
           chatwootInboxId,
         },
       },
-      select: { agentId: true },
+      select: { id: true, agentId: true },
     });
     if (!inbox?.agentId) return null;
     const agent = await db.agent.findUnique({
@@ -202,10 +207,58 @@ async function inboxAgentRuntime(
     if (!agent) return null;
     return {
       agentId: inbox.agentId,
+      inboxId: inbox.id,
       enabled: agent.enabled,
       mode: agent.mode,
       settings: agent.settings,
     };
+  });
+}
+
+// The mode of the agent bound to a conversation's OWN (mirrored) inbox, or null when nothing
+// resolves. Deliberately keyed by the conversation rather than by a payload inbox id: it is the
+// reading `maybeConsumeCommandOrGate` already uses for the test-mode gate, and it exists so the
+// question "is this command active?" and the gate that silences the conversation cannot be answered
+// by two different rows (issue #270).
+//
+// It answers about the AGENT and says nothing about the route, which is the split that keeps this
+// safe. Chatwoot fans one command out to the inbox's persona and to the conversation's assigned bot,
+// so more than one delivery can reach here with the same command; `commandBelongsHere` downstream is
+// the single fence that picks which one runs it and consumes the rest. Answering the route question
+// here too would give the losing delivery `commandActive === false`, which does not defer to that
+// fence — it walks past it and hands the agent "/teste" as ordinary customer text.
+//
+// Only ever called on the path where the payload named no inbox, so the common delivery pays for no
+// extra query.
+async function conversationAgentMode(
+  tenantId: bigint,
+  instanceId: bigint,
+  chatwootConversationId: number | null,
+  base: PrismaClient,
+): Promise<string | null> {
+  if (chatwootConversationId == null) return null;
+  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const conv = await db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId,
+        },
+      },
+      select: { inboxId: true },
+    });
+    if (conv?.inboxId == null) return null;
+    const inbox = await db.inbox.findUnique({
+      where: { id: conv.inboxId },
+      select: { agentId: true },
+    });
+    if (!inbox?.agentId) return null;
+    const agent = await db.agent.findUnique({
+      where: { id: inbox.agentId },
+      select: { mode: true },
+    });
+    return agent?.mode ?? null;
   });
 }
 
@@ -661,26 +714,15 @@ async function episodeActivationForWidget(
   });
 }
 
-async function isTestConversationActivated(params: {
-  tenantId: bigint;
-  instanceId: bigint;
-  conversationId: number | null;
-  base: PrismaClient;
-}): Promise<boolean> {
-  if (params.conversationId === null) return false;
-  const row = await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
-    db.conversation.findUnique({
-      where: {
-        tenantId_chatwootInstanceId_chatwootConversationId: {
-          tenantId: params.tenantId,
-          chatwootInstanceId: params.instanceId,
-          chatwootConversationId: params.conversationId as number,
-        },
-      },
-      select: { testActivatedAt: true },
-    }),
-  );
-  return row?.testActivatedAt != null;
+// The local ids the eager-media stages are logged against. Every other `source: "inbox"` flow
+// context in this repository fills these from values its caller already holds; this one is no
+// different, and states them as a type so a new call site has to answer rather than inherit a NULL.
+export interface EagerMediaOwner {
+  // Conversation DB row id (mirror.conversationRowId), not the Chatwoot conversation id on `n`.
+  conversationId: bigint | null;
+  agentId: bigint | null;
+  // Inbox DB row id, not `n.inboxId` (which is Chatwoot's).
+  inboxId: bigint | null;
 }
 
 // Eager media analysis: transcribe an incoming voice note (STT) and extract an incoming image/document
@@ -696,6 +738,15 @@ export async function runEagerMedia(
   instanceId: bigint,
   n: NormalizedChatwootEvent,
   base: PrismaClient,
+  // Where this media belongs, in LOCAL ids, for the `stt`/`vision` flow lines below. Required
+  // rather than optional: an omitted field here writes a NULL column that reads exactly like "this
+  // line has no conversation", and the operator's only route into a turn's trail
+  // (/logs?conversationId=) then cannot show the voice note that failed. The caller already holds
+  // all three — the mirror wrote the conversation row before this runs, and `inboxAgentRuntime`
+  // resolved the agent and its inbox — so nothing here re-queries for them. Null members are for
+  // the case where the caller genuinely has no answer (no agent bound to the inbox), which is also
+  // the case where no config resolves and no line is written at all.
+  owner: EagerMediaOwner,
 ): Promise<void> {
   if (
     n.conversationId === null ||
@@ -709,6 +760,9 @@ export async function runEagerMedia(
     tenantId,
     turnId: crypto.randomUUID(),
     source: "inbox" as const,
+    conversationId: owner.conversationId,
+    agentId: owner.agentId,
+    inboxId: owner.inboxId,
     threadId: chatwootThreadId(
       tenantId,
       instanceId,
@@ -1497,6 +1551,34 @@ async function maybeConsumeCommandOrGate(params: {
       });
       ctx.conv.testActivatedAt = linked.testActivatedAt;
     }
+  }
+
+  // NOTE: The EPISODE's activation, not this row's, for every gate below (issue #261). `/teste` means "this
+  // is me, testing", and a redirect episode is two conversations of one person: the stamp lands on the
+  // row it was typed in, and the one bridge that copies it (above) runs ONCE, at link time, in one
+  // direction. Outside that instant the two halves disagree, and the gates below — `/reset` and the
+  // test-mode silence — judged by whichever row they happened to hold.
+  //
+  // Resolved into the field the gates already read, which is what the propagation directly above does
+  // too, so this adds a source of truth rather than a second question. Safe for `/teste` itself: that
+  // branch writes a fresh stamp without reading this value.
+  //
+  // Costs nothing on the ordinary path — `needsEpisodeLookup` is false for a production agent, for a
+  // row already stamped, and for any conversation outside a redirect episode — and this gate runs on
+  // every inbound message.
+  if (ctx.agentSettings != null) {
+    ctx.conv.testActivatedAt = await episodeTestActivatedAt({
+      tenantId,
+      instanceId,
+      cfg: readChannelRedirectConfig(ctx.agentSettings),
+      agentMode: ctx.mode,
+      conv: {
+        testActivatedAt: ctx.conv.testActivatedAt,
+        contactId: ctx.conv.contactId,
+        chatwootInboxId: ctx.inboxChatwootId,
+      },
+      base,
+    });
   }
 
   // ── /teste: activate test mode for THIS conversation, ACK, consume. ──
@@ -2606,7 +2688,52 @@ export async function processChatwootDelivery(
         )
       : null;
   const command = isNewIncoming ? controlCommand(n) : null;
-  const commandActive = command !== null && rt?.mode === "test";
+  // NOTE: A control command is "active" only for a test-mode agent, and issue #270 is what happens when
+  // that question is answered by a different row than the one that acts on it: `rt` resolves the
+  // agent from the inbox id the PAYLOAD carries, while the test-mode gate downstream resolves it
+  // from the inbox id STORED on the mirrored conversation. Disagree, and the operator sends /teste
+  // and gets back the private note asking them to send /teste — a dead end with no way out from
+  // inside the conversation, and nothing anywhere naming the command as the thing that was dropped.
+  //
+  // The payload stays PRIMARY, so an ordinary delivery is answered by exactly the query it always
+  // was and pays for nothing extra. The stored row is consulted only when the payload names no
+  // INBOX at all AND a command was actually typed, which is the miss path that used to dead-end.
+  // The fallback can only ever turn a dropped command into an honoured one; it can never make an
+  // active command inactive, so no delivery that works today changes.
+  let commandMode: string | null = null;
+  if (command !== null) {
+    if (rt !== null) {
+      commandMode = rt.mode;
+    } else if (n.inboxId == null) {
+      // NOTE: ONLY when the payload named no inbox at all. An inbox it DID name that resolves to no agent
+      // is an answer, not a gap: falling back there would decide the command against whatever inbox
+      // the conversation pointed at BEFORE this event, and the mirror is about to move it to the one
+      // that just arrived. The command would then be active for an agent the delivery never reached,
+      // the route check would find no persona to match, and it would be consumed without running and
+      // without an acknowledgement — a worse silence than the one this fixes.
+      commandMode = await conversationAgentMode(
+        params.tenantId,
+        params.instanceId,
+        n.conversationId,
+        base,
+      );
+    }
+  }
+  const commandActive = command !== null && commandMode === "test";
+  // NOTE: A command that will not run is otherwise indistinguishable from ordinary customer text, in the
+  // logs and in the conversation alike — which is what left issue #270 undiagnosable from the
+  // outside. This is the only place that knows all three values the diagnosis needs, and past it
+  // the command is simply gone: `isTeste`/`isReset` are both false, so every later line describes a
+  // plain message. `mode=unresolved` means no inbox on either reading named an agent at all.
+  if (command !== null && !commandActive) {
+    logger.info(
+      "chatwoot: /%s not run (conv=%s) — control commands apply only to a test-mode agent (agent mode=%s, route bot=%s)",
+      command,
+      n.conversationId === null ? "?" : String(n.conversationId),
+      commandMode ?? "unresolved",
+      params.agentBotId === null ? "unknown" : String(params.agentBotId),
+    );
+  }
 
   // Mirror metadata (idempotent, monotonic, per-conversation locked) BEFORE the gate so the
   // runtime reads fresh state. Unconditional: applies to every event, not just actionable ones.
@@ -2883,24 +3010,33 @@ export async function processChatwootDelivery(
   // Production analyzes every new incoming message. Some transports attach the audio just after
   // message_created, so the first useful attachment arrives on message_updated; analyze that update
   // without arming debounce or a second turn. Test mode keeps its cost fence and only analyzes a late
-  // attachment when this conversation was explicitly activated.
+  // attachment on an activated EPISODE (issue #261) — the unit the other two gates use. Asked of the
+  // row alone, an episode activated on the WhatsApp side got no transcription on the widget side, and
+  // the agent then answered a message it never heard.
   const activatedTestLateMedia =
     hasLateMedia &&
     rt?.enabled === true &&
     rt.mode === "test" &&
     act &&
-    (await isTestConversationActivated({
-      tenantId: params.tenantId,
-      instanceId: params.instanceId,
-      conversationId: n.conversationId,
+    n.conversationId !== null &&
+    (await episodeActivationForWidget(
+      params.tenantId,
+      params.instanceId,
+      n.conversationId,
+      readChannelRedirectConfig(rt.settings),
+      rt.mode,
       base,
-    }));
+    )) !== null;
   if (
     rt?.enabled &&
     ((isNewIncoming && rt.mode === "production") ||
       (hasLateMedia && (rt.mode === "production" || activatedTestLateMedia)))
   ) {
-    await runEagerMedia(params.tenantId, params.instanceId, n, base);
+    await runEagerMedia(params.tenantId, params.instanceId, n, base, {
+      conversationId: mirror.conversationRowId,
+      agentId: rt.agentId,
+      inboxId: rt.inboxId,
+    });
   }
 
   // First-class on-reply reset: a new customer message makes any pending inactivity follow-up moot.
@@ -3004,7 +3140,16 @@ export async function processChatwootDelivery(
       // empty audio/image message. For a production agent this already ran before the gate; the call
       // is idempotent, so here it only does real work for a test-mode agent that just passed the gate
       // (activated with /teste). Best-effort — a failure leaves a "please send text" marker.
-      await runEagerMedia(params.tenantId, params.instanceId, n, base);
+      // `rt` is null when nothing on the payload's inbox names an agent — either none is bound, or
+      // the payload named no inbox at all — and then no STT/vision config resolves and no line is
+      // written, so the nulls never reach a row. The second half of that reaches here only through
+      // a control command that the conversation's own agent made active (issue #270); the state
+      // itself is not new, since `act` never depended on `rt`.
+      await runEagerMedia(params.tenantId, params.instanceId, n, base, {
+        conversationId: mirror.conversationRowId,
+        agentId: rt?.agentId ?? null,
+        inboxId: rt?.inboxId ?? null,
+      });
 
       // Debounce path: an incoming message on a debounce-enabled agent re-arms the durable DEBOUNCE
       // job (coalescing window) instead of replying balloon-by-balloon. The fast worker flushes it
@@ -3099,6 +3244,26 @@ export async function processChatwootDelivery(
               n.message.id,
               outcome === "posted" ? "answered" : "consumed",
             );
+          }
+          // NOTE: The turn had nowhere to go: no agent is bound to this inbox (issue #318). One line
+          // per customer message that nothing will answer — `runAgentTurn` only reaches this outcome
+          // for a new incoming message with text — which is the same unit as the gate's line below.
+          //
+          // The outcome is the WHOLE condition on purpose. `no-agent` used to also cover a binding
+          // that exists and could not load (a switched-off agent, which is deliberate and gets no
+          // line), and this branch first excluded that by re-reading the binding here. Re-reading is
+          // what the second reading cost: the turn runs gates, mirroring and media in between, so a
+          // rebind landing inside it answered about a different moment. `runAgentTurn` now
+          // classifies the two from the same scoped read that decides them, and `agent-unavailable`
+          // is the one this line stays silent about.
+          if (outcome === "no-agent" && mirror.conversationRowId !== null) {
+            emitUnroutedMessage({
+              tenantId: params.tenantId,
+              conversationRowId: mirror.conversationRowId,
+              inboxRowId: mirror.inboxRowId,
+              chatwootInboxId: n.inboxId,
+              base,
+            });
           }
           // Recovered: a successful answer clears any previously surfaced turn error (item 6).
           if (outcome === "posted" && n.conversationId !== null) {

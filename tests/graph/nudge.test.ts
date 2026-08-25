@@ -1532,8 +1532,15 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(outcome).toBe("messaged");
     let logged = false;
     for (let i = 0; i < 30 && !logged; i++) {
+      // Scoped to this nudge's own thread: 76 tests share the tenant, and `outcome`/`step` are
+      // values several of them write. Filtered by tenant alone this poll can exit on a neighbour's
+      // row and report a trail this turn never left (#258).
       const rows = await suDb.executionLog.findMany({
-        where: { tenantId, stage: "generate" },
+        where: {
+          tenantId,
+          stage: "generate",
+          threadId: `${tenantId}:${instanceId}:9912`,
+        },
         select: { detail: true },
       });
       logged = rows.some((r) => {
@@ -3605,7 +3612,12 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     let logged = false;
     for (let i = 0; i < 30 && !logged; i++) {
       const rows = await suDb.executionLog.findMany({
-        where: { tenantId, stage: "generate", level: "warn" },
+        where: {
+          tenantId,
+          stage: "generate",
+          level: "warn",
+          threadId: `${tenantId}:${instanceId}:913`,
+        },
         select: { detail: true },
       });
       logged = rows.some(

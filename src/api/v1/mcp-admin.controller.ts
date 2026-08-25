@@ -101,7 +101,7 @@ export const mcpAdminController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 422),
     },
   )
   .patch(
@@ -125,7 +125,7 @@ export const mcpAdminController = new Elysia({
         scopes: t.Optional(t.Array(t.String())),
         firstParty: t.Optional(t.Boolean()),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .delete(
@@ -225,6 +225,6 @@ export const mcpAdminController = new Elysia({
           description: "The approval id.",
         }),
       }),
-      response: errors(401, 403, 404),
+      response: errors(401, 403, 404, 422),
     },
   );

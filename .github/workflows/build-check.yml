@@ -45,7 +45,7 @@ jobs:
       - name: Check i18n locale files are up-to-date
         run: |
           bun i18n:extract
-          git diff --exit-code src/client/locales/ || (echo "Locale files are out of date. Run 'bun i18n:extract' and commit the changes." && exit 1)
+          git diff --exit-code src/client/locales/ src/api/locales/ || (echo "Locale files are out of date. Run 'bun i18n:extract' and commit the changes." && exit 1)
 
       - name: Run TypeScript type check
         run: bun run build-check

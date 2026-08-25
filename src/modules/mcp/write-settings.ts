@@ -79,7 +79,6 @@ export async function experimentCreate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   let agentId: bigint | undefined;
   if (args.agent_id) {
     const parsed = parseMcpId(args.agent_id, "agent_id");
@@ -101,7 +100,7 @@ export async function experimentCreate(
       });
     }
     const created = await createExperiment({
-      tenantId,
+      ctx,
       name: args.name,
       agentId,
       variants: mapVariants(args.variants),
@@ -138,7 +137,6 @@ export async function experimentUpdate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.experiment_id, "experiment_id");
   if (typeof id !== "bigint") return id;
   const patch: {
@@ -164,7 +162,7 @@ export async function experimentUpdate(
     );
   }
   try {
-    const current = await getExperiment(tenantId, id, base);
+    const current = await getExperiment(ctx, id, base);
     const target = `experiment:${id}`;
     const beforeProj = {
       name: current.name,
@@ -181,7 +179,7 @@ export async function experimentUpdate(
         },
       });
     }
-    const updated = await updateExperiment({ tenantId, id, ...patch, base });
+    const updated = await updateExperiment({ ctx, id, ...patch, base });
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
@@ -208,11 +206,10 @@ export async function experimentDelete(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  const tenantId = ctx.tenantId as bigint;
   const id = parseMcpId(args.experiment_id, "experiment_id");
   if (typeof id !== "bigint") return id;
   try {
-    const current = await getExperiment(tenantId, id, base);
+    const current = await getExperiment(ctx, id, base);
     const target = `experiment:${id}`;
     const beforeProj = { id: String(current.id), name: current.name };
     if (args.dry_run !== false) {
@@ -223,7 +220,7 @@ export async function experimentDelete(
         current: beforeProj,
       });
     }
-    await deleteExperiment(tenantId, id, base);
+    await deleteExperiment(ctx, id, base);
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",

@@ -2,13 +2,16 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { NotFoundError as ElysiaNotFoundError } from "elysia";
 import logger from "@/api/lib/logger";
 import { errors } from "@/api/lib/openapi";
+import EN_CATALOG from "@/api/locales/en.json";
 import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
 import {
   ActiveTenantNotFoundError,
   AppError,
+  type ErrorTranslationKey,
   NotFoundError,
 } from "@/lib/errors";
 import { SettingsTextTooLongError } from "@/modules/agents/service";
+import { expectWaiverLedger } from "@/tests/utils/ledger";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // The refusal as the CLIENT receives it, through the app the process actually serves.
@@ -342,6 +345,26 @@ describe("an error that calls itself a framework refusal", () => {
   });
 });
 
+// file ordering. Measured: two files that each register a route and hit it, run together, and the
+// one that registered second answered 200 `{}`. `compile()` rebuilds the table, and it has to stay
+// below the LAST route this file registers.
+// The sweep's route, registered HERE and not next to its own describe below, because of the note
+// directly above: everything this file serves must be declared before `compile()` freezes the table.
+const UNTRANSLATED = "UNTRANSLATED FALLBACK";
+
+app.get("/__refusal/key", ({ query }) => {
+  const params = JSON.parse((query.params as string) ?? "{}") as Record<
+    string,
+    string | number
+  >;
+  throw new AppError(
+    UNTRANSLATED,
+    400,
+    query.key as ErrorTranslationKey,
+    params,
+  );
+});
+
 app.compile();
 
 describe("a status the handler chose is not an unhandled failure", () => {
@@ -415,5 +438,166 @@ describe("the access log records the status actually answered", () => {
   test("the BigInt guard's raw 400 is logged as 400, not 500", async () => {
     expect(await wireStatusFor("/__logged/bigint")).toBe(400);
     expect(await loggedStatusFor("/__logged/bigint")).toBe("400");
+  });
+});
+
+// The sentence a refusal answered, or a THROW naming why there is none.
+//
+// A status other than the 400 the route raises means the request never reached the handler: the rate
+// limiter answering 429 (this file shares the app singleton, and its 600/min bucket, with every
+// other file in the worker), or the SPA catch-all answering a route registered after `compile()`.
+// Both hand back a body with no `error`, which would otherwise read as "the catalog answered
+// nothing" for all 161 keys at once — a harness failure reported as a catalog finding. Measured:
+// moving the route below `compile()` produces exactly that, 200 with `{}`.
+//
+// A function, and not an inline `if`, because live data never trips it: with the route where it
+// belongs every answer is a 400, so a blinded check would pass the sweep unchanged. The control is
+// below.
+async function sentenceOf(
+  res: Response,
+  key: string,
+  lang: string,
+): Promise<string> {
+  if (res.status !== 400) {
+    throw new Error(
+      `${key} (${lang}) answered ${res.status}, not the route's 400: ${(await res.text()).slice(0, 120)}`,
+    );
+  }
+  return ((await res.json()) as { error?: string }).error ?? "";
+}
+
+// A value per placeholder the template declares, so nothing is left unfilled by the CALLER — the
+// failure this looks for is the catalog's, not the fixture's.
+const paramsFor = (template: string): Record<string, string> =>
+  Object.fromEntries(
+    [...template.matchAll(/\{\{(\w+)\}\}/g)].map((m) => [
+      m[1] as string,
+      `<${m[1]}>`,
+    ]),
+  );
+
+// Empty, and it has to stay argued rather than merely true: an API refusal is a sentence written for
+// a reader, so two languages spelling one identically means one of them was never written. A short
+// UI label can legitimately be the same word in both (the client catalog has those); this catalog
+// has none, and a key arriving here is a translation that was skipped, not a coincidence.
+const WIRE_IDENTICAL_IN_BOTH: string[] = [];
+
+// ONE pass over the catalog, shared by the assertions below, because the requests are real: they go
+// through the app's own middleware chain, rate limiter included (600/min, src/config.ts). Two passes
+// over 158 keys in two locales is 632 requests and trips it — which is itself the evidence that
+// these are not calls to a helper dressed up as a request.
+// LAZY, and deliberately not a module-level IIFE: `app.get` above recompiles Elysia's router, and a
+// sweep that starts at module load races that registration — every request 404s with no `error`
+// field, so all 161 keys come back "" and the failure reads like a broken catalog rather than a
+// broken harness. Building it on first use puts it after the module body has run.
+let sweepOnce: Promise<Map<string, { en: string; pt: string }>> | null = null;
+const runSweep = (): Promise<Map<string, { en: string; pt: string }>> => {
+  sweepOnce ??= (async () => {
+    const rendered = new Map<string, { en: string; pt: string }>();
+    for (const key of Object.keys(EN_CATALOG.errors)) {
+      const template = (EN_CATALOG.errors as Record<string, string>)[
+        key
+      ] as string;
+      const params = encodeURIComponent(JSON.stringify(paramsFor(template)));
+      const say = async (lang: string): Promise<string> => {
+        const res = await app.handle(
+          new Request(
+            `http://localhost/__refusal/key?key=errors.${key}&params=${params}`,
+            { headers: { "accept-language": lang } },
+          ),
+        );
+        return sentenceOf(res, `errors.${key}`, lang);
+      };
+      rendered.set(key, { en: await say("en"), pt: await say("pt-BR") });
+    }
+    return rendered;
+  })();
+  return sweepOnce;
+};
+
+describe("every registered key, over the wire", () => {
+  test("a harness failure is named as one, never reported as a silent catalog", async () => {
+    // The two shapes measured on this file: the limiter, and a route the router never learned.
+    await expect(
+      sentenceOf(
+        new Response("Rate limit exceeded.", { status: 429 }),
+        "errors.x",
+        "en",
+      ),
+    ).rejects.toThrow(/answered 429/);
+    await expect(
+      sentenceOf(
+        new Response("{}", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+        "errors.x",
+        "en",
+      ),
+    ).rejects.toThrow(/answered 200/);
+    // …and a real refusal passes straight through.
+    expect(
+      await sentenceOf(
+        new Response(JSON.stringify({ error: "Agente não encontrado" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }),
+        "errors.agentNotFound",
+        "pt-BR",
+      ),
+    ).toBe("Agente não encontrado");
+  });
+
+  test("the sweep read the catalog the app reads, and reached every key", async () => {
+    const rendered = await runSweep();
+    expect(rendered.size).toBe(Object.keys(EN_CATALOG.errors).length);
+    expect(rendered.size).toBeGreaterThan(100);
+    expect(rendered.has("settingsTextTooLong")).toBe(true);
+  });
+
+  test("no key answers the untranslated fallback, the bare key, or an unfilled placeholder", async () => {
+    const offenders: string[] = [];
+    for (const [key, { en, pt }] of await runSweep()) {
+      for (const [lang, sentence] of [
+        ["en", en],
+        ["pt-BR", pt],
+      ] as const) {
+        if (
+          sentence === UNTRANSLATED ||
+          sentence === `errors.${key}` ||
+          sentence.includes("{{") ||
+          sentence.trim() === ""
+        ) {
+          offenders.push(
+            `${lang} errors.${key} -> ${JSON.stringify(sentence)}`,
+          );
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("pt-BR answers a different sentence than en, for every key", async () => {
+    const sameInBoth: string[] = [];
+    const differed: string[] = [];
+    for (const [key, { en, pt }] of await runSweep()) {
+      if (en === pt) sameInBoth.push(key);
+      else differed.push(key);
+    }
+    expect(sameInBoth).toEqual(WIRE_IDENTICAL_IN_BOTH);
+    // The control for a sweep whose expected result is "nothing found": an app that stopped honouring
+    // Accept-Language, or a harness answering "" to everything, lands every key in `sameInBoth`
+    // rather than here. Without this line both states read as a pass.
+    expect(differed.length).toBe(
+      (await runSweep()).size - WIRE_IDENTICAL_IN_BOTH.length,
+    );
+  });
+
+  // The ledger above is subtracted from a set derived from the catalog, so appending to it silences
+  // a key that was never translated AND keeps the assertion above true. Pinned at the size it was
+  // argued into, which here is zero: this ledger has to refuse its FIRST entry.
+  // tests/utils/ledger.ts carries the measurement (issue #293).
+  test("the wire-identical ledger may only shrink", () => {
+    expectWaiverLedger("WIRE_IDENTICAL_IN_BOTH", WIRE_IDENTICAL_IN_BOTH, 0);
   });
 });

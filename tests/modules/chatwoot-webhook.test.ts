@@ -287,6 +287,9 @@ describe("firstLocationAttachment (issue #45)", () => {
 describe("runEagerMedia (eager STT/vision idempotency contract)", () => {
   // The reuse / skip / no-op paths never fetch STT/vision config, so `base` is never touched — pass a
   // throwing stub so any accidental DB access fails the test loudly.
+  // `owner` is the local identity the stt/vision lines are logged against; these paths write no line
+  // at all, so the values only have to be there. That the receiver hands over the REAL ones is
+  // tests/modules/eager-media-flow-context.test.ts, against the database.
   const base = {} as unknown as PrismaClient;
   const ev = (
     message: NormalizedChatwootEvent["message"],
@@ -317,7 +320,11 @@ describe("runEagerMedia (eager STT/vision idempotency contract)", () => {
         },
       ],
     });
-    await runEagerMedia(3n, 5n, n, base);
+    await runEagerMedia(3n, 5n, n, base, {
+      conversationId: 90n,
+      agentId: 11n,
+      inboxId: 7n,
+    });
     expect(n.message?.transcribedText).toBe("olá mundo");
   });
 
@@ -331,7 +338,11 @@ describe("runEagerMedia (eager STT/vision idempotency contract)", () => {
       attachments: [{ id: 5, fileType: "audio", dataUrl: "https://x/a.ogg" }],
     });
     // A second pass must NOT re-transcribe: the field is set, so it never reaches resolveSttConfig.
-    await runEagerMedia(3n, 5n, n, base);
+    await runEagerMedia(3n, 5n, n, base, {
+      conversationId: 90n,
+      agentId: 11n,
+      inboxId: 7n,
+    });
     expect(n.message?.transcribedText).toBe("já feito");
   });
 
@@ -342,7 +353,11 @@ describe("runEagerMedia (eager STT/vision idempotency contract)", () => {
       messageType: "incoming",
       private: false,
     });
-    await runEagerMedia(3n, 5n, n, base);
+    await runEagerMedia(3n, 5n, n, base, {
+      conversationId: 90n,
+      agentId: 11n,
+      inboxId: 7n,
+    });
     expect(n.message?.transcribedText).toBeUndefined();
     expect(n.message?.imageDescription).toBeUndefined();
   });

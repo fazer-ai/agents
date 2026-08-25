@@ -995,10 +995,15 @@ export class ChatwootClient {
   // Update a contact's identity fields (admin token). `PUT /contacts/:id` assigns the provided
   // attributes; used to stamp a stable `identifier` on the WhatsApp contact so the widget's
   // setUser(identifier, …) merges the website conversation onto it. Only provided fields are sent.
+  //
+  // `identifier: null` CLEARS it, and null is the only way to clear it: the unique index is
+  // `(identifier, account_id)` with no partial predicate, so an empty string is a value like any other
+  // and a second contact cleared that way collides with the first. Postgres does not consider two
+  // NULLs equal, so nulls never do.
   updateContact(
     contactId: number,
     fields: {
-      identifier?: string;
+      identifier?: string | null;
       phone_number?: string;
       email?: string;
       name?: string;
@@ -1010,6 +1015,19 @@ export class ChatwootClient {
       `/contacts/${contactId}`,
       fields,
     );
+  }
+
+  // A contact's current `identifier` (admin token), or null when it has none. Addressed by id, so
+  // unlike the search and filter endpoints there is no paging, no case folding and no scope that can
+  // hide the row: `GET /contacts/:id` answers about exactly the contact asked for.
+  async getContactIdentifier(contactId: number): Promise<string | null> {
+    const res = (await this.request(
+      this.config.adminToken,
+      "GET",
+      `/contacts/${contactId}`,
+    )) as { payload?: { identifier?: unknown } } | null;
+    const id = res?.payload?.identifier;
+    return typeof id === "string" && id.length > 0 ? id : null;
   }
 
   // Merge two contacts (admin token): moves the mergee's conversations/contact_inboxes onto the base

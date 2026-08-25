@@ -4,7 +4,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { DEFAULT_TIMEZONE } from "@/graph/time";
 import { AppError } from "@/lib/errors";
 import type { DocumentField } from "@/modules/documents/blocks";
-import { calendarDay, issueDocument } from "@/modules/documents/issue";
+import { calendarDay, issueDocument, sysCtx } from "@/modules/documents/issue";
 import { documentToolName } from "@/modules/documents/slug";
 import { failableTool, toolFailure } from "./failure";
 import type { TurnState } from "./native";
@@ -241,7 +241,7 @@ export function buildDocumentTools(
         const at = new Date();
         try {
           const issued = await issueDocument({
-            tenantId: deps.tenantId,
+            ctx: sysCtx(deps.tenantId),
             templateId: selection.templateId,
             idempotencyKey: idempotencyKey(
               selection.templateId,

@@ -44,3 +44,58 @@ export function mergeDocumentEvent<T extends DocumentRowState>(
     error: event.error ?? (restated ? row.error : null),
   };
 }
+
+// Localizing a blocked document's reason: the `error` column carries either a stable token the
+// server chose (see src/lib/embedding-block.ts) or a raw provider diagnostic, and only the first
+// kind has a sentence to show.
+//
+// Pure, and returning the PARTS rather than a translated string, for two reasons. It is a decision
+// (which of the two kinds is this?) and decisions belong out of the render path where a table test
+// can reach them; and `t` is a hook binding the component owns, so a function that called it could
+// not be tested without mounting anything.
+//
+// `null` means "not a token": show the string as-is. Inventing a sentence for an unrecognized value
+// would bury the diagnostic that is the only clue for an unknown failure.
+export interface DocErrorEntry {
+  key: string;
+  fallback: string;
+}
+
+const DOC_ERROR_TEXT: Record<string, DocErrorEntry> = {
+  "errors.embeddingNotConfigured": {
+    key: "knowledge.docError.embeddingNotConfigured",
+    fallback:
+      "The embedding credential is not configured for this workspace. Set it under Components, then index again.",
+  },
+  "errors.embeddingPending": {
+    key: "knowledge.docError.embeddingPending",
+    fallback:
+      "The embedding credential has not been filled in yet. Fill it in, then index again.",
+  },
+  "errors.embeddingEmpty": {
+    key: "knowledge.docError.embeddingEmpty",
+    fallback:
+      "The embedding credential is empty. Fill it in, then index again.",
+  },
+};
+
+// The spelling the producer used BEFORE issue #256, one per reason. `KnowledgeDocument.error` is a
+// stored column and nothing rewrites it when the producer changes, so every row that failed on an
+// older release still carries `errors.embedding.<snake_case>` — and would go on showing the raw token
+// in the tooltip until someone re-indexed it. Neither branch matched those rows before this change
+// either (that IS the bug), so this is not a regression being papered over: it is the one cheap way
+// to make the history readable without a data migration over a column the app can rebuild anyway.
+//
+// One-way and frozen: the producer emits only the camel-case keys now, so nothing is added here
+// again. A row that predates even these spellings still falls through to `null`, which shows the
+// stored string, which is the honest answer for a token nobody recognizes.
+const LEGACY_DOC_ERROR_ALIAS: Record<string, string> = {
+  "errors.embedding.embedding_not_configured": "errors.embeddingNotConfigured",
+  "errors.embedding.credential_pending": "errors.embeddingPending",
+  "errors.embedding.credential_empty": "errors.embeddingEmpty",
+};
+
+export function docErrorEntry(error: string): DocErrorEntry | null {
+  const token = LEGACY_DOC_ERROR_ALIAS[error] ?? error;
+  return DOC_ERROR_TEXT[token] ?? null;
+}

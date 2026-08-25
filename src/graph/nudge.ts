@@ -59,6 +59,7 @@ import {
   buildToolset,
   loadAgentConfig,
 } from "./prepare";
+import { undoRefusedTurn } from "./refused-turn";
 import type { RuntimeDeps } from "./runtime";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 import { buildNativeTools, handoffAnsweredTheTurn } from "./tools/native";
@@ -110,6 +111,12 @@ export type RunAgentNudgeOutcome =
   | "stale"
   // Live-state gate could not verify (GET failed): fail-closed, nothing posted; caller may retry.
   | "live-unavailable"
+  // NOTE: The agent this conversation IS bound to could not author anything: its model credential does
+  // not resolve, or it is switched off. Nothing was posted and no model was reached, and the reason
+  // is one an operator repairs, which is what separates it from `no-agent` (issue #281). Callers
+  // that own an occasion (a follow-up step, a reminder offset, a ladder stage) must not spend it
+  // here; see isRepairableNudgeRefusal.
+  | "agent-unavailable"
   | "no-conversation"
   | "no-agent";
 
@@ -343,7 +350,12 @@ export async function runAgentNudge(
       agentId: inbox.agentId,
       threadId: params.threadId,
     });
-    if (!cfg) return null;
+    // Classified by exclusion, and the exclusion is the point: `loadAgentConfig` refuses for three
+    // reasons (the row is gone, the switch is off, the model credentialRef does not resolve) and
+    // answers all three with null. The agent row read above already distinguishes the first from the
+    // other two, and the rule survives a fourth reason being added there: a config that refuses an
+    // agent which EXISTS is, whatever the reason, an agent that cannot author right now.
+    if (!cfg) return agent ? ("agent-unavailable" as const) : null;
     return {
       cfg,
       status: conv.status,
@@ -365,6 +377,16 @@ export async function runAgentNudge(
       String(conversationId),
     );
     return "silent";
+  }
+  if (loaded === "agent-unavailable") {
+    // `loadAgentConfig` already logs WHICH reason (the unresolvable credentialRef by name); this line
+    // is the other half an operator needs, and the half no log had: that a proactive occasion reached
+    // the agent and found it unable to answer.
+    logger.info(
+      "agentNudge: the agent cannot author right now (conv=%s), nothing posted",
+      String(conversationId),
+    );
+    return "agent-unavailable";
   }
   if (!loaded) return "no-agent";
   // `let` for one reason: an authorized contact's facts are appended to the prompt below, after the
@@ -869,6 +891,8 @@ export async function runAgentNudge(
       flow,
       systemPrompt: cfg.systemPrompt,
       makeModel: params.deps?.makeModel,
+      // Same sink as this turn's own callbacks (see the buildCallbacks call above).
+      persistUsage: params.deps?.persistUsage,
     })("output", text);
 
   // What the transfer promised the customer, delivered on the way OUT of the turn — whatever the way
@@ -1126,6 +1150,52 @@ export async function runAgentNudge(
   } finally {
     if (claimedGraphThread) clearTurnInFlight(graphThreadId);
   }
+  // Every refusal from here on suppresses the send and leaves the generated pair checkpointed, which
+  // is what `refuse` is for: it takes the outcome back out through the rollback instead of returning
+  // it straight. Written as one closure and used at every post-generation refusal rather than inlined
+  // at each, so a ninth refusal that forgets it is a diff a reader can see, and one a source sweep
+  // can fail on (tests/graph/refused-turn-callsites.test.ts). Issue #251.
+  //
+  // It never decides WHETHER to roll back. `undoRefusedTurn` reads the channel and answers that, so a
+  // turn that ran a tool, or one whose messages another writer already took, keeps what it has.
+  const refuse = async (
+    outcome: RunAgentNudgeOutcome,
+  ): Promise<RunAgentNudgeOutcome> => {
+    const plan = await undoRefusedTurn({
+      checkpointer,
+      graphThreadId,
+      produced: result.messages,
+      kind: "proactive",
+    }).catch((err) => {
+      // NOTE: best-effort, and loudly. The send was already suppressed, so a failed rollback costs
+      // the next turn a message the customer never saw, which is the defect this exists to close,
+      // and nothing more. Throwing would turn a correct refusal into a retried job.
+      logger.warn(
+        { err, conversationId: String(conversationId) },
+        "agentNudge: could not roll back the refused turn",
+      );
+      return null;
+    });
+    if (plan?.action === "remove") {
+      logger.info(
+        "agentNudge rolled back a refused turn: conv=%s outcome=%s messages=%d",
+        String(conversationId),
+        outcome,
+        plan.ids.length,
+      );
+    } else if (plan?.reason === "another-invoke-is-reading") {
+      // NOTE: the one keep that is a MISS rather than a decision about this turn. The history still
+      // holds a message the customer never received, and the next turn will read it. Logged at warn
+      // so the case has a name in the logs instead of looking like a rollback that ran.
+      logger.warn(
+        "agentNudge could not roll back a refused turn, another invoke holds the thread: conv=%s outcome=%s",
+        String(conversationId),
+        outcome,
+      );
+    }
+    return outcome;
+  };
+
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
   const replyRaw = lastAssistantText(result.messages);
@@ -1162,7 +1232,7 @@ export async function runAgentNudge(
   //
   // The later checks answer for later model calls — the guardrail judge's, and the screening inside
   // deliverPromisedLine — not for this one.
-  if (!(await stillWanted())) return "stale";
+  if (!(await stillWanted())) return refuse("stale");
 
   let canMessagePost: boolean;
   if (handedOff) {
@@ -1174,13 +1244,14 @@ export async function runAgentNudge(
     // check above this block answers for the model call, not for this round trip. Above the
     // `unavailable` return as well, so a retired run reports what it is rather than asking for a
     // retry it must not get.
-    if (!(await stillWanted())) return "stale";
+    if (!(await stillWanted())) return refuse("stale");
     // Fail closed: nothing has been posted yet, so a probe that could not run costs a retry and
     // nothing else.
-    if (owned === "unavailable") return "live-unavailable";
+    if (owned === "unavailable") return refuse("live-unavailable");
     // The live-gated caller asked for certainty and gets an abort; an event nudge downgrades to a
     // private note instead, which is the shape it has always had.
-    if (owned === "not-ours" && params.requireLiveBotOwnership) return "stale";
+    if (owned === "not-ours" && params.requireLiveBotOwnership)
+      return refuse("stale");
     canMessagePost = owned === "ours";
   }
 
@@ -1204,7 +1275,7 @@ export async function runAgentNudge(
   // just cleared and re-armed the sequence the command ended — and the post-actions below would have
   // relabelled and resolved it on the way out. The transfer itself still stands: the tool ran inside
   // the graph and this fence was never able to reverse it.
-  if (promised === "stale") return "stale";
+  if (promised === "stale") return refuse("stale");
   if (promised) {
     if (promised !== "silent") markFollowUp(promised);
     await applyPostActions({ canMessage: canMessagePost });
@@ -1279,12 +1350,12 @@ export async function runAgentNudge(
         !guardrailLeftAMark(decision) &&
         params.requireLiveBotOwnership
       ) {
-        return "live-unavailable";
+        return refuse("live-unavailable");
       }
       // A KNOWN takeover ends the episode either way: that outcome does not retry, so it costs no
       // repetition — and "the human owns it" is a different fact from "we could not ask".
       if (owned === "not-ours" && params.requireLiveBotOwnership)
-        return "stale";
+        return refuse("stale");
       canMessagePost = owned === "ours";
     }
 
@@ -1294,7 +1365,7 @@ export async function runAgentNudge(
     // ABOVE the suppression branch, for the reason the check outside this block sits above the silent
     // one: suppression posts no message but still fires the post-actions, so a check placed after it
     // guards only the sends and lets the judge's stretch of time reach the labels and the resolve.
-    if (!(await stillWanted())) return "stale";
+    if (!(await stillWanted())) return refuse("stale");
     if (screened === null) {
       await applyPostActions({ canMessage: canMessagePost });
       return "silent";

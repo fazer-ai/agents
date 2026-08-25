@@ -526,7 +526,6 @@ export async function integrationCreate(
     if ("fail" in resolved) return resolved.fail;
     inboundSecretRef = resolved.ref;
   }
-  const tenantId = ctx.tenantId as bigint;
   try {
     if (args.dry_run !== false) {
       return ok({
@@ -545,7 +544,7 @@ export async function integrationCreate(
       });
     }
     const created = await createIntegrationInstance(
-      tenantId,
+      ctx,
       {
         catalogType: args.catalog_type,
         name: args.name,

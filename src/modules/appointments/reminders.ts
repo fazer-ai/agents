@@ -2,10 +2,14 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
+import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { loadAppointmentContext } from "@/modules/appointments/context";
+import {
+  loadAppointmentContext,
+  parseStartMs,
+} from "@/modules/appointments/context";
 import {
   type ClaimedJob,
   cancelPendingJobsByPrefix,
@@ -264,7 +268,10 @@ export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
 interface EventStatus {
   notFound?: boolean;
   cancelled?: boolean;
-  startMs: number | null;
+  // The calendar's own start, kept as the string it sent (offset included) rather than as an instant:
+  // it is what the reminder says out loud, and re-rendering it would move the time the customer reads
+  // into another zone. Null when the event carries no start we can parse.
+  startISO: string | null;
   summary: string;
 }
 
@@ -303,7 +310,7 @@ async function fetchEventStatus(
       signal: ctrl.signal,
     });
     if (res.status === 404 || res.status === 410)
-      return { notFound: true, startMs: null, summary: "" };
+      return { notFound: true, startISO: null, summary: "" };
     if (res.status < 200 || res.status >= 300) return undefined;
     const data = (await res.json()) as Record<string, unknown>;
     const start = (data.start ?? {}) as { dateTime?: unknown; date?: unknown };
@@ -313,10 +320,10 @@ async function fetchEventStatus(
         : typeof start.date === "string"
           ? start.date
           : null;
-    const startMs = startStr ? Date.parse(startStr) : null;
     return {
       cancelled: data.status === "cancelled",
-      startMs: startMs != null && !Number.isNaN(startMs) ? startMs : null,
+      startISO:
+        startStr && !Number.isNaN(parseStartMs(startStr)) ? startStr : null,
       summary: typeof data.summary === "string" ? data.summary : "",
     };
   } catch {
@@ -324,6 +331,47 @@ async function fetchEventStatus(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// The start this reminder is judged AND worded by, and it has to be one value: the check that lets a
+// retry through and the sentence the customer reads must not come from different clocks, or a
+// reminder allowed because the calendar now says 3pm goes out announcing the 10am it replaced.
+//
+// The live answer wins whenever the lookup gave one, because the payload's start is a snapshot from
+// the moment the row was armed and an event edited directly in Google (never through the agent, which
+// re-arms the reminders) can have moved in either direction. When the lookup could not be made or
+// carried no readable start, the snapshot is the only thing left that knows, and it decides.
+export function authoritativeReminderStart(
+  live: { startISO: string | null } | undefined,
+  snapshotStartISO: string,
+): string {
+  return live?.startISO ?? snapshotStartISO;
+}
+
+// Has the appointment this reminder announces already begun? A reminder that arrives after the start
+// is worse than none: it tells someone already in the appointment that it is coming up.
+//
+// This only became reachable when the handler learned to retry: a job used to run exactly once, at
+// `start - offset`, so the start was ahead by construction. A retry can land hours later, and a
+// Google GET failing at that moment used to leave nothing between it and the customer.
+//
+// An absent or unreadable start is NOT "started", and that falls out of the comparison rather than
+// needing a guard: the parser answers NaN, and every comparison with NaN is false. Refusing to remind
+// on a date nobody can read would drop a customer-facing message over a field the agent wrote.
+//
+// `parseStartMs`, never a bare `Date.parse`: this repo already learned that one (issue #39's
+// neighbours). A start can reach a payload from the model's own tool input, and `Date.parse` rolls an
+// impossible date forward instead of refusing it, so `2026-02-31` becomes March and a reminder is
+// judged against a day that does not exist. The same parser reads the sweep's side, and the two
+// answering differently is how a reminder gets dropped by one and kept by the other.
+export function reminderAlreadyStarted(
+  live: { startISO: string | null } | undefined,
+  snapshotStartISO: string,
+  now: number,
+): boolean {
+  return (
+    parseStartMs(authoritativeReminderStart(live, snapshotStartISO)) <= now
+  );
 }
 
 export async function appointmentReminderHandler(
@@ -375,45 +423,82 @@ export async function appointmentReminderHandler(
   // Summary preference: live Google value > the snapshot enriched into the payload > generic.
   let summary =
     typeof p.summary === "string" && p.summary ? p.summary : "your appointment";
+  let live: EventStatus | undefined;
   if (credentialRef) {
-    const ev = await fetchEventStatus(
+    live = await fetchEventStatus(
       tenantId,
       credentialRef,
       calendarId,
       eventId,
       base,
     );
-    if (ev) {
-      if (ev.notFound || ev.cancelled) return { outcome: "done" };
-      if (ev.startMs != null && ev.startMs <= Date.now())
-        return { outcome: "done" };
-      if (ev.summary) summary = ev.summary;
+    if (live) {
+      if (live.notFound || live.cancelled) return { outcome: "done" };
+      if (live.summary) summary = live.summary;
     }
+  }
+
+  if (reminderAlreadyStarted(live, startISO, Date.now())) {
+    return { outcome: "done" };
   }
 
   // NOTE: The boundary that matters: the last thing before the customer hears from us. The check above
   // ran before a network call long enough for the reset to land inside it.
   if (await retired()) return { outcome: "done" };
 
-  await runAgentNudge({
+  const outcome = await runAgentNudge({
     tenantId,
     threadId,
     // And once more inside, where the nudge re-asks its own questions across the model call. Three
     // reads is not belt-and-braces: each covers a different slow step (the Google fetch, the nudge's
     // setup, the judge's call), and the stamp can land in any of them.
+    // Two questions, asked at every point the nudge re-asks anything, because a model turn is long
+    // enough for either answer to change inside it. The appointment ceiling is the new one: a retry
+    // scheduled minutes before the start would otherwise pass the check above and still be composing
+    // when the start arrives, which is precisely the message this handler must never send.
     stillWanted: async ({ strict }) =>
-      !(await (strict ? retiredStrict() : retired())),
+      !(await (strict ? retiredStrict() : retired())) &&
+      !reminderAlreadyStarted(live, startISO, Date.now()),
     nudge: reminderNudge({
       isLast,
       askConfirmation,
       summary,
-      startISO,
+      // The same value the start check just used, for the reason its header gives.
+      startISO: authoritativeReminderStart(live, startISO),
       eventId,
       calendarId,
     }),
     base,
     deps,
   });
+  // NOTE: A reminder offset is an occasion, and it is spent exactly once. When the nudge posted nothing
+  // for a reason that may be repaired, retrying the SAME row is what keeps the customer's reminder
+  // from disappearing because a credential was broken for ten minutes.
+  //
+  // Only the LAST offset is retried, and that is the whole answer to the duplicate: offsets are whole
+  // hours and the backoff ladder spans two, so a retried 2h reminder would come due alongside the 1h
+  // one and a credential that recovered in between would send both, back to back. An earlier offset
+  // has a later one behind it to carry the message, so it yields instead of waiting. The last one has
+  // nothing behind it, and its ceiling is the appointment itself (the start check above).
+  if (isRepairableNudgeRefusal(outcome) && isLast) {
+    const retry = nextNudgeRetry(job.payload);
+    if (retry.retry) {
+      // Patched, never replaced: the per-event cancel merges its tombstone onto this row without
+      // bumping the claim token, so writing back the claim-time snapshot would pass the compare-and-set
+      // and un-cancel an appointment the operator already cancelled.
+      return {
+        outcome: "reschedule",
+        runAt: retry.runAt,
+        payloadPatch: { nudgeRetries: retry.attempt },
+      };
+    }
+    logger.warn(
+      "appointmentReminder: giving up after %d %s retries (thread=%s), the reminder is not sent",
+      retry.attempt,
+      outcome,
+      threadId,
+    );
+  }
   return { outcome: "done" };
 }
 

@@ -6,6 +6,8 @@ import type { TFunction } from "i18next";
 
 export function flowStageLabel(stage: string, t: TFunction): string {
   switch (stage) {
+    case "route":
+      return t("logs.stage.route", "Routing");
     case "stt":
       return t("logs.stage.stt", "Transcription");
     case "embed":

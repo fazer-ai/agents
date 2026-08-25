@@ -3,6 +3,7 @@ import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { requireVaultRef } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
@@ -197,7 +198,7 @@ export async function createToolDefinition(
     throw new AppError("tenant required", 400);
   }
   const tenantId = ctx.tenantId;
-  const data = toolDefinitionCreateSchema.parse(input);
+  const data = parseInput(toolDefinitionCreateSchema, input);
   assertSupportedBody(data.body);
   // NOTE: canonicalize programmatic authoring shapes (JSON-Schema inputSchema, single-brace
   // {var}) so storage always holds what the runtime executes.
@@ -245,7 +246,7 @@ export async function updateToolDefinition(
   patch: ToolDefinitionUpdate,
   base: PrismaClient = basePrisma,
 ): Promise<ToolDefinitionDto> {
-  const data = toolDefinitionUpdateSchema.parse(patch);
+  const data = parseInput(toolDefinitionUpdateSchema, patch);
   // NOTE: an absent body is not judged, so a row stored before this check stays editable — only a
   // write that sets the body is refused.
   assertSupportedBody(data.body);

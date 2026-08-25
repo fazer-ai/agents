@@ -2,6 +2,10 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { broadcastDocumentEvent } from "@/api/features/realtime/realtime.service";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import {
+  EMBEDDING_BLOCK_KEY,
+  type EmbeddingBlockReason,
+} from "@/lib/embedding-block";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -76,9 +80,10 @@ export async function resolveEmbeddingStatus(
 }
 
 // NOTE: The English message carries the reason, and is not allowed to collapse into one generic
-// sentence. MCP hands `AppError.message` to the caller verbatim and the translation key has no
-// server-side locale entry, so outside the console the message is the only thing that says which of
-// the three happened.
+// sentence. The three keys DO have server-side entries now (EMBEDDING_BLOCK_KEY, issue #256), but
+// only the console reads them: MCP hands `AppError.message` to the caller verbatim, on a surface
+// with no locale and no structured error channel, so outside the console this message is still the
+// only thing that says which of the three happened.
 function embeddingBlockMessage(
   status: Exclude<EmbeddingStatus, { ok: true }>,
 ): string {
@@ -99,7 +104,7 @@ export async function resolveEmbeddingConfig(
   throw new AppError(
     embeddingBlockMessage(status),
     400,
-    `errors.embedding.${embeddingBlock(status).reason}`,
+    EMBEDDING_BLOCK_KEY[embeddingBlock(status).reason],
   );
 }
 
@@ -140,7 +145,7 @@ export function refuseUnstorable(
 }
 
 export interface CreateDocumentParams {
-  tenantId: bigint;
+  ctx: TenantContext;
   knowledgeBaseId: bigint;
   title: string;
   text: string;
@@ -165,7 +170,8 @@ export async function createDocument(
   params: CreateDocumentParams,
 ): Promise<{ id: bigint; status: string }> {
   const base = params.base ?? basePrisma;
-  const { tenantId, knowledgeBaseId } = params;
+  const { ctx, knowledgeBaseId } = params;
+  const tenantId = ctx.tenantId as bigint;
   refuseUnstorable([
     ["title", params.title],
     ["text", params.text],
@@ -173,7 +179,7 @@ export async function createDocument(
     ["mimeType", params.mimeType],
   ]);
 
-  const doc = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+  const doc = await runScopedOn(base, ctx, async (db) => {
     const kb = await db.knowledgeBase.findUnique({
       where: { id: knowledgeBaseId },
       select: { id: true },
@@ -227,11 +233,11 @@ interface DocumentListRow {
 }
 
 export async function listDocuments(
-  tenantId: bigint,
+  ctx: TenantContext,
   knowledgeBaseId: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<DocumentListRow[]> {
-  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+  return runScopedOn(base, ctx, async (db) => {
     const kb = await db.knowledgeBase.findUnique({
       where: { id: knowledgeBaseId },
       select: { id: true },
@@ -260,11 +266,11 @@ export async function listDocuments(
 }
 
 export async function getDocument(
-  tenantId: bigint,
+  ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
 ) {
-  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+  return runScopedOn(base, ctx, async (db) => {
     const doc = await db.knowledgeDocument.findUnique({
       where: { id },
       select: {
@@ -288,11 +294,11 @@ export async function getDocument(
 }
 
 export async function deleteDocument(
-  tenantId: bigint,
+  ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  await runScopedOn(base, sysCtx(tenantId), async (db) => {
+  await runScopedOn(base, ctx, async (db) => {
     const res = await db.knowledgeDocument.deleteMany({ where: { id } });
     if (res.count === 0) throw new NotFoundError("document not found");
   });
@@ -307,11 +313,12 @@ export interface UpdateDocumentParams {
 // RAG_INGEST job re-chunks + re-embeds, replacing the old chunks — same path as retry/create); a
 // title-only edit just updates the metadata, no re-embed (the chunks are the content, not the title).
 export async function updateDocument(
-  tenantId: bigint,
+  ctx: TenantContext,
   id: bigint,
   params: UpdateDocumentParams,
   base: PrismaClient = basePrisma,
 ): Promise<{ id: bigint; status: string }> {
+  const tenantId = ctx.tenantId as bigint;
   const hasTitle = params.title !== undefined;
   const hasText = params.text !== undefined;
   if (!hasTitle && !hasText) throw new AppError("nothing to update", 400);
@@ -322,29 +329,25 @@ export async function updateDocument(
     ["text", params.text],
   ]);
 
-  const { doc, reingest } = await runScopedOn(
-    base,
-    sysCtx(tenantId),
-    async (db) => {
-      const existing = await db.knowledgeDocument.findUnique({
-        where: { id },
-        select: { id: true, content: true },
-      });
-      if (!existing) throw new NotFoundError("document not found");
-      const reingest = hasText && params.text !== existing.content;
-      const updated = await db.knowledgeDocument.update({
-        where: { id },
-        data: {
-          ...(hasTitle ? { title: params.title } : {}),
-          ...(reingest
-            ? { content: params.text, status: "PENDING", error: null }
-            : {}),
-        },
-        select: { id: true, status: true, knowledgeBaseId: true },
-      });
-      return { doc: updated, reingest };
-    },
-  );
+  const { doc, reingest } = await runScopedOn(base, ctx, async (db) => {
+    const existing = await db.knowledgeDocument.findUnique({
+      where: { id },
+      select: { id: true, content: true },
+    });
+    if (!existing) throw new NotFoundError("document not found");
+    const reingest = hasText && params.text !== existing.content;
+    const updated = await db.knowledgeDocument.update({
+      where: { id },
+      data: {
+        ...(hasTitle ? { title: params.title } : {}),
+        ...(reingest
+          ? { content: params.text, status: "PENDING", error: null }
+          : {}),
+      },
+      select: { id: true, status: true, knowledgeBaseId: true },
+    });
+    return { doc: updated, reingest };
+  });
 
   if (reingest) {
     await enqueueJob({
@@ -366,11 +369,12 @@ export async function updateDocument(
 }
 
 export async function retryDocument(
-  tenantId: bigint,
+  ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  const doc = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+  const tenantId = ctx.tenantId as bigint;
+  const doc = await runScopedOn(base, ctx, async (db) => {
     const existing = await db.knowledgeDocument.findUnique({
       where: { id },
       select: { id: true, status: true, knowledgeBaseId: true },
@@ -415,10 +419,7 @@ export async function retryDocument(
 // read the console renders from. `credential_empty` joined it so all three resolvable reasons have a
 // name here instead of two of them collapsing into one.
 export interface EmbeddingBlock {
-  reason:
-    | "embedding_not_configured"
-    | "credential_pending"
-    | "credential_empty";
+  reason: EmbeddingBlockReason;
   credentialRef?: string;
   vaultId?: string;
 }
@@ -457,10 +458,11 @@ function embeddingBlock(
 // block never depends on which base is being looked at — which is also why the caller does not have
 // to load a knowledge base (and pay its chunk count) to ask this question.
 export async function readEmbeddingBlock(
-  tenantId: bigint,
+  ctx: TenantContext,
   base: PrismaClient = basePrisma,
 ): Promise<EmbeddingBlock | null> {
-  const status = await runScopedOn(base, sysCtx(tenantId), (db) =>
+  const tenantId = ctx.tenantId as bigint;
+  const status = await runScopedOn(base, ctx, (db) =>
     resolveEmbeddingStatus(db, tenantId, ""),
   );
   return status.ok ? null : embeddingBlock(status);
@@ -471,13 +473,14 @@ export async function readEmbeddingBlock(
 // recovery of genuine ingestion errors — the same PENDING → ingest path as the per-document retry). If
 // the embedding prerequisite is missing, nothing is queued and `blocked` explains why (docs stay put).
 export async function reindexKnowledgeBase(
-  tenantId: bigint,
+  ctx: TenantContext,
   knowledgeBaseId: bigint,
   base: PrismaClient = basePrisma,
   opts: { includeFailed?: boolean; dryRun?: boolean } = {},
 ): Promise<ReindexResult> {
+  const tenantId = ctx.tenantId as bigint;
   const statuses = opts.includeFailed ? ["UNINDEXED", "FAILED"] : ["UNINDEXED"];
-  const outcome = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+  const outcome = await runScopedOn(base, ctx, async (db) => {
     const kb = await db.knowledgeBase.findUnique({
       where: { id: knowledgeBaseId },
       select: { id: true, embeddingModel: true },

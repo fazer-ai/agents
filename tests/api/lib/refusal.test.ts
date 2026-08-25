@@ -63,15 +63,33 @@ const ROWS: Row[] = [
     body: { error: "Forbidden" },
   },
   {
-    name: "a 409 names its input too: the status is not what decides this",
+    // The class carries a field and no params, which is why the slug refusal below stopped being
+    // thrown through it: a 409 that has to interpolate cannot.
+    name: "a ConflictError carries its field through, like any other refusal",
     error: new ConflictError(
+      "mcp connection name already in use",
+      "errors.mcpNameTaken",
+      "name",
+    ),
+    acceptLanguage: "en",
+    body: {
+      error: "That MCP connection name is already in use.",
+      field: "name",
+    },
+  },
+  {
+    name: "a 409 names its input too: the status is not what decides this",
+    error: new AppError(
       'a document template with the slug "orcamento" already exists',
+      409,
       "errors.documentTemplateSlugTaken",
+      { slug: "orcamento" },
       "slug",
     ),
     acceptLanguage: "en",
     body: {
-      error: "A document template with this identifier already exists",
+      error:
+        'A document template with the identifier "orcamento" already exists',
       field: "slug",
     },
   },

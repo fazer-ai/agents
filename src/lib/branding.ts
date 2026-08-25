@@ -46,3 +46,48 @@ export function sanitizeBranding(input: unknown): Record<string, string> {
   }
   return out;
 }
+
+// The white-label display name when none is configured (the product's own brand). It is also the
+// `<title>` declared in `public/index.html`, so the cold-cache first paint already shows it.
+export const DEFAULT_BRAND_NAME = "fazer.ai agents";
+
+// Where the client caches the resolved global branding. Named here rather than in the provider
+// because a second reader lives outside the bundle: the inline <head> script that stamps the tab
+// title before React exists (#277).
+export const BRANDING_CACHE_KEY = "@app:branding";
+
+// The white-label name to display: the configured one, or the product's own. Blank and whitespace
+// count as unconfigured, and the configured name is displayed trimmed.
+export function resolveBrandName(
+  config: { brandName?: string | null } | null,
+): string {
+  return config?.brandName?.trim() || DEFAULT_BRAND_NAME;
+}
+
+// Where the branding binaries are served from. Public by design (they load before any auth
+// context), and long-cached, so every URL carries the config's `version` as the cache buster.
+export const BRANDING_ASSET_BASE = "/api/v1/branding/asset";
+
+export function brandingAssetUrl(
+  kind: "logo" | "favicon",
+  variant: "dark" | "light",
+  version: string,
+): string {
+  return `${BRANDING_ASSET_BASE}/${kind}/${variant}?v=${version}`;
+}
+
+// Prefer the variant matching the active theme; fall back to the other if only one was uploaded.
+export function pickVariant(
+  present: { dark: boolean; light: boolean },
+  theme: "light" | "dark",
+): "dark" | "light" | null {
+  if (theme === "dark")
+    return present.dark ? "dark" : present.light ? "light" : null;
+  return present.light ? "light" : present.dark ? "dark" : null;
+}
+
+// Where the page's DECLARED icon links are kept, so a cleared favicon can restore them. The inline
+// <head> script that applies the custom icon before the first paint has to remove them (leaving
+// them in place makes the browser fetch the default too), so it writes them here on the way out
+// and `applyFavicon` reads them back (#290).
+export const BRANDING_DEFAULT_FAVICONS_KEY = "__brandingDefaultFavicons";

@@ -14,6 +14,14 @@ import {
   type Variant,
 } from "@/modules/experiments/service";
 
+// The context these calls take: the tenant id came from a row this test created, so it carries
+// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+const ctxOf = (tenantId: bigint): TenantContext => ({
+  tenantId,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
+
 describe("chooseVariant (deterministic)", () => {
   const variants: Variant[] = [
     { key: "a", systemPrompt: "PA" },
@@ -80,7 +88,7 @@ describe.skipIf(!dbUp)("resolveVariantOverride", () => {
     });
     agentId = agent.id;
     await createExperiment({
-      tenantId,
+      ctx: ctxOf(tenantId),
       name: "prompts",
       agentId,
       variants: [
@@ -165,7 +173,7 @@ describe.skipIf(!dbUp)("experiments CRUD + results", () => {
 
   test("CRUD + results reflect conversions per variant", async () => {
     const { id } = await createExperiment({
-      tenantId: tnt,
+      ctx: ctxOf(tnt),
       name: "x",
       variants: [
         { key: "a", weight: 1 },
@@ -173,12 +181,12 @@ describe.skipIf(!dbUp)("experiments CRUD + results", () => {
       ],
       base: appDb,
     });
-    expect((await getExperiment(tnt, id, appDb)).name).toBe("x");
-    expect((await listExperiments(tnt, appDb)).length).toBeGreaterThanOrEqual(
-      1,
-    );
+    expect((await getExperiment(ctxOf(tnt), id, appDb)).name).toBe("x");
+    expect(
+      (await listExperiments(ctxOf(tnt), appDb)).length,
+    ).toBeGreaterThanOrEqual(1);
     const upd = await updateExperiment({
-      tenantId: tnt,
+      ctx: ctxOf(tnt),
       id,
       enabled: false,
       base: appDb,
@@ -205,13 +213,13 @@ describe.skipIf(!dbUp)("experiments CRUD + results", () => {
     await suDb.conversionEvent.create({
       data: { tenantId: tnt, threadId: "th-1", source: "test" },
     });
-    const res = await experimentResults(tnt, id, appDb);
+    const res = await experimentResults(ctxOf(tnt), id, appDb);
     const a = res.variants.find((v) => v.key === "a");
     expect(a?.assigned).toBe(2);
     expect(a?.converted).toBe(1);
     expect(a?.conversionRate).toBe(0.5);
 
-    await deleteExperiment(tnt, id, appDb);
-    expect(getExperiment(tnt, id, appDb)).rejects.toThrow();
+    await deleteExperiment(ctxOf(tnt), id, appDb);
+    expect(getExperiment(ctxOf(tnt), id, appDb)).rejects.toThrow();
   });
 });

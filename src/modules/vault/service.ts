@@ -59,6 +59,7 @@ function pendingCredentialError(ref: string): AppError {
     `vault secret "${ref}" has not been filled yet`,
     409,
     "errors.credentialPending",
+    { ref },
   );
 }
 
@@ -255,7 +256,7 @@ export async function requireVaultRef(
       `"${ref}" is not a vault reference (expected vault:<id>)`,
       400,
       "errors.invalidVaultRef",
-      undefined,
+      { ref },
       field,
     );
   if (!ref.startsWith(VAULT_REF_PREFIX)) throw malformed();
@@ -276,7 +277,7 @@ export async function requireVaultRef(
       `vault secret "${ref}" not found`,
       400,
       "errors.vaultRefNotFound",
-      undefined,
+      { ref },
       field,
     );
   }
@@ -385,8 +386,8 @@ function validateVaultValue(kind: string, value: unknown): void {
         throw new AppError(
           `value.${key} must be a non-empty string`,
           400,
-          "errors.invalidVaultValue",
-          undefined,
+          "errors.vaultFieldRequired",
+          { field: key },
           // NOTE: the credential form renders one input per declared field and keys it by exactly this
           // (`fieldValues[f.key]`, src/client/components/CredentialForm.tsx), so the key IS the
           // console's name for the input that was refused.
@@ -401,7 +402,8 @@ function validateVaultValue(kind: string, value: unknown): void {
         throw new AppError(
           `value has unexpected key: ${k}`,
           400,
-          "errors.invalidVaultValue",
+          "errors.vaultFieldUnknown",
+          { field: k },
         );
       }
     }

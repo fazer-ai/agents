@@ -118,22 +118,68 @@ async function setCeiling(maxHistoryTokens: number | null) {
   });
 }
 
-// The trail is written fire-and-forget, so the assertion polls instead of racing it.
-async function trimLines() {
+// The `generate` lines of ONE thread, scoped so that neither test below can answer with the other's
+// rows. Both run a thread in the same tenant and one of them asserts that NO trim line exists, which
+// read across the tenant is a claim about its neighbour: swapping the two `test()` blocks used to
+// turn this file red with `Received length: 2`, so the green depended on declaration order (#258).
+async function generateLines(convId: number) {
+  return suDb.executionLog.findMany({
+    where: {
+      tenantId,
+      stage: "generate",
+      level: "info",
+      threadId: `${tenantId}:${instanceId}:${convId}`,
+    },
+    select: { detail: true, level: true },
+  });
+}
+
+const isTrim = (r: { detail: unknown }) =>
+  typeof (r.detail as Record<string, unknown> | null)?.historyDropped ===
+  "number";
+
+// The two questions this file asks of the trail are NOT the same question, and one reader cannot
+// wait correctly for both. A trimmed turn writes TWO `generate`/`info` rows, its ordinary one and a
+// separate one for the trim (`onHistoryTrim` is its own `emitFlowEvent` in src/graph/runtime.ts).
+// Measured on this file: the no-ceiling thread produces 6 rows and 0 trims, the ceiling thread 8 and
+// 2. So a single reader waiting on the TOTAL count is satisfied by the six ordinary rows while both
+// trim writes are still in flight, and the positive test intermittently reads none.
+
+// "Did this thread trim?" — poll until a trim row lands. The line is what is being asserted, so
+// waiting for it is the whole job.
+async function waitForTrimLines(convId: number) {
+  let trims: Awaited<ReturnType<typeof generateLines>> = [];
+  for (let i = 0; i < 30 && trims.length === 0; i++) {
+    trims = (await generateLines(convId)).filter(isTrim);
+    if (trims.length === 0) await new Promise((r) => setTimeout(r, 100));
+  }
+  return trims;
+}
+
+// "Did this thread trim NOTHING?" — wait for the turns' own bookkeeping, then read.
+//
+// The landmark is the count of NON-trim rows, never a trim appearing: polling for something that
+// must never arrive can only spend the whole timeout and then agree with itself, which is what this
+// assertion used to do for 3 of the file's 4 seconds.
+//
+// NOTE: an absence can only ever be asserted against a barrier, and `emitFlowEvent` offers none, so
+// this composes the two that exist. The turn's OWN row is dispatched after any trim row of the same
+// turn — `onHistoryTrim` runs while the history window is built, before the model call, and the
+// ordinary row closes the generate stage after it — so `turns` ordinary rows means every trim write
+// this thread could owe was already dispatched. The settle re-read covers the rest: two independent
+// transactions dispatched in order can still land out of order on a pool. Neither is a lock, which
+// is why the regression this corroborates is ALSO caught deterministically one assertion earlier:
+// `onHistoryTrim` fires only when the window dropped something (src/graph/graph.ts), and anything
+// dropped means the model no longer saw all 12 messages.
+async function trimLinesAfterTurns(convId: number, turns: number) {
+  let rows: Awaited<ReturnType<typeof generateLines>> = [];
   for (let i = 0; i < 30; i++) {
-    const rows = await suDb.executionLog.findMany({
-      where: { tenantId, stage: "generate", level: "info" },
-      select: { detail: true, level: true },
-    });
-    const hits = rows.filter(
-      (r) =>
-        typeof (r.detail as Record<string, unknown> | null)?.historyDropped ===
-        "number",
-    );
-    if (hits.length > 0) return hits;
+    rows = await generateLines(convId);
+    if (rows.filter((r) => !isTrim(r)).length >= turns) break;
     await new Promise((r) => setTimeout(r, 100));
   }
-  return [];
+  await new Promise((r) => setTimeout(r, 100));
+  return (await generateLines(convId)).filter(isTrim);
 }
 
 describe.skipIf(!dbUp)("a turn under the agent's history ceiling", () => {
@@ -257,7 +303,8 @@ describe.skipIf(!dbUp)("a turn under the agent's history ceiling", () => {
     expect(last.some((m) => String(m.content).includes(FIRST_QUESTION))).toBe(
       true,
     );
-    expect(await trimLines()).toHaveLength(0);
+    // Six turns ran, so six lines are owed; among them, none may carry a trim.
+    expect(await trimLinesAfterTurns(980, 6)).toHaveLength(0);
   });
 
   test("with a ceiling the oldest turns stop travelling, and the trail records it", async () => {
@@ -281,7 +328,7 @@ describe.skipIf(!dbUp)("a turn under the agent's history ceiling", () => {
     expect(last[0]?.getType()).toBe("system");
     expect(last[1]?.getType()).toBe("human");
 
-    const lines = await trimLines();
+    const lines = await waitForTrimLines(981);
     expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) {
       // INFO, never warn: warn fans out to the alert channels, and a working ceiling trims on

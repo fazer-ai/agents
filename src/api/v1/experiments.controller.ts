@@ -14,13 +14,19 @@ import {
   type Variant,
 } from "@/modules/experiments/service";
 
+// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
+// src/api/locales/*.json from these lines and prunes anything nothing references, and
+// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
+// throw site rather than an English sentence on a pt-BR caller's screen.
+// translate('errors.experimentNotFound', 'Experiment not found.')
+
 // Prompt A/B experiments (per-tenant). TENANT_ADMIN. Variant assignment is deterministic per
 // thread; /results joins assignments with ConversionEvents for the win-rate breakdown.
 
-function tid(ctx: TenantContext | null): bigint {
+function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
   if (ctx.tenantId === null) throw new TenantTargetRequiredError();
-  return ctx.tenantId;
+  return ctx;
 }
 
 function ser(e: {
@@ -68,7 +74,7 @@ export const experimentsController = new Elysia({
     "/",
     async ({ tenantContext }) => ({
       instance: instanceIdentity,
-      experiments: (await listExperiments(tid(tenantContext))).map(ser),
+      experiments: (await listExperiments(ctxOrThrow(tenantContext))).map(ser),
     }),
     {
       requireRole: "TENANT_ADMIN",
@@ -76,7 +82,7 @@ export const experimentsController = new Elysia({
         "List experiments",
         "List all prompt A/B experiments for the current tenant.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .get(
@@ -84,7 +90,7 @@ export const experimentsController = new Elysia({
     async ({ tenantContext, params }) => ({
       instance: instanceIdentity,
       experiment: ser(
-        await getExperiment(tid(tenantContext), BigInt(params.id)),
+        await getExperiment(ctxOrThrow(tenantContext), BigInt(params.id)),
       ),
     }),
     {
@@ -100,7 +106,10 @@ export const experimentsController = new Elysia({
     "/:id/results",
     async ({ tenantContext, params }) => ({
       instance: instanceIdentity,
-      results: await experimentResults(tid(tenantContext), BigInt(params.id)),
+      results: await experimentResults(
+        ctxOrThrow(tenantContext),
+        BigInt(params.id),
+      ),
     }),
     {
       requireRole: "TENANT_ADMIN",
@@ -124,7 +133,7 @@ export const experimentsController = new Elysia({
         enabled?: boolean;
       };
       const created = await createExperiment({
-        tenantId: tid(tenantContext),
+        ctx: ctxOrThrow(tenantContext),
         name: b.name,
         agentId: b.agentId ? BigInt(b.agentId) : undefined,
         variants: b.variants,
@@ -138,7 +147,7 @@ export const experimentsController = new Elysia({
         "Create experiment",
         "Create a prompt A/B experiment with one or more variants.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
       body: t.Object({
         name: t.String({
           minLength: 1,
@@ -174,7 +183,7 @@ export const experimentsController = new Elysia({
         enabled?: boolean;
       };
       const updated = await updateExperiment({
-        tenantId: tid(tenantContext),
+        ctx: ctxOrThrow(tenantContext),
         id: BigInt(params.id),
         name: b.name,
         agentId:
@@ -194,7 +203,7 @@ export const experimentsController = new Elysia({
         "Update experiment",
         "Update an experiment name, target agent, variants, or enabled flag.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         id: t.String({ description: "Experiment id (BigInt as a string)." }),
       }),
@@ -229,7 +238,7 @@ export const experimentsController = new Elysia({
   .delete(
     "/:id",
     async ({ tenantContext, params }) => {
-      await deleteExperiment(tid(tenantContext), BigInt(params.id));
+      await deleteExperiment(ctxOrThrow(tenantContext), BigInt(params.id));
       return { instance: instanceIdentity, success: true };
     },
     {

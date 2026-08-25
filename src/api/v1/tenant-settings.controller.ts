@@ -24,6 +24,12 @@ import {
   updateLangfuse,
 } from "@/modules/tenant-settings/service";
 
+// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
+// src/api/locales/*.json from these lines and prunes anything nothing references, and
+// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
+// throw site rather than an English sentence on a pt-BR caller's screen.
+// translate('errors.invalidCredentialKind', 'This setting requires a credential of kind {{kind}}.')
+
 // Per-tenant feature settings (TENANT_ADMIN). Embedding (provider/model/credential for RAG) and
 // Langfuse (tracing) configs live in Tenant.settings. Secret VALUES are never returned. The langfuse
 // credential is now a standard vault entry (kind `langfuse`) created via the vault UI — this endpoint
@@ -64,7 +70,7 @@ export const tenantSettingsController = new Elysia({
         "Get tenant settings",
         "Returns the tenant's embedding, Langfuse and company-profile settings.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .put(
@@ -108,7 +114,7 @@ export const tenantSettingsController = new Elysia({
         "Update embedding settings",
         "Updates the tenant's RAG embedding configuration.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .put(
@@ -155,7 +161,7 @@ export const tenantSettingsController = new Elysia({
         "Update Langfuse settings",
         "Updates the tenant's Langfuse tracing configuration.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .post(
@@ -191,7 +197,7 @@ export const tenantSettingsController = new Elysia({
         "Test Langfuse connection",
         "Probes the Langfuse instance with the supplied keys without saving them.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 422),
     },
   )
   .put(
@@ -232,7 +238,7 @@ export const tenantSettingsController = new Elysia({
         "Update company profile",
         "Updates the letterhead the tenant's issued documents carry.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .post(
@@ -254,7 +260,7 @@ export const tenantSettingsController = new Elysia({
         "Upload company logo",
         "Stores the letterhead logo used by document templates whose header shows one.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .delete(
@@ -269,7 +275,7 @@ export const tenantSettingsController = new Elysia({
         "Remove company logo",
         "Clears the letterhead logo; documents fall back to a typographic header.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .get(

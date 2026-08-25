@@ -26,7 +26,9 @@ import {
 export type JobResult =
   | { outcome: "done" }
   // `payload`, when present, REPLACES the job's payload on reschedule (e.g. a follow-up advancing its
-  // step index on the same row). Omit it to keep the current payload.
+  // step index on the same row). Omit it to keep the current payload. `payloadPatch` MERGES instead,
+  // which is what a handler wants when it only carries a field forward and another writer may have
+  // stamped the row while it ran (see rescheduleJob). Pass at most one of the two.
   //
   // `resetAttempts` clears the failure budget, and exists for the kinds that reschedule FOREVER. A
   // job's attempts are its whole lifetime's — nothing else clears them — which is right for a
@@ -34,11 +36,13 @@ export type JobResult =
   // weeks of successful passes dead-letter a row that is supposed to keep running. Opt-in, because
   // a kind that reschedules WITHIN one unit of work (a follow-up advancing a step, a compaction
   // waiting out its grace window) must keep counting: resetting there would hand a genuinely
-  // failing unit of work an unbounded retry. Issue #287 is the general case.
+  // failing unit of work an unbounded retry. Issue #287 is the general case. It is orthogonal to
+  // the two payload knobs, and rescheduleJob honours it on either path.
   | {
       outcome: "reschedule";
       runAt: Date;
       payload?: Record<string, unknown>;
+      payloadPatch?: Record<string, unknown>;
       resetAttempts?: boolean;
     }
   | { outcome: "fail"; error?: string };
@@ -181,6 +185,7 @@ export async function runClaimed(
       result.runAt,
       result.payload,
       base,
+      result.payloadPatch,
       result.resetAttempts,
     );
     if (!applied) supersededWarning(job, "reschedule");

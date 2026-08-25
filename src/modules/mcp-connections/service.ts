@@ -11,6 +11,7 @@ import {
   MCP_STDIO_LAUNCHERS,
   stdioCommandLauncher,
 } from "@/lib/mcp-launchers";
+import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
@@ -110,6 +111,7 @@ async function assertTransportValid(effective: {
         `stdio command must start with a supported launcher (${MCP_STDIO_LAUNCHERS.join(", ")})`,
         400,
         "errors.mcpLauncherInvalid",
+        { launchers: MCP_STDIO_LAUNCHERS.join(", ") },
       );
     }
     // Defense in depth: reject shell metacharacters / control chars / over-long input. The spawn is
@@ -188,7 +190,7 @@ export async function createMcpConnection(
 ): Promise<McpConnectionDto> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const data = mcpConnectionCreateSchema.parse(input);
+  const data = parseInput(mcpConnectionCreateSchema, input);
   await assertTransportValid(data);
   return runScopedOn(base, ctx, async (db) => {
     await assertNameFree(db, data.name);
@@ -217,7 +219,7 @@ export async function updateMcpConnection(
   patch: McpConnectionUpdate,
   base: PrismaClient = basePrisma,
 ): Promise<McpConnectionDto> {
-  const data = mcpConnectionUpdateSchema.parse(patch);
+  const data = parseInput(mcpConnectionUpdateSchema, patch);
   const current = await runScopedOn(base, ctx, (db) =>
     db.mcpServerConnection.findUnique({
       where: { id },

@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
   type DocumentRowState,
+  docErrorEntry,
   mergeDocumentEvent,
 } from "@/client/lib/knowledgeDocs";
+import {
+  EMBEDDING_BLOCK_KEY,
+  type EmbeddingBlockReason,
+} from "@/lib/embedding-block";
 
 // Decision table for the realtime merge behind the documents modal. The row the operator is looking
 // at is patched from the event without a re-fetch, so whatever this function inherits stays on
@@ -90,5 +95,66 @@ describe("mergeDocumentEvent", () => {
       { status: "PENDING" },
     );
     expect(row.title).toBe("Contrato");
+  });
+});
+
+// The reason a blocked document carries is written by the SERVER and read by the console, and until
+// now the two spelled it differently: `resolveEmbeddingConfig` threw `errors.embedding.<snake_case>`,
+// the ingest catch stored that `translationKey` verbatim in `KnowledgeDocument.error`, and the
+// console matched `errors.embeddingCamelCase`. Neither branch ever fired, so the operator read the
+// raw token off a tooltip.
+//
+// The assertion is over the PRODUCER's map rather than a list written here, which is the only form
+// that survives a reason being added: a new entry in `EMBEDDING_BLOCK_KEY` with no console branch
+// fails this test instead of shipping a token to a tooltip.
+describe("every reason the server can emit is localizable", () => {
+  test("EMBEDDING_BLOCK_KEY is covered by docErrorEntry, entry for entry", () => {
+    const reasons = Object.keys(EMBEDDING_BLOCK_KEY) as EmbeddingBlockReason[];
+    expect(reasons.length).toBeGreaterThan(0);
+    for (const reason of reasons) {
+      const token = EMBEDDING_BLOCK_KEY[reason];
+      const entry = docErrorEntry(token);
+      expect(entry, `no console branch for ${token}`).not.toBeNull();
+      expect(entry?.key).toStartWith("knowledge.docError.");
+      expect(entry?.fallback.length ?? 0).toBeGreaterThan(10);
+    }
+  });
+
+  // Covered is not enough: two reasons pointing at ONE token type-check, pass the coverage check
+  // above, and silently tell the operator to fix the wrong thing. A reason is only distinguishable
+  // if its token is.
+  test("each reason has a token of its own", () => {
+    const tokens = Object.values(EMBEDDING_BLOCK_KEY);
+    expect(new Set(tokens).size).toBe(tokens.length);
+    const sentences = tokens.map((t) => docErrorEntry(t)?.key);
+    expect(new Set(sentences).size).toBe(tokens.length);
+  });
+
+  // `KnowledgeDocument.error` is STORED, and nothing rewrites it when the producer changes spelling.
+  // Every row that failed before issue #256 still carries `errors.embedding.<snake_case>`, so the
+  // console has to answer those too or the history reads as raw tokens forever.
+  //
+  // Derived from EMBEDDING_BLOCK_KEY rather than listed, so a reason added later cannot get a modern
+  // token and be forgotten here — the same coupling the coverage test above enforces going forward.
+  test("a row written before the rename still gets its sentence", () => {
+    for (const reason of Object.keys(
+      EMBEDDING_BLOCK_KEY,
+    ) as EmbeddingBlockReason[]) {
+      const legacy = `errors.embedding.${reason}`;
+      const entry = docErrorEntry(legacy);
+      expect(entry, `no console branch for legacy ${legacy}`).not.toBeNull();
+      // The SAME sentence as the modern token, not merely some sentence: an alias that pointed at
+      // another reason would tell the operator to fix the wrong thing and still pass a null check.
+      expect(entry).toEqual(docErrorEntry(EMBEDDING_BLOCK_KEY[reason]));
+    }
+  });
+
+  // The negative case, and it is the design decision: anything that is NOT one of those tokens is a
+  // raw provider diagnostic, and the console shows it as-is rather than inventing a sentence.
+  test("a diagnostic message is not mistaken for a token", () => {
+    expect(docErrorEntry("connect ECONNREFUSED 10.0.0.4:443")).toBeNull();
+    expect(docErrorEntry("errors.embeddingSomethingElse")).toBeNull();
+    // The dotted shape is not a blanket pass: only the three spellings the producer actually wrote.
+    expect(docErrorEntry("errors.embedding.something_else")).toBeNull();
   });
 });

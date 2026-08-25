@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import en from "@/client/locales/en.json";
 import ptBR from "@/client/locales/pt-BR.json";
+import { expectWaiverLedger } from "@/tests/utils/ledger";
 
 // Every ConfigIssueKey the editor can render needs copy under `editor.configIssue.*`, in every
 // locale. The lookup is dynamic (`t(\`editor.configIssue.${issue.key}\`)`), so a key with no entry
@@ -102,5 +103,13 @@ describe("config issue copy", () => {
         }
       }
     }
+  });
+
+  // Both lists above are subtracted from a key set READ OUT OF `configHealth.ts`, so appending to
+  // either one silences a key that has no copy, and nothing here would notice. Pinned at the size
+  // each was argued into: tests/utils/ledger.ts, issue #293.
+  test("the ledgers this file waives with may only shrink", () => {
+    expectWaiverLedger("HANDLED_ELSEWHERE", HANDLED_ELSEWHERE, 5);
+    expectWaiverLedger("CREDENTIAL_STATES_ONLY", CREDENTIAL_STATES_ONLY, 1);
   });
 });

@@ -23,17 +23,21 @@ import {
 // NOTE: these AppError translationKeys are localized centrally in `onError` (not via literal
 // translate() calls), so they are declared here for the i18n extractor (keepRemoved: false). Keep
 // the defaults in sync with src/api/locales/*.json.
-// translate('errors.vaultNameInUse', 'A secret with this name and type already exists')
-// translate('errors.invalidVaultName', 'Name must be 1 to 128 characters')
-// translate('errors.invalidVaultValue', 'Invalid secret value for this credential type')
-// translate('errors.invalidVaultBaseUrl', 'Base URL must be a valid http(s) URL')
-// translate('errors.vaultParamNameRequired', 'Param name is required for this credential type')
-// translate('errors.invalidVaultParamName', 'Param name contains invalid characters')
-// translate('errors.vaultBaseUrlRequired', 'This credential type requires a base URL.')
-// translate('errors.invalidVaultRef', 'Not a vault reference: expected vault:<id>, not a credential name')
-// translate('errors.vaultRefNotFound', 'That vault reference does not point to any credential')
-// translate('errors.credentialPending', 'This credential has not been filled yet')
+// translate('errors.credentialPending', 'The credential {{ref}} has not been filled yet')
 // translate('errors.credentialPendingUnsupportedKind', 'This credential type is set up via a connect flow and cannot be created as a pending reference')
+// translate('errors.emptyVaultSecret', 'A vault secret must not be empty.')
+// translate('errors.invalidSecretType', 'That secret type is not valid.')
+// translate('errors.invalidVaultBaseUrl', 'Base URL must be a valid http(s) URL')
+// translate('errors.invalidVaultName', 'Name must be 1 to 128 characters')
+// translate('errors.invalidVaultParamName', 'Param name contains invalid characters')
+// translate('errors.invalidVaultRef', '"{{ref}}" is not a vault reference: expected vault:<id>, not a credential name')
+// translate('errors.invalidVaultValue', 'The secret value must be an object for this credential type')
+// translate('errors.vaultFieldRequired', 'The "{{field}}" field must not be empty')
+// translate('errors.vaultFieldUnknown', 'This credential type has no field called "{{field}}"')
+// translate('errors.vaultBaseUrlRequired', 'This credential type requires a base URL.')
+// translate('errors.vaultNameInUse', 'A secret with this name and type already exists')
+// translate('errors.vaultParamNameRequired', 'Param name is required for this credential type')
+// translate('errors.vaultRefNotFound', 'That vault reference does not point to any credential: {{ref}}')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
@@ -65,7 +69,7 @@ export const vaultController = new Elysia({
         "List vault entries",
         "Returns the tenant's secret names, kinds and reference usage; the secret value is never returned.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .post(
@@ -121,7 +125,7 @@ export const vaultController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403, 409),
+      response: errors(400, 401, 403, 404, 409, 422),
     },
   )
   .put(
@@ -175,7 +179,7 @@ export const vaultController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403, 404, 409),
+      response: errors(400, 401, 403, 404, 409, 422),
     },
   )
   .get(
@@ -194,7 +198,7 @@ export const vaultController = new Elysia({
         "Returns where a vault entry is referenced across the tenant's configuration.",
       ),
       params: idParams,
-      response: errors(401, 403, 404),
+      response: errors(401, 403, 404, 422),
     },
   )
   // Test-on-save: probe a typed value (pre-save) or a stored credential by id. Stateless for the
@@ -242,7 +246,7 @@ export const vaultController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 422),
     },
   )
   .post(
@@ -274,7 +278,7 @@ export const vaultController = new Elysia({
           ),
         }),
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .delete(
@@ -290,6 +294,6 @@ export const vaultController = new Elysia({
         "Permanently removes a tenant secret by id.",
       ),
       params: idParams,
-      response: errors(401, 403, 404),
+      response: errors(401, 403, 404, 422),
     },
   );

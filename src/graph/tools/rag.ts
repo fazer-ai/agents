@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { clipText } from "@/lib/text";
 import { xmlAttr, xmlEscape } from "@/lib/xml";
+import { sysCtx } from "@/modules/rag/documents";
 import { createSuggestion, searchKnowledge } from "@/modules/rag/service";
 
 // RAG tools the agent can call mid-turn. search_knowledge retrieves from the tenant's knowledge
@@ -183,7 +184,7 @@ function searchTool(ctx: RagToolCtx) {
       knowledge_base?: string;
     }) => {
       const hits = await searchKnowledge({
-        tenantId: ctx.tenantId,
+        ctx: sysCtx(ctx.tenantId),
         query,
         knowledgeBaseIds: resolveSearchScope(
           knowledge_base,
@@ -276,7 +277,7 @@ function suggestTool(ctx: RagToolCtx) {
         return "No knowledge base is configured for suggestions.";
       }
       await createSuggestion({
-        tenantId: ctx.tenantId,
+        ctx: sysCtx(ctx.tenantId),
         knowledgeBaseId: targetId,
         proposedContent: args.content,
         proposedTitle: args.title,

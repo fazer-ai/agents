@@ -7,8 +7,10 @@ import {
   listChatwootAccounts,
   listDeploymentAccounts,
   listInboxes,
+  previewInboxRemoval,
   reconcileInboxBots,
   reconnectInbox,
+  removeInbox,
   rotateChatwootDeploymentToken,
   setConnectedAccounts,
   softDisconnectChatwootInstance,
@@ -337,6 +339,56 @@ export async function inboxBind(
       after: truncForAudit({ agentId: updated.agentId }),
     });
     return ok({ dryRun: false, applied: true, target, inbox: updated });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// Remove the LOCAL mirror of an inbox that was deleted in Chatwoot. The dry run calls Chatwoot too,
+// which is the difference that matters: the write refuses a live inbox, so a preview answering from
+// its arguments alone would approve exactly what the apply then rejects.
+export async function inboxRemove(
+  principal: VerifiedToken,
+  args: { inbox_id: string; dry_run?: boolean },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const inboxId = parseMcpId(args.inbox_id, "inbox_id");
+  if (typeof inboxId !== "bigint") return inboxId;
+  try {
+    const cw = { makeClient: deps.makeClient };
+    const { inbox, gone } = await previewInboxRemoval(ctx, inboxId, cw, base);
+    const target = `inbox:${inboxId}`;
+    const beforeProj = {
+      id: inbox.id,
+      name: inbox.name,
+      chatwootInboxId: inbox.chatwootInboxId,
+      agentId: inbox.agentId,
+    };
+    if (args.dry_run !== false) {
+      return ok({
+        dryRun: true,
+        action: "remove",
+        target,
+        current: beforeProj,
+        goneFromChatwoot: gone,
+        note: gone
+          ? "Removes the LOCAL mirror only. Past conversations are kept and stop naming an inbox; past usage and log lines are kept."
+          : "This inbox still exists in Chatwoot, so applying would be refused. Delete it in Chatwoot first.",
+      });
+    }
+    await removeInbox(ctx, inboxId, cw, base);
+    await recordMcpAudit(ctx, base, {
+      actorId: principal.userId,
+      actorType: "mcp",
+      action: "mcp.inbox_remove",
+      target,
+      before: truncForAudit(beforeProj),
+      after: null,
+    });
+    return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
   }

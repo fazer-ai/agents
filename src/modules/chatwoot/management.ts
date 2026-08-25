@@ -1332,6 +1332,60 @@ export function remoteInboxIsGone(err: unknown): boolean {
   return err instanceof ChatwootApiError && err.status === 404;
 }
 
+// Read the mirror row and ask Chatwoot whether its inbox still exists. Shared by the removal and by
+// the removal's PREVIEW, so a dry run answers the same question the write answers: a preview that
+// replies from its arguments alone approves exactly what the write then refuses.
+async function loadInboxAndAsk(
+  ctx: TenantContext,
+  inboxId: bigint,
+  deps: LoadChatwootClientDeps,
+  base: PrismaClient,
+): Promise<{ inbox: InboxDto; gone: boolean }> {
+  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  const tenantId = ctx.tenantId;
+
+  const row = await runScopedOn(base, ctx, (db) =>
+    db.inbox.findUnique({ where: { id: inboxId }, select: INBOX_SELECT }),
+  );
+  if (!row) {
+    throw new NotFoundError("inbox not found", "errors.inboxNotFound");
+  }
+
+  // Ask, OUTSIDE any tx. NOTE: unlike `bindInbox`, an AppError raised while loading the client is
+  // NOT rethrown as itself — every way of failing to get an answer collapses into the same refusal,
+  // because the only thing that matters downstream is that we did not get the 404.
+  try {
+    const client = await loadChatwootClient(tenantId, row.chatwootInstanceId, {
+      base,
+      makeClient: deps.makeClient,
+    });
+    await client.getInbox(row.chatwootInboxId);
+  } catch (err) {
+    if (!remoteInboxIsGone(err)) {
+      // NOTE: the sentence says CONFIRM and not "reach", because this branch also carries answers
+      // that did reach us (401, 403, 500). "Could not reach Chatwoot" would be false for those, and
+      // a sentence that is false on a branch it covers is the defect issue #292 spent a PR removing.
+      throw new AppError(
+        "could not confirm with Chatwoot that this inbox was deleted",
+        502,
+        "errors.chatwootInboxProbeFailed",
+      );
+    }
+    return { inbox: toInboxDto(row), gone: true };
+  }
+  return { inbox: toInboxDto(row), gone: false };
+}
+
+// The preview half, for a transport that offers a dry run before it writes.
+export async function previewInboxRemoval(
+  ctx: TenantContext,
+  inboxId: bigint,
+  deps: LoadChatwootClientDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<{ inbox: InboxDto; gone: boolean }> {
+  return loadInboxAndAsk(ctx, inboxId, deps, base);
+}
+
 // Remove the mirror of an inbox that no longer exists in Chatwoot — the explicit action that the
 // comment in `syncInboxes` points at. Pruning on sync was considered and rejected there (a sync that
 // cannot reach an inbox would otherwise delete a binding the operator configured), which left the
@@ -1354,43 +1408,7 @@ export async function removeInbox(
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
-  const tenantId = ctx.tenantId;
-
-  const inbox = await runScopedOn(base, ctx, (db) =>
-    db.inbox.findUnique({
-      where: { id: inboxId },
-      select: { id: true, chatwootInstanceId: true, chatwootInboxId: true },
-    }),
-  );
-  if (!inbox) {
-    throw new NotFoundError("inbox not found", "errors.inboxNotFound");
-  }
-
-  // Ask, OUTSIDE any tx. NOTE: unlike `bindInbox`, an AppError raised while loading the client is
-  // NOT rethrown as itself — every way of failing to get an answer collapses into the same refusal,
-  // because the only thing that matters downstream is that we did not get the 404.
-  let gone = false;
-  try {
-    const client = await loadChatwootClient(
-      tenantId,
-      inbox.chatwootInstanceId,
-      { base, makeClient: deps.makeClient },
-    );
-    await client.getInbox(inbox.chatwootInboxId);
-  } catch (err) {
-    if (!remoteInboxIsGone(err)) {
-      // NOTE: the sentence says CONFIRM and not "reach", because this branch also carries answers
-      // that did reach us (401, 403, 500). "Could not reach Chatwoot" would be false for those, and
-      // a sentence that is false on a branch it covers is the defect issue #292 spent a PR removing.
-      throw new AppError(
-        "could not confirm with Chatwoot that this inbox was deleted",
-        502,
-        "errors.chatwootInboxProbeFailed",
-      );
-    }
-    gone = true;
-  }
+  const { gone } = await loadInboxAndAsk(ctx, inboxId, deps, base);
   if (!gone) {
     throw new AppError(
       "this inbox still exists in Chatwoot; delete it there first",

@@ -406,6 +406,13 @@ function bindingIsDead(body: string, name: string): boolean {
       }
     }
     if (close < 0) continue;
+    // The guard has to DOMINATE the toast: nested under another condition
+    // (`if (skip) { if (err) return; }`) it proves nothing about the path that skipped it. Every block
+    // open at the guard must still be open at the toast — `body` ends there, so that is the whole
+    // test. Second rule in a row pointing outward, and the direction that refuses correct code.
+    const atGuard = openBlocks(body, m.index);
+    const atToast = openBlocks(body, body.length);
+    if (!atGuard.every((b, k) => atToast[k] === b)) continue;
     // Leaving proves the binding falsy only when the binding ALONE would have entered: `if (err)` and
     // `if (err || !data)` do, `if (err && err.status === 409)` does not — its exit is compatible with
     // a truthy `err`, and the read below it is real. One such guard on this tree
@@ -413,16 +420,40 @@ function bindingIsDead(body: string, name: string): boolean {
     if (!entersOnItsOwn(body.slice(paren + 1, close), name)) continue;
     let i = close + 1;
     while (i < body.length && /\s/.test(body[i] as string)) i++;
+    let exits = false;
+    let after = -1;
     if (body[i] === "{") {
       const end = blockEnd(body, i);
       // Still open here ⇒ the toast is INSIDE the guard, which is where the binding is live.
       if (end < 0) continue;
-      if (/\b(return|throw)\b[^;]*;\s*$/.test(body.slice(i, end))) return true;
+      // The exit has to be the guard's OWN last statement: at its brace level, and the WHOLE
+      // statement. `if (err) { if (x) return; }` ends in a `return` only one path takes, and the tail
+      // read as text is indistinguishable from an unconditional one — the difference is what sits
+      // between the previous statement boundary and the keyword.
+      const guarded = body.slice(i, end);
+      const tail = /\b(return|throw)\b[^;]*;\s*$/.exec(guarded);
+      const stmtStart = tail
+        ? Math.max(
+            guarded.lastIndexOf(";", tail.index - 1),
+            guarded.lastIndexOf("{", tail.index - 1),
+            guarded.lastIndexOf("}", tail.index - 1),
+          )
+        : -1;
+      exits =
+        !!tail &&
+        openBlocks(guarded, tail.index).length === 1 &&
+        guarded.slice(stmtStart + 1, tail.index).trim() === "";
+      after = end + 1;
     } else {
       const semi = body.indexOf(";", i);
-      if (semi >= 0 && /\b(return|throw)\b/.test(body.slice(i, semi)))
-        return true;
+      exits = semi >= 0 && /\b(return|throw)\b/.test(body.slice(i, semi));
+      after = semi + 1;
     }
+    if (!exits) continue;
+    // And nothing put a value back into it between the guard and the toast. `err = await retry()`
+    // makes the binding live again, and the guard above says nothing about what it holds now.
+    if (new RegExp(`\\b${name}\\s*=[^=]`).test(body.slice(after))) continue;
+    return true;
   }
   return false;
 }
@@ -927,6 +958,54 @@ describe("an error toast shows what the server said", () => {
         }
       }`;
     expect(deadReads(live)).toEqual([]);
+  });
+
+  test("a guard nested under another condition proves nothing", () => {
+    // `if (skip) { if (err) return; }` never ran on the path where `skip` was false, so `err` is as
+    // live below it as it was above. The guard has to dominate the toast, not merely precede it.
+    const nested = `
+      async function save() {
+        const { data, error: err } = await api.api.v1.things.post(body);
+        if (skip) {
+          if (err) return;
+        }
+        if (err || !data) {
+          showToast(apiErrorMessage(err) || t("x.saveError", "Could not save."), "error");
+        }
+      }`;
+    expect(deadReads(nested)).toEqual([]);
+  });
+
+  test("a guard whose exit is itself conditional proves nothing", () => {
+    // `if (err) { if (fatal) return; }` ends in a `return` that only one path takes. Read as text the
+    // tail looks identical to an unconditional exit; the difference is the brace level it sits at.
+    const conditional = `
+      async function save() {
+        const { data, error: err } = await api.api.v1.things.post(body);
+        if (err) {
+          if (fatal) return;
+        }
+        if (err || !data) {
+          showToast(apiErrorMessage(err) || t("x.saveError", "Could not save."), "error");
+        }
+      }`;
+    expect(deadReads(conditional)).toEqual([]);
+  });
+
+  test("a binding written again after the guard is live again", () => {
+    // The guard proved the OLD value null. `err = …` below it makes the read real, and no amount of
+    // looking at the guard can see that.
+    const rewritten = `
+      async function save() {
+        let { data, error: err } = await api.api.v1.things.post(body);
+        if (err) return;
+        ({ data, error: err } = await api.api.v1.things.confirm.post());
+        err = err ?? null;
+        if (err || !data) {
+          showToast(apiErrorMessage(err) || t("x.saveError", "Could not save."), "error");
+        }
+      }`;
+    expect(deadReads(rewritten)).toEqual([]);
   });
 
   test("a guard with a second condition proves nothing", () => {

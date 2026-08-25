@@ -259,12 +259,67 @@ export function talkedToTheServer(body: string): boolean {
   return false;
 }
 
-// The handler's own name, when it has one: `const failed = useCallback(() => {`, `function load() {`,
-// `const save = async () => {`. Read off the head, so an anonymous callback answers null and the
-// delegation question is simply not asked of it.
+// The handler's own name, when it has one: `function load() {`, `const save = async () => {`,
+// `const failed = useCallback(\n  (reason) => {`. Anonymous callbacks answer null, and the delegation
+// question is simply not asked of them.
+//
+// Walked back as TOKENS, not matched on the line the block opens. A one-line regex read the
+// production shape as anonymous, because biome wraps `useCallback(` the moment its argument grows a
+// parameter — which is exactly what the fix for `DocumentsPanel` made it do. The conservative
+// direction of that miss is the dangerous one: the fence went quiet about the site it had just been
+// taught to see, and reverting the fix produced no offender at all. Found by review.
 function handlerName(code: string, start: number): string | null {
-  const before = code.slice(Math.max(0, start - 200), start);
-  return before.match(/(?:const|let|function)\s+(\w+)[^\n]*$/)?.[1] ?? null;
+  let i = start - 1;
+  let seen: string | null = null;
+  const skipSpace = () => {
+    while (i >= 0 && /\s/.test(code[i] as string)) i--;
+  };
+  for (let step = 0; step < 24; step++) {
+    skipSpace();
+    if (i < 0) return null;
+    const c = code[i] as string;
+    // A balanced group ending here: a parameter list, an index, an object.
+    if (c === ")" || c === "]" || c === "}") {
+      const open = c === ")" ? "(" : c === "]" ? "[" : "{";
+      let depth = 0;
+      for (; i >= 0; i--) {
+        if (code[i] === c) depth++;
+        else if (code[i] === open && --depth === 0) break;
+      }
+      i--;
+      continue;
+    }
+    if (c === ">" && code[i - 1] === "=") {
+      i -= 2; // the arrow
+      continue;
+    }
+    // A return annotation: `function f(): Promise<string | null> {`, `function g(): boolean {`. The
+    // generic form is skipped back to its colon in one go; the bare one falls through to the
+    // identifier branch and lands on the colon below.
+    if (c === ">") {
+      while (i >= 0 && /[\w\s$.<>|&,'"[\]?]/.test(code[i] as string)) i--;
+      if (code[i] !== ":") return null;
+      i--;
+      continue;
+    }
+    // `:` is the annotation's own colon. An object property (`{ onSave: () => {` ) reaches the `{`
+    // one step later and answers null there, which is the abstention we want.
+    if (c === "=" || c === "(" || c === ":") {
+      i--;
+      continue;
+    }
+    if (/[\w$]/.test(c)) {
+      let j = i;
+      while (j >= 0 && /[\w$.]/.test(code[j] as string)) j--;
+      const word = code.slice(j + 1, i + 1);
+      if (["const", "let", "var", "function"].includes(word)) return seen;
+      seen = word;
+      i = j;
+      continue;
+    }
+    return null;
+  }
+  return null;
 }
 
 // Is this handler CALLED from a place that had already asked the server?
@@ -299,8 +354,25 @@ export interface Offender {
   shown: string;
 }
 
-export function unreadRefusals(src: string, file = "<memory>"): Offender[] {
-  const out: Offender[] = [];
+// Every error toast in one file, each with the verdict the rules above reach about it. One walker
+// rather than two: the filter chain was copied once, and a rule added to one copy and not the other
+// is how a fence starts claiming an invariant it does not hold — which is the defect this whole file
+// is a guard against.
+type Verdict =
+  // the sentence is already read, or computed by name from a read
+  | "reads"
+  // no server sentence exists at this line: nothing sent yet, or a catch no throw reaches
+  | "nothing-to-read"
+  // its handler awaits nothing AND has no name, so there is no call site to put the question to
+  | "unasked"
+  // a fixed sentence where the server had sent one
+  | "offender";
+
+function verdicts(
+  src: string,
+  file: string,
+): { verdict: Verdict; at: Offender }[] {
+  const out: { verdict: Verdict; at: Offender }[] = [];
   // Structure is read off the skeleton and TEXT off the source: the braces have to be real code, and
   // the sentence being shown is exactly the part the skeleton blanks.
   const code = codeSkeleton(src);
@@ -311,26 +383,41 @@ export function unreadRefusals(src: string, file = "<memory>"): Offender[] {
     // requiring the quote to be last silently skipped every toast the formatter had wrapped — which
     // is most of the long ones, and they are the ones with a sentence worth replacing.
     if (!/["']error["'],?$/.test(args.trim())) continue;
+    const at: Offender = {
+      file,
+      line: src.slice(0, m.index).split("\n").length,
+      shown: args.replace(/\s+/g, " ").slice(0, 70),
+    };
+    const say = (verdict: Verdict) => out.push({ verdict, at });
+
     // `.value.error` is the same read by hand, and one screen does it on purpose: `mapSaveError`
     // (CredentialForm) answers a LOCALIZED sentence for 409 and the server's own for 400, which is a
     // policy, not an oversight. A fence that only knows the helper's name calls that an offender and
     // the sweep then overrides the 409 branch.
-    if (/apiErrorMessage|refusal\.|\.value\??\.error/.test(args)) continue;
+    if (/apiErrorMessage|refusal\.|\.value\??\.error/.test(args)) {
+      say("reads");
+      continue;
+    }
+
+    const chain = openBlocks(code, m.index);
+    if (!chain.length) {
+      say("nothing-to-read");
+      continue;
+    }
+
     // The sentence can be computed a few lines up and shown by name — `const toast =
     // refusal.capture(…)` then `showToast(toast, "error")`. Reading only the argument list calls that
     // handler an offender while it is the reference implementation of the rule.
     const named = args.trim().match(/^(\w+)\s*(?:\?\?[^,]*)?,/);
     if (named) {
-      const chainForName = openBlocks(code, m.index);
-      const from = chainForName[0] ?? 0;
       const assigned = new RegExp(
         `\\b${named[1]}\\b\\s*=[^;]*(?:apiErrorMessage|refusal\\.)`,
       );
-      if (assigned.test(src.slice(from, m.index))) continue;
+      if (assigned.test(src.slice(chain[0] ?? 0, m.index))) {
+        say("reads");
+        continue;
+      }
     }
-
-    const chain = openBlocks(code, m.index);
-    if (!chain.length) continue;
 
     // The innermost enclosing `catch`, if the toast is in one at all.
     const catchStart = chain.findLast((start) =>
@@ -342,30 +429,52 @@ export function unreadRefusals(src: string, file = "<memory>"): Offender[] {
     if (catchStart !== undefined) {
       // A catch nothing of the request's can reach. See the header: Eden resolves transport failures,
       // so this one only ever holds a fault in our own handler.
-      if (!catchSeesTheError(code, catchStart)) continue;
-    } else {
-      // A client-side check: the handler has not asked the server BEFORE this line, so no sentence
-      // of its exists yet. Asked of the handler, not of the `if` the toast happens to sit in.
-      const handler = enclosingHandler(code, chain);
-      // NOTE: unreachable on this tree and on every fixture here — every toast sits inside some
-      // function — and kept anyway, deliberately: a source scanner that meets a shape it does not
-      // understand must answer "I cannot tell", not throw a null dereference in the middle of the
-      // suite. Mutation-surviving on purpose; the alternative is a crash instead of an abstention.
-      if (!handler) continue;
-      if (
-        !talkedToTheServer(code.slice(handler.start, m.index)) &&
-        !calledAfterARequest(code, handler.start)
-      )
-        continue;
+      say(catchSeesTheError(code, catchStart) ? "offender" : "nothing-to-read");
+      continue;
     }
 
-    out.push({
-      file,
-      line: src.slice(0, m.index).split("\n").length,
-      shown: args.replace(/\s+/g, " ").slice(0, 70),
-    });
+    // A client-side check: the handler has not asked the server BEFORE this line, so no sentence of
+    // its exists yet. Asked of the handler, not of the `if` the toast happens to sit in.
+    const handler = enclosingHandler(code, chain);
+    // NOTE: unreachable on this tree and on every fixture here — every toast sits inside some
+    // function — and kept anyway, deliberately: a source scanner that meets a shape it does not
+    // understand must answer "I cannot tell", not throw a null dereference in the middle of the
+    // suite. Mutation-surviving on purpose; the alternative is a crash instead of an abstention.
+    if (!handler) {
+      say("unasked");
+      continue;
+    }
+    if (talkedToTheServer(code.slice(handler.start, m.index))) {
+      say("offender");
+      continue;
+    }
+    // Awaits nothing itself. It is a preflight only if nobody who HAD asked the server handed it the
+    // toast, and that question needs a name to ask it of.
+    if (!handlerName(code, handler.start)) {
+      say("unasked");
+      continue;
+    }
+    say(
+      calledAfterARequest(code, handler.start) ? "offender" : "nothing-to-read",
+    );
   }
   return out;
+}
+
+export function unreadRefusals(src: string, file = "<memory>"): Offender[] {
+  return verdicts(src, file)
+    .filter((v) => v.verdict === "offender")
+    .map((v) => v.at);
+}
+
+// Toasts the scanner cannot ASK about: their handler awaits nothing and has no name, so there is no
+// call site to put the question to. It abstains, which is the right answer and also a silent one —
+// and silence is the shape every bug in this predicate has taken. Pinned below, so a new one costs an
+// edit and a look rather than passing as a clean scan.
+export function unaskedToasts(src: string, file = "<memory>"): Offender[] {
+  return verdicts(src, file)
+    .filter((v) => v.verdict === "unasked")
+    .map((v) => v.at);
 }
 
 // `a || b ? c : d` is `(a || b) ? c : d`, and that is how the sweep for this issue broke the one
@@ -433,6 +542,18 @@ const WAIVED: Record<string, string> = {
     "Same as the Google section: the browser blocked the popup before any request.",
   "components/McpOAuthSection.tsx :: vault.mcpOAuth.authFailed":
     "Same as the Google section: the popup outcome, decided in the browser.",
+  "pages/agents/AgentEditorPage.tsx :: editor.conflictToast":
+    "Gated on `status === 409`, and all three 409s these routes answer are the same `errors.agentModifiedElsewhere`. The client's sentence says the same thing plus the affordance the server cannot know about — the banner's `save again to overwrite` — so passing the server's through would make the toast WORSE.",
+};
+
+// Toasts raised from an anonymous handler, where the delegation question has nowhere to go. Both are
+// `useEffect(() => {` reacting to state that is already on screen, so neither has a request behind it
+// — but that is a JUDGEMENT, and it is written down here rather than left to a scan that says nothing.
+const UNASKED: Record<string, string> = {
+  "components/TenantDeepLink.tsx :: tenant.deepLinkUnavailable":
+    'An effect over the tenant list already loaded: `action.kind === "unavailable"` is decided here, and no request was made to reach it.',
+  "pages/resources/VaultPanel.tsx :: vault.fillLinkNotHere":
+    "An effect over `entries` already loaded. The comment above it says why a failed load says nothing instead: an empty list is not the same claim as `the tenant does not have it`.",
 };
 
 // The subject of a waiver: the file, and the first translation key or bare identifier the toast
@@ -639,6 +760,29 @@ describe("an error toast shows what the server said", () => {
     expect(unreadRefusals(delegated).length).toBe(1);
   });
 
+  test("a wrapped `useCallback(` still names its handler", () => {
+    // The production shape, and the reason it is a fixture of its own: biome wraps `useCallback(` the
+    // moment its argument grows a parameter, which is exactly what the fix for `DocumentsPanel` made
+    // it do. Reading the name off the line the block opens then answered "anonymous", the delegation
+    // question was never asked, and the fence went quiet about the site it had just been taught to
+    // see. Measured by reverting the fix: zero offenders, with and without it.
+    const wrapped = `
+      const failed = useCallback(
+        (reason?: unknown) => {
+          showToast(t("x.refreshError", "Could not refresh."), "error");
+        },
+        [showToast, t],
+      );
+      const load = useCallback(async () => {
+        const [list] = await Promise.all([api.api.v1.things.get()]);
+        if (list.error) {
+          failed(list.error);
+          return;
+        }
+      }, [failed]);`;
+    expect(unreadRefusals(wrapped).length).toBe(1);
+  });
+
   test("a helper called from a preflight stays a preflight", () => {
     // The call site is asked the SAME question, so delegation does not turn every shared toast into
     // an accusation. Without this control the rule above is a blanket one, and the ledger grows to
@@ -724,6 +868,20 @@ describe("an error toast shows what the server said", () => {
   // The ledger may only shrink, and its size is the anchor the tree cannot supply: appending a name
   // silences a new offender AND satisfies every other rule here.
   test("the waiver ledger is pinned to its size", () => {
-    expectWaiverLedger("WAIVED", WAIVED, 6);
+    expectWaiverLedger("WAIVED", WAIVED, 7);
+  });
+
+  test("every toast the scanner cannot ask about is named", () => {
+    const unasked = sources(ROOT).flatMap((f) =>
+      unaskedToasts(readFileSync(f, "utf8"), f),
+    );
+    expect(
+      unasked.map(waiverKey).sort(),
+      "the scanner abstains on these because their handler is anonymous: name the handler, or add it here with its reason",
+    ).toEqual(Object.keys(UNASKED).sort());
+  });
+
+  test("the abstention ledger is pinned to its size", () => {
+    expectWaiverLedger("UNASKED", UNASKED, 2);
   });
 });

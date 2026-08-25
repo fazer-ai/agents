@@ -39,6 +39,7 @@ import {
   templateNameSchema,
 } from "@/modules/documents/templates";
 import { parseAuthoredTemplate } from "@/modules/documents/validate";
+import { disarmFullDetail } from "@/modules/flowlog/settings";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
 import { assertNoSecrets } from "@/modules/n8n-export/n8n";
@@ -1059,8 +1060,9 @@ export async function importAgent(
         name: exp.name,
         systemPrompt: exp.systemPrompt,
         modelConfig: modelConfig as Prisma.InputJsonValue,
-        settings: (normalizeSettingsForStorage(settings) ??
-          settings) as Prisma.InputJsonValue,
+        settings: disarmFullDetail(
+          normalizeSettingsForStorage(settings) ?? settings,
+        ) as Prisma.InputJsonValue,
         transferWithSummary: exp.transferWithSummary,
         businessHoursId,
         followUpHoursId,

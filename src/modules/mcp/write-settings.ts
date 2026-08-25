@@ -1,5 +1,7 @@
+import { z } from "zod";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import { revokeApiKey } from "@/modules/api-keys/service";
 import {
   createBusinessHours,
@@ -12,6 +14,7 @@ import {
   deleteExperiment,
   getExperiment,
   updateExperiment,
+  variantWriteSchema,
 } from "@/modules/experiments/service";
 import {
   getTenantSettings,
@@ -57,12 +60,21 @@ interface VariantArg {
   system_prompt?: string;
 }
 
+// Mapped AND validated here, not only inside the service, because this runs on the DRY RUN too. The
+// service parses through `variantWriteSchema` on the way to the database, which a preview never
+// reaches — so a prompt past the ceiling came back as an approved preview and then failed on the
+// identical call with `dry_run: false`. A preview that approves what the write refuses is worse than
+// no preview: it is the one that gets trusted.
 function mapVariants(variants: VariantArg[]) {
-  return variants.map((v) => ({
-    key: v.key,
-    weight: v.weight,
-    systemPrompt: v.system_prompt,
-  }));
+  return parseInput(
+    z.array(variantWriteSchema),
+    variants.map((v) => ({
+      key: v.key,
+      weight: v.weight,
+      systemPrompt: v.system_prompt,
+    })),
+    "variants",
+  );
 }
 
 export async function experimentCreate(
@@ -147,7 +159,16 @@ export async function experimentUpdate(
   } = {};
   if (args.name !== undefined) patch.name = args.name;
   if (args.enabled !== undefined) patch.enabled = args.enabled;
-  if (args.variants !== undefined) patch.variants = mapVariants(args.variants);
+  // Inside a catch boundary, like the create path: `mapVariants` VALIDATES now, so it throws on a
+  // variant the write would refuse — and a tool that throws answers the caller with an exception
+  // instead of the `{ ok: false, error }` every other refusal on this surface produces.
+  if (args.variants !== undefined) {
+    try {
+      patch.variants = mapVariants(args.variants);
+    } catch (e) {
+      return failOf(e);
+    }
+  }
   if (args.agent_id !== undefined) {
     if (args.agent_id === null) patch.agentId = null;
     else {

@@ -453,6 +453,7 @@ export async function runLoadedTurn(
     inboxId: loaded.inboxDbId,
     threadId,
     base,
+    fullDetail: loaded.fullDetail,
   };
 
   // Load the client + tools (network, outside the tx). The bot token is the PERSONA's, so replies are

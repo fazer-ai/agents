@@ -107,6 +107,8 @@ describe("behavior-settings — observability", () => {
     expect(BEHAVIOR_SETTINGS_KEYS).toContain("observability");
     expect(readBehaviorSettings({}).observability).toEqual({
       logToolValues: false,
+      fullDetail: false,
+      fullDetailUntil: null,
     });
   });
 
@@ -115,7 +117,12 @@ describe("behavior-settings — observability", () => {
       { limits: { maxToolCalls: 7 } },
       { observability: { logToolValues: "true" } },
     );
-    expect(next.observability).toEqual({ logToolValues: true });
+    // The STORED shape, not the read shape: `fullDetail` is derived on read and must never be
+    // persisted, or a bag can say "armed" an hour after the window closed.
+    expect(next.observability).toEqual({
+      logToolValues: true,
+      fullDetailUntil: null,
+    });
     // The limits block is re-read through its typed reader, so it comes back normalized in full:
     // the untouched tool-call cap plus the history ceiling explicitly at "off".
     expect(next.limits).toEqual({ maxToolCalls: 7, maxHistoryTokens: null });
@@ -224,5 +231,49 @@ describe("behavior-settings — a patch into a nested block", () => {
     expect(
       (next.attributeContext as Record<string, unknown>).conversation,
     ).toEqual(["a"]);
+  });
+});
+
+// The merge re-reads every block through its typed reader and writes the result back, so a reader
+// that answers a DERIVED field would persist it. `observability.fullDetail` is exactly that field:
+// it is computed from `fullDetailUntil` on every read, and a bag holding it would let the stored
+// answer and the computed one disagree the moment the window closes (issue #58).
+describe("behavior-settings — the merge stores what is stored, not what is derived", () => {
+  const armed = new Date(Date.now() + 3_600_000).toISOString();
+
+  test("an armed window survives a patch to an unrelated block", () => {
+    const next = mergeBehaviorSettings(
+      { observability: { fullDetailUntil: armed } },
+      { limits: { maxToolCalls: 7 } },
+    );
+    expect(next.observability).toEqual({
+      logToolValues: false,
+      fullDetailUntil: armed,
+    });
+  });
+
+  test("the derived flag never reaches the bag", () => {
+    const next = mergeBehaviorSettings(
+      { observability: { fullDetailUntil: armed } },
+      { observability: { logToolValues: true } },
+    );
+    expect(Object.keys(next.observability as object).sort()).toEqual([
+      "fullDetailUntil",
+      "logToolValues",
+    ]);
+  });
+
+  test("a window that closed is written back as off", () => {
+    const next = mergeBehaviorSettings(
+      {
+        observability: {
+          fullDetailUntil: new Date(Date.now() - 1000).toISOString(),
+        },
+      },
+      { limits: { maxToolCalls: 7 } },
+    );
+    expect(
+      (next.observability as { fullDetailUntil: unknown }).fullDetailUntil,
+    ).toBeNull();
   });
 });

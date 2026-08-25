@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
+import {
+  FULL_DETAIL_MAX_HOURS,
+  parseIsoInstant,
+} from "@/modules/flowlog/settings";
 import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
@@ -365,6 +369,30 @@ const observability = z.looseObject({
     .boolean()
     .optional()
     .describe("tool arguments as VALUES instead of shapes"),
+  // NOTE: `z.string()`, not `z.iso.datetime()`. The typed form publishes a 430-character regex into
+  // every listing of this tool, which is a third of a block's whole budget spent restating a format
+  // the description states in four words. The check is the same either way — it runs in the refine
+  // below, which publishes nothing — and what a caller loses is the machine-readable `format`, not
+  // the constraint.
+  fullDetailUntil: z
+    .string()
+    .nullable()
+    .optional()
+    .refine((v) => {
+      if (v == null) return true;
+      // Through the READER's own parser, so a caller is refused by the same rule the runtime will
+      // apply — an offset-bearing ISO instant, never `Date.parse`'s wider vocabulary. Refusing here
+      // is the courtesy half: the reader refuses it either way, but silently, as the mode simply
+      // never arming.
+      const t = parseIsoInstant(v);
+      return (
+        t !== null &&
+        t.getTime() <= Date.now() + FULL_DETAIL_MAX_HOURS * 3_600_000
+      );
+    }, `an ISO instant with an offset, at most ${FULL_DETAIL_MAX_HOURS}h ahead`)
+    .describe(
+      `ISO instant the log debug mode ends, at most ${FULL_DETAIL_MAX_HOURS}h ahead; until then this agent's log detail is stored whole instead of cut at 2000 chars`,
+    ),
 });
 
 const memory = z.looseObject({

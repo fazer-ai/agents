@@ -232,6 +232,12 @@ export interface AgentConfig {
   // Whether this agent's tool lines log the VALUES the model sent instead of their shape
   // (agent.settings.observability.logToolValues; off by default — see src/modules/flowlog/shape.ts).
   logToolValues: boolean;
+  // Whether this agent's debug mode is on for this turn: flow lines keep their `detail` strings
+  // whole instead of cutting them at 2000, which is what lets an operator read the audited system
+  // prompt past that point (agent.settings.observability.fullDetailUntil; off by default, and it
+  // expires on its own — see src/modules/flowlog/settings.ts). Read HERE, with the rest of the
+  // agent's settings, so the emit path never pays a settings read per log line.
+  fullDetail: boolean;
 }
 
 export interface LoadAgentArgs {
@@ -415,6 +421,18 @@ export async function loadAgentConfig(
     }
   }
   const attributeContext = readAttributeContextConfig(effSettings);
+  // One read for both observability knobs, and one instant for the debug mode's expiry: reading it
+  // twice would let the window close between the two answers.
+  // From the SAVED bag, not the draft, and it is the one block here that is read that way.
+  //
+  // The overrides exist so the playground can run an unsaved agent, and every other block in them
+  // changes how the agent BEHAVES — the prompt, the model, the tools, the guardrails. This one does
+  // not: it changes what the platform STORES about the run. A draft that widened it would record
+  // the customer's tool values, or full-size rows, from a switch the operator has not committed and
+  // could close the tab on, while the console's own warning says "Save to apply" and the agent's
+  // stored settings say the mode is off. Recording policy follows the saved settings, so the two
+  // can never disagree (#58).
+  const obs = readObservabilityConfig(agent.settings);
   const wantsAttributeContext = !isAttributeContextEmpty(attributeContext);
   const conv = await db.conversation.findUnique({
     where: {
@@ -720,7 +738,8 @@ export async function loadAgentConfig(
     },
     memoryCompactionApiKey,
     memoryCompactionCredentialBaseUrl,
-    logToolValues: readObservabilityConfig(effSettings).logToolValues,
+    logToolValues: obs.logToolValues,
+    fullDetail: obs.fullDetail,
   };
 }
 

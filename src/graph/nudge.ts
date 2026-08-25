@@ -418,6 +418,11 @@ export async function runAgentNudge(
     inboxId: cfg.inboxDbId,
     threadId: params.threadId,
     base,
+    // The proactive turn runs on the SAME loaded config as the reactive one, so the agent's debug
+    // mode reaches it the same way (#58). Leaving it out would answer one question two ways for one
+    // agent: the tool line of a follow-up would still be cut at 2,000 while the tool line of a reply
+    // was not, with nothing in the settings saying so.
+    fullDetail: cfg.fullDetail,
   };
   const markFollowUp = (outcome: RunAgentNudgeOutcome): void => {
     emitFlowEvent(flow, {

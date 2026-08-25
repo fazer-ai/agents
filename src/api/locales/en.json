@@ -28,6 +28,7 @@
     "credentialPendingUnsupportedKind": "This credential type is set up via a connect flow and cannot be created as a pending reference",
     "credentialRequired": "A credential is required to list provider models.",
     "currentPasswordIncorrect": "Current password is incorrect",
+    "debugWindowTooLong": "The log debug mode can be armed for at most {{hours}}h at a time.",
     "documentNameIsBuiltinTool": "\"{{name}}\" would produce the tool {{tool}}, which is already a built-in. Pick another name.",
     "documentNotFound": "Document not found",
     "documentNotNumbered": "This document could not be numbered because its template no longer exists",

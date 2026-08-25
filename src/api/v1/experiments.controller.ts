@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import config from "@/config";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
@@ -59,8 +60,8 @@ const variantSchemaT = t.Object({
   ),
   systemPrompt: t.Optional(
     t.String({
-      description:
-        "System prompt override applied when this variant is assigned.",
+      maxLength: config.agent.promptMaxChars,
+      description: `System prompt override applied when this variant is assigned (up to ${config.agent.promptMaxChars} characters, the same ceiling the agent's own prompt is held to).`,
     }),
   ),
 });

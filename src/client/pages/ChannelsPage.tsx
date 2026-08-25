@@ -38,6 +38,7 @@ import {
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { chatwootInboxNewUrl } from "@/client/lib/chatwootLinks";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
@@ -432,15 +433,16 @@ export function ChannelsPage() {
             ? (err as { status?: number }).status
             : undefined;
         showToast(
-          status === 409
-            ? t(
-                "channels.connectDifferent",
-                "This tenant is already connected to a different Chatwoot. Disconnect it first to switch servers.",
-              )
-            : t(
-                "channels.connectError",
-                "Could not connect. Check the URL and token.",
-              ),
+          apiErrorMessage(err) ||
+            (status === 409
+              ? t(
+                  "channels.connectDifferent",
+                  "This tenant is already connected to a different Chatwoot. Disconnect it first to switch servers.",
+                )
+              : t(
+                  "channels.connectError",
+                  "Could not connect. Check the URL and token.",
+                )),
           "error",
         );
         return;
@@ -477,12 +479,13 @@ export function ChannelsPage() {
         t("channels.accountsResynced", "Account list updated."),
         "success",
       );
-    } catch {
+    } catch (e) {
       showToast(
-        t(
-          "channels.accountsError",
-          "Could not list accounts. Check the URL and token.",
-        ),
+        apiErrorMessage(e) ||
+          t(
+            "channels.accountsError",
+            "Could not list accounts. Check the URL and token.",
+          ),
         "error",
       );
     } finally {
@@ -528,9 +531,10 @@ export function ChannelsPage() {
       manageModal.close();
       setSelected(new Set());
       showToast(t("channels.accountsEnabled", "Accounts updated."), "success");
-    } catch {
+    } catch (e) {
       showToast(
-        t("channels.accountsSaveError", "Could not update the accounts."),
+        apiErrorMessage(e) ||
+          t("channels.accountsSaveError", "Could not update the accounts."),
         "error",
       );
     } finally {
@@ -554,9 +558,13 @@ export function ChannelsPage() {
       showToast(t("channels.tokenSaved", "Token updated."), "success");
       tokenModal.close();
       void load();
-    } catch {
+    } catch (e) {
       showToast(
-        t("channels.tokenSaveError", "Could not update the token (check it)."),
+        apiErrorMessage(e) ||
+          t(
+            "channels.tokenSaveError",
+            "Could not update the token (check it).",
+          ),
         "error",
       );
     } finally {
@@ -590,10 +598,11 @@ export function ChannelsPage() {
         });
         if (err) {
           showToast(
-            t(
-              "channels.teardownError",
-              "Could not disconnect. Check your password and try again.",
-            ),
+            apiErrorMessage(err) ||
+              t(
+                "channels.teardownError",
+                "Could not disconnect. Check your password and try again.",
+              ),
             "error",
           );
           throw err; // keep the dialog open
@@ -638,10 +647,11 @@ export function ChannelsPage() {
           .remove.post({ confirmName: phrase, password });
         if (err) {
           showToast(
-            t(
-              "channels.removeAccountError",
-              "Could not remove the account. Check your password and try again.",
-            ),
+            apiErrorMessage(err) ||
+              t(
+                "channels.removeAccountError",
+                "Could not remove the account. Check your password and try again.",
+              ),
             "error",
           );
           throw err; // keep the dialog open
@@ -672,8 +682,12 @@ export function ChannelsPage() {
         "success",
       );
       await refreshInboxes();
-    } catch {
-      showToast(t("channels.syncError", "Could not sync inboxes."), "error");
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) ||
+          t("channels.syncError", "Could not sync inboxes."),
+        "error",
+      );
     } finally {
       syncInFlight.current.delete(account.id);
       setBusy(false);
@@ -689,7 +703,8 @@ export function ChannelsPage() {
       .patch({ agentId });
     if (err) {
       showToast(
-        t("channels.bindError", "Could not update the inbox."),
+        apiErrorMessage(err) ||
+          t("channels.bindError", "Could not update the inbox."),
         "error",
       );
       throw err;
@@ -715,9 +730,10 @@ export function ChannelsPage() {
       if (err) throw err;
       setBotStatus((prev) => ({ ...prev, [inboxId]: "active" }));
       showToast(t("channels.reconnected", "Bot reconnected."), "success");
-    } catch {
+    } catch (e) {
       showToast(
-        t("channels.reconnectError", "Could not reconnect the bot."),
+        apiErrorMessage(e) ||
+          t("channels.reconnectError", "Could not reconnect the bot."),
         "error",
       );
     } finally {

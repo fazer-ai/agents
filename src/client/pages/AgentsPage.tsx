@@ -28,6 +28,7 @@ import {
   useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { formatDateTime, formatRelativeTime } from "@/client/lib/utils";
 
@@ -154,9 +155,10 @@ export function AgentsPage() {
           ? { importWarnings: data.warnings }
           : undefined,
       });
-    } catch {
+    } catch (e) {
       showToast(
-        t("agents.importError", "Could not import (invalid file?)."),
+        apiErrorMessage(e) ||
+          t("agents.importError", "Could not import (invalid file?)."),
         "error",
       );
     } finally {
@@ -174,9 +176,10 @@ export function AgentsPage() {
       if (err || !data) throw err ?? new Error("no data");
       createModal.close();
       navigate(`/agents/${data.agent.id}`);
-    } catch {
+    } catch (e) {
       showToast(
-        t("agents.createError", "Could not create the agent."),
+        apiErrorMessage(e) ||
+          t("agents.createError", "Could not create the agent."),
         "error",
       );
     } finally {

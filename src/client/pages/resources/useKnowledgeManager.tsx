@@ -452,8 +452,11 @@ export function useKnowledgeManager(opts: {
       createModal.close();
       void onChanged();
       opts.onCreated?.({ id: data.base.id, name: name.trim() });
-    } catch {
-      showToast(t("knowledge.createError", "Could not create."), "error");
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) || t("knowledge.createError", "Could not create."),
+        "error",
+      );
     } finally {
       setBusy(false);
     }
@@ -477,8 +480,11 @@ export function useKnowledgeManager(opts: {
       showToast(t("knowledge.updated", "Knowledge base updated."), "success");
       editModal.close();
       void onChanged();
-    } catch {
-      showToast(t("knowledge.updateError", "Could not update."), "error");
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) || t("knowledge.updateError", "Could not update."),
+        "error",
+      );
     } finally {
       setBusy(false);
     }
@@ -676,9 +682,10 @@ export function useKnowledgeManager(opts: {
       docEditModal.close();
       if (docsModal.payload) await reloadDocs(docsModal.payload.id);
       void onChanged();
-    } catch {
+    } catch (e) {
       showToast(
-        t("knowledge.docUpdateError", "Could not update the document."),
+        apiErrorMessage(e) ||
+          t("knowledge.docUpdateError", "Could not update the document."),
         "error",
       );
     } finally {
@@ -695,8 +702,12 @@ export function useKnowledgeManager(opts: {
       const base = data.bases.find((b) => b.id === id);
       if (!base) throw new Error("not found");
       editModal.open(base);
-    } catch {
-      showToast(t("knowledge.loadError", "Could not load this base."), "error");
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) ||
+          t("knowledge.loadError", "Could not load this base."),
+        "error",
+      );
     }
   }
 
@@ -720,13 +731,16 @@ export function useKnowledgeManager(opts: {
       // (e.g. the editor's "documents need indexing" banner) clear immediately.
       void onChanged();
       showToast(t("knowledge.retried", "Retrying..."), "success");
-    } catch {
+    } catch (e) {
       setDocs((prev) =>
         prev
           ? prev.map((d) => (d.id === doc.id ? { ...d, status: original } : d))
           : null,
       );
-      showToast(t("knowledge.retryError", "Could not retry."), "error");
+      showToast(
+        apiErrorMessage(e) || t("knowledge.retryError", "Could not retry."),
+        "error",
+      );
     }
   }
 
@@ -781,10 +795,11 @@ export function useKnowledgeManager(opts: {
       // (e.g. the editor's "documents need indexing" banner) clear immediately.
       void onChanged();
       showToast(t("knowledge.indexing", "Indexing…"), "success");
-    } catch {
+    } catch (e) {
       revert();
       showToast(
-        t("knowledge.indexAllError", "Could not start indexing."),
+        apiErrorMessage(e) ||
+          t("knowledge.indexAllError", "Could not start indexing."),
         "error",
       );
     }
@@ -804,7 +819,8 @@ export function useKnowledgeManager(opts: {
           .delete();
         if (err) {
           showToast(
-            t("knowledge.docDeleteError", "Could not delete document."),
+            apiErrorMessage(err) ||
+              t("knowledge.docDeleteError", "Could not delete document."),
             "error",
           );
           throw err;
@@ -831,7 +847,11 @@ export function useKnowledgeManager(opts: {
           .bases({ id: b.id })
           .delete();
         if (err) {
-          showToast(t("knowledge.deleteError", "Could not delete."), "error");
+          showToast(
+            apiErrorMessage(err) ||
+              t("knowledge.deleteError", "Could not delete."),
+            "error",
+          );
           throw err;
         }
         showToast(t("knowledge.deleted", "Deleted."), "success");

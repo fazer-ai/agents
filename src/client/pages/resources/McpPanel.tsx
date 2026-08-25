@@ -19,6 +19,7 @@ import {
   McpToolArgs,
 } from "@/client/components/mcp/DiscoveredMcpTools";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { McpEditModal } from "./McpEditModal";
 
 type McpData = Awaited<
@@ -87,7 +88,8 @@ export function McpPanel() {
       }).discover.post();
       if (err || !data) {
         showToast(
-          t("mcp.discoverError", "Could not reach the server."),
+          apiErrorMessage(err) ||
+            t("mcp.discoverError", "Could not reach the server."),
           "error",
         );
         return;
@@ -132,7 +134,10 @@ export function McpPanel() {
         id,
       }).delete();
       if (err) {
-        showToast(t("mcp.deleteError", "Could not delete."), "error");
+        showToast(
+          apiErrorMessage(err) || t("mcp.deleteError", "Could not delete."),
+          "error",
+        );
         return;
       }
       showToast(t("mcp.deleted", "Deleted."), "success");

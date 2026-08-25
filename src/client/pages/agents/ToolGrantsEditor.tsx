@@ -33,6 +33,7 @@ import {
   McpToolArgs,
 } from "@/client/components/mcp/DiscoveredMcpTools";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
 import {
   toolpackToolMeta,
@@ -714,7 +715,11 @@ export function ToolGrantsEditor({
       if (session !== documentSession.current) return;
       if (err || !data) {
         showToast(
-          t("editor.tools.documentOpenError", "Could not open this template."),
+          apiErrorMessage(err) ||
+            t(
+              "editor.tools.documentOpenError",
+              "Could not open this template.",
+            ),
           "error",
         );
         return;
@@ -771,7 +776,8 @@ export function ToolGrantsEditor({
       }).discover.post();
       if (error || !data) {
         showToast(
-          t("mcp.discoverError", "Could not reach the server."),
+          apiErrorMessage(error) ||
+            t("mcp.discoverError", "Could not reach the server."),
           "error",
         );
         return;

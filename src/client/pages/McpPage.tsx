@@ -16,6 +16,7 @@ import {
 import { McpInstall } from "@/client/components/mcp/McpInstall";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { isAdminRole } from "@/client/lib/roles";
 import { formatDate } from "@/client/lib/utils";
 import { McpAdminSections } from "@/client/pages/mcp/McpAdminSections";
@@ -92,7 +93,8 @@ export function McpPage() {
           .delete();
         if (err) {
           showToast(
-            t("mcp.my.disconnectFailed", "Could not disconnect the app"),
+            apiErrorMessage(err) ||
+              t("mcp.my.disconnectFailed", "Could not disconnect the app"),
             "error",
           );
           throw new Error("disconnect failed");

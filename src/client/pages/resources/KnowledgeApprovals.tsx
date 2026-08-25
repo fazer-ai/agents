@@ -20,6 +20,7 @@ import {
   useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { approvalEditPatch } from "@/client/lib/approvalEdit";
 
 // Types derived from the Eden treaty — never hand-declared (see docs/eden-treaty.md).
@@ -130,7 +131,8 @@ export function KnowledgeApprovals({
         .patch(patch);
       if (err) {
         showToast(
-          t("approvals.editError", "Could not save the edit."),
+          apiErrorMessage(err) ||
+            t("approvals.editError", "Could not save the edit."),
           "error",
         );
         return;

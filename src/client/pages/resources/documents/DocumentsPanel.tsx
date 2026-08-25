@@ -304,7 +304,11 @@ export function DocumentsPanel() {
         id,
       }).delete();
       if (err) {
-        showToast(t("documents.deleteError", "Could not delete."), "error");
+        showToast(
+          apiErrorMessage(err) ||
+            t("documents.deleteError", "Could not delete."),
+          "error",
+        );
         return;
       }
       showToast(t("documents.deleted", "Deleted."), "success");
@@ -385,7 +389,10 @@ export function DocumentsPanel() {
         .revoke.post();
       if (err) throw err;
     } catch (e) {
-      showToast(t("documents.revokeError", "Could not revoke."), "error");
+      showToast(
+        apiErrorMessage(e) || t("documents.revokeError", "Could not revoke."),
+        "error",
+      );
       // Rethrown so the confirm dialog stays OPEN on failure, per its own contract: a revoke worth
       // asking about is worth retrying without hunting the row down in the list again. Eden
       // RESOLVES an HTTP error as `{ error }` and REJECTS on a transport failure, so both halves

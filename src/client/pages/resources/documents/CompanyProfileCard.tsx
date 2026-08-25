@@ -240,7 +240,11 @@ export function CompanyProfileCard({
         await api.api.v1["tenant-settings"].company.logo.delete();
       if (error || !data) {
         showToast(
-          t("documents.company.logoRemoveError", "Could not remove the logo."),
+          apiErrorMessage(error) ||
+            t(
+              "documents.company.logoRemoveError",
+              "Could not remove the logo.",
+            ),
           "error",
         );
         return;

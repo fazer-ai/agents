@@ -15,6 +15,7 @@ import {
 } from "@/client/components";
 import { BusinessHoursForm } from "@/client/components/BusinessHoursForm";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { formatTimezoneLabel } from "@/client/lib/timezones";
 import { formatWindowsSummary } from "@/modules/business-hours/announce";
 
@@ -79,7 +80,10 @@ export function BusinessHoursPanel() {
           id: h.id,
         }).delete();
         if (err) {
-          showToast(t("hours.deleteError", "Could not delete."), "error");
+          showToast(
+            apiErrorMessage(err) || t("hours.deleteError", "Could not delete."),
+            "error",
+          );
           throw err;
         }
         showToast(t("hours.deleted", "Deleted."), "success");

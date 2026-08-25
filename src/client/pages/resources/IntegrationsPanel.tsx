@@ -13,6 +13,7 @@ import {
   useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { IntegrationEditModal } from "./IntegrationEditModal";
 
 type CatalogData = Awaited<
@@ -119,7 +120,8 @@ export function IntegrationsPanel() {
           .delete();
         if (err) {
           showToast(
-            t("integrations.deleteError", "Could not delete."),
+            apiErrorMessage(err) ||
+              t("integrations.deleteError", "Could not delete."),
             "error",
           );
           throw err;

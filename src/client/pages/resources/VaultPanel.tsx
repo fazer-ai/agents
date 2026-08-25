@@ -15,6 +15,7 @@ import {
 } from "@/client/components";
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { secretTypeService } from "@/client/lib/secretTypes";
 import { cn } from "@/client/lib/utils";
 import { invalidateVault } from "@/client/lib/vaultCache";
@@ -191,7 +192,10 @@ export function VaultPanel() {
     try {
       const { error: err } = await api.api.v1.vault({ id }).delete();
       if (err) {
-        showToast(t("vault.deleteError", "Could not delete."), "error");
+        showToast(
+          apiErrorMessage(err) || t("vault.deleteError", "Could not delete."),
+          "error",
+        );
         return;
       }
       showToast(t("vault.deleted", "Secret deleted."), "success");

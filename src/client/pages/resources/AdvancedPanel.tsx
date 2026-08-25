@@ -11,6 +11,7 @@ import {
 } from "@/client/components";
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 
 type Settings = NonNullable<
   Awaited<ReturnType<(typeof api.api.v1)["tenant-settings"]["get"]>>["data"]
@@ -79,9 +80,13 @@ export function AdvancedPanel() {
         t("advanced.embedding.saved", "Embedding settings saved."),
         "success",
       );
-    } catch {
+    } catch (e) {
       showToast(
-        t("advanced.embedding.saveError", "Could not save embedding settings."),
+        apiErrorMessage(e) ||
+          t(
+            "advanced.embedding.saveError",
+            "Could not save embedding settings.",
+          ),
         "error",
       );
     } finally {
@@ -106,12 +111,13 @@ export function AdvancedPanel() {
         t("advanced.observability.saved", "Observability settings saved."),
         "success",
       );
-    } catch {
+    } catch (e) {
       showToast(
-        t(
-          "advanced.observability.saveError",
-          "Could not save observability settings.",
-        ),
+        apiErrorMessage(e) ||
+          t(
+            "advanced.observability.saveError",
+            "Could not save observability settings.",
+          ),
         "error",
       );
     } finally {

@@ -49,6 +49,7 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
+import { describeClosedGate } from "@/modules/chatwoot/gate-close";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import {
   authorizeContact,
@@ -2537,11 +2538,19 @@ export async function processChatwootDelivery(
   // (no meta), fall back to the mirror's EFFECTIVE state — it preserves the stored trio now, so a
   // degraded event on a human-owned conversation must not read as bot-owned.
   const assigneeKnown = n.assigneeType !== undefined;
+  // Named once, asked twice: by the gate, and — when the gate closes — by the line that says which
+  // of the two events closed it. Re-deriving it at the second question is how the two answers drift
+  // apart, and the second is the one an operator reads afterwards.
+  //
+  // Only the assignee is lifted, and the literal below stays a literal on purpose: the per-call-site
+  // sweep for issue #210 reads the argument as written, so a call handed a named object no longer
+  // shows it the `assigneeId` that makes the gate strict.
+  const effectiveAssigneeType = assigneeKnown
+    ? (n.assigneeType ?? null)
+    : mirror.assigneeType;
   const act = shouldBotHandle(
     {
-      assigneeType: assigneeKnown
-        ? (n.assigneeType ?? null)
-        : mirror.assigneeType,
+      assigneeType: effectiveAssigneeType,
       status: n.status,
       assigneeId: assigneeKnown ? (n.assigneeId ?? null) : mirror.assigneeId,
     },
@@ -3032,12 +3041,38 @@ export async function processChatwootDelivery(
       n.event,
     );
   } else {
+    const closed = describeClosedGate({
+      assigneeType: effectiveAssigneeType,
+      status: n.status,
+    });
     logger.info(
-      "chatwoot: bot silent by gate (conv=%s event=%s newIncoming=%s)",
+      "chatwoot: bot silent by gate (conv=%s event=%s newIncoming=%s reason=%s status=%s)",
       convLabel,
       n.event,
       isNewIncoming,
+      closed.outcome,
+      n.status ?? "unknown",
     );
+    // The operator's own trail, and it is deliberately narrower than this branch: ONE line per
+    // customer message the bot did not answer, never one per webhook event. This gate is the only
+    // one those messages reach — a refused event arms no flush and starts no turn — so without the
+    // line the silence an operator is investigating has nothing behind it (issue #271). The
+    // narrowing is what keeps it readable: `message_updated` here is usually our own media
+    // write-back coming back around, and a switched-off agent was never going to answer, so a line
+    // there would explain the silence with the wrong reason.
+    if (isNewIncoming && rt?.enabled && mirror.conversationRowId !== null) {
+      emitFlowEvent(
+        {
+          tenantId: params.tenantId,
+          turnId: crypto.randomUUID(),
+          source: "inbox",
+          conversationId: mirror.conversationRowId,
+          agentId: rt.agentId,
+          base,
+        },
+        { stage: "handoff", status: "ok", detail: closed },
+      );
+    }
   }
 
   // A new inbound message the bot deliberately leaves unanswered — the conversation is human-owned

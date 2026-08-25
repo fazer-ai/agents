@@ -8,6 +8,7 @@ import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { describeClosedGate } from "@/modules/chatwoot/gate-close";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   buildQuoteResolver,
@@ -1151,22 +1152,16 @@ export async function runLoadedTurn(
     // over a human who is already answering it is exactly what should not land.
     if (!recheck.ours) {
       // TWO different events wear this one exit, and calling both "taken_over" is what sent an
-      // incident investigation to the wrong half of the system (issue #225). A human assignee is a
-      // real handoff and the answer is correctly dropped. Anything else means the gate closed with
-      // nobody on the other side, most often Chatwoot auto-escalating `pending` to `open` because our
-      // webhook ack was slow, which discards a reply that was already written and correct. The
-      // operator has to be able to tell those apart in the log, so the detail names the status that
-      // closed the gate.
-      const humanTookOver = recheck.assigneeType === "User";
+      // incident investigation to the wrong half of the system (issue #225). The reading is the
+      // gates' shared one now (issue #271): this is the last of three that close on the same
+      // question, and an operator filtering the log for one outcome has to get all three.
       emitFlowEvent(flow, {
         stage: "handoff",
         status: "ok",
-        detail: humanTookOver
-          ? { outcome: "taken_over" }
-          : {
-              outcome: "ownership_lost",
-              status: recheck.observed.status ?? "unknown",
-            },
+        detail: describeClosedGate({
+          assigneeType: recheck.assigneeType,
+          status: recheck.observed.status,
+        }),
       });
       return "taken-over";
     }

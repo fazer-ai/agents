@@ -9,6 +9,7 @@ import {
 } from "@/graph/runtime";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
+import { describeClosedGate } from "@/modules/chatwoot/gate-close";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   buildQuoteResolver,
@@ -311,6 +312,14 @@ export async function flushDebounceJob(
       },
     });
     if (!conv?.inboxId) return null;
+    // Read above the gate so a gate that CLOSES can still say whose conversation it was: the line it
+    // writes is filtered by agent on the Logs page, and one written without an agent id is invisible
+    // in exactly the view an operator investigating one agent is looking at.
+    const inbox = await db.inbox.findUnique({
+      where: { id: conv.inboxId },
+      select: { agentId: true, chatwootInboxId: true },
+    });
+    if (!inbox?.agentId) return null;
     // Gate: only the bot still owns it (pending, no human / our bot).
     if (
       !shouldBotHandle(
@@ -322,13 +331,18 @@ export async function flushDebounceJob(
         { ourAgentBotId: agentBotId },
       )
     ) {
-      return { gateClosed: true as const, convDbId: conv.id };
+      return {
+        // Classified WITH the gate, not after it: a second read would answer about a different
+        // moment, and the whole point of the line is which state closed THIS gate.
+        gateClosed: describeClosedGate({
+          assigneeType: conv.assigneeType,
+          status: conv.status,
+        }),
+        convDbId: conv.id,
+        inboxDbId: conv.inboxId,
+        agentId: inbox.agentId,
+      };
     }
-    const inbox = await db.inbox.findUnique({
-      where: { id: conv.inboxId },
-      select: { agentId: true, chatwootInboxId: true },
-    });
-    if (!inbox?.agentId) return null;
     const agentRow = await db.agent.findUnique({
       where: { id: inbox.agentId },
       select: { settings: true },
@@ -351,12 +365,34 @@ export async function flushDebounceJob(
   });
   // No agent / unbound inbox → nothing to do (not a failure).
   if (ctx === null) return { outcome: "done" };
-  // Human took over between the arm and this flush: the burst is the human's to answer now, so it
-  // still counts as handled. The arm path kept the burst's newest message id in the payload
-  // precisely so this advance needs no network fetch (issue #8) — without it, the burst would sit
-  // below the watermark and the first flush after the human returns the conversation would
-  // re-answer it.
+  // The gate closed between the arm and this flush, and TWO different events wear that exit: a human
+  // took the conversation, or it left `pending` with nobody on the other side — most often Chatwoot
+  // escalating after a slow ack. Either way the burst counts as handled: the arm path kept its newest
+  // message id in the payload precisely so this advance needs no network fetch (issue #8), because
+  // without it the burst would sit below the watermark and the first flush after the human returns
+  // the conversation would re-answer it.
+  //
+  // The line is what this branch was missing (issue #271). The escalation closes THIS gate rather
+  // than the runtime's recheck — no turn ever starts — so without a line here the case the
+  // distinction exists for is the one case nothing records.
   if ("gateClosed" in ctx) {
+    emitFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: ctx.convDbId,
+        agentId: ctx.agentId,
+        inboxId: ctx.inboxDbId,
+        threadId,
+        base,
+      },
+      {
+        stage: "handoff",
+        status: "ok",
+        detail: ctx.gateClosed,
+      },
+    );
     const last = readLastMessageId(job.payload);
     if (last !== null) {
       await advanceHandledWatermark({

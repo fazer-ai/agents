@@ -15,7 +15,7 @@ export const FLOW_STAGES = [
   "normalize", // the reply rewritten for speech before synthesis (its own model call)
   "tts", // audio-reply synthesis
   "split", // humanized balloon delivery
-  "handoff", // human takeover detected before posting
+  "handoff", // an ownership gate closed: a takeover, or the conversation left the bot
   "memory", // a closed attendance folded into the contact's memory (compaction)
 ] as const;
 export type FlowStage = (typeof FLOW_STAGES)[number];

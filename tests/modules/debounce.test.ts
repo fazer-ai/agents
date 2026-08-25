@@ -174,6 +174,7 @@ async function seedConversation(
     assigneeId?: number | null;
     lastHandledMessageId?: number | null;
     contactInboxId?: number | null;
+    status?: string;
   } = {},
 ) {
   await suDb.conversation.create({
@@ -181,7 +182,7 @@ async function seedConversation(
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootConversationId: convId,
-      status: "pending",
+      status: over.status ?? "pending",
       assigneeType: over.assigneeType ?? null,
       assigneeId: over.assigneeId ?? null,
       inboxId: inboxDbId,
@@ -956,6 +957,76 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([]);
     expect(calls.getMessages).toBe(0);
+  });
+
+  // A gate that closes has to SAY why it closed, and this one said nothing at all: the burst counted
+  // as handled and the flush returned, so the operator investigating an unanswered conversation
+  // found no line anywhere (issue #271). The two cases below are the two events that wear this one
+  // exit, and the second is the one the ack escalation produces — the case the distinction exists
+  // for, and the one that never reaches the recheck that could already name it, because no turn
+  // ever starts.
+  //
+  // Scoped to the conversation asked for, by its INTERNAL id, and polled: the emit is
+  // fire-and-forget, so an unscoped read answers with a neighbour's row and an unpolled one races
+  // the write it is asserting.
+  async function handoffDetailOf(convId: number): Promise<unknown> {
+    const conversation = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    for (let i = 0; i < 40; i++) {
+      const row = await suDb.executionLog.findFirst({
+        where: { tenantId, stage: "handoff", conversationId: conversation.id },
+        orderBy: { id: "desc" },
+      });
+      if (row) return row.detail;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return null;
+  }
+
+  test("a gate closed by a human writes the handoff line that names the takeover", async () => {
+    await seedConversation(870, { assigneeType: "User" });
+    const out = await flushDebounceJob({
+      job: jobFor(870),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 1, content: "oi" }])],
+          sent: [],
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(await handoffDetailOf(870)).toEqual({ outcome: "taken_over" });
+  });
+
+  // The ack escalation, as the flush meets it: Chatwoot moved the conversation out of `pending`
+  // with nobody on the other side, seconds after a slow ack, and the flush that fires next is the
+  // last place that can report it.
+  test("a gate closed by the escalation names the status that closed it", async () => {
+    await seedConversation(871, { status: "open" });
+    const out = await flushDebounceJob({
+      job: jobFor(871),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 1, content: "oi" }])],
+          sent: [],
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(await handoffDetailOf(871)).toEqual({
+      outcome: "ownership_lost",
+      status: "open",
+    });
   });
 
   // NOTE: The same seat held by OUR bot: assignment to ourselves is the normal steady state once

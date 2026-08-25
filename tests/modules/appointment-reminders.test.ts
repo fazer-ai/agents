@@ -8,6 +8,7 @@ import { DATA_FENCE, renderNudge } from "@/graph/nudge";
 import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
 import {
   appointmentReminderHandler,
+  authoritativeReminderStart,
   cancelAppointmentReminders,
   cancelThreadAppointmentReminders,
   computeReminderJobs,
@@ -192,73 +193,85 @@ describe("reminderNudge event identity", () => {
   });
 });
 
-describe("reminderAlreadyStarted", () => {
+describe("the start a reminder is judged and worded by", () => {
   const NOW = Date.parse("2026-08-25T12:00:00.000Z");
   const AHEAD = "2026-08-25T13:00:00.000Z";
   const PASSED = "2026-08-25T11:00:00.000Z";
 
-  // Each row is a state the retry can land in. The two that decide the design are the third (the
-  // calendar says the appointment moved later, so the stale snapshot must not veto it) and the
-  // fourth (nothing answered, so the snapshot is all there is).
+  // Each row is a state a retry can land in, and each declares BOTH answers: whether the appointment
+  // has begun, and which start the sentence names. They are asserted together because the point of
+  // the shared unit is that the check and the wording cannot disagree. The row that decides the
+  // design is the third: the calendar says the event moved later, so the stale snapshot must neither
+  // veto the reminder nor supply the time it announces.
   const rows: Array<{
     name: string;
-    live: { startMs: number | null } | undefined;
+    live: { startISO: string | null } | undefined;
     snapshot: string;
     started: boolean;
+    displayed: string;
   }> = [
     {
       name: "the calendar says it already started",
-      live: { startMs: NOW - 60_000 },
+      live: { startISO: PASSED },
       snapshot: AHEAD,
       started: true,
+      displayed: PASSED,
     },
     {
       name: "the calendar says it is still ahead",
-      live: { startMs: NOW + 60_000 },
+      live: { startISO: AHEAD },
       snapshot: AHEAD,
       started: false,
+      displayed: AHEAD,
     },
     {
       name: "the calendar says ahead and the snapshot says passed: the event moved later",
-      live: { startMs: NOW + 60_000 },
+      live: { startISO: AHEAD },
       snapshot: PASSED,
       started: false,
+      displayed: AHEAD,
     },
     {
       name: "the lookup could not answer and the snapshot has passed",
       live: undefined,
       snapshot: PASSED,
       started: true,
+      displayed: PASSED,
     },
     {
       name: "the lookup could not answer and the snapshot is ahead",
       live: undefined,
       snapshot: AHEAD,
       started: false,
+      displayed: AHEAD,
     },
     {
       name: "the calendar answered without a readable start, and the snapshot has passed",
-      live: { startMs: null },
+      live: { startISO: null },
       snapshot: PASSED,
       started: true,
+      displayed: PASSED,
     },
     {
       name: "the calendar answered without a readable start, and the snapshot is ahead",
-      live: { startMs: null },
+      live: { startISO: null },
       snapshot: AHEAD,
       started: false,
+      displayed: AHEAD,
     },
     {
       name: "an unreadable snapshot never counts as started",
       live: undefined,
       snapshot: "not a date",
       started: false,
+      displayed: "not a date",
     },
     {
       name: "an absent snapshot never counts as started",
       live: undefined,
       snapshot: "",
       started: false,
+      displayed: "",
     },
   ];
 
@@ -267,8 +280,25 @@ describe("reminderAlreadyStarted", () => {
       expect(reminderAlreadyStarted(row.live, row.snapshot, NOW)).toBe(
         row.started,
       );
+      expect(authoritativeReminderStart(row.live, row.snapshot)).toBe(
+        row.displayed,
+      );
     });
   }
+
+  // The table proves the rule; this proves the handler obeys it, which is a separate claim: a pure
+  // unit can be correct and unused. Read from source because the only branch that separates the two
+  // starts needs a live Google lookup answering differently from the payload, and standing up an
+  // OAuth credential to assert one argument would test the harness instead of the rule.
+  test("the handler words the reminder with the authoritative start, not the payload's", async () => {
+    const src = await Bun.file("src/modules/appointments/reminders.ts").text();
+    // One consumer, so "the call site" is a thing that can be checked at all.
+    expect([...src.matchAll(/reminderNudge\(\{/g)]).toHaveLength(1);
+    const call = src.slice(src.indexOf("reminderNudge({"));
+    expect(call.slice(0, call.indexOf("})"))).toContain(
+      "startISO: authoritativeReminderStart(",
+    );
+  });
 });
 
 describe("enqueueAppointmentReminders", () => {

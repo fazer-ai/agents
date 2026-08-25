@@ -265,7 +265,10 @@ export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
 interface EventStatus {
   notFound?: boolean;
   cancelled?: boolean;
-  startMs: number | null;
+  // The calendar's own start, kept as the string it sent (offset included) rather than as an instant:
+  // it is what the reminder says out loud, and re-rendering it would move the time the customer reads
+  // into another zone. Null when the event carries no start we can parse.
+  startISO: string | null;
   summary: string;
 }
 
@@ -304,7 +307,7 @@ async function fetchEventStatus(
       signal: ctrl.signal,
     });
     if (res.status === 404 || res.status === 410)
-      return { notFound: true, startMs: null, summary: "" };
+      return { notFound: true, startISO: null, summary: "" };
     if (res.status < 200 || res.status >= 300) return undefined;
     const data = (await res.json()) as Record<string, unknown>;
     const start = (data.start ?? {}) as { dateTime?: unknown; date?: unknown };
@@ -314,10 +317,10 @@ async function fetchEventStatus(
         : typeof start.date === "string"
           ? start.date
           : null;
-    const startMs = startStr ? Date.parse(startStr) : null;
     return {
       cancelled: data.status === "cancelled",
-      startMs: startMs != null && !Number.isNaN(startMs) ? startMs : null,
+      startISO:
+        startStr && !Number.isNaN(Date.parse(startStr)) ? startStr : null,
       summary: typeof data.summary === "string" ? data.summary : "",
     };
   } catch {
@@ -327,28 +330,37 @@ async function fetchEventStatus(
   }
 }
 
+// The start this reminder is judged AND worded by, and it has to be one value: the check that lets a
+// retry through and the sentence the customer reads must not come from different clocks, or a
+// reminder allowed because the calendar now says 3pm goes out announcing the 10am it replaced.
+//
+// The live answer wins whenever the lookup gave one, because the payload's start is a snapshot from
+// the moment the row was armed and an event edited directly in Google (never through the agent, which
+// re-arms the reminders) can have moved in either direction. When the lookup could not be made or
+// carried no readable start, the snapshot is the only thing left that knows, and it decides.
+export function authoritativeReminderStart(
+  live: { startISO: string | null } | undefined,
+  snapshotStartISO: string,
+): string {
+  return live?.startISO ?? snapshotStartISO;
+}
+
 // Has the appointment this reminder announces already begun? A reminder that arrives after the start
 // is worse than none: it tells someone already in the appointment that it is coming up.
-//
-// The calendar's own answer wins whenever it gave one, because the payload's start is a snapshot from
-// the moment the row was armed and an event edited directly in Google (never through the agent, which
-// re-arms) can have moved in either direction. When the lookup could not be made or did not answer
-// with a start, the snapshot is the only thing left that knows, and it decides.
 //
 // This only became reachable when the handler learned to retry: a job used to run exactly once, at
 // `start - offset`, so the start was ahead by construction. A retry can land hours later, and a
 // Google GET failing at that moment used to leave nothing between it and the customer.
 //
-// An absent or unparseable snapshot is NOT "started", and that falls out of the comparison rather
-// than needing a guard: `Date.parse` answers NaN, and every comparison with NaN is false. Refusing to
+// An absent or unparseable start is NOT "started", and that falls out of the comparison rather than
+// needing a guard: `Date.parse` answers NaN, and every comparison with NaN is false. Refusing to
 // remind on a date nobody can read would drop a customer-facing message over a field the agent wrote.
 export function reminderAlreadyStarted(
-  live: { startMs: number | null } | undefined,
+  live: { startISO: string | null } | undefined,
   snapshotStartISO: string,
   now: number,
 ): boolean {
-  if (live?.startMs != null) return live.startMs <= now;
-  return Date.parse(snapshotStartISO) <= now;
+  return Date.parse(authoritativeReminderStart(live, snapshotStartISO)) <= now;
 }
 
 export async function appointmentReminderHandler(
@@ -435,7 +447,8 @@ export async function appointmentReminderHandler(
       isLast,
       askConfirmation,
       summary,
-      startISO,
+      // The same value the start check just used, for the reason its header gives.
+      startISO: authoritativeReminderStart(live, startISO),
       eventId,
       calendarId,
     }),

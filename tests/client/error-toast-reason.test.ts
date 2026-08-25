@@ -215,21 +215,82 @@ function catchSeesTheError(code: string, blockStart: number): boolean {
   return /\bthrow\s+(err|error|e)\b/.test(code.slice(tryStart, tryEnd));
 }
 
+// The expression one `await` waits on: from just after the keyword to the end of the term, brackets
+// balanced. Needed because "did this handler ask the server" is a question about what is being
+// awaited, and the call is not always the first thing after the keyword.
+function awaitedExpression(body: string, afterKeyword: number): string {
+  let depth = 0;
+  let i = afterKeyword;
+  for (; i < body.length; i++) {
+    const c = body[i] as string;
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      if (depth === 0) break;
+      depth--;
+    } else if (depth === 0 && (c === ";" || c === ",")) break;
+  }
+  return body.slice(afterKeyword, i);
+}
+
 // Has this handler awaited a request, up to here?
 //
-// Not `await api.` as literal text: a handler is free to name the endpoint first, and one does —
-// `KnowledgeApprovals.act` writes `const endpoint = api.api.v1.knowledge.approvals({ id })` and then
-// awaits `endpoint.approve.post()`. Reading only the literal call let the fence pass while that
-// handler discarded its `err` in a fixed "Action failed.", which is the invariant this file claims to
-// hold. Found by review, and it is the same shape as every other bug this predicate has had: a rule
-// stated over the TEXT rather than over what the text means.
+// Asked of each awaited EXPRESSION, not of the text `await api.`, because the call is routinely not
+// the first thing after the keyword. Two shapes in this tree, and reading the literal text missed
+// both:
+//
+//   - the endpoint named first — `KnowledgeApprovals.act` writes `const endpoint =
+//     api.api.v1.knowledge.approvals({ id })` and awaits `endpoint.approve.post()`. The fence passed
+//     while that handler discarded its `err` in a fixed "Action failed.";
+//   - four requests at once — `DocumentsPanel.load` awaits `Promise.all([api…, api…, api…, api…])`,
+//     and ten files in `src/client` load a screen that way.
+//
+// It is the same shape as every other bug this predicate has had: a rule stated over the TEXT rather
+// than over what the text means.
 export function talkedToTheServer(body: string): boolean {
-  if (/await\s+api\./.test(body)) return true;
-  // Anything named from `api.` in this handler, then awaited under that name.
   const aliases = [...body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*api\./g)].map(
-    (m) => m[1],
+    (m) => m[1] as string,
   );
-  return aliases.some((name) => new RegExp(`await\\s+${name}\\b`).test(body));
+  for (const kw of body.matchAll(/\bawait\b/g)) {
+    const expr = awaitedExpression(body, (kw.index as number) + "await".length);
+    if (/\bapi\./.test(expr)) return true;
+    if (aliases.some((name) => new RegExp(`\\b${name}\\b`).test(expr)))
+      return true;
+  }
+  return false;
+}
+
+// The handler's own name, when it has one: `const failed = useCallback(() => {`, `function load() {`,
+// `const save = async () => {`. Read off the head, so an anonymous callback answers null and the
+// delegation question is simply not asked of it.
+function handlerName(code: string, start: number): string | null {
+  const before = code.slice(Math.max(0, start - 200), start);
+  return before.match(/(?:const|let|function)\s+(\w+)[^\n]*$/)?.[1] ?? null;
+}
+
+// Is this handler CALLED from a place that had already asked the server?
+//
+// A handler that never awaits anything is normally a client-side check, and that is what the rule
+// above assumes. It stops being true the moment the toast is delegated: `DocumentsPanel` writes
+// `const failed = useCallback(…)` holding the sentence, and `load` calls it from inside
+// `if (list.error || settings.error)` — the refusal is right there at the call site, and the helper,
+// asked on its own, looks like a preflight. Found by review; the fence claimed an invariant it was
+// not enforcing, which is the only kind of hole in a fence that matters.
+//
+// The call site is asked the SAME question, so a helper called from another preflight stays a
+// preflight. On this tree exactly one toast changes hands, and it is the one above.
+function calledAfterARequest(code: string, start: number): boolean {
+  const name = handlerName(code, start);
+  if (!name) return false;
+  for (const call of code.matchAll(new RegExp(`\\b${name}\\s*\\(`, "g"))) {
+    const at = call.index as number;
+    // `function failed(` is the declaration, not a call, and its enclosing block is the component —
+    // which awaits somewhere for sure. Without this every named helper reads as delegated.
+    if (/(?:function|const|let)\s+$/.test(code.slice(Math.max(0, at - 20), at)))
+      continue;
+    const caller = enclosingHandler(code, openBlocks(code, at));
+    if (caller && talkedToTheServer(code.slice(caller.start, at))) return true;
+  }
+  return false;
 }
 
 export interface Offender {
@@ -291,7 +352,11 @@ export function unreadRefusals(src: string, file = "<memory>"): Offender[] {
       // understand must answer "I cannot tell", not throw a null dereference in the middle of the
       // suite. Mutation-surviving on purpose; the alternative is a crash instead of an abstention.
       if (!handler) continue;
-      if (!talkedToTheServer(code.slice(handler.start, m.index))) continue;
+      if (
+        !talkedToTheServer(code.slice(handler.start, m.index)) &&
+        !calledAfterARequest(code, handler.start)
+      )
+        continue;
     }
 
     out.push({
@@ -538,6 +603,58 @@ describe("an error toast shows what the server said", () => {
         }
       }`;
     expect(unreadRefusals(elsewhere)).toEqual([]);
+  });
+
+  test("four requests awaited at once still count as a request", () => {
+    // Ten files in `src/client` load a screen with `await Promise.all([api…, api…])`, and reading
+    // `await api.` as literal text answered "never talked to the server" about every one of them.
+    const batched = `
+      async function load() {
+        const [list, settings] = await Promise.all([
+          api.api.v1.things.get(),
+          api.api.v1["tenant-settings"].get(),
+        ]);
+        if (list.error || settings.error) {
+          showToast(t("x.refreshError", "Could not refresh."), "error");
+        }
+      }`;
+    expect(unreadRefusals(batched).length).toBe(1);
+  });
+
+  test("a toast delegated to a helper is asked about its caller", () => {
+    // Verbatim in shape from `DocumentsPanel`: the sentence lives in a `useCallback` that awaits
+    // nothing, and the refusal is at the call site. Asked on its own the helper looks like a
+    // preflight, which is how it passed a fence that claims exactly this invariant.
+    const delegated = `
+      const failed = useCallback(() => {
+        showToast(t("x.refreshError", "Could not refresh."), "error");
+      }, [showToast, t]);
+      const load = useCallback(async () => {
+        const [list] = await Promise.all([api.api.v1.things.get()]);
+        if (list.error) {
+          failed();
+          return;
+        }
+      }, [failed]);`;
+    expect(unreadRefusals(delegated).length).toBe(1);
+  });
+
+  test("a helper called from a preflight stays a preflight", () => {
+    // The call site is asked the SAME question, so delegation does not turn every shared toast into
+    // an accusation. Without this control the rule above is a blanket one, and the ledger grows to
+    // hold sentences that are correct as they are.
+    const shared = `
+      const complain = useCallback(() => {
+        showToast(t("x.nameRequired", "Name is required."), "error");
+      }, [showToast, t]);
+      const save = useCallback(async () => {
+        if (!name.trim()) {
+          complain();
+          return;
+        }
+        await api.api.v1.things.post(body);
+      }, [complain]);`;
+    expect(unreadRefusals(shared)).toEqual([]);
   });
 
   test("a handler that reads the sentence is not an offender", () => {

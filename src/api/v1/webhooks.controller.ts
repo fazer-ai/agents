@@ -23,7 +23,7 @@ import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
 // NOTE: the subscription service (src/modules/...) throws these AppError translationKeys; they are
 // localized centrally in `onError`. Declared here (under src/api/**) so the API i18n extractor keeps
 // them — its input glob does not reach src/modules.
-// translate('errors.unknownWebhookEvent', 'Unknown webhook event')
+// translate('errors.unknownWebhookEvent', 'Unknown webhook event: {{event}}')
 // translate('errors.webhookSubscriptionNotFound', 'Webhook subscription not found')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {

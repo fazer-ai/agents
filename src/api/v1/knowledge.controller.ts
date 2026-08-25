@@ -46,7 +46,7 @@ import type { ChunkHit } from "@/modules/rag/sql";
 // translate('errors.knowledgeBaseNotFound', 'Knowledge base not found.')
 // translate('errors.noExtractableText', 'No extractable text found in this file')
 // translate('errors.unstorableText', '{{field}} contains characters that cannot be stored ({{codePoints}})')
-// translate('errors.unsupportedFileType', 'Unsupported file type')
+// translate('errors.unsupportedFileType', 'Unsupported file type: {{type}}')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();

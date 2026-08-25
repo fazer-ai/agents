@@ -53,6 +53,7 @@ export async function extractText(file: FileInput): Promise<{ text: string }> {
       `Unsupported file type: ${extension || mime}`,
       415,
       "errors.unsupportedFileType",
+      { type: extension || mime },
     );
   }
 

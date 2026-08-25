@@ -6,7 +6,7 @@ import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import {
-  // translate('errors.invalidId', 'This id is not valid')
+  // translate('errors.invalidId', 'Not a valid {{label}}')
   getIssuedDocumentPdf,
   issueDocument,
   listIssuedDocuments,
@@ -27,7 +27,7 @@ import {
 // translate('errors.documentTemplateNotFound', 'Document template not found')
 // translate('errors.documentNotFound', 'Document not found')
 // translate('errors.documentTemplateDisabled', 'This document template is disabled')
-// translate('errors.documentTemplateSlugTaken', 'A document template with this identifier already exists')
+// translate('errors.documentTemplateSlugTaken', 'A document template with the identifier "{{slug}}" already exists')
 // translate('errors.documentTemplateNameTaken', 'You already have a document template called "{{name}}"')
 // translate('errors.documentTemplateNameCollides', '"{{name}}" collides with the template "{{existing}}": both produce the tool name {{tool}}')
 // translate('errors.documentTemplateNameCollidesUnknown', 'You already have a document template whose name produces the tool {{tool}}. Pick another name.')
@@ -36,12 +36,12 @@ import {
 // translate('errors.invalidDocumentTemplateReason', 'This document template is not valid: {{reason}}')
 // translate('errors.invalidCompanyField', 'This company profile field is not valid: {{reason}}')
 // translate('errors.invalidDocumentValues', 'The values do not match what this template declares')
-// translate('errors.invalidDocumentSlug', 'This identifier is not valid')
+// translate('errors.invalidDocumentSlug', 'This identifier is not valid: {{reason}}')
 // translate('errors.invalidDocumentTemplateName', 'The document template name must be between 1 and 120 characters')
 // translate('errors.documentRevoked', 'This document was revoked and cannot be issued again')
 // translate('errors.documentNotNumbered', 'This document could not be numbered because its template no longer exists')
 // translate('errors.invalidDocumentTemplateDescription', 'The document template description is too long')
-// translate('errors.documentTemplateUnreadable', 'This template contains content a newer version wrote, so it cannot be saved from here')
+// translate('errors.documentTemplateUnreadable', 'This template contains content a newer version wrote, so it cannot be saved from here: {{reason}}')
 // translate('errors.invalidDocumentNumberPrefix', 'The document number prefix is too long')
 // translate('errors.invalidIdempotencyKey', 'This idempotency key is not valid: {{reason}}')
 // translate('errors.documentNotStored', 'This document could not be stored')

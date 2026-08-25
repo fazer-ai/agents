@@ -39,8 +39,8 @@ import { vaultRefWhere } from "@/modules/vault/service";
 
 // NOTE: these AppError translationKeys are localized centrally in `onError`; declared here for the
 // i18n extractor (keepRemoved: false). Keep in sync with src/api/locales/*.json.
-// translate('errors.googleOAuthInvalidScope', 'Invalid Google OAuth scope')
-// translate('errors.googleOAuthTooManyScopes', 'Too many Google OAuth scopes')
+// translate('errors.googleOAuthInvalidScope', 'Invalid Google OAuth scope: {{scope}}')
+// translate('errors.googleOAuthTooManyScopes', 'Too many Google OAuth scopes (at most {{max}})')
 // translate('errors.googleOAuthTokenExchangeFailed', 'Failed to exchange the Google authorization code')
 // translate('errors.googleOAuthNoRefreshToken', 'Google did not return a refresh token; re-consent is required')
 // translate('errors.googleOAuthNotConnected', 'This Google credential is not connected')

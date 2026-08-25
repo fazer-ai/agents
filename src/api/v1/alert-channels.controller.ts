@@ -20,7 +20,7 @@ import { FLOW_STAGES } from "@/modules/flowlog/stages";
 //
 // NOTE: the channels service throws these AppError translationKeys; declared here (under src/api/**)
 // so the API i18n extractor keeps them (its glob does not reach src/modules).
-// translate('errors.unknownFlowStage', 'Unknown flow stage')
+// translate('errors.unknownFlowStage', 'Unknown flow stage: {{stage}}')
 // translate('errors.alertChannelNotFound', 'Alert channel not found')
 // translate('errors.noUpdatableFields', 'No updatable fields provided')
 

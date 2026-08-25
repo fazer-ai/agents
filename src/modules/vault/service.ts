@@ -59,6 +59,7 @@ function pendingCredentialError(ref: string): AppError {
     `vault secret "${ref}" has not been filled yet`,
     409,
     "errors.credentialPending",
+    { ref },
   );
 }
 
@@ -255,7 +256,7 @@ export async function requireVaultRef(
       `"${ref}" is not a vault reference (expected vault:<id>)`,
       400,
       "errors.invalidVaultRef",
-      undefined,
+      { ref },
       field,
     );
   if (!ref.startsWith(VAULT_REF_PREFIX)) throw malformed();
@@ -276,7 +277,7 @@ export async function requireVaultRef(
       `vault secret "${ref}" not found`,
       400,
       "errors.vaultRefNotFound",
-      undefined,
+      { ref },
       field,
     );
   }

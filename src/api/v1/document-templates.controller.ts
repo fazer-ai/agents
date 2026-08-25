@@ -7,7 +7,7 @@ import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { documentStarters } from "@/modules/documents/starters";
 import {
-  // translate('errors.invalidId', 'This id is not valid')
+  // translate('errors.invalidId', 'Not a valid {{label}}')
   createDocumentTemplate,
   deleteDocumentTemplate,
   documentTemplateReferences,

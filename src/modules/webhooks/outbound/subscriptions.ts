@@ -67,6 +67,7 @@ function assertKnownEvents(events: string[]): OutboundEvent[] {
         `unknown webhook event: ${e}`,
         400,
         "errors.unknownWebhookEvent",
+        { event: e },
       );
     }
     if (!seen.has(e)) {

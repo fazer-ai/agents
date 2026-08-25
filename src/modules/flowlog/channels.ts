@@ -91,7 +91,14 @@ function assertStages(stages: string[]): string[] {
   const out: string[] = [];
   for (const s of stages) {
     if (!allowed.has(s)) {
-      throw new AppError(`unknown stage: ${s}`, 400, "errors.unknownFlowStage");
+      throw new AppError(
+        `unknown stage: ${s}`,
+        400,
+        "errors.unknownFlowStage",
+        {
+          stage: s,
+        },
+      );
     }
     if (!seen.has(s)) {
       seen.add(s);

@@ -46,7 +46,7 @@ import { vaultRefWhere } from "@/modules/vault/service";
 // i18n extractor (keepRemoved: false). Keep in sync with src/api/locales/*.json.
 // translate('errors.mcpOAuthDiscoveryFailed', 'Could not discover the MCP server OAuth configuration')
 // translate('errors.mcpOAuthDcrDisabled', 'The MCP server does not support dynamic client registration')
-// translate('errors.mcpOAuthDcrFailed', 'Dynamic client registration with the MCP server failed')
+// translate('errors.mcpOAuthDcrFailed', 'Dynamic client registration with the MCP server failed: {{reason}}')
 // translate('errors.mcpOAuthTokenExchangeFailed', 'Failed to exchange the MCP authorization code')
 // translate('errors.mcpOAuthNotConnected', 'This MCP credential is not connected')
 // translate('errors.mcpOAuthInvalidState', 'Invalid MCP OAuth state')

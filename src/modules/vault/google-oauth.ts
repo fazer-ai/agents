@@ -85,6 +85,7 @@ export function validateScopes(requested: string[]): string[] {
         `invalid Google OAuth scope: ${scope}`,
         400,
         "errors.googleOAuthInvalidScope",
+        { scope },
       );
     }
     if (!seen.has(scope)) {
@@ -103,6 +104,7 @@ export function validateScopes(requested: string[]): string[] {
       `too many Google OAuth scopes (max ${MAX_SCOPES})`,
       400,
       "errors.googleOAuthTooManyScopes",
+      { max: MAX_SCOPES },
     );
   }
   return out;

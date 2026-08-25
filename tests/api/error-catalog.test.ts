@@ -250,36 +250,57 @@ function keysThatSayLess(
     .sort();
 }
 
-// Every `new AppError(<literal>, …, "errors.X")` in `src`, as key -> the set of messages thrown with
-// it. Literal messages only: a message built from a variable cannot be compared to a catalog entry,
-// and the rule is about what the two SAY.
-// DERIVED from src/lib/errors.ts, not spelled out. A hard-coded alternation is a list that goes stale
-// the day someone adds a subclass, and it did: `ConflictError` was missing, so every refusal thrown
-// through it — `chatwootDifferentDeployment` among them, one of the entries review had to find by
-// reading — was invisible to the rule below.
-async function throwSiteRe(): Promise<RegExp> {
+// Every refusal in `src` that pairs a LITERAL message with a catalog key, as key -> the set of
+// messages thrown with it. Literal messages only: a message built from a variable cannot be compared
+// to a catalog entry, and the rule is about what the two SAY.
+//
+// THREE SPELLINGS, because a refusal is written three ways here and the rule is about the refusal,
+// not about the syntax. The class alternation is DERIVED from src/lib/errors.ts rather than spelled
+// out. A hard-coded list goes stale the day someone adds a subclass, and it did: `ConflictError`
+// was missing, so every refusal thrown through it (`chatwootDifferentDeployment` among them) was
+// invisible. The other two spellings were found the same way, one blind spot later:
+//
+//   1. `new AppError("…", 400, "errors.x")`, the direct throw;
+//   2. `super("…", 400, "errors.x")`, a subclass that hard-codes its own refusal. Sees three keys
+//      the direct form does not (`tenantNotFound`, `promptTooLong`, `settingsTextTooLong`), and
+//      names no new offender: measured, and the reason it costs nothing to keep looking;
+//   3. `{ message: "…", key: "errors.x", params: {…} }`, a refusal BUILT and thrown elsewhere, the
+//      shape `src/modules/documents/templates.ts` uses so a dry run and an apply can reach the same
+//      answer. This one was hiding a live offender: `invalidDocumentSlug` interpolates the rule the
+//      identifier broke (`slug: ${problem}.`) into a catalog entry that says only "This identifier
+//      is not valid", and issue #291 was written from a list that could not see it.
+async function throwSiteRes(): Promise<RegExp[]> {
   const src = await readFile("src/lib/errors.ts", "utf8");
   const classes = [...src.matchAll(/export class (\w+)/g)].map(
     (m) => m[1] as string,
   );
   expect(classes.length).toBeGreaterThan(5);
-  return new RegExp(
-    `new (?:${classes.join("|")})\\(\\s*(\`[^\`]*\`|"(?:[^"\\\\]|\\\\.)*")\\s*,\\s*(?:\\d+\\s*,\\s*)?"errors\\.([A-Za-z0-9_]+)"`,
-    "gs",
-  );
+  const MESSAGE = '(`[^`]*`|"(?:[^"\\\\]|\\\\.)*")';
+  const STATUS = "(?:\\d+\\s*,\\s*)?";
+  const KEY = '"errors\\.([A-Za-z0-9_]+)"';
+  return [
+    new RegExp(
+      `new (?:${classes.join("|")})\\(\\s*${MESSAGE}\\s*,\\s*${STATUS}${KEY}`,
+      "gs",
+    ),
+    new RegExp(`super\\(\\s*${MESSAGE}\\s*,\\s*${STATUS}${KEY}`, "gs"),
+    new RegExp(`message:\\s*${MESSAGE}\\s*,\\s*key:\\s*${KEY}`, "gs"),
+  ];
 }
 
 function throwSites(
   body: string,
   into: Map<string, Set<string>>,
-  re: RegExp,
+  res: readonly RegExp[],
 ): void {
-  for (const m of body.matchAll(re)) {
-    const key = m[2] as string;
-    const msg = (m[1] as string).slice(1, -1);
-    const set = into.get(key) ?? new Set<string>();
-    set.add(msg);
-    into.set(key, set);
+  for (const re of res) {
+    for (const m of body.matchAll(re)) {
+      const key = m[2] as string;
+      const msg = (m[1] as string).slice(1, -1);
+      const set = into.get(key) ?? new Set<string>();
+      set.add(msg);
+      into.set(key, set);
+    }
   }
 }
 
@@ -293,30 +314,18 @@ function throwSites(
 // offends has to leave, so the list stays a record of what is left to do rather than a graveyard.
 const SAY_LESS_GRANDFATHERED: readonly string[] = [
   "baseUrlRequired",
-  "credentialPending",
   "credentialRequired",
-  "documentTemplateSlugTaken",
-  "documentTemplateUnreadable",
   "documentWouldBeBlank",
-  "googleOAuthInvalidScope",
   "googleOAuthNotConnected",
   "googleOAuthTokenExchangeFailed",
-  "googleOAuthTooManyScopes",
   "imageTooLarge",
-  "invalidId",
-  "invalidVaultRef",
   "invalidVaultValue",
-  "mcpOAuthDcrFailed",
   "mcpOAuthDiscoveryFailed",
   "mcpOAuthNotConnected",
   "mcpOAuthTokenExchangeFailed",
   "noExtractableText",
   "providerModelsFailed",
-  "unknownFlowStage",
   "unknownProvider",
-  "unknownWebhookEvent",
-  "unsupportedFileType",
-  "vaultRefNotFound",
 ];
 
 describe("the error catalog cannot be bypassed", () => {
@@ -609,11 +618,16 @@ describe("both languages answer, and answer differently", () => {
         'throw new NotFoundError("no status arg", "errors.c");',
         'throw new AppError("second message", 400, "errors.a");',
         'throw new AppError(someVariable, 400, "errors.d");',
+        // The two spellings the reader was blind to. Both are POSITIVE controls: a reader that
+        // stopped matching them would go green here and quietly stop covering a whole family, which
+        // is what it did to `invalidDocumentSlug` for four releases.
+        'super("from a subclass", 400, "errors.e");',
+        'return { message: "built, thrown elsewhere", key: "errors.f", params: {} };',
       ].join("\n"),
       into,
-      await throwSiteRe(),
+      await throwSiteRes(),
     );
-    expect([...into.keys()].sort()).toEqual(["a", "b", "c"]);
+    expect([...into.keys()].sort()).toEqual(["a", "b", "c", "e", "f"]);
     // The captured MESSAGE, not just the key: what feeds the rule above is whether the message
     // interpolates, so a reader that stripped the `${…}` on the way out would silence it.
     //
@@ -634,10 +648,10 @@ describe("both languages answer, and answer differently", () => {
     const classes = [...src.matchAll(/export class (\w+)/g)].map(
       (m) => m[1] as string,
     );
-    const re = await throwSiteRe();
+    const res = await throwSiteRes();
     for (const cls of classes) {
       const into = new Map<string, Set<string>>();
-      throwSites(`throw new ${cls}("m", 409, "errors.k");`, into, re);
+      throwSites(`throw new ${cls}("m", 409, "errors.k");`, into, res);
       expect(
         [...into.keys()],
         `${cls} is not a throw site to the reader`,
@@ -647,9 +661,9 @@ describe("both languages answer, and answer differently", () => {
 
   test("no key answers with less than its call sites already said", async () => {
     const sites = new Map<string, Set<string>>();
-    const re = await throwSiteRe();
+    const res = await throwSiteRes();
     for (const f of await sourceFiles("src")) {
-      throwSites(await readFile(f, "utf8"), sites, re);
+      throwSites(await readFile(f, "utf8"), sites, res);
     }
     expect(
       keysThatSayLess(
@@ -662,9 +676,9 @@ describe("both languages answer, and answer differently", () => {
 
   test("the grandfathered list only names keys that still offend", async () => {
     const sites = new Map<string, Set<string>>();
-    const re = await throwSiteRe();
+    const res = await throwSiteRes();
     for (const f of await sourceFiles("src")) {
-      throwSites(await readFile(f, "utf8"), sites, re);
+      throwSites(await readFile(f, "utf8"), sites, res);
     }
     const stillOffends = new Set(
       keysThatSayLess(sites, apiEn.errors as Record<string, string>, []),
@@ -775,7 +789,7 @@ describe("both languages answer, and answer differently", () => {
     expectWaiverLedger(
       "SAY_LESS_GRANDFATHERED",
       SAY_LESS_GRANDFATHERED,
-      hasProOnlyKeys ? 26 : 25,
+      hasProOnlyKeys ? 14 : 13,
     );
   });
 });
@@ -875,77 +889,149 @@ describe("a registered key still has to say something", () => {
 // caller to a correct ENGLISH sentence, silently. Removing `{ timezone: tz }` from its throw site
 // fails no assertion anywhere else in this suite — measured.
 //
-// So the language is asserted structurally. A key whose text interpolates must be thrown with
-// something after it, and `NotFoundError`/`ForbiddenError` cannot be that something: their
-// constructors take no params argument at all, so a placeholder key thrown through one can never
-// interpolate no matter what the call site looks like.
+// So the language is asserted structurally, at the CALL SITE and not from a table of expected
+// params: a table proves what the table says, and the question here is whether the code hands the
+// value over.
+//
+// READ BY POSITION, WHICH IS THE HALF THE FIRST VERSION GUESSED AT. It asked whether the line after
+// the key closes the call, plus a hand-written list of classes that carry no params. Both are
+// approximations of "what is in the params slot", and issue #291 measured the gap: of the fourteen
+// sites it had to fix, that shape saw seven. It missed a single-line throw (nothing follows the key
+// on its own line), a site passing `undefined` there to reach the `field` argument behind it, and a
+// bag that is present and EMPTY (`params: {}`), which is the shape that would have let this very
+// change go green with the catalogs edited and no call site touched.
 describe("a key that interpolates is thrown with the values", () => {
-  const PARAMLESS_CLASSES = ["NotFoundError", "ForbiddenError"];
+  // The names an object literal binds, in BOTH spellings. `{ field: bad.what }` and `{ field }` are
+  // the same fact written two ways, and a sweep that knew only the first is how a guard passes over
+  // half its subject: measured on this repo in #245, on a bag written exactly like these.
+  //
+  // A spread is answered with `null`: unknown, not fine. Nothing spreads into a refusal today, and
+  // a sweep that quietly approved the first one to do so would be worth less than no sweep.
+  function bagNames(inner: string): Set<string> | null {
+    const names = new Set<string>();
+    let depth = 0;
+    let part = "";
+    const take = (raw: string): boolean => {
+      const t = raw.trim();
+      if (!t) return true;
+      if (t.startsWith("...")) return false;
+      const m = t.match(/^(\w+)/);
+      if (m) names.add(m[1] as string);
+      return true;
+    };
+    for (const c of inner) {
+      if ("{[(".includes(c)) depth++;
+      else if ("}])".includes(c)) depth--;
+      if (c === "," && depth === 0) {
+        if (!take(part)) return null;
+        part = "";
+      } else part += c;
+    }
+    return take(part) ? names : null;
+  }
 
-  // Proven against a synthetic body first: live source has no offender once this PR lands, and a
-  // predicate that matched nothing would pass the sweep below unchanged.
-  function offendersIn(body: string, keys: readonly string[]): string[] {
-    const out: string[] = [];
-    const lines = body.split("\n");
-    for (const [i, line] of lines.entries()) {
-      const m = line.match(/["'](errors\.\w+)["']/);
-      if (!m || line.trimStart().startsWith("//")) continue;
-      const key = m[1] as string;
-      if (!keys.includes(key)) continue;
-      const next = lines.slice(i + 1).find((l) => l.trim().length > 0) ?? "";
-      if (/^\s*\)/.test(next)) out.push(`${key}: no argument follows`);
-      const opener = lines
-        .slice(Math.max(0, i - 6), i + 1)
-        .reverse()
-        .find((l) => /new \w+Error\(/.test(l));
-      const cls = opener?.match(/new (\w+Error)\(/)?.[1];
-      if (cls && PARAMLESS_CLASSES.includes(cls))
-        out.push(`${key}: thrown through ${cls}, which carries no params`);
+  // What sits in the params position, in every spelling a refusal is written in: the argument after
+  // the key, the `params:` field of a refusal built to be thrown elsewhere, and the bag
+  // `translateWithLocale` takes behind its English fallback. Anything else in that position, be it
+  // `undefined`, a field name or the end of the call, is a site that hands nothing over.
+  function bagAfterKey(rest: string): Set<string> | null {
+    let s = rest;
+    for (const re of [
+      /^\s*,\s*/,
+      /^params\s*:\s*/,
+      /^(?:"(?:[^"\\]|\\.)*"|`[^`]*`)\s*,\s*/,
+    ]) {
+      const m = s.match(re);
+      if (m) s = s.slice(m[0].length);
+    }
+    if (!s.startsWith("{")) return null;
+    let depth = 0;
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === "{") depth++;
+      else if (s[i] === "}") {
+        depth--;
+        if (depth === 0) return bagNames(s.slice(1, i));
+      }
+    }
+    return null;
+  }
+
+  // Every place the key is WRITTEN, not every place it is thrown: a key used as a comparison token
+  // carries no bag either, and that is the shape issue #256 was about. The ledger comments spell the
+  // key in single quotes, so they are not sites and need no exception.
+  function keySites(body: string, key: string): (Set<string> | null)[] {
+    const needle = `"errors.${key}"`;
+    const out: (Set<string> | null)[] = [];
+    for (
+      let i = body.indexOf(needle);
+      i >= 0;
+      i = body.indexOf(needle, i + 1)
+    ) {
+      out.push(bagAfterKey(body.slice(i + needle.length)));
     }
     return out;
   }
 
-  test("the detector detects both shapes", () => {
-    const keys = ["errors.invalidTimezone"];
+  test("the reader finds the bag, in every spelling, and says so when there is none", () => {
+    // Proven against source that DOES offend before being pointed at a tree that does not: a reader
+    // matching nothing passes a clean tree unchanged, which is a green that means nothing.
+    expect(bagAfterKey(', { field: bad.what, codePoints: "1 2" })')).toEqual(
+      new Set(["field", "codePoints"]),
+    );
+    expect(bagAfterKey(", { name })")).toEqual(new Set(["name"]));
+    // A template literal inside the bag closes braces of its own, so the scan has to survive one.
+    // Built from `dollar` for the same reason the throw-site fixture above is: the lint refuses a
+    // literal interpolation written inside a plain string.
+    const dollar = "$";
     expect(
-      offendersIn(
-        'throw new AppError(\n  "bad tz",\n  400,\n  "errors.invalidTimezone",\n);',
-        keys,
-      ),
-    ).toEqual(["errors.invalidTimezone: no argument follows"]);
-    expect(
-      offendersIn(
-        'throw new NotFoundError(\n  "nope",\n  "errors.invalidTimezone",\n);',
-        keys,
-      ),
-    ).toContain(
-      "errors.invalidTimezone: thrown through NotFoundError, which carries no params",
+      bagAfterKey(`, { date: x ? \`${dollar}{a}..${dollar}{b}\` : c })`),
+    ).toEqual(new Set(["date"]));
+    expect(bagAfterKey(",\n      params: { tool, name },")).toEqual(
+      new Set(["tool", "name"]),
     );
     expect(
-      offendersIn(
-        'throw new AppError(\n  "bad tz",\n  400,\n  "errors.invalidTimezone",\n  { timezone: tz },\n);',
-        keys,
-      ),
-    ).toEqual([]);
-    // A ledger line is a declaration, not a throw.
-    expect(
-      offendersIn(
-        "// translate('errors.invalidTimezone', 'Unknown: {{timezone}}')",
-        keys,
-      ),
-    ).toEqual([]);
+      bagAfterKey(', "The value sent in {{field}} is not valid.", { field })'),
+    ).toEqual(new Set(["field"]));
+    // The four ways a site hands nothing over, three of which the previous shape read as fine.
+    expect(bagAfterKey(");")).toBeNull();
+    expect(bagAfterKey(", undefined, field)")).toBeNull();
+    expect(bagAfterKey(', "slug")')).toBeNull();
+    expect(bagAfterKey(", params: {},")).toEqual(new Set());
+    // …and the spread that cannot be read is unknown, not approved.
+    expect(bagAfterKey(", { ...whatever })")).toBeNull();
+    expect(keySites('new AppError(m, 400, "errors.x", { a });', "x")).toEqual([
+      new Set(["a"]),
+    ]);
+    expect(keySites("// translate('errors.x', 'nope')", "x")).toEqual([]);
   });
 
   test("every interpolating key is thrown with its values", async () => {
     const en = apiEn.errors as Record<string, string>;
-    const keys = Object.keys(en)
-      .filter((k) => /\{\{\w+\}\}/.test(en[k] ?? ""))
-      .map((k) => `errors.${k}`);
-    const offenders: string[] = [];
+    const wanted = new Map(
+      Object.entries(en)
+        .map(
+          ([k, v]) =>
+            [
+              k,
+              [...v.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1] as string),
+            ] as [string, string[]],
+        )
+        .filter(([, ph]) => ph.length > 0),
+    );
+    const unfilled: string[] = [];
+    const seen = new Set<string>();
     for (const f of await sourceFiles("src")) {
-      for (const o of offendersIn(await readFile(f, "utf8"), keys))
-        offenders.push(`${f}: ${o}`);
+      const body = await readFile(f, "utf8");
+      for (const [key, expected] of wanted) {
+        for (const bag of keySites(body, key)) {
+          seen.add(key);
+          const absent = expected.filter((p) => !bag?.has(p));
+          if (absent.length) unfilled.push(`${f}: ${key} <- ${absent.join()}`);
+        }
+      }
     }
-    expect(offenders).toEqual([]);
+    expect(unfilled).toEqual([]);
+    // A sweep whose subject went missing reports the same empty list as a clean tree.
+    expect(seen.size).toBeGreaterThan(10);
   });
 });

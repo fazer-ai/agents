@@ -4,7 +4,6 @@ import basePrisma from "@/api/lib/prisma";
 import { DEFAULT_TIMEZONE } from "@/graph/time";
 import {
   AppError,
-  ConflictError,
   type ErrorTranslationKey,
   NotFoundError,
 } from "@/lib/errors";
@@ -155,7 +154,7 @@ function nameTaken(
     return {
       message: `the slug "${slug}" is already taken by the template "${existingName}"`,
       key: "errors.documentTemplateSlugTaken",
-      params: {},
+      params: { slug },
       field: "slug",
     };
   }
@@ -205,9 +204,13 @@ function writeConflict(
         );
       }
       if (name === undefined) {
-        throw new ConflictError(
+        // NOTE: AppError rather than ConflictError, which is the same 409 with no params slot:
+        // its constructor spends that position on `undefined` so the field can sit behind it.
+        throw new AppError(
           `a document template with the slug "${slug}" already exists`,
+          409,
           "errors.documentTemplateSlugTaken",
+          { slug },
           "slug",
         );
       }
@@ -237,7 +240,7 @@ function slugRefusal(
     return {
       message: `slug: ${problem}.`,
       key: "errors.invalidDocumentSlug",
-      params: {},
+      params: { reason: problem },
       field: "slug",
     };
   }
@@ -802,6 +805,7 @@ export function patchedContent(
         `this template contains content a newer version wrote and this one cannot read, so saving from here would drop it (${e.message}) — edit it from the client that wrote it, or send blocks explicitly to replace them.`,
         409,
         "errors.documentTemplateUnreadable",
+        { reason: e.message },
       );
     }
     throw e;

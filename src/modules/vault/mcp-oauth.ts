@@ -268,6 +268,7 @@ export async function registerClient(params: {
       `dynamic client registration failed: ${json.error ?? res.status}`,
       502,
       "errors.mcpOAuthDcrFailed",
+      { reason: json.error ?? res.status },
     );
   }
   return {

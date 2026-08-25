@@ -6,17 +6,20 @@ import {
   setActiveTenantId,
 } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
+import { mediaFetch } from "@/client/lib/media";
 import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
 
-// The reconciliation that does NOT wait for a page load, driven through the real Eden client.
+// The recovery at both of its call sites, because a decision nothing calls changes nothing.
 //
-// `dropSelectionIfRejected` is a decision, and a decision nothing calls changes nothing: what this
-// file asserts is the call site. Until the console acts on the refusal, an operator who deletes the
-// tenant they are working in keeps a dead id in every request until they reload by hand, which is
-// the half of #223 that its fix did not reach.
+// Two things in the console send the tenant selector — the Eden client, on every API call, and
+// `mediaFetch`, on the raw fetches that carry media bytes, PDFs and previews — and until this both
+// of them could be told their selector was dead and do nothing about it. The `mediaFetch` half is
+// the one that stays broken longest when it is missed: every caller there is a one-shot loader that
+// reports its own 404 and stops, so the console would sit on a dead selection until some unrelated
+// treaty call happened to be refused. Issue #252.
 //
-// NOTE: every assertion reduces to a number, a string or a boolean BEFORE expect. A failing
-// expectation holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
+// NOTE: every assertion reduces to a string, number or boolean BEFORE expect. A failing expectation
+// holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 let responder: () => Response = () => new Response(null, { status: 204 });
 const reloads: number[] = [];
@@ -35,6 +38,9 @@ const refusal = (rejectedId: string | null) =>
 beforeEach(() => {
   reloads.length = 0;
   setActiveTenantId(null);
+  // The per-window once-flag, reset because each test is a fresh page.
+  (window as unknown as Record<string, unknown>).__tenantSelectorReloading =
+    undefined;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("/api/")) return responder();
@@ -56,7 +62,7 @@ afterAll(() => {
 });
 
 describe("a request refused because the selector it carried is dead", () => {
-  test("drops the selection and takes the page with it", async () => {
+  test("through the API client: drops the selection and takes the page with it", async () => {
     setActiveTenantId("999");
     responder = () => refusal("999");
     await api.api.v1.agents.get();
@@ -66,15 +72,34 @@ describe("a request refused because the selector it carried is dead", () => {
     expect(reloads.length).toBe(1);
   });
 
-  test("a burst of them reloads once, not once per request", async () => {
+  test("through mediaFetch: the same, on the path a native <img> cannot take", async () => {
+    setActiveTenantId("999");
+    responder = () => refusal("999");
+    const res = await mediaFetch("/api/v1/documents/7/pdf");
+    // The caller still gets its own answer to report; the recovery is on top of it, not instead.
+    expect(res.status).toBe(404);
+    expect(getActiveTenantId()).toBeNull();
+    expect(reloads.length).toBe(1);
+  });
+
+  test("a burst reloads once, not once per request", async () => {
     setActiveTenantId("999");
     responder = () => refusal("999");
     await Promise.all([
       api.api.v1.agents.get(),
       api.api.v1.tenants.get(),
-      api.api.v1.agents.get(),
+      mediaFetch("/api/v1/documents/7/pdf"),
     ]);
     expect(getActiveTenantId()).toBeNull();
+    expect(reloads.length).toBe(1);
+  });
+
+  test("a tab whose storage another tab already cleared still reloads itself", async () => {
+    // localStorage is shared across tabs of the same origin. This tab is rendered against 999 and
+    // still sending it; the neighbour that was refused first cleared the key. Reading that as
+    // "already handled" is what would leave this tab on screen with no selector at all.
+    responder = () => refusal("999");
+    await api.api.v1.agents.get();
     expect(reloads.length).toBe(1);
   });
 
@@ -89,7 +114,6 @@ describe("a request refused because the selector it carried is dead", () => {
   });
 
   test("a refusal naming an id the console has already left is ignored", async () => {
-    // The request went out under the old selection and was refused after the operator switched.
     setActiveTenantId("7");
     responder = () => refusal("999");
     await api.api.v1.agents.get();

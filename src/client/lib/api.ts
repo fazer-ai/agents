@@ -1,12 +1,8 @@
 import { treaty } from "@elysiajs/eden";
 import type { App } from "@/app";
-import {
-  dropSelectionIfRejected,
-  getActiveTenantId,
-} from "@/client/lib/activeTenant";
+import { getActiveTenantId } from "@/client/lib/activeTenant";
 import i18n from "@/client/lib/i18n";
-import { suppressUnloadPrompt } from "@/client/lib/unsavedGuard";
-import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
+import { recoverFromRejectedSelector } from "@/client/lib/tenantSelectorRecovery";
 
 // NOTE: `parseDate: false` disables Eden treaty's default JSON reviver that
 // auto-converts any string matching an ISO 8601 / RFC 1123 / dd-mm-yyyy regex
@@ -28,22 +24,17 @@ export const api = treaty<App>(window.location.origin, {
     return headers;
   },
   onResponse: (response) => {
-    const rejectedTenant = response.headers.get(
-      REJECTED_TENANT_SELECTOR_HEADER,
-    );
     if (response.status === 401) {
       window.dispatchEvent(new CustomEvent("auth:unauthorized"));
     } else if (response.status === 429) {
       // Surfaced as a coalesced global toast (see GlobalApiToasts) so every page gets clear
       // rate-limit feedback, not just the ones that read err.status into a DataBoundary.
       window.dispatchEvent(new CustomEvent("api:rate-limited"));
-    } else if (rejectedTenant && dropSelectionIfRejected(rejectedTenant)) {
-      // NOTE: the page on screen was built on the id that just died, and clearing storage neither
-      // remounts nor retries the requests it already sent: a one-shot loader would sit in its error
-      // state until someone retried it by hand. A tenant SWITCH reloads for the same reason (see
-      // TenantSwitcher), and this is the same event arriving from the other side.
-      suppressUnloadPrompt();
-      window.location.reload();
+    } else {
+      // NOTE: keyed on the header the boundary sets and never on the status: a 404 is also how an
+      // agent, a document or a tenant the page NAMED comes back missing, and none of those says
+      // anything about what the browser is holding. `mediaFetch` answers the same header.
+      recoverFromRejectedSelector(response);
     }
   },
   parseDate: false,

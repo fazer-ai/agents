@@ -37,6 +37,9 @@ globalThis.fetch = (async () => {
   if (answer === "throws") throw new Error("offline");
   return {
     ok: answer === "ok",
+    // NOTE: present because `mediaFetch` reads them: a refused tenant selector is answered by a
+    // header, and a double that omits it makes the recovery throw inside every media load.
+    headers: new Headers(),
     blob: async () => {
       await new Promise<void>((resolve) => {
         releaseBody = resolve;

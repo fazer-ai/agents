@@ -62,16 +62,19 @@ export function reconcileActiveTenantId(tenantIds: string[]): {
 // console pointed at a different database. This path finds out on the next request instead of on the
 // next page load, from the id the boundary names (REJECTED_TENANT_SELECTOR_HEADER).
 //
-// It compares that id against what is stored rather than trusting the refusal, for the same reason
-// the reconciliation reads storage at call time: a request that went out under the old selection can
-// be refused AFTER the operator switched to a live tenant, and that newer choice is not this
-// answer's to discard.
+// Answers whether the refusal is about the selection THIS window is running under. A DIFFERENT id is
+// not: the request went out under the old selection and came back after the operator had already
+// switched to a live tenant, and that newer choice is not this answer's to discard — the same reason
+// the reconciliation reads storage at call time rather than capturing it.
 //
-// Returns whether it dropped anything, which is also the once-flag. A page has several requests in
-// flight and each answers 404; the first clears storage synchronously, so every later answer in the
-// burst finds nothing to clear and the caller reloads once rather than once per request.
-export function dropSelectionIfRejected(rejectedId: string): boolean {
-  if (getActiveTenantId() !== rejectedId) return false;
+// Nothing stored still counts as ours, and that case is the multi-tab one: localStorage is shared
+// across tabs, so another tab may have cleared it while this one was still rendered against that
+// tenant and still sending it. Reading null as "someone else handled it" is what would leave that tab
+// on screen, sending no selector at all. What keeps the reload to one per window is
+// src/client/lib/tenantSelectorRecovery.ts, which is window state and not this.
+export function dropRejectedSelection(rejectedId: string): boolean {
+  const active = getActiveTenantId();
+  if (active !== null && active !== rejectedId) return false;
   setActiveTenantId(null);
   return true;
 }

@@ -3,7 +3,11 @@ import { broadcastConversationEvent } from "@/api/features/realtime/realtime.ser
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { modelConfigSchema } from "@/graph/model-config";
-import { AppError, NotFoundError } from "@/lib/errors";
+import {
+  AppError,
+  NotFoundError,
+  TenantTargetRequiredError,
+} from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadAppointmentContext } from "@/modules/appointments/context";
 import {
@@ -504,7 +508,7 @@ function normalizeMessages(raw: unknown): ConversationMessage[] {
 
 function requireTenant(ctx: TenantContext): bigint {
   if (ctx.tenantId === null) {
-    throw new AppError("tenant required", 400, "errors.tenantTargetRequired");
+    throw new TenantTargetRequiredError();
   }
   return ctx.tenantId;
 }

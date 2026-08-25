@@ -6,6 +6,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { getVisionProvider } from "@/modules/vision/providers";
 import { extractInboundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -124,6 +125,7 @@ function usageRows(threadId: string) {
       promptTokens: true,
       completionTokens: true,
       source: true,
+      cachedReadTokens: true,
       conversationId: true,
       agentId: true,
       inboxId: true,
@@ -300,7 +302,11 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
       new Response(
         JSON.stringify({
           choices: [{ message: { content: "uma nota fiscal" } }],
-          usage: { prompt_tokens: 813, completion_tokens: 24 },
+          usage: {
+            prompt_tokens: 813,
+            completion_tokens: 24,
+            prompt_tokens_details: { cached_tokens: 512 },
+          },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       )) as unknown as typeof fetch;
@@ -340,6 +346,10 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
     // already.
     expect(usage[0]?.promptTokens).toBe(813);
     expect(usage[0]?.completionTokens).toBe(24);
+    // The discounted subset reaches the row too. The type could not catch this one: the cache
+    // counters are optional on `recordDirectUsage`, so a call site that forwarded only the pair
+    // still compiled.
+    expect(usage[0]?.cachedReadTokens).toBe(512);
     expect(usage[0]?.conversationId).toBe(convDbId);
     expect(usage[0]?.agentId).toBe(agentId);
   });
@@ -400,5 +410,116 @@ describe("every model invocation carries a usage sink", () => {
       }
     }
     expect(offenders).toEqual([]);
+  });
+});
+
+// The three vision branches parse three different usage shapes, and "carried the pair" is not the
+// same as "carried what was billed". Two of the counters are the ones a first pass drops: a cached
+// prompt is charged at a discount, and Gemini bills thinking as output that its candidates count
+// does NOT include (the API reference defines totalTokenCount as prompt + thoughts + candidates).
+//
+// A table rather than three tests: what is being pinned is one rule read three ways, and the shape
+// that hides a mistake is one provider quietly disagreeing with the others.
+const fetchReturning = (body: unknown) =>
+  (async () =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+
+const USAGE_SHAPES = [
+  {
+    name: "openai-compatible: cached prompt is a discounted subset",
+    provider: "openai",
+    body: {
+      choices: [{ message: { content: "ok" } }],
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 10,
+        prompt_tokens_details: { cached_tokens: 40 },
+        // Reasoning is counted INSIDE completion_tokens by OpenAI, so reading it would bill the
+        // same tokens twice. The expectation below is what pins that it is left alone.
+        completion_tokens_details: { reasoning_tokens: 6 },
+      },
+    },
+    want: {
+      promptTokens: 100,
+      completionTokens: 10,
+      cachedReadTokens: 40,
+      cacheCreationTokens: 0,
+    },
+  },
+  {
+    name: "gemini: thinking tokens are billed output on top of candidates",
+    provider: "gemini",
+    body: {
+      candidates: [{ content: { parts: [{ text: "ok" }] } }],
+      usageMetadata: {
+        promptTokenCount: 100,
+        candidatesTokenCount: 10,
+        thoughtsTokenCount: 55,
+        cachedContentTokenCount: 40,
+      },
+    },
+    want: {
+      promptTokens: 100,
+      completionTokens: 65,
+      cachedReadTokens: 40,
+      cacheCreationTokens: 0,
+    },
+  },
+  {
+    name: "anthropic: cache read and cache write are separate counters",
+    provider: "anthropic",
+    body: {
+      content: [{ type: "text", text: "ok" }],
+      usage: {
+        input_tokens: 100,
+        output_tokens: 10,
+        cache_read_input_tokens: 40,
+        cache_creation_input_tokens: 7,
+      },
+    },
+    want: {
+      promptTokens: 100,
+      completionTokens: 10,
+      cachedReadTokens: 40,
+      cacheCreationTokens: 7,
+    },
+  },
+] as const;
+
+describe("a vision provider carries every count it was billed for", () => {
+  for (const c of USAGE_SHAPES) {
+    test(c.name, async () => {
+      const out = await getVisionProvider(c.provider)?.extract({
+        bytes: new ArrayBuffer(4),
+        mimeType: "image/png",
+        kind: "image",
+        prompt: "Descreva.",
+        model: "m",
+        apiKey: "k",
+        baseURL: null,
+        fetchImpl: fetchReturning(c.body),
+      });
+      expect(out?.text).toBe("ok");
+      expect(out?.usage).toEqual(c.want);
+    });
+  }
+
+  // An endpoint that sent no counts must not be recorded as a free call: null is what keeps
+  // `recordDirectUsage` from writing a row that says this one cost nothing.
+  test("a response with no usage block reports null, never zeros", async () => {
+    const out = await getVisionProvider("openai")?.extract({
+      bytes: new ArrayBuffer(4),
+      mimeType: "image/png",
+      kind: "image",
+      prompt: "Descreva.",
+      model: "m",
+      apiKey: "k",
+      baseURL: null,
+      fetchImpl: fetchReturning({ choices: [{ message: { content: "ok" } }] }),
+    });
+    expect(out?.usage).toBeNull();
   });
 });

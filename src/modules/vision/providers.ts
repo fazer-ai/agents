@@ -24,6 +24,11 @@ export interface VisionRequest {
 export interface VisionUsage {
   promptTokens: number;
   completionTokens: number;
+  // Cached input: a discounted SUBSET of promptTokens, never additive. Same contract as
+  // `TokenUsage` in graph/usage.ts, because the two paths answer the same question and a reader
+  // summing both must not have to know which one wrote the row.
+  cachedReadTokens: number;
+  cacheCreationTokens: number;
 }
 
 export interface VisionResult {
@@ -46,10 +51,25 @@ function num(v: unknown): number {
 
 // A usage block is only reported when the endpoint actually sent counts. Returning zeros for a
 // missing block would write a row saying the call was free.
-function usageOf(prompt: unknown, completion: unknown): VisionUsage | null {
-  const p = num(prompt);
-  const c = num(completion);
-  return p === 0 && c === 0 ? null : { promptTokens: p, completionTokens: c };
+//
+// The cached counters are what separate "carried the pair" from "carried what was billed": a cached
+// prompt is charged at a discount, so a row that reports the whole prompt as fresh input overstates
+// the spend it exists to measure.
+function usageOf(u: {
+  prompt: unknown;
+  completion: unknown;
+  cachedRead?: unknown;
+  cacheCreation?: unknown;
+}): VisionUsage | null {
+  const promptTokens = num(u.prompt);
+  const completionTokens = num(u.completion);
+  if (promptTokens === 0 && completionTokens === 0) return null;
+  return {
+    promptTokens,
+    completionTokens,
+    cachedReadTokens: num(u.cachedRead),
+    cacheCreationTokens: num(u.cacheCreation),
+  };
 }
 
 export class VisionError extends Error {
@@ -102,11 +122,22 @@ async function chatCompletionsExtract(
   if (!res.ok) throw new VisionError(providerName, res.status);
   const json = (await res.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
-    usage?: { prompt_tokens?: number; completion_tokens?: number };
+    usage?: {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      prompt_tokens_details?: { cached_tokens?: number };
+    };
   };
   return {
     text: (json.choices?.[0]?.message?.content ?? "").trim(),
-    usage: usageOf(json.usage?.prompt_tokens, json.usage?.completion_tokens),
+    usage: usageOf({
+      prompt: json.usage?.prompt_tokens,
+      completion: json.usage?.completion_tokens,
+      // NOTE: `completion_tokens_details.reasoning_tokens` is NOT read here on purpose: OpenAI
+      // counts reasoning INSIDE completion_tokens, so adding it would bill the same tokens twice.
+      // Gemini is the opposite case, and is handled as such below.
+      cachedRead: json.usage?.prompt_tokens_details?.cached_tokens,
+    }),
   };
 }
 
@@ -167,6 +198,8 @@ async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
     usageMetadata?: {
       promptTokenCount?: number;
       candidatesTokenCount?: number;
+      thoughtsTokenCount?: number;
+      cachedContentTokenCount?: number;
     };
   };
   const parts = json.candidates?.[0]?.content?.parts ?? [];
@@ -175,10 +208,18 @@ async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
       .map((p) => p.text ?? "")
       .join("")
       .trim(),
-    usage: usageOf(
-      json.usageMetadata?.promptTokenCount,
-      json.usageMetadata?.candidatesTokenCount,
-    ),
+    usage: usageOf({
+      prompt: json.usageMetadata?.promptTokenCount,
+      // Thinking tokens are billed output and are NOT part of candidatesTokenCount: the API
+      // reference defines totalTokenCount as "prompt + thoughts + response candidates", so a
+      // thinking model's reply would otherwise be recorded at a fraction of what it cost.
+      completion:
+        num(json.usageMetadata?.candidatesTokenCount) +
+        num(json.usageMetadata?.thoughtsTokenCount),
+      // promptTokenCount already INCLUDES the cached part ("the total effective prompt size"), so
+      // this is the discounted subset and never an addition.
+      cachedRead: json.usageMetadata?.cachedContentTokenCount,
+    }),
   };
 }
 
@@ -221,14 +262,24 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
   if (!res.ok) throw new VisionError("anthropic", res.status);
   const json = (await res.json()) as {
     content?: Array<{ type?: string; text?: string }>;
-    usage?: { input_tokens?: number; output_tokens?: number };
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      cache_read_input_tokens?: number;
+      cache_creation_input_tokens?: number;
+    };
   };
   return {
     text: (json.content ?? [])
       .map((c) => (c.type === "text" ? (c.text ?? "") : ""))
       .join("")
       .trim(),
-    usage: usageOf(json.usage?.input_tokens, json.usage?.output_tokens),
+    usage: usageOf({
+      prompt: json.usage?.input_tokens,
+      completion: json.usage?.output_tokens,
+      cachedRead: json.usage?.cache_read_input_tokens,
+      cacheCreation: json.usage?.cache_creation_input_tokens,
+    }),
   };
 }
 

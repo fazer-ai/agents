@@ -217,8 +217,7 @@ export async function extractInboundFile(
     await recordDirectUsage(params.flow, {
       model: cfg.model || provider.defaultModel,
       node: "vision",
-      promptTokens: extracted.usage.promptTokens,
-      completionTokens: extracted.usage.completionTokens,
+      ...extracted.usage,
     });
   }
   if (!text) return null;
@@ -362,8 +361,7 @@ export async function extractPlaygroundFile(
       await recordDirectUsage(params.flow, {
         model: cfg.model || provider.defaultModel,
         node: "vision",
-        promptTokens: extracted.usage.promptTokens,
-        completionTokens: extracted.usage.completionTokens,
+        ...extracted.usage,
       });
     }
     return { kind, text: extracted.text.trim() };

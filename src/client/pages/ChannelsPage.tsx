@@ -763,27 +763,23 @@ export function ChannelsPage() {
           const { error: err } = await api.api.v1.chatwoot
             .inboxes({ id: inbox.id })
             .delete();
-          if (err) {
-            const status =
-              typeof err === "object" && err !== null && "status" in err
-                ? (err as { status?: number }).status
-                : undefined;
-            showToast(
-              status === 409
-                ? t(
-                    "channels.removeInboxStillExists",
-                    "This inbox still exists in Chatwoot. Delete it there first.",
-                  )
-                : t("channels.removeInboxError", "Could not remove the inbox."),
-              "error",
-            );
-            throw err;
-          }
+          if (err) throw err;
           setInboxes((prev) => prev.filter((i) => i.id !== inbox.id));
           showToast(
             t("channels.removedInbox", "Inbox mirror removed."),
             "success",
           );
+        } catch (e) {
+          // The server's own sentence, because it is the one that TEACHES: a live inbox comes back
+          // 409 "This inbox still exists in Chatwoot. Delete it there first.", already localized. The
+          // fallback covers a transport failure with no server behind it, which is the case a bare
+          // `if (err)` never reaches — the await rejects before `err` is ever assigned (docs/ui.md).
+          showToast(
+            apiErrorMessage(e) ??
+              t("channels.removeInboxError", "Could not remove the inbox."),
+            "error",
+          );
+          throw e;
         } finally {
           setRemovingInbox(null);
         }

@@ -285,7 +285,6 @@
     "removeInbox": "Remover espelho da caixa de entrada",
     "removeInboxAction": "Remover espelho",
     "removeInboxError": "Não foi possível remover a caixa de entrada.",
-    "removeInboxStillExists": "Esta caixa de entrada ainda existe no Chatwoot. Exclua-a lá primeiro.",
     "removeInboxTitle": "Remover espelho da caixa de entrada",
     "removeInboxWarning": "Isto remove a cópia local de uma caixa de entrada que foi excluída no Chatwoot. As conversas antigas são mantidas e deixam de nomear uma caixa de entrada; o uso e as linhas de log antigos são mantidos. Não pode ser desfeito, e só funciona depois que a caixa de entrada sumir do Chatwoot.",
     "resync": "Resincronizar",

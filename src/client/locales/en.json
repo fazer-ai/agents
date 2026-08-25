@@ -284,7 +284,6 @@
     "removeInbox": "Remove inbox mirror",
     "removeInboxAction": "Remove mirror",
     "removeInboxError": "Could not remove the inbox.",
-    "removeInboxStillExists": "This inbox still exists in Chatwoot. Delete it there first.",
     "removeInboxTitle": "Remove inbox mirror",
     "removeInboxWarning": "This removes the local copy of an inbox that was deleted in Chatwoot. Past conversations are kept and stop naming an inbox; past usage and log lines are kept. It cannot be undone, and only works once the inbox is gone from Chatwoot.",
     "resync": "Resync",

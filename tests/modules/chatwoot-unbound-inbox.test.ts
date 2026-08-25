@@ -241,4 +241,25 @@ describe.skipIf(!dbUp)("an unbound inbox says so", () => {
     expect(await routeRows(8103, 300)).toEqual([]);
     expect(agentDbId).toBeGreaterThan(0n);
   });
+
+  // The state this line must NOT claim, found by review. `runAgentTurn` answers `no-agent` for a
+  // disabled agent too — `loadAgentConfig` returns null on the `enabled` flag, one step past the
+  // binding — so keying on the outcome alone tells an operator who switched their agent off, at
+  // `warn` and through their alert channel, that the inbox has no agent. It has one; they turned it
+  // off, which is a deliberate state and the same exclusion the ownership gate's line makes.
+  test("a bound agent that is switched off writes no line", async () => {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { enabled: false },
+    });
+    try {
+      await deliver(8104, BOUND_INBOX);
+      expect(await routeRows(8104, 300)).toEqual([]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { enabled: true },
+      });
+    }
+  });
 });

@@ -219,7 +219,11 @@ export async function transcribeInboundAudio(
 }
 
 export interface PlaygroundTranscribeParams {
-  tenantId: bigint;
+  // The REQUEST's context, unlike the inbound path above, whose tenant id this process read from a
+  // row. Rebuilding one here would tell the unknown-tenant check at `runScopedOn` that a caller's
+  // stale selector was internal, and the operator would get "agent not found" for a tenant that is
+  // gone rather than a refusal naming the selection they are carrying (issue #268).
+  ctx: TenantContext;
   agentId: bigint;
   audio: ArrayBuffer;
   mimeType: string | null;
@@ -244,7 +248,7 @@ export async function transcribePlaygroundAudio(
   const cfg =
     params.settings !== undefined
       ? readSttConfig(params.settings)
-      : await runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+      : await runScopedOn(base, params.ctx, async (db) => {
           const agent = await db.agent.findUnique({
             where: { id: params.agentId },
             select: { settings: true },
@@ -261,7 +265,7 @@ export async function transcribePlaygroundAudio(
       "errors.sttNotConfigured",
     );
   }
-  const entry = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+  const entry = await runScopedOn(base, params.ctx, (db) =>
     tryResolveVaultEntry<string>(db, cfg.credentialRef as string),
   );
   if (!entry) {

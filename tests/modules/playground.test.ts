@@ -205,7 +205,7 @@ describe.skipIf(!dbUp)("playground", () => {
 
   test("a turn returns the reply and a tenant+agent-fenced thread id", async () => {
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentOk,
       message: "oi",
       base: appDb,
@@ -234,7 +234,7 @@ describe.skipIf(!dbUp)("playground", () => {
     const rewritten = "Oi! Sou o agente de teste, falado.";
     const model = new UsageReportingModel([REPLY, rewritten]);
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentAudio,
       message: "oi",
       forceAudio: true,
@@ -268,7 +268,7 @@ describe.skipIf(!dbUp)("playground", () => {
   test("a forged threadId (real conversation shape) is rejected → fresh thread", async () => {
     const forged = `${tenantId}:5:900`; // tenant:instance:conv — NOT a playground thread
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentOk,
       message: "oi",
       threadId: forged,
@@ -284,7 +284,7 @@ describe.skipIf(!dbUp)("playground", () => {
   test("a thread from a DIFFERENT agent is rejected → fresh thread", async () => {
     const otherAgentThread = `${tenantId}:playground:${agentDisabled}:abc`;
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentOk,
       message: "oi",
       threadId: otherAgentThread,
@@ -299,7 +299,7 @@ describe.skipIf(!dbUp)("playground", () => {
 
   test("works on a DISABLED agent (test before going live)", async () => {
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentDisabled,
       message: "oi",
       base: appDb,
@@ -311,7 +311,7 @@ describe.skipIf(!dbUp)("playground", () => {
   test("throws when the agent has no runnable model credential", async () => {
     await expect(
       runPlaygroundTurn({
-        tenantId,
+        ctx: ctx(tenantId),
         agentId: agentNoKey,
         message: "oi",
         base: appDb,
@@ -324,7 +324,7 @@ describe.skipIf(!dbUp)("playground", () => {
     // agentNoKey's SAVED model points at a missing credential; the draft override supplies a
     // working one, so the turn runs — proving the override replaces the saved config.
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentNoKey,
       message: "oi",
       overrides: {
@@ -353,7 +353,7 @@ describe.skipIf(!dbUp)("playground", () => {
 
   test("a follow-up returns the proactive reply (not silent) on a fenced thread", async () => {
     const r = await runPlaygroundFollowup({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentOk,
       base: appDb,
       deps: deps(),
@@ -367,7 +367,7 @@ describe.skipIf(!dbUp)("playground", () => {
 
   test("a follow-up with an empty model reply is reported as silent", async () => {
     const r = await runPlaygroundFollowup({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentOk,
       base: appDb,
       deps: {
@@ -381,7 +381,7 @@ describe.skipIf(!dbUp)("playground", () => {
 
   test("listPlaygroundTools classifies native/utility/http/rag and marks simulated", async () => {
     const tools = await listPlaygroundTools({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTools,
       base: appDb,
     });
@@ -412,7 +412,11 @@ describe.skipIf(!dbUp)("playground", () => {
 
   test("listPlaygroundTools throws when the agent has no runnable model", async () => {
     await expect(
-      listPlaygroundTools({ tenantId, agentId: agentNoKey, base: appDb }),
+      listPlaygroundTools({
+        ctx: ctx(tenantId),
+        agentId: agentNoKey,
+        base: appDb,
+      }),
     ).rejects.toThrow();
   });
 
@@ -473,7 +477,7 @@ describe("runPlaygroundAudioTurn guards", () => {
   test("rejects an oversized audio file", async () => {
     await expect(
       runPlaygroundAudioTurn({
-        tenantId: 1n,
+        ctx: ctx(1n),
         agentId: 1n,
         file: fakeFile(30 * 1024 * 1024, "audio/webm"),
       }),
@@ -483,7 +487,7 @@ describe("runPlaygroundAudioTurn guards", () => {
   test("rejects a non-audio mime type", async () => {
     await expect(
       runPlaygroundAudioTurn({
-        tenantId: 1n,
+        ctx: ctx(1n),
         agentId: 1n,
         file: fakeFile(1000, "image/png"),
       }),

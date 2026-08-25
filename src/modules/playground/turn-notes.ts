@@ -17,10 +17,6 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 // Turns it never ran on still come from the checkpointer alone, and a note that fails to write
 // costs the reload its annotation, never the turn.
 
-function sysCtx(tenantId: bigint): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
 // NOTE: There is deliberately no per-tenant cap here, unlike the media store. Bytes are what the
 // media cap exists to bound, and a screened session writes one short row per turn, bounded by an
 // operator typing turns by hand. Pruning one while its session is still reloadable would silently
@@ -46,16 +42,16 @@ export interface PlaygroundTurnNote {
 export async function savePlaygroundTurnNote(
   base: PrismaClient,
   params: PlaygroundTurnNote & {
-    tenantId: bigint;
+    ctx: TenantContext;
     agentId: bigint;
     threadId: string;
   },
 ): Promise<void> {
   try {
-    await runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    await runScopedOn(base, params.ctx, async (db) => {
       await db.playgroundTurnNote.create({
         data: {
-          tenantId: params.tenantId,
+          tenantId: params.ctx.tenantId as bigint,
           agentId: params.agentId,
           threadId: params.threadId,
           messageId: params.messageId,
@@ -82,10 +78,10 @@ export interface LoadedTurnNote extends PlaygroundTurnNote {
 
 export async function listThreadTurnNotes(
   base: PrismaClient,
-  tenantId: bigint,
+  ctx: TenantContext,
   threadId: string,
 ): Promise<LoadedTurnNote[]> {
-  const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+  const rows = await runScopedOn(base, ctx, (db) =>
     db.playgroundTurnNote.findMany({
       where: { threadId },
       orderBy: { id: "asc" },

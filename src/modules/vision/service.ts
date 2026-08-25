@@ -253,7 +253,11 @@ export async function extractInboundFile(
 }
 
 export interface PlaygroundExtractParams {
-  tenantId: bigint;
+  // The REQUEST's context, unlike the inbound path above, whose tenant id this process read from a
+  // row. Rebuilding one here would tell the unknown-tenant check at `runScopedOn` that a caller's
+  // stale selector was internal, and the operator would get "agent not found" for a tenant that is
+  // gone rather than a refusal naming the selection they are carrying (issue #268).
+  ctx: TenantContext;
   agentId: bigint;
   file: ArrayBuffer;
   mimeType: string | null;
@@ -285,7 +289,7 @@ export async function extractPlaygroundFile(
   const cfg =
     params.settings !== undefined
       ? readVisionConfig(params.settings)
-      : await runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+      : await runScopedOn(base, params.ctx, async (db) => {
           const agent = await db.agent.findUnique({
             where: { id: params.agentId },
             select: { settings: true },
@@ -302,7 +306,7 @@ export async function extractPlaygroundFile(
       "errors.visionNotConfigured",
     );
   }
-  const entry = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+  const entry = await runScopedOn(base, params.ctx, (db) =>
     tryResolveVaultEntry<string>(db, cfg.credentialRef as string),
   );
   if (!entry) {
@@ -351,7 +355,7 @@ export async function extractPlaygroundFile(
     // marker so the agent still answers. Misconfig (no credential/disabled) already threw above.
     logger.error(
       {
-        tenantId: String(params.tenantId),
+        tenantId: String(params.ctx.tenantId),
         agentId: String(params.agentId),
         provider: cfg.provider,
         mime: params.mimeType,

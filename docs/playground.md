@@ -44,6 +44,8 @@ Every turn the guardrail RAN on gets one, the clean verdicts included: the toggl
 
 The checkpointer is outside RLS, so the thread id is the tenant fence. Playground threads are `tenantId:playground:agentId:uuid`. A client-supplied `threadId` is honored **only** if it matches that exact shape for this tenant+agent; anything else (e.g. a real conversation's `tenantId:instanceId:convId`, or another agent's thread) is rejected and a fresh thread is generated. This stops a caller from reading another conversation's checkpointer history through the playground. Multi-turn memory works because the client holds the returned `threadId` across turns; Reset starts a new session.
 
+The database side is the request's own `TenantContext`, passed all the way down rather than an id lifted out of it. That is what makes the unknown-tenant check at `runScopedOn` apply here too: it is keyed on the caller's ROLE, so a fleet operator whose stored selection names a tenant that is gone gets a 404 naming the selector instead of an empty session list, and a tenant-scoped operator pays no extra statement. No module under `src/modules/playground/` builds a context of its own.
+
 ## REST + UI
 
 `POST /v1/agents/:id/playground { message, threadId? } → { reply, threadId, trace, sources }` (TENANT_ADMIN). The agent editor's **Playground** tab (`PlaygroundTab`) is a chat panel (Enter to send, Reset to restart) that holds the `threadId` in a ref; each agent reply is expandable into its `trace` + grounding `sources` (collapsible `<details>`). Tenant scoping is the `tenancyPlugin`; the thread fence is in the service.

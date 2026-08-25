@@ -486,7 +486,11 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         eff,
       ) => {
         try {
-          const tenantId = eff.tenantId as bigint;
+          // The principal's OWN context, not an id rebuilt from it. A fleet token resolved its
+          // `tenant` selector on the way in (tenant-target.ts) and keeps SUPER_ADMIN, so the scoped
+          // boundary verifies the target once more and a tenant deleted between the two answers a
+          // refusal rather than an empty playground. Issue #268.
+          const ctx = principalCtx(eff);
           // Same parser as every other id: a padded or empty agent_id must not resolve to some
           // other agent's row.
           const parsedAgent = parseMcpId(args.agent_id, "agent_id");
@@ -506,7 +510,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             const file = await mcpAttachmentToFile(args.attachment);
             res = isAudioMime(file.type)
               ? await runPlaygroundAudioTurn({
-                  tenantId,
+                  ctx,
                   agentId,
                   file,
                   threadId,
@@ -514,7 +518,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
                   guardrails,
                 })
               : await runPlaygroundFileTurn({
-                  tenantId,
+                  ctx,
                   agentId,
                   file,
                   threadId,
@@ -523,7 +527,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
                 });
           } else if (args.message?.trim()) {
             res = await runPlaygroundTurn({
-              tenantId,
+              ctx,
               agentId,
               message: args.message,
               threadId,

@@ -8,17 +8,13 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 // belongs to. A per-tenant retention cap bounds storage (the playground is a test surface, not an
 // archive). All best-effort: a media-write hiccup must never break a turn.
 
-function sysCtx(tenantId: bigint): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
-}
-
 export type PlaygroundMediaKind = "user_audio" | "tts_audio" | "user_file";
 
 // Keep at most this many media rows per tenant; older ones are pruned on each save.
 const MEDIA_RETENTION_PER_TENANT = 200;
 
 export interface SaveMediaParams {
-  tenantId: bigint;
+  ctx: TenantContext;
   agentId: bigint;
   threadId: string;
   messageId: string;
@@ -35,10 +31,10 @@ export async function savePlaygroundMedia(
   params: SaveMediaParams,
 ): Promise<string | null> {
   try {
-    return await runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    return await runScopedOn(base, params.ctx, async (db) => {
       const row = await db.playgroundMedia.create({
         data: {
-          tenantId: params.tenantId,
+          tenantId: params.ctx.tenantId as bigint,
           agentId: params.agentId,
           threadId: params.threadId,
           messageId: params.messageId,
@@ -65,7 +61,7 @@ export async function savePlaygroundMedia(
           logger.info(
             "playground: pruned %d media rows past the retention cap (tenant=%s)",
             pruned.count,
-            String(params.tenantId),
+            String(params.ctx.tenantId),
           );
         }
       }
@@ -91,11 +87,11 @@ export interface MediaMeta {
 
 // Lists a thread's media (NO bytes) for joining onto reconstructed turns.
 export async function listThreadMedia(
-  tenantId: bigint,
+  ctx: TenantContext,
   threadId: string,
   base: PrismaClient = basePrisma,
 ): Promise<MediaMeta[]> {
-  const rows = await runScopedOn(base, sysCtx(tenantId), (db) =>
+  const rows = await runScopedOn(base, ctx, (db) =>
     db.playgroundMedia.findMany({
       where: { threadId },
       orderBy: { id: "asc" },
@@ -125,11 +121,11 @@ export interface MediaBlob {
 
 // Fetches one media blob by id (tenant-scoped). Null when absent / not this tenant's.
 export async function getPlaygroundMedia(
-  tenantId: bigint,
+  ctx: TenantContext,
   mediaId: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<MediaBlob | null> {
-  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+  const row = await runScopedOn(base, ctx, (db) =>
     db.playgroundMedia.findUnique({
       where: { id: mediaId },
       select: { mime: true, fileName: true, bytes: true },

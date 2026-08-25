@@ -11,7 +11,7 @@ describe("playground respects the enabled toggle", () => {
   test("vision disabled → not configured (no DB)", async () => {
     await expect(
       extractPlaygroundFile({
-        tenantId: 1n,
+        ctx: { tenantId: 1n, userId: null, role: "TENANT_ADMIN" },
         agentId: 1n,
         file: new ArrayBuffer(4),
         mimeType: "image/png",
@@ -29,7 +29,7 @@ describe("playground respects the enabled toggle", () => {
   test("stt disabled → not configured (no DB)", async () => {
     await expect(
       transcribePlaygroundAudio({
-        tenantId: 1n,
+        ctx: { tenantId: 1n, userId: null, role: "TENANT_ADMIN" },
         agentId: 1n,
         audio: new ArrayBuffer(4),
         mimeType: "audio/webm",
@@ -99,7 +99,7 @@ describe.skipIf(!dbUp)(
 
     test("a provider fetch failure → unsupported marker, not a throw", async () => {
       const res = await extractPlaygroundFile({
-        tenantId,
+        ctx: { tenantId, userId: null, role: "TENANT_ADMIN" },
         agentId: 1n,
         file: new ArrayBuffer(8),
         mimeType: "image/png",

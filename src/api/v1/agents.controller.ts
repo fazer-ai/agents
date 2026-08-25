@@ -721,7 +721,7 @@ export const agentsController = new Elysia({
       return {
         instance: instanceIdentity,
         ...(await runPlaygroundTurn({
-          tenantId: ctx.tenantId as bigint,
+          ctx,
           agentId: BigInt(params.id),
           message: b.message,
           threadId: b.threadId,
@@ -755,7 +755,7 @@ export const agentsController = new Elysia({
       return {
         instance: instanceIdentity,
         tools: await listPlaygroundTools({
-          tenantId: ctx.tenantId as bigint,
+          ctx,
           agentId: BigInt(params.id),
         }),
       };
@@ -789,7 +789,7 @@ export const agentsController = new Elysia({
       return {
         instance: instanceIdentity,
         ...(await runPlaygroundFollowup({
-          tenantId: ctx.tenantId as bigint,
+          ctx,
           agentId: BigInt(params.id),
           threadId: b.threadId,
           context: b.context,
@@ -824,7 +824,7 @@ export const agentsController = new Elysia({
       return {
         instance: instanceIdentity,
         ...(await runPlaygroundTranscribe({
-          tenantId: ctx.tenantId as bigint,
+          ctx,
           agentId: BigInt(params.id),
           file: b.file,
           overrides: parseDraft(b.draft),
@@ -875,7 +875,7 @@ export const agentsController = new Elysia({
       return {
         instance: instanceIdentity,
         ...(await runPlaygroundAudioTurn({
-          tenantId: ctx.tenantId as bigint,
+          ctx,
           agentId: BigInt(params.id),
           file: b.file,
           threadId: b.threadId,
@@ -945,7 +945,7 @@ export const agentsController = new Elysia({
       return {
         instance: instanceIdentity,
         ...(await runPlaygroundExtract({
-          tenantId: ctx.tenantId as bigint,
+          ctx,
           agentId: BigInt(params.id),
           file: b.file,
           overrides: parseDraft(b.draft),
@@ -997,7 +997,7 @@ export const agentsController = new Elysia({
       return {
         instance: instanceIdentity,
         ...(await runPlaygroundFileTurn({
-          tenantId: ctx.tenantId as bigint,
+          ctx,
           agentId: BigInt(params.id),
           file: b.file,
           threadId: b.threadId,
@@ -1074,7 +1074,7 @@ export const agentsController = new Elysia({
         set.status = 404;
         return { error: "Not Found" };
       }
-      const blob = await getPlaygroundMedia(ctx.tenantId as bigint, mediaId);
+      const blob = await getPlaygroundMedia(ctx, mediaId);
       if (!blob) {
         set.status = 404;
         return { error: "Not Found" };
@@ -1110,10 +1110,7 @@ export const agentsController = new Elysia({
       const ctx = ctxOrThrow(tenantContext);
       return {
         instance: instanceIdentity,
-        sessions: await listPlaygroundSessions(
-          ctx.tenantId as bigint,
-          BigInt(params.id),
-        ),
+        sessions: await listPlaygroundSessions(ctx, BigInt(params.id)),
       };
     },
     {
@@ -1137,7 +1134,7 @@ export const agentsController = new Elysia({
       return {
         instance: instanceIdentity,
         turns: await getPlaygroundSessionTurns(
-          ctx.tenantId as bigint,
+          ctx,
           BigInt(params.id),
           params.threadId,
         ),
@@ -1165,11 +1162,7 @@ export const agentsController = new Elysia({
     "/:id/playground/sessions/:threadId",
     async ({ tenantContext, params }) => {
       const ctx = ctxOrThrow(tenantContext);
-      await deletePlaygroundSession(
-        ctx.tenantId as bigint,
-        BigInt(params.id),
-        params.threadId,
-      );
+      await deletePlaygroundSession(ctx, BigInt(params.id), params.threadId);
       return { instance: instanceIdentity, ok: true };
     },
     {

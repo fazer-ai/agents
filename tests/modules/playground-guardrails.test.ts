@@ -6,7 +6,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { runScopedOn } from "@/lib/tenancy";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   runPlaygroundFollowup,
   runPlaygroundTurn,
@@ -19,6 +19,12 @@ import {
 } from "@/modules/playground/sessions";
 import { listThreadTurnNotes } from "@/modules/playground/turn-notes";
 import { guardrailModel } from "../utils/scripted-models";
+
+// The context a console operator carries. The playground takes the REQUEST's context now, not an id
+// rebuilt from it, so these read exactly as the controller calls them (issue #268).
+function ctx(t: bigint): TenantContext {
+  return { tenantId: t, userId: null, role: "TENANT_ADMIN" };
+}
 
 // Issue #136: the playground ran the agent's graph directly and never screened anything, so the
 // operator read a reply the customer would never have received. These tests are written against
@@ -291,7 +297,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("an output violation replaces the reply the operator reads", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTemplate,
       message: "e o concorrente?",
       base: appDb,
@@ -305,7 +311,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("an output violation with the silent action leaves no reply at all", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentSilent,
       message: "e o concorrente?",
       base: appDb,
@@ -320,7 +326,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("an input violation skips the graph: the agent model is never invoked", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentInput,
       message: "fale do concorrente",
       base: appDb,
@@ -335,7 +341,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("the verdict is annotated in the trace, with the direction and what it did", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTemplate,
       message: "e o concorrente?",
       base: appDb,
@@ -355,7 +361,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("a guardrail that cannot be built is fail-open, and says so in the trace", async () => {
     const m = models({ violated: false, breakJudge: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentBrokenGuard,
       message: "oi",
       base: appDb,
@@ -373,7 +379,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("a guardrail whose credential is gone is unavailable, not silently off", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentDeadCredential,
       message: "oi",
       base: appDb,
@@ -414,7 +420,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("a clean screening is annotated too", async () => {
     const m = models({ violated: false });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTemplate,
       message: "oi",
       base: appDb,
@@ -431,7 +437,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("screening off leaves the raw reply and costs no guardrail call", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTemplate,
       message: "e o concorrente?",
       guardrails: false,
@@ -449,7 +455,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("the trace keeps the screenings on the sides of the graph they ran on", async () => {
     const m = models({ violated: false, toolFirst: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentBoth,
       message: "quanto é 1+1?",
       base: appDb,
@@ -470,7 +476,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("an output trip is recorded for the reload, with the screened text", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTemplate,
       message: "e o concorrente?",
       base: appDb,
@@ -490,7 +496,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("an input block is recorded with the customer's own text", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentInput,
       message: "fale do concorrente",
       base: appDb,
@@ -509,7 +515,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("an input block still persists the recording it blocked", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentInput,
       message: "<mensagem-de-audio>fale do concorrente</mensagem-de-audio>",
       userMedia: {
@@ -538,7 +544,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("a turn the guardrail never touched writes no note", async () => {
     const m = models({ violated: false });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTemplate,
       message: "oi",
       guardrails: false,
@@ -555,7 +561,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("a suppressed follow-up is not reported as agent silence", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundFollowup({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentSilent,
       base: appDb,
       deps: deps(m),
@@ -573,7 +579,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("a silently blocked message reports suppression", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentInputSilent,
       message: "fale do concorrente",
       base: appDb,
@@ -589,7 +595,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("a suppressed normal turn reports suppression, not an empty reply", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentSilent,
       message: "e o concorrente?",
       base: appDb,
@@ -602,7 +608,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("a reply the guardrail left alone is not reported as suppressed", async () => {
     const m = models({ violated: false });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTemplate,
       message: "oi",
       base: appDb,
@@ -618,7 +624,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("a screened turn the agent left empty keeps its verdict on reload", async () => {
     const cp = new MemorySaver();
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentInput,
       message: "primeira",
       base: appDb,
@@ -634,7 +640,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     // "appended at the end" are the same position, so a test with one turn cannot tell a placed
     // verdict from a lost one that happened to land right.
     await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentInput,
       message: "segunda",
       threadId: r.threadId,
@@ -649,7 +655,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
             ?.checkpoint?.channel_values as { messages?: BaseMessage[] }
         )?.messages as BaseMessage[],
       ),
-      await listThreadTurnNotes(appDb, tenantId, r.threadId),
+      await listThreadTurnNotes(appDb, ctx(tenantId), r.threadId),
     );
     expect(turns.map((t) => `${t.role}:${t.text}`)).toEqual([
       "user:primeira",
@@ -680,7 +686,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       },
     })) as never;
     const first = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentInput,
       message: "primeira",
       guardrails: false,
@@ -688,7 +694,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       deps: { makeModel: silentModel },
     });
     await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentInput,
       message: "fale do concorrente",
       threadId: first.threadId,
@@ -696,7 +702,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       deps: { makeModel: models({ violated: true }).make },
     });
     await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentInput,
       message: "terceira",
       threadId: first.threadId,
@@ -705,7 +711,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     });
 
     const turns = await getPlaygroundSessionTurns(
-      tenantId,
+      ctx(tenantId),
       agentInput,
       first.threadId,
       appDb,
@@ -748,7 +754,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       },
     })) as never;
     const first = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentInput,
       message: "primeira",
       guardrails: false,
@@ -758,7 +764,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     // Turn 2, same thread: the input trips, so the turn exists only as a note.
     const m = models({ violated: true });
     await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentInput,
       message: "fale do concorrente",
       threadId: first.threadId,
@@ -844,7 +850,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("deleting the session takes its transcript notes with it", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTemplate,
       message: "e o concorrente?",
       base: appDb,
@@ -853,7 +859,12 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(
       await suDb.playgroundTurnNote.count({ where: { threadId: r.threadId } }),
     ).toBe(1);
-    await deletePlaygroundSession(tenantId, agentTemplate, r.threadId, appDb);
+    await deletePlaygroundSession(
+      ctx(tenantId),
+      agentTemplate,
+      r.threadId,
+      appDb,
+    );
     expect(
       await suDb.playgroundTurnNote.count({ where: { threadId: r.threadId } }),
     ).toBe(0);
@@ -868,7 +879,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   // reaches and the whole defect is the two stores disagreeing.
   test("a deleted session cannot be reopened with its raw replies", async () => {
     const first = await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTemplate,
       message: "fale do concorrente",
       base: appDb,
@@ -877,7 +888,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     expect(first.reply).toBe(TEMPLATE);
 
     await deletePlaygroundSession(
-      tenantId,
+      ctx(tenantId),
       agentTemplate,
       first.threadId,
       appDb,
@@ -886,7 +897,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     // The same id, reused the way a caller that kept it would. A reply of its own, so the raw one
     // the first turn left behind cannot be mistaken for this turn's.
     await runPlaygroundTurn({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTemplate,
       message: "segunda",
       threadId: first.threadId,
@@ -899,7 +910,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     });
 
     const turns = await getPlaygroundSessionTurns(
-      tenantId,
+      ctx(tenantId),
       agentTemplate,
       first.threadId,
       appDb,
@@ -919,7 +930,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("a thread outside the fence is refused, not deleted", async () => {
     await expect(
       deletePlaygroundSession(
-        tenantId,
+        ctx(tenantId),
         agentTemplate,
         `${tenantId}:1:4242`,
         appDb,
@@ -932,7 +943,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
   test("the simulated follow-up is screened on the output direction", async () => {
     const m = models({ violated: true });
     const r = await runPlaygroundFollowup({
-      tenantId,
+      ctx: ctx(tenantId),
       agentId: agentTemplate,
       base: appDb,
       deps: deps(m),

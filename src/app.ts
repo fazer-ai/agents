@@ -1,12 +1,13 @@
 import cors from "@elysiajs/cors";
 import { staticPlugin } from "@elysiajs/static";
-import Elysia from "elysia";
+import Elysia, { type ValidationError } from "elysia";
 import { helmet } from "elysia-helmet";
 import api from "@/api";
 import { cspDirectives } from "@/api/lib/csp";
 import logger from "@/api/lib/logger";
 import { parseOrigins } from "@/api/lib/origin";
 import { refusalBody, refusalHeaders } from "@/api/lib/refusal";
+import { schemaRefusal } from "@/api/lib/schema-refusal";
 import { localeMiddleware } from "@/api/middlewares/locale";
 import {
   credentialRateLimitMiddleware,
@@ -129,12 +130,36 @@ const app = new Elysia({
   // /api/nope` and any request to a missing non-/api path came back 404 with no `RateLimit-*` header
   // and no budget spent. An unknown GET under /api looked metered only because the `.get("/api/*")`
   // guard below turns it into a MATCHED route, which the normal hook counts.
-  // PARSE and VALIDATION were never affected either way, because the `default:` branch below returns
-  // `undefined` for them and the chain continues to the plugin regardless of order.
-  .onError(({ path, error, code }) => {
+  // PARSE still is not affected either way, because the `default:` branch below returns `undefined`
+  // for it and the chain continues to the plugin regardless of order. VALIDATION is answered here
+  // now (issue #255) and so DOES depend on this placement: the plugin has already charged it by the
+  // time this handler returns.
+  .onError(({ path, error, code, request, set }) => {
     // NOTE: Handle BigInt parsing errors as 400 Bad Request
     if (error instanceof SyntaxError && error.message.includes("BigInt")) {
       return new Response("Invalid ID format", { status: 400 });
+    }
+
+    // NOTE: a schema refusal, answered in the app's own vocabulary instead of TypeBox's. Registered
+    // HERE, after the limiters, and not next to the AppError branch above: the rate-limit plugin
+    // charges request-side VALIDATION from its own `onError` (see the note in middlewares/rateLimit
+    // .ts on 4.6.3), and Elysia stops at the first handler that RETURNS A VALUE, so answering it
+    // before the plugin would hand back an uncharged budget to anyone willing to send a body the
+    // schema refuses. Everything about the body and the log line is decided in api/lib/schema
+    // -refusal.ts, including why the submitted value reaches neither.
+    if (code === "VALIDATION") {
+      const refusal = schemaRefusal(
+        error as ValidationError,
+        request.headers.get("accept-language"),
+      );
+      const line = "%s %s";
+      if (refusal.severity === "error") {
+        logger.error(line, path, refusal.log);
+      } else {
+        logger.warn(line, path, refusal.log);
+      }
+      set.status = refusal.status;
+      return Response.json(refusal.body, { status: refusal.status });
     }
 
     logger.error("%s\n%s", path, error);

@@ -45,6 +45,13 @@ app.get("/__refusal/ambient-tenant", () => {
 app.get("/__refusal/named-tenant", () => {
   throw new NotFoundError("Tenant not found", "errors.tenantNotFound");
 });
+// NOTE: Elysia freezes its route table on the first request it serves, and the app is a singleton
+// several test files import. A route registered after some OTHER file has already called `handle`
+// is silently dropped and answers the SPA catch-all instead, so the tests below passed or failed on
+// file ordering. Measured: two files that each register a route and hit it, run together, and the
+// one that registered second answered 200 `{}`. `compile()` rebuilds the table, and it has to stay
+// below the LAST route this file registers.
+app.compile();
 
 const refusal = async (
   path: string,

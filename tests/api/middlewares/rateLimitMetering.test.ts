@@ -29,8 +29,9 @@ beforeAll(() => {
   // NOTE: registered on the REAL app, so the hooks it exercises are the ones src/app.ts installed,
   // in the order it installed them. There is no unauthenticated route in the app that throws a
   // 404 to borrow for this, and rebuilding an equivalent app would pin the test's own ordering
-  // instead of the app's. It mutates the exported singleton, which is safe only because this is the
-  // one test file that imports it.
+  // instead of the app's. It mutates the exported singleton, which several files now do; the
+  // `listen` below rebuilds the route table, which is what keeps a route registered after another
+  // file has already served a request from being silently dropped (see refusal-wire.test.ts).
   app.get("/__metering/thrown-404", () => {
     throw new NotFoundError("gone");
   });

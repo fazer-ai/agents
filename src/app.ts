@@ -138,6 +138,7 @@ const app = new Elysia({
   .onError(({ path, error, code, request, set }) => {
     // NOTE: Handle BigInt parsing errors as 400 Bad Request
     if (error instanceof SyntaxError && error.message.includes("BigInt")) {
+      set.status = 400;
       return new Response("Invalid ID format", { status: 400 });
     }
 
@@ -181,6 +182,11 @@ const app = new Elysia({
         // api/lib/unhandled-error.ts; the short version is that a redact-list keyed on `code` leaked
         // twice, once through a string code and once through a numeric one.
         if (isFrameworkRefusal(error)) return;
+        // NOTE: `set.status` too, not just the Response's. The access log in onAfterResponse reads
+        // `set.status`, and Elysia seeds it from the thrown value's own `status` property — so an
+        // error carrying `status: 401` is answered 500 here and LOGGED as 401 unless this line runs.
+        // Same reason the AppError arm above carries the same note; the BigInt arm needed it too.
+        set.status = 500;
         const message =
           config.env === "development"
             ? errorDetail(error)

@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import logger from "@/api/lib/logger";
 import { errors } from "@/api/lib/openapi";
 import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
 import {
@@ -213,6 +214,19 @@ app.get("/__unhandled/numericcode", () => {
 // serialized. This is the shape that surfaced the bug (issue #253), and the one that answered with
 // the error's class name rather than a bare message.
 app.get("/__unhandled/serialize", () => ({ id: 1n }));
+// An unhandled error that carries its OWN `status`. Elysia seeds `set.status` from that property
+// before this handler runs, and the access log reads `set.status`, not the Response's — so the two
+// disagree unless the arm syncs it.
+app.get("/__logged/carries-status", () => {
+  throw Object.assign(new Error(`connection failed: ${SECRET}`), {
+    status: 401,
+  });
+});
+// Not this PR's arm, but the same invariant, found by sweeping for it: the BigInt guard answers a
+// raw 400 and was logging 500.
+app.get("/__logged/bigint", () => {
+  throw new SyntaxError("Cannot convert 9007199254740993x to a BigInt");
+});
 
 const UNHANDLED = [
   "sync",
@@ -295,5 +309,43 @@ describe("a request refused before the handler keeps its own answer", () => {
 
   test("a body the schema refuses stays 422 (VALIDATION)", async () => {
     expect(await login(JSON.stringify({ nope: 1 }))).toBe(422);
+  });
+});
+
+// What the ACCESS LOG says happened, which is a different question from what the client got.
+// `onAfterResponse` logs `set.status`; a raw `Response` alone does not move it. Elysia seeds it from
+// the thrown value's own `status`, so an error carrying `status: 401` is answered 500 and recorded
+// as 401 — the response is right and the log is wrong, which is the worse of the two failures
+// because nothing on the wire shows it.
+describe("the access log records the status actually answered", () => {
+  // `onAfterResponse` runs after `handle` has already resolved, so the line is not there yet when
+  // the await returns. Poll for it and THROW when it never arrives: a bare timeout would let a
+  // missing access log read as `undefined` and turn a real regression into a wording mismatch.
+  const loggedStatusFor = async (path: string): Promise<string> => {
+    const spy = spyOn(logger, "info");
+    try {
+      await (await app.handle(new Request(`http://localhost${path}`))).text();
+      for (let i = 0; i < 100; i++) {
+        const call = spy.mock.calls.findLast((c) => c[0] === "%s %s [%s]");
+        if (call) return String(call[3]);
+        await Bun.sleep(5);
+      }
+      throw new Error(`no access log line for ${path} after 500ms`);
+    } finally {
+      spy.mockRestore();
+    }
+  };
+
+  const wireStatusFor = async (path: string): Promise<number> =>
+    (await app.handle(new Request(`http://localhost${path}`))).status;
+
+  test("an error carrying status: 401 is answered 500 and logged 500", async () => {
+    expect(await wireStatusFor("/__logged/carries-status")).toBe(500);
+    expect(await loggedStatusFor("/__logged/carries-status")).toBe("500");
+  });
+
+  test("the BigInt guard's raw 400 is logged as 400, not 500", async () => {
+    expect(await wireStatusFor("/__logged/bigint")).toBe(400);
+    expect(await loggedStatusFor("/__logged/bigint")).toBe("400");
   });
 });

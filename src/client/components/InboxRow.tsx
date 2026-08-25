@@ -105,16 +105,19 @@ export function InboxRow({
         )}
         {onRemove && (
           <Tooltip content={t("channels.removeInbox", "Remove inbox mirror")}>
-            <Button
-              variant="secondary"
-              size="sm"
-              loading={removing}
-              onClick={onRemove}
-              aria-label={t("channels.removeInbox", "Remove inbox mirror")}
-              className="text-text-muted hover:text-danger"
-            >
-              <Trash2 className="h-4 w-4" aria-hidden="true" />
-            </Button>
+            {/* `Button` does not forwardRef, so Radix `asChild` needs a real DOM node (CLAUDE.md). */}
+            <span className="inline-flex">
+              <Button
+                variant="secondary"
+                size="sm"
+                loading={removing}
+                onClick={onRemove}
+                aria-label={t("channels.removeInbox", "Remove inbox mirror")}
+                className="text-text-muted hover:text-danger"
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+              </Button>
+            </span>
           </Tooltip>
         )}
         {children}

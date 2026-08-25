@@ -1399,6 +1399,15 @@ export async function removeInbox(
     );
   }
 
+  // NOTE: a writer that is ALREADY in flight can put the row back, and that is deliberate rather
+  // than unhandled. Two can: a `syncInboxes` whose remote list was fetched before the upstream
+  // deletion, and a webhook delivery being mirrored. Neither is worth a tombstone, and a tombstone
+  // would be the harmful fix: `upsertInbox` recreating a row because TRAFFIC arrived is the
+  // behaviour this whole fence rests on, so a row that refuses to be recreated is an inbox whose
+  // customers reach nobody and whose messages are mirrored nowhere — silently, and with no operator
+  // action that repairs it. What the window costs today is a row reappearing unbound, which the
+  // operator removes again; what a tombstone would cost is traffic. The window is also small by
+  // construction: a sync started after the upstream deletion cannot list the inbox at all.
   // `deleteMany`, not `delete`: the row was read, then the network was asked, so a concurrent
   // removal can land in between and `delete` would answer that window with a P2025 — a 500 for two
   // operators doing the same correct thing. A DELETE is idempotent, and "it is already gone" is the

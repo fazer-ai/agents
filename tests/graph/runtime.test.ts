@@ -373,7 +373,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     let retryLogged = false;
     for (let i = 0; i < 30 && !retryLogged; i++) {
       const rows = await suDb.executionLog.findMany({
-        where: { tenantId, stage: "generate", level: "warn" },
+        where: {
+          tenantId,
+          stage: "generate",
+          level: "warn",
+          threadId: `${tenantId}:${instanceId}:995`,
+        },
         select: { detail: true },
       });
       retryLogged = rows.some(
@@ -1083,11 +1088,18 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const conversation = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
     });
-    const row = await suDb.executionLog.findFirstOrThrow({
-      where: { tenantId, stage: "handoff", conversationId: conversation.id },
-      orderBy: { id: "desc" },
-    });
-    return row.detail;
+    // Scoped since #123; the wait is the other half. `findFirstOrThrow` on a row that has not landed
+    // yet does not answer wrong, it THROWS, so what the scoping converted was a silent wrong answer
+    // into a spurious failure. Poll for the row this conversation owes (#258).
+    for (let i = 0; i < 30; i++) {
+      const row = await suDb.executionLog.findFirst({
+        where: { tenantId, stage: "handoff", conversationId: conversation.id },
+        orderBy: { id: "desc" },
+      });
+      if (row) return row.detail;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`no handoff flow line for conv ${convId}`);
   }
 
   // NOTE: the guard for the reader above, not for the product. Before it was scoped, this returned
@@ -1234,7 +1246,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     let resolvedLogged = false;
     for (let i = 0; i < 30 && !resolvedLogged; i++) {
       const rows = await suDb.executionLog.findMany({
-        where: { tenantId, stage: "handoff" },
+        where: {
+          tenantId,
+          stage: "handoff",
+          threadId: `${tenantId}:${instanceId}:910`,
+        },
         select: { detail: true },
       });
       resolvedLogged = rows.some(
@@ -2227,16 +2243,28 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ).toBe(true);
       // And the trail names the tool the operator granted, not a constant: an operator filtering for
       // it has to find the line it produced.
-      const flow = await suDb.executionLog.findMany({
-        where: { tenantId, stage: "tool" },
-        select: { detail: true },
-      });
-      const details = flow.map((f) => JSON.stringify(f.detail));
-      expect(
-        details.some(
-          (d) => d.includes("send_orcamento") && d.includes('"outcome":"sent"'),
-        ),
-      ).toBe(true);
+      // Scoped AND polled. This reader had neither, and the missing wait is the one that already
+      // cost a CI run on an unrelated PR: `emitFlowEvent` is fire-and-forget, so the `send_orcamento`
+      // line had simply not landed when the assertion read the table (#258).
+      let named = false;
+      for (let i = 0; i < 30 && !named; i++) {
+        const flow = await suDb.executionLog.findMany({
+          where: {
+            tenantId,
+            stage: "tool",
+            threadId: `${tenantId}:${instanceId}:941`,
+          },
+          select: { detail: true },
+        });
+        named = flow
+          .map((f) => JSON.stringify(f.detail))
+          .some(
+            (d) =>
+              d.includes("send_orcamento") && d.includes('"outcome":"sent"'),
+          );
+        if (!named) await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(named).toBe(true);
     } finally {
       await suDb.$executeRawUnsafe(
         `DELETE FROM agent_tool_selections WHERE tenant_id = ${tenantId}`,

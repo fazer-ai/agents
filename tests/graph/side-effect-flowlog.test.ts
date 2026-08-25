@@ -98,7 +98,11 @@ async function pollToolRows(
   let rows: ToolRow[] = [];
   for (let i = 0; i < 50; i++) {
     rows = await suDb.executionLog.findMany({
-      where: { tenantId, stage: "tool" },
+      where: {
+        tenantId,
+        stage: "tool",
+        threadId: `${tenantId}:${instanceId}:950`,
+      },
       select: { level: true, status: true, errorMessage: true, detail: true },
     });
     if (predicate(rows)) return rows;

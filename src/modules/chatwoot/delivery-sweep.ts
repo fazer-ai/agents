@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { readDebounceConfig } from "@/modules/debounce/settings";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -81,6 +82,7 @@ async function mirrorOf(
   inboxId: bigint | null;
   agentId: bigint | null;
   handledMessageId: number | null;
+  coalesces: boolean;
 } | null> {
   if (row.conversationId === null) return null;
   const conversationId = row.conversationId;
@@ -102,11 +104,22 @@ async function mirrorOf(
           select: { agentId: true },
         })
       : null;
+    const agent = inbox?.agentId
+      ? await db.agent.findUnique({
+          where: { id: inbox.agentId },
+          select: { settings: true },
+        })
+      : null;
     return {
       conversationRowId: conv.id,
       inboxId: conv.inboxId,
       agentId: inbox?.agentId ?? null,
       handledMessageId: conv.lastHandledMessageId,
+      // Read now rather than recorded then, which is the one thing this cannot be exact about: an
+      // operator who switched debouncing off since the strand makes it read the stricter way, and
+      // the stricter way reports a loss that may have been answered. That direction is the right
+      // one to be wrong in.
+      coalesces: readDebounceConfig(agent?.settings).enabled,
     };
   });
 }
@@ -175,6 +188,7 @@ export async function sweepStrandedDeliveries(
       now,
       staleAfterMs: STALE_AFTER_MS,
       handledMessageId: null,
+      coalesces: false,
     });
     if (preliminary === "in-flight") {
       counts.tooFresh += 1;
@@ -186,6 +200,7 @@ export async function sweepStrandedDeliveries(
       now,
       staleAfterMs: STALE_AFTER_MS,
       handledMessageId: mirror?.handledMessageId ?? null,
+      coalesces: mirror?.coalesces ?? false,
     });
     // Not reachable: the same row already answered "not in-flight" a few lines up, against the same
     // clock and the same threshold — the second call only adds the watermark, which no branch above

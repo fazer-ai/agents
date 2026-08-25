@@ -449,10 +449,12 @@ export async function recordAndProcessChatwootDelivery(
     params.deliveryId,
     params.normalized.event,
     params.normalized.conversationId,
-    // Only an INBOUND message: the recovery sweep uses this to tell a delivery that lost a
-    // customer's message from one that lost nothing, and the bot's own reply coming back around as
-    // a `message_created` is the second kind (issue #228).
-    isIncomingMessage(params.normalized)
+    // Only a NEW INBOUND message, which is the exact set that drives a turn: the sweep uses this to
+    // tell a delivery that lost a customer's message from one that lost nothing (issue #228). The
+    // bot's own reply comes back as a `message_created` too, and an incoming `message_updated` is
+    // usually our own media write-back coming around — neither is a customer waiting for an answer,
+    // so neither may put a row in the loss list.
+    isNewIncomingMessage(params.normalized)
       ? (params.normalized.message?.id ?? null)
       : null,
   );

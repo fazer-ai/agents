@@ -37,6 +37,16 @@ export interface StrandedDeliveryPolicy {
   // Null is treated as "not answered": the safe reading of a question that cannot be answered is
   // the one that puts the row in front of an operator instead of closing it quietly.
   handledMessageId: number | null;
+  // Whether this conversation's agent COALESCES. It decides what a later watermark proves, which is
+  // not the same question as how far the watermark got.
+  //
+  // With debouncing on, a flush re-fetches every message above the watermark and hands them to the
+  // model together, so a watermark past the stranded message means that message WAS in the burst
+  // that got answered. With it off, each delivery answers its own message directly: a later message
+  // moves the watermark past the stranded one without the model ever having seen it, and reading
+  // that as "answered" would close a real loss (measured on this repo's direct path, which is the
+  // one an agent with `settings.debounce.enabled = false` takes).
+  coalesces: boolean;
 }
 
 export type StrandedVerdict =
@@ -59,6 +69,7 @@ export function classifyStrandedDelivery(
   if (age < policy.staleAfterMs) return "in-flight";
   if (row.inboundMessageId === null) return "no-message";
   if (
+    policy.coalesces &&
     policy.handledMessageId !== null &&
     policy.handledMessageId >= row.inboundMessageId
   ) {

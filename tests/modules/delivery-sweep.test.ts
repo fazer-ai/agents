@@ -208,6 +208,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       "contacts",
       "inboxes",
       "chatwoot_agent_bots",
+      "agent_tool_selections",
       "agents",
       "chatwoot_instances",
       "chatwoot_deployments",
@@ -361,6 +362,58 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(counts.lost).toBe(0);
     expect((await statusOf(rowId)).status).toBe("PROCESSED");
     expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
+  });
+
+  test("reports a loss when the agent does not coalesce, whatever the watermark", async () => {
+    // With debouncing off each delivery answers its own message directly, so a LATER message moves
+    // the watermark past the stranded one without the model ever having seen it. Reading that as
+    // "answered" would close a real loss, and the same numbers read the other way one test up.
+    const agent = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Direto",
+        systemPrompt: "p",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: { debounce: { enabled: false } },
+      },
+    });
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: CHATWOOT_INBOX_ID + 1,
+        name: "Direto",
+        agentId: agent.id,
+      },
+    });
+    const convId = 8814;
+    const messageId = 9451;
+    const conv = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: convId,
+        status: "pending",
+        inboxId: inbox.id,
+        threadId: threadOf(convId),
+        lastEventAt: new Date(),
+        // Past the stranded message, exactly as in the coalescing test above.
+        lastHandledMessageId: messageId + 40,
+        contactInboxId: 61_000 + convId,
+      },
+      select: { id: true },
+    });
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      inboundMessageId: messageId,
+    });
+
+    const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect(counts.lost).toBe(1);
+    expect(counts.closed).toBe(0);
+    expect((await statusOf(rowId)).status).toBe("DEAD");
+    expect((await deliveryLines(conv.id))[0]?.level).toBe("error");
   });
 
   test("closes a strand that carried no inbound message", async () => {
@@ -519,15 +572,24 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     const outgoing = await deliverThrough(convId, 9702, "outgoing");
     expect(outgoing.conversationId).toBe(convId);
     expect(outgoing.inboundMessageId).toBeNull();
+
+    // And an incoming `message_updated` — usually our own media write-back coming back around. It
+    // is incoming, but it drives no turn, so nobody is waiting on it either.
+    const updated = await deliverThrough(convId, 9703, "incoming", {
+      event: "message_updated",
+    });
+    expect(updated.conversationId).toBe(convId);
+    expect(updated.inboundMessageId).toBeNull();
   });
 
   async function deliverThrough(
     convId: number,
     messageId: number,
     direction: "incoming" | "outgoing",
+    over: { event?: string } = {},
   ) {
     const n = normalizeChatwootEvent({
-      event: "message_created",
+      event: over.event ?? "message_created",
       id: messageId,
       private: false,
       content: "oi",

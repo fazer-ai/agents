@@ -18,6 +18,7 @@ function verdict(row: {
   ageMs: number;
   inboundMessageId: number | null;
   handledMessageId: number | null;
+  coalesces?: boolean;
 }): StrandedVerdict {
   return classifyStrandedDelivery(
     {
@@ -28,6 +29,7 @@ function verdict(row: {
       now: NOW,
       staleAfterMs: STALE_MS,
       handledMessageId: row.handledMessageId,
+      coalesces: row.coalesces ?? true,
     },
   );
 }
@@ -38,6 +40,7 @@ describe("classifying a delivery stranded non-terminal", () => {
     ageMs: number;
     inboundMessageId: number | null;
     handledMessageId: number | null;
+    coalesces?: boolean;
     expected: StrandedVerdict;
   }> = [
     {
@@ -106,6 +109,25 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "lost",
     },
     {
+      // The watermark is proof only where the path COALESCES. With debouncing off each delivery
+      // answers its own message directly, so a later message moves the watermark past the stranded
+      // one without the model ever having seen it — reading that as answered closes a real loss.
+      name: "a later watermark proves nothing when the agent does not coalesce",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: 50,
+      handledMessageId: 90,
+      coalesces: false,
+      expected: "lost",
+    },
+    {
+      name: "and it still proves nothing when it sits exactly on the message",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: 50,
+      handledMessageId: 50,
+      coalesces: false,
+      expected: "lost",
+    },
+    {
       // The delivery died before the mirror write, so there is no watermark to compare against. The
       // safe reading of a question that cannot be answered is the one that puts the row in front of
       // an operator instead of closing it quietly.
@@ -124,6 +146,7 @@ describe("classifying a delivery stranded non-terminal", () => {
           ageMs: c.ageMs,
           inboundMessageId: c.inboundMessageId,
           handledMessageId: c.handledMessageId,
+          coalesces: c.coalesces,
         }),
       ).toBe(c.expected);
     });

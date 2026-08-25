@@ -8,6 +8,7 @@ import logger from "@/api/lib/logger";
 import { parseOrigins } from "@/api/lib/origin";
 import { refusalBody, refusalHeaders } from "@/api/lib/refusal";
 import { schemaRefusal } from "@/api/lib/schema-refusal";
+import { errorDetail, isFrameworkRefusal } from "@/api/lib/unhandled-error";
 import { localeMiddleware } from "@/api/middlewares/locale";
 import {
   credentialRateLimitMiddleware,
@@ -172,14 +173,20 @@ const app = new Elysia({
           return Response.json({ error: "Not Found" }, { status: 404 });
         }
         return new Response("Not Found", { status: 404 });
-      case "INTERNAL_SERVER_ERROR": {
+      default: {
+        // NOTE: everything that is not a refusal Elysia itself raised is an unhandled failure, and
+        // its text does not reach the client outside development. Stated by exclusion, and decided
+        // from the thrown VALUE rather than from `code`, because `code` is a property the value
+        // carries and any library can set it. The measurements behind both of those choices are in
+        // api/lib/unhandled-error.ts; the short version is that a redact-list keyed on `code` leaked
+        // twice, once through a string code and once through a numeric one.
+        if (isFrameworkRefusal(error)) return;
         const message =
           config.env === "development"
-            ? (error.stack ?? error.message)
+            ? errorDetail(error)
             : "Something went wrong";
-        return new Response(`${message}`, { status: 500 });
+        return new Response(message, { status: 500 });
       }
-      default:
     }
   })
   .use(

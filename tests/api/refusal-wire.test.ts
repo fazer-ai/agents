@@ -158,3 +158,142 @@ describe("a 404 about the tenant selector the session is carrying", () => {
     expect(body).toEqual({ error: "Tenant not found" });
   });
 });
+
+// ── issue #263 ───────────────────────────────────────────────────────────────────────────────────
+// The other half of what this app puts on the wire when something goes wrong. The refusals above are
+// the ones it MEANS to answer; these are the ones it did not plan for.
+//
+// `src/app.ts` redacts a 500 to "Something went wrong" outside development, but only in the
+// `INTERNAL_SERVER_ERROR` arm — and an unhandled error does not arrive with that code. It arrives as
+// `UNKNOWN`, falls through `default:`, and Elysia's built-in handler answers with the error's own
+// text, so whatever the message happened to carry went to the client.
+//
+// These live in THIS file rather than their own, and that is not filing convenience. A second test
+// file that drives the exported app singleton makes the routes registered above stop matching (they
+// answer 200 from the SPA catch-all instead of the refusal), reproducible with a six-line file and
+// not avoided by registering in `beforeAll`. Until that is understood, one file owns this app.
+
+// Stands in for anything an unhandled error's message can carry: a connection string, a query
+// fragment, a filesystem path, a third-party SDK payload. The assertions look for THIS, so they fail
+// on the disclosure itself rather than on a particular phrasing of the refusal.
+const SECRET = "postgres://user:hunter2@db.internal:5432/agents";
+
+app.get("/__unhandled/sync", () => {
+  throw new Error(`connection failed: ${SECRET}`);
+});
+app.get("/__unhandled/async", async () => {
+  await Promise.resolve();
+  throw new TypeError(`connection failed: ${SECRET}`);
+});
+app.get("/__unhandled/nonerror", () => {
+  throw `connection failed: ${SECRET}`;
+});
+// The shapes a two-name list walked past: the thrown value already carries a `code`, and Elysia
+// hands THAT to the handler instead of UNKNOWN. These are the errors whose message actually holds
+// something — a query fragment, a filesystem path.
+app.get("/__unhandled/prisma", () => {
+  throw Object.assign(new Error(`connection failed: ${SECRET}`), {
+    code: "P2025",
+  });
+});
+app.get("/__unhandled/fs", () => {
+  throw Object.assign(new Error(`connection failed: ${SECRET}`), {
+    code: "EACCES",
+  });
+});
+// The NUMERIC half of the same hole: Elysia copies these into `code` too, and a rule that read a
+// numeric code as "a status the handler chose" passed both straight through.
+app.get("/__unhandled/domexception", () => {
+  throw new DOMException(`connection failed: ${SECRET}`, "DataCloneError");
+});
+app.get("/__unhandled/numericcode", () => {
+  throw Object.assign(new Error(`connection failed: ${SECRET}`), { code: 23 });
+});
+// Not a throw at all: the handler returns fine and the FAILURE happens while the response is
+// serialized. This is the shape that surfaced the bug (issue #253), and the one that answered with
+// the error's class name rather than a bare message.
+app.get("/__unhandled/serialize", () => ({ id: 1n }));
+
+const UNHANDLED = [
+  "sync",
+  "async",
+  "nonerror",
+  "serialize",
+  "prisma",
+  "fs",
+  "domexception",
+  "numericcode",
+] as const;
+
+const unhandled = async (
+  shape: string,
+): Promise<{ status: number; body: string }> => {
+  const res = await app.handle(
+    new Request(`http://localhost/__unhandled/${shape}`),
+  );
+  return { status: res.status, body: await res.text() };
+};
+
+describe("an unhandled error, whatever shape it arrives in", () => {
+  test.each([...UNHANDLED])("%s still answers 500", async (shape) => {
+    expect((await unhandled(shape)).status).toBe(500);
+  });
+
+  // The finding itself.
+  test.each([...UNHANDLED])("%s does not leak the message", async (shape) => {
+    const { body } = await unhandled(shape);
+    expect(body).not.toContain(SECRET);
+    expect(body).not.toContain("connection failed");
+  });
+
+  // Asserted positively, not as another "does not contain": the serialize shape answered
+  // `{"name":"TypeError","message":…}`, so a body carrying no secret can still name the class that
+  // failed. Pinning the whole body rules both out at once.
+  test.each([...UNHANDLED])(
+    "%s answers the redaction, nothing else",
+    async (shape) => {
+      expect((await unhandled(shape)).body).toBe("Something went wrong");
+    },
+  );
+});
+
+// The complement, and the reason the arm lists UNKNOWN and stops there. Both of these are rejected
+// before the handler and already have a specific, correct answer; folding them into the 500 arm
+// replaces a usable refusal with "Something went wrong". Measured while mutation-testing the fix:
+// adding either code to the arm changed nothing any test could see, which is what a guard with no
+// coverage looks like.
+// A status the handler CHOSE has to survive the redaction, or the guard would swallow deliberate
+// answers along with the accidents. This is the one member of the pass-through list that is not a
+// refusal Elysia raised on the caller's behalf, so it is asserted rather than assumed.
+app.get("/__chosen/teapot", ({ status }) => status(418, "deliberate"));
+
+describe("a status the handler chose is not an unhandled failure", () => {
+  test("it keeps its own code and body", async () => {
+    const res = await app.handle(
+      new Request("http://localhost/__chosen/teapot"),
+    );
+    expect(res.status).toBe(418);
+    expect(await res.text()).toBe("deliberate");
+  });
+});
+
+describe("a request refused before the handler keeps its own answer", () => {
+  const login = async (body: string): Promise<number> =>
+    (
+      await app.handle(
+        new Request("http://localhost/api/auth/login", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body,
+        }),
+      )
+    ).status;
+
+  test("a body that is not JSON stays 400 (PARSE)", async () => {
+    expect(await login("{ not json at all")).toBe(400);
+  });
+
+  test("a body the schema refuses stays 422 (VALIDATION)", async () => {
+    expect(await login(JSON.stringify({ nope: 1 }))).toBe(422);
+  });
+});

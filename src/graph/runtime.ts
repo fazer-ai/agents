@@ -103,7 +103,13 @@ function sysCtx(tenantId: bigint): TenantContext {
 export type RunAgentTurnOutcome =
   | "posted"
   | "skipped"
+  // NO AGENT IS BOUND to this inbox. The mirror creates a row for any inbox that sends traffic, so
+  // this is the state a channel connected in Chatwoot and never bound here sits in, and the caller
+  // reports it (issue #318). Its sibling below is the binding that EXISTS and cannot answer.
   | "no-agent"
+  // Bound, and the config would not load: the agent is switched off (the common one, and deliberate)
+  // or its row is gone. Same silence, different repair, and deliberately not the same word.
+  | "agent-unavailable"
   | "empty"
   | "taken-over"
   // The run was CALLED OFF while it worked — today only by /reset retiring the job that queued it.
@@ -1433,7 +1439,13 @@ export async function runAgentTurn(
   }
 
   // Scoped read (no network): resolve the inbox's Agent + config bundle.
-  const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+  //
+  // The binding and the config are read in ONE scope and reported apart, because they are two facts
+  // an operator repairs differently and the caller writes a `route` line off the answer (issue #318).
+  // Classifying them anywhere else means reading the binding a second time, and a rebind landing
+  // between the two reads then reports the wrong one — the turn takes seconds, and gates, mirroring
+  // and media all run inside it.
+  const resolved = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const inbox = await db.inbox.findUnique({
       where: {
         tenantId_chatwootInstanceId_chatwootInboxId: {
@@ -1444,16 +1456,23 @@ export async function runAgentTurn(
       },
       select: { agentId: true },
     });
-    if (!inbox?.agentId) return null;
-    return loadAgentConfig(db, {
-      tenantId,
-      instanceId,
-      conversationId,
-      agentId: inbox.agentId,
-      threadId,
-    });
+    if (!inbox?.agentId) return { bound: false as const, config: null };
+    return {
+      bound: true as const,
+      config: await loadAgentConfig(db, {
+        tenantId,
+        instanceId,
+        conversationId,
+        agentId: inbox.agentId,
+        threadId,
+      }),
+    };
   });
-  if (!loaded) return "no-agent";
+  if (!resolved.bound) return "no-agent";
+  const loaded = resolved.config;
+  // A binding that exists and could not be loaded: the agent is switched off, or its row is gone.
+  // Switched off is a deliberate operator state, which is why it is NOT the silence above.
+  if (!loaded) return "agent-unavailable";
 
   // NOTE: Post gate, mirroring the debounce flush (issue #49): concurrent direct turns on the same
   // conversation (webhook deliveries are not serialized) each generate a reply — without this gate

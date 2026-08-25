@@ -3129,23 +3129,18 @@ export async function processChatwootDelivery(
             outcome,
             mirror.applied ? "applied" : "skipped",
           );
-          // NOTE: The turn had nowhere to go: no agent is bound to this inbox (issue #318). The
-          // outcome is narrow enough to key on — `runAgentTurn` only reaches it for a new incoming
-          // message with text, so this is one line per customer message that nothing will answer,
-          // the same unit as the gate's line below.
+          // NOTE: The turn had nowhere to go: no agent is bound to this inbox (issue #318). One line
+          // per customer message that nothing will answer — `runAgentTurn` only reaches this outcome
+          // for a new incoming message with text — which is the same unit as the gate's line below.
           //
-          // `rt === null` is the OTHER half of the question, and without it this line lies. That
-          // outcome collapses two states, because `loadAgentConfig` returns null both when no agent
-          // is bound AND when a bound agent is switched OFF — so an operator who disabled their
-          // agent on purpose would be told, at `warn`, that their inbox has no agent. A disabled
-          // agent was never going to answer, which is why the ownership gate excludes it too, and
-          // `rt` is exactly the reading that separates them: it resolves the inbox's agent ROW
-          // without consulting `enabled`, so it is null only when there is no row to find.
-          if (
-            outcome === "no-agent" &&
-            rt === null &&
-            mirror.conversationRowId !== null
-          ) {
+          // The outcome is the WHOLE condition on purpose. `no-agent` used to also cover a binding
+          // that exists and could not load (a switched-off agent, which is deliberate and gets no
+          // line), and this branch first excluded that by re-reading the binding here. Re-reading is
+          // what the second reading cost: the turn runs gates, mirroring and media in between, so a
+          // rebind landing inside it answered about a different moment. `runAgentTurn` now
+          // classifies the two from the same scoped read that decides them, and `agent-unavailable`
+          // is the one this line stays silent about.
+          if (outcome === "no-agent" && mirror.conversationRowId !== null) {
             emitUnroutedMessage({
               tenantId: params.tenantId,
               conversationRowId: mirror.conversationRowId,

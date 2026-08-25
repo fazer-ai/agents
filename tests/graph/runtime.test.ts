@@ -1079,6 +1079,44 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent).toEqual([]);
   });
 
+  // The sibling state, and the reason the two are not one word: a bound agent that is switched off
+  // is silent by the operator's own decision, while an unbound inbox is a channel nobody finished
+  // connecting. The caller writes an operator-facing line for the second and stays quiet for the
+  // first (issue #318), so the classification has to happen HERE, in the read that decides it — a
+  // caller re-reading the binding afterwards would answer about a later moment.
+  test("bound inbox whose agent is switched off → agent-unavailable (silent)", async () => {
+    const sent: Array<[number, string]> = [];
+    const bound = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 7 },
+      select: { agentId: true },
+    });
+    await suDb.agent.update({
+      where: { id: bound.agentId as bigint },
+      data: { enabled: false },
+    });
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 906, inboxId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("agent-unavailable");
+      expect(sent).toEqual([]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: bound.agentId as bigint },
+        data: { enabled: true },
+      });
+    }
+  });
+
   test("human took over during the LLM call → does not post", async () => {
     await seedConversation(901, "User");
     const sent: Array<[number, string]> = [];

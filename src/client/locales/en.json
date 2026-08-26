@@ -1159,6 +1159,20 @@
     "tabs": "Agent settings",
     "temperature": "Temperature",
     "temperatureHint": "0-2 (optional)",
+    "toolPreconditions": {
+      "add": "Add a precondition",
+      "contact": "Contact",
+      "conversation": "Conversation",
+      "description": "Block a tool until a conversation or contact attribute holds a value. The agent is told why and continues the conversation; nothing is said to the customer.",
+      "equals": "Required value",
+      "equalsPlaceholder": "any value",
+      "key": "Attribute",
+      "keyPlaceholder": "attribute key",
+      "pickTool": "Pick a tool…",
+      "scope": "Scope",
+      "title": "Tool preconditions",
+      "tool": "Tool"
+    },
     "tools": {
       "clear": "Clear",
       "createNew": "New",
@@ -1192,6 +1206,7 @@
       "noIntegrations": "No integrations activated yet.",
       "noMcp": "No MCP servers connected yet.",
       "noNativeSelected": "No native tools selected — the agent can only chat.",
+      "preconditions": "Preconditions",
       "selectAll": "Select all",
       "showConfig": "Settings"
     },

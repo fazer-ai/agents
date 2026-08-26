@@ -75,6 +75,7 @@ export function makeConfig(
     sendImageConfig: SEND_IMAGE_DEFAULTS,
     kanbanConfig: KANBAN_DEFAULTS,
     toolGuidance: {},
+    toolPreconditions: {},
     httpToolContext: {},
     contactName: null,
     timezone: "America/Sao_Paulo",

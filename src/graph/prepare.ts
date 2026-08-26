@@ -7,10 +7,18 @@ import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import config from "@/config";
 import type { ModelOverride } from "@/graph/model-override";
+import {
+  applyToolPreconditions,
+  preconditionStateLoader,
+} from "@/graph/tools/precondition";
 import { parseDbId } from "@/lib/db-id";
 import type { ScopedDb, TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { readToolGuidance } from "@/modules/agents/tool-guidance";
+import {
+  readToolPreconditions,
+  type ToolPrecondition,
+} from "@/modules/agents/tool-preconditions";
 import {
   buildAppointmentContextSection,
   loadAppointmentContext,
@@ -225,6 +233,9 @@ export interface AgentConfig {
   // Operator-authored guidance for tools whose only config is the note (set_custom_attribute,
   // assign_label, …), keyed by native tool name; merged into the tool descriptions at buildToolset.
   toolGuidance: Partial<Record<NativeToolName, string>>;
+  // Operator-declared preconditions, keyed by TOOL NAME (issue #101). Native or custom: the seam
+  // that applies them is the one place every source's tools meet, so one map covers all six.
+  toolPreconditions: Record<string, ToolPrecondition>;
   // Conversation/contact context exposed to custom HTTP tools as {{placeholders}} (contact_name,
   // contact_email, …). conversation_id is merged in at buildToolset time (it lives on ctx). Never
   // holds a secret.
@@ -755,6 +766,7 @@ export async function loadAgentConfig(
     sendImageConfig: readSendImageConfig(effSettings),
     kanbanConfig: readKanbanConfig(effSettings),
     toolGuidance: readToolGuidance(effSettings),
+    toolPreconditions: readToolPreconditions(effSettings),
     httpToolContext: {
       ...(conv?.contact?.chatwootContactId != null
         ? { contact_id: String(conv.contact.chatwootContactId) }
@@ -1225,6 +1237,42 @@ export async function buildToolset(
       cfg.ragConfig?.tools,
     ),
   ]);
+  // The precondition seam, and the reason the whole feature is six lines: every source's tools have
+  // already been merged into ONE name-unique list above, so a map keyed by name reaches native,
+  // document, HTTP, MCP, toolpack and RAG at once. An agent with no preconditions gets the same
+  // array back, untouched.
+  const guarded = applyToolPreconditions(
+    tools,
+    cfg.toolPreconditions,
+    preconditionStateLoader({
+      base: ctx.base,
+      tenantId: ctx.tenantId,
+      conversationDbId: cfg.conversationDbId ?? null,
+      contactDbId: cfg.contactDbId ?? null,
+    }),
+    flow
+      ? ({ tool: name, cond }) =>
+          emitFlowEvent(flow, {
+            stage: "tool",
+            // INFO, deliberately. A precondition refusing a call is the system working as the
+            // operator configured it, and warn/error is what reaches the alert channels: a rule that
+            // fires on every third conversation would otherwise page all day. It still has to be
+            // VISIBLE, because "the agent never hands off any more" is exactly the report this
+            // feature will generate, and the answer has to be one line away in the Logs page.
+            level: "info",
+            status: "ok",
+            detail: {
+              tool: name,
+              phase: "precondition",
+              preconditionKind: cond.kind,
+              // The KEY, never the value: an attribute bag holds whatever the operator put in it,
+              // and a flow-log detail is PII-free by contract (modules/flowlog).
+              preconditionKey: cond.key,
+              preconditionScope: cond.scope,
+            },
+          })
+      : undefined,
+  );
   if (dropped.length > 0) {
     // The operator is the only one who can fix this, and the symptom they would otherwise see is a
     // tool that quietly does nothing — or, on a provider that rejects a duplicated function name,
@@ -1236,7 +1284,7 @@ export async function buildToolset(
       [...new Set(dropped)].join(", "),
     );
   }
-  return tools;
+  return guarded;
 }
 
 export interface CallbacksArgs {

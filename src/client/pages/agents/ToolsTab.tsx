@@ -1,10 +1,16 @@
-import { Plug, Puzzle, Webhook, Wrench } from "lucide-react";
+import { Plug, Puzzle, ShieldCheck, Webhook, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
 import { SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 import { ToolGrantsEditor } from "./ToolGrantsEditor";
-import type { GrantState, HandoffUiState, ToolCatalog } from "./types";
+import { ToolPreconditionsEditor } from "./ToolPreconditionsEditor";
+import type {
+  GrantState,
+  HandoffUiState,
+  ToolCatalog,
+  ToolPreconditionRow,
+} from "./types";
 
 interface ToolsTabProps {
   agentId: string;
@@ -24,6 +30,10 @@ interface ToolsTabProps {
   setLabelInstructions: (v: string) => void;
   updateKanbanTaskInstructions: string;
   setUpdateKanbanTaskInstructions: (v: string) => void;
+  // Per-tool preconditions (issue #101). Owned by AgentEditorPage like the guidance above, and saved
+  // by this tab, because a precondition is config OF a tool.
+  toolPreconditions: ToolPreconditionRow[];
+  setToolPreconditions: (rows: ToolPreconditionRow[]) => void;
   // Discovered MCP tools + per-connection collapse state, owned by AgentEditorPage so the discovery
   // survives tab switches (this tab unmounts when inactive).
   mcpTools: Record<string, DiscoveredMcpTool[]>;
@@ -67,6 +77,8 @@ export function ToolsTab({
   setLabelInstructions,
   updateKanbanTaskInstructions,
   setUpdateKanbanTaskInstructions,
+  toolPreconditions,
+  setToolPreconditions,
   mcpTools,
   setMcpTools,
   mcpInstructions,
@@ -82,6 +94,15 @@ export function ToolsTab({
   onOpenPlayground,
 }: ToolsTabProps) {
   const { t } = useTranslation();
+  // The native tools this agent actually has, resolved with the SAME rule ToolGrantsEditor uses: no
+  // explicit NATIVE row means all of them (the permissive default), an explicit row means exactly
+  // its allowlist. Offering a name the agent was not granted would let an operator write a rule that
+  // is inert, which reads as protection and is not.
+  const nativeGrant = grants.find((g) => g.source === "NATIVE");
+  const grantedNativeTools = nativeGrant
+    ? (nativeGrant.enabledTools ?? [])
+    : catalog.native.map((n) => n.name);
+
   // Section index for the Tools tab (item 9): mirrors the section ids set on ToolGrantsEditor's
   // blocks + the capability map below.
   const sections = [
@@ -104,6 +125,11 @@ export function ToolsTab({
       id: "tools-native",
       icon: Wrench,
       label: t("editor.tools.native", "Native tools"),
+    },
+    {
+      id: "tools-preconditions",
+      icon: ShieldCheck,
+      label: t("editor.tools.preconditions", "Preconditions"),
     },
   ];
 
@@ -138,6 +164,11 @@ export function ToolsTab({
             setMcpCollapsed={setMcpCollapsed}
             integrationCollapsed={integrationCollapsed}
             setIntegrationCollapsed={setIntegrationCollapsed}
+          />
+          <ToolPreconditionsEditor
+            rows={toolPreconditions}
+            onChange={setToolPreconditions}
+            grantedNativeTools={grantedNativeTools}
           />
         </div>
       </div>

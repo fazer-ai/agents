@@ -43,3 +43,12 @@ export interface HandoffUiState {
   // Persisted in agent.settings.handoff.instructions.
   instructions: string;
 }
+
+// One row of the tool-precondition editor. The stored shape is a map keyed by tool name; the editor
+// holds a list so a row survives the operator clearing the tool name to pick another one.
+export interface ToolPreconditionRow {
+  tool: string;
+  scope: "conversation" | "contact";
+  key: string;
+  equals: string;
+}

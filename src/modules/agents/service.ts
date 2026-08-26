@@ -17,6 +17,7 @@ import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
+import { invalidToolPreconditions } from "@/modules/agents/tool-preconditions";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
@@ -317,6 +318,38 @@ export class DebugWindowTooLongError extends AppError {
   }
 }
 
+export class InvalidToolPreconditionError extends AppError {
+  constructor(toolName: string) {
+    super(
+      `settings.toolPreconditions.${toolName} is not a valid precondition`,
+      400,
+      "errors.invalidToolPrecondition",
+      { tool: toolName },
+      `toolPreconditions.${toolName}`,
+    );
+  }
+}
+
+// A precondition that does not parse is REFUSED here rather than dropped at turn time, and the two
+// halves are the same parse on purpose. The cost of the other arrangement is specific: the operator
+// saves a rule, the console shows it saved, and the runtime treats the tool as ungoverned — a tool
+// the operator believes is fenced and is not, which is worse than never having offered the fence.
+//
+// Only what the write CHANGES is refused. A bag stored before this shipped keeps its bad entries
+// (dropped at read time) and an unrelated PATCH is not the moment to make the operator fix them,
+// because the field they would have to fix is not the field they came to edit.
+export function assertSettingsToolPreconditions(
+  settings: unknown,
+  stored: unknown,
+): void {
+  const next = invalidToolPreconditions(settings);
+  if (next.length === 0) return;
+  const before = new Set(invalidToolPreconditions(stored));
+  const introduced = next.find((name) => !before.has(name));
+  if (introduced === undefined) return;
+  throw new InvalidToolPreconditionError(introduced);
+}
+
 // A FALLBACK IS A PROVIDER AND A MODEL, OR IT IS NOTHING — and the write is the only place that can
 // say so, because every reader downstream agrees a half-named block is no fallback and none of them
 // has anywhere to say it.
@@ -605,6 +638,7 @@ export async function updateAgent(
     assertSettingsTextSizes(rest.settings, before?.settings);
     assertSettingsDebugWindow(rest.settings, before?.settings);
     assertSettingsModelFallback(rest.settings, before?.settings, "replace");
+    assertSettingsToolPreconditions(rest.settings, before?.settings);
     // NOTE: Inside the lock and against the same row, for the reason above: "did this write change
     // the ref" has to be asked of the value this write replaces. It also rewrites `rest` in place,
     // so the normalization below copies the canonical bag rather than the submitted one.
@@ -740,6 +774,7 @@ export async function createAgent(
   assertSettingsTextSizes(input.settings, undefined);
   assertSettingsDebugWindow(input.settings, undefined);
   assertSettingsModelFallback(input.settings, undefined, "replace");
+  assertSettingsToolPreconditions(input.settings, undefined);
   const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);
   const bhId =

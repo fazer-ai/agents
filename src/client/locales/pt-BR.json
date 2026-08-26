@@ -1162,6 +1162,20 @@
     "tabs": "Configurações do agente",
     "temperature": "Temperatura",
     "temperatureHint": "0 a 2 (opcional)",
+    "toolPreconditions": {
+      "add": "Adicionar precondição",
+      "contact": "Contato",
+      "conversation": "Conversa",
+      "description": "Bloqueia uma ferramenta até que um atributo da conversa ou do contato tenha valor. O agente é informado do motivo e segue a conversa; nada é dito ao cliente.",
+      "equals": "Valor exigido",
+      "equalsPlaceholder": "qualquer valor",
+      "key": "Atributo",
+      "keyPlaceholder": "chave do atributo",
+      "pickTool": "Escolha uma ferramenta…",
+      "scope": "Escopo",
+      "title": "Precondições de ferramenta",
+      "tool": "Ferramenta"
+    },
     "tools": {
       "clear": "Limpar",
       "createNew": "Nova",
@@ -1196,6 +1210,7 @@
       "noIntegrations": "Nenhuma integração ativada ainda.",
       "noMcp": "Nenhum servidor MCP conectado ainda.",
       "noNativeSelected": "Nenhuma ferramenta nativa selecionada — o agente só pode conversar.",
+      "preconditions": "Precondições",
       "selectAll": "Selecionar tudo",
       "showConfig": "Configurações"
     },

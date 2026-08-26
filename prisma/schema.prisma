@@ -1142,6 +1142,10 @@ model OutboundWebhookDelivery {
 
   @@index([tenantId])
   @@index([status, nextAttemptAt])
+  // The operator's page (issue #305): keyset by id desc, filtered by status for the dead-letter
+  // view. The two above are the WORKER's; see the migration for the measurement.
+  @@index([tenantId, id])
+  @@index([tenantId, status, id])
   @@map("outbound_webhook_deliveries")
 }
 

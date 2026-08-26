@@ -80,10 +80,11 @@ ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "claimed_at" TIMESTAMP(3);
 -- WHICH terminal state is a question this migration can answer, and it is the same question
 -- `classifyStrandedDelivery` asks first: only a `message_created` could ever have owed a customer a
 -- turn. `event` is not one of the columns being added here — every build has always written it — so
--- a conversation update, our own media write-back, a contact created and everything else Chatwoot
--- sends an agent bot are closed rather than reported. Blanket-DEAD, they would arrive as a deploy-day
--- pile of "customer went unanswered" rows that no customer was ever waiting on, in the list whose
--- entire value is that every row in it is real.
+-- a conversation update, a conversation opened or resolved, our own media write-back and a widget
+-- being triggered are closed rather than reported. Measured against the local fork (4.16.0): those,
+-- plus `message_created`, are the SEVEN events an Agent Bot receives. Blanket-DEAD, they would
+-- arrive as a deploy-day pile of "customer went unanswered" rows that no customer was ever waiting
+-- on, in the list whose entire value is that every row in it is real.
 --
 -- What stays ambiguous is a legacy `message_created`, which may or may not have carried an incoming
 -- message: the id columns are added by this same migration and neither is backfilled. DEAD is the

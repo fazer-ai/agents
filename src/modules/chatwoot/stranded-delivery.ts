@@ -85,13 +85,23 @@ export function classifyStrandedDelivery(
   // still names its event, so this answers for those rows too, which is the population the fence
   // exists for.
   //
-  // Chatwoot sends an agent bot far more than customer messages — a contact created, a widget
-  // triggered, a kanban card moved — and `normalize.ts` reads a conversation id from nothing but the
-  // two shapes that are a conversation or a message (issue #257), so those reach the ledger with
-  // BOTH ids null and no claim: byte for byte the signature the fence reads as "a build we cannot
-  // read". A `message_updated` is the same story from the other direction — it is our own media
-  // write-back coming around and drives no turn, which is why the name it shares with
-  // `isNewIncomingMessage` is one constant and not two.
+  // MEASURED against the local Chatwoot fork (4.16.0), by pointing a real Agent Bot at a capture
+  // endpoint: `AgentBotListener` dispatches exactly seven events, and `contact_created` is not among
+  // them. They are `conversation_resolved`, `conversation_opened`, `conversation_status_changed`,
+  // `conversation_updated`, `message_created`, `message_updated` and `webwidget_triggered`.
+  //
+  // Six of the seven name a conversation, so a row THIS build wrote for them already fails the
+  // message-id check below. The seventh does not: `webwidget_triggered` carries a CONTACT_INBOX
+  // (observed: top-level `id` = 69, the contact_inbox id, and no `conversation` key at all), and
+  // `normalize.ts` reads a conversation id from nothing but the two shapes that are a conversation
+  // or a message (issue #257) — so it reaches the ledger with BOTH ids null and, if the process dies
+  // before the claim, no stamp either: byte for byte the signature the fence below reads as "a build
+  // we cannot read".
+  //
+  // The other population this answers for is every event an OLDER build wrote, which is the one the
+  // fence exists for and the one a rollout produces in bulk. A `message_updated` is that story from
+  // the other direction — our own media write-back coming around, driving no turn — which is why the
+  // name it shares with `isNewIncomingMessage` is one constant and not two.
   if (row.event !== TURN_BEARING_EVENT) return "no-message";
   // A row this build never touched, whose nulls are UNRECORDED rather than "nothing was there". Read
   // the literal way, every message the previous release lost would be closed as carrying none — the

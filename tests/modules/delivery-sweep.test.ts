@@ -503,17 +503,19 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("closes an event that could never carry a message, ids or no ids", async () => {
-    // Chatwoot sends an agent bot far more than messages, and `normalize.ts` reads a conversation id
-    // from nothing but the two shapes that ARE a conversation or a message (issue #257). So a
-    // contact being created reaches the ledger with both ids null and, if the process dies before
-    // the claim, no claim stamp either — byte for byte the signature the next test reads as "a build
-    // whose columns we cannot trust", on a row where the nulls mean exactly what they say.
+    // MEASURED against the local fork (4.16.0): an Agent Bot receives seven events, and
+    // `webwidget_triggered` is the one whose body is a CONTACT_INBOX — captured with a top-level
+    // `id` of 69, the contact_inbox id, and no `conversation` key at all. `normalize.ts` reads a
+    // conversation id from nothing but the two shapes that ARE a conversation or a message (issue
+    // #257), so it reaches the ledger with both ids null and, if the process dies before the claim,
+    // no claim stamp either — byte for byte the signature the next test reads as "a build whose
+    // columns we cannot trust", on a row where the nulls mean exactly what they say.
     const rowId = await seedStrandedDelivery({
       conversationId: null,
       ageMs: STALE_MS * 2,
       status: "PENDING",
       inboundMessageId: null,
-      event: "contact_created",
+      event: "webwidget_triggered",
     });
 
     const counts = await sweepStrandedDeliveries({ tenantId, base: appDb });
@@ -699,11 +701,15 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(job?.status).toBe("PENDING");
   });
 
-  test("comes back from the dead on a re-arm", async () => {
-    // A job's failure budget counts its whole LIFETIME (`rescheduleJob` never clears `attempts`),
-    // so a sweep meant to run forever is dead-lettered on its fifth failure ever. A re-arm that did
-    // not reset would revive the row only for it to die on the next one. Issue #287 is the general
-    // case; this is the arming call answering for itself.
+  test("a re-arm revives the row and KEEPS the budget the last pass spent", async () => {
+    // The sweep is one perpetual row per tenant, and a boot or a newly connected account re-arming
+    // it is the SAME unit of work — the answer `enqueueJob` requires and cannot derive (#339). So
+    // the row comes back PENDING and its `attempts` survive: a sweep that keeps failing must not get
+    // five fresh attempts every time somebody connects an account, which is the cap doing nothing.
+    //
+    // What clears the budget is a pass that COMPLETED, on its way out through `rescheduleJob`
+    // (#287/#337), which is the other half of the same rule and the reason this half is safe: a
+    // sweep that works never accumulates, and one that does not keeps its count.
     await suDb.$executeRawUnsafe(
       `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId} AND kind = 'DELIVERY_SWEEP'`,
     );
@@ -726,7 +732,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       select: { status: true, attempts: true },
     });
     expect(job.status).toBe("PENDING");
-    expect(job.attempts).toBe(0);
+    expect(job.attempts).toBe(4);
   });
 
   test("records the two ids recovery needs, and only for an INBOUND message", async () => {

@@ -169,13 +169,14 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "lost",
     },
     {
-      // The event Chatwoot sends when a contact is created carries a CONTACT, so `normalize.ts`
-      // reads no conversation from it (issue #257) and the row is inserted with both ids null. Its
-      // signature is identical to an old build's PENDING row, and read that way every one of them
-      // stranded before a claim would be a customer-loss alert about an event nobody was waiting on.
+      // MEASURED: `webwidget_triggered` is the one event of the seven an Agent Bot receives whose
+      // body is a CONTACT_INBOX, so `normalize.ts` reads no conversation from it (issue #257) and
+      // the row is inserted with both ids null. Its signature is identical to an old build's PENDING
+      // row, and read that way every one of them stranded before a claim would be a customer-loss
+      // alert about an event nobody was waiting on.
       name: "an event that cannot carry a message never lost one, ids or no ids",
       ageMs: STALE_MS * 3,
-      event: "contact_created",
+      event: "webwidget_triggered",
       inboundMessageId: null,
       conversationId: null,
       status: "PENDING",
@@ -183,11 +184,11 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "no-message",
     },
     {
-      // And the same event on the OTHER non-terminal state, which the fence below reads as a build
+      // And a conversation event on the OTHER non-terminal state, which the fence reads as a build
       // it cannot parse whatever the conversation column says.
       name: "the event outranks the unreadable-build fence, on PROCESSING too",
       ageMs: STALE_MS * 3,
-      event: "webwidget_triggered",
+      event: "conversation_resolved",
       inboundMessageId: null,
       status: "PROCESSING",
       claimed: false,

@@ -541,14 +541,12 @@ export async function ensureDeliverySweep(
     kind: "DELIVERY_SWEEP",
     dedupeKey: "delivery-sweep",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
-    // Revives a row that was already dead-lettered: without this it comes back with `attempts` at
-    // the cap and dies on the very next failure. `rescheduleJob` clears the budget on every pass
-    // that completed (#337), so this covers the one case that cannot — a row that reached the cap
-    // while the sweep was failing, which no completed pass will ever follow.
-    //
-    // Diverges from `ensureFlowlogSweep` / `ensureTenantSweep`, which have the same shape and do not
-    // reset. That is the re-arm half of the same question, and it is issue #339.
-    resetAttempts: true,
+    // NOTE: One perpetual row per tenant, same shape as the flow-log sweep and the heartbeat: a
+    // completed pass clears the budget on its own (#287/#337), and a boot or a newly connected
+    // account re-arming this row is the SAME unit of work, not a new one. Clearing here would hand a
+    // sweep that keeps failing five fresh attempts every time an account is connected, which is the
+    // cap doing nothing (#339).
+    rearm: "same-work",
     base,
   });
 }

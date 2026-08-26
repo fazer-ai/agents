@@ -78,8 +78,9 @@ export interface LinkRedirectResult {
 }
 
 // Link the widget conversation to its WhatsApp sibling exactly once. The redirectLinkedAt watermark is
-// set unconditionally (even with no sibling / on a note failure) so this never re-runs or re-spams; the
-// notes themselves are best-effort, mirroring the webhook's other private-note posts.
+// CLAIMED for the episode this call read (even with no sibling / on a note failure) so this never
+// re-runs or re-spams; the notes themselves are best-effort, mirroring the webhook's other
+// private-note posts.
 export async function linkRedirectConversations(
   p: LinkRedirectParams,
 ): Promise<LinkRedirectResult> {
@@ -117,16 +118,43 @@ export async function linkRedirectConversations(
     p.widgetConv.testActivatedAt,
   );
 
-  // Watermark the widget conversation (+ propagate) — ALWAYS, so this one-shot never re-runs.
-  await runScopedOn(base, sysCtx(p.tenantId), (db) =>
-    db.conversation.update({
-      where: { id: p.widgetConv.id },
+  // CLAIM the cross-link for the episode this call read, rather than stamp it. Two conditions, one
+  // question — is this still the episode whose sibling I just looked up?
+  //
+  // `redirectOriginDisplayId` is the half that #222 made askable. The origin above comes from the
+  // delivery's own snapshot, and the stamp below lands after two database round trips and a Chatwoot
+  // POST; a pairing accepted in that window moves the episode, and stamping anyway spends the NEXT
+  // episode's only shot on the previous one's notes — the inbound that belongs to the new origin
+  // finds the watermark set and links nothing, ever. Losing the claim is not a failure: it means
+  // another episode owns this conversation now, and its own first inbound will link it.
+  //
+  // `redirectLinkedAt: null` is the caller's fence, moved into the same statement. It was read a
+  // dozen awaits ago, so two inbounds arriving together both passed it and both posted a pair of
+  // private notes. Asked here it costs nothing and the one-shot is one for real.
+  //
+  // The propagation rides along deliberately: a `/teste` copied from a sibling this conversation is
+  // no longer paired with would silence the wrong agent on the wrong episode.
+  const claimed = await runScopedOn(base, sysCtx(p.tenantId), async (db) => {
+    const res = await db.conversation.updateMany({
+      where: {
+        id: p.widgetConv.id,
+        redirectLinkedAt: null,
+        redirectOriginDisplayId: p.widgetConv.redirectOriginDisplayId,
+      },
       data: {
         redirectLinkedAt: now,
         ...(propagate ? { testActivatedAt: now } : {}),
       },
-    }),
-  );
+    });
+    return res.count === 1;
+  });
+  if (!claimed) {
+    logger.info(
+      "channel-redirect: cross-link stood down — the episode moved while it read (widget conv=%d)",
+      p.widgetConv.displayId,
+    );
+    return { testActivatedAt: p.widgetConv.testActivatedAt };
+  }
 
   // Cross-link private notes (best-effort). Needs the deployment baseUrl + accountId + the bot client.
   if (sibling) {

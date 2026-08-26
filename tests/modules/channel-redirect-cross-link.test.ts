@@ -230,5 +230,106 @@ describe.skipIf(!dbUp)(
       expect(row.testActivatedAt).not.toBeNull();
       expect(row.redirectLinkedAt).not.toBeNull();
     });
+
+    // Review round 5 of #355. The origin this call resolves its sibling with is read at the top of
+    // the delivery, and the watermark it stamps is written after two round trips and a Chatwoot POST.
+    // A pairing accepted in that window moves the episode, and stamping anyway spends the NEXT
+    // episode's only shot on the previous episode's notes: the inbound for the new origin finds the
+    // watermark set and links nothing, ever.
+    test("does not stamp the watermark when the pairing moved under it", async () => {
+      const cfg: ChannelRedirectConfig = {
+        ...CHANNEL_REDIRECT_DEFAULTS,
+        enabled: true,
+        entryInboxId: ENTRY_INBOX,
+        widgetInboxId: WIDGET_INBOX,
+      };
+      // The episode released and re-paired to the decoy while this delivery was reading, which is
+      // exactly what the mirror writes when it accepts a different origin.
+      await suDb.conversation.update({
+        where: { id: widgetRowId },
+        data: {
+          redirectLinkedAt: null,
+          testActivatedAt: null,
+          redirectOriginDisplayId: DECOY_CONV,
+        },
+      });
+
+      const out = await linkRedirectConversations({
+        tenantId,
+        instanceId,
+        agentId: 1n,
+        mode: "test",
+        cfg,
+        widgetConv: {
+          id: widgetRowId,
+          displayId: WIDGET_CONV,
+          testActivatedAt: null,
+          contactId,
+          // The snapshot this delivery started from: the origin as it stood before the move.
+          redirectOriginDisplayId: ORIGIN_CONV,
+        },
+        base: appDb,
+      });
+
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: { testActivatedAt: true, redirectLinkedAt: true },
+      });
+      // Nothing claimed, so the next inbound — the one that belongs to the decoy episode — still
+      // gets its cross-link. And nothing propagated either: the activation it would have carried
+      // over belongs to the origin this episode no longer has.
+      expect(row.redirectLinkedAt).toBeNull();
+      expect(row.testActivatedAt).toBeNull();
+      expect(out.testActivatedAt).toBeNull();
+    });
+
+    // The claim is the one-shot, not the caller's fence. That fence reads `redirectLinkedAt` at the
+    // top of the delivery and this write lands a dozen awaits later, so two inbounds arriving
+    // together both passed it — and an unconditional stamp let both post their pair of private notes.
+    test("a second call finds the watermark taken and does not re-stamp it", async () => {
+      const cfg: ChannelRedirectConfig = {
+        ...CHANNEL_REDIRECT_DEFAULTS,
+        enabled: true,
+        entryInboxId: ENTRY_INBOX,
+        widgetInboxId: WIDGET_INBOX,
+      };
+      await suDb.conversation.update({
+        where: { id: widgetRowId },
+        data: {
+          redirectLinkedAt: null,
+          testActivatedAt: null,
+          redirectOriginDisplayId: ORIGIN_CONV,
+        },
+      });
+      const call = () =>
+        linkRedirectConversations({
+          tenantId,
+          instanceId,
+          agentId: 1n,
+          mode: "test",
+          cfg,
+          widgetConv: {
+            id: widgetRowId,
+            displayId: WIDGET_CONV,
+            testActivatedAt: null,
+            contactId,
+            redirectOriginDisplayId: ORIGIN_CONV,
+          },
+          base: appDb,
+        });
+
+      await call();
+      const first = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: { redirectLinkedAt: true },
+      });
+      await call();
+      const second = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: { redirectLinkedAt: true },
+      });
+      expect(first.redirectLinkedAt).not.toBeNull();
+      expect(second.redirectLinkedAt).toEqual(first.redirectLinkedAt);
+    });
   },
 );

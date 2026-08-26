@@ -386,6 +386,54 @@ describe.skipIf(!dbUp)(
       });
     };
 
+    // Review round 5 of #355. The closing RESOLVES the WhatsApp conversation it names, and on this
+    // path there is no job to ask about — the resolve webhook enters it directly — so the claim CAS is
+    // the only thing standing between a run that read one episode and a conversation that is now in
+    // another. The pairing is read at the top and the claim is written after the agent read, the bot
+    // load and the client build; a re-entry accepted in that window re-points the episode, and a
+    // goodbye sent afterwards resolves a thread this conversation is no longer paired with.
+    test("the pairing moving under the closing stops the claim", async () => {
+      await rearm();
+      await suDb.conversation.updateMany({
+        where: { tenantId: tid, chatwootConversationId: WIDGET },
+        data: { redirectOriginDisplayId: SIBLING },
+      });
+      // The rendezvous is the closing's OWN read of the widget conversation — identified by the
+      // select only it makes — so the flip lands strictly between that read and the claim.
+      const flipping = appDb.$extends({
+        query: {
+          conversation: {
+            async findUnique({ args, query }) {
+              const res = await query(args);
+              const sel = args.select as Record<string, unknown> | undefined;
+              if (sel?.chatwootStatusAt && sel?.lastInboundAt && sel?.inbox) {
+                await suDb.conversation.updateMany({
+                  where: { tenantId: tid, chatwootConversationId: WIDGET },
+                  data: { redirectOriginDisplayId: SIBLING + 100 },
+                });
+              }
+              return res;
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      try {
+        await resolveWidget(flipping);
+        expect(wire.filter((u) => u.includes("/messages"))).toEqual([]);
+        const widget = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId: tid, chatwootConversationId: WIDGET },
+          select: { redirectClosedAt: true },
+        });
+        // Not burned either: the episode that is current now still gets its own goodbye.
+        expect(widget.redirectClosedAt).toBeNull();
+      } finally {
+        await suDb.conversation.updateMany({
+          where: { tenantId: tid, chatwootConversationId: WIDGET },
+          data: { redirectOriginDisplayId: null },
+        });
+      }
+    });
+
     test("a switched-off agent posts no goodbye on the sibling", async () => {
       await suDb.agent.update({
         where: { id: agent },

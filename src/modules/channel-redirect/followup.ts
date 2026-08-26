@@ -910,6 +910,7 @@ export async function deliverRedirectClosing(
         status: true,
         chatwootStatusAt: true,
         lastInboundAt: true,
+        redirectOriginDisplayId: true,
         inbox: { select: { agentId: true, channelType: true, provider: true } },
       },
     });
@@ -979,6 +980,19 @@ export async function deliverRedirectClosing(
   }
 
   // Claim the closing: set the watermark only if still unset AND the episode is the one this run read.
+  //
+  // `redirectOriginDisplayId` is the third condition, and the one this path has nothing else to put
+  // in its place. The closing RESOLVES the WhatsApp conversation the pairing names; the resolve
+  // trigger reaches here straight from a webhook, with no job to ask about, so every fence the ladder
+  // gets from `stillWanted` is one this caller skips. Between the read at the top and this write sit
+  // an agent read, a bot load and a client build — a re-entry accepted in that window re-points the
+  // episode, and a goodbye sent afterwards resolves a thread this conversation is no longer paired
+  // with. Losing the claim leaves the anchor free, so the episode that IS current still gets its own.
+  //
+  // Null is a value here, not a wildcard: a widget conversation with no stored pairing (every one of
+  // them, until fazer-ai/chatwoot#418 is deployed) matches only while it still has none, so the
+  // arrival of a first pairing stands this run down rather than letting it act on the recency
+  // fallback it read.
   const won = await runScopedOn(base, sysCtx(p.tenantId), async (db) => {
     const res = await db.conversation.updateMany({
       where: {
@@ -987,6 +1001,7 @@ export async function deliverRedirectClosing(
         chatwootConversationId: p.widgetConversationId,
         redirectClosedAt: null,
         lastInboundAt: cx.widget.lastInboundAt,
+        redirectOriginDisplayId: cx.widget.redirectOriginDisplayId,
       },
       data: { redirectClosedAt: now },
     });

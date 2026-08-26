@@ -61,6 +61,12 @@ export interface MirrorResult {
   assigneeId: number | null;
   assigneeType: string | null;
   lastEventAt: Date | null;
+  // This event moved the conversation into a DIFFERENT redirect episode, and the write above already
+  // released the episode's watermarks on the row. What the mirror cannot release is the work already
+  // armed for the old episode: the REDIRECT_FOLLOWUP ladder, whose stages message the paired WhatsApp
+  // thread and resolve it. Reported rather than retired here so the retirement sits with the other
+  // episode-lifecycle handling (and with /reset, which retires the same key for the same reason).
+  redirectEpisodeReleased: boolean;
 }
 
 export async function mirrorChatwootEvent(
@@ -85,6 +91,7 @@ export async function mirrorChatwootEvent(
       assigneeId: null,
       assigneeType: null,
       lastEventAt: null,
+      redirectEpisodeReleased: false,
     };
   }
   const convId = n.conversationId;
@@ -159,6 +166,7 @@ export async function mirrorChatwootEvent(
           status: true,
           resolvedBy: true,
           resolvedByAt: true,
+          redirectOriginDisplayId: true,
           // Read so the stale branch can tell a reading it already has from one it does not, and
           // skip the UPDATE in the common case rather than rewriting the same two values.
           chatwootCreatedAt: true,
@@ -201,6 +209,34 @@ export async function mirrorChatwootEvent(
           stampedAfterVersion: existing.resolvedByAt,
         });
 
+      // The pairing is the redirect episode's IDENTITY, so a genuinely different one means this
+      // widget conversation is in a NEW episode and the per-episode one-shots belong to the old one.
+      // `redirectLinkedAt` gates the cross-link and `redirectClosedAt` is the at-most-once claim for
+      // the goodbye: left standing, the second episode gets neither — the cross-link reads a
+      // watermark the first episode set, and the closing CAS asks for a null the first episode spent.
+      // Both symptoms predate #222 and neither could be fixed before it, because until the fork
+      // recorded the pairing nothing on this side could tell one episode from the next.
+      //
+      // Asked of a PREVIOUSLY STATED origin, not of the stored value, and that is the whole
+      // distinction: stored null is both "the fork never spoke about this conversation" (every
+      // conversation, before fazer-ai/chatwoot#418 is deployed) and "the fork said there is none".
+      // `chatwootRedirectOriginAt` separates them — it is set the first time we are TOLD. Leaning the
+      // other way would release the episode of every live conversation on the day the fork ships,
+      // re-running each cross-link and posting its private notes a second time; leaning this way
+      // leaves exactly the behaviour of today for a pairing we are only now learning.
+      const releasesEpisode =
+        existing != null &&
+        decision.redirectOrigin &&
+        existing.chatwootRedirectOriginAt != null &&
+        (n.redirectOriginDisplayId ?? null) !==
+          existing.redirectOriginDisplayId;
+      // Written with the pairing wherever the pairing is written, the stale branch included: that
+      // branch is where the pairing's own conversation_updated ORDINARILY lands, since
+      // `last_activity_at` does not move on a column write.
+      const episodeRelease = releasesEpisode
+        ? { redirectLinkedAt: null, redirectClosedAt: null }
+        : {};
+
       if (existing && decision.stale) {
         // NOTE: A stale event says nothing about the conversation's STATE, with three exceptions, all
         // written here because this branch returns before the update.
@@ -240,6 +276,7 @@ export async function mirrorChatwootEvent(
           ...(decision.redirectOriginAt != null
             ? { chatwootRedirectOriginAt: decision.redirectOriginAt }
             : {}),
+          ...episodeRelease,
           ...staleSla,
         };
         if (Object.keys(staleWrites).length > 0) {
@@ -259,6 +296,7 @@ export async function mirrorChatwootEvent(
           assigneeId: existing.assigneeId,
           assigneeType: existing.assigneeType,
           lastEventAt: existing.lastEventAt,
+          redirectEpisodeReleased: releasesEpisode,
         };
       }
 
@@ -320,6 +358,8 @@ export async function mirrorChatwootEvent(
           assigneeId: n.assigneeId ?? null,
           assigneeType: n.assigneeType ?? null,
           lastEventAt: createdLastEventAt,
+          // A row born now has no previous episode to release.
+          redirectEpisodeReleased: false,
         };
       }
 
@@ -387,6 +427,7 @@ export async function mirrorChatwootEvent(
           ...(decision.redirectOriginAt != null
             ? { chatwootRedirectOriginAt: decision.redirectOriginAt }
             : {}),
+          ...episodeRelease,
         },
       });
       const inboxIdStr = inboxRowId != null ? String(inboxRowId) : null;
@@ -425,6 +466,7 @@ export async function mirrorChatwootEvent(
         assigneeId: nextAssigneeId,
         assigneeType: nextAssigneeType,
         lastEventAt: effectiveLastEventAt,
+        redirectEpisodeReleased: releasesEpisode,
       };
     });
   });

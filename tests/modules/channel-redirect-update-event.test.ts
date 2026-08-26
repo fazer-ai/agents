@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { chatwootThreadId } from "@/graph/checkpointer";
+import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -52,6 +54,7 @@ const ENTRY_INBOX = 62;
 const WIDGET_CONV = 6100;
 const OLD_ORIGIN = 6201;
 const NEW_ORIGIN = 6202;
+const THIRD_ORIGIN = 6203;
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -219,6 +222,65 @@ describe.skipIf(!dbUp)(
       expect(afterUpdate.redirectOriginDisplayId).toBe(NEW_ORIGIN);
       // ...and the episode is untouched: no cross-link ran, so nothing acted on either origin.
       expect(afterUpdate.redirectLinkedAt).toBeNull();
+    });
+
+    // Review round 5 of #355. Clearing the row's watermarks frees the NEXT episode's one-shots and
+    // does nothing about the work already armed for the previous one. The REDIRECT_FOLLOWUP ladder
+    // messages the paired WhatsApp thread and RESOLVES it, and a worker that already read its sibling
+    // passes every fence it has left — so the episode change has to retire it, which is the one
+    // signal that reaches a run already claimed.
+    async function armLadder() {
+      const key = followUpDedupeKey(
+        chatwootThreadId(tenantId, instanceId, WIDGET_CONV),
+      );
+      await suDb.schedulerJob.deleteMany({
+        where: { tenantId, kind: "REDIRECT_FOLLOWUP", dedupeKey: key },
+      });
+      await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "REDIRECT_FOLLOWUP",
+          dedupeKey: key,
+          payload: { stage: "whatsapp" },
+          status: "PENDING",
+          runAt: new Date(Date.now() + 600_000),
+        },
+      });
+      return key;
+    }
+
+    async function ladderState(key: string) {
+      const row = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, kind: "REDIRECT_FOLLOWUP", dedupeKey: key },
+        select: { status: true, payload: true },
+      });
+      return {
+        status: row.status,
+        cancelled:
+          (row.payload as { cancelledAt?: unknown } | null)?.cancelledAt !=
+          null,
+      };
+    }
+
+    test("a pairing that moves retires the previous episode's ladder", async () => {
+      const key = await armLadder();
+      await deliver(widgetConversation(THIRD_ORIGIN), "conversation_updated");
+      expect((await widgetRow()).redirectOriginDisplayId).toBe(THIRD_ORIGIN);
+      expect(await ladderState(key)).toEqual({
+        status: "DONE",
+        cancelled: true,
+      });
+    });
+
+    // And the other side of it: a retried delivery of the SAME pairing describes the episode that is
+    // running, so the ladder it armed is the one that should still run.
+    test("a repeat of the same pairing leaves the ladder armed", async () => {
+      const key = await armLadder();
+      await deliver(widgetConversation(THIRD_ORIGIN), "conversation_updated");
+      expect(await ladderState(key)).toEqual({
+        status: "PENDING",
+        cancelled: false,
+      });
     });
 
     test("the cloned message that follows is what links the episode", async () => {

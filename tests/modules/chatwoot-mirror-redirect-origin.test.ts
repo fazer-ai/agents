@@ -400,4 +400,228 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     );
     expect(await storedOrigin(44)).toBe(77);
   });
+
+  // ── Review round 5 of #355: the pairing is the EPISODE'S IDENTITY, so the row's per-episode
+  //    watermarks have to move with it. `redirectLinkedAt` and `redirectClosedAt` are one-shots
+  //    scoped to "this redirect episode": the first gates the cross-link, the second is the
+  //    at-most-once claim for the goodbye. Neither knew which origin it was stamped for, because
+  //    until #222 nothing on this side did. ──
+
+  async function setWatermarks(convId: number, at: Date | null) {
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { redirectLinkedAt: at, redirectClosedAt: at },
+    });
+  }
+
+  async function watermarks(convId: number) {
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { redirectLinkedAt: true, redirectClosedAt: true },
+    });
+    return {
+      linked: row.redirectLinkedAt !== null,
+      closed: row.redirectClosedAt !== null,
+    };
+  }
+
+  // The defect this releases. Without it the second episode never gets its cross-link (the one-shot
+  // reads a watermark the FIRST episode set) and never gets its goodbye (the closing CAS asks for
+  // `redirectClosedAt: null` and the first episode already spent it).
+  test("a different origin releases the previous episode's watermarks", async () => {
+    const T = 1_786_600_000;
+    await mirror(
+      clonedMessage(50, {
+        messageId: 8500,
+        lastActivityAt: T,
+        updatedAt: T + 0.1,
+        origin: 77,
+      }),
+    );
+    await setWatermarks(50, new Date());
+
+    await mirror({
+      event: "conversation_updated",
+      ...convPayload(50, { lastActivityAt: T, updatedAt: T + 5, origin: 91 }),
+    });
+
+    expect(await storedOrigin(50)).toBe(91);
+    expect(await watermarks(50)).toEqual({ linked: false, closed: false });
+  });
+
+  // The other half, and the one that keeps this from being a wipe on every delivery: the retried
+  // snapshot of the SAME episode says nothing new, so the episode it describes is still running.
+  test("a retry of the same origin leaves the episode standing", async () => {
+    const T = 1_786_610_000;
+    await mirror(
+      clonedMessage(51, {
+        messageId: 8600,
+        lastActivityAt: T,
+        updatedAt: T + 0.1,
+        origin: 77,
+      }),
+    );
+    await setWatermarks(51, new Date());
+
+    await mirror(
+      clonedMessage(51, {
+        messageId: 8601,
+        lastActivityAt: T + 30,
+        updatedAt: T + 30.1,
+        origin: 77,
+      }),
+    );
+
+    expect(await storedOrigin(51)).toBe(77);
+    expect(await watermarks(51)).toEqual({ linked: true, closed: true });
+  });
+
+  // LEARNING a pairing is not a new episode, and the column alone cannot tell the two apart: stored
+  // null is both "the fork never spoke about this conversation" and "the fork said there is none".
+  // `chatwootRedirectOriginAt` is what separates them — it is set the first time we are TOLD — and
+  // the direction of the mistake decides which way to lean. Releasing here would re-run the
+  // cross-link on a live episode and post its private notes a second time, on every conversation, the
+  // day fazer-ai/chatwoot#418 is deployed; not releasing leaves exactly the behaviour of today.
+  test("the first pairing ever stated leaves the episode standing", async () => {
+    const T = 1_786_620_000;
+    await mirror(
+      clonedMessage(52, {
+        messageId: 8700,
+        lastActivityAt: T,
+        updatedAt: T + 0.1,
+      }),
+    );
+    await setWatermarks(52, new Date());
+
+    await mirror(
+      clonedMessage(52, {
+        messageId: 8701,
+        lastActivityAt: T + 30,
+        updatedAt: T + 30.1,
+        origin: 77,
+      }),
+    );
+
+    expect(await storedOrigin(52)).toBe(77);
+    expect(await watermarks(52)).toEqual({ linked: true, closed: true });
+  });
+
+  // A stated clear IS an episode change: the fork writes it when a token resumes this conversation
+  // naming no origin, which is a resume with no WhatsApp half. What must not follow is the previous
+  // episode's ladder closing a thread this conversation is no longer paired with.
+  test("a stated clear releases the episode too", async () => {
+    const T = 1_786_630_000;
+    await mirror(
+      clonedMessage(53, {
+        messageId: 8800,
+        lastActivityAt: T,
+        updatedAt: T + 0.1,
+        origin: 77,
+      }),
+    );
+    await setWatermarks(53, new Date());
+
+    await mirror({
+      event: "conversation_updated",
+      ...convPayload(53, { lastActivityAt: T, updatedAt: T + 5, origin: null }),
+    });
+
+    expect(await storedOrigin(53)).toBeNull();
+    expect(await watermarks(53)).toEqual({ linked: false, closed: false });
+  });
+
+  // The release rides with the WRITE, so it has to reach the stale branch as well: that branch is
+  // where the pairing's own `conversation_updated` lands whenever the payload is behind on activity,
+  // which is the ordinary case for it (`last_activity_at` does not move on a column write).
+  test("the stale branch releases the episode with the pairing it writes", async () => {
+    const T = 1_786_640_000;
+    await mirror(
+      clonedMessage(54, {
+        messageId: 8900,
+        lastActivityAt: T + 600,
+        updatedAt: T + 600.1,
+        origin: 77,
+      }),
+    );
+    await setWatermarks(54, new Date());
+
+    // Older on activity than what is stored — this is the stale branch — but newer on the pairing's
+    // own mark, so the pairing applies and the episode goes with it.
+    await mirror({
+      event: "conversation_updated",
+      ...convPayload(54, {
+        lastActivityAt: T,
+        updatedAt: T + 700,
+        origin: 91,
+      }),
+    });
+
+    expect(await storedOrigin(54)).toBe(91);
+    expect(await watermarks(54)).toEqual({ linked: false, closed: false });
+  });
+
+  // The release rides on the pairing being APPLIED, and both halves of that matter. A payload that
+  // says nothing about the pairing is not an episode change — it is every ordinary message from a
+  // Chatwoot without fazer-ai/chatwoot#418, and reading its silence as "no origin, therefore
+  // different" would release the episode of every conversation on every delivery.
+  test("a payload that omits the key leaves the episode standing", async () => {
+    const T = 1_786_650_000;
+    await mirror(
+      clonedMessage(55, {
+        messageId: 9000,
+        lastActivityAt: T,
+        updatedAt: T + 0.1,
+        origin: 77,
+      }),
+    );
+    await setWatermarks(55, new Date());
+
+    await mirror(
+      clonedMessage(55, {
+        messageId: 9001,
+        lastActivityAt: T + 60,
+        updatedAt: T + 60.1,
+      }),
+    );
+
+    expect(await storedOrigin(55)).toBe(77);
+    expect(await watermarks(55)).toEqual({ linked: true, closed: true });
+  });
+
+  // And the other half: a pairing the version fence REFUSES describes an episode that already ended,
+  // so it cannot end the one running now. Releasing on a value that is not written would let the
+  // retried delivery of a previous episode wipe the current episode's one-shots.
+  test("a refused older pairing leaves the episode standing", async () => {
+    const T = 1_786_660_000;
+    await mirror(
+      clonedMessage(56, {
+        messageId: 9100,
+        lastActivityAt: T,
+        updatedAt: T + 0.11,
+        origin: 77,
+      }),
+    );
+    await mirror(
+      clonedMessage(56, {
+        messageId: 9101,
+        lastActivityAt: T,
+        updatedAt: T + 0.62,
+        origin: 91,
+      }),
+    );
+    await setWatermarks(56, new Date());
+
+    // The retry of the first delivery: a DIFFERENT origin, and one this row already moved past.
+    await mirror(
+      clonedMessage(56, {
+        messageId: 9100,
+        lastActivityAt: T,
+        updatedAt: T + 0.11,
+        origin: 77,
+      }),
+    );
+
+    expect(await storedOrigin(56)).toBe(91);
+    expect(await watermarks(56)).toEqual({ linked: true, closed: true });
+  });
 });

@@ -24,6 +24,7 @@ import {
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
+  FOLLOW_UP_MAX_STEPS,
   type FollowUpStep,
   isNewFollowUpEpisode,
   readFollowUpConfig,
@@ -134,32 +135,46 @@ async function sweepHandler(
         -- parseStartMs (all-day → UTC midnight; offset-less datetime → 'Z'), so the SQL and JS
         -- liveness decisions agree regardless of the session/host time zones.
         -- Invalid/absent start = not-future (fail-safe: only the queued arm suppresses then).
+        --
+        -- Both halves below are compared AS JSONB, never as text. ->> renders a JSON string and a
+        -- JSON boolean to the same characters, and the readers do not: bag.pauseWhileAppointment
+        -- !== false keeps the pause ON for a stored "false" while ->> read it as OFF, which is
+        -- the fence lifting itself on a spelling. = 'false'::jsonb is true for the boolean alone.
+        -- All seven spellings measured against the reader; that string was the only disagreement.
         AND NOT (
-          coalesce(a.settings->'followUp'->>'pauseWhileAppointment', 'true') <> 'false'
-          -- ...and NO step opted out of it (issue #103). Deliberately EXISTENTIAL, not positional:
-          -- the sweep asks "could any step want to fire through an appointment?" and the handler
-          -- asks "does THIS step want to?". Asking about step 0 here instead would put an INDEX in
-          -- the SQL, and the index the reader uses is not the raw one — readFollowUpConfig drops
-          -- every non-object entry before numbering, so a stored [7, {opted out}] (which REST
-          -- stores as written: the agent body types settings as an opaque record) leaves the sweep
-          -- suppressing the very step the handler would fire. There is no index to disagree about
-          -- if nobody reads one.
+          coalesce(
+            a.settings->'followUp'->'pauseWhileAppointment',
+            'true'::jsonb
+          ) <> 'false'::jsonb
+          -- ...and the step this sweep is about to enqueue did not opt out of it (issue #103).
           --
-          -- The cost is bounded and lands on the safe side: an agent whose LATER step opts out gets
-          -- step 0 enqueued during an appointment, and the handler's own gate reschedules it — which
-          -- is exactly what every conversation did before this predicate existed. Suppressing
-          -- wrongly is the expensive direction, because the follow-up then never happens at all.
-          AND NOT EXISTS (
-            SELECT 1
-            FROM jsonb_array_elements(
-              CASE
-                WHEN jsonb_typeof(a.settings->'followUp'->'steps') = 'array'
-                  THEN a.settings->'followUp'->'steps'
-                ELSE '[]'::jsonb
-              END
-            ) AS step
-            WHERE step->>'ignoreAppointmentPause' = 'true'
-          )
+          -- The subject is STEP 0, because step 0 is the only step the sweep ever enqueues, and it
+          -- is the reader's step 0, which is NOT raw index 0: readFollowUpConfig keeps the first
+          -- FOLLOW_UP_MAX_STEPS raw entries, drops every non-object among them, and numbers what is
+          -- left. Measured live — PATCH /api/v1/agents/:id types settings as an opaque record, not
+          -- as the MCP behaviour schema, so [7, {opted out}] stores with HTTP 200 — and read
+          -- positionally the sweep suppresses the very step the handler fires.
+          --
+          -- IN ('object','array') and not just 'object' because the reader's test is
+          -- typeof raw === "object" && raw !== null, which an array passes. No step at all leaves
+          -- the coalesce, matching the reader's fallback to a default step that carries no opt-out.
+          AND coalesce(
+            (
+              SELECT e.value->'ignoreAppointmentPause'
+              FROM jsonb_array_elements(
+                CASE
+                  WHEN jsonb_typeof(a.settings->'followUp'->'steps') = 'array'
+                    THEN a.settings->'followUp'->'steps'
+                  ELSE '[]'::jsonb
+                END
+              ) WITH ORDINALITY AS e(value, ord)
+              WHERE e.ord <= ${FOLLOW_UP_MAX_STEPS}
+                AND jsonb_typeof(e.value) IN ('object', 'array')
+              ORDER BY e.ord
+              LIMIT 1
+            ),
+            'false'::jsonb
+          ) <> 'true'::jsonb
           AND EXISTS (
             SELECT 1
             FROM scheduler_jobs sj

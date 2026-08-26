@@ -1617,6 +1617,7 @@
       "memory": "Memória",
       "normalize": "Reescrita para fala",
       "route": "Roteamento",
+      "spend_ceiling": "Teto de tokens",
       "split": "Entrega",
       "stt": "Transcrição",
       "tool": "Chamada de ferramenta",
@@ -2030,6 +2031,33 @@
     "title": "Crie a conta de admin",
     "tokenHint": "Exibido no log do servidor na primeira inicialização.",
     "tokenLabel": "Token de configuração"
+  },
+  "spendCeiling": {
+    "cooldown": "Intervalo entre avisos (segundos)",
+    "cooldownHint": "Quanto tempo até a mesma conversa ser avisada de novo. O teto em si é conferido em toda mensagem, independentemente disso.",
+    "desc": "Para de gastar quando o mês corrente atinge um orçamento de tokens. As conversas com clientes e o playground são contados separadamente, então testar nunca silencia o agente para os clientes.",
+    "enabled": "Aplicar o teto",
+    "handoff": "Passar as conversas recusadas para um humano",
+    "inboxTokens": "Teto mensal: clientes",
+    "message": "Mensagem para o cliente",
+    "messageHint": "Enviada uma vez por conversa enquanto o teto estiver atingido. Deixe em branco para não dizer nada.",
+    "playgroundTokens": "Teto mensal: playground",
+    "saved": "Teto de tokens salvo.",
+    "saveError": "Não foi possível salvar o teto de tokens.",
+    "source": {
+      "inbox": "Conversas com clientes",
+      "playground": "Playground (seus testes)"
+    },
+    "title": "Teto de tokens",
+    "tokensHint": "Tokens (entrada + saída) por mês corrente. 0 significa sem teto nesta metade.",
+    "usage": {
+      "error": "Não foi possível ler o consumo.",
+      "noCeiling": "{{used}} tokens (sem teto)",
+      "ofCeiling": "{{used}} de {{ceiling}} tokens",
+      "title": "Gasto neste mês"
+    },
+    "warnAt": "Avisar em",
+    "warnAtHint": "Percentual de um teto que dispara um aviso nos seus canais de alerta, para você saber antes de o agente ficar em silêncio. 0 desliga o aviso."
   },
   "strongConfirm": {
     "password": "Sua senha"

@@ -12,6 +12,7 @@ import {
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { SpendCeilingCard } from "./SpendCeilingCard";
 
 type Settings = NonNullable<
   Awaited<ReturnType<(typeof api.api.v1)["tenant-settings"]["get"]>>["data"]
@@ -43,12 +44,17 @@ export function AdvancedPanel() {
   const [lfDebug, setLfDebug] = useState(false);
   const [lfSaving, setLfSaving] = useState(false);
 
+  const [spendCeiling, setSpendCeiling] = useState<
+    Settings["spendCeiling"] | null
+  >(null);
+
   const apply = useCallback((s: Settings) => {
     setEmbCredential(s.embedding.credentialRef ?? "");
     setLfEnabled(s.langfuse.enabled);
     setLfCredentialRef(s.langfuse.credentialRef);
     setLfSendContent(s.langfuse.sendContent);
     setLfDebug(s.langfuse.debug);
+    setSpendCeiling(s.spendCeiling);
   }, []);
 
   const load = useCallback(async () => {
@@ -128,6 +134,9 @@ export function AdvancedPanel() {
   return (
     <DataBoundary loading={loading} error={error} onRetry={load}>
       <div className="flex flex-col gap-4">
+        {spendCeiling && (
+          <SpendCeilingCard value={spendCeiling} onSaved={setSpendCeiling} />
+        )}
         <Card className="flex flex-col gap-4">
           <div>
             <h2 className="font-medium text-text-primary">

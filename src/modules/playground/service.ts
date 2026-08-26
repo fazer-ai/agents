@@ -61,6 +61,7 @@ import {
   guardrailTripped,
   screenedText,
 } from "@/modules/guardrails/gate";
+import { assertPlaygroundSpendCeiling } from "@/modules/spend-ceiling/service";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
@@ -510,6 +511,11 @@ export async function runPlaygroundTurn(
     threadId,
     base,
   };
+  // The playground's token ceiling, before the graph is built and before a single provider call.
+  // Its own number, never the inbox one: an operator burning the month testing must not be able to
+  // silence the agent for customers, and the two ledgers are already told apart by `source`.
+  await assertPlaygroundSpendCeiling({ tenantId, base, flow });
+
   const { graph, callbacks, loaded, tools, traceLabels } =
     await buildPlaygroundGraph({
       ctx,
@@ -877,6 +883,11 @@ export async function runPlaygroundFollowup(
     threadId,
     base,
   };
+  // The playground's token ceiling, before the graph is built and before a single provider call.
+  // Its own number, never the inbox one: an operator burning the month testing must not be able to
+  // silence the agent for customers, and the two ledgers are already told apart by `source`.
+  await assertPlaygroundSpendCeiling({ tenantId, base, flow });
+
   const { graph, callbacks, loaded, tools, traceLabels } =
     await buildPlaygroundGraph({
       ctx,

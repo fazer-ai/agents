@@ -4,6 +4,11 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { unprintableProblem } from "@/modules/documents/printable";
+import {
+  readSpendCeilingConfig,
+  type SpendCeilingConfig,
+  spendCeilingSettingsSchema,
+} from "@/modules/spend-ceiling/settings";
 import { requireVaultRef, vaultRefWhere } from "@/modules/vault/service";
 
 // Per-tenant settings live in the Tenant.settings JSON column. RLS scopes the row to the active
@@ -153,6 +158,7 @@ export interface TenantSettingsDto {
   embedding: EmbeddingSettings;
   langfuse: LangfuseSettings;
   company: CompanySettings;
+  spendCeiling: SpendCeilingConfig;
 }
 
 export async function getTenantSettings(
@@ -166,6 +172,10 @@ export async function getTenantSettings(
       embedding: parseEmbeddingSettings(raw),
       langfuse: parseLangfuseSettings(raw),
       company: parseCompanySettings(raw),
+      // Read with the RUNTIME's own lenient reader, not a schema of this module's: the console has
+      // to show the operator the numbers the gate will actually apply, and a second parser here
+      // would be a second answer to that question the day one of them clamps differently.
+      spendCeiling: readSpendCeilingConfig(raw),
     };
   });
 }
@@ -182,11 +192,15 @@ export async function getTenantSettings(
 // The merge runs INSIDE the lock and is handed the raw settings, so what it merges into is what is
 // about to be written and never a snapshot from before someone else's write.
 async function patchBlock<
-  T extends EmbeddingSettings | LangfuseSettings | CompanySettings,
+  T extends
+    | EmbeddingSettings
+    | LangfuseSettings
+    | CompanySettings
+    | SpendCeilingConfig,
 >(
   ctx: TenantContext,
   base: PrismaClient,
-  key: "embedding" | "langfuse" | "company",
+  key: "embedding" | "langfuse" | "company" | "spendCeiling",
   // May be async, so a caller that has to read or do something UNDER THE LOCK, before the commit,
   // can do it here. The logo upload is the one: it needs the key it is about to supersede, and the
   // block it reads outside the lock is already stale by the time it writes.
@@ -387,5 +401,26 @@ export async function setCompanyLogoKey(
       // buster has to be to mean anything.
       logoVersion: Math.max(now, current.logoVersion + 1),
     });
+  });
+}
+
+export type SpendCeilingUpdateInput = Partial<SpendCeilingConfig>;
+
+// Updates the spend-ceiling block. Validated on the way IN (see `spendCeilingSettingsSchema`) so a
+// ceiling typed with an extra zero comes back as a 422 the operator can read, rather than as a
+// silently clamped number that would only surface as a month of unmetered traffic.
+//
+// Merged under the row lock, like every other block here: the ceiling screen and the alert-channel
+// screen are different requests against one JSON column, and a merge outside the lock is how one
+// save erases the other.
+export async function updateSpendCeiling(
+  ctx: TenantContext,
+  patch: SpendCeilingUpdateInput,
+  base: PrismaClient = basePrisma,
+): Promise<SpendCeilingConfig> {
+  return patchBlock(ctx, base, "spendCeiling", (raw) => {
+    const current = readSpendCeilingConfig(raw);
+    // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
+    return spendCeilingSettingsSchema.parse({ ...current, ...patch });
   });
 }

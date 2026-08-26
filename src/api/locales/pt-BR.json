@@ -160,6 +160,7 @@
     "settingsTextTooLong": "O texto em {{field}} é longo demais: {{len}} caracteres (limite {{max}}).",
     "setupAlreadyComplete": "A configuração inicial já foi concluída",
     "signupDisabled": "Cadastros estão desabilitados",
+    "spendCeilingReached": "O teto de tokens do playground para este mês foi atingido. Aumente o limite nas Configurações ou aguarde o próximo mês.",
     "sttCredentialMissing": "A credencial de transcrição não foi encontrada.",
     "sttFailed": "A transcrição falhou: {{detail}}",
     "sttNotConfigured": "A transcrição de áudio não está configurada neste workspace.",

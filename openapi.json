@@ -19544,7 +19544,7 @@
           "Settings"
         ],
         "summary": "Get tenant settings",
-        "description": "Returns the tenant's embedding, Langfuse and company-profile settings.",
+        "description": "Returns the tenant's embedding, Langfuse, company-profile and token-ceiling settings.",
         "responses": {
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
@@ -20110,6 +20110,531 @@
           }
         },
         "operationId": "putV1Tenant-settingsLangfuse",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/tenant-settings/spend-ceiling/usage": {
+      "get": {
+        "tags": [
+          "Settings"
+        ],
+        "summary": "Get token-ceiling usage",
+        "description": "Tokens spent this calendar month per traffic source, against the configured ceiling. Returned for both sources whether or not a ceiling is set, so the number is available to whoever has to pick one.",
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1Tenant-settingsSpend-ceilingUsage",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/tenant-settings/spend-ceiling": {
+      "put": {
+        "tags": [
+          "Settings"
+        ],
+        "summary": "Update token-ceiling settings",
+        "description": "Updates the tenant's monthly token ceiling.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "description": "Whether the token ceiling is enforced.",
+                    "type": "boolean"
+                  },
+                  "monthlyInboxTokens": {
+                    "minimum": 0,
+                    "maximum": 1000000000000,
+                    "description": "Tokens (prompt + completion) allowed per calendar month for customer traffic. 0 = no ceiling on this half.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1000000000000,
+                        "description": "Tokens (prompt + completion) allowed per calendar month for customer traffic. 0 = no ceiling on this half.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "monthlyPlaygroundTokens": {
+                    "minimum": 0,
+                    "maximum": 1000000000000,
+                    "description": "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1000000000000,
+                        "description": "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "overCeilingMessage": {
+                    "description": "What the customer is told when a turn is refused. null says nothing.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "handoffEnabled": {
+                    "description": "Whether a refused conversation is opened for humans to pick up.",
+                    "type": "boolean"
+                  },
+                  "noticeCooldownSeconds": {
+                    "minimum": 0,
+                    "maximum": 3600,
+                    "description": "Cooldown on the customer copy and the operator note. Never on the verdict, which is evaluated every message.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 3600,
+                        "description": "Cooldown on the customer copy and the operator note. Never on the verdict, which is evaluated every message.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "warnAtPercent": {
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Warn through the alert channels once usage crosses this percentage of a ceiling. 0 = no warning.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "Warn through the alert channels once usage crosses this percentage of a ceiling. 0 = no warning.",
+                        "type": "integer"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "description": "Whether the token ceiling is enforced.",
+                    "type": "boolean"
+                  },
+                  "monthlyInboxTokens": {
+                    "minimum": 0,
+                    "maximum": 1000000000000,
+                    "description": "Tokens (prompt + completion) allowed per calendar month for customer traffic. 0 = no ceiling on this half.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1000000000000,
+                        "description": "Tokens (prompt + completion) allowed per calendar month for customer traffic. 0 = no ceiling on this half.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "monthlyPlaygroundTokens": {
+                    "minimum": 0,
+                    "maximum": 1000000000000,
+                    "description": "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1000000000000,
+                        "description": "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "overCeilingMessage": {
+                    "description": "What the customer is told when a turn is refused. null says nothing.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "handoffEnabled": {
+                    "description": "Whether a refused conversation is opened for humans to pick up.",
+                    "type": "boolean"
+                  },
+                  "noticeCooldownSeconds": {
+                    "minimum": 0,
+                    "maximum": 3600,
+                    "description": "Cooldown on the customer copy and the operator note. Never on the verdict, which is evaluated every message.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 3600,
+                        "description": "Cooldown on the customer copy and the operator note. Never on the verdict, which is evaluated every message.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "warnAtPercent": {
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Warn through the alert channels once usage crosses this percentage of a ceiling. 0 = no warning.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "Warn through the alert channels once usage crosses this percentage of a ceiling. 0 = no warning.",
+                        "type": "integer"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "description": "Whether the token ceiling is enforced.",
+                    "type": "boolean"
+                  },
+                  "monthlyInboxTokens": {
+                    "minimum": 0,
+                    "maximum": 1000000000000,
+                    "description": "Tokens (prompt + completion) allowed per calendar month for customer traffic. 0 = no ceiling on this half.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1000000000000,
+                        "description": "Tokens (prompt + completion) allowed per calendar month for customer traffic. 0 = no ceiling on this half.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "monthlyPlaygroundTokens": {
+                    "minimum": 0,
+                    "maximum": 1000000000000,
+                    "description": "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 1000000000000,
+                        "description": "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "overCeilingMessage": {
+                    "description": "What the customer is told when a turn is refused. null says nothing.",
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "handoffEnabled": {
+                    "description": "Whether a refused conversation is opened for humans to pick up.",
+                    "type": "boolean"
+                  },
+                  "noticeCooldownSeconds": {
+                    "minimum": 0,
+                    "maximum": 3600,
+                    "description": "Cooldown on the customer copy and the operator note. Never on the verdict, which is evaluated every message.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 3600,
+                        "description": "Cooldown on the customer copy and the operator note. Never on the verdict, which is evaluated every message.",
+                        "type": "integer"
+                      }
+                    ]
+                  },
+                  "warnAtPercent": {
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Warn through the alert channels once usage crosses this percentage of a ceiling. 0 = no warning.",
+                    "anyOf": [
+                      {
+                        "format": "integer",
+                        "default": 0,
+                        "type": "string"
+                      },
+                      {
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "Warn through the alert channels once usage crosses this percentage of a ceiling. 0 = no warning.",
+                        "type": "integer"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putV1Tenant-settingsSpend-ceiling",
         "parameters": [
           {
             "name": "x-tenant-id",

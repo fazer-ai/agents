@@ -17,11 +17,17 @@ import {
   readCompanyLogo,
   setCompanyLogo,
 } from "@/modules/documents/company";
+import { spendCeilingUsage } from "@/modules/spend-ceiling/service";
+import {
+  SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
+  SPEND_CEILING_TOKENS_MAX,
+} from "@/modules/spend-ceiling/settings";
 import {
   getTenantSettings,
   updateCompanySettings,
   updateEmbeddingSettings,
   updateLangfuse,
+  updateSpendCeiling,
 } from "@/modules/tenant-settings/service";
 
 // The error catalog this controller's routes answer with. `bun i18n:extract` materialises
@@ -49,13 +55,13 @@ export const tenantSettingsController = new Elysia({
   .get(
     "/",
     async ({ tenantContext }) => {
-      const { embedding, langfuse, company } = await getTenantSettings(
-        ctxOrThrow(tenantContext),
-      );
+      const { embedding, langfuse, company, spendCeiling } =
+        await getTenantSettings(ctxOrThrow(tenantContext));
       return {
         instance: instanceIdentity,
         embedding,
         company,
+        spendCeiling,
         langfuse: {
           enabled: langfuse.enabled,
           credentialRef: langfuse.credentialRef,
@@ -68,7 +74,7 @@ export const tenantSettingsController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Get tenant settings",
-        "Returns the tenant's embedding, Langfuse and company-profile settings.",
+        "Returns the tenant's embedding, Langfuse, company-profile and token-ceiling settings.",
       ),
       response: errors(401, 403, 404),
     },
@@ -160,6 +166,90 @@ export const tenantSettingsController = new Elysia({
       detail: doc(
         "Update Langfuse settings",
         "Updates the tenant's Langfuse tracing configuration.",
+      ),
+      response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .get(
+    "/spend-ceiling/usage",
+    async ({ tenantContext }) => {
+      return {
+        instance: instanceIdentity,
+        ...(await spendCeilingUsage({ ctx: ctxOrThrow(tenantContext) })),
+      };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Get token-ceiling usage",
+        "Tokens spent this calendar month per traffic source, against the configured ceiling. Returned for both sources whether or not a ceiling is set, so the number is available to whoever has to pick one.",
+      ),
+      response: errors(401, 403, 404),
+    },
+  )
+  .put(
+    "/spend-ceiling",
+    async ({ tenantContext, body }) => {
+      const spendCeiling = await updateSpendCeiling(
+        ctxOrThrow(tenantContext),
+        body,
+      );
+      return { instance: instanceIdentity, spendCeiling };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      body: t.Object({
+        enabled: t.Optional(
+          t.Boolean({ description: "Whether the token ceiling is enforced." }),
+        ),
+        monthlyInboxTokens: t.Optional(
+          t.Integer({
+            minimum: 0,
+            maximum: SPEND_CEILING_TOKENS_MAX,
+            description:
+              "Tokens (prompt + completion) allowed per calendar month for customer traffic. 0 = no ceiling on this half.",
+          }),
+        ),
+        monthlyPlaygroundTokens: t.Optional(
+          t.Integer({
+            minimum: 0,
+            maximum: SPEND_CEILING_TOKENS_MAX,
+            description:
+              "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
+          }),
+        ),
+        overCeilingMessage: t.Optional(
+          t.Union([t.String(), t.Null()], {
+            description:
+              "What the customer is told when a turn is refused. null says nothing.",
+          }),
+        ),
+        handoffEnabled: t.Optional(
+          t.Boolean({
+            description:
+              "Whether a refused conversation is opened for humans to pick up.",
+          }),
+        ),
+        noticeCooldownSeconds: t.Optional(
+          t.Integer({
+            minimum: 0,
+            maximum: SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
+            description:
+              "Cooldown on the customer copy and the operator note. Never on the verdict, which is evaluated every message.",
+          }),
+        ),
+        warnAtPercent: t.Optional(
+          t.Integer({
+            minimum: 0,
+            maximum: 100,
+            description:
+              "Warn through the alert channels once usage crosses this percentage of a ceiling. 0 = no warning.",
+          }),
+        ),
+      }),
+      detail: doc(
+        "Update token-ceiling settings",
+        "Updates the tenant's monthly token ceiling.",
       ),
       response: errors(400, 401, 403, 404, 422),
     },

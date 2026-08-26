@@ -38,6 +38,9 @@ export function isRepairableNudgeRefusal(
   return (
     outcome === "agent-unavailable" ||
     outcome === "live-unavailable" ||
+    // The month turns over on its own, and the operator can raise the number: a follow-up step
+    // burned against a ceiling would be a message the customer never gets and nobody re-sends.
+    outcome === "over-ceiling" ||
     outcome === "deferred"
   );
 }

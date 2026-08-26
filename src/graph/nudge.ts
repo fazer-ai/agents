@@ -35,6 +35,10 @@ import {
   proactiveSendMode,
 } from "@/modules/service-window/service";
 import {
+  announceSpendCeiling,
+  spendCeilingVerdict,
+} from "@/modules/spend-ceiling/service";
+import {
   attendanceHasStarted,
   claimAttendanceBoundary,
   needsAttendanceStartProbe,
@@ -119,6 +123,11 @@ export type RunAgentNudgeOutcome =
   // that own an occasion (a follow-up step, a reminder offset, a ladder stage) must not spend it
   // here; see isRepairableNudgeRefusal.
   | "agent-unavailable"
+  // NOTE: The tenant is past its token ceiling for the month (issue #146). Nothing was posted and no
+  // model was reached, and like `agent-unavailable` this is a refusal an operator REPAIRS (raise the
+  // ceiling, or wait for the month to turn), so a caller that owns an occasion must not spend it
+  // here; see isRepairableNudgeRefusal.
+  | "over-ceiling"
   | "no-conversation"
   | "no-agent";
 
@@ -557,6 +566,26 @@ export async function runAgentNudge(
   // thread, so a retired job asked only at the send boundary would still leave memory of a message
   // nobody received.
   if (!(await stillWanted())) return "stale";
+
+  // THE TENANT'S OWN CEILING, asked here for the reason the line above states: before any model
+  // spend. A proactive nudge has nobody waiting on the other end, so there is no copy and no handoff
+  // to arrange — it simply does not go out, and the caller reschedules it rather than burning the
+  // occasion, because a month that turns over repairs this by itself.
+  const ceiling = await spendCeilingVerdict({
+    tenantId,
+    source: "inbox",
+    base,
+  });
+  announceSpendCeiling(flow, ceiling, "inbox", tenantId);
+  if (ceiling.state === "over") {
+    logger.info(
+      "nudge: spend ceiling reached (conv=%s used=%s ceiling=%s) — nothing was sent",
+      String(conversationId),
+      String(ceiling.usedTokens),
+      String(ceiling.ceilingTokens),
+    );
+    return "over-ceiling";
+  }
 
   // Pre-invoke gate: may we message the customer (bot owns it), or only note (human owns it)?
   // When the live gate ran, it already proved bot ownership with FRESH data (and reconciled the

@@ -12,6 +12,11 @@ import {
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
+import {
+  announceSpendCeiling,
+  assertPlaygroundSpendCeiling,
+  spendCeilingVerdict,
+} from "@/modules/spend-ceiling/service";
 import { tryResolveVaultEntry } from "@/modules/vault/service";
 import { visionAcceptsDocuments } from "./document-support";
 import {
@@ -223,6 +228,26 @@ export async function extractInboundFile(
     return null;
   };
 
+  // THE SPEND CEILING, asked here and not by the caller. Vision runs on the incoming attachment
+  // BEFORE the webhook's gates decide anything, so the turn ceiling upstream has not run yet and
+  // an image sent into a spent month would be billed with nothing to stop it. Asked ahead of the
+  // download and the credential read, because those cost too. A `warning` only writes its line.
+  const ceiling = await spendCeilingVerdict({
+    tenantId: params.tenantId,
+    source: "inbox",
+    base,
+  });
+  announceSpendCeiling(params.flow, ceiling, "inbox", params.tenantId);
+  if (ceiling.state === "over") {
+    logger.info(
+      "vision: spend ceiling reached (tenant=%s used=%s ceiling=%s) — the attachment was not read",
+      String(params.tenantId),
+      String(ceiling.usedTokens),
+      String(ceiling.ceilingTokens),
+    );
+    return skip("spend_ceiling");
+  }
+
   const provider = getVisionProvider(cfg.provider);
   if (!provider) {
     logger.warn("vision: unknown provider %s", cfg.provider);
@@ -421,6 +446,14 @@ export async function extractPlaygroundFile(
       "errors.visionNotConfigured",
     );
   }
+  // The playground's own ceiling, asked before the credential and the provider round trip. It
+  // throws (see `assertPlaygroundSpendCeiling`), so an operator uploading a file into a spent month
+  // is told why instead of watching the extraction produce nothing.
+  await assertPlaygroundSpendCeiling({
+    tenantId: params.ctx.tenantId as bigint,
+    base,
+    flow: params.flow,
+  });
   const entry = await runScopedOn(base, params.ctx, (db) =>
     tryResolveVaultEntry<string>(db, cfg.credentialRef as string),
   );

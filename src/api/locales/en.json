@@ -160,6 +160,7 @@
     "settingsTextTooLong": "The text in {{field}} is too long: {{len}} characters (limit {{max}}).",
     "setupAlreadyComplete": "Initial setup has already been completed",
     "signupDisabled": "Sign-ups are disabled",
+    "spendCeilingReached": "The playground token ceiling for this month has been reached. Raise it in Settings or wait for the next month.",
     "sttCredentialMissing": "The transcription credential was not found.",
     "sttFailed": "Transcription failed: {{detail}}",
     "sttNotConfigured": "Speech-to-text is not configured for this workspace.",

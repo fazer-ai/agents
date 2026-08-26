@@ -21,6 +21,10 @@ export const FLOW_STAGES = [
   "delivery", // an inbound delivery a process death interrupted: lost, or answered late
   "debounce", // inbound burst coalesced before a turn (one line per flush)
   "contact_auth", // external contact-authorization gate (allowed/denied/error before the turn)
+  // The per-tenant token ceiling refusing a turn, or warning that it is about to (issue #146).
+  // Before the turn like `contact_auth`, and for the same reason it is worth a line: past this gate
+  // nothing runs, so without one the operator sees an agent that stopped answering and no cause.
+  "spend_ceiling",
   "generate", // the LLM turn (graph.invoke)
   "guardrail", // input/output moderation trip (a guardrails check fired)
   "tool", // a tool call the agent made during the turn (name + status + duration)

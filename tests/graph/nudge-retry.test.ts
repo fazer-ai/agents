@@ -15,6 +15,10 @@ const TABLE: Array<[RunAgentNudgeOutcome, boolean]> = [
   ["agent-unavailable", true],
   ["live-unavailable", true],
   ["deferred", true],
+  // The month turns over on its own, and the operator can raise the number before it does. Spending
+  // the occasion here would lose a follow-up nobody resends, over a wall that is temporary by
+  // construction (issue #146).
+  ["over-ceiling", true],
   ["messaged", false],
   ["templated", false],
   ["noted", false],

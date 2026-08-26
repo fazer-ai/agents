@@ -98,6 +98,10 @@ import {
   revokeJobsByKeyPrefixOn,
 } from "@/modules/scheduler/service";
 import {
+  announceSpendCeiling,
+  spendCeilingVerdict,
+} from "@/modules/spend-ceiling/service";
+import {
   resolveSttConfig,
   transcribeInboundAudio,
 } from "@/modules/stt/service";
@@ -1066,6 +1070,23 @@ const CONTACT_AUTH_ERROR_LABELS: Record<string, string> = {
   unexpected_status: "status inesperado",
 };
 
+// Operator-facing note for a conversation the spend ceiling silenced (pt-BR, the same register as
+// its neighbours below). The numbers are the point: an operator who reads only this note has to be
+// able to tell "the month's budget ran out" from "the agent broke", and the two look identical from
+// inside a Chatwoot conversation. The figure is tokens, which is what the ceiling is denominated in
+// and what the console shows, so the note and the screen never disagree.
+export function spendCeilingNoteText(
+  verdict: { usedTokens: number; ceilingTokens: number | null },
+  handedOff: boolean,
+): string {
+  const handoffLine = handedOff
+    ? " A conversa foi aberta para atendimento humano."
+    : "";
+  const used = verdict.usedTokens.toLocaleString("pt-BR");
+  const ceiling = (verdict.ceilingTokens ?? 0).toLocaleString("pt-BR");
+  return `O agente não respondeu: o limite de tokens do mês foi atingido (${used} de ${ceiling}). O limite fica em Configurações e é reiniciado no primeiro dia do mês.${handoffLine}`;
+}
+
 // Operator-facing note for a conversation the contact-authorization gate refused (pt-BR, the same
 // register as the one-shot test-mode / out-of-hours notices). Reasons are short codes by the time
 // they get here (the slug guard upstream drops prose), so the note can carry one without carrying
@@ -1544,6 +1565,57 @@ async function maybeConsumeCommandOrGate(params: {
     } catch (err) {
       logger.warn(
         "chatwoot: private note failed (conv=%s): %s",
+        String(conversationId),
+        errMsg(err),
+      );
+      return false;
+    }
+  };
+
+  // OPENING A CONVERSATION FOR THE HUMAN QUEUE, for every gate that refuses a turn before it runs.
+  //
+  // Status `open` is what ends the bot's attribution, so this IS the handoff; the optional team
+  // assignment only routes it, and a routing miss must never undo the open. Shared rather than
+  // written per gate (issue #146): the fence below is the part that is easy to leave out, and a
+  // second copy of it would be the copy that forgets.
+  //
+  // The fence: a gate can take time to decide (contact-auth waits on somebody else's endpoint), and
+  // a human can claim the conversation while it does. Without the re-check the copy was correctly
+  // withheld and the conversation was reopened and re-routed anyway, pulling a human's conversation
+  // back out of their hands by a gate that had already decided to stay quiet.
+  const openConversationForHumans = async (
+    gate: string,
+    teamId: number | null,
+    teamUsable?: (id: number) => Promise<boolean>,
+  ): Promise<boolean> => {
+    try {
+      if (!(await stillOurs())) {
+        logger.info(
+          "chatwoot: %s handoff skipped (conv=%s) — the conversation is no longer the bot's",
+          gate,
+          String(conversationId),
+        );
+        return false;
+      }
+      const client = await personaClient();
+      await client.toggleStatus(conversationId, "open");
+      if (teamId !== null && (await (teamUsable?.(teamId) ?? true))) {
+        try {
+          await client.assignTeam(conversationId, teamId);
+        } catch (err) {
+          logger.warn(
+            "chatwoot: %s team assignment failed (conv=%s): %s",
+            gate,
+            String(conversationId),
+            errMsg(err),
+          );
+        }
+      }
+      return true;
+    } catch (err) {
+      logger.warn(
+        "chatwoot: %s handoff failed (conv=%s): %s",
+        gate,
         String(conversationId),
         errMsg(err),
       );
@@ -2477,6 +2549,86 @@ async function maybeConsumeCommandOrGate(params: {
     return true;
   }
 
+  // ── Spend ceiling: the tenant's own token budget for the calendar month (issue #146). BEFORE the
+  //    authorization gate below, and that ordering is the point: past this line the turn is not going
+  //    to run, so asking somebody else's endpoint whether the contact may be served would be spending
+  //    a stranger's network call on a question whose answer changes nothing. It is also the cheapest
+  //    gate here, one indexed local read (measured: 1.3ms median over a 1M-row ledger spread across
+  //    200 tenants, see `tokensUsedSince`).
+  //
+  //    Over the ceiling ⇒ the operator's configured sentence to the customer, then a handoff so a
+  //    human can pick the conversation up, then a private note saying why the agent went quiet.
+  //    Same order and same reasons as the gate below: the copy goes first because after the open the
+  //    conversation is no longer the bot's and the fence would rightly withhold it, and the note goes
+  //    last so it can say whether the handoff actually happened.
+  //
+  //    The COPY AND THE NOTE sit behind a cooldown, the verdict never does: ten people writing in
+  //    after the month is spent are each evaluated, and told once per window. The claim mechanism is
+  //    contact-auth's, under a key of this gate's own — it is a per-conversation notice cooldown and
+  //    nothing about it is specific to that gate, and renaming it would churn fifty lines of another
+  //    feature's code for a word. ──
+  if (ctx.agentId !== null && ctx.agentEnabled && isNewIncomingMessage(n)) {
+    const ceiling = await spendCeilingVerdict({
+      tenantId,
+      source: "inbox",
+      base,
+    });
+    announceSpendCeiling(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: ctx.conv.id,
+        agentId: ctx.agentId,
+        inboxId: ctx.conv.inboxId,
+        threadId: chatwootThreadId(tenantId, instanceId, conversationId),
+        base,
+      },
+      ceiling,
+      "inbox",
+      tenantId,
+    );
+    if (ceiling.state === "over") {
+      const cooldownMs = ceiling.cfg.noticeCooldownSeconds * 1000;
+      const claim = (notice: "copy" | "note") =>
+        claimContactAuthNotice(
+          `spend_ceiling:${tenantId}:${ctx.conv.id}:${notice}`,
+          cooldownMs,
+        );
+      const copy = ceiling.cfg.overCeilingMessage;
+      const copyClaim = copy ? claim("copy") : false;
+      if (copy && copyClaim) {
+        // The window is claimed before the send, so two deliveries racing cannot both speak. A send
+        // that does not land gives it back: kept, it would silence the next refusal for the whole
+        // window over a message the customer never received.
+        if (!(await postPublicMessage(copy))) {
+          releaseContactAuthNotice(copyClaim);
+        }
+      }
+      let handedOff = false;
+      if (ceiling.cfg.handoffEnabled) {
+        // Outside the cooldown deliberately: the open is what ends the bot's attribution, and a
+        // first attempt that failed has to be retried on the next message, notice or no notice.
+        handedOff = await openConversationForHumans("spend-ceiling", null);
+      }
+      const noteClaim = claim("note");
+      if (noteClaim) {
+        if (
+          !(await postPrivateNote(spendCeilingNoteText(ceiling, handedOff)))
+        ) {
+          releaseContactAuthNotice(noteClaim);
+        }
+      }
+      logger.info(
+        "chatwoot: spend ceiling reached (conv=%s used=%s ceiling=%s) — the turn did not run",
+        String(conversationId),
+        String(ceiling.usedTokens),
+        String(ceiling.ceilingTokens),
+      );
+      return true;
+    }
+  }
+
   // ── Contact authorization gate: an agent that may only serve contacts a system outside the
   //    console knows about (docs/contact-auth.md) asks it before spending a turn. Last of the gates
   //    on purpose: a conversation an earlier gate already silenced costs no authorization call. The
@@ -2534,43 +2686,8 @@ async function maybeConsumeCommandOrGate(params: {
         return false;
       };
 
-      const openForHumans = async (teamId: number | null): Promise<boolean> => {
-        try {
-          // The same fence the customer copy carries, for the same reason: the authorization
-          // request is a network round-trip to somebody else's endpoint, and a human can take the
-          // conversation while it is in flight. Without this, the copy was correctly withheld and
-          // the conversation was reopened and re-routed to a team anyway — a human's conversation
-          // pulled back out of their hands by a gate that had already decided to stay quiet.
-          if (!(await stillOurs())) {
-            logger.info(
-              "chatwoot: contact-auth handoff skipped (conv=%s) — the conversation is no longer the bot's",
-              String(conversationId),
-            );
-            return false;
-          }
-          const client = await personaClient();
-          await client.toggleStatus(conversationId, "open");
-          if (teamId !== null && (await teamTargetUsable(teamId))) {
-            try {
-              await client.assignTeam(conversationId, teamId);
-            } catch (err) {
-              logger.warn(
-                "chatwoot: contact-auth team assignment failed (conv=%s): %s",
-                String(conversationId),
-                errMsg(err),
-              );
-            }
-          }
-          return true;
-        } catch (err) {
-          logger.warn(
-            "chatwoot: contact-auth handoff failed (conv=%s): %s",
-            String(conversationId),
-            errMsg(err),
-          );
-          return false;
-        }
-      };
+      const openForHumans = (teamId: number | null): Promise<boolean> =>
+        openConversationForHumans("contact-auth", teamId, teamTargetUsable);
       const verdict = await authorizeContact({
         tenantId,
         agentId,

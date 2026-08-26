@@ -1611,6 +1611,7 @@
       "memory": "Memory",
       "normalize": "Speech rewrite",
       "route": "Routing",
+      "spend_ceiling": "Token ceiling",
       "split": "Delivery",
       "stt": "Transcription",
       "tool": "Tool call",
@@ -2022,6 +2023,33 @@
     "title": "Create the admin account",
     "tokenHint": "Printed in the server log on first start.",
     "tokenLabel": "Setup token"
+  },
+  "spendCeiling": {
+    "cooldown": "Notice cooldown (seconds)",
+    "cooldownHint": "How long before the same conversation is told again. The ceiling itself is checked on every message regardless.",
+    "desc": "Stop spending once a calendar month reaches a token budget. Customer traffic and the playground are counted apart, so testing can never silence the agent for customers.",
+    "enabled": "Enforce the ceiling",
+    "handoff": "Hand refused conversations to a human",
+    "inboxTokens": "Monthly ceiling: customers",
+    "message": "Message to the customer",
+    "messageHint": "Sent once per conversation while the ceiling is reached. Leave it empty to say nothing.",
+    "playgroundTokens": "Monthly ceiling: playground",
+    "saved": "Token ceiling saved.",
+    "saveError": "Could not save the token ceiling.",
+    "source": {
+      "inbox": "Customer conversations",
+      "playground": "Playground (your own tests)"
+    },
+    "title": "Token ceiling",
+    "tokensHint": "Tokens (prompt + completion) per calendar month. 0 means no ceiling on this half.",
+    "usage": {
+      "error": "Could not read the usage.",
+      "noCeiling": "{{used}} tokens (no ceiling)",
+      "ofCeiling": "{{used}} of {{ceiling}} tokens",
+      "title": "Spent this month"
+    },
+    "warnAt": "Warn at",
+    "warnAtHint": "Percentage of a ceiling that triggers a warning on your alert channels, so you hear about it before the agent goes quiet. 0 disables the warning."
   },
   "strongConfirm": {
     "password": "Your password"

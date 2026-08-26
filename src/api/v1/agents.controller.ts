@@ -84,6 +84,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.visionCredentialMissing', 'Vision credential not found')
 // translate('errors.visionFailed', 'Image/document extraction failed')
 // translate('errors.visionNotConfigured', 'Image/document reading is not configured')
+// translate('errors.spendCeilingReached', 'The playground token ceiling for this month has been reached. Raise it in Settings or wait for the next month.')
 
 // Agent config REST surface (one of the three transports; MCP prompt_get/set + UI project over
 // the same service). Config management is TENANT_ADMIN; the scoped service is the hard boundary.

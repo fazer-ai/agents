@@ -202,6 +202,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/memory-dead-letter.test.ts": 1,
   "tests/modules/playground-guardrails.test.ts": 1,
   "tests/modules/model-fallback-turn.test.ts": 1,
+  "tests/modules/spend-ceiling-gate-e2e.test.ts": 1,
   "tests/modules/stt.test.ts": 1,
   "tests/modules/tts-normalize-observability.test.ts": 1,
   "tests/modules/terminal-failure-announces.test.ts": 1,

@@ -28,6 +28,7 @@ function conversationEvent(over: Partial<StatePayload> = {}): StatePayload {
     status: "resolved",
     assigneeStated: true,
     assigneeType: "User",
+    redirectOriginCleared: false,
     redirectOriginStated: false,
     ...over,
   };
@@ -48,6 +49,7 @@ function storedRow(over: Partial<StateRow> = {}): StateRow {
     assigneeAt: V_NOW,
     assigneeType: "AgentBot",
     redirectOriginAt: null,
+    redirectOriginKnown: false,
     ...over,
   };
 }

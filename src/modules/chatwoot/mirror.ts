@@ -110,6 +110,7 @@ export async function mirrorChatwootEvent(
     assigneeStated: n.assigneeType !== undefined,
     assigneeType: n.assigneeType ?? null,
     redirectOriginStated: n.redirectOriginDisplayId !== undefined,
+    redirectOriginCleared: n.redirectOriginDisplayId === null,
   };
   // The inbound watermark (`lastInboundAt`) advances only on a brand-new incoming customer message
   // (message_created), never on a message_updated — our own STT/vision write-back re-dispatches one
@@ -185,6 +186,12 @@ export async function mirrorChatwootEvent(
               assigneeAt: existing.chatwootAssigneeAt,
               assigneeType: existing.assigneeType,
               redirectOriginAt: existing.chatwootRedirectOriginAt,
+              // The mark OR a stored origin: a Chatwoot too old to send `updated_at` writes the
+              // pairing and stamps nothing, so the mark alone would read those conversations as
+              // never having been told, and a clear there would pass as silence.
+              redirectOriginKnown:
+                existing.chatwootRedirectOriginAt != null ||
+                existing.redirectOriginDisplayId != null,
             }
           : null,
         now,
@@ -221,14 +228,16 @@ export async function mirrorChatwootEvent(
       // Asked of a PREVIOUSLY STATED origin, not of the stored value, and that is the whole
       // distinction: stored null is both "the fork never spoke about this conversation" (every
       // conversation, before fazer-ai/chatwoot#418 is deployed) and "the fork said there is none".
-      // `chatwootRedirectOriginAt` separates them — it is set the first time we are TOLD. Leaning the
+      // Being told is what separates them, and it leaves two possible traces — the mark, or a stored
+      // origin from an instance too old to send a version to stamp one with. Leaning the
       // other way would release the episode of every live conversation on the day the fork ships,
       // re-running each cross-link and posting its private notes a second time; leaning this way
       // leaves exactly the behaviour of today for a pairing we are only now learning.
       const releasesEpisode =
         existing != null &&
         decision.redirectOrigin &&
-        existing.chatwootRedirectOriginAt != null &&
+        (existing.chatwootRedirectOriginAt != null ||
+          existing.redirectOriginDisplayId != null) &&
         (n.redirectOriginDisplayId ?? null) !==
           existing.redirectOriginDisplayId;
       // Written with the pairing wherever the pairing is written, the stale branch included: that

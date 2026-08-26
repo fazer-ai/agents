@@ -624,4 +624,109 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await storedOrigin(56)).toBe(91);
     expect(await watermarks(56)).toEqual({ linked: true, closed: true });
   });
+
+  // ── Review round 8 of #355: the upgrade day. ──
+
+  async function marks(convId: number) {
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: {
+        redirectOriginDisplayId: true,
+        chatwootRedirectOriginAt: true,
+        redirectLinkedAt: true,
+        redirectClosedAt: true,
+      },
+    });
+    return row;
+  }
+
+  // The regression this guards, and it fires on EVERY conversation at once. A redirect episode that
+  // began before the fork carried the field has a NULL column in Chatwoot, and once the fork ships,
+  // every payload for it carries the key with nil. Read as a stated clear, that stamps the mark, and
+  // a stamped mark is what tells `episodeOriginQuery` to refuse the recency fallback — so the first
+  // inbound after the upgrade loses its cross-link and every later WhatsApp touch loses its sibling.
+  //
+  // A clear is a TRANSITION, and there is nothing to transition from here. Silence and the column's
+  // default arrive as the same bytes, so the only thing that separates them is whether we were ever
+  // told about a pairing on this conversation.
+  test("a null on a conversation we were never told about is not a clear", async () => {
+    const T = 1_786_700_000;
+    await mirror(
+      clonedMessage(57, {
+        messageId: 9200,
+        lastActivityAt: T,
+        updatedAt: T + 0.1,
+      }),
+    );
+    await setWatermarks(57, new Date());
+
+    // The fork is deployed: the key is present on every payload from now on, and nil.
+    await mirror(
+      clonedMessage(57, {
+        messageId: 9201,
+        lastActivityAt: T + 60,
+        updatedAt: T + 60.1,
+        origin: null,
+      }),
+    );
+
+    const row = await marks(57);
+    expect(row.redirectOriginDisplayId).toBeNull();
+    // Not stamped: nothing was stated, so the fallback this episode has always used stays open.
+    expect(row.chatwootRedirectOriginAt).toBeNull();
+    expect(row.redirectLinkedAt).not.toBeNull();
+  });
+
+  // And the clear that IS a transition still counts, mark and all.
+  test("a null after a pairing we were told about is a clear", async () => {
+    const T = 1_786_710_000;
+    await mirror(
+      clonedMessage(58, {
+        messageId: 9300,
+        lastActivityAt: T,
+        updatedAt: T + 0.1,
+        origin: 77,
+      }),
+    );
+    await mirror(
+      clonedMessage(58, {
+        messageId: 9301,
+        lastActivityAt: T + 60,
+        updatedAt: T + 60.1,
+        origin: null,
+      }),
+    );
+    const row = await marks(58);
+    expect(row.redirectOriginDisplayId).toBeNull();
+    expect(row.chatwootRedirectOriginAt).toBe(T + 60.1);
+  });
+
+  // The other half of round 8: a stored pairing with no mark. A Chatwoot too old to send
+  // `updated_at` writes the value and stamps nothing, so the mark cannot be the only evidence that
+  // we were told — the stored origin is evidence of its own, and a change away from it is a new
+  // episode exactly as it would be with a mark.
+  test("a versionless pairing that changes still releases the episode", async () => {
+    const T = 1_786_720_000;
+    await mirror(
+      clonedMessage(59, { messageId: 9400, lastActivityAt: T, origin: 77 }),
+    );
+    let row = await marks(59);
+    expect(row.redirectOriginDisplayId).toBe(77);
+    // No `updated_at` on that payload, so nothing to stamp: this is the state the finding is about.
+    expect(row.chatwootRedirectOriginAt).toBeNull();
+
+    await setWatermarks(59, new Date());
+    await mirror(
+      clonedMessage(59, {
+        messageId: 9401,
+        lastActivityAt: T + 60,
+        origin: 91,
+      }),
+    );
+
+    row = await marks(59);
+    expect(row.redirectOriginDisplayId).toBe(91);
+    expect(row.redirectLinkedAt).toBeNull();
+    expect(row.redirectClosedAt).toBeNull();
+  });
 });

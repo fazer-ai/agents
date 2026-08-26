@@ -89,6 +89,12 @@ export interface StatePayload {
    * payload from a Chatwoot without that change.
    */
   redirectOriginStated: boolean;
+  /**
+   * True when what the payload states is that there is NO pairing. Meaningful only with
+   * `redirectOriginStated`, and separate from it because a stated nil is not always an answer: see
+   * `redirectOriginAnswers` below.
+   */
+  redirectOriginCleared: boolean;
 }
 
 /** The ordering state already stored for this conversation. Null when there is no row yet. */
@@ -98,6 +104,12 @@ export interface StateRow {
   assigneeAt: number | null;
   assigneeType: string | null;
   redirectOriginAt: number | null;
+  /**
+   * Whether this conversation has EVER had a pairing stated about it — the mark, or a stored origin
+   * for the versionless instances that write the value and stamp nothing. Both are evidence; only
+   * having neither is silence.
+   */
+  redirectOriginKnown: boolean;
 }
 
 export interface StateDecision {
@@ -176,6 +188,23 @@ export function decideConversationWrites(
   // reading of the source. Claiming a version for it would protect it: a complete event delivered
   // afterwards but serialized before, carrying the real `pending` or `resolved`, would lose on
   // `olderThanStatus` and the invented `open` would stand until something newer arrived.
+  // WHETHER THE PAYLOAD ANSWERS THE PAIRING QUESTION, which is not the same as speaking about it.
+  //
+  // A stated pairing always answers. A stated NIL only answers when there was something to clear:
+  // the fork ships the key on every conversation once it is deployed, and the column is NULL for
+  // every episode that began before it existed. Read as an answer, the first payload after the
+  // upgrade converts "nobody ever told us" into "there is none" on EVERY live conversation at once —
+  // which stamps the mark, and a stamped mark is what tells `episodeOriginQuery` to refuse the
+  // recency fallback those episodes have always run on. They would lose their cross-link and every
+  // later WhatsApp touch, with nothing in the data to say why.
+  //
+  // A clear is a TRANSITION, and Chatwoot's own column cannot say which null it is holding either:
+  // a token that names no origin writes NULL over a NULL. So the only thing that separates the two
+  // is on this side — whether a pairing was ever stated about this conversation before.
+  const redirectOriginAnswers =
+    payload.redirectOriginStated &&
+    (!payload.redirectOriginCleared || (row?.redirectOriginKnown ?? false));
+
   if (row === null) {
     return {
       stale: false,
@@ -184,8 +213,8 @@ export function decideConversationWrites(
       unversioned: true,
       statusAt: payload.status != null ? payload.version : null,
       assigneeAt: payload.assigneeStated ? payload.version : null,
-      redirectOrigin: payload.redirectOriginStated,
-      redirectOriginAt: payload.redirectOriginStated ? payload.version : null,
+      redirectOrigin: redirectOriginAnswers,
+      redirectOriginAt: redirectOriginAnswers ? payload.version : null,
       activityAt: eventAt,
     };
   }
@@ -240,9 +269,9 @@ export function decideConversationWrites(
       unversioned: false,
       statusAt: null,
       assigneeAt: null,
-      redirectOrigin: payload.redirectOriginStated && !olderThanRedirectOrigin,
+      redirectOrigin: redirectOriginAnswers && !olderThanRedirectOrigin,
       redirectOriginAt:
-        payload.redirectOriginStated && !olderThanRedirectOrigin
+        redirectOriginAnswers && !olderThanRedirectOrigin
           ? advancesFrom(row.redirectOriginAt, payload.version)
           : null,
       activityAt: row.activityAt ?? eventAt,
@@ -294,8 +323,7 @@ export function decideConversationWrites(
   //
   // A payload carrying NO version (Chatwoot < 4.0.2) writes and stamps nothing, which is the
   // pre-fence behaviour: there is no key to order by, so last write wins, as it did before.
-  const redirectOrigin =
-    payload.redirectOriginStated && !olderThanRedirectOrigin;
+  const redirectOrigin = redirectOriginAnswers && !olderThanRedirectOrigin;
 
   return {
     stale: false,

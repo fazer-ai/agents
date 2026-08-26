@@ -1765,11 +1765,17 @@ async function maybeConsumeCommandOrGate(params: {
     // other side's anchors and ladder standing, and the funnel can be re-run but not re-closed. The
     // operator resets the other side to finish the job.
     //
-    // Reaching across needs to know WHICH widget chat opened from this entry, and that is not
-    // derivable here: the merge happens inside Chatwoot's token resolve and what comes back names
-    // the CONTACT, not the conversation the token was minted on. Every predicate over the mirrored
-    // rows is a guess, and this command cancels appointment reminders — issue #222 carries the fork
-    // change that would make the pair a fact.
+    // Reaching across needs to know WHICH widget chat opened from this entry, and that used to be
+    // underivable: the merge happens inside Chatwoot's token resolve and what comes back names the
+    // CONTACT, not the conversation the token was minted on, so every predicate over the mirrored
+    // rows was a guess — on a command that cancels appointment reminders. Issue #222 removed that:
+    // the widget row now records the entry conversation it opened from, so this direction is a
+    // lookup rather than an inference.
+    //
+    // The scoping stands anyway, and deliberately. Widening what a /reset erases is a change to what
+    // the operator asked for, on the command whose whole ordering above exists to bound what it
+    // touches; it is the operator's call, not a side effect of the pairing becoming available. What
+    // changed is that the reach is now implementable, not that it is wanted here.
 
     // FIRST among the mutations, and the ordering is the whole fence. Two races pull in opposite
     // directions and only this position settles both.

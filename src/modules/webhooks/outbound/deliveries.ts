@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitDeliveryRequeued } from "@/modules/flowlog/webhook";
 
@@ -112,16 +113,6 @@ function toDto(r: DeliveryRow): WebhookDeliveryDto {
   };
 }
 
-function badParam(param: string): never {
-  throw new AppError(
-    `invalid value for ${param}`,
-    400,
-    "errors.invalidQueryParam",
-    { param },
-    param,
-  );
-}
-
 // The RANGE of the filters lives here, not in the controller, so MCP is held to the same rule: its
 // `since`/`until` arrive as `new Date(string)` and its `limit` as a plain number, and both reach
 // Prisma and throw on a value the caller got wrong. A 500 for a caller's typo is the wrong answer
@@ -129,19 +120,15 @@ function badParam(param: string): never {
 function assertUsableFilters(opts: ListDeliveriesOpts): void {
   for (const key of ["since", "until"] as const) {
     const d = opts[key];
-    if (d && Number.isNaN(d.getTime())) badParam(key);
+    if (d && Number.isNaN(d.getTime())) badQueryParam(key);
   }
-  if (
-    opts.limit !== undefined &&
-    (!Number.isInteger(opts.limit) || opts.limit < 1)
-  )
-    badParam("limit");
+  assertUsableCount(opts.limit, "limit");
 }
 
 // An event name is free text (the closed set lives in OUTBOUND_EVENTS, and a delivery can outlive
 // an event being retired), so the only thing to refuse here is the empty one.
 function assertUsableEvent(e: string): string {
-  if (e === "") badParam("event");
+  if (e === "") badQueryParam("event");
   return e;
 }
 

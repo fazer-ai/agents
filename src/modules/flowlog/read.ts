@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { assertUsableCount } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 
 // Read surface for the execution-flow log (the Logs page). RLS-scoped to the active tenant. KEYSET
@@ -126,7 +127,8 @@ export async function listExecutionLogs(
   opts: ListLogsOpts = {},
   base: PrismaClient = basePrisma,
 ): Promise<ListLogsResult> {
-  const take = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  assertUsableCount(opts.limit, "limit");
+  const take = Math.min(opts.limit ?? 50, 200);
   const where = buildLogWhere(opts);
   const rows = await runScopedOn(base, ctx, (db) =>
     db.executionLog.findMany({

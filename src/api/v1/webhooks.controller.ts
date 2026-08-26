@@ -1,15 +1,15 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
-import { tenancyPlugin } from "@/api/middlewares/tenancy";
-import { parseDbId, requireDbId } from "@/lib/db-id";
 import {
-  AppError,
-  ForbiddenError,
-  TenantTargetRequiredError,
-} from "@/lib/errors";
+  parseQueryCount,
+  parseQueryId,
+  parseQueryInstant,
+} from "@/api/lib/query-filters";
+import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import { requireDbId } from "@/lib/db-id";
+import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
-import { parseIsoInstant } from "@/modules/flowlog/settings";
 import {
   getWebhookDelivery,
   type ListDeliveriesOpts,
@@ -41,59 +41,6 @@ import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
 // translate('errors.webhookDeliveryNotFound', 'Webhook delivery not found')
 // translate('errors.webhookDeliveryNotDead', 'Only a dead delivery can be requeued; this one is {{status}}')
 // translate('errors.unknownDeliveryStatus', 'Unknown delivery status: {{status}}')
-// translate('errors.invalidQueryParam', 'Invalid value for {{param}}')
-
-// A filter value the server cannot parse is a REFUSAL, never a dropped filter. These started as
-// copies of the logs controller's lenient parsers, which answer an unparseable value with
-// `undefined` — and on a LEDGER that is the wrong answer twice over: a malformed `subscriptionId`
-// returns the tenant's whole ledger instead of one subscription's, and a malformed `cursor`
-// restarts pagination, which is a paging loop that never ends. Measured against the real client,
-// the numeric leg is worse than a wrong page: `take: NaN` and an invalid `Date` both reach Prisma
-// and throw (a 500 for a caller error), and `take: 3.5` quietly returns zero rows.
-function badParam(param: string): never {
-  throw new AppError(
-    `invalid value for ${param}`,
-    400,
-    "errors.invalidQueryParam",
-    { param },
-    param,
-  );
-}
-
-// PRESENT means the caller asked for this filter. Only ABSENT means they did not, which is why
-// none of these open with `if (!s)`: `?subscriptionId=` and `?status=` are values a form submits
-// when its input is empty, and treating them as "no filter" answers a narrowed request with the
-// tenant's whole ledger. `""` is refused, exactly like `abc`.
-// `parseIsoInstant`, never `new Date(s)`. `Date.parse` NORMALISES rather than refuses, so
-// `2026-02-30T00:00:00Z` comes back as March 2 and the ledger is quietly queried with a bound the
-// caller never asked for; and it accepts `08/26/2026 10:00`, resolving it against the SERVER's
-// timezone, so the same filter means different instants on two installations. The helper checks
-// the shape, the calendar and the offset on the STRING. The cost is that a date alone is refused:
-// this filter takes an instant, `2026-01-01T00:00:00Z`, and the parameter's description says so.
-function parseDate(s: string | undefined, param: string): Date | undefined {
-  if (s === undefined) return undefined;
-  const d = parseIsoInstant(s);
-  if (d === null) badParam(param);
-  return d;
-}
-
-// `parseDbId`, never `BigInt(s)`: BigInt is arbitrary precision, so an id past 2^63-1 parses here
-// and is refused by POSTGRES when the query binds it — a 500 for a value this route documents as a
-// 400. See lib/db-id.ts, whose own header names `BigInt(params.id)` as the spelling to avoid.
-function parseId(s: string | undefined, param: string): bigint | undefined {
-  if (s === undefined) return undefined;
-  const id = parseDbId(s);
-  if (id === null) badParam(param);
-  return id;
-}
-
-// Syntax only; the range belongs to the service, so MCP is held to the same rule.
-function parseCount(s: string | undefined, param: string): number | undefined {
-  if (s === undefined) return undefined;
-  const n = Number(s);
-  if (s.trim() === "" || !Number.isInteger(n)) badParam(param);
-  return n;
-}
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
@@ -114,12 +61,12 @@ export function parseDeliveryQuery(query: {
 }): ListDeliveriesOpts {
   return {
     status: query.status,
-    subscriptionId: parseId(query.subscriptionId, "subscriptionId"),
+    subscriptionId: parseQueryId(query.subscriptionId, "subscriptionId"),
     event: query.event,
-    since: parseDate(query.since, "since"),
-    until: parseDate(query.until, "until"),
-    limit: parseCount(query.limit, "limit"),
-    cursor: parseId(query.cursor, "cursor"),
+    since: parseQueryInstant(query.since, "since"),
+    until: parseQueryInstant(query.until, "until"),
+    limit: parseQueryCount(query.limit, "limit"),
+    cursor: parseQueryId(query.cursor, "cursor"),
   };
 }
 

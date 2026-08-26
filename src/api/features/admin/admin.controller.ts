@@ -10,6 +10,7 @@ import {
 import { type AuthUser, authPlugin } from "@/api/lib/auth";
 import { translate } from "@/api/lib/i18n";
 import { doc, errors } from "@/api/lib/openapi";
+import { parseQueryCount } from "@/api/lib/query-filters";
 import config from "@/config";
 import { UnauthorizedError } from "@/lib/errors";
 import {
@@ -94,7 +95,7 @@ export const adminController = new Elysia({
       // response stays a single shape and the treaty type for `data.users` is non-optional.
       const user = await getAuthUser();
       if (!user) throw new UnauthorizedError();
-      const page = Number(query.page) || 1;
+      const page = parseQueryCount(query.page, "page") ?? 1;
       const search = query.search?.trim() || undefined;
       const result = await getUsers(
         resolveScope(user, query.tenantId),
@@ -136,7 +137,7 @@ export const adminController = new Elysia({
         "List users",
         "Return a paginated, optionally filtered list of users.",
       ),
-      response: errors(401, 403),
+      response: errors(400, 401, 403),
     },
   )
   .patch(

@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import prisma from "@/api/lib/prisma";
+import { badQueryParam } from "@/lib/query-param";
 import { asSuperAdminOn } from "@/lib/tenancy";
 
 // NOTE: roles a tenant admin may assign (never SUPER_ADMIN, which is fleet-level and
@@ -27,6 +28,10 @@ export async function getUsers(
   page = 1,
   search?: string,
 ) {
+  // The RANGE lives here, not in the query parser, so a caller that never sends a query string is
+  // held to it too. Without this a negative page reaches Prisma as a negative `skip` and answers
+  // 500 (measured on `?page=-5`), and a fractional one is echoed back to the client as `page`.
+  if (!Number.isInteger(page) || page < 1) badQueryParam("page");
   const pageSize = 20;
   const skip = (page - 1) * pageSize;
 

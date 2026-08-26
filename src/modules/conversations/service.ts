@@ -8,6 +8,7 @@ import {
   NotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
+import { assertUsableCount } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadAppointmentContext } from "@/modules/appointments/context";
 import {
@@ -99,8 +100,8 @@ export interface ConversationsPage {
 }
 
 function clampLimit(limit: number | undefined): number {
-  if (!limit || Number.isNaN(limit)) return DEFAULT_LIMIT;
-  return Math.min(Math.max(Math.trunc(limit), 1), MAX_LIMIT);
+  assertUsableCount(limit, "limit");
+  return limit === undefined ? DEFAULT_LIMIT : Math.min(limit, MAX_LIMIT);
 }
 
 function normalizeStatus(status: string | undefined): string | undefined {

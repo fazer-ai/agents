@@ -8,6 +8,8 @@ Versioned, mounted under the `/api` group (so paths are `/api/v1/...`). The same
 
 Current endpoints: `GET /api/v1/meta`, `GET /api/v1/tenants`, `GET /api/v1/tenants/:id`. Conversations/metrics/funnel projections arrive in their phases.
 
+**A query filter is used or refused, never dropped.** Every read surface parses its filters through `src/api/lib/query-filters.ts` (`parseQueryInstant` / `parseQueryId` / `parseQueryCount`), and a value the server cannot use is answered **400 naming the parameter** (`{ error, field }`, key `errors.invalidQueryParam`). The lenient spellings this replaced each had their own wrong answer: `agentId=abc` dropped the filter and returned the tenant's whole table, `cursor=abc` restarted pagination so a client following `nextCursor` never terminated, `since=2026-02-30T00:00:00Z` normalised to March 2 and queried a window nobody asked for, and `limit=abc` reached Prisma as `take: NaN` — a 500 for a caller's typo. Empty is a value, not an absence: `?agentId=` is what a form submits when its input is blank, and reading it as "no filter" is the same widening. The RANGE of a count lives in the SERVICE (`assertUsableCount` in `src/lib/query-param.ts`), not in the parser, so MCP and the console's own service calls are held to it too. An instant filter takes an ISO 8601 instant with an offset; a date alone is refused. Issues #305 / #361 settled this for the delivery ledger and #372 applied it to the rest.
+
 **Isolation-preserving projection.** Fleet-facing surfaces (read API, outbound webhooks, MCP read resources, SUPER_ADMIN cross-tenant) expose metrics + state + control by default, never message bodies or PII. A per-instance toggle opts a tenant into raw detail.
 
 ## Instance identity

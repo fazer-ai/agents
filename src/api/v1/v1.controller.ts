@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { getUserById, verifyPassword } from "@/api/features/auth/auth.service";
 import { createInvite } from "@/api/features/invitations/invitation.service";
 import { doc, errors } from "@/api/lib/openapi";
+import { parseQueryCount, parseQueryInstant } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
 import { AppError, ForbiddenError } from "@/lib/errors";
@@ -261,7 +262,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     async ({ tenantContext, query }) => {
       const page = await listConversations(ctxOrThrow(tenantContext), {
         status: query.status,
-        limit: query.limit ? Number(query.limit) : undefined,
+        limit: parseQueryCount(query.limit, "limit"),
         cursor: query.cursor,
         q: query.q,
       });
@@ -340,10 +341,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   .get(
     "/conversations/:id/messages",
     async ({ tenantContext, params, query }) => {
-      const before =
-        query.before != null && query.before !== ""
-          ? Number.parseInt(query.before, 10)
-          : undefined;
+      const before = parseQueryCount(query.before, "before");
       return {
         instance: instanceIdentity,
         ...(await getConversationMessages(
@@ -351,7 +349,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
           BigInt(params.id),
           {},
           undefined,
-          Number.isFinite(before) ? before : undefined,
+          before,
         )),
       };
     },
@@ -602,9 +600,9 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   .get(
     "/metrics",
     async ({ tenantContext, query }) => {
-      const since = query.since ? new Date(query.since) : undefined;
+      const since = parseQueryInstant(query.since, "since");
       const metrics = await getInstanceMetrics(ctxOrThrow(tenantContext), {
-        since: since && !Number.isNaN(since.getTime()) ? since : undefined,
+        since,
         source: query.source,
       });
       return { instance: instanceIdentity, metrics };
@@ -614,7 +612,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         since: t.Optional(
           t.String({
             description:
-              "Optional ISO start timestamp; invalid values are ignored rather than rejected.",
+              "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
           }),
         ),
         // Usage segment: "inbox" (real) | "playground". Omitted → all sources.
@@ -639,9 +637,9 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   .get(
     "/metrics/kpis",
     async ({ tenantContext, query }) => {
-      const since = query.since ? new Date(query.since) : undefined;
+      const since = parseQueryInstant(query.since, "since");
       const kpis = await getKpis(ctxOrThrow(tenantContext), {
-        since: since && !Number.isNaN(since.getTime()) ? since : undefined,
+        since,
       });
       return { instance: instanceIdentity, kpis };
     },
@@ -650,7 +648,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         since: t.Optional(
           t.String({
             description:
-              "Optional ISO start timestamp; invalid values are ignored rather than rejected.",
+              "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
           }),
         ),
       }),
@@ -662,15 +660,15 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(401, 404),
+      response: errors(400, 401, 404),
     },
   )
   .get(
     "/metrics/timeseries",
     async ({ tenantContext, query }) => {
-      const since = query.since ? new Date(query.since) : undefined;
+      const since = parseQueryInstant(query.since, "since");
       const points = await getTimeseries(ctxOrThrow(tenantContext), {
-        since: since && !Number.isNaN(since.getTime()) ? since : undefined,
+        since,
         source: query.source,
         tz: query.tz,
       });
@@ -681,7 +679,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         since: t.Optional(
           t.String({
             description:
-              "Optional ISO start timestamp; invalid values are ignored rather than rejected.",
+              "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
           }),
         ),
         source: t.Optional(
@@ -711,9 +709,9 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
   .get(
     "/metrics/costs",
     async ({ tenantContext, query }) => {
-      const since = query.since ? new Date(query.since) : undefined;
+      const since = parseQueryInstant(query.since, "since");
       const costs = await getLangfuseCosts(ctxOrThrow(tenantContext), {
-        since: since && !Number.isNaN(since.getTime()) ? since : undefined,
+        since,
       });
       return { instance: instanceIdentity, costs };
     },
@@ -722,7 +720,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         since: t.Optional(
           t.String({
             description:
-              "Optional ISO start timestamp; invalid values are ignored rather than rejected.",
+              "Optional ISO start instant (2026-01-01T00:00:00Z). A value that is not one is refused with a 400 naming the parameter.",
           }),
         ),
       }),
@@ -734,6 +732,6 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(401, 404),
+      response: errors(400, 401, 404),
     },
   );

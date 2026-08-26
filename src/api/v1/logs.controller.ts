@@ -1,5 +1,10 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
+import {
+  parseQueryCount,
+  parseQueryId,
+  parseQueryInstant,
+} from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
@@ -21,21 +26,6 @@ function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   return ctx;
 }
 
-function parseDate(s?: string): Date | undefined {
-  if (!s) return undefined;
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? undefined : d;
-}
-
-function parseBigInt(s?: string): bigint | undefined {
-  if (!s) return undefined;
-  try {
-    return BigInt(s);
-  } catch {
-    return undefined;
-  }
-}
-
 function parseFormat(s?: string): LogExportFormat {
   return s === "json" ? "json" : "csv";
 }
@@ -50,27 +40,33 @@ export const logsController = new Elysia({
     async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
       ...(await listExecutionLogs(ctxOrThrow(tenantContext), {
-        since: parseDate(query.since),
-        until: parseDate(query.until),
+        since: parseQueryInstant(query.since, "since"),
+        until: parseQueryInstant(query.until, "until"),
         level: query.level,
         stage: query.stage,
-        agentId: parseBigInt(query.agentId),
-        conversationId: parseBigInt(query.conversationId),
+        agentId: parseQueryId(query.agentId, "agentId"),
+        conversationId: parseQueryId(query.conversationId, "conversationId"),
         turnId: query.turnId,
         source: query.source,
         search: query.search,
-        limit: query.limit ? Number(query.limit) : undefined,
-        cursor: parseBigInt(query.cursor),
+        limit: parseQueryCount(query.limit, "limit"),
+        cursor: parseQueryId(query.cursor, "cursor"),
       })),
     }),
     {
       requireRole: "TENANT_ADMIN",
       query: t.Object({
         since: t.Optional(
-          t.String({ description: "Lower bound on log time (ISO date)." }),
+          t.String({
+            description:
+              "Lower bound on log time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+          }),
         ),
         until: t.Optional(
-          t.String({ description: "Upper bound on log time (ISO date)." }),
+          t.String({
+            description:
+              "Upper bound on log time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+          }),
         ),
         level: t.Optional(t.String({ description: "Filter by log level." })),
         stage: t.Optional(
@@ -124,27 +120,33 @@ export const logsController = new Elysia({
     async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
       ...(await exportExecutionLogs(ctxOrThrow(tenantContext), {
-        since: parseDate(query.since),
-        until: parseDate(query.until),
+        since: parseQueryInstant(query.since, "since"),
+        until: parseQueryInstant(query.until, "until"),
         level: query.level,
         stage: query.stage,
-        agentId: parseBigInt(query.agentId),
-        conversationId: parseBigInt(query.conversationId),
+        agentId: parseQueryId(query.agentId, "agentId"),
+        conversationId: parseQueryId(query.conversationId, "conversationId"),
         turnId: query.turnId,
         source: query.source,
         search: query.search,
         format: parseFormat(query.format),
-        maxRows: query.maxRows ? Number(query.maxRows) : undefined,
+        maxRows: parseQueryCount(query.maxRows, "maxRows"),
       })),
     }),
     {
       requireRole: "TENANT_ADMIN",
       query: t.Object({
         since: t.Optional(
-          t.String({ description: "Lower bound on log time (ISO date)." }),
+          t.String({
+            description:
+              "Lower bound on log time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+          }),
         ),
         until: t.Optional(
-          t.String({ description: "Upper bound on log time (ISO date)." }),
+          t.String({
+            description:
+              "Upper bound on log time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+          }),
         ),
         level: t.Optional(t.String({ description: "Filter by log level." })),
         stage: t.Optional(

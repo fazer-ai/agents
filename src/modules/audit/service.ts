@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { assertUsableCount } from "@/lib/query-param";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 
 export interface AuditEntry {
@@ -64,7 +65,8 @@ export async function listAudit(
   opts: { limit?: number; action?: string } = {},
   base: PrismaClient = basePrisma,
 ): Promise<AuditLogItem[]> {
-  const take = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  assertUsableCount(opts.limit, "limit");
+  const take = Math.min(opts.limit ?? 100, 500);
   const rows = await runScopedOn(base, ctx, (db) =>
     db.auditLog.findMany({
       where: opts.action ? { action: opts.action } : {},

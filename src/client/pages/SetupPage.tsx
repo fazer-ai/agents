@@ -9,13 +9,13 @@ import { api } from "@/client/lib/api";
 
 // The keys the setup body carries. `email` is the one that refuses in practice: an address that
 // already has an account answers 400 "Email already in use" and names it.
-const SETUP_FIELDS = [
-  "email",
-  "password",
-  "name",
-  "companyName",
-  "token",
-] as const;
+const SETUP_FIELDS = ["email", "password", "name", "companyName"] as const;
+
+// `token` only where enforcement is on. The box is drawn behind `setupTokenRequired`, but a token
+// captured from `?token=` is SENT either way, so the route can refuse it (the schema caps it at 256)
+// on a screen with no control for it. Declaring it there would place the sentence on nothing and
+// leave the button looking dead.
+const SETUP_FIELDS_WITH_TOKEN = [...SETUP_FIELDS, "token"] as const;
 
 // biome-ignore lint/plugin/require-page-container: auth page renders its own centered layout outside <Layout>, so <PageContainer> does not apply
 export function SetupPage() {
@@ -31,7 +31,9 @@ export function SetupPage() {
   const [token, setToken] = useState(() => searchParams.get("token") ?? "");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const refusal = useFieldRefusal(SETUP_FIELDS);
+  const refusal = useFieldRefusal(
+    setupTokenRequired ? SETUP_FIELDS_WITH_TOKEN : SETUP_FIELDS,
+  );
   // What the inputs hold right now, in the server's vocabulary, and what the write sends. Above the
   // early return below, because a hook after a conditional return is not called on every render.
   const current = {

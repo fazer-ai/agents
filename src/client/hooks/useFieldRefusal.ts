@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useToast } from "@/client/components/Toast";
 import {
   placeRefusal,
@@ -42,22 +42,25 @@ export interface FieldRefusal {
   field: string | null;
 }
 
-// `onScreen` is whether the FORM is showing, and it defaults to "as long as this component is".
+// `rendered` is what the form is DRAWING RIGHT NOW, and the tense is the whole of it.
 //
-// For a page those are the same question. Wherever the form can be hidden while its component lives
-// on, they are not, and the difference is silence: `useModalController` keeps the wrapper mounted
-// when the dialog closes, and the agent editor keeps `name` and `systemPrompt` in state while the
-// operator reads another tab. A save still in flight then answers into a component that is alive and
-// a form that is gone: the mark would be written, the caller told "it is on the control", and
-// nothing on screen would say anything at all.
+// This started as a constant list plus a boolean for "is the form on screen", and the boolean grew a
+// new meaning every review round: a dialog that closed, then a tab that changed. It was always an
+// approximation of the question `placeRefusal` actually asks — is THIS name one the operator can see
+// — and it is too coarse for a form that hides some of its own controls. Measured, five of those are
+// already here: the setup token renders only where enforcement is on, the vault's per-key inputs and
+// its base URL disappear when the operator switches to pasting a `.env`, its parameter-name box
+// belongs to three of the secret kinds, and the add-content dialog draws the text box on one of its
+// two tabs. In every one of them a refusal the server named by that field was marked onto a control
+// nobody was rendering, and `capture` told the caller to keep the toast quiet.
 //
-// So it takes whatever makes the form visible — `modal.isOpen` from a dialog, `tab === "general"`
-// from a tab — and `capture` routes around it (see there). Measured on McpEditModal: dismiss
-// mid-save and the banner stayed empty for a refusal the server had named.
-export function useFieldRefusal(
-  rendered: readonly string[],
-  onScreen = true,
-): FieldRefusal {
+// So the caller answers with the list, per render, and the boolean is gone: a form that is not on
+// screen renders nothing, which is `[]`.
+//
+// Read through a ref, because the answer is needed AFTER the await and a submit handler closes over
+// the render it started in. That was the point of the boolean's ref too; it is the same fix, applied
+// to the thing that was always the real question.
+export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
   const { showToast } = useToast();
   const [held, setHeld] = useState<{
     field: string;
@@ -74,16 +77,8 @@ export function useFieldRefusal(
       mounted.current = false;
     };
   }, []);
-  // Kept in step on every render rather than read from the closure: the answer is needed AFTER the
-  // await, and a closed-over boolean is the value from the render the request started in.
-  const showing = useRef(onScreen);
-  showing.current = onScreen;
-
-  // The declared list is a literal at almost every call site (`COMPANY_FIELDS`), but a caller that
-  // builds it inline would otherwise hand `capture` a new identity on every render.
-  const key = rendered.join(" ");
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` IS `rendered`, by value.
-  const fields = useMemo(() => rendered.slice(), [key]);
+  const fields = useRef(rendered);
+  fields.current = rendered;
 
   const capture = useCallback(
     (
@@ -92,8 +87,10 @@ export function useFieldRefusal(
       sent: Record<string, unknown>,
       current: Record<string, unknown>,
     ) => {
-      const onForm = mounted.current && showing.current;
-      const placed = placeRefusal(readRefusal(e), fields, fallback, {
+      // The form is where the operator is looking only if it is drawing something. An empty list is
+      // a dismissed dialog, a tab left behind, a page unmounted — all the same answer.
+      const onForm = mounted.current && fields.current.length > 0;
+      const placed = placeRefusal(readRefusal(e), fields.current, fallback, {
         mounted: onForm,
         sent,
         current,
@@ -125,7 +122,7 @@ export function useFieldRefusal(
       }
       return placed.toast;
     },
-    [fields, showToast],
+    [showToast],
   );
 
   const clear = useCallback(() => setHeld(null), []);

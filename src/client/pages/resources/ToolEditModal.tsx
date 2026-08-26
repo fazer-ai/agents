@@ -649,7 +649,7 @@ export function ToolEditModal({
   // rather than under a box that no longer holds it.
   const formRef = useRef(form);
   formRef.current = form;
-  const refusal = useFieldRefusal(TOOL_FIELDS, modal.isOpen);
+  const refusal = useFieldRefusal(modal.isOpen ? TOOL_FIELDS : []);
   const [saving, setSaving] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);

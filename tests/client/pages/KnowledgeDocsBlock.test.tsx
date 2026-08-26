@@ -41,6 +41,9 @@ let docsCalls = 0;
 let reindexResponse: Record<string, unknown> = {};
 // What the add-a-text-document POST answers. Null means it is not being exercised.
 let addDocResponse: { status: number; body: unknown } | null = null;
+// Keeps the add-a-document answer in flight until a test lets it go, so the operator can move away
+// from the form while its own write is still out.
+let holdAddDoc: Promise<void> | null = null;
 let onKnowledgeDocument:
   | ((e: {
       knowledgeBaseId: string;
@@ -126,6 +129,7 @@ function installFetchStub() {
       return json(await nextDocs());
     }
     if (url.includes("/documents") && method === "POST" && addDocResponse) {
+      if (holdAddDoc) await holdAddDoc;
       return new Response(JSON.stringify(addDocResponse.body), {
         status: addDocResponse.status,
         headers: { "content-type": "application/json" },
@@ -756,6 +760,39 @@ describe("knowledge: a refusal the server phrased reaches the operator", () => {
     fireEvent.focus(chip);
     await waitFor(() => expect(shows(/Unsupported file type/i)).toBe(true));
     expect(shows(/whatever the API said/)).toBe(false);
+  });
+
+  // The dialog has two tabs and the text box belongs to one of them. The tabs stay live while the
+  // POST is out, so the operator can be looking at the file tab when the refusal lands — and a
+  // refusal naming `text` would then be marked onto a control that is not rendered, with `capture`
+  // reporting it placed and the toast staying quiet. Nothing on screen, on a dialog whose Add button
+  // had just spun.
+  test("a text refusal answered on the file tab still reaches the operator", async () => {
+    addDocResponse = null;
+    await openModal();
+    fireEvent.click(screen.getByRole("button", { name: /^add$/i }));
+    fireEvent.change(await screen.findByRole("textbox", { name: /text/i }), {
+      target: { value: "some text" },
+    });
+    // Held until the operator has moved to the other tab, which is the whole point.
+    let release: () => void = () => {};
+    holdAddDoc = new Promise<void>((r) => {
+      release = r;
+    });
+    addDocResponse = {
+      status: 400,
+      body: {
+        error: "text contains characters that cannot be stored (U+0000)",
+        field: "text",
+      },
+    };
+    const buttons = screen.getAllByRole("button", { name: /^add$/i });
+    fireEvent.click(buttons[buttons.length - 1] as HTMLElement);
+    fireEvent.click(screen.getByRole("tab", { name: /^file$/i }));
+    release();
+
+    await waitFor(() => expect(shows(/U\+0000/)).toBe(true));
+    holdAddDoc = null;
   });
 });
 

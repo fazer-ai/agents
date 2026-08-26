@@ -48,7 +48,7 @@ export function WebhookSubscriptionModal({
   onSaved: () => void;
 }) {
   const { t } = useTranslation();
-  const refusal = useFieldRefusal(WEBHOOK_FIELDS, modal.isOpen);
+  const refusal = useFieldRefusal(modal.isOpen ? WEBHOOK_FIELDS : []);
   const enabledId = useId();
   const editing = modal.payload?.subscription;
   const [url, setUrl] = useState("");

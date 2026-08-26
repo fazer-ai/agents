@@ -624,7 +624,7 @@ function AgentEditor() {
   // only mounted while `tab === "general"`, so a save that answers after the operator has moved on —
   // or the "Save and export" that writes General from wherever they are — would place its mark on a
   // control nobody is rendering. Off that tab the sentence goes to the toast.
-  const refusal = useFieldRefusal(EDITOR_FIELDS, tab === "general");
+  const refusal = useFieldRefusal(tab === "general" ? EDITOR_FIELDS : []);
   // What the two placeable inputs hold right now, readable from inside a save that started before
   // them: this page's saves are long and the operator keeps typing during them.
   const currentRef = useRef<Record<string, unknown>>({});
@@ -850,7 +850,7 @@ function AgentEditor() {
   const [cloneName, setCloneName] = useState("");
   // The clone dialog is its own form: one input, and the route refuses a name already taken by name.
   // Separate from the editor's holder, because the two are on screen together.
-  const cloneRefusal = useFieldRefusal(CLONE_FIELDS, cloneModal.isOpen);
+  const cloneRefusal = useFieldRefusal(cloneModal.isOpen ? CLONE_FIELDS : []);
   const cloneRef = useRef("");
   cloneRef.current = cloneName;
   // The suggested name prefilled on open; the modal only warns about discarding

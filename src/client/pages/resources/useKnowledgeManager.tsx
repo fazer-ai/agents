@@ -153,15 +153,22 @@ export function useKnowledgeManager(opts: {
   const docEditModal = useModalController<{ id: string; title: string }>();
   const confirm = useModalController<ConfirmPayload>();
 
+  // Above the holders because one of them reads it: the add dialog's tab decides whether the text
+  // box is on screen at all.
+  const [addTab, setAddTab] = useState("texto");
+
   // Create/edit KB fields
   // Three forms here, three holders: the base (create and edit share their inputs and are never open
   // together), the "add text" document, and the document editor.
   const baseRefusal = useFieldRefusal(
-    BASE_FIELDS,
-    createModal.isOpen || editModal.isOpen,
+    createModal.isOpen || editModal.isOpen ? BASE_FIELDS : [],
   );
-  const addDocRefusal = useFieldRefusal(DOC_FIELDS, addContentModal.isOpen);
-  const editDocRefusal = useFieldRefusal(DOC_FIELDS, docEditModal.isOpen);
+  // The add dialog has two tabs and the text box belongs to one of them: on the file tab there is no
+  // control for `title` or `text`, so a refusal naming either has to go to the toast.
+  const addDocRefusal = useFieldRefusal(
+    addContentModal.isOpen && addTab === "texto" ? DOC_FIELDS : [],
+  );
+  const editDocRefusal = useFieldRefusal(docEditModal.isOpen ? DOC_FIELDS : []);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [chunkSize, setChunkSize] = useState(1000);
@@ -170,7 +177,6 @@ export function useKnowledgeManager(opts: {
   const [chunkOverlapError, setChunkOverlapError] = useState("");
 
   // Add content fields (the add form is a modal stacked over the documents list).
-  const [addTab, setAddTab] = useState("texto");
   const [docTitle, setDocTitle] = useState("");
   // What each form's inputs hold right now, readable from inside a request that started before them.
   const baseRef = useRef<Record<string, unknown>>({});

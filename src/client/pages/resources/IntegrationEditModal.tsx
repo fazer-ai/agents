@@ -583,7 +583,7 @@ export function IntegrationEditModal({
   // The CURRENT form, readable from inside a request that started before it.
   const formRef = useRef(form);
   formRef.current = form;
-  const refusal = useFieldRefusal(INTEGRATION_FIELDS, modal.isOpen);
+  const refusal = useFieldRefusal(modal.isOpen ? INTEGRATION_FIELDS : []);
   const [saving, setSaving] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);

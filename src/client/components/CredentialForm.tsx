@@ -209,16 +209,6 @@ export function CredentialForm({
 
   const fields = secretTypeFields(kind);
   const hasFields = !!fields && fields.length > 0;
-  // The names this form can render a sentence under. The per-field keys of a multi-field type are in
-  // the list because that is how the server refuses them: `assertNoSurroundingWhitespace` names the
-  // inner key (`api_key`), and this form draws one input per key.
-  const refusal = useFieldRefusal([
-    "name",
-    "value",
-    "baseUrl",
-    "paramName",
-    ...(fields ?? []).map((f) => f.key),
-  ]);
   const needsParamName = secretTypeNeedsParamName(kind);
   const supportsBaseUrl = secretTypeSupportsBaseUrl(kind);
   const requiresBaseUrl = secretTypeRequiresBaseUrl(kind);
@@ -226,6 +216,23 @@ export function CredentialForm({
   // blob created empty and populated by the connect flow. The form needs only name + baseUrl.
   const isManagedBlob = secretTypeIsManagedBlob(kind);
   const provLink = providerLink(kind);
+
+  // What this form is DRAWING, which is not what it can send. Four of these five come and go with
+  // the secret kind and the input mode: the per-key inputs of a multi-field type are how the server
+  // refuses them (`assertNoSurroundingWhitespace` names the inner key, `api_key`), and they are
+  // replaced by a single `.env` textarea the moment the operator switches to pasting — at which
+  // point a refusal about `public_key` has nowhere to land and belongs in the toast. Mirrors the
+  // conditions the JSX below renders under, and it has to keep mirroring them.
+  const refusal = useFieldRefusal([
+    "name",
+    ...(supportsBaseUrl && !langfusePaste ? ["baseUrl"] : []),
+    ...(needsParamName ? ["paramName"] : []),
+    ...(isManagedBlob || langfusePaste
+      ? []
+      : hasFields
+        ? (fields ?? []).map((f) => f.key)
+        : ["value"]),
+  ]);
 
   // For multi-field types: all fields must be either all filled or all empty (no partial).
   const allFieldsFilled =
@@ -815,6 +822,11 @@ export function CredentialForm({
                           setLangfusePaste(id === "langfuse");
                           setEnvText("");
                           setEnvError(false);
+                          // Uniqueness in the vault is the (name, kind) PAIR, and the mark expires
+                          // by the name alone. Keeping a custom name while switching type gives a
+                          // pair the server has said nothing about, under a sentence saying it is
+                          // taken.
+                          refusal.clear();
                         }}
                       >
                         <ServiceLogo

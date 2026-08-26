@@ -122,7 +122,7 @@ export function DocumentsPanel() {
   const editModal = useModalController<{ template: DocumentTemplate }>();
   const companyModal = useModalController();
   const starterModal = useModalController();
-  const refusal = useFieldRefusal(STARTER_FIELDS, starterModal.isOpen);
+  const refusal = useFieldRefusal(starterModal.isOpen ? STARTER_FIELDS : []);
   const refsModal = useModalController<{ name: string }>();
   const deleteModal = useModalController<{ id: string; name: string }>();
   const confirm = useModalController<ConfirmPayload>();

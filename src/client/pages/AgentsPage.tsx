@@ -61,7 +61,9 @@ export function AgentsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [name, setName] = useState("");
-  const refusal = useFieldRefusal(CREATE_AGENT_FIELDS, createModal.isOpen);
+  const refusal = useFieldRefusal(
+    createModal.isOpen ? CREATE_AGENT_FIELDS : [],
+  );
   const nameRef = useRef(name);
   nameRef.current = name;
   const [creating, setCreating] = useState(false);

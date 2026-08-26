@@ -235,46 +235,86 @@ export function halfUsedHolders(src: string): string[] {
 //
 // Read from the source rather than imported because the point is to compare the declaration against
 // the RENDER, and only the source has both.
-export function declarations(
-  src: string,
-): { holder: string; fields: string[] }[] {
+export function declarations(src: string): {
+  holder: string;
+  fields: string[];
+}[] {
   return [...src.matchAll(/const (\w+) = useFieldRefusal\(/g)].map((m) => ({
     holder: m[1] as string,
     fields: declaredArg(
-      src.slice((m.index as number) + (m[0] as string).length),
+      argumentOf(src, (m.index as number) + (m[0] as string).length - 1),
       src,
     ),
   }));
 }
 
-// The first argument's names, however it is spelled. Both spellings are in the tree: the `as const`
-// list beside the component, and — where the list depends on what the form is drawing — an array
-// built inline (`CredentialForm`, whose multi-field types contribute one name per input). The inline
-// one was skipped entirely by the identifier-only version.
+// The text between a call's parentheses, balanced. Not a lazy match up to the next `);`, because the
+// argument is an expression now and expressions nest.
+function argumentOf(src: string, open: number): string {
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    const c = src[i];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      if (--depth === 0) return src.slice(open + 1, i);
+    }
+  }
+  return "";
+}
+
+// Every name the argument can ever produce, whichever branch it takes.
 //
-// A computed element contributes nothing, which is the honest answer rather than a hole: a spread of
+// The argument is an EXPRESSION now — `modal.isOpen ? MCP_FIELDS : []`, `required ? WITH_TOKEN :
+// BASE`, an array built one control at a time — so reading it as "one identifier, or one inline
+// array" answers `[]` for almost every holder in the tree, and a rule that is handed nothing asks
+// nothing. That is what this rule was written to catch and what it silently stopped seeing the
+// moment the hook's argument changed shape: a fence with no findings and a fence with no vision are
+// the same green.
+//
+// So: every string literal in the expression, plus every SCREAMING_CASE identifier in it that names
+// a list in this file, resolved one level down so `[...SETUP_FIELDS, "token"]` contributes both. A
+// computed element contributes nothing, which is the honest answer rather than a hole — a spread of
 // `fields.map(f => f.key)` is read back by an `at(f.key, …)` the source cannot see either, so both
 // sides of the comparison drop it together.
-function declaredArg(rest: string, src: string): string[] {
-  const lead = rest.match(/^\s*/)?.[0].length ?? 0;
-  const arg = rest.slice(lead);
-  if (arg.startsWith("[")) {
-    let depth = 0;
-    for (let i = 0; i < arg.length; i++) {
-      if (arg[i] === "[") depth++;
-      else if (arg[i] === "]" && --depth === 0)
-        return literals(arg.slice(1, i));
-    }
-    return [];
+function declaredArg(arg: string, src: string): string[] {
+  const out = new Set(literalsInLists(arg));
+  for (const m of arg.matchAll(/\b([A-Z][A-Z0-9_]*)\b/g)) {
+    for (const name of resolveList(m[1] as string, src, 0)) out.add(name);
   }
-  const ident = arg.match(/^([A-Za-z_$][\w$]*)/)?.[1];
-  if (!ident) return [];
-  const list = new RegExp(`${ident}\\s*=\\s*\\[([^\\]]*)\\]`).exec(src);
-  return list ? literals(list[1] as string) : [];
+  return [...out];
+}
+
+// A SCREAMING_CASE list declared in this file, following a spread into another one.
+function resolveList(ident: string, src: string, depth: number): string[] {
+  if (depth > 2) return [];
+  const at = src.search(new RegExp(`\\b${ident}\\s*=\\s*\\[`));
+  if (at < 0) return [];
+  const body = argumentOf(src, src.indexOf("[", at));
+  const out = new Set(literals(body));
+  for (const m of body.matchAll(/\.\.\.([A-Z][A-Z0-9_]*)\b/g)) {
+    for (const name of resolveList(m[1] as string, src, depth + 1)) {
+      out.add(name);
+    }
+  }
+  return [...out];
 }
 
 function literals(list: string): string[] {
   return [...list.matchAll(/["']([^"']+)["']/g)].map((m) => m[1] as string);
+}
+
+// Only the literals inside an ARRAY, because the expression also holds the condition that chooses
+// between them: `addTab === "texto" ? DOC_FIELDS : []` names a tab, not a field, and reading it as
+// one had the fence demanding a control for `texto`.
+function literalsInLists(arg: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < arg.length; i++) {
+    if (arg[i] !== "[") continue;
+    const body = argumentOf(arg, i);
+    out.push(...literals(body));
+    i += body.length + 1;
+  }
+  return out;
 }
 
 // Every name declared anywhere in the file, which is what "did this handler send something the form
@@ -369,37 +409,22 @@ function resetSites(src: string, code: string, dialog: string): string[] {
   return inline;
 }
 
-// A holder in a file that can HIDE its form and never says when.
+// A holder in a file that can HIDE part of its form and hands the hook a bare constant.
 //
-// The other half of the same confusion: `useModalController` keeps the wrapper mounted when the
-// dialog closes, so the hook's mounted check answers `true` for a form the operator has already
-// dismissed. `capture` then reports "it is on the control", the caller keeps the banner quiet, and a
-// refusal the server named reaches nobody. Silence is the one outcome this mechanism must never
-// produce, so what makes the form visible is the second argument.
+// `rendered` is what the form is DRAWING, so a file that draws conditionally has to say so in the
+// argument. A bare `const FIELDS` says "all of these, always", which is a claim, and in a file with
+// a dialog, a tab, or a mode toggle it is a false one. Measured five times before this rule existed:
+// a dismissed dialog, a tab left behind, the setup token, the vault's `.env` toggle, and the
+// add-content tabs — each of them a refusal marked onto a control nobody was rendering, with
+// `capture` telling the caller to keep the toast quiet.
 //
-// A dialog is not the only way to hide a form, and asking only about dialogs is how the agent
-// editor got through the round that added this rule: its `name` and `systemPrompt` live in
-// `GeneralTab`, mounted only while `tab === "general"`, and its holder had been waived as a page's
-// because the file's dialog belongs to something else. A tab test in the file asks the same
-// question of every holder in it.
+// The test is on the ARGUMENT, not on the file: a conditional expression is the form answering, and
+// what it answers with is the caller's business.
 export function holdersBlindToTheScreen(src: string): string[] {
-  if (!/useOnModalOpen\(|\.open\(|\btab === "/.test(src)) return [];
+  if (!/useOnModalOpen\(|\.open\(|\btab === "|\bTabs\b/.test(src)) return [];
   return [...src.matchAll(/const (\w+) = useFieldRefusal\(([^;]*?)\);/g)]
-    .filter((m) => topLevelArgCount(m[2] as string) < 2)
+    .filter((m) => /^\s*[A-Za-z_$][\w$]*\s*$/.test(m[2] as string))
     .map((m) => m[1] as string);
-}
-
-// How many arguments a call carries, counting only the commas that belong to IT.
-function topLevelArgCount(args: string): number {
-  if (!args.trim()) return 0;
-  let depth = 0;
-  let n = 1;
-  for (const c of args) {
-    if (c === "(" || c === "[" || c === "{") depth++;
-    else if (c === ")" || c === "]" || c === "}") depth--;
-    else if (c === "," && depth === 0) n++;
-  }
-  return n;
 }
 
 // A reading that CANNOT run, because the `??` in front of it never falls through.
@@ -676,6 +701,39 @@ describe("a form that writes holds the refusal it gets", () => {
     expect(silentDeclarations(src)).toEqual(["b.name"]);
   });
 
+  test("a list chosen by a condition is read on both branches", () => {
+    // The shape almost every holder has now, and the one an identifier-or-array reader answers `[]`
+    // for — which would leave the whole sweep green and blind.
+    const src = `
+      const A = ["name", "slug"] as const;
+      const r = useFieldRefusal(modal.isOpen ? A : []);
+      <FormField error={r.at("name", u)} />
+    `;
+    expect(silentDeclarations(src)).toEqual(["r.slug"]);
+  });
+
+  test("a condition's own strings are not fields", () => {
+    // `addTab === "texto"` names a tab. Reading the expression's literals flat had the fence
+    // demanding a control for it.
+    const src = `
+      const DOC = ["title"] as const;
+      const r = useFieldRefusal(m.isOpen && addTab === "texto" ? DOC : []);
+      <FormField error={r.at("title", u)} />
+    `;
+    expect(silentDeclarations(src)).toEqual([]);
+  });
+
+  test("a list spread into another contributes both", () => {
+    const src = `
+      const BASE = ["email", "password"] as const;
+      const WITH_TOKEN = [...BASE, "token"] as const;
+      const r = useFieldRefusal(required ? WITH_TOKEN : BASE);
+      <FormField error={r.at("email", u)} />
+      <FormField error={r.at("password", v)} />
+    `;
+    expect(silentDeclarations(src)).toEqual(["r.token"]);
+  });
+
   test("an inline field list is read, not skipped", () => {
     // `CredentialForm` builds its list from the secret type it is drawing. The identifier-only
     // version returned nothing for it, so the whole form was outside the fence.
@@ -834,7 +892,7 @@ describe("a form that writes holds the refusal it gets", () => {
     ).toEqual([]);
   });
 
-  test("a holder in a file that hides a form says when its own is showing", () => {
+  test("a holder in a file that hides controls answers with what it draws", () => {
     const blind = sources(ROOT)
       .flatMap((f) =>
         holdersBlindToTheScreen(readFileSync(f, "utf8")).map(
@@ -844,7 +902,7 @@ describe("a form that writes holds the refusal it gets", () => {
       .filter((h) => !(h in ALWAYS_ON_SCREEN));
     expect(
       blind,
-      "the component outlives the form when a dialog closes or a tab changes, so a save answering after that places a mark nobody renders: pass what makes the form visible",
+      "a bare constant claims every field is drawn, always, and this file hides some of them: hand the hook the list it is DRAWING",
     ).toEqual([]);
   });
 
@@ -852,7 +910,7 @@ describe("a form that writes holds the refusal it gets", () => {
     expectWaiverLedger("ALWAYS_ON_SCREEN", ALWAYS_ON_SCREEN, 1);
   });
 
-  test("the predicate flags a holder that takes only its field list", () => {
+  test("the predicate flags a holder that claims every field, always", () => {
     const src = `
       const refusal = useFieldRefusal(FIELDS);
       useOnModalOpen(modal, () => {});
@@ -867,13 +925,26 @@ describe("a form that writes holds the refusal it gets", () => {
       const refusal = useFieldRefusal(EDITOR_FIELDS);
       {tab === "general" && <GeneralTab />}
     `;
+
     expect(holdersBlindToTheScreen(src)).toEqual(["refusal"]);
   });
 
-  test("a holder given the dialog's own state is not flagged", () => {
-    // The argument can be an expression: one form reached from two dialogs answers for both.
+  test("a holder that answers with an expression is not flagged", () => {
+    // One form reached from two dialogs answers for both, and a form that hides one control answers
+    // for that too. What it answers with is the caller's business.
     const src = `
-      const refusal = useFieldRefusal(FIELDS, a.isOpen || b.isOpen);
+      const refusal = useFieldRefusal(a.isOpen || b.isOpen ? FIELDS : []);
+      useOnModalOpen(modal, () => {});
+    `;
+    expect(holdersBlindToTheScreen(src)).toEqual([]);
+  });
+
+  test("a per-control list is an answer too", () => {
+    const src = `
+      const refusal = useFieldRefusal([
+        "name",
+        ...(needsParamName ? ["paramName"] : []),
+      ]);
       useOnModalOpen(modal, () => {});
     `;
     expect(holdersBlindToTheScreen(src)).toEqual([]);

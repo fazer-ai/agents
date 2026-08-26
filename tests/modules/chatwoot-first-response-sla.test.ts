@@ -207,6 +207,66 @@ describe.skipIf(!dbUp)("the mirrored first-response SLA", () => {
     expect(row?.chatwootFirstReplyAt?.getTime()).toBe(firstReplyAt.getTime());
   });
 
+  // An epoch a Date cannot hold. `Number.isFinite` says yes and `> 0` says yes, so the only thing
+  // standing between the payload and the column is whether the Date that comes out is a date at
+  // all. It is not, and Prisma refuses an Invalid Date, which would fail the WHOLE delivery over
+  // an optional field, and fail it again on every retry, because the payload never changes. The
+  // mirror's own rule for a reading it cannot use is to keep what it stored, so that is what an
+  // unreadable timestamp has to do too.
+  test("an epoch no Date can hold is absent, and does not fail the delivery", async () => {
+    const convId = 9815;
+    await deliver(
+      {
+        event: "message_created",
+        id: convId * 10,
+        content: "oi",
+        message_type: "incoming",
+        private: false,
+        conversation: convPayload(
+          convId,
+          {},
+          {
+            created_at: 1e20,
+            first_reply_created_at: "99999999999999999999",
+          },
+        ),
+      },
+      `${convId}-unholdable`,
+    );
+
+    const row = await stored(convId);
+    // The row exists: the delivery went through and mirrored everything else.
+    expect(row === null).toBe(false);
+    expect(row?.chatwootCreatedAt).toBeNull();
+    expect(row?.chatwootFirstReplyAt).toBeNull();
+  });
+
+  // The third spelling asks the same question: text that is not a date at all. It reaches a
+  // different branch from the two above (neither a number nor all digits), and the answer has to be
+  // the same one, or the branch that happens to be exercised decides whether a delivery survives.
+  test("text that is not a date is absent too", async () => {
+    const convId = 9816;
+    await deliver(
+      {
+        event: "conversation_updated",
+        ...convPayload(
+          convId,
+          {},
+          {
+            created_at: "sometime last tuesday",
+            first_reply_created_at: "n/a",
+          },
+        ),
+      },
+      `${convId}-unparseable`,
+    );
+
+    const row = await stored(convId);
+    expect(row === null).toBe(false);
+    expect(row?.chatwootCreatedAt).toBeNull();
+    expect(row?.chatwootFirstReplyAt).toBeNull();
+  });
+
   test("a conversation the mirror first meets mid-dialogue keeps the source's numbers", async () => {
     // No conversation_created is delivered here — an Agent Bot never gets one. The row is born from
     // a message that is NOT the conversation's first, and the readings it carries are still the
@@ -337,23 +397,26 @@ describe.skipIf(!dbUp)("the first-response KPI", () => {
     );
   }
 
+  // The sample both tests below read, seeded in setup rather than by the first of them. A test that
+  // inherits its fixtures from the test above it passes only in file order: run this one by name and
+  // the sample is empty, so the assertions fail while the service is behaving correctly.
+  //
+  // 10s, 60s and one conversation opened at the end of a Friday: the mean of the three is 20 minutes
+  // and describes none of them, which is the whole argument for the median.
   beforeAll(async () => {
     ({ tenantId, instanceId } = await seedTenant(`sla-kpi-${process.pid}`));
+    const base = Math.floor(Date.now() / 1000) - 86_400;
+    await attendance(9901, base, 10);
+    await attendance(9902, base, 60);
+    await attendance(9903, base, 3_600);
+    // Nobody has answered this one yet: it has no response time, and must not be counted as zero.
+    await attendance(9904, base, null);
   });
   afterAll(async () => {
     await dropTenant(tenantId);
   });
 
   test("reports the median attendance and the size of its sample", async () => {
-    const base = Math.floor(Date.now() / 1000) - 86_400;
-    // 10s, 60s and one conversation opened at the end of a Friday: the mean of the three is 20
-    // minutes and describes none of them, which is the whole argument for the median.
-    await attendance(9901, base, 10);
-    await attendance(9902, base, 60);
-    await attendance(9903, base, 3_600);
-    // Nobody has answered this one yet: it has no response time, and must not be counted as zero.
-    await attendance(9904, base, null);
-
     const kpis = await getKpis(
       { tenantId, userId: null, role: "TENANT_ADMIN" } satisfies TenantContext,
       {},

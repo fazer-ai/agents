@@ -34,15 +34,20 @@ function float(v: unknown): number | null {
 // plain ActiveRecord attribute and serializes as an ISO-8601 string. Accept either, reject anything
 // that does not parse — a field we cannot read must read as absent, never as the epoch.
 function ts(v: unknown): Date | null {
+  // NOTE: every branch exits through here. `Number.isFinite` and `> 0` both pass for an epoch far
+  // outside the range a Date can hold (1e20, or a digit string of the same size), and what comes
+  // back is an Invalid Date, which Prisma refuses — failing the WHOLE delivery over an optional
+  // field, and failing it again on every retry because the payload never changes. A reading this
+  // cannot use has to read as absent, on the same terms as a field the payload never carried.
+  const held = (d: Date): Date | null => (Number.isNaN(d.getTime()) ? null : d);
   if (typeof v === "number" && Number.isFinite(v))
-    return v > 0 ? new Date(v * 1000) : null;
+    return v > 0 ? held(new Date(v * 1000)) : null;
   if (typeof v === "string") {
     if (/^\d+$/.test(v)) {
       const sec = Number(v);
-      return sec > 0 ? new Date(sec * 1000) : null;
+      return sec > 0 ? held(new Date(sec * 1000)) : null;
     }
-    const parsed = new Date(v);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
+    return held(new Date(v));
   }
   return null;
 }

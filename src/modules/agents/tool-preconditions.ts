@@ -120,6 +120,11 @@ export function evaluatePrecondition(
     cond.scope === "conversation"
       ? state.conversationAttributes
       : state.contactAttributes;
+  // OWN property, and the attribute key is operator text just like the tool name. `constructor`,
+  // `toString` and `__proto__` all resolve to something non-blank on an ordinary bag parsed from
+  // jsonb, so a presence-only rule would read as SATISFIED on an empty conversation — the tool runs
+  // exactly where the operator asked for it not to.
+  if (!Object.hasOwn(bag, cond.key)) return false;
   const value = bag[cond.key];
   if (value === null || value === undefined) return false;
   // A non-string value (a number, a boolean, `false`, `0`) is PRESENT, and presence is the

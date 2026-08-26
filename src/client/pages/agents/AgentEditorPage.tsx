@@ -2273,15 +2273,16 @@ function AgentEditor() {
       if (updateKanbanNote)
         toolGuidanceJson.update_kanban_task = updateKanbanNote;
       else delete toolGuidanceJson.update_kanban_task;
+      const toolPreconditionsJson = serializeToolPreconditions(
+        toolPreconditions,
+        syncedSettings.toolPreconditions,
+      );
       const toolsSettings = {
         ...syncedSettings,
         handoff: handoffJson,
         kanban: kanbanJson,
         toolGuidance: toolGuidanceJson,
-        toolPreconditions: serializeToolPreconditions(
-          toolPreconditions,
-          syncedSettings.toolPreconditions,
-        ),
+        toolPreconditions: toolPreconditionsJson,
       };
       // The WHOLE bag, not just this tab's fields: the PATCH resends every block, so text typed on
       // another tab would refuse it just the same — after the grants had already been written.
@@ -2340,6 +2341,10 @@ function AgentEditor() {
         handoff: handoffJson,
         kanban: kanbanJson,
         toolGuidance: toolGuidanceJson,
+        // The SAME value that was just written, not a recomputation. Left out, the shared bag keeps
+        // the pre-save map, and the next Behavior save spreads it back over the rules that were just
+        // stored — with the Tools tab still showing them as saved.
+        toolPreconditions: toolPreconditionsJson,
       }));
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync("tools", "knowledge");

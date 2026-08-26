@@ -4,7 +4,7 @@ import { Button } from "@/client/components/Button";
 import { FormField } from "@/client/components/FormField";
 import { Input } from "@/client/components/Input";
 import { Select } from "@/client/components/Select";
-import { nativeToolMeta } from "@/client/lib/nativeTools";
+import { NATIVE_TOOL_ICONS, nativeToolMeta } from "@/client/lib/nativeTools";
 import type { ToolPreconditionRow } from "./types";
 
 // The enforceable half of the per-tool guidance: guidance tells the model WHEN to use a tool and is
@@ -18,6 +18,10 @@ import type { ToolPreconditionRow } from "./types";
 // name does not match is silently no protection at all, which is the one failure this feature must
 // not have. Those are configurable over REST, whose settings bag is open-ended; docs/graph.md
 // carries the boundary and why it is where it is.
+// The native names this console knows how to show. A condition on any other name (an HTTP, MCP or
+// integration tool, configured over REST) is not this editor's to render — see parseToolPreconditionRows.
+const NATIVE_TOOL_NAMES_UI = new Set(Object.keys(NATIVE_TOOL_ICONS));
+
 interface Props {
   rows: ToolPreconditionRow[];
   onChange: (rows: ToolPreconditionRow[]) => void;
@@ -34,6 +38,18 @@ export function ToolPreconditionsEditor({
   const { t } = useTranslation();
   const patch = (i: number, next: Partial<ToolPreconditionRow>) =>
     onChange(rows.map((r, idx) => (idx === i ? { ...r, ...next } : r)));
+
+  // A tool already claimed by ANOTHER row is not offered: two rows on one tool collapse into one
+  // stored rule, so the second is a guard the operator can see and cannot save. The row's own tool is
+  // always included, even if the grant was since removed — a select whose value is not among its
+  // options renders BLANK, and a blank row invites the operator to delete a rule they never read.
+  const optionsFor = (own: string, index: number) => {
+    const claimed = new Set(
+      rows.filter((_, idx) => idx !== index).map((r) => r.tool),
+    );
+    const names = grantedNativeTools.filter((n) => !claimed.has(n));
+    return own && !names.includes(own) ? [own, ...names] : names;
+  };
 
   return (
     <div className="flex flex-col gap-3" id="tools-preconditions">
@@ -66,7 +82,7 @@ export function ToolPreconditionsEditor({
                 <option value="">
                   {t("editor.toolPreconditions.pickTool", "Pick a tool…")}
                 </option>
-                {grantedNativeTools.map((name) => (
+                {optionsFor(row.tool, i).map((name) => (
                   <option key={name} value={name}>
                     {nativeToolMeta(name, t).label}
                   </option>
@@ -149,13 +165,21 @@ export function ToolPreconditionsEditor({
 // refusing the whole save because a row was left blank punishes the wrong edit.
 //
 // `stored` is passed so entries this editor could not RENDER are carried through untouched. Without
-// it, a condition kind added later (or written over REST) would be deleted by the first operator who
-// saves an unrelated change on this tab — silently, from a console that never showed it to them.
+// it, a condition on a custom tool, or of a kind added later, would be deleted by the first operator
+// who saves an unrelated change on this tab — silently, from a console that never showed it.
+//
+// THE PROPERTY THIS HOLDS, and the one the review found three separate ways to break: saving without
+// changing a row must not change what the RUNTIME accepts. Anything the runtime refuses has to come
+// back out refused, and anything it accepts has to come back out identical. The matrix in
+// tests/client/tool-preconditions-editor.test.ts asserts exactly that, per class of stored value.
 export function serializeToolPreconditions(
   rows: ToolPreconditionRow[],
   stored?: unknown,
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
+  // NULL-PROTOTYPE, for the same reason the runtime map is: a tool named `__proto__` assigned onto
+  // an ordinary object changes its prototype, the key never appears in the JSON, and the guard the
+  // operator configured disappears on the next save.
+  const out = Object.create(null) as Record<string, unknown>;
   if (stored && typeof stored === "object" && !Array.isArray(stored)) {
     const rendered = new Set(
       parseToolPreconditionRows(stored).map((r) => r.tool),
@@ -166,10 +190,16 @@ export function serializeToolPreconditions(
       if (!rendered.has(name)) out[name] = raw;
     }
   }
+  const seen = new Set<string>();
   for (const row of rows) {
     const tool = row.tool.trim();
     const key = row.key.trim();
     if (!tool || !key) continue;
+    // FIRST wins, not last. Two rows naming one tool collapse into one map key, and silently keeping
+    // the last one discards a guard the operator can still see on screen. The select stops the
+    // duplicate from being created; this is what happens to one that got there anyway.
+    if (seen.has(tool)) continue;
+    seen.add(tool);
     const equals = row.equals.trim();
     out[tool] = {
       kind: "attribute",
@@ -181,22 +211,30 @@ export function serializeToolPreconditions(
   return out;
 }
 
-// Only entries this editor can render EXACTLY. An unknown kind, an unknown scope or a missing key is
-// skipped rather than coerced: parsing `scope: "moon"` as `conversation` would let the next save on
-// this tab turn an entry the runtime IGNORES into a live rule, and the tool would start being
-// blocked without anyone having asked for it.
+// Only entries this editor can render EXACTLY, and only for tools it can OFFER. Everything else stays
+// in the raw passthrough above.
+//
+// - An unknown kind, an unknown scope, a missing key or a non-string/blank `equals` is skipped rather
+//   than coerced: parsing `scope: "moon"` as `conversation`, or dropping a blank `equals`, would let
+//   the next save on this tab turn an entry the runtime IGNORES into a live rule.
+// - A tool this editor has no option for (an HTTP/MCP/integration name, configured over REST) is
+//   skipped too. Rendered, it would be a row with a blank selector, and the operator's only sensible
+//   reaction to a blank row is to delete it — deleting a guard they never asked about.
 export function parseToolPreconditionRows(
   stored: unknown,
 ): ToolPreconditionRow[] {
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) return [];
   const rows: ToolPreconditionRow[] = [];
   for (const [tool, raw] of Object.entries(stored as Record<string, unknown>)) {
+    if (!NATIVE_TOOL_NAMES_UI.has(tool)) continue;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const c = raw as Record<string, unknown>;
     if (c.kind !== "attribute") continue;
     if (c.scope !== "conversation" && c.scope !== "contact") continue;
     if (typeof c.key !== "string" || c.key.trim() === "") continue;
-    if (c.equals !== undefined && typeof c.equals !== "string") continue;
+    if (c.equals !== undefined && c.equals !== null) {
+      if (typeof c.equals !== "string" || c.equals.trim() === "") continue;
+    }
     rows.push({
       tool,
       scope: c.scope,

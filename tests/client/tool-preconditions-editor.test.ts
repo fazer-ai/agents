@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   parseToolPreconditionRows,
   serializeToolPreconditions,
@@ -87,9 +88,21 @@ describe("serializeToolPreconditions", () => {
 
 describe("parseToolPreconditionRows", () => {
   test("round-trips what the runtime stores", () => {
+    // Real native names: the parser only renders tools the editor can OFFER, so a placeholder name
+    // would exercise the passthrough instead of the round trip.
     const rows = [
-      { tool: "a", scope: "conversation" as const, key: "k", equals: "" },
-      { tool: "b", scope: "contact" as const, key: "j", equals: "v" },
+      {
+        tool: "handoff_to_human",
+        scope: "conversation" as const,
+        key: "k",
+        equals: "",
+      },
+      {
+        tool: "resolve_conversation",
+        scope: "contact" as const,
+        key: "j",
+        equals: "v",
+      },
     ];
     expect(parseToolPreconditionRows(serializeToolPreconditions(rows))).toEqual(
       rows,
@@ -110,10 +123,12 @@ describe("parseToolPreconditionRows", () => {
     // path only touches rows it produced.
     expect(
       parseToolPreconditionRows({
-        legacy: { kind: "somethingElse", host: "x.com" },
-        ok: { kind: "attribute", scope: "contact", key: "k" },
+        handoff_to_human: { kind: "somethingElse", host: "x.com" },
+        assign_label: { kind: "attribute", scope: "contact", key: "k" },
       }),
-    ).toEqual([{ tool: "ok", scope: "contact", key: "k", equals: "" }]);
+    ).toEqual([
+      { tool: "assign_label", scope: "contact", key: "k", equals: "" },
+    ]);
   });
 });
 
@@ -148,14 +163,14 @@ describe("round 1: the editor renders exactly, or not at all", () => {
   test("a row the operator REMOVED is actually removed", () => {
     // The passthrough above must not resurrect a rule that was rendered and then deleted.
     const stored = {
-      gone: { kind: "attribute", scope: "contact", key: "k" },
-      kept: { kind: "attribute", scope: "contact", key: "j" },
+      handoff_to_human: { kind: "attribute", scope: "contact", key: "k" },
+      assign_label: { kind: "attribute", scope: "contact", key: "j" },
     };
     const out = serializeToolPreconditions(
-      [{ tool: "kept", scope: "contact", key: "j", equals: "" }],
+      [{ tool: "assign_label", scope: "contact", key: "j", equals: "" }],
       stored,
     );
-    expect(Object.keys(out)).toEqual(["kept"]);
+    expect(Object.keys(out)).toEqual(["assign_label"]);
   });
 
   test("a malformed entry is NOT rewritten into a working rule by a save", () => {
@@ -164,5 +179,174 @@ describe("round 1: the editor renders exactly, or not at all", () => {
     expect(out.t).toEqual({ kind: "attribute", scope: "moon", key: "k" });
     // And the runtime still ignores it, which is the state the operator asked for by never fixing it.
     expect(readToolPreconditions({ toolPreconditions: out })).toEqual({});
+  });
+});
+
+// Round 2 of PR #378. Three of the seven findings were the same question asked of a different value,
+// and round 1 had already asked it once: what does a save do to a stored entry the operator did not
+// touch? A patch per value class was the wrong answer. This is the property, asserted per class.
+//
+// SAVING WITHOUT CHANGING A ROW MUST NOT CHANGE WHAT THE RUNTIME ACCEPTS. Both directions:
+// an entry the runtime refuses must stay refused (a save must not promote it into a live rule), and
+// an entry it accepts must survive byte-identical (a save must not drop or rewrite it).
+describe("round 2: parse → serialize is a fixed point for the runtime", () => {
+  const RUNTIME_ACCEPTS = [
+    [
+      "a plain presence rule",
+      { kind: "attribute", scope: "conversation", key: "url" },
+    ],
+    [
+      "a rule with equals",
+      { kind: "attribute", scope: "contact", key: "plan", equals: "gold" },
+    ],
+  ] as const;
+
+  const RUNTIME_REFUSES = [
+    ["an unknown kind", { kind: "somethingElse", host: "x.com" }],
+    ["an unknown scope", { kind: "attribute", scope: "moon", key: "k" }],
+    ["a missing key", { kind: "attribute", scope: "contact" }],
+    ["a blank key", { kind: "attribute", scope: "contact", key: "   " }],
+    [
+      "a blank equals",
+      { kind: "attribute", scope: "contact", key: "k", equals: "" },
+    ],
+    [
+      "a whitespace equals",
+      { kind: "attribute", scope: "contact", key: "k", equals: "  " },
+    ],
+    [
+      "a numeric equals",
+      { kind: "attribute", scope: "contact", key: "k", equals: 42 },
+    ],
+    ["a null entry", null],
+    ["a string entry", "cpf"],
+    ["an array entry", []],
+  ] as const;
+
+  // A save that changes nothing: the rows come straight back out of the stored bag.
+  const resave = (stored: Record<string, unknown>) =>
+    serializeToolPreconditions(parseToolPreconditionRows(stored), stored);
+
+  test.each(RUNTIME_ACCEPTS)(
+    "keeps %s enforceable and identical",
+    (_l, entry) => {
+      const stored = { handoff_to_human: entry } as Record<string, unknown>;
+      const after = resave(stored);
+      expect(readToolPreconditions({ toolPreconditions: after })).toEqual(
+        readToolPreconditions({ toolPreconditions: stored }),
+      );
+    },
+  );
+
+  test.each(RUNTIME_REFUSES)(
+    "does not promote %s into a live rule",
+    (_l, entry) => {
+      const stored = { handoff_to_human: entry } as Record<string, unknown>;
+      expect(readToolPreconditions({ toolPreconditions: stored })).toEqual({});
+      expect(
+        readToolPreconditions({ toolPreconditions: resave(stored) }),
+      ).toEqual({});
+    },
+  );
+
+  test.each(RUNTIME_REFUSES)(
+    "carries %s through instead of deleting it",
+    (_l, entry) => {
+      const stored = { handoff_to_human: entry } as Record<string, unknown>;
+      expect(resave(stored).handoff_to_human).toEqual(entry);
+    },
+  );
+
+  test("a condition on a tool this editor cannot offer survives a save", () => {
+    // Configured over REST on an HTTP/MCP/integration tool. Rendering it would produce a row with a
+    // blank selector, and the only sensible reaction to a blank row is to delete it.
+    const stored = {
+      create_invoice: { kind: "attribute", scope: "contact", key: "cpf" },
+    };
+    expect(parseToolPreconditionRows(stored)).toEqual([]);
+    expect(resave(stored)).toEqual(stored);
+    expect(
+      readToolPreconditions({ toolPreconditions: resave(stored) }),
+    ).toEqual(readToolPreconditions({ toolPreconditions: stored }));
+  });
+
+  test("a tool named `__proto__` survives serialization as an entry", () => {
+    const rows = [
+      { tool: "__proto__", scope: "contact" as const, key: "k", equals: "" },
+    ];
+    const out = serializeToolPreconditions(rows);
+    // On an ordinary object this assignment changes the prototype and the key vanishes from JSON.
+    expect(JSON.parse(JSON.stringify(out))).toHaveProperty("__proto__");
+  });
+
+  test("two rows on one tool keep the FIRST, not the last", () => {
+    const out = serializeToolPreconditions([
+      {
+        tool: "handoff_to_human",
+        scope: "conversation",
+        key: "first",
+        equals: "",
+      },
+      { tool: "handoff_to_human", scope: "contact", key: "second", equals: "" },
+    ]) as Record<string, Record<string, unknown>>;
+    expect(out.handoff_to_human?.key).toBe("first");
+  });
+
+  test("a row the operator ADDED overwrites an unrenderable entry of the same name", () => {
+    const stored = { handoff_to_human: { kind: "somethingElse" } };
+    const out = serializeToolPreconditions(
+      [{ tool: "handoff_to_human", scope: "contact", key: "k", equals: "" }],
+      stored,
+    ) as Record<string, Record<string, unknown>>;
+    expect(out.handoff_to_human?.kind).toBe("attribute");
+  });
+});
+
+// Round 2, the P1: the Tools save wrote `toolPreconditions` to the server and did NOT put it back
+// into the shared settings bag, so the next Behavior save spread the pre-save map over the rules that
+// had just been stored — with this tab still showing them as saved.
+//
+// Read from the source, like the other AgentEditorPage guards in this suite: rendering the editor
+// pulls auth, theme, toast and a live catalog, and what is being asserted is which keys the handler
+// names. Written as a FENCE rather than as a check for this one key, because the defect is
+// structural: every key the save PATCHes has to come back into the shared state, and the next block
+// added to this tab inherits the same hole otherwise.
+describe("round 2: the Tools save puts back everything it wrote", () => {
+  const SRC = readFileSync(
+    "src/client/pages/agents/AgentEditorPage.tsx",
+    "utf8",
+  );
+
+  function keysOfObjectLiteral(src: string, start: number): string[] {
+    let depth = 0;
+    const keys: string[] = [];
+    for (let i = start; i < src.length; i++) {
+      const ch = src[i];
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) break;
+      } else if (depth === 1) {
+        const m = /^\n\s{6,}([A-Za-z_$][\w$]*):/.exec(src.slice(i, i + 60));
+        if (m?.[1]) keys.push(m[1]);
+      }
+    }
+    return keys;
+  }
+
+  test("every key sent in toolsSettings is written back to the settings state", () => {
+    const sentAt = SRC.indexOf("const toolsSettings = {");
+    expect(sentAt).toBeGreaterThan(-1);
+    const sent = keysOfObjectLiteral(SRC, SRC.indexOf("{", sentAt));
+
+    // The setSettings that belongs to this handler is the first one AFTER the send.
+    const backAt = SRC.indexOf("setSettings((s) => ({", sentAt);
+    expect(backAt).toBeGreaterThan(sentAt);
+    const back = keysOfObjectLiteral(SRC, SRC.indexOf("{", backAt + 18));
+
+    // Positive control: the parse has to actually find keys, or this passes on an empty set.
+    expect(sent).toContain("toolGuidance");
+    expect(sent.length).toBeGreaterThanOrEqual(4);
+    expect(sent.filter((k) => !back.includes(k))).toEqual([]);
   });
 });

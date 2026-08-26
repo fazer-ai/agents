@@ -347,6 +347,14 @@ export function assertSettingsToolPreconditions(
   // Compared by VALUE, not by name. A name that was already invalid and is now invalid DIFFERENTLY
   // is an edit, and an edit is exactly what this refuses: comparing name membership would accept the
   // operator rewriting a broken rule into another broken rule and reading it as saved.
+  // The BAG itself being the wrong shape is not a per-name question — `invalidToolPreconditions`
+  // answers it with a synthetic name that appears in neither value map, so a name-wise comparison
+  // finds "unchanged" and lets an array or a string through. Compared as a whole, once.
+  if (next.length === 1 && next[0] === "toolPreconditions") {
+    const nextBag = JSON.stringify(rawPreconditionBag(settings));
+    if (nextBag === JSON.stringify(rawPreconditionBag(stored))) return;
+    throw new InvalidToolPreconditionError("toolPreconditions");
+  }
   const before = storedPreconditionValues(stored);
   const now = storedPreconditionValues(settings);
   const introduced = next.find((name) => now.get(name) !== before.get(name));
@@ -356,6 +364,13 @@ export function assertSettingsToolPreconditions(
 
 // The raw entries, serialized, so "did this one change?" is one comparison. `undefined` for a name
 // that is not there, which is what makes an ADDED invalid entry differ from an absent one.
+function rawPreconditionBag(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return undefined;
+  }
+  return (settings as Record<string, unknown>).toolPreconditions;
+}
+
 function storedPreconditionValues(settings: unknown): Map<string, string> {
   const out = new Map<string, string>();
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) {

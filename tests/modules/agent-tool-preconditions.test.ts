@@ -352,3 +352,60 @@ describe("round 1: a stored-invalid entry is exempt only while it does not CHANG
     ).not.toThrow();
   });
 });
+
+describe("round 2: the attribute key is operator text too", () => {
+  test.each(["constructor", "toString", "__proto__", "valueOf"])(
+    "an absent attribute named `%s` does NOT satisfy a presence rule",
+    (key) => {
+      // On an ordinary bag parsed from jsonb these all resolve to something non-blank, so the guard
+      // would read as satisfied on a conversation where the attribute was never set — the tool runs
+      // exactly where the operator asked for it not to.
+      expect(
+        evaluatePrecondition(
+          { kind: "attribute", scope: "conversation", key },
+          { conversationAttributes: {}, contactAttributes: {} },
+        ),
+      ).toBe(false);
+    },
+  );
+
+  test("an attribute genuinely named `constructor` still satisfies it", () => {
+    expect(
+      evaluatePrecondition(
+        { kind: "attribute", scope: "conversation", key: "constructor" },
+        {
+          conversationAttributes: JSON.parse('{"constructor":"acme"}'),
+          contactAttributes: {},
+        },
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("round 2: a malformed BAG is refused at the write boundary", () => {
+  test.each([
+    ["an array", []],
+    ["a string", "nope"],
+    ["a number", 7],
+  ])("refuses a new bag that is %s", (_l, bag) => {
+    expect(() =>
+      assertSettingsToolPreconditions({ toolPreconditions: bag }, undefined),
+    ).toThrow();
+  });
+
+  test("accepts a malformed bag that was already stored, unchanged", () => {
+    const stored = { toolPreconditions: "nope" };
+    expect(() =>
+      assertSettingsToolPreconditions({ toolPreconditions: "nope" }, stored),
+    ).not.toThrow();
+  });
+
+  test("refuses replacing one malformed bag with a different malformed bag", () => {
+    expect(() =>
+      assertSettingsToolPreconditions(
+        { toolPreconditions: "other" },
+        { toolPreconditions: "nope" },
+      ),
+    ).toThrow();
+  });
+});

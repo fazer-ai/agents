@@ -101,6 +101,7 @@ export async function mirrorChatwootEvent(
     status: n.status ?? null,
     assigneeStated: n.assigneeType !== undefined,
     assigneeType: n.assigneeType ?? null,
+    redirectOriginStated: n.redirectOriginDisplayId != null,
   };
   // The inbound watermark (`lastInboundAt`) advances only on a brand-new incoming customer message
   // (message_created), never on a message_updated — our own STT/vision write-back re-dispatches one
@@ -162,6 +163,7 @@ export async function mirrorChatwootEvent(
           // skip the UPDATE in the common case rather than rewriting the same two values.
           chatwootCreatedAt: true,
           chatwootFirstReplyAt: true,
+          chatwootRedirectOriginAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -173,6 +175,7 @@ export async function mirrorChatwootEvent(
               statusAt: existing.chatwootStatusAt,
               assigneeAt: existing.chatwootAssigneeAt,
               assigneeType: existing.assigneeType,
+              redirectOriginAt: existing.chatwootRedirectOriginAt,
             }
           : null,
         now,
@@ -267,6 +270,7 @@ export async function mirrorChatwootEvent(
             lastEventAt: createdLastEventAt,
             chatwootStatusAt: decision.statusAt,
             chatwootAssigneeAt: decision.assigneeAt,
+            chatwootRedirectOriginAt: decision.redirectOriginAt,
             lastInboundAt: inboundAt,
             // A row created mid-dialogue needs no special case here: what it stores is what
             // Chatwoot measured over the whole conversation, not what we happened to witness.
@@ -358,14 +362,19 @@ export async function mirrorChatwootEvent(
           ...(decision.unversioned && n.kanbanAttributes
             ? { kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue }
             : {}),
-          // NOTE: Written whenever the payload names one, WITHOUT the version fence the bags carry.
-          // The pairing is not conversation state that a stale event could regress — the fork writes
-          // it once, before any event that carries the conversation exists, and re-entry only ever
-          // moves it forward to the origin of the redirect that just happened. What a fence would buy
-          // is nothing; what it would cost is the episode staying unpaired because the payload that
-          // named it happened to lose the ordering race.
-          ...(n.redirectOriginDisplayId != null
+          // NOTE: Fenced by its OWN version mark, not by the recency the bags use. A widget
+          // conversation can be re-entered from a second WhatsApp thread, and every payload carries
+          // the pairing as of when it was SERIALIZED — a retried delivery (3 attempts, 3s apart)
+          // therefore carries the older answer and would otherwise regress the row. `last_activity_at`
+          // cannot separate two re-entries inside one second, and it does not move at all when the
+          // fork records the pairing, so ordering this field by recency would both miss the race and
+          // discard the conversation_updated that announces the change. The consumer messages AND
+          // resolves the conversation this names, so a regression acts on the wrong thread.
+          ...(decision.redirectOrigin && n.redirectOriginDisplayId != null
             ? { redirectOriginDisplayId: n.redirectOriginDisplayId }
+            : {}),
+          ...(decision.redirectOriginAt != null
+            ? { chatwootRedirectOriginAt: decision.redirectOriginAt }
             : {}),
         },
       });

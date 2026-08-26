@@ -965,6 +965,167 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     ).toBeNull();
   });
 
+  // Review round 2. The predicate above used to read the step at RAW index 0, which is not the step
+  // the runtime reads: `readFollowUpConfig` drops every non-object entry BEFORE numbering, so its
+  // step 0 is the first OBJECT in the array. Measured live against the dev server, because the
+  // reachability was the whole question: `PATCH /api/v1/agents/:id` types `settings` as an opaque
+  // record (`z.record(z.string(), z.unknown())`), NOT as the MCP behaviour schema, so this bag is
+  // stored exactly as written and answers HTTP 200.
+  //
+  // The predicate is existential now, so there is no index left to disagree about — and this test
+  // is the one that would have caught the positional version.
+  test("(#103) the sweep enqueues when a non-object entry shifts the opted-out step off index 0", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          followUp: {
+            enabled: true,
+            steps: [
+              7,
+              {
+                delayValue: 1,
+                delayUnit: "minutes",
+                instructions: "cobrança",
+                ignoreAppointmentPause: true,
+              },
+            ],
+          },
+        },
+      },
+    });
+    await seedConversation(1108, {
+      assigneeType: "AgentBot",
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await withReminder(1108, "ev_103f");
+    registerFollowUpHandlers();
+    await getJobHandler("FOLLOWUP_SWEEP")?.(
+      {
+        id: 996n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1108)}`,
+        },
+      }),
+    ).not.toBeNull();
+  });
+
+  // And the same shape with the flag NOWHERE: a malformed entry does not by itself lift the fence.
+  // Without this the test above would pass on a predicate that simply gave up on any array holding
+  // something it did not understand.
+  test("(#103) a non-object entry alone does not lift the appointment fence", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          followUp: {
+            enabled: true,
+            steps: [
+              7,
+              {
+                delayValue: 1,
+                delayUnit: "minutes",
+                instructions: "re-engajamento",
+              },
+            ],
+          },
+        },
+      },
+    });
+    await seedConversation(1109, {
+      assigneeType: "AgentBot",
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await withReminder(1109, "ev_103g");
+    registerFollowUpHandlers();
+    await getJobHandler("FOLLOWUP_SWEEP")?.(
+      {
+        id: 995n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1109)}`,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  // The other half of the existential predicate: a LATER step opting out lifts the fence too, and
+  // the handler's own gate is what then holds step 0 back. Enqueue-then-reschedule is the safe
+  // direction and it is what every conversation did before this predicate existed; suppressing
+  // wrongly is the direction where the follow-up never happens at all.
+  test("(#103) a LATER step opting out lets the sweep enqueue, and the handler still holds step 0", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "re-engajamento" },
+      {
+        delayValue: 1,
+        delayUnit: "days",
+        instructions: "cobrança",
+        ignoreAppointmentPause: true,
+      },
+    ]);
+    await seedConversation(1110, {
+      assigneeType: "AgentBot",
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await withReminder(1110, "ev_103h");
+    registerFollowUpHandlers();
+    await getJobHandler("FOLLOWUP_SWEEP")?.(
+      {
+        id: 994n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1110)}`,
+        },
+      }),
+    ).not.toBeNull();
+    const s = stubClient();
+    const result = await followUpHandler(jobFor(1110, 0), appDb, {
+      makeModel: fakeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(result.outcome).toBe("reschedule");
+    expect(s.sent).toEqual([]);
+  });
+
   // NOTE: Firing a reminder marks its row DONE. Suppression anchored on PENDING rows alone goes
   // blind after the LAST reminder fires while the appointment is still ahead (issue #39) — both
   // the handler re-check and the sweep must treat "DONE with a future start" as a live appointment,

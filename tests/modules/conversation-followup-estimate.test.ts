@@ -62,6 +62,7 @@ let convOurBotEstimate = 0n;
 let convUnidentifiedBotArmed = 0n;
 let convStepOptOutEstimate = 0n;
 let convStepOptOutArmedStep1 = 0n;
+let convStepOptOutStepGone = 0n;
 let convNoBotRowArmed = 0n;
 
 // The redirect follow-up job's run time, asserted verbatim as the widget conversation's redirectNext.
@@ -541,6 +542,28 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         status: "PENDING",
         runAt: ARMED_STEP1_RUN_AT,
         payload: { threadId: `${tenant}:${inst}:331`, stepIndex: 1 },
+      },
+    });
+
+    // Review round 2: an operator who SHORTENS a sequence leaves a pending job for a step that no
+    // longer exists. The handler answers `done` on its first look, so the console has to reach the
+    // same terminal answer — before this it counted down to a step that will never fire and, once
+    // the step decides the pause, reported the conversation as appointment-paused over a job that
+    // is about to end. stepIndex 4 on a two-step sequence.
+    convStepOptOutStepGone = await seedAppointmentConv(
+      332,
+      stepOptOutInbox.id,
+      { startISO: new Date(Date.now() + 2 * 3_600_000).toISOString() },
+      { lastFollowUpAt: FOLLOW_UP_AT },
+    );
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId: tenant,
+        kind: "FOLLOWUP",
+        dedupeKey: `followup:${tenant}:${inst}:332`,
+        status: "PENDING",
+        runAt: ARMED_STEP1_RUN_AT,
+        payload: { threadId: `${tenant}:${inst}:332`, stepIndex: 4 },
       },
     });
 
@@ -1064,6 +1087,23 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.pausedByAppointment).toBe(true);
     expect(d.followUp?.nextStep).toBeNull();
     expect(d.followUp?.nextRunAt).toBeNull();
+  });
+
+  // Review round 2, and it is a regression THIS PR introduced. Before the per-step read, the pause
+  // did not consult a step at all and the console's "paused" was accurate here, because the handler
+  // used to meet the appointment BEFORE it noticed the step was gone and rescheduled. Moving the
+  // gate below the step resolution made the handler end the sequence instead, so the same word on
+  // the screen became false. The console has to model the handler's terminal case, not just its
+  // pause.
+  test("(#103) a job past the end of a shrunk sequence reports no next step, and no pause", async () => {
+    const d = await getConversationDetail(
+      ctx(tenant),
+      convStepOptOutStepGone,
+      appDb,
+    );
+    expect(d.followUp?.nextStep).toBeNull();
+    expect(d.followUp?.nextRunAt).toBeNull();
+    expect(d.followUp?.pausedByAppointment).toBe(false);
   });
 
   // Issue #72: the pending-job branch reported whatever the row said, while the handler re-checks all

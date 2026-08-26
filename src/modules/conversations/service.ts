@@ -966,7 +966,19 @@ export async function getConversationDetail(
       (agent?.followUpArmedAt == null ||
         conv.lastInboundAt == null ||
         conv.lastInboundAt < agent.followUpArmedAt);
-    if (job && !fencedStep0Job && followUpLive) {
+    // NOTE: a job whose step no longer exists is a sequence that is OVER, and the handler says so
+    // by returning `done` on its very first look (issue #103 moved that check to the top). An
+    // operator who shortens a sequence with a later-step job still pending leaves exactly that
+    // state, so the console has to reach the same terminal answer — otherwise it counts down to a
+    // step that will never fire, prints "step 5 of 1", and (once the step decides the pause)
+    // reports the conversation as appointment-paused over a job that is about to end instead.
+    //
+    // Its own arm, ahead of both others, because falling through is not the same answer: the
+    // estimate arm below would offer step 1, which is a countdown for a sequence about to end.
+    const jobStepGone = job != null && cfg.steps[jobStepIndex] === undefined;
+    if (jobStepGone) {
+      nextStep = null;
+    } else if (job && !fencedStep0Job && followUpLive) {
       const stepIndex = jobStepIndex;
       nextStep = stepIndex + 1;
       // job.runAt is NOT the firing time yet — the sweep enqueues step 0 with runAt=now (and re-arms

@@ -136,15 +136,30 @@ async function sweepHandler(
         -- Invalid/absent start = not-future (fail-safe: only the queued arm suppresses then).
         AND NOT (
           coalesce(a.settings->'followUp'->>'pauseWhileAppointment', 'true') <> 'false'
-          -- ...and STEP 0 did not opt out of it (issue #103). The sweep only ever enqueues step 0,
-          -- so step 0 is the only step whose flag it can read — the later ones are the handler's,
-          -- which knows its own stepIndex. Read beside pauseWhileAppointment for the same
-          -- reason it lives there: this predicate is the SQL mirror of the handler's gate, and the
-          -- two drifting apart is what issues #39 and #60 already cost once each.
-          AND coalesce(
-            a.settings->'followUp'->'steps'->0->>'ignoreAppointmentPause',
-            'false'
-          ) <> 'true'
+          -- ...and NO step opted out of it (issue #103). Deliberately EXISTENTIAL, not positional:
+          -- the sweep asks "could any step want to fire through an appointment?" and the handler
+          -- asks "does THIS step want to?". Asking about step 0 here instead would put an INDEX in
+          -- the SQL, and the index the reader uses is not the raw one — readFollowUpConfig drops
+          -- every non-object entry before numbering, so a stored [7, {opted out}] (which REST
+          -- stores as written: the agent body types settings as an opaque record) leaves the sweep
+          -- suppressing the very step the handler would fire. There is no index to disagree about
+          -- if nobody reads one.
+          --
+          -- The cost is bounded and lands on the safe side: an agent whose LATER step opts out gets
+          -- step 0 enqueued during an appointment, and the handler's own gate reschedules it — which
+          -- is exactly what every conversation did before this predicate existed. Suppressing
+          -- wrongly is the expensive direction, because the follow-up then never happens at all.
+          AND NOT EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(
+              CASE
+                WHEN jsonb_typeof(a.settings->'followUp'->'steps') = 'array'
+                  THEN a.settings->'followUp'->'steps'
+                ELSE '[]'::jsonb
+              END
+            ) AS step
+            WHERE step->>'ignoreAppointmentPause' = 'true'
+          )
           AND EXISTS (
             SELECT 1
             FROM scheduler_jobs sj

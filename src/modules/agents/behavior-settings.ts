@@ -255,6 +255,7 @@ export function mergeBehaviorSettings(
   // this line is what would persist it.
   next.observability = storableObservability(normalized.observability);
   next.memory = normalized.memory;
+  next.modelFallback = normalized.modelFallback;
   // grounding: only persist when a valid distance is set; otherwise leave whatever was there
   // (a null maxDistance means "no grounding filter" — represent it explicitly when the patch
   // touched grounding so the operator can clear it).

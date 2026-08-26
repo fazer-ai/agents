@@ -57,7 +57,11 @@ export function KnowledgeApprovals({
   // editors invite approving the card the reviewer was not reading.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState({ title: "", content: "" });
-  const refusal = useFieldRefusal(APPROVAL_FIELDS);
+  // Gated on the editor being open, because that is what the two inputs are gated on: they are drawn
+  // inside `editingId === a.id`, and a list that names them while it is null claims a control that
+  // is not there. Not a reachable failure today — Cancel is disabled while the PATCH is out, so the
+  // editor cannot close under its own save — but the claim is what the rest of this reads.
+  const refusal = useFieldRefusal(editingId ? APPROVAL_FIELDS : []);
   // The CURRENT draft, readable from inside a request that started before it.
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -120,6 +124,10 @@ export function KnowledgeApprovals({
   }
 
   function startEdit(a: Approval) {
+    // Per editing SESSION, like a dialog's own reset: the mark expires by value, so reopening the
+    // same item — or another one whose title happens to match — would show the last request's
+    // server sentence before anything has been sent.
+    refusal.clear();
     setEditingId(a.id);
     setDraft({
       title: a.proposedTitle ?? "",

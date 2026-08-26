@@ -440,11 +440,19 @@ export function uncleanedHolders(src: string): string[] {
   const out: string[] = [];
   for (const m of src.matchAll(/const (\w+) = useFieldRefusal\(([^;]*?)\);/g)) {
     const holder = m[1] as string;
+    // DIALOGS, and deliberately not every state a holder is gated on.
+    //
+    // An inline editor needs the same per-session clear — `startEdit` re-seeds the form from a
+    // record, so a mark from the last request stops being about anything on screen — and this rule
+    // is not the place to demand it. Asking every gating state means asking the vault's
+    // manual/`.env` toggle too, and clearing there would DELETE a correct mark: switching views does
+    // not change the value the server refused. Separating "opens a session" from "switches a view"
+    // needs to know what the setter re-seeds, which two attempts at a heuristic got wrong in
+    // opposite directions. KnowledgeApprovals' clear is proved by a test instead.
+    const guard = codeSkeleton(m[2] as string);
     const dialogs = [
       ...new Set(
-        [...(m[2] as string).matchAll(/\b(\w+)\.isOpen\b/g)].map(
-          (d) => d[1] as string,
-        ),
+        [...guard.matchAll(/\b(\w+)\.isOpen\b/g)].map((d) => d[1] as string),
       ),
     ];
     for (const dialog of dialogs) {
@@ -495,22 +503,29 @@ function resetSites(src: string, code: string, dialog: string): string[] {
   return inline;
 }
 
-// A holder in a file that can HIDE part of its form and hands the hook a bare constant.
+// A holder that hands the hook a bare constant, which is the claim "every one of these is drawn,
+// always".
 //
-// `rendered` is what the form is DRAWING, so a file that draws conditionally has to say so in the
-// argument. A bare `const FIELDS` says "all of these, always", which is a claim, and in a file with
-// a dialog, a tab, or a mode toggle it is a false one. Measured five times before this rule existed:
-// a dismissed dialog, a tab left behind, the setup token, the vault's `.env` toggle, and the
-// add-content tabs — each of them a refusal marked onto a control nobody was rendering, with
-// `capture` telling the caller to keep the toast quiet.
+// `rendered` is what the form is DRAWING, so the default is an expression and a bare list is the
+// exception. The first two versions of this rule had it the other way round — they tried to work out
+// whether the FILE hides anything, first from a list of shapes (a dialog, a tab) and then from the
+// JSX around each reading — and each version missed the shape the next round found: an inline editor
+// opened by `editingId === a.id`, whose two inputs are as absent as any dialog's while it is closed.
+// Detecting a conditional render from source text is a real static-analysis question and string
+// matching kept answering it with one more exclusion.
 //
-// The test is on the ARGUMENT, not on the file: a conditional expression is the form answering, and
-// what it answers with is the caller's business.
+// Inverting it costs a ledger of eight and buys the property the shape list never had: a form added
+// next week either says what it draws or writes down why it always draws everything. See
+// ALWAYS_ON_SCREEN.
 export function holdersBlindToTheScreen(src: string): string[] {
-  if (!/useOnModalOpen\(|\.open\(|\btab === "|\bTabs\b/.test(src)) return [];
-  return [...src.matchAll(/const (\w+) = useFieldRefusal\(([^;]*?)\);/g)]
-    .filter((m) => /^\s*[A-Za-z_$][\w$]*\s*$/.test(m[2] as string))
-    .map((m) => m[1] as string);
+  return declarations(src)
+    .filter((d) => /^\s*[A-Za-z_$][\w$]*\s*$/.test(argOf(src, d.holder)))
+    .map((d) => d.holder);
+}
+
+function argOf(src: string, holder: string): string {
+  const m = new RegExp(`const ${holder} = useFieldRefusal\\(`).exec(src);
+  return m ? argumentOf(src, m.index + m[0].length - 1) : "";
 }
 
 // A reading that CANNOT run, because the `??` in front of it never falls through.
@@ -563,6 +578,19 @@ const NOT_A_REFUSABLE_FORM: Record<string, string> = {
 // them: the agent editor's holder is a page's for the clearing rule and a hidden form's for this
 // one. Waiving it in both was how the tab case survived the round that found the modal case.
 const ALWAYS_ON_SCREEN: Record<string, string> = {
+  "components/BusinessHoursForm.tsx :: refusal":
+    "The schedule editor IS the screen it is on, and its four controls are drawn together. The windows and exceptions lists grow and shrink; the controls that hold them do not.",
+  "pages/LoginPage.tsx :: refusal":
+    "Two boxes, both always drawn. The page unmounts on a successful login, which the mounted check already answers.",
+  "pages/SignupPage.tsx :: refusal": "Same two boxes, same reason.",
+  "pages/settings/SettingsProfilePage.tsx :: refusal":
+    "The password form is a section of the page, drawn whenever the page is.",
+  "pages/resources/documents/CompanyProfileCard.tsx :: refusal":
+    "The profile fields are the card's body; the card is either mounted or it is not.",
+  "pages/resources/AdvancedPanel.tsx :: embRefusal":
+    "One credential picker, drawn with the panel.",
+  "pages/resources/AdvancedPanel.tsx :: lfRefusal":
+    "The Langfuse credential picker, likewise. The enable switch hides the SETTINGS below it, not the picker this holder names.",
   "pages/admin/AdminBrandingPage.tsx :: refusal":
     "The branding form is drawn unconditionally by the page. The only thing this file hides is the logo cropper, which writes no field.",
 };
@@ -1065,18 +1093,18 @@ describe("a form that writes holds the refusal it gets", () => {
       .filter((h) => !(h in ALWAYS_ON_SCREEN));
     expect(
       blind,
-      "a bare constant claims every field is drawn, always, and this file hides some of them: hand the hook the list it is DRAWING",
+      "a bare constant claims every one of these is drawn, always: hand the hook the list it is DRAWING, or name the form in ALWAYS_ON_SCREEN",
     ).toEqual([]);
   });
 
   test("the always-on-screen ledger is pinned to its size", () => {
-    expectWaiverLedger("ALWAYS_ON_SCREEN", ALWAYS_ON_SCREEN, 1);
+    expectWaiverLedger("ALWAYS_ON_SCREEN", ALWAYS_ON_SCREEN, 8);
   });
 
   test("the predicate flags a holder that claims every field, always", () => {
     const src = `
       const refusal = useFieldRefusal(FIELDS);
-      useOnModalOpen(modal, () => {});
+      {modal.isOpen && <FormField error={refusal.at("name", v)} />}
     `;
     expect(holdersBlindToTheScreen(src)).toEqual(["refusal"]);
   });
@@ -1086,9 +1114,10 @@ describe("a form that writes holds the refusal it gets", () => {
     // while the operator reads another tab, and a save started before the switch answers after it.
     const src = `
       const refusal = useFieldRefusal(EDITOR_FIELDS);
-      {tab === "general" && <GeneralTab />}
+      {tab === "general" ? (
+        <FormField error={refusal.at("name", v)} />
+      ) : null}
     `;
-
     expect(holdersBlindToTheScreen(src)).toEqual(["refusal"]);
   });
 
@@ -1097,9 +1126,34 @@ describe("a form that writes holds the refusal it gets", () => {
     // for that too. What it answers with is the caller's business.
     const src = `
       const refusal = useFieldRefusal(a.isOpen || b.isOpen ? FIELDS : []);
-      useOnModalOpen(modal, () => {});
+      {a.isOpen && <FormField error={refusal.at("name", v)} />}
     `;
     expect(holdersBlindToTheScreen(src)).toEqual([]);
+  });
+
+  test("a page's form is flagged too, and answers in the ledger", () => {
+    // The inversion: a bare list is the exception, not the default. A form that really does draw all
+    // of them says so once, by name, in ALWAYS_ON_SCREEN — which is a sentence someone wrote, not a
+    // shape a regex guessed.
+    const src = `
+      const refusal = useFieldRefusal(BRANDING_FIELDS);
+      <FormField error={refusal.at("name", v)} />
+    `;
+    expect(holdersBlindToTheScreen(src)).toEqual(["refusal"]);
+  });
+
+  test("an inline editor guards its readings like any dialog", () => {
+    // The shape the file-shape list missed: no dialog, no tab, and the two inputs are as absent as
+    // any modal's while `editingId` is null.
+    const src = `
+      const refusal = useFieldRefusal(APPROVAL_FIELDS);
+      {editingId === a.id ? (
+        <Input error={refusal.at("title", draft.title)} />
+      ) : (
+        <p>{a.title}</p>
+      )}
+    `;
+    expect(holdersBlindToTheScreen(src)).toEqual(["refusal"]);
   });
 
   test("a per-control list is an answer too", () => {
@@ -1108,7 +1162,7 @@ describe("a form that writes holds the refusal it gets", () => {
         "name",
         ...(needsParamName ? ["paramName"] : []),
       ]);
-      useOnModalOpen(modal, () => {});
+      {needsParamName && <Input error={refusal.at("paramName", v)} />}
     `;
     expect(holdersBlindToTheScreen(src)).toEqual([]);
   });

@@ -1,6 +1,13 @@
 /// <reference lib="dom" />
 
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
 import { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
 import { readTtsFormState } from "@/client/pages/agents/ttsFormState";
@@ -13,7 +20,7 @@ import { readTtsFormState } from "@/client/pages/agents/ttsFormState";
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 const realFetch = globalThis.fetch;
-globalThis.fetch = (async () =>
+const stubFetch = (async () =>
   new Response(JSON.stringify({ data: [] }), {
     headers: { "content-type": "application/json" },
   })) as unknown as typeof globalThis.fetch;
@@ -154,6 +161,14 @@ const staleClaims = () =>
   screen.queryAllByText(/lê apenas imagens/i).length;
 
 describe("vision provider document support, at the point of choice", () => {
+  // Installed in `beforeAll` rather than at module scope, and this is not style. `globalThis.fetch`
+  // is the whole PROCESS's, and a swap made while the module loads is in force from that moment
+  // until this describe finishes — a window that covers whatever else the runner is doing in
+  // between. Every DB-backed test in the suite that reaches the network is inside it. Bracketing it
+  // to the describe keeps the swap as short as the tests that need it.
+  beforeAll(() => {
+    globalThis.fetch = stubFetch;
+  });
   afterEach(() => cleanup());
   afterAll(() => {
     globalThis.fetch = realFetch;

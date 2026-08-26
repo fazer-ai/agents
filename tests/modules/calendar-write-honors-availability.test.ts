@@ -444,6 +444,67 @@ describe("calendar writes honor availability — round 1 (#345)", () => {
     expect(out).toContain("not a bookable");
   });
 
+  test("a legacy all-day appointment can still be converted to a timed slot on its own day", async () => {
+    // freeBusy reports the all-day event as a day-long busy interval. Read from the request, its
+    // span is unrepresentable (a bare date is not an instant), so it stayed in the busy list and
+    // every same-day conversion collided with the very event being converted.
+    const { impl, calls } = routeFetch((url, init) => {
+      if (url.includes("/freeBusy"))
+        return {
+          json: {
+            calendars: {
+              primary: {
+                busy: [
+                  {
+                    start: `${DAY}T00:00:00-03:00`,
+                    end: "2099-06-23T00:00:00-03:00",
+                  },
+                ],
+              },
+            },
+          },
+        };
+      if (init.method === "GET")
+        return {
+          json: {
+            id: "ev_legacy",
+            extendedProperties: stampedExt,
+            start: { date: DAY },
+            end: { date: "2099-06-23" },
+          },
+        };
+      return { json: { id: "ev_legacy" } };
+    });
+    await toolFor(
+      "calendar_update_event",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      eventId: "ev_legacy",
+      start: AT("14:00"),
+      end: AT("15:00"),
+    });
+    expect(writes(calls)).toHaveLength(1);
+    expect(writes(calls)[0]?.init.method).toBe("PATCH");
+  });
+
+  test("the refusal carries each alternative's exact instants, not only its label", async () => {
+    // The label has no year and no offset, and across a DST fallback two distinct slots wear the
+    // same one. The tool refuses to guess a timestamp, so it cannot ask the model to build one.
+    const { impl } = freeCalendar();
+    const out = (await toolFor(
+      "calendar_create_event",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      summary: "Consulta",
+      start: AT("14:15"),
+      end: AT("15:15"),
+    })) as string;
+    expect(out).toContain(new Date(Date.parse(AT("14:00"))).toISOString());
+    expect(out).toContain(new Date(Date.parse(AT("15:00"))).toISOString());
+  });
+
   test("resending the same times while renaming is not a move, and is not checked", async () => {
     // The appointment is in the past, so judging it would refuse. The tool promises an edit that
     // leaves the time alone is never checked, and a caller that echoes back the times it already

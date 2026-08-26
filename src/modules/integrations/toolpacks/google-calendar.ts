@@ -408,10 +408,14 @@ function toEventTimePatch(
   return { ...toEventTime(value, timeZone), date: null };
 }
 
-// A blocking-calendar event as a busy window. Timed events parse as-is; an all-day `date` widens to
-// local midnight in the integration timezone (Google's all-day end.date is already exclusive).
-// Unparseable shapes → null (skipped defensively).
-function blockingBusyWindow(
+// The span an event OCCUPIES. Timed events parse as-is; an all-day `date` widens to local midnight
+// in the integration timezone (Google's all-day end.date is already exclusive). Unparseable shapes
+// → null (skipped defensively).
+//
+// Two callers, and the all-day half is load-bearing for both: a holiday is the all-day shape, and
+// so is a legacy appointment being converted to a timed slot, whose own day-long busy window has to
+// come out of its way or every same-day conversion collides with itself.
+function eventBusyWindow(
   ev: Record<string, unknown>,
   timeZone: string,
 ): { start: string; end: string } | null {
@@ -916,7 +920,7 @@ async function readBlockingWindows(
     const items = Array.isArray(evData.items) ? evData.items : [];
     const windows: BusyWindow[] = [];
     for (const ev of items) {
-      const w = blockingBusyWindow(
+      const w = eventBusyWindow(
         (ev ?? {}) as Record<string, unknown>,
         timeZone,
       );
@@ -1086,11 +1090,13 @@ function notBookableMessage(alternatives: Slot[]): string {
   if (alternatives.length === 0) {
     return "That time is not a bookable appointment slot, and nothing else is bookable that day. Call calendar_check_availability for another day and offer the customer a time from it.";
   }
-  return `That time is not a bookable appointment slot. Bookable times that day: ${alternatives
-    .map((s) => s.label)
-    .join(
-      ", ",
-    )}. Offer one of these to the customer and use its exact start and end.`;
+  // The exact start/end travel with the label, in the same shape calendar_check_availability
+  // returns. A label alone carries no year and no offset, and across a DST fallback two different
+  // slots wear the same one — so a refusal that only named them would be asking the model to
+  // reconstruct a timestamp this very tool refuses to guess at.
+  return `That time is not a bookable appointment slot. These are: ${JSON.stringify(
+    alternatives,
+  )}. Offer one to the customer and pass its start and end back unchanged.`;
 }
 
 // The availability read failed, so whether the time is free is unknown. Writing anyway is the double
@@ -1423,15 +1429,10 @@ function buildUpdateEventTool(
           businessHoursId,
           start: nextStart,
           end: nextEnd,
-          // The appointment being moved: its own booking comes back as busy, and leaving it in place
-          // would make every reschedule collide with itself.
-          excludeBusy:
-            currentStart &&
-            currentEnd &&
-            at(currentStart) !== null &&
-            at(currentEnd) !== null
-              ? { start: currentStart, end: currentEnd }
-              : null,
+          // The appointment being moved: its own booking comes back as busy, and leaving it in
+          // place would make every reschedule collide with itself. Read from the EVENT, not from
+          // the request, so a legacy all-day appointment contributes the days it really occupies.
+          excludeBusy: eventBusyWindow(ownerEv, timeZone),
         });
         if (!judged.ok) return judged.refusal;
       }

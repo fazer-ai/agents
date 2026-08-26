@@ -79,10 +79,45 @@ interface Stub {
 }
 
 // A Chatwoot that holds one page of history and records what was posted back to it.
-function stubChatwoot(opts: { page?: unknown; throwOnRead?: boolean }): Stub {
+//
+// `conv` is the LIVE conversation the recovery reads before rebuilding anything, in the shape a real
+// `GET /conversations/:id` returns (MEASURED against the fork: `id` is the display id, `status` is a
+// string, the assignee lives under `meta`, and there is no `contact_inbox`). It defaults to an
+// unassigned pending conversation whose last activity is the message's own time, which is what a
+// real account reports for a conversation whose newest event IS that message.
+function stubChatwoot(opts: {
+  page?: unknown;
+  throwOnRead?: boolean;
+  conv?: {
+    status?: string;
+    assigneeType?: string | null;
+    assigneeId?: number | null;
+    lastActivityAt?: number;
+  };
+}): Stub {
   const sent: Array<[number, string]> = [];
   const asked: Array<[number, number | undefined]> = [];
+  const c = opts.conv ?? {};
   const client = {
+    getConversation: async (conversationId: number) => {
+      if (opts.throwOnRead) throw new Error("connect ECONNREFUSED");
+      return {
+        id: conversationId,
+        status: c.status ?? "pending",
+        inbox_id: CHATWOOT_INBOX_ID,
+        last_activity_at: c.lastActivityAt ?? SENT_AT,
+        timestamp: c.lastActivityAt ?? SENT_AT,
+        meta: {
+          ...(c.assigneeType != null
+            ? {
+                assignee_type: c.assigneeType,
+                assignee: { id: c.assigneeId, name: "outro" },
+              }
+            : { assignee: null }),
+          sender: { id: 77, name: "Cliente" },
+        },
+      };
+    },
     getMessages: async (conversationId: number, o?: { before?: number }) => {
       asked.push([conversationId, o?.before]);
       if (opts.throwOnRead) throw new Error("connect ECONNREFUSED");
@@ -161,6 +196,7 @@ async function seedConversation(
     assigneeType?: string | null;
     assigneeId?: number | null;
     lastEventAt?: Date;
+    status?: string;
   } = {},
 ) {
   return suDb.conversation.create({
@@ -168,7 +204,7 @@ async function seedConversation(
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootConversationId: convId,
-      status: "pending",
+      status: over.status ?? "pending",
       assigneeType: over.assigneeType ?? null,
       assigneeId: over.assigneeId ?? null,
       inboxId: inboxDbId,
@@ -327,6 +363,79 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
   });
 
+  test("a conversation the mirror still calls resolved is answered anyway", async () => {
+    // The case that refuted this file's first design. An incoming message on a resolved conversation
+    // REOPENS it (MEASURED at the fork: `Message#reopen_resolved_conversation` — `pending` on a bot
+    // inbox, `open` otherwise), and the delivery that would have mirrored that is the one that died.
+    // Built from the mirror alone, the body says `resolved`, `shouldBotHandle` refuses, the row is
+    // marked PROCESSED and this reports a recovery that answered nobody. A customer writing again
+    // after a conversation was resolved is the ordinary way a new episode starts.
+    const convId = 8926;
+    const messageId = 9429;
+    const conv = await seedConversation(convId, {
+      status: "resolved",
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "voltei" }]),
+      // What Chatwoot actually holds: the reopen already happened there.
+      conv: { status: "pending" },
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+    expect(stub.sent).toEqual([[convId, REPLY]]);
+
+    // And the mirror is REPAIRED, not merely bypassed: every gate downstream reads this row, so
+    // leaving it on `resolved` would hand the next delivery the same wrong answer.
+    const row = await suDb.conversation.findUniqueOrThrow({
+      where: { id: conv.id },
+      select: { status: true },
+    });
+    expect(row.status).toBe("pending");
+  });
+
+  test("a live snapshot that cannot be trusted defers instead of falling back", async () => {
+    // `parseLiveConversation` returns null for a snapshot it cannot trust — no status, or an
+    // AgentBot assignee with no readable id, which is unverifiable ownership. Falling back to the
+    // mirror would use exactly the value this read exists to distrust.
+    const convId = 8927;
+    const messageId = 9430;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+      // An AgentBot assignee with no readable id: ownership that cannot be checked, which
+      // `shouldBotHandle` would read as OURS.
+      conv: { assigneeType: "AgentBot", assigneeId: null },
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("deferred");
+    expect(stub.sent).toEqual([]);
+    // A deferral spends no attempt: the row keeps its budget for a pass that can read the account.
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+  });
+
   test("the loss the sweep reported is closed by a line of its own", async () => {
     // `retireCoveredDeliveries` writes its correction only for rows it moves out of DEAD itself, and
     // this row left DEAD at the claim — so the turn settling it afterwards sees PROCESSING and takes
@@ -364,6 +473,69 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // `warn`, matching the correction it stands in for: it must not page the channel the loss paged.
     expect(closing[0]?.level).toBe("warn");
     expect(closing[0]?.source).toBe("inbox");
+  });
+
+  test("a closing line that could not be written is not swallowed", async () => {
+    // The only trace of how the loss ended, written after the row has already left DEAD — so a
+    // failed write loses it for good and nothing retries it. The branch cannot be reached
+    // behaviourally: making `writeFlowEvent` fail against a real database means faking the client
+    // out from under `runScopedOn`, which proves nothing about the shipped code. Asserted where it
+    // is written instead, the same way tests/modules/delivery-sweep.test.ts asserts its two.
+    const src = await Bun.file(
+      new URL(
+        "../../src/modules/chatwoot/recover-delivery.ts",
+        import.meta.url,
+      ),
+    ).text();
+    const tail = src.slice(src.indexOf("const closed = await writeFlowEvent("));
+    expect(tail).toContain("if (!closed.delivered)");
+    // Error, not warn: the loss has left the worklist and the page an operator received stays open.
+    expect(tail.slice(tail.indexOf("if (!closed.delivered)"))).toContain(
+      "logger.error(",
+    );
+  });
+
+  test("a turn that starts while the recovery is reading is not raced", async () => {
+    // The early fence spends no network on a conversation already busy; this is about the several
+    // awaits after it — two REST reads and a reconcile — during which a live delivery can start a
+    // turn, and a live delivery does not consult the recovery claim.
+    const convId = 8928;
+    const messageId = 9431;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    // The turn starts exactly where the real one would: after the recovery decided the conversation
+    // was free, and before it hands the delivery path anything.
+    const racing: RuntimeDeps = {
+      ...depsWith(stub),
+      makeClient: async (cfg) => {
+        markTurnInFlight(threadOf(convId));
+        const inner = stub.makeClient;
+        if (!inner) throw new Error("stub has no client factory");
+        return inner(cfg);
+      },
+    };
+
+    let outcome: string;
+    try {
+      outcome = await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: racing,
+      });
+    } finally {
+      clearTurnInFlight(threadOf(convId));
+    }
+
+    expect(outcome).toBe("deferred");
+    expect(stub.sent).toEqual([]);
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
   });
 
   test("a recovery that could not run leaves no closing line", async () => {
@@ -534,6 +706,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
 
     expect(outcome).toBe("deferred");
     expect(stub.sent).toEqual([]);
+    // Nothing was read either, which is the early check's whole purpose: the late one before the
+    // handoff is what makes the fence correct, and this one is what keeps a busy conversation from
+    // costing two REST round trips per pass.
+    expect(stub.asked).toEqual([]);
     // Deferred keeps the budget: nothing was attempted, so nothing was spent.
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
   });

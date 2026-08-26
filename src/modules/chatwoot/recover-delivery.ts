@@ -9,7 +9,8 @@ import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { agentBotChatwootId, loadChatwootClient } from "./instance";
-import { normalizeChatwootEvent } from "./normalize";
+import { normalizeChatwootEvent, parseLiveConversation } from "./normalize";
+import { reconcileMirrorFromLive } from "./reconcile";
 import { buildRecoveryPayload } from "./recover-payload";
 import { processChatwootDelivery } from "./webhook";
 
@@ -273,9 +274,29 @@ async function runRecovery(params: {
       ? null
       : await agentBotChatwootId(params.tenantId, instanceId, agentId, base);
 
-  // The message, which is the one thing the mirror does not hold. `before` anchors the page that
-  // ENDS at this id, so the message is in it whatever the conversation's length.
+  // TWO READS OFF THE ACCOUNT, and the first one exists because a review round refuted the premise
+  // the other half of this file was written on.
+  //
+  // The conversation's own state cannot come from the mirror, and the reason is the strand itself:
+  // the delivery that would have mirrored this message is the one that died, so the mirror holds the
+  // state from BEFORE it. MEASURED at the fork's source and live against it — an incoming message on
+  // a `resolved` conversation reopens it (`Message#reopen_resolved_conversation`: `pending` on a
+  // bot inbox, `open` otherwise), so the mirror still says `resolved` while Chatwoot says otherwise.
+  // Copied into the body, that stale `resolved` makes `shouldBotHandle` refuse, the row is marked
+  // PROCESSED, this function reports a recovery, and the customer is never answered. A customer
+  // writing again after a conversation was resolved is the ordinary way a new episode starts, so
+  // this is not an exotic path.
+  //
+  // The live snapshot goes through `reconcileMirrorFromLive`, not straight into the body, and that
+  // is the more useful of the two: it REPAIRS the mirror under the same ordering rule the webhook
+  // mirror uses, so the gates downstream — which read the mirror, not this — see the truth too, and
+  // a webhook committed between the GET and the write still outranks the snapshot. The row it
+  // returns is what the body is built from.
+  //
+  // The message read stays what it was: the one thing no mirror holds. `before` anchors the page
+  // that ENDS at this id, so the message is in it whatever the conversation's length.
   let raw: unknown;
+  let live: ReturnType<typeof parseLiveConversation> = null;
   try {
     const client = await loadChatwootClient(params.tenantId, instanceId, {
       base,
@@ -285,6 +306,7 @@ async function runRecovery(params: {
         ? { makeClient: params.deps.makeClient }
         : {}),
     });
+    live = parseLiveConversation(await client.getConversation(conversationId));
     raw = await client.getMessages(conversationId, { before: messageId + 1 });
   } catch (e) {
     // The account is unreachable or the token no longer works. Both are repairable by an operator,
@@ -298,6 +320,29 @@ async function runRecovery(params: {
     );
     return "deferred";
   }
+  // Unreadable rather than absent: `parseLiveConversation` returns null for a snapshot it cannot
+  // trust (no status, or an AgentBot assignee with no id — unverifiable ownership). Deferring is
+  // what the live gate does with the same answer, and for the same reason: proceeding would mean
+  // falling back to the mirror, which is the value this read exists to distrust.
+  if (!live) {
+    logger.warn(
+      "chatwoot recovery: conversation %d did not parse as a live snapshot (delivery=%s)",
+      conversationId,
+      String(row.id),
+    );
+    return "deferred";
+  }
+  const reconciled = await reconcileMirrorFromLive({
+    tenantId: params.tenantId,
+    instanceId,
+    conversationId,
+    live,
+    base,
+  });
+  // The row AFTER the reconcile, which is the truth in both directions: the live snapshot where it
+  // won, and whatever outranked it where it lost. Null only if the mirror row vanished between the
+  // two reads, and the row read above is then the best thing left.
+  const state = reconciled.state ?? conv;
 
   const message = findRawMessage(raw, messageId);
   // Chatwoot no longer has the message: deleted, or the conversation was. There is nothing to
@@ -308,11 +353,13 @@ async function runRecovery(params: {
     buildRecoveryPayload({
       conversation: {
         chatwootConversationId: conversationId,
+        // From the mirror, and only this one: the REST conversation renders no `contact_inbox`
+        // (MEASURED), and the pairing does not move anyway.
         contactInboxId: conv.contactInboxId,
-        status: conv.status,
-        assigneeType: conv.assigneeType,
-        assigneeId: conv.assigneeId,
-        assigneeName: conv.assigneeName,
+        status: state.status,
+        assigneeType: state.assigneeType,
+        assigneeId: state.assigneeId,
+        assigneeName: state.assigneeName,
       },
       inboxId: conv.inbox?.chatwootInboxId ?? null,
       inboxName: conv.inbox?.name ?? null,
@@ -337,6 +384,24 @@ async function runRecovery(params: {
   // recovery that cannot produce an event has nothing to hand the delivery path, and saying so is
   // cheaper than a throw nobody catches.
   if (!normalized) return "unrecoverable";
+
+  // Asked AGAIN, immediately before the handoff. The check at the top spends no network on a
+  // conversation that is already busy; this one is about the several awaits since — two REST reads
+  // and a reconcile — during which a live delivery can have started a turn, and a live delivery does
+  // not consult the recovery claim.
+  //
+  // It NARROWS the window and does not close it: the last one is `processChatwootDelivery`'s own
+  // path down to where `runAgentTurn` marks the thread. What is left is the same overlap two live
+  // deliveries for one conversation already have, which the post-response supersede and the
+  // monotonic watermark CAS are what bound. Closing it properly means an exclusion both entry paths
+  // take at the turn boundary, which is issue #203's durable fence and not this issue.
+  if (
+    isTurnInFlight(
+      chatwootThreadId(params.tenantId, instanceId, conversationId),
+    )
+  ) {
+    return "deferred";
+  }
 
   const outcome = await processChatwootDelivery({
     tenantId: params.tenantId,
@@ -367,7 +432,7 @@ async function runRecovery(params: {
   // `warn`, matching the correction it stands in for, and it does not page the channel the loss
   // paged: a channel's `minLevel` defaults to `error`, so this is read on the Logs page. That gap is
   // the existing correction's too, and the reason is written where that one is.
-  await writeFlowEvent(
+  const closed = await writeFlowEvent(
     {
       tenantId: params.tenantId,
       turnId: crypto.randomUUID(),
@@ -391,6 +456,17 @@ async function runRecovery(params: {
       },
     },
   );
+  // `writeFlowEvent` swallows its own failure and reports it, the same shape the sweep's own lines
+  // use. Loud, because nothing retries this one: the row has already left DEAD, so the loss is out
+  // of the worklist with the page an operator received still open, and this log line is the only
+  // remaining trace of how it ended.
+  if (!closed.delivered) {
+    logger.error(
+      "chatwoot recovery: %s was recovered but its closing line could not be written; the loss reported for conversation %d has nothing closing it",
+      row.deliveryId,
+      conversationId,
+    );
+  }
   return "recovered";
 }
 

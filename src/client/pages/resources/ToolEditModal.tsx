@@ -279,11 +279,15 @@ const TOOL_FIELDS = [
   "headers",
   "inputSchema",
   "query",
-  "body",
   "credentialRef",
   "expectedStatuses",
-  "ackMessage",
 ] as const;
+
+// The two this modal draws behind a switch. Both stay in the BODY when their control is gone —
+// `body` becomes an empty kv bag for a GET, `ackMessage` becomes null — so the server can still
+// refuse either by name with nothing on screen to mark.
+const TOOL_BODY_FIELDS = ["body"] as const;
+const TOOL_ACK_FIELDS = ["ackMessage"] as const;
 
 export function formFromTool(tool: Tool) {
   // NOTE: legacy rows authored programmatically may still carry pre-normalization shapes
@@ -649,7 +653,6 @@ export function ToolEditModal({
   // rather than under a box that no longer holds it.
   const formRef = useRef(form);
   formRef.current = form;
-  const refusal = useFieldRefusal(modal.isOpen ? TOOL_FIELDS : []);
   const [saving, setSaving] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -668,6 +671,16 @@ export function ToolEditModal({
   const aiFieldNames = form.aiFields.map((f) => f.name.trim()).filter(Boolean);
   const isWriteMethod =
     form.method === "POST" || form.method === "PUT" || form.method === "PATCH";
+
+  const refusal = useFieldRefusal(
+    modal.isOpen
+      ? [
+          ...TOOL_FIELDS,
+          ...(isWriteMethod ? TOOL_BODY_FIELDS : []),
+          ...(form.ackEnabled ? TOOL_ACK_FIELDS : []),
+        ]
+      : [],
+  );
   // What the inputs hold right now, in the server's vocabulary. The marks are keyed by VALUE, so
   // this has to be the same function the save sends. Null only while the headers are unparseable,
   // which is a client-side check the banner already answers.

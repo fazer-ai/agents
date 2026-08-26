@@ -63,7 +63,13 @@ function AlertChannelModal({
   const [secretRef, setSecretRef] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState("");
-  const refusal = useFieldRefusal(modal.isOpen ? ALERT_FIELDS : []);
+  const refusal = useFieldRefusal(
+    modal.isOpen
+      ? type === "webhook"
+        ? ALERT_WEBHOOK_FIELDS
+        : ALERT_FIELDS
+      : [],
+  );
   const [loading, setLoading] = useState(false);
 
   useOnModalOpen(modal, () => {
@@ -397,7 +403,12 @@ function AlertChannelModal({
 
 // The keys of the body this form writes: the route refuses by them, and `requireVaultRef` names
 // `secretRef`. `stages` and `minLevel` are chip rows and a Select with nowhere to render a sentence.
-const ALERT_FIELDS = ["name", "type", "url", "secretRef"] as const;
+const ALERT_FIELDS = ["name", "type", "url"] as const;
+
+// The signing secret belongs to a webhook, and its picker is drawn only there. The ref stays in the
+// BODY when the operator switches to Discord, though — a credential picked and then stranded — so
+// the server can still refuse it by name, on a dialog with no picker to mark.
+const ALERT_WEBHOOK_FIELDS = [...ALERT_FIELDS, "secretRef"] as const;
 
 export function AlertChannelsSection() {
   const { t } = useTranslation();

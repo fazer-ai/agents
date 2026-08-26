@@ -528,6 +528,84 @@ function argOf(src: string, holder: string): string {
   return m ? argumentOf(src, m.index + m[0].length - 1) : "";
 }
 
+// A field whose control is drawn BEHIND A GUARD, declared as though it always were.
+//
+// This is the per-control half of the rule above, and it took three review rounds to state because I
+// kept trying to state it about the file: a dialog, then a tab, then an inline editor, then a mode
+// toggle inside a form that is itself on screen. The thing being asked about was never the file. It
+// is one JSX conditional, in the idiom this codebase writes it in — `{expr && (`, `{expr ? (` — with
+// the expression carrying no parens or braces of its own, which is what keeps the search from
+// walking out to the component body and calling every arrow and type annotation a guard.
+//
+// The demand is that the DECLARATION mention the STATE the guard turns on — `type` for
+// `type === "webhook"`, `form.ackEnabled` for itself — which is exactly what a caller writes anyway
+// (`type === "webhook" ? ALERT_WEBHOOK_FIELDS : ALERT_FIELDS`). Mentioning it rather than repeating
+// the whole condition, because the two are not always spellable the same way: an inline editor's
+// guard is `editingId === a.id`, per row, and the holder above the rows has only `editingId`. What
+// makes this checkable at all is that it never has to decide whether one expression implies another.
+//
+// Run over the tree it named eighteen guarded controls, six of which were declared unconditionally —
+// two the review found and four it had not reached.
+const JSX_GUARD = /\{\s*[^{}()]*?(?:&&|\?)\s*$/;
+
+export function guardOf(
+  src: string,
+  holder: string,
+  field: string,
+): string | null {
+  const code = codeSkeleton(src);
+  const re = new RegExp(
+    `\\b${holder}\\.at\\(\\s*["']${field}["']|\\b${holder}\\.at\\(\\s*\\n\\s*["']${field}["']`,
+    "g",
+  );
+  for (const m of src.matchAll(re)) {
+    const at = m.index as number;
+    const opens: number[] = [];
+    for (let i = 0; i < at; i++) {
+      const c = code[i];
+      if (c === "(" || c === "{") opens.push(i);
+      else if (c === ")" || c === "}") opens.pop();
+    }
+    // Innermost first: an outer guard is about the screen, and the one this control answers to is
+    // the nearest one.
+    for (const o of opens.reverse()) {
+      const from = Math.max(0, o - 120);
+      const g = JSX_GUARD.exec(code.slice(from, o));
+      if (!g) continue;
+      return src
+        .slice(from + (g.index as number), o)
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+  }
+  return null;
+}
+
+// The state a guard turns on: the leading identifier chain, past any `!`. `form.ackEnabled` and not
+// `form`, because half this tree's guards hang off one `form` object and the root alone would let
+// any of them vouch for any other.
+function stateOf(guard: string): string {
+  return (
+    /^\{\s*!*\s*([A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)*)/.exec(
+      guard,
+    )?.[1] ?? guard
+  );
+}
+
+export function guardedButUnconditional(src: string): string[] {
+  const out: string[] = [];
+  for (const d of declarations(src)) {
+    const arg = argOf(src, d.holder).replace(/\s+/g, " ");
+    for (const field of d.fields) {
+      const guard = guardOf(src, d.holder, field);
+      if (!guard) continue;
+      if (!arg.includes(stateOf(guard)))
+        out.push(`${d.holder}.${field} <- ${guard}`);
+    }
+  }
+  return out;
+}
+
 // A reading that CANNOT run, because the `??` in front of it never falls through.
 //
 // `at(…)` answers `string | null`, so it reads naturally as the fallback of a local validation
@@ -729,6 +807,60 @@ describe("a form that writes holds the refusal it gets", () => {
       setError(r.capture(e, f, sent, current));
     `;
     expect(halfUsedHolders(src)).toEqual(["r (never read)"]);
+  });
+
+  test("a control drawn behind a guard is declared behind the same one", () => {
+    const blind = sources(ROOT).flatMap((f) =>
+      guardedButUnconditional(readFileSync(f, "utf8")).map(
+        (h) => `${f.slice(`${ROOT}/`.length)} :: ${h}`,
+      ),
+    );
+    expect(
+      blind,
+      "this control is only drawn under that condition, so declaring it always puts the server's sentence on nothing and keeps the toast quiet: mirror the guard in the list",
+    ).toEqual([]);
+  });
+
+  test("the predicate flags a field drawn behind a switch", () => {
+    const src = `
+      const F = ["name", "secretRef"] as const;
+      const r = useFieldRefusal(m.isOpen ? F : []);
+      <Input error={r.at("name", n)} />
+      {type === "webhook" && (
+        <CredentialPicker error={r.at("secretRef", s)} />
+      )}
+    `;
+    expect(guardedButUnconditional(src)).toEqual([
+      'r.secretRef <- {type === "webhook" &&',
+    ]);
+  });
+
+  test("a declaration that mirrors the guard is not flagged", () => {
+    const src = `
+      const F = ["name"] as const;
+      const WF = [...F, "secretRef"] as const;
+      const r = useFieldRefusal(type === "webhook" ? WF : F);
+      <Input error={r.at("name", n)} />
+      {type === "webhook" && (
+        <CredentialPicker error={r.at("secretRef", s)} />
+      )}
+    `;
+    expect(guardedButUnconditional(src)).toEqual([]);
+  });
+
+  test("the badge idiom is not a guard", () => {
+    // `{r.at(x) && (<span/>)}` guards on the refusal itself and says nothing about whether the
+    // control is drawn. It needs no clause of its own: the pattern only accepts a condition that
+    // ends the text before the delimiter, and here the reading it would flag sits past a `<span>`.
+    // Measured — an explicit exclusion for it was dead in both directions.
+    const src = `
+      const F = ["windows"] as const;
+      const r = useFieldRefusal(F);
+      {r.at("windows", w) && (
+        <span className="text-error">{r.at("windows", w)}</span>
+      )}
+    `;
+    expect(guardedButUnconditional(src)).toEqual([]);
   });
 
   test("no reading sits behind a fallback that never falls through", () => {

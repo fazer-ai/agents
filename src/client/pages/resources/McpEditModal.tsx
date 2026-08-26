@@ -73,13 +73,13 @@ function bodyOf(form: Form) {
 // `command` is declared even though no single input holds it: the launcher Select and the args Input
 // compose into it, so a refusal about the command is marked on the args field, which is the half an
 // operator can act on. See the render.
-const MCP_FIELDS = [
-  "name",
-  "transport",
-  "url",
-  "command",
-  "credentialRef",
-] as const;
+const MCP_FIELDS = ["name", "transport", "credentialRef"] as const;
+
+// A stdio server is launched, the others are reached: the modal draws the command line for one and
+// the URL for the other, never both. Both stay in the BODY, so declaring both would put a refusal
+// about the one that is hidden onto a control that is not there.
+const MCP_STDIO_FIELDS = [...MCP_FIELDS, "command"] as const;
+const MCP_URL_FIELDS = [...MCP_FIELDS, "url"] as const;
 
 // Per-launcher args placeholder (the package + its flags; the launcher itself is the Select).
 function argsPlaceholder(launcher: string): string {
@@ -119,7 +119,6 @@ export function McpEditModal({
   // banner rather than under a box that no longer holds it.
   const formRef = useRef(form);
   formRef.current = form;
-  const refusal = useFieldRefusal(modal.isOpen ? MCP_FIELDS : []);
   const [saving, setSaving] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -182,6 +181,9 @@ export function McpEditModal({
   });
 
   const isStdio = form.transport === "stdio";
+  const refusal = useFieldRefusal(
+    modal.isOpen ? (isStdio ? MCP_STDIO_FIELDS : MCP_URL_FIELDS) : [],
+  );
   // What the inputs hold right now, in the server's vocabulary. The marks are keyed by VALUE, so this
   // has to be the same function the save sends — an edit takes the mark off because the box stops
   // holding what was refused.

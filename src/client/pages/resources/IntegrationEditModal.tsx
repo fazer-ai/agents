@@ -486,9 +486,13 @@ function emptyForm(): Form {
 //
 // `config` is not here: it is a per-toolpack section of many controls, and a refusal about the bag
 // as a whole has no single box to sit under, so it belongs in the toast.
-const INTEGRATION_FIELDS = [
-  "name",
-  "credentialRef",
+const INTEGRATION_FIELDS = ["name", "credentialRef"] as const;
+
+// The inbound secret's picker is drawn only for a strategy that HAS one. The ref survives a switch
+// to NONE in the body, so a stranded credential can still be refused by name with nothing on screen
+// holding it.
+const INTEGRATION_INBOUND_FIELDS = [
+  ...INTEGRATION_FIELDS,
   "inboundSecretRef",
 ] as const;
 
@@ -583,7 +587,13 @@ export function IntegrationEditModal({
   // The CURRENT form, readable from inside a request that started before it.
   const formRef = useRef(form);
   formRef.current = form;
-  const refusal = useFieldRefusal(modal.isOpen ? INTEGRATION_FIELDS : []);
+  const refusal = useFieldRefusal(
+    modal.isOpen
+      ? form.inboundAuthStrategy !== "NONE"
+        ? INTEGRATION_INBOUND_FIELDS
+        : INTEGRATION_FIELDS
+      : [],
+  );
   const [saving, setSaving] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);

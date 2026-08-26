@@ -20,7 +20,11 @@ const labelCls = "mb-1 block font-medium text-sm text-text-primary";
 
 // The keys of the body this modal writes. `email` is the one that matters in practice: inviting an
 // address that already has an account answers 409 "Email already in use", and it names the field.
-const INVITE_FIELDS = ["email", "role", "tenantId"] as const;
+const INVITE_FIELDS = ["email", "role"] as const;
+
+// The tenant picker is only drawn for a SUPER_ADMIN; everyone else invites into their own tenant and
+// the id still rides along in the body, so the server can refuse it by name with no picker to mark.
+const INVITE_SUPER_FIELDS = [...INVITE_FIELDS, "tenantId"] as const;
 
 export function InviteUserModal({
   modal,
@@ -45,7 +49,9 @@ export function InviteUserModal({
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const refusal = useFieldRefusal(modal.isOpen ? INVITE_FIELDS : []);
+  const refusal = useFieldRefusal(
+    modal.isOpen ? (isSuperAdmin ? INVITE_SUPER_FIELDS : INVITE_FIELDS) : [],
+  );
 
   // A SUPER_ADMIN must target a tenant; block submit until one is chosen.
   const noTarget = isSuperAdmin && !tenantId;

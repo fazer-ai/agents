@@ -122,7 +122,10 @@ export function DocumentsPanel() {
   const editModal = useModalController<{ template: DocumentTemplate }>();
   const companyModal = useModalController();
   const starterModal = useModalController();
-  const refusal = useFieldRefusal(starterModal.isOpen ? STARTER_FIELDS : []);
+  // The dialog has two steps and only the second draws a name box: the first is the starter list.
+  const refusal = useFieldRefusal(
+    starterModal.isOpen && naming ? STARTER_FIELDS : [],
+  );
   const refsModal = useModalController<{ name: string }>();
   const deleteModal = useModalController<{ id: string; name: string }>();
   const confirm = useModalController<ConfirmPayload>();

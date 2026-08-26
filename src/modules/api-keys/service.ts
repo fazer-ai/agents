@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { PrismaClient, UserRole } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { recordAudit } from "@/modules/audit/service";
 import { generateApiKey } from "./verify";
@@ -88,7 +89,7 @@ export async function createApiKey(
 ): Promise<CreatedApiKey> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const parsed = apiKeyCreateSchema.parse(input);
+  const parsed = parseInput(apiKeyCreateSchema, input);
   const gen = generateApiKey();
   const row = await runScopedOn(base, ctx, async (db) => {
     const created = await db.apiKey.create({

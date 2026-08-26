@@ -5,6 +5,7 @@ import config from "@/config";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { emitDeliveryDead } from "@/modules/flowlog/webhook";
 import { tryResolveVaultSecret } from "@/modules/vault/service";
 import { nextBackoffMs } from "./service";
 import { outboundHeaders } from "./signing";
@@ -181,6 +182,37 @@ async function finalizeDelivered(
   );
 }
 
+// THE ONLY WRITE OF DEAD, and it is one function for that reason rather than for tidiness. There
+// are two roads here — the retry budget running out, and a URL the SSRF guard refuses on sight —
+// and issue #325 is what happens when a road forgets to tell anybody: both of them wrote the row
+// and returned, and the operator's only trace was a counter in a process log. A third road will be
+// added one day; going through here is what makes it announce itself without anyone remembering to.
+async function finalizeDead(
+  base: PrismaClient,
+  d: ClaimedDelivery,
+  attempts: number,
+  error: string,
+): Promise<DeliveryOutcome> {
+  await runScopedOn(base, sysCtx(d.tenantId), (db) =>
+    db.outboundWebhookDelivery.update({
+      where: { id: d.id },
+      data: { status: "DEAD", attempts, lastError: error },
+    }),
+  );
+  // Fire-and-forget, and AFTER the write: the row is the fact, the line is the notification, and a
+  // failed notification must never leave a delivery claimed forever.
+  emitDeliveryDead({
+    tenantId: d.tenantId,
+    deliveryId: d.id,
+    subscriptionId: d.subscriptionId,
+    event: d.event,
+    attempts,
+    error,
+    base,
+  });
+  return "dead";
+}
+
 // Retryable failure: increment attempts, schedule next attempt with full-jitter backoff, or
 // give up (DEAD) once MAX_ATTEMPTS is reached. The row's tenant scopes the update via RLS.
 async function finalizeFailure(
@@ -190,15 +222,8 @@ async function finalizeFailure(
   now: () => number,
 ): Promise<DeliveryOutcome> {
   const attemptsAfter = d.attempts + 1;
-  if (attemptsAfter >= MAX_ATTEMPTS) {
-    await runScopedOn(base, sysCtx(d.tenantId), (db) =>
-      db.outboundWebhookDelivery.update({
-        where: { id: d.id },
-        data: { status: "DEAD", attempts: attemptsAfter, lastError: error },
-      }),
-    );
-    return "dead";
-  }
+  if (attemptsAfter >= MAX_ATTEMPTS)
+    return finalizeDead(base, d, attemptsAfter, error);
   const nextAttemptAt = new Date(now() + nextBackoffMs(attemptsAfter));
   await runScopedOn(base, sysCtx(d.tenantId), (db) =>
     db.outboundWebhookDelivery.update({
@@ -228,17 +253,7 @@ async function deliverClaimed(
   try {
     await assertSafe(d.url);
   } catch (err) {
-    await runScopedOn(base, sysCtx(d.tenantId), (db) =>
-      db.outboundWebhookDelivery.update({
-        where: { id: d.id },
-        data: {
-          status: "DEAD",
-          attempts: d.attempts + 1,
-          lastError: errMsg(err),
-        },
-      }),
-    );
-    return "dead";
+    return finalizeDead(base, d, d.attempts + 1, errMsg(err));
   }
 
   // Per-tenant signing secret, resolved through a tenant-scoped read (RLS active, not the

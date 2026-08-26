@@ -15,6 +15,7 @@ import {
 } from "@/client/components";
 import { CreateApiKeyModal } from "@/client/components/api-keys/CreateApiKeyModal";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { formatDate } from "@/client/lib/utils";
 
 // Derived from the treaty response; never hand-mirrored (see docs/eden-treaty.md).
@@ -71,7 +72,8 @@ export function ApiKeysPage() {
         }).delete();
         if (err) {
           showToast(
-            t("apiKeys.revokeFailed", "Could not revoke the key"),
+            apiErrorMessage(err) ||
+              t("apiKeys.revokeFailed", "Could not revoke the key"),
             "error",
           );
           throw new Error("revoke failed");

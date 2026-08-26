@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { upsertJobRow } from "@/modules/scheduler/service";
 import { type DebounceConfig, readDebounceConfig } from "./settings";
 
 // Debounce arming + config resolution. Arming re-uses the durable scheduler row (one live row per
@@ -91,16 +92,19 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         where: { kind: "DEBOUNCE", dedupeKey },
         select: { status: true, payload: true },
       });
-      const prevBurst =
-        existing?.status === "PENDING"
-          ? readBurstStart(existing.payload)
-          : null;
+      // NOTE: A live PENDING row is the burst this message joins; anything else (no row, DONE,
+      // DEAD, or a claim in flight) means the previous flush is finished business and this message
+      // opens a new burst. Every question below reads that one fact, so they cannot answer it
+      // differently.
+      const continuingBurst = existing?.status === "PENDING";
+      const prevBurst = continuingBurst
+        ? readBurstStart(existing.payload)
+        : null;
       const burstStartedAt = prevBurst ?? nowMs;
       // High-water message id across the burst's arms (a fresh burst starts over, like burstStartedAt).
-      const prevLast =
-        existing?.status === "PENDING"
-          ? readLastMessageId(existing.payload)
-          : null;
+      const prevLast = continuingBurst
+        ? readLastMessageId(existing.payload)
+        : null;
       const lastCandidate = Math.max(prevLast ?? 0, params.lastMessageId ?? 0);
       const lastMessageId = lastCandidate > 0 ? lastCandidate : null;
       const runAtMs = Math.min(
@@ -113,24 +117,19 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         burstStartedAt,
         ...(lastMessageId !== null ? { lastMessageId } : {}),
       } satisfies Prisma.InputJsonObject;
-      await db.schedulerJob.upsert({
-        where: {
-          tenantId_kind_dedupeKey: { tenantId, kind: "DEBOUNCE", dedupeKey },
-        },
-        create: {
-          tenantId,
-          kind: "DEBOUNCE",
-          dedupeKey,
-          runAt: new Date(runAtMs),
-          status: "PENDING",
-          payload,
-        },
-        update: {
-          runAt: new Date(runAtMs),
-          status: "PENDING",
-          lastError: null,
-          payload,
-        },
+      await upsertJobRow(db, {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey,
+        runAt: new Date(runAtMs),
+        payload,
+        // NOTE: A new burst is new work; a message joining the burst already open is the SAME flush
+        // being pushed out, and one waiting on its backoff must not be handed five more attempts by
+        // every message the contact types.
+        //
+        // The key is the THREAD, reused by every burst this contact ever sends, so before this a
+        // flush that dead-lettered left every later burst on that thread with one attempt (#339).
+        rearm: continuingBurst ? "same-work" : "new-work",
       });
       return new Date(runAtMs);
     }),

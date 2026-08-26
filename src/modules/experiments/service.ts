@@ -1,7 +1,9 @@
 import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import config from "@/config";
 import { NotFoundError } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 
 // Prompt A/B experiments. A thread is bucketed to a variant DETERMINISTICALLY (so re-resolution is
@@ -13,9 +15,34 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 export const variantSchema = z.object({
   key: z.string().min(1),
   weight: z.number().nonnegative().optional(),
+  // NO length bound here, deliberately, and the asymmetry with the controller is the point. This
+  // schema is a READER: `parseVariants` runs it over a stored row, and it parses the ARRAY, so one
+  // oversized prompt written under the old contract would fail the whole parse and silently disable
+  // the entire experiment for every turn. The ceiling belongs where a caller can still be told about
+  // it — `variantSchemaT` in the controller — which is what keeps a NEW variant inside the same
+  // ceiling the agent's own prompt is held to (#58) without breaking an upgrade.
   systemPrompt: z.string().optional(),
 });
 export type Variant = z.infer<typeof variantSchema>;
+
+// THE SAME SHAPE, BOUNDED, FOR WRITES ONLY.
+//
+// `systemPrompt` REPLACES the agent's own prompt when the variant is assigned (`loadAgentConfig`),
+// so a variant that skipped the agent's ceiling would ship a prompt the agent itself would have been
+// refused — and it breaks a derivation downstream, since the log debug mode sizes its ceiling from
+// the largest operator-authored prompt this API accepts (#58).
+//
+// It is a SECOND schema rather than a bound on the reader because the reader parses the whole ARRAY
+// off a stored row: one prompt written under the older, unbounded contract would fail that parse and
+// silently disable the entire experiment for every turn. Bounding a write refuses the caller, who
+// can act on it; bounding a read refuses the tenant, who cannot.
+//
+// And it goes on the two functions both write paths converge on, not on either surface: the REST
+// controller publishes the same ceiling in its own schema so a client can see it, and the MCP tool
+// maps its arguments straight into these calls without a schema of its own.
+export const variantWriteSchema = variantSchema.extend({
+  systemPrompt: z.string().max(config.agent.promptMaxChars).optional(),
+});
 
 export function parseVariants(raw: unknown): Variant[] {
   const parsed = z.array(variantSchema).safeParse(raw);
@@ -112,7 +139,11 @@ export async function createExperiment(params: {
   base?: PrismaClient;
 }): Promise<{ id: bigint }> {
   const base = params.base ?? basePrisma;
-  const variants = z.array(variantSchema).parse(params.variants);
+  const variants = parseInput(
+    z.array(variantWriteSchema),
+    params.variants,
+    "variants",
+  );
   return runScopedOn(base, params.ctx, async (db) => {
     const exp = await db.experiment.create({
       data: {
@@ -167,7 +198,7 @@ export async function updateExperiment(params: {
   const base = params.base ?? basePrisma;
   const variants =
     params.variants !== undefined
-      ? z.array(variantSchema).parse(params.variants)
+      ? parseInput(z.array(variantWriteSchema), params.variants, "variants")
       : undefined;
   return runScopedOn(base, params.ctx, async (db) => {
     const current = await db.experiment.findUnique({

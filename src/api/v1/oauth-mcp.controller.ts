@@ -44,11 +44,18 @@ import { vaultRefWhere } from "@/modules/vault/service";
 
 // NOTE: these AppError translationKeys are localized centrally in `onError`; declared here for the
 // i18n extractor (keepRemoved: false). Keep in sync with src/api/locales/*.json.
-// translate('errors.mcpOAuthDiscoveryFailed', 'Could not discover the MCP server OAuth configuration')
+// translate('errors.mcpOAuthDiscoveryFailed', 'Could not read the MCP server OAuth configuration: {{url}} answered {{status}}')
+// translate('errors.mcpOAuthNoAuthorizationServer', 'The MCP server metadata names no authorization server, so there is nothing to connect to')
+// translate('errors.mcpOAuthMetadataIncomplete', 'The MCP authorization server metadata is missing the authorization or token endpoint')
+// translate('errors.mcpOAuthPkceUnsupported', 'The MCP authorization server does not support PKCE (S256), which is required to connect')
 // translate('errors.mcpOAuthDcrDisabled', 'The MCP server does not support dynamic client registration')
-// translate('errors.mcpOAuthDcrFailed', 'Dynamic client registration with the MCP server failed')
+// translate('errors.mcpOAuthDcrFailed', 'Dynamic client registration with the MCP server failed: {{reason}}')
 // translate('errors.mcpOAuthTokenExchangeFailed', 'Failed to exchange the MCP authorization code')
 // translate('errors.mcpOAuthNotConnected', 'This MCP credential is not connected')
+// translate('errors.mcpOAuthNoServerUrl', 'This MCP credential has no server URL, so there is nothing to authorize')
+// translate('errors.mcpOAuthCredentialNotFound', 'This MCP credential no longer exists')
+// translate('errors.mcpOAuthTokenEndpointError', 'The MCP server refused the token request: {{reason}}')
+// translate('errors.mcpOAuthRefreshFailed', 'Could not refresh the MCP credential: the answer carried no access token. Reconnect it.')
 // translate('errors.mcpOAuthInvalidState', 'Invalid MCP OAuth state')
 // translate('errors.mcpOAuthWrongKind', 'This credential is not an MCP OAuth credential')
 
@@ -124,7 +131,7 @@ export const oauthMcpVaultController = new Elysia({
       if (!baseUrl) {
         throw new NotFoundError(
           "mcp_oauth credential has no MCP server URL (baseUrl)",
-          "errors.mcpOAuthNotConnected",
+          "errors.mcpOAuthNoServerUrl",
         );
       }
 
@@ -208,7 +215,7 @@ export const oauthMcpVaultController = new Elysia({
         "Discovers the MCP server OAuth configuration, registers a client via DCR if needed, and builds the authorization URL and signed state to start the consent flow for an mcp_oauth vault entry.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404, 502),
+      response: errors(400, 401, 403, 404, 422, 502),
     },
   )
   // Connection status (never returns tokens or the client secret).
@@ -226,7 +233,7 @@ export const oauthMcpVaultController = new Elysia({
         "Returns the connection state of an mcp_oauth vault entry; never returns tokens or the client secret.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   // Disconnect: drop the tokens but keep the discovered config + registered client so a reconnect
@@ -262,7 +269,7 @@ export const oauthMcpVaultController = new Elysia({
         "Drops the stored tokens for an mcp_oauth vault entry, keeping the discovered OAuth config and registered client.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   );
 

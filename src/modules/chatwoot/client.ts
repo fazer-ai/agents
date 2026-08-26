@@ -858,6 +858,17 @@ export class ChatwootClient {
     return this.request(this.config.adminToken, "GET", "/inboxes");
   }
 
+  // One inbox's detail (admin token). Exists to answer ONE question before a mirror row is
+  // destroyed: does this inbox still exist in Chatwoot? `fetch_inbox` resolves it with
+  // `Current.account.inboxes.find(params[:id])` and only THEN runs `authorize @inbox, :show?`, so an
+  // inbox that is gone raises RecordNotFound before any policy check and Rails answers 404.
+  // Measured live against the fork (2026-08-25): live id → 200 with the inbox JSON, absent id → 404
+  // {"error":"Resource could not be found"}, missing token → 401. Deliberately NOT parsed here — the
+  // caller wants the STATUS, and any body we could parse would be a second thing to be wrong about.
+  getInbox(inboxId: number): Promise<unknown> {
+    return this.request(this.config.adminToken, "GET", `/inboxes/${inboxId}`);
+  }
+
   // WhatsApp Cloud (official) HSM templates of an inbox, read from the inbox detail's
   // `message_templates` (admin token), returned as { name, category, language } (approved only when a
   // status is present). NOTE: baileys/zapi inboxes are also `Channel::Whatsapp` but with an unofficial

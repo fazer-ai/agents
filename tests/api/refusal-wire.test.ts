@@ -11,6 +11,7 @@ import {
   NotFoundError,
 } from "@/lib/errors";
 import { SettingsTextTooLongError } from "@/modules/agents/service";
+import { expectWaiverLedger } from "@/tests/utils/ledger";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // The refusal as the CLIENT receives it, through the app the process actually serves.
@@ -590,5 +591,13 @@ describe("every registered key, over the wire", () => {
     expect(differed.length).toBe(
       (await runSweep()).size - WIRE_IDENTICAL_IN_BOTH.length,
     );
+  });
+
+  // The ledger above is subtracted from a set derived from the catalog, so appending to it silences
+  // a key that was never translated AND keeps the assertion above true. Pinned at the size it was
+  // argued into, which here is zero: this ledger has to refuse its FIRST entry.
+  // tests/utils/ledger.ts carries the measurement (issue #293).
+  test("the wire-identical ledger may only shrink", () => {
+    expectWaiverLedger("WIRE_IDENTICAL_IN_BOTH", WIRE_IDENTICAL_IN_BOTH, 0);
   });
 });

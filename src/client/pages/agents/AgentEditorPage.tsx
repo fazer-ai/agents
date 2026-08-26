@@ -68,7 +68,6 @@ import {
   type ChannelRedirectConfig,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
-import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import {
   GUARDRAILS_DEFAULTS,
@@ -93,6 +92,10 @@ import { GuardrailsTab } from "./GuardrailsTab";
 import { readGuardrailsFormState } from "./guardrailsFormState";
 import { KnowledgeTab } from "./KnowledgeTab";
 import { memoryToForm, memoryToStored } from "./memoryFormState";
+import {
+  observabilityToForm,
+  observabilityToStored,
+} from "./observabilityFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
 import { ToolsTab } from "./ToolsTab";
@@ -420,7 +423,7 @@ function readBehaviorState(a: Agent) {
     // REST or an import can carry the string "true", which the runtime honors — reading it stricter
     // here would show the switch off while values were being logged, and would then persist that lie
     // on the next save.
-    observability: readObservabilityConfig(s),
+    observability: observabilityToForm(s),
     // NOTE: Same reason as observability above — through the runtime's own reader, because this one
     // defaults to ON and a hand-rolled `=== true` would show the switch off on every agent whose bag
     // predates the feature, then persist that lie on the next save.
@@ -689,9 +692,23 @@ function AgentEditor() {
     maxToolCalls: "10",
     maxHistoryTokens: "",
   });
-  // Whether this agent's tool lines log the values the model sent instead of their shape. Mirrors
-  // agent.settings.observability (modules/flowlog/settings).
-  const [observability, setObservability] = useState({ logToolValues: false });
+  // Whether this agent's tool lines log the values the model sent instead of their shape, and
+  // whether the log debug mode is armed. Mirrors agent.settings.observability
+  // (modules/flowlog/settings), and seeded from the reader over an empty bag rather than a literal
+  // so a field added to that block cannot default differently here than it does at runtime.
+  // Null until the tenant settings answer, which reads as "not known yet" and never as "off".
+  const [langfuseSendContent, setLangfuseSendContent] = useState<
+    boolean | null
+  >(null);
+  const [observability, setObservability] = useState(observabilityToForm({}));
+  // What the SERVER is doing, as opposed to what the form is about to ask it to do. The "recording
+  // more than the default" warning reads this one, never the form: a switch flipped off stops
+  // recording when the save lands, not when the operator touches it, and a warning that goes quiet
+  // on the touch tells them recording stopped while it is still running. Set only where a server
+  // read set the form (load, post-save refresh, discard), never by a switch.
+  const [savedObservability, setSavedObservability] = useState(
+    observabilityToForm({}),
+  );
   // Whether an attendance that ended is folded into a summary, and which model writes it. Seeded
   // from the reader over an empty bag rather than a literal: the pre-load state is the same shape
   // the round-trip pair produces, so a field added to `compaction` cannot default differently here
@@ -895,6 +912,7 @@ function AgentEditor() {
     setVision(b.vision);
     setLimits(b.limits);
     setObservability(b.observability);
+    setSavedObservability(b.observability);
     setMemory(b.memory);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
@@ -932,6 +950,7 @@ function AgentEditor() {
     setVision(b.vision);
     setLimits(b.limits);
     setObservability(b.observability);
+    setSavedObservability(b.observability);
     setMemory(b.memory);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
@@ -963,6 +982,17 @@ function AgentEditor() {
         api.api.v1.agents({ id })["tool-selections"].get(),
         api.api.v1["business-hours"].get(),
       ]);
+      // Only for the shared debug warning (#58): the third switch that widens what is recorded is
+      // the tenant's `langfuse.sendContent`, and it lives on another page. Deliberately OUTSIDE the
+      // load above and not awaited with it — the warning is allowed to say less, never to hold the
+      // editor open or send it to the error state, and inside that `Promise.all` a slow or refused
+      // optional read would do both.
+      void api.api.v1["tenant-settings"]
+        .get()
+        .then((r) =>
+          setLangfuseSendContent(r.data?.langfuse.sendContent ?? null),
+        )
+        .catch(() => setLangfuseSendContent(null));
       if (agentRes.error || !agentRes.data || tsRes.error || !tsRes.data) {
         setError(true);
         return;
@@ -1215,7 +1245,10 @@ function AgentEditor() {
         // is what "not configured" means everywhere else in this payload.
         maxHistoryTokens: Number(limits.maxHistoryTokens) || null,
       },
-      observability: { logToolValues: observability.logToolValues },
+      // NOTE: through the pair, for the same reason `memory` below is — this save REPLACES the
+      // block, so a field written out by hand here is deleted from the bag the moment someone
+      // forgets it. ./observabilityFormState is the round-trip guard.
+      observability: observabilityToStored(observability),
       // NOTE: through the pair, not spelled out here. The Behavior save REPLACES the block, so a
       // field the form dropped would be deleted on the next save — which is exactly how
       // `tts.baseURL` was lost once, and the round-trip test over ./memoryFormState is the guard.
@@ -1741,6 +1774,18 @@ function AgentEditor() {
           'Business hours "{{name}}" already existed and were reused; check the schedule is right.',
           p,
         );
+      case "hoursWindowsDropped":
+        return t(
+          "editor.importWarning.hoursWindowsDropped",
+          'Business hours "{{name}}": {{count}} weekly window(s) were not stored as written. Open the schedule and check the days are right.',
+          p,
+        );
+      case "hoursExceptionsDropped":
+        return t(
+          "editor.importWarning.hoursExceptionsDropped",
+          'Business hours "{{name}}": {{count}} date exception(s) were not stored as written. Open the schedule and check the holidays and closures are right.',
+          p,
+        );
       case "httpToolBodyIgnored":
         return t(
           "editor.importWarning.httpToolBodyIgnored",
@@ -2044,6 +2089,7 @@ function AgentEditor() {
     setVision(b.vision);
     setLimits(b.limits);
     setObservability(b.observability);
+    setSavedObservability(b.observability);
     setMemory(b.memory);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
@@ -2435,8 +2481,11 @@ function AgentEditor() {
       a.download = `agents-agent-${slugify(data.export.agent.name) || "agent"}.json`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch {
-      showToast(t("editor.exportError", "Could not export."), "error");
+    } catch (caught) {
+      showToast(
+        apiErrorMessage(caught) || t("editor.exportError", "Could not export."),
+        "error",
+      );
     }
   }
 
@@ -2500,10 +2549,11 @@ function AgentEditor() {
           .delete({ confirmName, password });
         if (err) {
           showToast(
-            t(
-              "editor.deleteError",
-              "Could not delete. Check your password and try again.",
-            ),
+            apiErrorMessage(err) ||
+              t(
+                "editor.deleteError",
+                "Could not delete. Check your password and try again.",
+              ),
             "error",
           );
           throw err; // keep the dialog open
@@ -2922,6 +2972,8 @@ function AgentEditor() {
             {tab === "behavior" && (
               <BehaviorTab
                 agentId={id}
+                langfuseSendContent={langfuseSendContent}
+                savedObservability={savedObservability}
                 hours={hours}
                 businessHoursId={businessHoursId}
                 setBusinessHoursId={setBusinessHoursId}

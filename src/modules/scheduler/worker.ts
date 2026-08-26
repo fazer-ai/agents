@@ -21,7 +21,8 @@ import {
 // Single-replica worker that drains the scheduler. The handler registry decouples the scheduler
 // from feature logic (follow-ups register their handlers); a job kind with no handler fails (and
 // eventually goes DEAD) rather than silently vanishing. `reschedule` is for "not yet" (out of
-// hours) and does not consume an attempt; `fail` retries with backoff up to the cap.
+// hours) and CLEARS the failure budget, because it means the pass completed (issue #287); `fail`
+// retries with backoff up to the cap.
 
 export type JobResult =
   | { outcome: "done" }

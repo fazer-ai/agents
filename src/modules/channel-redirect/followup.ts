@@ -219,6 +219,12 @@ export async function armRedirectChatFollowUp(
     tenantId: p.tenantId,
     kind: "REDIRECT_FOLLOWUP",
     dedupeKey: followUpDedupeKey(p.widgetThreadId),
+    // NOTE: The key is the widget THREAD, reused by every idle period this lead ever has, and this
+    // call is what a LEAD MESSAGE triggers: the ladder pending from the previous silence is
+    // superseded, and what is being armed is the ladder for the silence starting now. Without the
+    // reset, a ladder that dead-lettered once would leave every later idle period on that thread
+    // with one attempt.
+    rearm: "new-work",
     runAt: minutesFromNow(
       redirectDelayMinutes(
         p.cfg.chatFollowupDelayValue,

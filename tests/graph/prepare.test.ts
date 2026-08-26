@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { MemorySaver } from "@langchain/langgraph";
 import type { ResolvedModelConfig } from "@/graph/models";
@@ -75,6 +76,7 @@ function makeConfig(
     memoryCompactionApiKey: "",
     memoryCompactionCredentialBaseUrl: null,
     logToolValues: false,
+    fullDetail: false,
     ...over,
   } as AgentConfig;
 }
@@ -364,5 +366,48 @@ describe("buildSpeechNormalizer", () => {
     expect(buildSpeechNormalizer(cfg, { makeModel })).toBeDefined();
     expect(getCaptured().apiKey).toBe("sk-rewriter");
     expect(getCaptured().baseURL).toBeUndefined();
+  });
+});
+
+// The observability block is the ONE block the playground's draft overrides do not reach, and the
+// reason is what the two kinds of setting are. Every other override changes how the agent BEHAVES —
+// prompt, model, tools, guardrails — and the playground exists to try those unsaved. This one
+// changes what the platform STORES about the run, and a draft that widened it would record the
+// customer's tool values, or full-size rows, from a switch the operator never committed and can
+// close the tab on, while the console's own warning reads the saved settings and says "Save to
+// apply" (issue #58).
+describe("prepare — a draft cannot widen what is recorded", () => {
+  test("the draft's observability block is ignored, the saved one decides", () => {
+    const source = readFileSync(
+      new URL("../../src/graph/prepare.ts", import.meta.url),
+      "utf8",
+    );
+    // Read off the saved bag by name, never through the effective one every other block uses.
+    expect(source).toContain("readObservabilityConfig(agent.settings)");
+    expect(source).not.toContain("readObservabilityConfig(effSettings)");
+  });
+
+  // AND NOWHERE ELSE READS IT ITS OWN WAY. Checking `prepare.ts` alone missed the file beside it:
+  // `runPlaygroundFollowup` had its own `readObservabilityConfig(settings)` on the DRAFT bag, so
+  // turning the tool-values switch on without saving recorded the customer's values on a simulated
+  // follow-up while the console said "Save to apply". Proving one call site is not proving the rule.
+  test("every reader of the block is one of the four that may have one", async () => {
+    const files = new Bun.Glob("src/**/*.{ts,tsx}");
+    const found: string[] = [];
+    for await (const f of files.scan(
+      new URL("../../", import.meta.url).pathname,
+    )) {
+      if (f.endsWith("modules/flowlog/settings.ts")) continue; // the definition
+      const src = await Bun.file(new URL(`../../${f}`, import.meta.url)).text();
+      if (src.includes("readObservabilityConfig(")) found.push(f);
+    }
+    // The turn's own read, the settings DTO, the shared derivation, and the console's form pair.
+    // A fifth entry is a fifth answer to the same question, and the last one was a defect.
+    expect(found.sort()).toEqual([
+      "src/client/pages/agents/observabilityFormState.ts",
+      "src/graph/prepare.ts",
+      "src/modules/agents/behavior-settings.ts",
+      "src/modules/flowlog/debug-mode.ts",
+    ]);
   });
 });

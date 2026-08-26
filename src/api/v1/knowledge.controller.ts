@@ -44,9 +44,9 @@ import type { ChunkHit } from "@/modules/rag/sql";
 // translate('errors.embeddingNotConfigured', 'Embeddings are not configured for this workspace.')
 // translate('errors.embeddingPending', 'The embedding credential is not filled in yet.')
 // translate('errors.knowledgeBaseNotFound', 'Knowledge base not found.')
-// translate('errors.noExtractableText', 'No extractable text found in this file')
+// translate('errors.noExtractableText', 'No extractable text found in this {{kind}} file')
 // translate('errors.unstorableText', '{{field}} contains characters that cannot be stored ({{codePoints}})')
-// translate('errors.unsupportedFileType', 'Unsupported file type')
+// translate('errors.unsupportedFileType', 'Unsupported file type: {{type}}')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
@@ -127,7 +127,7 @@ export const knowledgeController = new Elysia({
         "Create knowledge base",
         "Create a new knowledge base for the current tenant.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       body: t.Object({
         name: t.String({
           minLength: 1,
@@ -189,7 +189,7 @@ export const knowledgeController = new Elysia({
         "Update knowledge base",
         "Update a knowledge base name, description, or chunking parameters.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         id: t.String({
           description: "Knowledge base id (BigInt as a string).",
@@ -323,7 +323,7 @@ export const knowledgeController = new Elysia({
         "Add text document",
         "Add a plain-text document to a knowledge base for embedding.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         id: t.String({
           description: "Knowledge base id (BigInt as a string).",
@@ -440,7 +440,7 @@ export const knowledgeController = new Elysia({
         "Update document",
         "Edit a document's title and/or text. Changing the text re-ingests and re-embeds it.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         id: t.String({ description: "Document id (BigInt as a string)." }),
       }),
@@ -513,7 +513,7 @@ export const knowledgeController = new Elysia({
         "Index pending knowledge-base documents",
         "Queue ingestion + embedding for every not-yet-indexed (UNINDEXED) document in the base, e.g. after importing an agent that bundled its documents. Pass includeFailed=true to also re-queue FAILED documents (bulk recovery). If the tenant's embedding credential is unconfigured or its secret is not filled yet, nothing is queued and `blocked` explains why (the documents keep their status).",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         id: t.String({
           description: "Knowledge base id (BigInt as a string).",
@@ -546,7 +546,7 @@ export const knowledgeController = new Elysia({
         "Search knowledge",
         "Run a semantic search across one or more knowledge bases and return ranked chunks.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       body: t.Object({
         query: t.String({
           minLength: 1,
@@ -589,7 +589,7 @@ export const knowledgeController = new Elysia({
         "Suggest knowledge entry",
         "Create a pending suggestion to add an entry to a knowledge base, awaiting human approval.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       body: t.Object({
         knowledgeBaseId: t.String({
           description: "Target knowledge base id (BigInt as a string).",
@@ -640,7 +640,7 @@ export const knowledgeController = new Elysia({
         "Edit pending approval",
         "Edit the title, content, or rationale of a pending knowledge-base suggestion before approving it.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         id: t.String({ description: "Approval item id (BigInt as a string)." }),
       }),

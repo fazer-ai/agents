@@ -722,6 +722,7 @@ export function parseDocumentValues(
       field.type === "lineItems"
         ? (z
             .array(lineItemValueSchema)
+            // not-caller-input: inside a validator whose contract is { ok: false, reason }, not a throw
             .parse(value)
             .map((item) => ({
               ...item,

@@ -21,6 +21,7 @@ import {
   useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { flowStageLabel } from "@/client/lib/flowLabels";
 import type { ApiErrorPayload } from "@/client/lib/types";
 import { cn, formatDate } from "@/client/lib/utils";
@@ -396,7 +397,11 @@ export function AlertChannelsSection() {
       setChannels((prev) =>
         prev.map((c) => (c.id === ch.id ? { ...c, enabled: ch.enabled } : c)),
       );
-      showToast(t("alerts.saveFailed", "Could not save the channel"), "error");
+      showToast(
+        apiErrorMessage(err) ||
+          t("alerts.saveFailed", "Could not save the channel"),
+        "error",
+      );
     }
   };
 
@@ -415,7 +420,8 @@ export function AlertChannelsSection() {
         }).delete();
         if (err) {
           showToast(
-            t("alerts.deleteFailed", "Could not delete the channel"),
+            apiErrorMessage(err) ||
+              t("alerts.deleteFailed", "Could not delete the channel"),
             "error",
           );
           throw new Error("delete failed");

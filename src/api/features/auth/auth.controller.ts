@@ -170,7 +170,7 @@ const baseAuthController = new Elysia({
         ),
         security: [],
       },
-      response: errors(400, 401, 409),
+      response: errors(400, 401, 409, 422),
     },
   )
   .post(
@@ -252,7 +252,7 @@ const baseAuthController = new Elysia({
         ),
         security: [],
       },
-      response: errors(400, 403),
+      response: errors(400, 403, 422),
     },
   )
   .post(
@@ -318,7 +318,7 @@ const baseAuthController = new Elysia({
         ),
         security: [],
       },
-      response: errors(400, 401),
+      response: errors(400, 401, 422),
     },
   )
   .get(
@@ -444,7 +444,7 @@ const baseAuthController = new Elysia({
         "Change own password",
         "Verifies the current password and stores a new one for the authenticated user. Returns 400 for Google-only accounts (no local password) or an incorrect current password.",
       ),
-      response: errors(400, 401),
+      response: errors(400, 401, 422),
     },
   )
   // ── invitation acceptance (public: the invitee has no account yet) ──
@@ -480,7 +480,7 @@ const baseAuthController = new Elysia({
         ),
         security: [],
       },
-      response: errors(400, 404),
+      response: errors(400, 404, 422),
     },
   )
   // Consume the invite: create the user (tenant + role bound to the invite row, never the
@@ -555,7 +555,7 @@ const baseAuthController = new Elysia({
         ),
         security: [],
       },
-      response: errors(400, 409, 410),
+      response: errors(400, 409, 410, 422),
     },
   )
   .post(
@@ -666,7 +666,7 @@ const googleAuthController = baseAuthController.post(
       ),
       security: [],
     },
-    response: errors(400, 401, 403),
+    response: errors(400, 401, 403, 422),
   },
 );
 

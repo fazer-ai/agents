@@ -124,7 +124,17 @@ const SETTINGS_DESC_CEILING = 2_000;
 // and never runs. `denyMessage: null` means say nothing, which is a refusal the customer sees no
 // sign of. The rest is the shape: nine fields, an enum and the nullable wrappers, and that part
 // does not compress. Headroom over 11,303 stays tighter than a block, as before.
-const SETTINGS_SCHEMA_CEILING = 11_650;
+//
+// RAISED from 11,650 for issue #58, and this time the trim came first and bought most of it. The
+// `observability` block gained one field, `fullDetailUntil`, and typing it as `z.iso.datetime()`
+// published a 430-character regex — a third of a whole block's budget spent restating a format the
+// description states in four words. Declaring it a plain string moved the check into a `refine`,
+// which publishes nothing, and gave back 351 of the 738 the field had cost. What is left is the
+// field name, the nullable wrapper, and one sentence a caller cannot get by trying: that the value
+// is the instant the mode ENDS rather than a duration or a switch, and that the mode stores log
+// detail whole instead of cutting it at 2,000. Headroom over 11,690 stays tighter than a block, as
+// before.
+const SETTINGS_SCHEMA_CEILING = 12_050;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {

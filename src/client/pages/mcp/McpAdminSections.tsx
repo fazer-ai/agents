@@ -19,6 +19,7 @@ import {
   RegisterMcpClientModal,
 } from "@/client/components/mcp/RegisterMcpClientModal";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { formatDate } from "@/client/lib/utils";
 
 // Admin management of OUR MCP server (third transport): OAuth clients, active tokens and
@@ -124,7 +125,8 @@ export function McpAdminSections() {
           .delete();
         if (err) {
           showToast(
-            t("mcp.admin.clientDeleteFailed", "Could not delete the client"),
+            apiErrorMessage(err) ||
+              t("mcp.admin.clientDeleteFailed", "Could not delete the client"),
             "error",
           );
           throw new Error("delete failed");
@@ -151,7 +153,8 @@ export function McpAdminSections() {
           .delete();
         if (err) {
           showToast(
-            t("mcp.admin.revokeFailed", "Could not revoke the token"),
+            apiErrorMessage(err) ||
+              t("mcp.admin.revokeFailed", "Could not revoke the token"),
             "error",
           );
           throw new Error("revoke failed");
@@ -177,10 +180,11 @@ export function McpAdminSections() {
           .delete();
         if (err) {
           showToast(
-            t(
-              "mcp.admin.revokeApprovalFailed",
-              "Could not revoke the approval",
-            ),
+            apiErrorMessage(err) ||
+              t(
+                "mcp.admin.revokeApprovalFailed",
+                "Could not revoke the approval",
+              ),
             "error",
           );
           throw new Error("revoke failed");

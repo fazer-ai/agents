@@ -19,6 +19,11 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 // be on the wire at all), and that a model which sends it anyway still gets slots and the customer
 // still gets an answer.
 //
+// Asked of EVERY argument a conditional schema removes, not just calendarId: the integration here also
+// pins the slot grid (1h visits on the half hour), which is the second instance of the same question —
+// a model sending granularityMinutes: 15 got 14:15 back, a real, bookable slot the business does not
+// sell. Same turn, same wire, one more pair of args.
+//
 // NOTE: the turn's SSRF guard is not injectable (prepare.ts builds the toolpack ctx without one), so
 // this test resolves www.googleapis.com for real. Every HTTP response is stubbed; only DNS is live.
 
@@ -101,6 +106,10 @@ function fakeHosts() {
                       timeMin: "2099-06-22T00:00:00-03:00",
                       timeMax: "2099-06-22T23:00:00-03:00",
                       calendarId: INVENTED,
+                      // The school's case: a grid the operator pinned, redefined per call. Sent
+                      // from a stale tool definition, since neither arg is on the wire any more.
+                      slotDurationMinutes: 15,
+                      granularityMinutes: 15,
                     }),
                   },
                 },
@@ -231,6 +240,9 @@ describe.skipIf(!dbUp)("a turn on an integration with one calendar", () => {
         config: {
           calendarIds: [PINNED],
           calendarLabels: { [PINNED]: "Clinic" },
+          // 1h appointments on the half hour, the configuration the report came from.
+          slotDurationMinutes: 60,
+          slotGranularityMinutes: 30,
         },
       },
       select: { id: true },
@@ -343,10 +355,29 @@ describe.skipIf(!dbUp)("a turn on an integration with one calendar", () => {
     // 3. The customer got the answer.
     expect(sent).toEqual([[801, REPLY]]);
 
-    // 4. And the arg the model filled in was never on the wire to begin with.
+    // 4. And no argument the operator's configuration decides was on the wire to begin with.
     const fn = toolOnTheWire(fake.llm[0]);
     expect(fn).not.toBeNull();
     const params = fn?.parameters as { properties?: Record<string, unknown> };
-    expect(Object.keys(params?.properties ?? {})).not.toContain("calendarId");
+    const onTheWire = Object.keys(params?.properties ?? {});
+    expect(onTheWire).not.toContain("calendarId");
+    expect(onTheWire).not.toContain("slotDurationMinutes");
+    expect(onTheWire).not.toContain("granularityMinutes");
+    expect(onTheWire).toContain("timeMin");
+
+    // 5. The observable effect, which is the whole point: the start times the model read back sit on
+    // the operator's grid, not on the 15-minute one it asked for. A `:15` here is the slot a family
+    // would have shown up for.
+    const slots = (
+      JSON.parse(String(toolReply?.content)) as {
+        slots: { start: string; end: string }[];
+      }
+    ).slots;
+    expect(slots.length).toBeGreaterThan(0);
+    for (const slot of slots) {
+      expect(new Date(slot.start).getUTCMinutes() % 30).toBe(0);
+      // 60 minutes long, the pinned duration — not the 15 the model sent.
+      expect(Date.parse(slot.end) - Date.parse(slot.start)).toBe(3_600_000);
+    }
   });
 });

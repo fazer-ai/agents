@@ -172,7 +172,11 @@ export const mcpOAuthController = new Elysia({
         ),
         security: [],
       },
-      response: { 400: OAuthErrorResponse, 404: OAuthErrorResponse },
+      response: {
+        400: OAuthErrorResponse,
+        404: OAuthErrorResponse,
+        ...errors(422),
+      },
       body: t.Object({
         redirect_uris: t.Array(
           t.String({ minLength: 1, description: "An allowed redirect URI." }),
@@ -323,7 +327,7 @@ export const mcpOAuthController = new Elysia({
           description:
             "Redirect to the login screen, the consent screen, or the client's registered callback (with code + state + iss). Destination in the `Location` header.",
         }),
-        ...errors(400, 403),
+        ...errors(400, 403, 422),
       },
       query: t.Object({
         client_id: t.String({
@@ -491,7 +495,7 @@ export const mcpOAuthController = new Elysia({
         "Approves or denies a pending authorization. Verifies the CSRF token and single-use-consumes the request; on approve, mints the authorization code from the stored record and remembers the approval (revocable). Returns { redirect } for the SPA to navigate to.",
       ),
       requireAuth: true,
-      response: errors(400, 401, 404),
+      response: errors(400, 401, 404, 422),
       params: t.Object({
         req: t.String({
           minLength: 1,
@@ -553,7 +557,7 @@ export const mcpOAuthController = new Elysia({
         ),
         security: [],
       },
-      response: { 400: OAuthErrorResponse },
+      response: { 400: OAuthErrorResponse, ...errors(422) },
       body: t.Object({
         grant_type: t.String({
           description: 'Either "authorization_code" or "refresh_token".',

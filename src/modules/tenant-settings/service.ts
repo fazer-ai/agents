@@ -228,6 +228,7 @@ export async function updateEmbeddingSettings(
     // feature ships (configurable dimension + provider registry). Only the
     // credential is honored; provider/model/baseURL from the patch are ignored. Unlocking = restore
     // the `{ ...current, ...patch }` merge.
+    // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
     return embeddingSettingsSchema.parse({
       ...EMBEDDING_DEFAULTS,
       credentialRef:
@@ -296,6 +297,7 @@ export async function updateLangfuse(
 
   return patchBlock(ctx, base, "langfuse", (raw) => {
     const live = parseLangfuseSettings(raw);
+    // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
     return langfuseSettingsSchema.parse({
       enabled: input.enabled ?? live.enabled,
       // The live value when this request did not mention one, like every other field here.
@@ -337,6 +339,7 @@ export async function updateCompanySettings(
       );
   }
   return patchBlock(ctx, base, "company", (raw) =>
+    // not-caller-input: the STORED block merged with the patch; the patch's own fields are refused above with errors.invalidCompanyField
     companySettingsSchema.parse({ ...parseCompanySettings(raw), ...patch }),
   );
 }
@@ -376,6 +379,7 @@ export async function setCompanyLogoKey(
   return patchBlock(ctx, base, "company", async (raw) => {
     const current = parseCompanySettings(raw);
     await publish?.(current);
+    // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
     return companySettingsSchema.parse({
       ...current,
       logoKey,

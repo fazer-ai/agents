@@ -82,7 +82,7 @@ export const brandingController = new Elysia({
         ),
         security: [],
       },
-      response: errors(400, 404),
+      response: errors(400, 404, 422),
     },
   )
   // SUPER_ADMIN: update colors (mode + brand color and/or per-theme token maps).
@@ -139,7 +139,7 @@ export const brandingController = new Elysia({
       "Update branding colors",
       "Updates the global branding color mode, brand color, and per-theme token maps. SUPER_ADMIN only.",
     ),
-    response: errors(400, 401, 403),
+    response: errors(400, 401, 403, 422),
   })
   // SUPER_ADMIN: upload a logo/favicon variant (multipart). The service re-checks type + size.
   .put(
@@ -164,7 +164,7 @@ export const brandingController = new Elysia({
         "Upload branding asset",
         "Uploads a logo or favicon binary for the given kind and theme variant (multipart). SUPER_ADMIN only.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 422),
     },
   )
   // SUPER_ADMIN: remove a logo/favicon variant.
@@ -178,6 +178,6 @@ export const brandingController = new Elysia({
         "Delete branding asset",
         "Removes the stored logo or favicon binary for the given kind and theme variant. SUPER_ADMIN only.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 422),
     },
   );

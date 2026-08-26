@@ -9,6 +9,7 @@ import { Select } from "@/client/components/Select";
 import { TimezonePicker } from "@/client/components/TimezonePicker";
 import { useToast } from "@/client/components/Toast";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 
 type HoursData = Awaited<
   ReturnType<(typeof api.api.v1)["business-hours"]["get"]>
@@ -226,9 +227,10 @@ export function BusinessHoursForm({
         showToast(t("hours.saved", "Business hours saved."), "success");
         onSaved(data.businessHours.id, data.businessHours.name);
       }
-    } catch {
+    } catch (e) {
       showToast(
-        t("hours.saveError", "Could not save (check the timezone)."),
+        apiErrorMessage(e) ||
+          t("hours.saveError", "Could not save (check the timezone)."),
         "error",
       );
     } finally {

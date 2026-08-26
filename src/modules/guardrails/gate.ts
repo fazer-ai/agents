@@ -1,6 +1,11 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { verdictAskMode } from "@/graph/model-config";
 import { createChatModel } from "@/graph/models";
+import {
+  UsageCapture,
+  type UsagePersist,
+  usageAttribution,
+} from "@/graph/usage";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { analyzeGuardrail } from "./analyze";
@@ -126,10 +131,23 @@ export interface GuardrailGateParams {
   // check itself, structurally, the same way the input direction drops the replacement.
   customerMessage?: string;
   makeModel?: typeof createChatModel;
+  // Overrides the ledger sink. Tests inject; production takes the default, which writes the row.
+  persistUsage?: UsagePersist;
 }
 
 export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   const gr = p.cfg;
+  // The analysis runs on the guardrails agent's OWN model, so the row has to name THAT model and
+  // not the agent's: a shared name would attribute this spend to the customer turn beside it. The
+  // rest of the attribution comes from the flow context, which is the only thing this gate holds
+  // that knows which conversation it is screening.
+  const usage = () =>
+    new UsageCapture({
+      ...usageAttribution(p.flow),
+      model: gr.model,
+      node: "guardrail",
+      persist: p.persistUsage,
+    });
   // Built on FIRST CALL, not here, and never twice: a gate is constructed for every turn and every
   // follow-up, while a direction that is switched off never reaches the model. `createChatModel`
   // throws synchronously on a configuration it cannot satisfy (an `openai-compatible` provider with
@@ -236,6 +254,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       // OpenAI itself and whatever an operator points `openai-compatible` at (issue #131). Reaching
       // it through the gate is what puts the proactive path on the same footing as the reactive one.
       verdictAskMode(gr.provider),
+      [usage()],
     );
     // A guardrail that could not run reads exactly like one that ran and approved, so without this
     // line an expired credential is silent moderation for as long as nobody notices. The turn is

@@ -66,6 +66,9 @@ export async function ensureFlowlogSweep(
     tenantId,
     kind: "FLOWLOG_SWEEP",
     dedupeKey: "flowlog-sweep",
+    // NOTE: One perpetual row per tenant, same shape as the follow-up sweep: a completed pass
+    // clears the budget (issue #287), and a boot re-arming it must not.
+    rearm: "same-work",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
     base,
   });

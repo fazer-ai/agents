@@ -21,6 +21,8 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDialog,
+  type ConfirmPayload,
   DataBoundary,
   EmptyState,
   FormField,
@@ -38,6 +40,7 @@ import {
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { chatwootInboxNewUrl } from "@/client/lib/chatwootLinks";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
@@ -225,6 +228,7 @@ export function ChannelsPage() {
   // Strong confirmation (backup warning + re-typed name + password) for the two irreversible,
   // SUPER_ADMIN-only actions: tearing down the whole instance, and removing one account (to move it).
   const strongConfirm = useModalController<StrongConfirmPayload>();
+  const confirm = useModalController<ConfirmPayload>();
 
   // Connect form (base URL + admin token, entered once).
   const [baseUrl, setBaseUrl] = useState("");
@@ -249,6 +253,7 @@ export function ChannelsPage() {
     Record<string, "active" | "missing">
   >({});
   const [reconnecting, setReconnecting] = useState<string | null>(null);
+  const [removingInbox, setRemovingInbox] = useState<string | null>(null);
 
   const loadBotStatus = useCallback(async () => {
     try {
@@ -432,15 +437,16 @@ export function ChannelsPage() {
             ? (err as { status?: number }).status
             : undefined;
         showToast(
-          status === 409
-            ? t(
-                "channels.connectDifferent",
-                "This tenant is already connected to a different Chatwoot. Disconnect it first to switch servers.",
-              )
-            : t(
-                "channels.connectError",
-                "Could not connect. Check the URL and token.",
-              ),
+          apiErrorMessage(err) ||
+            (status === 409
+              ? t(
+                  "channels.connectDifferent",
+                  "This tenant is already connected to a different Chatwoot. Disconnect it first to switch servers.",
+                )
+              : t(
+                  "channels.connectError",
+                  "Could not connect. Check the URL and token.",
+                )),
           "error",
         );
         return;
@@ -477,12 +483,13 @@ export function ChannelsPage() {
         t("channels.accountsResynced", "Account list updated."),
         "success",
       );
-    } catch {
+    } catch (e) {
       showToast(
-        t(
-          "channels.accountsError",
-          "Could not list accounts. Check the URL and token.",
-        ),
+        apiErrorMessage(e) ||
+          t(
+            "channels.accountsError",
+            "Could not list accounts. Check the URL and token.",
+          ),
         "error",
       );
     } finally {
@@ -528,9 +535,10 @@ export function ChannelsPage() {
       manageModal.close();
       setSelected(new Set());
       showToast(t("channels.accountsEnabled", "Accounts updated."), "success");
-    } catch {
+    } catch (e) {
       showToast(
-        t("channels.accountsSaveError", "Could not update the accounts."),
+        apiErrorMessage(e) ||
+          t("channels.accountsSaveError", "Could not update the accounts."),
         "error",
       );
     } finally {
@@ -554,9 +562,13 @@ export function ChannelsPage() {
       showToast(t("channels.tokenSaved", "Token updated."), "success");
       tokenModal.close();
       void load();
-    } catch {
+    } catch (e) {
       showToast(
-        t("channels.tokenSaveError", "Could not update the token (check it)."),
+        apiErrorMessage(e) ||
+          t(
+            "channels.tokenSaveError",
+            "Could not update the token (check it).",
+          ),
         "error",
       );
     } finally {
@@ -590,10 +602,11 @@ export function ChannelsPage() {
         });
         if (err) {
           showToast(
-            t(
-              "channels.teardownError",
-              "Could not disconnect. Check your password and try again.",
-            ),
+            apiErrorMessage(err) ||
+              t(
+                "channels.teardownError",
+                "Could not disconnect. Check your password and try again.",
+              ),
             "error",
           );
           throw err; // keep the dialog open
@@ -638,10 +651,11 @@ export function ChannelsPage() {
           .remove.post({ confirmName: phrase, password });
         if (err) {
           showToast(
-            t(
-              "channels.removeAccountError",
-              "Could not remove the account. Check your password and try again.",
-            ),
+            apiErrorMessage(err) ||
+              t(
+                "channels.removeAccountError",
+                "Could not remove the account. Check your password and try again.",
+              ),
             "error",
           );
           throw err; // keep the dialog open
@@ -672,8 +686,12 @@ export function ChannelsPage() {
         "success",
       );
       await refreshInboxes();
-    } catch {
-      showToast(t("channels.syncError", "Could not sync inboxes."), "error");
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) ||
+          t("channels.syncError", "Could not sync inboxes."),
+        "error",
+      );
     } finally {
       syncInFlight.current.delete(account.id);
       setBusy(false);
@@ -689,7 +707,8 @@ export function ChannelsPage() {
       .patch({ agentId });
     if (err) {
       showToast(
-        t("channels.bindError", "Could not update the inbox."),
+        apiErrorMessage(err) ||
+          t("channels.bindError", "Could not update the inbox."),
         "error",
       );
       throw err;
@@ -715,14 +734,57 @@ export function ChannelsPage() {
       if (err) throw err;
       setBotStatus((prev) => ({ ...prev, [inboxId]: "active" }));
       showToast(t("channels.reconnected", "Bot reconnected."), "success");
-    } catch {
+    } catch (e) {
       showToast(
-        t("channels.reconnectError", "Could not reconnect the bot."),
+        apiErrorMessage(e) ||
+          t("channels.reconnectError", "Could not reconnect the bot."),
         "error",
       );
     } finally {
       setReconnecting(null);
     }
+  }
+
+  // Remove one inbox's local mirror. Only ever succeeds for an inbox that no longer exists in
+  // Chatwoot; a live one comes back 409 and the toast says so, which is the only place an operator
+  // learns why the row is still there. Kept out of the agent editor's Channels tab on purpose.
+  function removeInboxMirror(inbox: { id: string; name: string }) {
+    confirm.open({
+      title: t("channels.removeInboxTitle", "Remove inbox mirror"),
+      message: t(
+        "channels.removeInboxWarning",
+        "This removes the local copy of an inbox that was deleted in Chatwoot. Past conversations are kept and stop naming an inbox; past usage and log lines are kept. It cannot be undone, and only works once the inbox is gone from Chatwoot.",
+      ),
+      danger: true,
+      confirmLabel: t("channels.removeInboxAction", "Remove mirror"),
+      onConfirm: async () => {
+        setRemovingInbox(inbox.id);
+        try {
+          const { error: err } = await api.api.v1.chatwoot
+            .inboxes({ id: inbox.id })
+            .delete();
+          if (err) throw err;
+          setInboxes((prev) => prev.filter((i) => i.id !== inbox.id));
+          showToast(
+            t("channels.removedInbox", "Inbox mirror removed."),
+            "success",
+          );
+        } catch (e) {
+          // The server's own sentence, because it is the one that TEACHES: a live inbox comes back
+          // 409 "This inbox still exists in Chatwoot. Delete it there first.", already localized. The
+          // fallback covers a transport failure with no server behind it, which is the case a bare
+          // `if (err)` never reaches — the await rejects before `err` is ever assigned (docs/ui.md).
+          showToast(
+            apiErrorMessage(e) ??
+              t("channels.removeInboxError", "Could not remove the inbox."),
+            "error",
+          );
+          throw e;
+        } finally {
+          setRemovingInbox(null);
+        }
+      },
+    });
   }
 
   const baseUrlInvalid = !isValidHttpUrl(baseUrl);
@@ -1089,6 +1151,8 @@ export function ChannelsPage() {
                           }
                           reconnecting={reconnecting === ib.id}
                           onReconnect={() => reconnectBot(ib.id)}
+                          removing={removingInbox === ib.id}
+                          onRemove={() => removeInboxMirror(ib)}
                         >
                           {disconnected ? (
                             <span className="shrink-0 text-text-muted text-xs">
@@ -1350,6 +1414,7 @@ export function ChannelsPage() {
       </Modal>
 
       <StrongConfirmModal modal={strongConfirm} />
+      <ConfirmDialog modal={confirm} />
     </PageContainer>
   );
 }

@@ -39,11 +39,14 @@ import { vaultRefWhere } from "@/modules/vault/service";
 
 // NOTE: these AppError translationKeys are localized centrally in `onError`; declared here for the
 // i18n extractor (keepRemoved: false). Keep in sync with src/api/locales/*.json.
-// translate('errors.googleOAuthInvalidScope', 'Invalid Google OAuth scope')
-// translate('errors.googleOAuthTooManyScopes', 'Too many Google OAuth scopes')
+// translate('errors.googleOAuthInvalidScope', 'Invalid Google OAuth scope: {{scope}}')
+// translate('errors.googleOAuthTooManyScopes', 'Too many Google OAuth scopes (at most {{max}})')
 // translate('errors.googleOAuthTokenExchangeFailed', 'Failed to exchange the Google authorization code')
 // translate('errors.googleOAuthNoRefreshToken', 'Google did not return a refresh token; re-consent is required')
 // translate('errors.googleOAuthNotConnected', 'This Google credential is not connected')
+// translate('errors.googleOAuthCredentialNotFound', 'This Google credential no longer exists')
+// translate('errors.googleOAuthTokenEndpointError', 'Google refused the token request: {{reason}}')
+// translate('errors.googleOAuthRefreshFailed', 'Could not refresh the Google credential: the answer carried no access token. Reconnect it.')
 // translate('errors.googleOAuthWrongKind', 'This credential is not a Google OAuth credential')
 
 const idParams = t.Object({
@@ -134,7 +137,7 @@ export const oauthGoogleVaultController = new Elysia({
           { description: "Google OAuth scopes to request during consent." },
         ),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   // Connection status (never returns tokens or the client secret).
@@ -152,7 +155,7 @@ export const oauthGoogleVaultController = new Elysia({
         "Returns the connection state of a google_oauth vault entry; never returns tokens or the client secret.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   // Disconnect: best-effort revoke the refresh token, then drop the tokens (keep clientId/secret).
@@ -182,7 +185,7 @@ export const oauthGoogleVaultController = new Elysia({
         "Best-effort revokes the refresh token and drops the stored tokens for a google_oauth vault entry, keeping the client id and secret.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   );
 

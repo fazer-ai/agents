@@ -11,6 +11,7 @@ import {
   MCP_STDIO_LAUNCHERS,
   stdioCommandLauncher,
 } from "@/lib/mcp-launchers";
+import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
@@ -189,7 +190,7 @@ export async function createMcpConnection(
 ): Promise<McpConnectionDto> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const data = mcpConnectionCreateSchema.parse(input);
+  const data = parseInput(mcpConnectionCreateSchema, input);
   await assertTransportValid(data);
   return runScopedOn(base, ctx, async (db) => {
     await assertNameFree(db, data.name);
@@ -218,7 +219,7 @@ export async function updateMcpConnection(
   patch: McpConnectionUpdate,
   base: PrismaClient = basePrisma,
 ): Promise<McpConnectionDto> {
-  const data = mcpConnectionUpdateSchema.parse(patch);
+  const data = parseInput(mcpConnectionUpdateSchema, patch);
   const current = await runScopedOn(base, ctx, (db) =>
     db.mcpServerConnection.findUnique({
       where: { id },

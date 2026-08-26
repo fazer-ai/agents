@@ -6,7 +6,7 @@ import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import {
-  // translate('errors.invalidId', 'This id is not valid')
+  // translate('errors.invalidId', 'Not a valid {{label}}')
   getIssuedDocumentPdf,
   issueDocument,
   listIssuedDocuments,
@@ -27,7 +27,8 @@ import {
 // translate('errors.documentTemplateNotFound', 'Document template not found')
 // translate('errors.documentNotFound', 'Document not found')
 // translate('errors.documentTemplateDisabled', 'This document template is disabled')
-// translate('errors.documentTemplateSlugTaken', 'A document template with this identifier already exists')
+// translate('errors.documentTemplateSlugTaken', 'A document template with the identifier "{{slug}}" already exists')
+// translate('errors.documentTemplateSlugTakenBy', 'The identifier "{{slug}}" is already taken by the template "{{name}}"')
 // translate('errors.documentTemplateNameTaken', 'You already have a document template called "{{name}}"')
 // translate('errors.documentTemplateNameCollides', '"{{name}}" collides with the template "{{existing}}": both produce the tool name {{tool}}')
 // translate('errors.documentTemplateNameCollidesUnknown', 'You already have a document template whose name produces the tool {{tool}}. Pick another name.')
@@ -35,17 +36,20 @@ import {
 // translate('errors.invalidDocumentTemplate', 'This document template is not valid')
 // translate('errors.invalidDocumentTemplateReason', 'This document template is not valid: {{reason}}')
 // translate('errors.invalidCompanyField', 'This company profile field is not valid: {{reason}}')
-// translate('errors.invalidDocumentValues', 'The values do not match what this template declares')
-// translate('errors.invalidDocumentSlug', 'This identifier is not valid')
-// translate('errors.invalidDocumentTemplateName', 'The document template name must be between 1 and 120 characters')
+// translate('errors.invalidDocumentValues', 'The values do not match what this template declares: {{reason}}')
+// translate('errors.invalidDocumentSlug', 'This identifier is not valid: {{reason}}')
+// translate('errors.invalidDocumentTemplateName', 'This document template name is not valid: {{reason}}')
 // translate('errors.documentRevoked', 'This document was revoked and cannot be issued again')
 // translate('errors.documentNotNumbered', 'This document could not be numbered because its template no longer exists')
-// translate('errors.invalidDocumentTemplateDescription', 'The document template description is too long')
-// translate('errors.documentTemplateUnreadable', 'This template contains content a newer version wrote, so it cannot be saved from here')
-// translate('errors.invalidDocumentNumberPrefix', 'The document number prefix is too long')
+// translate('errors.invalidDocumentTemplateDescription', 'This document template description is not valid: {{reason}}')
+// translate('errors.documentTemplateUnreadable', 'This template contains content a newer version wrote, so it cannot be saved from here: {{reason}}')
+// translate('errors.invalidDocumentNumberPrefix', 'This document number prefix is not valid: {{reason}}')
 // translate('errors.invalidIdempotencyKey', 'This idempotency key is not valid: {{reason}}')
 // translate('errors.documentNotStored', 'This document could not be stored')
-// translate('errors.documentWouldBeBlank', 'This document would be blank')
+// translate('errors.documentWouldBeBlank', 'This document would be blank: with the values given, no block prints anything.')
+// translate('errors.documentWouldBeBlankNoLetterhead', 'This document would be blank: the company letterhead it printed is no longer configured.')
+// translate('errors.imageTooManyPixels', 'The image has too many pixels: at most {{max}} in total (about {{dimensions}})')
+// translate('errors.imageDimensionsUnreadable', 'The image header could not be read, so its size cannot be checked. Export the file again.')
 // translate('errors.logoNotFound', 'Logo not found')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
@@ -124,7 +128,7 @@ export const documentsController = new Elysia({
       // and one past 2^63-1 is refused by the range check rather than by the transport. A status the
       // route returns and the contract does not name is a status no generated client knows how to
       // handle — the same reason the issue route names 409.
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .post(
@@ -182,7 +186,7 @@ export const documentsController = new Elysia({
       // 409 is a real answer here: an idempotency key can land on a row that was revoked, that could
       // not be numbered, or that nobody managed to store. A status the route returns and the
       // contract does not name is a status no generated client knows how to handle.
-      response: errors(400, 401, 403, 404, 409),
+      response: errors(400, 401, 403, 404, 409, 422),
     },
   )
   .post(
@@ -206,7 +210,7 @@ export const documentsController = new Elysia({
         "Revoke document",
         "Revokes an issued document; its PDF stops being served.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .get(
@@ -243,6 +247,6 @@ export const documentsController = new Elysia({
         "Download document PDF",
         "Streams the rendered PDF for inline viewing.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   );

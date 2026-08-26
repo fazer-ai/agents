@@ -150,16 +150,25 @@ export function DocumentsPanel() {
   // Where a failed load is reported, which depends entirely on whether there is anything on screen
   // to lose. With nothing loaded, the retry card is the only thing that can say the panel is empty
   // because a request failed rather than because the account is.
-  const failed = useCallback(() => {
-    if (loadedOnce.current) {
-      showToast(
-        t("documents.refreshError", "Could not refresh this page."),
-        "error",
-      );
-      return;
-    }
-    setError(true);
-  }, [showToast, t]);
+  //
+  // `reason` is the response that failed, and it is passed rather than read here because the caller
+  // is the only one that knows WHICH of the four requests refused. Absent from the `catch` on
+  // purpose: Eden resolves a transport failure, so that one holds a fault of ours, with no sentence
+  // of the server's in it.
+  const failed = useCallback(
+    (reason?: unknown) => {
+      if (loadedOnce.current) {
+        showToast(
+          apiErrorMessage(reason) ||
+            t("documents.refreshError", "Could not refresh this page."),
+          "error",
+        );
+        return;
+      }
+      setError(true);
+    },
+    [showToast, t],
+  );
   const load = useCallback(async () => {
     const seq = ++loadSeq.current;
     const writes = companyWrites.current;
@@ -183,7 +192,7 @@ export function DocumentsPanel() {
       // be writing an answer to a question nobody is asking any more.
       if (!current()) return;
       if (list.error || !list.data || settings.error) {
-        failed();
+        failed(list.error ?? settings.error);
         return;
       }
       setTemplates([...list.data.templates]);
@@ -304,7 +313,11 @@ export function DocumentsPanel() {
         id,
       }).delete();
       if (err) {
-        showToast(t("documents.deleteError", "Could not delete."), "error");
+        showToast(
+          apiErrorMessage(err) ||
+            t("documents.deleteError", "Could not delete."),
+          "error",
+        );
         return;
       }
       showToast(t("documents.deleted", "Deleted."), "success");
@@ -385,7 +398,10 @@ export function DocumentsPanel() {
         .revoke.post();
       if (err) throw err;
     } catch (e) {
-      showToast(t("documents.revokeError", "Could not revoke."), "error");
+      showToast(
+        apiErrorMessage(e) || t("documents.revokeError", "Could not revoke."),
+        "error",
+      );
       // Rethrown so the confirm dialog stays OPEN on failure, per its own contract: a revoke worth
       // asking about is worth retrying without hunting the row down in the list again. Eden
       // RESOLVES an HTTP error as `{ error }` and REJECTS on a transport failure, so both halves

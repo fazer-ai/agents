@@ -61,6 +61,31 @@ export interface AgentBotIdentity {
   accessToken: string;
 }
 
+// The persona's Chatwoot id, and ONLY that. Deliberately not `loadAgentBot`: that one decrypts the
+// access token on the way out, which a caller that never speaks does not need and cannot survive —
+// a rejected decrypt (a rotated key, a corrupt blob) would escape into whatever path was merely
+// asking WHICH bot. Callers that report rather than act use this one.
+export async function agentBotChatwootId(
+  tenantId: bigint,
+  instanceId: bigint,
+  agentId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<number | null> {
+  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootAgentBot.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_agentId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          agentId,
+        },
+      },
+      select: { chatwootAgentBotId: true },
+    }),
+  );
+  return row?.chatwootAgentBotId ?? null;
+}
+
 export async function loadAgentBot(
   tenantId: bigint,
   instanceId: bigint,

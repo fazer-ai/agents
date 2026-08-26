@@ -4,7 +4,10 @@ import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { readAttributeContextConfig } from "@/modules/chatwoot/attributes";
 import { readContactAuthConfig } from "@/modules/contact-auth/settings";
 import { readDebounceConfig } from "@/modules/debounce/settings";
-import { readObservabilityConfig } from "@/modules/flowlog/settings";
+import {
+  readObservabilityConfig,
+  storableObservability,
+} from "@/modules/flowlog/settings";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readGuardrailsConfig } from "@/modules/guardrails/settings";
 import { readHandoffConfig } from "@/modules/handoff/settings";
@@ -241,7 +244,9 @@ export function mergeBehaviorSettings(
   next.channelRedirect = normalized.channelRedirect;
   next.guardrails = normalized.guardrails;
   next.attributeContext = normalized.attributeContext;
-  next.observability = normalized.observability;
+  // Through the storable projection, not the read shape: `observability.fullDetail` is DERIVED, and
+  // this line is what would persist it.
+  next.observability = storableObservability(normalized.observability);
   next.memory = normalized.memory;
   // grounding: only persist when a valid distance is set; otherwise leave whatever was there
   // (a null maxDistance means "no grounding filter" — represent it explicitly when the patch

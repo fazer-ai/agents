@@ -17,6 +17,7 @@ import { PendingInvitesCard } from "@/client/components/admin/PendingInvitesCard
 import { Tooltip } from "@/client/components/Tooltip";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { isAdminRole } from "@/client/lib/roles";
 import { cn, formatDate } from "@/client/lib/utils";
 
@@ -175,7 +176,11 @@ export function AdminUsersPage() {
       });
 
     if (error) {
-      showToast(t("admin.roleUpdateFailed", "Failed to update role"), "error");
+      showToast(
+        apiErrorMessage(error) ||
+          t("admin.roleUpdateFailed", "Failed to update role"),
+        "error",
+      );
       return;
     }
 
@@ -215,9 +220,9 @@ export function AdminUsersPage() {
           .users({ id: user.id })
           .delete({ password });
         if (error) {
-          const msg = (error.value as { error?: string } | undefined)?.error;
           showToast(
-            msg || t("admin.deleteUserError", "Could not delete the user."),
+            apiErrorMessage(error) ||
+              t("admin.deleteUserError", "Could not delete the user."),
             "error",
           );
           throw error;

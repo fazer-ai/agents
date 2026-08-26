@@ -20,7 +20,7 @@ import { FLOW_STAGES } from "@/modules/flowlog/stages";
 //
 // NOTE: the channels service throws these AppError translationKeys; declared here (under src/api/**)
 // so the API i18n extractor keeps them (its glob does not reach src/modules).
-// translate('errors.unknownFlowStage', 'Unknown flow stage')
+// translate('errors.unknownFlowStage', 'Unknown flow stage: {{stage}}')
 // translate('errors.alertChannelNotFound', 'Alert channel not found')
 // translate('errors.noUpdatableFields', 'No updatable fields provided')
 
@@ -55,7 +55,7 @@ export const alertChannelsController = new Elysia({
         "List alert channels",
         "Returns the tenant's alert channels; the token-bearing url is returned only as a masked preview.",
       ),
-      response: errors(401, 403),
+      response: errors(401, 403, 404),
     },
   )
   .post(
@@ -117,7 +117,7 @@ export const alertChannelsController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .patch(
@@ -191,7 +191,7 @@ export const alertChannelsController = new Elysia({
           }),
         ),
       }),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
     },
   )
   .delete(

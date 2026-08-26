@@ -12,6 +12,7 @@ import {
   NotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
@@ -20,6 +21,11 @@ import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
 import { documentToolName } from "@/modules/documents/slug";
 import { parseTemplateContent } from "@/modules/documents/validate";
+import {
+  FULL_DETAIL_MAX_HOURS,
+  isFullDetailWindowOpen,
+  parseIsoInstant,
+} from "@/modules/flowlog/settings";
 import { ensureTenantSweep } from "@/modules/followups/handlers";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
@@ -286,6 +292,52 @@ export function assertSettingsTextSizes(
   }
 }
 
+// The debug window's write boundary, and it sits beside the text-size one for the same reason: this
+// is where every transport that writes an agent's settings converges (REST create, REST update, and
+// the MCP patch, which imports it from here).
+//
+// The READER also refuses a deadline past the horizon, but that comparison MOVES: a value 48h ahead
+// is refused today and, twenty-five hours later, sits comfortably inside `now + 24h` and arms the
+// mode for the rest of its window. A read-time bound can only ever DELAY such a value, never refuse
+// it, because nothing in a lone deadline says when it was armed. Refusing the write is what makes it
+// permanent for everything this platform stores.
+//
+// Same shape as the text rule: only a value the write INTRODUCES or CHANGES is refused, so a bag
+// that already holds one does not block an unrelated save.
+export class DebugWindowTooLongError extends AppError {
+  constructor(hours: number) {
+    super(
+      `observability.fullDetailUntil is further than ${hours}h ahead`,
+      400,
+      "errors.debugWindowTooLong",
+      { hours },
+      "observability.fullDetailUntil",
+    );
+  }
+}
+
+export function assertSettingsDebugWindow(
+  settings: unknown,
+  stored: unknown,
+  now: Date = new Date(),
+): void {
+  const next = rawFullDetailUntil(settings);
+  if (next === undefined || next === rawFullDetailUntil(stored)) return;
+  const at = parseIsoInstant(next);
+  if (at !== null && isFullDetailWindowOpen(at, now)) return;
+  // A value that reads as OFF is allowed through only when it is genuinely off — past, absent, or
+  // unreadable. What is refused is the one that is off TODAY and arms itself later.
+  if (at === null || at.getTime() <= now.getTime()) return;
+  throw new DebugWindowTooLongError(FULL_DETAIL_MAX_HOURS);
+}
+
+function rawFullDetailUntil(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object") return undefined;
+  const o = (settings as Record<string, unknown>).observability;
+  if (!o || typeof o !== "object") return undefined;
+  return (o as Record<string, unknown>).fullDetailUntil;
+}
+
 // The write boundary for the agent's credential refs, and the only place a `vault:<id>` enters
 // either JSON bag. `requireVaultRef` is what the other six ref columns have been held to since #124;
 // the agent's two bags were left out of that sweep because they have no column to grep for, so a
@@ -359,7 +411,7 @@ export async function updateAgent(
   opts: { expectedUpdatedAt?: Date } = {},
 ): Promise<AgentDto> {
   assertPromptSize(patch.systemPrompt);
-  const data = agentUpdateSchema.parse(patch);
+  const data = parseInput(agentUpdateSchema, patch);
   validateModelConfigForWrite(data.modelConfig);
   const { businessHoursId, followUpHoursId, ...rest } = data;
   const hasBh = businessHoursId !== undefined;
@@ -441,6 +493,7 @@ export async function updateAgent(
     // NOTE: Inside the lock, against the row this write replaces — reading the stored bag separately
     // would compare against a value another writer could have changed in between.
     assertSettingsTextSizes(rest.settings, before?.settings);
+    assertSettingsDebugWindow(rest.settings, before?.settings);
     // NOTE: Inside the lock and against the same row, for the reason above: "did this write change
     // the ref" has to be asked of the value this write replaces. It also rewrites `rest` in place,
     // so the normalization below copies the canonical bag rather than the submitted one.
@@ -574,7 +627,8 @@ export async function createAgent(
   const tenantId = requireTenant(ctx);
   assertPromptSize(input.systemPrompt);
   assertSettingsTextSizes(input.settings, undefined);
-  const data = agentCreateSchema.parse(input);
+  assertSettingsDebugWindow(input.settings, undefined);
+  const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);
   const bhId =
     data.businessHoursId != null ? BigInt(data.businessHoursId) : null;

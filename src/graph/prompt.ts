@@ -151,7 +151,9 @@ const TIME_VARS: Record<
 // are: each answer is prose, and the name the operator reached for is the only signal of which
 // language the surrounding prompt is written in. An agent has no language of its own.
 type ScheduleVarKind = "is_open" | "next_open" | "summary";
-const SCHEDULE_VARS: Record<
+// Exported so the audit can key its collapse on the SAME names this resolves, EN aliases included
+// (`src/graph/prompt-audit.ts`): one spelling left out would keep expanding.
+export const SCHEDULE_VARS: Record<
   string,
   { kind: ScheduleVarKind; lang: "pt" | "en" }
 > = {

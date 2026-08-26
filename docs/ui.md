@@ -21,6 +21,29 @@ Added alongside the existing Button/Input/Card/Badge/Modal/Toast/Tooltip: **Sele
 
 **Loading states are skeletons, not spinners** (see CLAUDE.md → UX). `DataBoundary` is the chokepoint: its `loading` branch renders a generic row-skeleton by default, or a caller-supplied `skeleton={<…/>}` for distinctive layouts (Dashboard, Conversations list, Channels, the Agent editor); it owns the `role="status"` + sr-only `common.loading` announcement, so a bespoke skeleton is purely visual. Pages outside `DataBoundary` (admin tables, Approvals, the conversation message thread) compose `<Skeleton>` inline with their own `role="status"` wrapper. Spinners survive only for `<Button loading>` and the boot/auth/invite-token splash. Skeleton bars are `bg-bg-tertiary`, so don't nest them inside a `bg-bg-tertiary` shell (zero contrast) — drop the shell's bg and let the bars read against the card.
 
+## Where a server refusal goes
+
+The API answers a refusal as `{ error, field? }` (`src/api/lib/refusal.ts`): the sentence, already localized for the request's `Accept-Language`, and — when the refusal is about one input — the server's own name for that input, identical in every language. `field` is a column (`systemPrompt`), a key of a patch (`document`), or a dotted path into a bag the server owns (`guardrails.output.templateMessage`); it is **absent**, never null, whenever the refusal is not about one input, which is most of them.
+
+Two client pieces read it, and which one a call site wants depends on whether it is a form:
+
+- **`apiErrorMessage(e)`** (`lib/apiError.ts`) → the sentence, or `null` for a transport failure with no server behind it. For actions that are not a form (a delete, a retry, a connection test), where a toast is the answer either way.
+- **`useFieldRefusal(fields)`** (`hooks/useFieldRefusal.ts`) for a form. The form **declares** the server names it can render (`useFieldRefusal(COMPANY_FIELDS)`), passes `error={refusal.at(name, draft[name])}` to each `<FormField>`, and its submit handler does `const toast = refusal.capture(error, fallback, sent, current); if (toast) showToast(toast, "error")` — `sent` being what the request carried and `current` what the inputs hold now.
+
+The rule the mechanism holds is that the two channels are **exclusive and exhaustive**: a refusal about a declared input renders at that control and raises no toast; a refusal about anything else — another screen's field, no field at all, or no server at all — is a toast. Silence is the outcome that must never happen, and a message shown at the control *and* in a toast is the noise that teaches people to dismiss toasts unread. `placeRefusal` (`lib/fieldRefusal.ts`) is that decision as a pure function, with the table in `tests/client/field-refusal.test.ts`.
+
+The decision is about whether the operator will actually **read** the message, not merely whether the field was declared, and three cases separate those. The form may have unmounted while its own save was out (a modal body does this), in which case the mark goes to state nobody renders. The operator may have corrected the value while the request was out, in which case marking the box blames a value the server never saw. And a refusal about a field the request never carried is about what is *stored*, so there is nothing to be stale against and the mark stands. All three are rows in the same table.
+
+The mark then expires **by value**: `at(field, value)` shows the message only while the input still holds what was refused, so an edit takes it off with no `onChange` line to forget. `clear()` exists for the save that goes through, which the value key cannot recognise on its own.
+
+Declared rather than discovered, because the submit handler needs the answer *before* the next render; matched exactly rather than by prefix, so a form rendering a parent path does not claim every leaf under it. The state is per form instance: a modal over the panel that opened it has its own, and both have a `name`.
+
+Reference wiring: `pages/resources/documents/CompanyProfileCard.tsx`.
+
+**Where the console actually stands**, because the two paragraphs above describe the destination and not today. Every error toast now shows the server's sentence when there is one — `tests/client/error-toast-reason.test.ts` holds that as a rule, and a handler that discards an error it has fails the suite. Rendering the refusal **at the input** it names is wired on that one card and nowhere else: `AdvancedPanel`, the vault picker, Channels and the admin surfaces all receive a `field` today (`requireVaultRef` names `embedding.credentialRef`, `SettingsTextTooLongError` names the settings path) and all of them still show it in a toast. Issue #320 tracks that, per screen, and it is deliberately separate: declaring the server's names for a form's inputs has to be read screen by screen, and doing it inside the sentence sweep would have meant editing the same handlers twice.
+
+Refusals rendered into **local error state** rather than a toast are a third population, unswept and unfenced: issue #329.
+
 ## i18n gotchas
 
 - `t("key", "Default")` everywhere; `bun i18n:extract` auto-adds keys to `en.json` AND `pt-BR.json` (copying the English default into pt-BR — **new pt-BR keys must then be translated**). Run `bun check` (which runs the extractor) after adding strings.

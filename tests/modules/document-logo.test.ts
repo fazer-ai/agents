@@ -203,7 +203,7 @@ describe("setCompanyLogo", () => {
   test("refuses a JPEG announced as a PNG", async () => {
     await expect(
       setCompanyLogo(ctx, upload("image/png", [...jpeg()])),
-    ).rejects.toThrow(/PNG or JPEG/);
+    ).rejects.toThrow(/must be one of: PNG, JPG/);
   });
 
   // The one the size cap cannot catch: a small file that decodes into gigabytes.
@@ -250,7 +250,7 @@ describe("setCompanyLogo", () => {
     expect(LOGO_EXT_BY_TYPE["image/webp"]).toBeUndefined();
     await expect(
       setCompanyLogo(ctx, upload("image/webp", [...png()])),
-    ).rejects.toThrow(/PNG or JPEG/);
+    ).rejects.toThrow(/must be one of: PNG, JPG/);
     await expect(
       setCompanyLogo(ctx, {
         type: "image/png",

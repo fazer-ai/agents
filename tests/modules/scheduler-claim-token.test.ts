@@ -73,6 +73,7 @@ async function staleAndCurrent(
   dedupeKey: string,
 ): Promise<{ id: bigint; stale: ClaimedJob; current: ClaimedJob }> {
   const id = await enqueueJob({
+    rearm: "same-work",
     tenantId,
     kind: "WEBHOOK_RETRY",
     dedupeKey,
@@ -84,6 +85,7 @@ async function staleAndCurrent(
   expect(stale).toBeDefined();
 
   await enqueueJob({
+    rearm: "same-work",
     tenantId,
     kind: "WEBHOOK_RETRY",
     dedupeKey,
@@ -196,6 +198,7 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
 
   test("the reaper does not issue a token, so the run it declared dead stays out", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "tok-reap",
@@ -237,6 +240,7 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
       if (!armedDuring) {
         armedDuring = true;
         await enqueueJob({
+          rearm: "same-work",
           tenantId: job.tenantId,
           kind: "HEARTBEAT",
           dedupeKey: "tok-handler",
@@ -249,6 +253,7 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
     });
 
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "HEARTBEAT",
       dedupeKey: "tok-handler",

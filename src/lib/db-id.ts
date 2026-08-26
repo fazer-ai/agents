@@ -31,7 +31,9 @@ export function requireDbId(
 ): bigint {
   const id = parseDbId(raw);
   if (id === null) {
-    throw new AppError(`invalid ${label}`, 400, "errors.invalidId");
+    throw new AppError(`invalid ${label}`, 400, "errors.invalidId", {
+      label,
+    });
   }
   return id;
 }

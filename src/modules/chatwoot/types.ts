@@ -105,6 +105,8 @@ export interface NormalizedChatwootContact {
 export interface NormalizedChatwootEvent {
   event: string;
   // conversation display_id (per-account) — the id the bot-token API uses, NOT the global PK.
+  // null whenever the event's body is not a conversation and embeds none: the two allowlists in
+  // normalize.ts are where that promise is kept, and issue #257 is what happens without them.
   conversationId: number | null;
   // The native Chatwoot ContactInbox id (conversation.contact_inbox.id). Present on every event the
   // fork emits (EventDataPresenter#push_data embeds the raw contact_inbox association). Keys the

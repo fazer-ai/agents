@@ -42,6 +42,10 @@ function sysCtx(tenantId: bigint): TenantContext {
 
 export interface MirrorResult {
   conversationRowId: bigint | null;
+  // The mirrored INBOX row this event belongs to, upserted here on every event. Exposed because a
+  // caller that finds no agent has nothing else to name the inbox with — `rt` is null precisely
+  // then, which is the state issue #318 is about. Null when the payload named no inbox.
+  inboxRowId: bigint | null;
   // The assignee BEFORE this event applied — captured for the REENGAGE flow, which
   // must see the prior human assignee before the mirror overwrites it.
   prevAssigneeId: number | null;
@@ -73,6 +77,7 @@ export async function mirrorChatwootEvent(
   if (n.conversationId === null) {
     return {
       conversationRowId: null,
+      inboxRowId: null,
       prevAssigneeId: null,
       prevStatus: null,
       applied: false,
@@ -231,6 +236,7 @@ export async function mirrorChatwootEvent(
         }
         return {
           conversationRowId: existing.id,
+          inboxRowId,
           prevAssigneeId,
           // NOTE: No transition applied — report status/prevStatus equal so a caller's diff sees "no change".
           prevStatus: existing.status,
@@ -287,6 +293,7 @@ export async function mirrorChatwootEvent(
         });
         return {
           conversationRowId: created.id,
+          inboxRowId,
           prevAssigneeId,
           // NOTE: No prior row → no prior status (never a "transition" for a brand-new conversation).
           prevStatus: null,
@@ -376,6 +383,7 @@ export async function mirrorChatwootEvent(
       }
       return {
         conversationRowId: existing.id,
+        inboxRowId,
         prevAssigneeId,
         // NOTE: The status as persisted BEFORE this update — the real transition source value.
         prevStatus: existing.status,

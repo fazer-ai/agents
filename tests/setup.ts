@@ -1,4 +1,13 @@
 import "@testing-library/jest-dom";
+import {
+  DB_GATE_OPT_OUT,
+  missingDbConfig,
+  PROBE_BACKSTOP_MS,
+  probePoolConfig,
+  probeTargets,
+  unreachableDb,
+  withDeadline,
+} from "./db-gate";
 
 // NOTE: happy-dom registration and the Bun-native global capture live in
 // ./dom-setup.ts, which bunfig.toml preloads BEFORE this file. The DOM must
@@ -43,6 +52,46 @@ if (testSuUrl) {
     process.env.LANGGRAPH_DATABASE_URL = appUrl.toString();
   }
 }
+// THE GATE. Everything above points the suite at the test database; this refuses to start when
+// there is nothing at the other end, because a suite that skips its database-backed half exits 0 and
+// reads as green. The reasoning, the measurements and the opt-out live in ./db-gate.ts.
+const missing = missingDbConfig(process.env);
+if (missing) throw new Error(`tests: ${missing}`);
+if (process.env[DB_GATE_OPT_OUT] !== "1") {
+  // BOTH connections, because both are what a guarded file asks for. Every `describe.skipIf(!dbUp)`
+  // block sits behind a `SELECT 1` on the migration role AND one on the app role, and the two
+  // authenticate as different roles with different credentials. Probing only the first passes a run
+  // whose app role cannot log in, which skips the same blocks just as silently: measured with a
+  // valid migration URL and a nonexistent app role, one file reported `6 pass, 14 skip, 0 fail`,
+  // exit 0. The URLs read here are the ones forced above, so this asks the question in exactly the
+  // shape the guarded files will ask it.
+  // Imported HERE, not at the top of the file. `generated/prisma` is gitignored and `bun install`
+  // does not produce it, so a static import fails on any checkout that has not run
+  // `bun run prisma:generate` yet, and it fails BEFORE the opt-out is read: measured, a run of a
+  // database-free test file with ALLOW_NO_DB=1 died on `Cannot find module`, where the same file on
+  // the base commit ran. The gate must not be the reason a run without a database cannot start.
+  const { PrismaPg } = await import("@prisma/adapter-pg");
+  const { PrismaClient } = await import("@/../generated/prisma/client");
+  for (const { variable, url } of probeTargets(process.env)) {
+    const probe = new PrismaClient({
+      adapter: new PrismaPg(probePoolConfig(url)),
+    });
+    try {
+      await withDeadline(
+        probe.$queryRaw`SELECT 1`,
+        PROBE_BACKSTOP_MS,
+        variable,
+      );
+      await probe.$disconnect();
+    } catch (err) {
+      // Not awaited: the connection this is trying to close is the one that just failed to answer,
+      // and waiting on it is the stall the deadline above exists to end.
+      void probe.$disconnect().catch(() => {});
+      throw new Error(`tests: ${unreachableDb(variable, url, err)}`);
+    }
+  }
+}
+
 process.env.JWT_SECRET = "test-secret-key-for-testing-only";
 // NOTE: Force a deterministic Google client id so the auth controller registers
 // `/auth/google` regardless of the developer's local `.env` and so tests can

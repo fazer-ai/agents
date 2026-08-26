@@ -11,6 +11,7 @@ import {
   useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import type { LogExportFormat } from "@/modules/flowlog/export";
 
 // Export flow for the Logs page. Picks a time range (a bounded export is the default; exporting the
@@ -109,8 +110,12 @@ export function LogsExportModal({
         );
       }
       modal.close();
-    } catch {
-      showToast(t("logs.exportError", "Could not export the logs."), "error");
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) ||
+          t("logs.exportError", "Could not export the logs."),
+        "error",
+      );
     } finally {
       setBusy(false);
     }

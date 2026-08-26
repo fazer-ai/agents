@@ -328,6 +328,7 @@ describe.skipIf(!dbUp)("debounce", () => {
     );
     const past = new Date(Date.now() - 60_000);
     await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dbc-wr",
@@ -1023,6 +1024,68 @@ describe.skipIf(!dbUp)("debounce", () => {
     return null;
   }
 
+  async function routeRowOf(convId: number) {
+    const conversation = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    for (let i = 0; i < 40; i++) {
+      const row = await suDb.executionLog.findFirst({
+        where: { tenantId, stage: "route", conversationId: conversation.id },
+        orderBy: { id: "desc" },
+      });
+      if (row) return row;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return null;
+  }
+
+  // The OTHER unbound-inbox exit, and the one nothing recorded: the gate is OPEN, so this burst is
+  // the bot's to answer and there is simply no agent to answer it. It ended as a silent `done`
+  // (issue #318), which from the operator's side is indistinguishable from an agent that is quiet.
+  test("an unbound inbox with the gate open leaves the line that names the inbox", async () => {
+    await seedConversation(874);
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 7302,
+        name: "Recem-conectada",
+        agentId: null,
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 874 },
+      data: { inboxId: inbox.id },
+    });
+    const sent: Array<[number, string]> = [];
+    const out = await flushDebounceJob({
+      job: jobFor(874, { lastMessageId: 31 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [page([{ id: 31, content: "oi" }])],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]);
+    const row = await routeRowOf(874);
+    expect(row?.level).toBe("warn");
+    expect(row?.status).toBe("skipped");
+    expect(row?.agentId).toBeNull();
+    expect(row?.inboxId).toBe(inbox.id);
+    expect(row?.detail).toEqual({ outcome: "no_agent", chatwootInboxId: 7302 });
+    // The burst is NOT consumed: an open gate on an inbox that gets bound later has to answer it,
+    // which is exactly what the bail's position below the gate buys. The line does not change that.
+    expect(await watermarkOf(874)).toBeNull();
+  });
+
   test("a gate closed by a human writes the handoff line that names the takeover", async () => {
     await seedConversation(870, { assigneeType: "User" });
     const out = await flushDebounceJob({
@@ -1487,6 +1550,122 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(sent).toEqual([]);
     expect(calls.getMessages).toBe(0);
     expect(await watermarkOf(806)).toBe(12);
+  });
+
+  // Issue #339. The DEBOUNCE dedupeKey is the THREAD, so one physical row serves every burst this
+  // contact ever sends. A flush that dead-lettered (five consecutive failures) left the row carrying
+  // five attempts, and the re-arm only ever wrote status/run_at/payload, so the NEXT burst, days
+  // later, got exactly one attempt before being retired again, forever.
+  //
+  // A fresh burst is not a guess here: it is the same thing `burstStartedAt` already keys off, a row
+  // that is not PENDING, and both are asserted so the two cannot drift apart.
+  test("a burst after a dead-lettered flush starts with the whole budget", async () => {
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`,
+    );
+    const thread = threadOf(702);
+    const cfg = {
+      enabled: true,
+      windowSeconds: 15,
+      maxMessagesPerBurst: 20,
+      maxWindowSeconds: 60,
+    };
+    const t0 = new Date(Date.now() - 600_000);
+    await armDebounce({
+      tenantId,
+      threadId: thread,
+      agentBotId: 9,
+      cfg,
+      base: appDb,
+      now: t0,
+    });
+    const armed = await suDb.schedulerJob.findFirstOrThrow({
+      where: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(thread),
+      },
+      select: { id: true },
+    });
+    await suDb.schedulerJob.update({
+      where: { id: armed.id },
+      data: { attempts: 5, status: "DEAD" },
+    });
+
+    const t1 = new Date(t0.getTime() + 300_000);
+    await armDebounce({
+      tenantId,
+      threadId: thread,
+      agentBotId: 9,
+      cfg,
+      base: appDb,
+      now: t1,
+    });
+    const row = await suDb.schedulerJob.findUniqueOrThrow({
+      where: { id: armed.id },
+      select: { status: true, attempts: true, payload: true },
+    });
+    expect(row.status).toBe("PENDING");
+    expect(row.attempts).toBe(0);
+    expect((row.payload as { burstStartedAt: number }).burstStartedAt).toBe(
+      t1.getTime(),
+    );
+  });
+
+  // The control for the test above, and the reason the answer is not just "always clear it": while a
+  // burst is still open, a re-arm is the SAME flush being pushed out by another message. A flush that
+  // failed and is waiting on its backoff must not be handed five more attempts by every message the
+  // contact types.
+  test("re-arming inside a burst keeps the attempts that burst has spent", async () => {
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`,
+    );
+    const thread = threadOf(703);
+    const cfg = {
+      enabled: true,
+      windowSeconds: 15,
+      maxMessagesPerBurst: 20,
+      maxWindowSeconds: 60,
+    };
+    const t0 = new Date(Date.now() - 10_000);
+    await armDebounce({
+      tenantId,
+      threadId: thread,
+      agentBotId: 9,
+      cfg,
+      base: appDb,
+      now: t0,
+    });
+    const armed = await suDb.schedulerJob.findFirstOrThrow({
+      where: {
+        tenantId,
+        kind: "DEBOUNCE",
+        dedupeKey: debounceDedupeKey(thread),
+      },
+      select: { id: true },
+    });
+    // The flush failed twice: failJob re-pends with a backoff, so the row is PENDING and the burst
+    // is still the same one.
+    await suDb.schedulerJob.update({
+      where: { id: armed.id },
+      data: { attempts: 2 },
+    });
+    await armDebounce({
+      tenantId,
+      threadId: thread,
+      agentBotId: 9,
+      cfg,
+      base: appDb,
+      now: new Date(t0.getTime() + 5_000),
+    });
+    const row = await suDb.schedulerJob.findUniqueOrThrow({
+      where: { id: armed.id },
+      select: { attempts: true, payload: true },
+    });
+    expect(row.attempts).toBe(2);
+    expect((row.payload as { burstStartedAt: number }).burstStartedAt).toBe(
+      t0.getTime(),
+    );
   });
 
   test("armDebounce keeps the burst's highest lastMessageId across re-arms", async () => {

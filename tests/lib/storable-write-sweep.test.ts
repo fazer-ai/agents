@@ -253,6 +253,7 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
 
   test("a failing job with a NUL still schedules its retry", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "sweep-failjob",
@@ -285,6 +286,7 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
 
   test("a NUL in the message still dead-letters the last attempt", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "sweep-failjob-dead",
@@ -343,17 +345,19 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],
   "src/modules/conversations/service.ts": [12, "read"],
-  "src/modules/debounce/service.ts": [1, "cleared"],
   "src/modules/flowlog/alert-worker.ts": [4, "guarded + cleared"],
   "src/modules/flowlog/read.ts": [4, "read"],
   "src/modules/flowlog/service.ts": [2, "guarded"],
+  "src/modules/flowlog/webhook.ts": [1, "flow-event"],
   "src/modules/guardrails/gate.ts": [2, "flow-event"],
   "src/modules/guardrails/health.ts": [4, "read"],
   "src/modules/memory/compact.ts": [1, "flow-event"],
   "src/modules/scheduler/service.ts": [4, "guarded + cleared"],
   "src/modules/stt/service.ts": [2, "flow-event"],
   "src/modules/vision/service.ts": [2, "flow-event"],
-  "src/modules/webhooks/outbound/worker.ts": [4, "guarded + cleared"],
+  // Was 4 until issue #325 collapsed the two DEAD writes into `finalizeDead`; the line that went
+  // is the duplicate, not a guard.
+  "src/modules/webhooks/outbound/worker.ts": [3, "guarded + cleared"],
 };
 
 // The other half of the same ledger, and the half that covers the two columns the scan above cannot

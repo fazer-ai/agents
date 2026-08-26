@@ -48,6 +48,12 @@ export function CredentialTestResult({
         "Blocked URL (internal addresses are not allowed).",
       );
       break;
+    case "surrounding_whitespace":
+      message = t(
+        "vault.testFail.surroundingWhitespace",
+        "The value begins or ends with a space or line break. Remove it before testing.",
+      );
+      break;
     case "missing_base_url":
       message = t(
         "vault.testFail.missingBaseUrl",

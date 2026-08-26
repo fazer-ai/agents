@@ -14,6 +14,7 @@ import {
   useToast,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
 import { NATIVE_TOOL_CATEGORY, NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { type Tool, ToolEditModal } from "./ToolEditModal";
@@ -79,7 +80,10 @@ export function ToolsPanel() {
     try {
       const { error: err } = await api.api.v1.tools({ id }).delete();
       if (err) {
-        showToast(t("tools.deleteError", "Could not delete."), "error");
+        showToast(
+          apiErrorMessage(err) || t("tools.deleteError", "Could not delete."),
+          "error",
+        );
         return;
       }
       showToast(t("tools.deleted", "Tool deleted."), "success");

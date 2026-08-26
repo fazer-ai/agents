@@ -54,15 +54,19 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.audioTooLarge', 'Audio file is too large')
 // translate('errors.baseUrlRequired', 'A base URL is required for this provider.')
 // translate('errors.credentialRequired', 'A credential is required to list provider models.')
+// translate('errors.credentialNotUsable', 'This credential did not provide an API key: it may be missing, empty, or of a type this provider cannot use.')
 // translate('errors.emptyMessage', 'The message is empty.')
 // translate('errors.fileTooLarge', 'File is too large')
 // translate('errors.invalidAgentExport', 'This file is not a valid agent export.')
 // translate('errors.invalidModelConfig', 'The model configuration must be an object.')
 // translate('errors.invalidModelConfigDetail', 'The model configuration is not valid: {{reason}}')
 // translate('errors.promptTooLong', 'System prompt is too long: {{len}} characters (limit {{max}}).')
-// translate('errors.providerModelsFailed', 'Failed to retrieve model list from provider.')
+// translate('errors.providerModelsFailed', '{{provider}} refused the list request (status {{status}}).')
+// translate('errors.providerListUnexpectedResponse', '{{provider}} answered the list request in an unexpected format.')
+// translate('errors.providerListUnreachable', 'Could not reach {{provider}} to list the options')
 // translate('errors.sessionNotFound', 'Playground session not found.')
 // translate('errors.settingsTextTooLong', 'The text in {{field}} is too long: {{len}} characters (limit {{max}}).')
+// translate('errors.debugWindowTooLong', 'The log debug mode can be armed for at most {{hours}}h at a time.')
 // translate('errors.sttCredentialMissing', 'The transcription credential was not found.')
 // translate('errors.sttFailed', 'Transcription failed: {{detail}}')
 // translate('errors.sttNotConfigured', 'Speech-to-text is not configured for this workspace.')
@@ -72,7 +76,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.toolGrantToolNotInIntegration', 'The tool {{tool}} is not available for the {{integration}} integration.')
 // translate('errors.toolGrantUnknownSource', 'Unknown tool source: {{source}}.')
 // translate('errors.toolGrantUnknownTool', 'Unknown {{source}} tool: {{tool}}.')
-// translate('errors.unknownProvider', 'Unknown model provider.')
+// translate('errors.unknownProvider', 'Unknown {{capability}} provider: {{provider}}.')
 // translate('errors.unsupportedAudioType', 'Unsupported audio type')
 // translate('errors.visionCredentialMissing', 'Vision credential not found')
 // translate('errors.visionFailed', 'Image/document extraction failed')
@@ -268,7 +272,7 @@ export const agentsController = new Elysia({
         "List agents",
         "Returns a paginated list of agents for the tenant.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       query: t.Object({
         q: t.Optional(
@@ -374,7 +378,7 @@ export const agentsController = new Elysia({
         "List inboxes that answer out of hours",
         'The agent\'s bound inboxes whose Chatwoot inbox-level out-of-office reply is configured (working hours enabled AND a message set), read live from Chatwoot. Chatwoot\'s schedule is keyed on the day of the week alone, so it cannot express the dated closures this product\'s business hours can: the two calendars disagree on holidays by construction. An inbox on an unreachable Chatwoot account is omitted rather than reported, so an empty list means "nothing found", not "nothing to find".',
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -391,7 +395,7 @@ export const agentsController = new Elysia({
     }),
     {
       detail: doc("Create agent", "Creates a new agent for the tenant."),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       body: t.Object({
         name: t.String({
@@ -470,7 +474,7 @@ export const agentsController = new Elysia({
     },
     {
       detail: doc("Update agent", "Partially updates an existing agent."),
-      response: errors(400, 401, 403, 404, 409),
+      response: errors(400, 401, 403, 404, 409, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -564,11 +568,7 @@ export const agentsController = new Elysia({
         !user?.passwordHash ||
         !(await verifyPassword(b.password, user.passwordHash))
       ) {
-        throw new AppError(
-          "password verification failed",
-          403,
-          "errors.invalidPassword",
-        );
+        throw new AppError("Incorrect password", 403, "errors.invalidPassword");
       }
       await deleteAgent(ctx, BigInt(params.id));
       return { instance: instanceIdentity, success: true };
@@ -578,7 +578,7 @@ export const agentsController = new Elysia({
         "Delete agent",
         "Deletes an agent by id. Requires re-typing the agent name and the current password (step-up).",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -608,7 +608,7 @@ export const agentsController = new Elysia({
     }),
     {
       detail: doc("Clone agent", "Creates a copy of an existing agent."),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -689,7 +689,7 @@ export const agentsController = new Elysia({
         "Import agent config",
         "Recreates an agent (disabled) from an exported config, resolving references by name.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       body: t.Object({
         export: t.Unknown({
@@ -752,7 +752,7 @@ export const agentsController = new Elysia({
         "Run playground turn",
         "Runs one chat turn against the agent in the playground, with no Chatwoot side effects.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -819,7 +819,7 @@ export const agentsController = new Elysia({
         "Run playground follow-up",
         "Simulates the proactive follow-up nudge on the current playground thread, with no Chatwoot post.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -852,7 +852,7 @@ export const agentsController = new Elysia({
         "Transcribe playground audio",
         "Transcribes an uploaded voice note only (step 1 of 2), returning the transcription.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -907,7 +907,7 @@ export const agentsController = new Elysia({
         "Run playground audio turn",
         "Runs a turn on an uploaded voice note (step 2 of 2), returning the transcription and the reply.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -973,7 +973,7 @@ export const agentsController = new Elysia({
         "Extract playground file",
         "Extracts content from an uploaded image or document only (step 1 of 2), returning the kind and content.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -1030,7 +1030,7 @@ export const agentsController = new Elysia({
         "Run playground file turn",
         "Runs a turn on an uploaded image or document (step 2 of 2), returning the extraction and the reply.",
       ),
-      response: errors(400, 401, 403, 404),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -1225,7 +1225,7 @@ export const agentsController = new Elysia({
         "List provider models",
         "Lists the available models for a model provider, using a vault credential reference.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       body: t.Object({
         provider: t.String({
@@ -1286,7 +1286,7 @@ export const agentsController = new Elysia({
         "List TTS voices/models",
         "Lists the voices or models for a text-to-speech provider. OpenAI returns a curated set; ElevenLabs is fetched live with the vault credential.",
       ),
-      response: errors(400, 401, 403),
+      response: errors(400, 401, 403, 404, 422),
       requireRole: "TENANT_ADMIN",
       body: t.Object({
         provider: t.String({
@@ -1331,7 +1331,7 @@ export const agentsController = new Elysia({
         "Replace tool selections",
         "Replaces the agent's entire set of tool grants (replace-the-set semantics).",
       ),
-      response: errors(400, 401, 403, 404, 409),
+      response: errors(400, 401, 403, 404, 409, 422),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({

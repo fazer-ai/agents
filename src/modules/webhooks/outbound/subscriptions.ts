@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { requireVaultRef } from "@/modules/vault/service";
@@ -67,6 +68,7 @@ function assertKnownEvents(events: string[]): OutboundEvent[] {
         `unknown webhook event: ${e}`,
         400,
         "errors.unknownWebhookEvent",
+        { event: e },
       );
     }
     if (!seen.has(e)) {
@@ -112,7 +114,7 @@ export async function createWebhookSubscription(
 ): Promise<WebhookSubscriptionDto> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const parsed = webhookSubscriptionCreateSchema.parse(input);
+  const parsed = parseInput(webhookSubscriptionCreateSchema, input);
   const events = assertKnownEvents(parsed.events);
   await assertUrlSafe(parsed.url);
   const row = await runScopedOn(base, ctx, async (db) => {
@@ -154,7 +156,7 @@ export async function updateWebhookSubscription(
   patch: WebhookSubscriptionUpdate,
   base: PrismaClient = basePrisma,
 ): Promise<WebhookSubscriptionDto> {
-  const parsed = webhookSubscriptionUpdateSchema.parse(patch);
+  const parsed = parseInput(webhookSubscriptionUpdateSchema, patch);
   const data: Record<string, unknown> = {};
   if (parsed.url !== undefined) {
     await assertUrlSafe(parsed.url);

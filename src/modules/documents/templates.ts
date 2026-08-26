@@ -4,7 +4,6 @@ import basePrisma from "@/api/lib/prisma";
 import { DEFAULT_TIMEZONE } from "@/graph/time";
 import {
   AppError,
-  ConflictError,
   type ErrorTranslationKey,
   NotFoundError,
 } from "@/lib/errors";
@@ -154,8 +153,8 @@ function nameTaken(
   if (name === undefined) {
     return {
       message: `the slug "${slug}" is already taken by the template "${existingName}"`,
-      key: "errors.documentTemplateSlugTaken",
-      params: {},
+      key: "errors.documentTemplateSlugTakenBy",
+      params: { slug, name: existingName },
       field: "slug",
     };
   }
@@ -205,9 +204,13 @@ function writeConflict(
         );
       }
       if (name === undefined) {
-        throw new ConflictError(
+        // NOTE: AppError rather than ConflictError, which is the same 409 with no params slot:
+        // its constructor spends that position on `undefined` so the field can sit behind it.
+        throw new AppError(
           `a document template with the slug "${slug}" already exists`,
+          409,
           "errors.documentTemplateSlugTaken",
+          { slug },
           "slug",
         );
       }
@@ -237,7 +240,7 @@ function slugRefusal(
     return {
       message: `slug: ${problem}.`,
       key: "errors.invalidDocumentSlug",
-      params: {},
+      params: { reason: problem },
       field: "slug",
     };
   }
@@ -277,6 +280,7 @@ export async function documentTemplateWriteProblem(
   const metadata = templateMetadataProblem(input);
   if (metadata) return metadata;
   const name =
+    // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
     input.name !== undefined ? templateNameSchema.parse(input.name) : undefined;
   // Only CREATE derives a slug from the name; a rename keeps the slug it already has, because the
   // slug is a tool name an agent may already be granted. Deriving here on an update would refuse a
@@ -460,8 +464,11 @@ export function templateMetadataProblem(input: {
 function parseNumberPrefix(value: unknown): string | null {
   const problem = templateMetadataProblem({ numberPrefix: value });
   if (problem) {
-    throw new AppError(problem, 400, "errors.invalidDocumentNumberPrefix");
+    throw new AppError(problem, 400, "errors.invalidDocumentNumberPrefix", {
+      reason: problem,
+    });
   }
+  // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
   return templateNumberPrefixSchema.parse(value ?? null);
 }
 
@@ -472,16 +479,21 @@ function parseTemplateDescription(value: unknown): string | null {
       problem,
       400,
       "errors.invalidDocumentTemplateDescription",
+      { reason: problem },
     );
   }
+  // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
   return templateDescriptionSchema.parse(value ?? null);
 }
 
 function parseTemplateName(value: unknown): string {
   const problem = templateMetadataProblem({ name: value });
   if (problem) {
-    throw new AppError(problem, 400, "errors.invalidDocumentTemplateName");
+    throw new AppError(problem, 400, "errors.invalidDocumentTemplateName", {
+      reason: problem,
+    });
   }
+  // not-caller-input: wrapped by invalidDocumentTemplate, which names the rule that broke
   return templateNameSchema.parse(value);
 }
 
@@ -802,6 +814,7 @@ export function patchedContent(
         `this template contains content a newer version wrote and this one cannot read, so saving from here would drop it (${e.message}) — edit it from the client that wrote it, or send blocks explicitly to replace them.`,
         409,
         "errors.documentTemplateUnreadable",
+        { reason: e.message },
       );
     }
     throw e;
@@ -1027,7 +1040,9 @@ function callerValues(
   if (raw === undefined) return sampleValues(fields, now, day);
   const parsed = parseDocumentValues(fields, raw);
   if (!parsed.ok) {
-    throw new AppError(parsed.reason, 400, "errors.invalidDocumentValues");
+    throw new AppError(parsed.reason, 400, "errors.invalidDocumentValues", {
+      reason: parsed.reason,
+    });
   }
   return parsed.values;
 }

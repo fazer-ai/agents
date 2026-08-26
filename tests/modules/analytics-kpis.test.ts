@@ -91,6 +91,36 @@ async function seedClosedConversation(p: {
   }
 }
 
+// A conversation a human owned start to finish, on which the customer sent an image. Vision runs on
+// the incoming attachment BEFORE the bot-ownership gate, so the tenant was billed and the row exists
+// — but the agent never took the turn. Seeded with the node the real writer sets.
+async function seedVisionOnlyConversation(convId: number): Promise<void> {
+  const conv = await suDb.conversation.create({
+    data: {
+      tenantId,
+      chatwootInstanceId: instanceId,
+      inboxId: inboxDbId,
+      chatwootConversationId: convId,
+      status: "open",
+      assigneeType: "User",
+      threadId: `${tenantId}:${instanceId}:${convId}`,
+      lastEventAt: new Date(),
+    },
+  });
+  await suDb.llmUsage.create({
+    data: {
+      tenantId,
+      inboxId: inboxDbId,
+      conversationId: conv.id,
+      source: "inbox",
+      model: "gpt-4o-mini",
+      node: "vision",
+      promptTokens: 273,
+      completionTokens: 1,
+    },
+  });
+}
+
 describe.skipIf(!dbUp)("getKpis: what counts as a resolution", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
@@ -202,6 +232,30 @@ describe.skipIf(!dbUp)("getKpis: what counts as a resolution", () => {
   test("a human takeover is still a handoff", async () => {
     const kpis = await getKpis(ctx(), {}, appDb);
     expect(kpis.handoff).toBe(1);
+  });
+
+  // Issue #316 completed the ledger, and completing it broke the proxy this KPI rested on: every
+  // billed call used to be an agent turn, because the calls that were not had no row. A vision-only
+  // conversation is the first one that is billed and never answered.
+  test("a call billed before the bot gate is not involvement", async () => {
+    const before = await getKpis(ctx(), {}, appDb);
+    await seedVisionOnlyConversation(30);
+    const after = await getKpis(ctx(), {}, appDb);
+    expect(after.involved).toBe(before.involved);
+    // The conversation is real and still counts in the denominator, so the rate must FALL: the
+    // funnel saw a customer it never engaged.
+    expect(after.totalConversations).toBe(before.totalConversations + 1);
+    expect(after.involvementRate).toBeLessThan(before.involvementRate);
+    // And the resolution rate, whose denominator is `involved`, must not move at all.
+    expect(after.resolutionRate).toBe(before.resolutionRate);
+  });
+
+  test("a legacy row with no node still counts as the agent turn it was", async () => {
+    // The eight conversations seeded above all carry `node: null`, which is what every row written
+    // before this column had a default looks like. `notIn` alone drops them (SQL NOT IN with NULL),
+    // so this is the assertion that catches the filter tightening past its own rule.
+    const kpis = await getKpis(ctx(), {}, appDb);
+    expect(kpis.involved).toBeGreaterThanOrEqual(8);
   });
 
   test("the rates derive from the recorded resolutions", async () => {

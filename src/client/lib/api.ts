@@ -2,6 +2,7 @@ import { treaty } from "@elysiajs/eden";
 import type { App } from "@/app";
 import { getActiveTenantId } from "@/client/lib/activeTenant";
 import i18n from "@/client/lib/i18n";
+import { noteServerDate } from "@/client/lib/serverClock";
 import { recoverFromRejectedSelector } from "@/client/lib/tenantSelectorRecovery";
 
 // NOTE: `parseDate: false` disables Eden treaty's default JSON reviver that
@@ -24,6 +25,9 @@ export const api = treaty<App>(window.location.origin, {
     return headers;
   },
   onResponse: (response) => {
+    // First and unconditional: a 401 and a 429 carry the same `Date` as a 200, and the console's
+    // debug-window deadline is judged against the server's clock, not the browser's.
+    noteServerDate(response);
     if (response.status === 401) {
       window.dispatchEvent(new CustomEvent("auth:unauthorized"));
     } else if (response.status === 429) {

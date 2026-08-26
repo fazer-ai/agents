@@ -350,3 +350,131 @@ describe("calendar writes honor availability (#345)", () => {
     expect(calls.filter((c) => c.url.includes("/freeBusy"))).toHaveLength(0);
   });
 });
+
+// The three defects round 1 of the review found, each as the case that separates the two behaviours.
+describe("calendar writes honor availability — round 1 (#345)", () => {
+  function tzWeekday(isoStr: string, tz: string): number {
+    const s = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      weekday: "short",
+    }).format(new Date(isoStr));
+    return WD[s] ?? 0;
+  }
+
+  test("a start with no offset is read in the calendar's timezone, not the server's", async () => {
+    // Google resolves an offset-less `dateTime` with the event's own timeZone, so the rule has to
+    // resolve it the same way. Date.parse would read it in the SERVER's zone: 10:00 judged as 22:00
+    // in Tokyo (from a -03:00 runner) or 19:00 (from a UTC one), both outside the service hours.
+    const TOKYO = "Asia/Tokyo";
+    const day = tzWeekday("2099-06-22T10:00:00+09:00", TOKYO);
+    const { impl, calls } = routeFetch((url) =>
+      url.includes("/freeBusy")
+        ? { json: { calendars: { primary: { busy: [] } } } }
+        : { json: { id: "ev_tz" } },
+    );
+    const out = (await toolFor(
+      "calendar_create_event",
+      { ...HOURLY, timeZone: TOKYO, businessHoursId: "5" },
+      baseCtx({
+        fetchImpl: impl,
+        resolveBusinessHours: async () => ({
+          windows: [{ day, start: "09:00", end: "18:00" }],
+          exceptions: [],
+          timezone: TOKYO,
+        }),
+      }),
+    )?.invoke({
+      summary: "Consulta",
+      start: "2099-06-22T10:00:00",
+      end: "2099-06-22T11:00:00",
+    })) as string;
+    expect(out).not.toContain("not a bookable");
+    expect(writes(calls)).toHaveLength(1);
+  });
+
+  test("an operator closure is not punched through by the appointment being moved", async () => {
+    // The appointment moves; the closure does not. Subtracting the event's span from the ASSEMBLED
+    // busy list took an hour out of a blocking calendar's event, and the reschedule landed inside a
+    // closure the operator had declared.
+    const { impl, calls } = routeFetch((url, init) => {
+      if (url.includes("/freeBusy"))
+        return {
+          json: {
+            calendars: {
+              primary: { busy: [{ start: AT("14:00"), end: AT("15:00") }] },
+            },
+          },
+        };
+      if (url.includes("holidays") && init.method === "GET")
+        return {
+          json: {
+            items: [
+              {
+                start: { dateTime: AT("13:00") },
+                end: { dateTime: AT("16:00") },
+              },
+            ],
+          },
+        };
+      if (init.method === "GET")
+        return {
+          json: {
+            id: "ev_1",
+            extendedProperties: stampedExt,
+            start: { dateTime: AT("14:00") },
+            end: { dateTime: AT("15:00") },
+          },
+        };
+      return { json: { id: "ev_1" } };
+    });
+    const out = (await toolFor(
+      "calendar_update_event",
+      {
+        slotDurationMinutes: 30,
+        slotGranularityMinutes: 30,
+        blockingCalendarIds: ["holidays@demo"],
+      },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      eventId: "ev_1",
+      start: AT("14:00"),
+      end: AT("14:30"),
+    })) as string;
+    expect(writes(calls)).toHaveLength(0);
+    expect(out).toContain("not a bookable");
+  });
+
+  test("resending the same times while renaming is not a move, and is not checked", async () => {
+    // The appointment is in the past, so judging it would refuse. The tool promises an edit that
+    // leaves the time alone is never checked, and a caller that echoes back the times it already
+    // has is doing exactly that.
+    const PAST_START = "2020-06-22T14:00:00-03:00";
+    const PAST_END = "2020-06-22T15:00:00-03:00";
+    const { impl, calls } = routeFetch((url, init) => {
+      if (url.includes("/freeBusy"))
+        return { json: { calendars: { primary: { busy: [] } } } };
+      if (init.method === "GET")
+        return {
+          json: {
+            id: "ev_1",
+            extendedProperties: stampedExt,
+            start: { dateTime: PAST_START },
+            end: { dateTime: PAST_END },
+          },
+        };
+      return { json: { id: "ev_1" } };
+    });
+    await toolFor(
+      "calendar_update_event",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      eventId: "ev_1",
+      summary: "Consulta (nome novo)",
+      start: PAST_START,
+      end: PAST_END,
+    });
+    expect(writes(calls)).toHaveLength(1);
+    expect(calls.filter((c) => c.url.includes("/freeBusy"))).toHaveLength(0);
+  });
+});

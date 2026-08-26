@@ -222,12 +222,19 @@ function tzOffsetMs(at: number, tz: string): number {
   return asUtc - at;
 }
 
-// The UTC instant of local midnight for a YYYY-MM-DD in an IANA timezone (DST-correct: one
-// refinement pass covers an offset shift between the UTC guess and the target instant).
-export function zonedMidnightMs(date: string, tz: string): number {
-  const utcGuess = Date.parse(`${date}T00:00:00Z`);
+// The UTC instant a LOCAL wall clock names in an IANA timezone (DST-correct: one refinement pass
+// covers an offset shift between the UTC guess and the target instant). NaN when the string is not
+// a wall clock at all, so callers can tell "unreadable" from a real instant.
+export function zonedWallClockMs(local: string, tz: string): number {
+  const utcGuess = Date.parse(`${local}Z`);
+  if (Number.isNaN(utcGuess)) return Number.NaN;
   const first = utcGuess - tzOffsetMs(utcGuess, tz);
   return utcGuess - tzOffsetMs(first, tz);
+}
+
+// The UTC instant of local midnight for a YYYY-MM-DD in an IANA timezone.
+export function zonedMidnightMs(date: string, tz: string): number {
+  return zonedWallClockMs(`${date}T00:00:00`, tz);
 }
 
 // How many bookable times a refusal offers back. Enough for the model to propose a real choice,
@@ -235,9 +242,12 @@ export function zonedMidnightMs(date: string, tz: string): number {
 const MAX_ALTERNATIVES = 6;
 
 export interface BookingInput extends Omit<SlotInput, "timeMin" | "timeMax"> {
-  // The requested appointment, as the write tools received it.
-  start: string;
-  end: string;
+  // The requested appointment as INSTANTS, already resolved by the caller. Not the strings it
+  // received: an offset-less `dateTime` is a wall clock in the calendar's timezone, and re-parsing
+  // it here would read it in the server's instead — which is exactly the divergence the caller
+  // resolved it to avoid. One parse, at the boundary.
+  startMs: number;
+  endMs: number;
 }
 
 export interface BookingVerdict {
@@ -283,9 +293,7 @@ export function bookingWindow(
 // the times it CAN offer are what lets the turn recover, and they cost nothing extra because the
 // availability read that answers the question already covers the whole day.
 export function judgeBooking(input: BookingInput): BookingVerdict {
-  const { start, end, ...slotInput } = input;
-  const startMs = Date.parse(start);
-  const endMs = Date.parse(end);
+  const { startMs, endMs, ...slotInput } = input;
   const window = bookingWindow(startMs, endMs, input.schedule.timezone);
   const offered = computeAvailableSlots({ ...slotInput, ...window });
   const bookable = offered.some(
@@ -308,6 +316,14 @@ export function judgeBooking(input: BookingInput): BookingVerdict {
 // that matches the event's hour exactly is NOT enough, because freeBusy MERGES adjacent busy blocks:
 // an appointment at 14:00-15:00 followed by another at 15:00-16:00 comes back as one 14:00-16:00
 // block, and an equality test would leave the whole fused block standing.
+//
+// Apply it to the calendar's OWN bookings only. Applied to the assembled busy list it would punch
+// the same hole through an operator closure that happens to cover the appointment's hour, which is
+// not the appointment and does not move with it. One residual is unavoidable at this resolution:
+// freeBusy carries no event identity, so an event that genuinely OVERLAPS the one being moved loses
+// coverage over the overlap. That is bounded to the span being vacated, on a calendar that was
+// already double-booked there; separating them would mean reading the events themselves, which
+// would put other customers' appointments in reach of a path that today only ever sees busy/free.
 export function subtractWindow(
   busy: { start: string; end: string }[],
   cut: { start: string; end: string } | null,

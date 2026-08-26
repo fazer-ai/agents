@@ -14,6 +14,7 @@ import {
   type Slot,
   subtractWindow,
   zonedMidnightMs,
+  zonedWallClockMs,
 } from "./calendar-slots";
 import {
   type IntegrationSelection,
@@ -1050,13 +1051,22 @@ function buildCheckAvailabilityTool(
   );
 }
 
-// The instant a Calendar start/end names, or null when it names a whole DAY instead. Same shape test
-// as toEventTime, so "what Google would store as all-day" and "what the booking rule cannot judge"
-// are the same question answered once.
-function timedInstantMs(value: string): number | null {
+const ALL_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const HAS_OFFSET_RE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
+
+// The instant a Calendar start/end names, or null when it names a whole DAY or nothing readable.
+//
+// A value WITHOUT an offset is a local wall clock, and the zone that resolves it has to be the zone
+// GOOGLE resolves it with: the event's own `timeZone`, which toEventTime always sets to the
+// integration's. `Date.parse` would read it in the SERVER's zone instead, so a UTC deployment
+// serving a São Paulo calendar judges "18:00" as 15:00 and stores it as 18:00 — three hours of
+// service hours and bookings the rule never looked at.
+function timedInstantMs(value: string, timeZone: string): number | null {
   const v = value.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
-  const ms = Date.parse(v);
+  if (ALL_DAY_RE.test(v)) return null;
+  const ms = HAS_OFFSET_RE.test(v)
+    ? Date.parse(v)
+    : zonedWallClockMs(v, timeZone);
   return Number.isNaN(ms) ? null : ms;
 }
 
@@ -1065,6 +1075,8 @@ function timedInstantMs(value: string): number | null {
 // the one shape of write that skips the rule entirely (issue #345).
 const NOT_A_TIMED_EVENT =
   "An appointment needs a start and end time, not a whole day. Pass ISO 8601 timestamps with an offset (e.g. 2026-06-20T14:00:00-03:00).";
+const UNREADABLE_TIME =
+  "Start and end must be ISO 8601 timestamps with an offset (e.g. 2026-06-20T14:00:00-03:00).";
 
 // The requested time is not one availability would have offered. The times that ARE bookable travel
 // with the refusal: a bare "unavailable" makes the agent apologise and end the turn, while a list of
@@ -1107,10 +1119,15 @@ async function judgeWrite(opts: {
   end: string;
   excludeBusy: BusyWindow | null;
 }): Promise<{ ok: true } | { ok: false; refusal: string | ToolFailure }> {
-  const startMs = timedInstantMs(opts.start);
-  const endMs = timedInstantMs(opts.end);
+  const startMs = timedInstantMs(opts.start, opts.timeZone);
+  const endMs = timedInstantMs(opts.end, opts.timeZone);
   if (startMs === null || endMs === null) {
-    return { ok: false, refusal: NOT_A_TIMED_EVENT };
+    const wholeDay =
+      ALL_DAY_RE.test(opts.start.trim()) || ALL_DAY_RE.test(opts.end.trim());
+    return {
+      ok: false,
+      refusal: wholeDay ? NOT_A_TIMED_EVENT : UNREADABLE_TIME,
+    };
   }
   if (endMs <= startMs) {
     return {
@@ -1154,17 +1171,17 @@ async function judgeWrite(opts: {
     return { ok: false, refusal: unverifiableMessage(blocked.refusal) };
   }
   const source = read.sources[0] as CalendarSource;
-  const busy = subtractWindow(
-    busyForSource(source, blocked.windows),
-    opts.excludeBusy,
+  const busy = busyForSource(
+    { ...source, busy: subtractWindow(source.busy, opts.excludeBusy) },
+    blocked.windows,
   );
   // The appointment length the operator sells: pinned by config when there is one, otherwise the
   // length the model asked for. Both go through resolveSlotDuration so the write is judged against
   // the very same clamping the availability answer was built with.
   const preset = configuredSlotDuration(opts.sel.config);
   const verdict = judgeBooking({
-    start: opts.start,
-    end: opts.end,
+    startMs,
+    endMs,
     now: new Date(),
     schedule: effective,
     busy,
@@ -1375,11 +1392,21 @@ function buildUpdateEventTool(
       // A move is judged by the same rule a create is (issue #345). Only a move: an edit that leaves
       // start and end alone changes nothing availability has an opinion about, and paying a read to
       // rename an appointment would be a request for nothing.
-      if (input.start !== undefined || input.end !== undefined) {
-        const currentStart = flattenTime(ownerEv.start);
-        const currentEnd = flattenTime(ownerEv.end);
-        const nextStart = input.start ?? currentStart;
-        const nextEnd = input.end ?? currentEnd;
+      //
+      // "A move" is the INSTANTS differing, not the fields being present. A caller that resends the
+      // times it already has while changing the summary is renaming, and judging that would refuse
+      // the rename because the appointment is now in the past, or inside the minimum notice, or
+      // outside service hours the operator changed after it was booked.
+      const currentStart = flattenTime(ownerEv.start);
+      const currentEnd = flattenTime(ownerEv.end);
+      const nextStart = input.start ?? currentStart;
+      const nextEnd = input.end ?? currentEnd;
+      const at = (v: string | null) =>
+        v === null ? null : timedInstantMs(v, timeZone);
+      const moved =
+        (input.start !== undefined || input.end !== undefined) &&
+        (at(nextStart) !== at(currentStart) || at(nextEnd) !== at(currentEnd));
+      if (moved) {
         if (nextStart === null || nextEnd === null) {
           return toolFailure(
             "Google Calendar did not return the appointment's current times, so the new time cannot be checked. Try again shortly.",
@@ -1401,8 +1428,8 @@ function buildUpdateEventTool(
           excludeBusy:
             currentStart &&
             currentEnd &&
-            timedInstantMs(currentStart) !== null &&
-            timedInstantMs(currentEnd) !== null
+            at(currentStart) !== null &&
+            at(currentEnd) !== null
               ? { start: currentStart, end: currentEnd }
               : null,
         });

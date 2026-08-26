@@ -448,8 +448,8 @@ describe("judgeBooking — the rule a calendar write has to pass", () => {
       const v = judgeBooking({
         ...hourly,
         ...c.over,
-        start: c.start,
-        end: c.end,
+        startMs: Date.parse(c.start),
+        endMs: Date.parse(c.end),
       });
       expect(v.bookable).toBe(c.bookable);
       if (c.offers !== undefined) {
@@ -464,8 +464,8 @@ describe("judgeBooking — the rule a calendar write has to pass", () => {
     const v = judgeBooking({
       ...hourly,
       busy: [{ start: iso("14:00"), end: iso("15:00") }],
-      start: iso("14:15"),
-      end: iso("15:15"),
+      startMs: Date.parse(iso("14:15")),
+      endMs: Date.parse(iso("15:15")),
     });
     expect(v.bookable).toBe(false);
     expect(v.alternatives.map((s) => localHM(s.start))).not.toContain("14:00");
@@ -474,8 +474,8 @@ describe("judgeBooking — the rule a calendar write has to pass", () => {
         judgeBooking({
           ...hourly,
           busy: [{ start: iso("14:00"), end: iso("15:00") }],
-          start: alt.start,
-          end: alt.end,
+          startMs: Date.parse(alt.start),
+          endMs: Date.parse(alt.end),
         }).bookable,
       ).toBe(true);
     }
@@ -489,8 +489,8 @@ describe("judgeBooking — the rule a calendar write has to pass", () => {
       schedule: { ...schedule, windows: [] },
       granularityMinutes: 60,
       slotMinutes: 120,
-      start: iso("23:00"),
-      end: "2026-06-23T01:00:00-03:00",
+      startMs: Date.parse(iso("23:00")),
+      endMs: Date.parse("2026-06-23T01:00:00-03:00"),
     });
     expect(v.bookable).toBe(true);
   });

@@ -435,6 +435,10 @@ export function ChannelsPage() {
   function openConnect() {
     setBaseUrl("");
     setAdminToken("");
+    // Every opening, not just the one driven by `?connect=`. The mark expires by VALUE, so a holder
+    // carried across a cancel comes back the moment the operator retypes the URL that was refused —
+    // an old server sentence under a box, before anything has been sent.
+    connectRefusal.clear();
     connectModal.open();
   }
 

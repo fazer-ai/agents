@@ -174,8 +174,12 @@ function AlertChannelModal({
       refusal.clear();
       onSaved();
       modal.close();
-    } catch {
-      setError(t("alerts.saveFailed", "Could not save the channel"));
+    } catch (e) {
+      // Through `held` like the branch above, and not because the sentence changes — the fallback IS
+      // this sentence. It is the CHANNEL: `error` is drawn inside the dialog, and the operator can
+      // dismiss one while its save is out (docs/modals.md), after which this line reaches nobody.
+      // `capture` is what knows the form has gone and sends the words somewhere still on screen.
+      setError(held(e));
     } finally {
       setLoading(false);
     }

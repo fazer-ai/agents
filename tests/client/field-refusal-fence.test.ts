@@ -158,6 +158,57 @@ export function unheldWrites(src: string): string[] {
     .map((h) => h.name);
 }
 
+// A BRANCH of a held handler that writes the form's error line without going through the holder.
+//
+// `unheldWrites` asks per handler, and a handler is answered by one `capture` anywhere inside it —
+// which is exactly how `AlertChannelsSection` passed while its `catch` wrote a fixed sentence
+// straight into the modal-local banner. The resolved-error branch was wired; the thrown one was not,
+// and Eden REJECTS on a transport failure, so the unwired branch is the one the operator hits when
+// the network is what failed. Dismiss the dialog during that and the sentence reaches nobody.
+//
+// Only branches AFTER the request went out, and only ones that write a SENTENCE.
+//
+// Both bounds are the rule, not convenience. A `setError` before the write is a pre-submit guard —
+// "Passwords do not match", "Headers must be valid JSON." — which the client decided on its own and
+// which no server was asked about; routing one through `capture` would be nonsense, and so would
+// routing the `setError("")` that clears the line at the top of a submit.
+export function unheldBranches(src: string): string[] {
+  const carriers = capturingNames(codeSkeleton(src));
+  if (carriers.size === 0) return [];
+  const out: string[] = [];
+  for (const h of handlers(src)) {
+    const uses = [...carriers].some((n) =>
+      new RegExp(`\\b${n}\\s*\\(`).test(h.code),
+    );
+    if (!uses && !/\.capture\(/.test(h.code)) continue;
+    const sent = sentAt(h.code);
+    if (sent < 0) continue;
+    for (const m of h.body.matchAll(
+      /\bset(?:[A-Z]\w*)?Err(?:or)?\(([^;]*?)\)[;,\n]/g,
+    )) {
+      if ((m.index as number) < sent) continue;
+      const arg = (m[1] as string).trim();
+      if (/^(?:""|''|``|null|undefined)$/.test(arg)) continue;
+      if (/\.capture\(/.test(arg)) continue;
+      if ([...carriers].some((n) => new RegExp(`\\b${n}\\s*\\(`).test(arg)))
+        continue;
+      out.push(`${h.name} :: ${arg.split("\n")[0]}`);
+    }
+  }
+  return out;
+}
+
+// Where the handler stops deciding for itself and starts answering the server: the offset of its
+// first write call.
+function sentAt(code: string): number {
+  let at = 0;
+  for (const line of code.split("\n")) {
+    if (WRITES.test(line) && !NOT_A_WRITE.test(line)) return at;
+    at += line.length + 1;
+  }
+  return -1;
+}
+
 // A holder that is declared and then half-used. Either half alone is silence: a holder nobody
 // captures into can only ever answer null at every `at(…)` reading it, and a holder nobody reads
 // keeps the toast quiet about a refusal it has placed nowhere.
@@ -241,40 +292,81 @@ export function readFields(src: string, holder?: string): Set<string> {
   return new Set([...src.matchAll(re)].map((m) => m[1] as string));
 }
 
-// A holder inside a modal that is not cleared when the modal opens.
+// A holder that is not cleared at EVERY opening of the dialog it belongs to.
 //
 // The component around a modal STAYS MOUNTED when the dialog closes — that is what `useOnModalOpen`
 // exists for, resetting the form on each open — so a holder written into state survives the session
 // that produced it. Reopening and typing the refused value again shows the old server sentence under
 // the box without anything having been sent. The hook's own note says a holder must not outlive its
 // form; a modal wrapper is exactly where "the form" and "the component" stop being the same thing.
+//
+// Per OPENING and per DIALOG, which the first version of this rule was neither. It pooled every
+// reset block in the file into one string and asked whether the holder's name appeared anywhere in
+// it, so one cleared opening vouched for all of them and one holder's clear vouched for the others.
+// `ChannelsPage` has three dialogs and two ways into the connect one, and the way the operator
+// actually uses — the Connect button — was the uncleared one.
+//
+// The attribution comes free from the holder itself: its second argument names the dialog whose
+// `isOpen` it answers for (`connectModal.isOpen`), and each opening names its dialog too. A holder
+// that names no dialog is a page's, and this rule has nothing to say about it — the page unmounts.
 export function uncleanedHolders(src: string): string[] {
-  if (!/useOnModalOpen\(|\.open\(/.test(src)) return [];
-  const holders = [...src.matchAll(/const (\w+) = useFieldRefusal\(/g)].map(
-    (m) => m[1] as string,
-  );
   const code = codeSkeleton(src);
-  // The `useOnModalOpen` callback, and — for a dialog opened from a click that seeds it inline, which
-  // is how the agent editor's clone dialog is written — the block around each `.open()`.
-  const resets = [
-    ...[...code.matchAll(/useOnModalOpen\(/g)].map((m) => {
-      let depth = 0;
-      for (let i = m.index; i < code.length; i++) {
-        if (code[i] === "(") depth++;
-        else if (code[i] === ")" && --depth === 0) return src.slice(m.index, i);
+  const out: string[] = [];
+  for (const m of src.matchAll(/const (\w+) = useFieldRefusal\(([^;]*?)\);/g)) {
+    const holder = m[1] as string;
+    const dialogs = [
+      ...new Set(
+        [...(m[2] as string).matchAll(/\b(\w+)\.isOpen\b/g)].map(
+          (d) => d[1] as string,
+        ),
+      ),
+    ];
+    for (const dialog of dialogs) {
+      for (const site of resetSites(src, code, dialog)) {
+        if (!new RegExp(`\\b${holder}\\.clear\\(`).test(site)) {
+          out.push(`${holder} (${dialog})`);
+        }
       }
-      return "";
-    }),
-    ...[...code.matchAll(/\.open\(/g)].map((m) => {
-      let depth = 0;
-      for (let i = m.index; i >= 0; i--) {
-        if (code[i] === "}") depth++;
-        else if (code[i] === "{" && depth-- === 0) return src.slice(i, m.index);
+    }
+  }
+  return [...new Set(out)];
+}
+
+// Where one dialog's per-session reset has to live, which is ONE of two places.
+//
+// `useOnModalOpen(dialog, …)` is the hook for it and runs on every opening by construction, so where
+// it exists it is the only site that matters and the buttons calling `.open()` are just buttons.
+// Where it does not — a dialog seeded inline from the click that opens it, which is how the agent
+// editor's clone dialog and the channels page's Connect button are written — the reset lives at each
+// `.open()` and EVERY one of them has to carry it. Asking both of a file that has the hook flags
+// every button in it; asking only the hook lets an inline dialog through with no reset at all.
+function resetSites(src: string, code: string, dialog: string): string[] {
+  const hooked: string[] = [];
+  for (const m of code.matchAll(
+    new RegExp(`useOnModalOpen\\(\\s*${dialog}\\b`, "g"),
+  )) {
+    let depth = 0;
+    for (let i = m.index as number; i < code.length; i++) {
+      if (code[i] === "(") depth++;
+      else if (code[i] === ")" && --depth === 0) {
+        hooked.push(src.slice(m.index as number, i));
+        break;
       }
-      return "";
-    }),
-  ].join("\n");
-  return holders.filter((h) => !new RegExp(`\\b${h}\\.clear\\(`).test(resets));
+    }
+  }
+  if (hooked.length > 0) return hooked;
+  const inline: string[] = [];
+  for (const m of code.matchAll(new RegExp(`\\b${dialog}\\.open\\(`, "g"))) {
+    let depth = 0;
+    for (let i = m.index as number; i >= 0; i--) {
+      if (code[i] === "}") depth++;
+      else if (code[i] === "{" && depth-- === 0) {
+        inline.push(src.slice(i, m.index as number));
+        break;
+      }
+    }
+  }
+  return inline;
 }
 
 // A holder in a file that can HIDE its form and never says when.
@@ -355,17 +447,6 @@ const NOT_A_REFUSABLE_FORM: Record<string, string> = {
     "Same section, same two calls, same reason: nothing here is a value the server can refuse by name.",
 };
 
-// A holder whose form is the PAGE, in a file that also opens a dialog for something else. The rule
-// above cannot tell the two apart — it asks per file — and clearing a page's holder when an unrelated
-// modal opens would be a line that means nothing. The page is unmounted when the operator leaves it,
-// so its holder cannot outlive its form the way a modal's does.
-const HELD_BY_THE_PAGE: Record<string, string> = {
-  "pages/admin/AdminBrandingPage.tsx :: refusal":
-    "The branding form is the page itself; the `.open()` in this file is the logo cropper, which writes no field.",
-  "pages/agents/AgentEditorPage.tsx :: refusal":
-    "The editor's own holder covers `name` and `systemPrompt`, which no dialog in this file draws — the clone dialog has its own holder (`cloneRefusal`), cleared on open. It IS hidden, by its tab, and answers for that itself: see ALWAYS_ON_SCREEN, which this entry is deliberately not in.",
-};
-
 // A holder whose form cannot be hidden, in a file that can hide something else. Separate from the
 // ledger above because the two rules ask different questions, and one entry answers only one of
 // them: the agent editor's holder is a page's for the clearing rule and a hidden form's for this
@@ -393,10 +474,6 @@ describe("a form that writes holds the refusal it gets", () => {
         `${file} is listed as partially held and holds nothing`,
       ).toBe(true);
     }
-  });
-
-  test("the page-holder ledger is pinned to its size", () => {
-    expectWaiverLedger("HELD_BY_THE_PAGE", HELD_BY_THE_PAGE, 2);
   });
 
   test("the partial ledger is pinned to its size", () => {
@@ -636,6 +713,88 @@ describe("a form that writes holds the refusal it gets", () => {
     ).toEqual([]);
   });
 
+  test("every branch of a held handler goes through the holder", () => {
+    const unheld = sources(ROOT).flatMap((f) =>
+      unheldBranches(readFileSync(f, "utf8")).map(
+        (b) => `${f.slice(`${ROOT}/`.length)} :: ${b}`,
+      ),
+    );
+    expect(
+      unheld,
+      "one wired branch answers for the handler but not for the operator: route this write through the holder too",
+    ).toEqual([]);
+  });
+
+  test("the predicate flags the branch a wired handler forgot", () => {
+    // Eden rejects on a transport failure instead of answering `{ error }`, so the branch that is
+    // easiest to leave unwired is the one a broken network lands in.
+    const src = `
+      const r = useFieldRefusal(F, m.isOpen);
+
+  const handleSubmit = async () => {
+    setError("");
+    const held = (e) => r.capture(e, fallback, sent, current);
+    try {
+      const { error } = await api.thing.post(body);
+      if (error) {
+        setError(held(error));
+        return;
+      }
+    } catch {
+      setError(t("alerts.saveFailed", "Could not save the channel"));
+    }
+  };
+    `;
+    expect(unheldBranches(src)).toEqual([
+      'handleSubmit :: t("alerts.saveFailed", "Could not save the channel")',
+    ]);
+  });
+
+  test("a check made before the request is not a refusal", () => {
+    // "Passwords do not match" and "Headers must be valid JSON." are decided here, with no server
+    // asked, and they return before anything is sent.
+    const src = `
+      const r = useFieldRefusal(F, m.isOpen);
+
+  const handleSubmit = async () => {
+    if (a !== b) {
+      setError(t("auth.passwordsNoMatch", "Passwords do not match"));
+      return;
+    }
+    const held = (e) => r.capture(e, fallback, sent, current);
+    const { error } = await api.thing.post(body);
+    if (error) setError(held(error));
+  };
+    `;
+    expect(unheldBranches(src)).toEqual([]);
+  });
+
+  test("a handler with no holder at all is another rule's business", () => {
+    // `unheldWrites` names those. Asking twice would report one defect as two.
+    const src = `
+      const r = useFieldRefusal(F, m.isOpen);
+
+  const other = async () => {
+    await api.thing.post(body);
+    setError("nope");
+  };
+    `;
+    expect(unheldBranches(src)).toEqual([]);
+  });
+
+  test("clearing the line is not a write", () => {
+    const src = `
+      const r = useFieldRefusal(F, m.isOpen);
+
+  const save = async () => {
+    setError("");
+    setFormError(null);
+    setError(r.capture(e, f, sent, current));
+  };
+    `;
+    expect(unheldBranches(src)).toEqual([]);
+  });
+
   test("no holder is declared and half-used", () => {
     const half = sources(ROOT).flatMap((f) =>
       halfUsedHolders(readFileSync(f, "utf8")).map(
@@ -661,13 +820,14 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a holder inside a modal is cleared when the modal opens", () => {
-    const uncleaned = sources(ROOT)
-      .flatMap((f) =>
-        uncleanedHolders(readFileSync(f, "utf8")).map(
-          (h) => `${f.slice(`${ROOT}/`.length)} :: ${h}`,
-        ),
-      )
-      .filter((h) => !(h in HELD_BY_THE_PAGE));
+    // No ledger under this one, and that is the rule earning its keep: it used to need two waivers
+    // saying "this holder belongs to the page, not to the dialog in the same file", and now the
+    // holder says which dialog it belongs to and the ones that name none are simply not asked.
+    const uncleaned = sources(ROOT).flatMap((f) =>
+      uncleanedHolders(readFileSync(f, "utf8")).map(
+        (h) => `${f.slice(`${ROOT}/`.length)} :: ${h}`,
+      ),
+    );
     expect(
       uncleaned,
       "the component outlives the dialog, so a mark from the last session is still held when it reopens: clear the holder in useOnModalOpen",
@@ -721,30 +881,87 @@ describe("a form that writes holds the refusal it gets", () => {
 
   test("the predicate flags a modal holder that is never cleared", () => {
     const src = `
-      const refusal = useFieldRefusal(F);
+      const refusal = useFieldRefusal(F, modal.isOpen);
       useOnModalOpen(modal, () => {
         setName("");
       });
     `;
-    expect(uncleanedHolders(src)).toEqual(["refusal"]);
+    expect(uncleanedHolders(src)).toEqual(["refusal (modal)"]);
+  });
+
+  test("one cleared opening does not vouch for another", () => {
+    // The shape the pooled version could not see, and it is the one the operator uses: the deep-link
+    // path clears, the button beside it does not, and the mark comes back on the value it refused.
+    const src = `
+      const connectRefusal = useFieldRefusal(F, connectModal.isOpen);
+      useEffect(() => {
+        connectRefusal.clear();
+        connectModal.open();
+      }, [x]);
+
+      function openConnect() {
+        setBaseUrl("");
+        connectModal.open();
+      }
+    `;
+    expect(uncleanedHolders(src)).toEqual(["connectRefusal (connectModal)"]);
+  });
+
+  test("the buttons of a hooked dialog are not reset sites", () => {
+    // `useOnModalOpen` runs on every opening, so where it exists it IS the per-session reset and the
+    // `.open()` calls scattered through the JSX have nothing to carry.
+    const src = `
+      const refusal = useFieldRefusal(F, modal.isOpen);
+      useOnModalOpen(modal, () => {
+        setName("");
+        refusal.clear();
+      });
+      <Button onClick={() => modal.open({})} />
+      <Button onClick={() => modal.open({ channel: ch })} />
+    `;
+    expect(uncleanedHolders(src)).toEqual([]);
+  });
+
+  test("one holder's clear does not vouch for another dialog's", () => {
+    const src = `
+      const a = useFieldRefusal(F, aModal.isOpen);
+      const b = useFieldRefusal(F, bModal.isOpen);
+      useOnModalOpen(aModal, () => {
+        a.clear();
+      });
+      useOnModalOpen(bModal, () => {
+        setName("");
+      });
+    `;
+    expect(uncleanedHolders(src)).toEqual(["b (bModal)"]);
+  });
+
+  test("a holder that names no dialog is not this rule's business", () => {
+    // A page's holder. The page unmounts when the operator leaves it, so it cannot outlive its form
+    // the way a modal's does, and clearing it when an unrelated dialog opens would mean nothing.
+    const src = `
+      const refusal = useFieldRefusal(BRANDING_FIELDS);
+      cropper.open();
+    `;
+    expect(uncleanedHolders(src)).toEqual([]);
   });
 
   test("a dialog seeded from a click is asked the same question", () => {
     // The agent editor's clone dialog has no `useOnModalOpen`: it seeds its input and opens in one
     // onClick, and the holder survives the close exactly the same way.
     const src = `
-      const cloneRefusal = useFieldRefusal(F);
+      const cloneRefusal = useFieldRefusal(F, cloneModal.isOpen);
       onClick={() => {
         setCloneName(suggested);
         cloneModal.open();
       }}
     `;
-    expect(uncleanedHolders(src)).toEqual(["cloneRefusal"]);
+    expect(uncleanedHolders(src)).toEqual(["cloneRefusal (cloneModal)"]);
   });
 
   test("a modal holder cleared on open is not flagged", () => {
     const src = `
-      const refusal = useFieldRefusal(F);
+      const refusal = useFieldRefusal(F, modal.isOpen);
       useOnModalOpen(modal, () => {
         setName("");
         refusal.clear();

@@ -91,7 +91,7 @@ export function placeRefusal(
   const declared = rendered.includes(field)
     ? field
     : rendered.find((name) =>
-        new RegExp(`^${escapeName(name)}\\.\\d+$`).test(field),
+        new RegExp(`^${escapeName(name)}\\.\\d+(?:\\.|$)`).test(field),
       );
   if (declared === undefined) return { toast: message };
   if (!form.mounted) return { toast: message };

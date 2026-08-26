@@ -27,8 +27,16 @@ export function resolveInboundAuthConfig(
   config: Record<string, unknown>,
 ): Required<InboundAuthConfig> {
   const entry = getCatalogEntry(catalogType);
+  // A string is the operator's answer, whatever it says — `""` included. Dropping the empty one here
+  // sent the gate the DEFAULT name, which is the single thing the refusal below exists to prevent:
+  // comparing the secret against `x-webhook-token` on an instance whose operator asked for something
+  // else. Judging usability is the gate's job, not this one's; here the question is only whether an
+  // override was GIVEN.
+  //
+  // A non-string still falls through, and deliberately: it is not an answer to this question at all,
+  // rows already carry it, and `verifyInboundAuth` would have nothing to compare it against.
   const override = (v: unknown): string | undefined =>
-    typeof v === "string" && v.length > 0 ? v : undefined;
+    typeof v === "string" ? v : undefined;
   return {
     authHeader:
       override(config.authHeader) ??

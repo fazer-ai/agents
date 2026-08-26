@@ -7,6 +7,7 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   alertChannelCreate,
   integrationCreate,
+  integrationUpdate,
   webhookCreate,
   webhookDelete,
 } from "@/modules/mcp/write-webhooks";
@@ -45,6 +46,20 @@ describe("MCP webhooks/alerts/integrations gate (no DB)", () => {
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("unknown event");
+  });
+
+  // Review round 1 of #370. `dry_run` DEFAULTS to true here, so the preview is the operator's FIRST
+  // answer — and it echoed the config back as approved while the apply would refuse it, which is the
+  // shape issue #248 was about. A preview that answers only from its own arguments is not a preview
+  // of anything.
+  test("integration_create's dry run refuses a header name the apply would refuse", async () => {
+    const r = await integrationCreate(principal({}), {
+      catalog_type: "ASAAS",
+      name: "hdr-dry",
+      config: { authHeader: "asaas-access-token " },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("config.authHeader");
   });
 
   test("integration_create with unknown catalog_type → error", async () => {
@@ -226,6 +241,29 @@ describe.skipIf(!dbUp)("MCP webhooks/alerts/integrations tools (DB)", () => {
       // The generated route token is surfaced via the console, never in the payload.
       expect(r.data.routeToken).toBeUndefined();
     }
+  });
+
+  // The other half of the same round: the update tool has its own dry-run branch, and a rule enforced
+  // on one of the two would let an operator edit an instance into exactly what create refuses.
+  test("integration_update's dry run refuses it too", async () => {
+    const p = principal({ tenantId: tenantA });
+    const created = await integrationCreate(
+      p,
+      { catalog_type: "ASAAS", name: "hdr-updatable", dry_run: false },
+      { base: appDb },
+    );
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const r = await integrationUpdate(
+      p,
+      {
+        integration_id: created.data.id as string,
+        config: { authHeader: "x tok" },
+      },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("config.authHeader");
   });
 
   test("integration_create still takes a vault NAME, now that the column will not", async () => {

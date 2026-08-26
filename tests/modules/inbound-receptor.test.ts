@@ -96,6 +96,17 @@ describe("inbound auth header resolution", () => {
       authHeader: "asaas-access-token",
       signatureHeader: DEFAULT_SIGNATURE_HEADER,
     },
+    // Review round 1 of #370. An empty override IS a configured name, and dropping it here sent the
+    // gate the DEFAULT — which is the one thing the refusal exists to prevent: comparing the secret
+    // against `x-webhook-token` on an instance whose operator asked for something else. The write
+    // refuses `""` like any other unusable name; this is the row already written.
+    {
+      name: "an empty override reaches the gate rather than falling back",
+      catalogType: "ASAAS",
+      config: { authHeader: "" },
+      authHeader: "",
+      signatureHeader: DEFAULT_SIGNATURE_HEADER,
+    },
     {
       name: "the signature header is overridable per instance too",
       catalogType: "ASAAS",
@@ -1375,6 +1386,39 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
         base: appDb,
       }),
     ).rejects.toMatchObject({ statusCode: 401 });
+  });
+
+  // Review round 1 of #370, and the same rule as the two above through a different door: an empty
+  // string is a configured name, and it used to be dropped one layer earlier — so the gate never saw
+  // it and authenticated against `x-webhook-token`, which the row's operator never chose.
+  test("an empty configured name refuses too, and does not authenticate on the default", async () => {
+    const entry = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "empty-header-name",
+        secret: encryptJson("the-secret"),
+      },
+      select: { id: true },
+    });
+    const { token } = await rawInstance({
+      strategy: "STATIC_HEADER",
+      secretRef: `vault:${entry.id}`,
+      config: { authHeader: "" },
+    });
+    const cap = captureWarnings();
+
+    await expect(
+      receiveInbound({
+        routeToken: token,
+        rawBody: diagBody,
+        // The correct secret, under the default name. A fallback would answer 200 here.
+        getHeader: headersFrom({ [DEFAULT_STATIC_HEADER]: "the-secret" }),
+        base: appDb,
+        deps: cap.deps,
+      }),
+    ).rejects.toMatchObject({ statusCode: 401 });
+
+    expect(cap.seen[0]).toMatchObject({ reason: "header_name_unusable" });
   });
 
   test("the response is identical whichever cause produced it", async () => {

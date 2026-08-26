@@ -9,6 +9,7 @@ import {
 } from "@/modules/flowlog/channels";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
 import {
+  assertUsableHeaderNames,
   createIntegrationInstance,
   deleteIntegrationInstance,
   getIntegrationInstance,
@@ -605,6 +606,10 @@ export async function integrationCreate(
     inboundSecretRef = resolved.ref;
   }
   try {
+    // Before the preview, not only before the write: `dry_run` defaults to true, so the preview is
+    // the operator's FIRST answer, and one that approves what the apply refuses is worse than no
+    // preview at all (issue #248).
+    if (args.config) assertUsableHeaderNames(args.config);
     if (args.dry_run !== false) {
       return ok({
         dryRun: true,
@@ -732,6 +737,7 @@ export async function integrationUpdate(
       afterProj[k] = patch[k];
     }
     const target = `integration:${id}`;
+    if (patch.config) assertUsableHeaderNames(patch.config);
     if (args.dry_run !== false) {
       return ok({
         dryRun: true,

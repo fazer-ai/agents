@@ -82,7 +82,7 @@ export async function resolveInboundRouteByToken(
 // written, and that one cannot tell the operator anything.
 const HEADER_NAME_KEYS = ["authHeader", "signatureHeader"] as const;
 
-function assertUsableHeaderNames(config: Record<string, unknown>): void {
+export function assertUsableHeaderNames(config: Record<string, unknown>): void {
   for (const key of HEADER_NAME_KEYS) {
     const value = config[key];
     if (typeof value !== "string") continue;

@@ -386,6 +386,60 @@ describe.skipIf(!dbUp)(
       });
     };
 
+    // Review round 9 of #355, and it is round 7's fix read back. The mark is a VERSION: it advances
+    // on every payload that states the pairing, the ones that state the SAME pairing included. Used
+    // as an equality token it turns any ordinary webhook arriving mid-run into "the episode moved",
+    // and on this path that is permanent — the ladder is already cancelled, so the resolve trigger is
+    // the only closing this episode will ever get.
+    test("an ordinary same-origin update does not cost the closing its claim", async () => {
+      await rearm();
+      await suDb.conversation.updateMany({
+        where: { tenantId: tid, chatwootConversationId: WIDGET },
+        data: {
+          redirectOriginDisplayId: SIBLING,
+          chatwootRedirectOriginAt: 1_786_000_000.5,
+        },
+      });
+      const bumping = appDb.$extends({
+        query: {
+          conversation: {
+            async findUnique({ args, query }) {
+              const res = await query(args);
+              const sel = args.select as Record<string, unknown> | undefined;
+              if (sel?.chatwootStatusAt && sel?.lastInboundAt && sel?.inbox) {
+                // Same origin, newer version: the shape of every retried or ordinary delivery.
+                await suDb.conversation.updateMany({
+                  where: { tenantId: tid, chatwootConversationId: WIDGET },
+                  data: { chatwootRedirectOriginAt: 1_786_000_090.5 },
+                });
+              }
+              return res;
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      try {
+        await resolveWidget(bumping);
+        // The episode never changed, so the goodbye goes out and the anchor is spent.
+        const widget = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId: tid, chatwootConversationId: WIDGET },
+          select: { redirectClosedAt: true },
+        });
+        expect(widget.redirectClosedAt).not.toBeNull();
+        expect(
+          wire.filter((u) => u.includes(`/conversations/${SIBLING}/messages`)),
+        ).not.toEqual([]);
+      } finally {
+        await suDb.conversation.updateMany({
+          where: { tenantId: tid, chatwootConversationId: WIDGET },
+          data: {
+            redirectOriginDisplayId: null,
+            chatwootRedirectOriginAt: null,
+          },
+        });
+      }
+    });
+
     // Review round 7 of #355, and the same question one state deeper. A closing that starts from
     // `(origin=null, mark=null)` resolved its sibling through the recency fallback; a stated clear
     // landing under it makes that answer wrong, and the claim compares only the origin, so both

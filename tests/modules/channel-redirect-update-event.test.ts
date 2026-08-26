@@ -83,7 +83,11 @@ function widgetConversation(origin: number) {
   };
 }
 
-async function deliver(payload: Record<string, unknown>, event: string) {
+async function deliver(
+  payload: Record<string, unknown>,
+  event: string,
+  db?: PrismaClient,
+) {
   deliverySeq += 1;
   const n = normalizeChatwootEvent({ event, ...payload });
   if (!n) throw new Error("payload did not normalize");
@@ -103,7 +107,7 @@ async function deliver(payload: Record<string, unknown>, event: string) {
     deliveryRowId: delivery.id,
     agentBotId: 9,
     normalized: n,
-    base: appDb,
+    base: db ?? appDb,
   });
 }
 
@@ -281,6 +285,44 @@ describe.skipIf(!dbUp)(
         status: "PENDING",
         cancelled: false,
       });
+    });
+
+    // Review round 9 of #355. The retirement runs inside the mirror's transaction, and a statement
+    // Postgres REJECTS there aborts the whole transaction at the server: every statement after it
+    // fails with `current transaction is aborted`, whatever JavaScript did with the rejection. A
+    // plain catch would therefore read as a degradation and deliver a rollback of the pairing —
+    // and this path is detached with Chatwoot's 200 already sent, so that event never comes back.
+    //
+    // Reproduced with a genuinely failing statement rather than a thrown Error, because a thrown
+    // Error does not abort a Postgres transaction and would prove nothing.
+    test("a scheduler statement Postgres rejects does not cost the pairing", async () => {
+      const FOURTH = 6204;
+      const breaking = appDb.$extends({
+        query: {
+          async $executeRaw({ args, query }) {
+            const sql = Array.isArray(args)
+              ? String((args as unknown[])[0])
+              : String(
+                  (args as { strings?: string[] }).strings?.join("") ?? "",
+                );
+            if (sql.includes("scheduler_jobs")) {
+              // A real error on this connection, which is what aborts the transaction.
+              return query(["SELECT 1 / 0"] as never);
+            }
+            return query(args);
+          },
+        },
+      }) as unknown as PrismaClient;
+
+      await armLadder();
+      await deliver(
+        widgetConversation(FOURTH),
+        "conversation_updated",
+        breaking,
+      );
+
+      // The pairing survived the aborted statement, rolled back to the savepoint.
+      expect((await widgetRow()).redirectOriginDisplayId).toBe(FOURTH);
     });
 
     test("the cloned message that follows is what links the episode", async () => {

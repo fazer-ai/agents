@@ -1000,11 +1000,16 @@ export async function deliverRedirectClosing(
   // arrival of a first pairing stands this run down rather than letting it act on the recency
   // fallback it read.
   //
-  // And the mark goes with it, because the origin alone cannot say which null this is. `(null, null)`
-  // is nobody ever told us and licenses the recency fallback this run may have used; `(null, set)` is
-  // the fork saying this episode has no WhatsApp half. A clear landing between the read and this
-  // write turns the first into the second without changing the origin, and a claim comparing only the
-  // origin would carry the goodbye through to a thread the source just disowned.
+  // And the mark comes in ONLY where the origin cannot answer, which is when the origin is null.
+  // `(null, null)` is nobody ever told us and licenses the recency fallback this run may have used;
+  // `(null, set)` is the fork saying this episode has no WhatsApp half. A clear landing between the
+  // read and this write turns the first into the second without changing the origin.
+  //
+  // Its NULLNESS, never its value. The mark is a version: it advances on every payload that states
+  // the pairing, the ones that state the SAME pairing included. Compared for equality it turns any
+  // ordinary webhook arriving mid-run into "the episode moved", and on this path that is permanent —
+  // the ladder is cancelled by the time the resolve trigger runs, so this is the only closing the
+  // episode will ever get. The identity is the origin; the mark only tells two nulls apart.
   const won = await runScopedOn(base, sysCtx(p.tenantId), async (db) => {
     const res = await db.conversation.updateMany({
       where: {
@@ -1014,7 +1019,14 @@ export async function deliverRedirectClosing(
         redirectClosedAt: null,
         lastInboundAt: cx.widget.lastInboundAt,
         redirectOriginDisplayId: cx.widget.redirectOriginDisplayId,
-        chatwootRedirectOriginAt: cx.widget.chatwootRedirectOriginAt,
+        ...(cx.widget.redirectOriginDisplayId === null
+          ? {
+              chatwootRedirectOriginAt:
+                cx.widget.chatwootRedirectOriginAt === null
+                  ? null
+                  : { not: null },
+            }
+          : {}),
       },
       data: { redirectClosedAt: now },
     });

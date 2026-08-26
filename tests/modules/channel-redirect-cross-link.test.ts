@@ -340,6 +340,56 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // Review round 9 of #355. The mark is a VERSION and advances on every payload that states the
+    // pairing, the ones stating the SAME pairing included. Compared for equality it reads an ordinary
+    // webhook arriving mid-call as an episode change and spends this inbound's attempt on nothing:
+    // no notes, no propagation, on an episode that never moved.
+    test("an ordinary same-origin update does not cost the cross-link its claim", async () => {
+      const cfg: ChannelRedirectConfig = {
+        ...CHANNEL_REDIRECT_DEFAULTS,
+        enabled: true,
+        entryInboxId: ENTRY_INBOX,
+        widgetInboxId: WIDGET_INBOX,
+      };
+      await suDb.conversation.update({
+        where: { id: widgetRowId },
+        data: {
+          redirectLinkedAt: null,
+          testActivatedAt: null,
+          redirectOriginDisplayId: ORIGIN_CONV,
+          // Newer than what the call carries, same origin.
+          chatwootRedirectOriginAt: 1_786_000_090.5,
+        },
+      });
+
+      await linkRedirectConversations({
+        tenantId,
+        instanceId,
+        agentId: 1n,
+        mode: "test",
+        cfg,
+        widgetConv: {
+          id: widgetRowId,
+          displayId: WIDGET_CONV,
+          testActivatedAt: null,
+          contactId,
+          redirectOriginDisplayId: ORIGIN_CONV,
+          chatwootRedirectOriginAt: 1_786_000_000.5,
+        },
+        base: appDb,
+      });
+
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: { redirectLinkedAt: true },
+      });
+      expect(row.redirectLinkedAt).not.toBeNull();
+      await suDb.conversation.update({
+        where: { id: widgetRowId },
+        data: { chatwootRedirectOriginAt: null },
+      });
+    });
+
     // The claim is the one-shot, not the caller's fence. That fence reads `redirectLinkedAt` at the
     // top of the delivery and this write lands a dozen awaits later, so two inbounds arriving
     // together both passed it — and an unconditional stamp let both post their pair of private notes.

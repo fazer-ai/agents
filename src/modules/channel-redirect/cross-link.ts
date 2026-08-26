@@ -131,12 +131,17 @@ export async function linkRedirectConversations(
   // finds the watermark set and links nothing, ever. Losing the claim is not a failure: it means
   // another episode owns this conversation now, and its own first inbound will link it.
   //
-  // `chatwootRedirectOriginAt` is the third, and it is what makes the origin condition mean the same
-  // thing the lookup meant. Since the stated clear became an answer of its own, `(origin=null,
-  // mark=null)` and `(origin=null, mark=set)` are different states — never told, versus told there is
-  // none — and a claim comparing only the origin reads them as one. A call that resolved its sibling
-  // through the recency fallback did so on the licence of the first state; a clear landing under it
-  // revokes that licence, and the notes would go to a conversation the source just disowned.
+  // `chatwootRedirectOriginAt` is the third, and it applies ONLY where the origin cannot answer,
+  // which is when the origin is null. Since the stated clear became an answer of its own,
+  // `(origin=null, mark=null)` and `(origin=null, mark=set)` are different states — never told,
+  // versus told there is none — and a claim comparing only the origin reads them as one. A call that
+  // resolved its sibling through the recency fallback did so on the licence of the first state; a
+  // clear landing under it revokes that licence, and the notes would go to a conversation the source
+  // just disowned.
+  //
+  // Its NULLNESS, never its value: the mark is a version and advances on every payload that states
+  // the pairing, the same pairing included, so comparing it for equality would read an ordinary
+  // webhook as an episode change and spend this inbound's only attempt on nothing.
   //
   // `redirectLinkedAt: null` is the caller's fence, moved into the same statement. It was read a
   // dozen awaits ago, so two inbounds arriving together both passed it and both posted a pair of
@@ -150,7 +155,14 @@ export async function linkRedirectConversations(
         id: p.widgetConv.id,
         redirectLinkedAt: null,
         redirectOriginDisplayId: p.widgetConv.redirectOriginDisplayId,
-        chatwootRedirectOriginAt: p.widgetConv.chatwootRedirectOriginAt,
+        ...(p.widgetConv.redirectOriginDisplayId === null
+          ? {
+              chatwootRedirectOriginAt:
+                p.widgetConv.chatwootRedirectOriginAt === null
+                  ? null
+                  : { not: null },
+            }
+          : {}),
       },
       data: {
         redirectLinkedAt: now,

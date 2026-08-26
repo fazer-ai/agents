@@ -263,20 +263,41 @@ export async function mirrorChatwootEvent(
       // Best-effort for the DOMAIN, like the outbound emit above: a scheduler write must not be able
       // to fail the mirror. A ladder left standing re-reads the pairing before it acts and its
       // closing claim carries the origin it read, so the fences downstream are the floor.
+      //
+      // A SAVEPOINT, because catching the rejection is not enough to make it best-effort. A statement
+      // that Postgres rejects — a deadlock, a statement timeout — aborts the whole transaction at the
+      // server, and every statement after it fails with `current transaction is aborted` no matter
+      // what JavaScript did with the error. Without the savepoint the catch reads as a degradation
+      // and delivers a rollback: the pairing itself would be lost.
+      //
+      // Losing the mirror write is the worse end of the trade, and not by a little. This path is
+      // detached and Chatwoot already has its 200, so a rejection escaping here leaves the delivery
+      // row on PROCESSING with nothing running and that event never comes back — a transient
+      // deadlock in the scheduler would drop the pairing permanently. Rolling back to the savepoint
+      // keeps the pairing and leaves the ladder standing, which is the degradation the paragraph
+      // above already describes and the downstream fences already handle.
       if (releasesEpisode && opts.redirectLadderDedupeKey) {
-        await retireJobsByDedupeKeyOn(
-          db,
-          tenantId,
-          "REDIRECT_FOLLOWUP",
-          opts.redirectLadderDedupeKey,
-        ).catch((err) => {
+        await db.$executeRawUnsafe("SAVEPOINT retire_redirect_ladder");
+        try {
+          await retireJobsByDedupeKeyOn(
+            db,
+            tenantId,
+            "REDIRECT_FOLLOWUP",
+            opts.redirectLadderDedupeKey,
+          );
+          await db.$executeRawUnsafe(
+            "RELEASE SAVEPOINT retire_redirect_ladder",
+          );
+        } catch (err) {
+          await db.$executeRawUnsafe(
+            "ROLLBACK TO SAVEPOINT retire_redirect_ladder",
+          );
           logger.warn(
             "chatwoot: could not retire the previous redirect episode's ladder (conv=%s): %s",
             String(convId),
             err instanceof Error ? err.message : String(err),
           );
-          return 0;
-        });
+        }
       }
 
       if (existing && decision.stale) {

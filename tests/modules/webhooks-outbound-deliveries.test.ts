@@ -477,6 +477,13 @@ describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
     test("the requeue writes one info line that keeps the count the row died at", async () => {
       await clearDeliveries();
       await clearFlowLog(suDb, { tenantId });
+      // The alert table too, and it is not housekeeping: the assertion at the end of this case is
+      // that an `info` line pages NOBODY, read tenant-wide because an alert delivery carries no link
+      // back to the delivery that caused it. Two cases above, a 500 drives a delivery to DEAD, whose
+      // `error` line does dispatch an alert. That case's row was reaching this read all along; it
+      // only stopped being invisible once the clear started waiting for the writes it had scheduled,
+      // so this assertion had been passing because the alert had not landed yet.
+      await suDb.alertDelivery.deleteMany({ where: { tenantId } });
       const id = await seed({ status: "DEAD", attempts: 8 });
       await requeueWebhookDelivery(ctx(), id, appDb);
       const [line, ...rest] = await webhookLines(1);

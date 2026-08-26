@@ -25,6 +25,16 @@ import { describe, expect, test } from "bun:test";
 // settles the scheduled writes and then deletes. A raw DELETE is the defect, so the guard is that
 // there are no raw ones rather than a per-site judgement.
 //
+// WHAT IT DOES NOT COVER, said out loud rather than left to be discovered: 29 files end with a loop
+// over a table list, `execution_logs` among the entries and the name interpolated into
+// `DELETE FROM ${table}`, so the literal never sits next to the verb and no widening of the pattern
+// below reaches it. Those are TEARDOWNS — nothing reads the table after them — so they cannot produce
+// the failure this obligation is about. What they can produce is a log line arriving after its tenant
+// was deleted, and that was measured on both sides rather than argued: ONE swallowed
+// `execution_logs_tenant_id_fkey` per full-suite run, in 8 of 8 runs of the base, and converting all
+// 29 loops to a settling helper left it at exactly one. A guard for them would be enforcing a rule
+// with no measured effect, so this file does not pretend to have one.
+//
 // The ledger is per file with a count, following tests/lib/storable-write-sweep.test.ts: a NEW
 // reader in an already-listed file trips this too, not only a new file. The classification is the
 // point of the ledger. `tenant-wide` is a real answer for a reader whose subject is the TABLE rather

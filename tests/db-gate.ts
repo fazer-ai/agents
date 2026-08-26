@@ -21,12 +21,15 @@
 
 export const DB_GATE_OPT_OUT = "ALLOW_NO_DB";
 
-// Every line here has to be runnable FROM THE STATE THAT PRINTED IT. `bun run db:test:setup` on its
-// own is not: it reads the same two variables this gate just found missing, so on a fresh clone it
-// fails at its own first check. The order below is the one a fresh clone actually needs, measured by
-// following it from a clone with no `.env`.
+// Every line here has to be runnable FROM THE STATE THAT PRINTED IT, as one paste. `bun run
+// db:test:setup` on its own is not: it reads the same two variables this gate just found missing, so
+// on a fresh clone it fails at its own first check. `--wait` is not decoration either: plain
+// `up -d` returns when the container STARTS, and the setup script connects with no retry, so the
+// chained command loses the race against a cold Postgres (measured, `read ECONNRESET`). The whole
+// line was run from a clone with no `.env`, against a cold container, and ends with a suite that
+// runs.
 const HOW = [
-  `  - fresh clone: cp .env.example .env && docker compose up -d && bun run db:test:setup`,
+  `  - fresh clone: cp .env.example .env && docker compose up -d --wait && bun run db:test:setup`,
   `  - in a worktree, with the database already up: cp ../main/.env .env`,
   `  - deliberately without a database: ${DB_GATE_OPT_OUT}=1 bun test`,
 ].join("\n");

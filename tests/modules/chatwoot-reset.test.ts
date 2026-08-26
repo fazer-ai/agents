@@ -1351,6 +1351,47 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // The pairing is NOT one of them, and the difference is what each column is. The four above are
+    // one-shot / cooldown watermarks: /reset clears them so the funnel can be run again. The pairing
+    // is an observed FACT — which WhatsApp conversation this chat was opened from — and /reset does
+    // not undo that; it does not un-click the link the lead clicked.
+    //
+    // Clearing it would be strictly worse, not neutral. `episodeOriginQuery` falls back to the
+    // contact's most recently active entry conversation when there is no stored answer, which is the
+    // inference #222 exists to remove: the reset would trade a right answer for a guess, on a
+    // consumer that MESSAGES and RESOLVES the conversation it picks. And nothing goes stale by
+    // keeping it: the value only ever changes when a new redirect is actually consumed, and then the
+    // fork writes the new origin over it.
+    test("the pairing survives, because a reset does not un-click the link", async () => {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        data: {
+          redirectOriginDisplayId: 4242,
+          redirectLinkedAt: new Date(),
+          redirectClosedAt: new Date(),
+        },
+      });
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: CONV_ID },
+        select: {
+          redirectOriginDisplayId: true,
+          redirectLinkedAt: true,
+          redirectClosedAt: true,
+        },
+      });
+      expect(conv).toEqual({
+        // The episode can be run again...
+        redirectLinkedAt: null,
+        redirectClosedAt: null,
+        // ...against the origin it actually came from.
+        redirectOriginDisplayId: 4242,
+      });
+    });
+
     // Jobs the episode armed. /reset already cancels FOLLOWUP and MEMORY_COMPACT; these two carry
     // exactly the same argument and were left running.
     test("the jobs the episode armed are cancelled with it", async () => {

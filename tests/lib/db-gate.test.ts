@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   DB_GATE_OPT_OUT,
   missingDbConfig,
+  probeTargets,
   unreachableDb,
   withDeadline,
 } from "../db-gate";
@@ -128,6 +129,34 @@ describe("the database gate's decision", () => {
       expect(msg).toContain("db:test:setup");
       expect(msg).toContain(DB_GATE_OPT_OUT);
     }
+  });
+});
+
+// A refusal that names a variable the reader cannot change is a refusal they cannot act on: the
+// preload OVERWRITES `MIGRATION_DATABASE_URL` from `TEST_MIGRATION_DATABASE_URL` on every run, so
+// editing the former in a `.env` changes nothing and the same error comes back.
+describe("what the probe is called when it fails", () => {
+  const derived = {
+    TEST_MIGRATION_DATABASE_URL: "postgresql://su@localhost/x_test",
+    MIGRATION_DATABASE_URL: "postgresql://su@localhost/x_test",
+    TEST_APP_DATABASE_URL: "postgresql://app@localhost/x_test",
+  };
+
+  test("every label is a variable a .env actually holds", () => {
+    for (const { variable } of probeTargets(derived)) {
+      expect(variable.startsWith("TEST_")).toBe(true);
+    }
+  });
+
+  // The label is not the value: the migration probe must still run against the DERIVED URL, which
+  // is the one the guarded files connect with.
+  test("the migration probe is labelled by its source and runs on the derived URL", () => {
+    const [migration] = probeTargets({
+      ...derived,
+      MIGRATION_DATABASE_URL: "postgresql://su@localhost/derived_test",
+    });
+    expect(migration.variable).toBe("TEST_MIGRATION_DATABASE_URL");
+    expect(migration.url).toContain("derived_test");
   });
 });
 

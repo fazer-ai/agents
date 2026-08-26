@@ -71,6 +71,28 @@ function oneLine(err: unknown): string {
   return collapsed.length > 200 ? `${collapsed.slice(0, 200)}...` : collapsed;
 }
 
+// WHAT TO PROBE, AND WHAT TO CALL IT WHEN IT FAILS. The two are not the same string. The preload
+// DERIVES the URLs it hands the suite (`MIGRATION_DATABASE_URL` is overwritten from
+// TEST_MIGRATION_DATABASE_URL, and the app URL has its database name swapped in), so a refusal that
+// names the derived variable sends the reader to edit a value that is overwritten again on the next
+// run. The label is therefore always the variable a `.env` actually holds, while the probe still
+// runs against the derived URL, which is the one the guarded files will use.
+export function probeTargets(env: { [k: string]: string | undefined }): {
+  variable: string;
+  url: string;
+}[] {
+  return [
+    {
+      variable: "TEST_MIGRATION_DATABASE_URL",
+      url: env.MIGRATION_DATABASE_URL as string,
+    },
+    {
+      variable: "TEST_APP_DATABASE_URL",
+      url: env.TEST_APP_DATABASE_URL as string,
+    },
+  ];
+}
+
 // An endpoint that ACCEPTS the connection and then says nothing is not a slow database, it is a
 // refusal that never arrives: measured against a listener that accepts and stays silent, the preload
 // was still hanging at 45s with no output at all. A deadline is what keeps this a gate rather than a

@@ -5,6 +5,7 @@ import {
   DB_GATE_OPT_OUT,
   missingDbConfig,
   PROBE_DEADLINE_MS,
+  probeTargets,
   unreachableDb,
   withDeadline,
 } from "./db-gate";
@@ -65,11 +66,7 @@ if (process.env[DB_GATE_OPT_OUT] !== "1") {
   // valid migration URL and a nonexistent app role, one file reported `6 pass, 14 skip, 0 fail`,
   // exit 0. The URLs read here are the ones forced above, so this asks the question in exactly the
   // shape the guarded files will ask it.
-  for (const variable of [
-    "MIGRATION_DATABASE_URL",
-    "TEST_APP_DATABASE_URL",
-  ] as const) {
-    const url = process.env[variable] as string;
+  for (const { variable, url } of probeTargets(process.env)) {
     const probe = new PrismaClient({
       adapter: new PrismaPg({ connectionString: url }),
     });

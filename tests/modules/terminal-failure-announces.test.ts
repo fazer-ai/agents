@@ -841,7 +841,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     );
   });
 
-  test("a row claimed before the column existed reads as stale, and is killed", async () => {
+  test("a PROCESSING row nobody stamped reads as stale, and is killed", async () => {
     await clearRows();
     const row = await suDb.inboundDelivery.create({
       data: {
@@ -852,8 +852,10 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
         status: "PROCESSING",
         attempts: 5,
         receivedAt: new Date(Date.now() - 60 * 60_000),
-        // What every PROCESSING row looks like the moment the migration lands. It has been sitting
-        // there since before the deploy, so nothing is running for it.
+        // The only safe reading for a row nobody stamped: the alternative is a row no claim can
+        // ever take again. The migration itself stamps every PROCESSING row it finds, precisely so
+        // that a claim held by the previous version during a rolling deploy is not read this way —
+        // that half is proved in tests/prisma/inbound-claimed-at-migration.test.ts.
         claimedAt: null,
       },
     });

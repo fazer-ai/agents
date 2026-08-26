@@ -1130,8 +1130,9 @@ model InboundDelivery {
   attempts              Int                   @default(0)
   receivedAt            DateTime              @default(now()) @map("received_at")
   /// When the CURRENT attempt was claimed. `receivedAt` cannot answer that — it is the delivery's
-  /// receipt and a claim never refreshes it — so it is what separates a claim still running from
-  /// one whose process died. NULL reads as stale (issue #356).
+  /// receipt and a claim never refreshes it — so this is what separates a claim still running from
+  /// one whose process died. NULL reads as stale, and the migration stamps every row that was
+  /// PROCESSING when it ran, so no live claim inherits that reading (issue #356).
   claimedAt             DateTime?             @map("claimed_at")
   processedAt           DateTime?             @map("processed_at")
 

@@ -426,9 +426,13 @@ export async function processInboundDelivery(
       // NOTE: staleness is measured from the CURRENT claim, not from the delivery's receipt. That
       // distinction is the whole of it: `receivedAt` is stamped once and a claim never refreshes
       // it, so five minutes after a webhook arrives the row is permanently "stale" by that measure
-      // and a duplicate delivery could take a row whose attempt was still running. `claimedAt` is
-      // NULL on every row that predates the column, which reads as stale and is correct — nothing
-      // has been running for those since before the deploy that added it (issue #356).
+      // and a duplicate delivery could take a row whose attempt was still running.
+      //
+      // NULL reads as stale, which is the only safe reading for a PROCESSING row nobody stamped:
+      // the alternative is a row no claim can ever take again. It is not how a live claim gets
+      // read, though — the migration stamps every row that was PROCESSING when it ran, because a
+      // rolling deploy has the previous version serving webhooks while that statement executes
+      // (issue #356).
       const stale = [
         { claimedAt: { lt: staleCutoff } },
         { claimedAt: null },

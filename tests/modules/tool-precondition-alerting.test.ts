@@ -2,6 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import {
+  preconditionFlowEvent,
+  unmatchedPreconditionEvent,
+} from "@/graph/tools/precondition";
+import type { ToolPrecondition } from "@/modules/agents/tool-preconditions";
 import type { FlowContext } from "@/modules/flowlog/service";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 
@@ -71,26 +76,30 @@ describe.skipIf(!dbUp)("a precondition refusal does not page anyone", () => {
     base: suDb,
   });
 
-  const refusalEvent = {
-    stage: "tool" as const,
-    level: "info" as const,
-    status: "ok" as const,
-    detail: {
-      tool: "handoff_to_human",
-      phase: "precondition",
-      preconditionKind: "attribute",
-      preconditionKey: "article_url",
-      preconditionScope: "conversation",
-    },
+  // NOTE: Built by the PRODUCTION constructor, not written out here. A hand-written literal would keep
+  // passing after the mapping it is supposed to measure was changed — the level is exactly the field
+  // under test, so a second copy of it is the one thing this file must not contain.
+  const cond: ToolPrecondition = {
+    kind: "attribute",
+    scope: "conversation",
+    key: "article_url",
   };
+  const tool = "handoff_to_human";
 
-  test("the refusal writes its log line and no alert delivery", async () => {
+  test("an unmet condition writes its log line and pages nobody", async () => {
     const before = await suDb.alertDelivery.count({ where: { tenantId } });
-    const { delivered } = await writeFlowEvent(flow(), refusalEvent);
+    // The turn is captured rather than generated inside the call: this file's other tests write
+    // `tool`-stage lines of their own, so a count fenced only by the tenant would answer with
+    // whichever of them happened to run first (tests/modules/flowlog-reader-scope.test.ts).
+    const ctx = flow();
+    const { delivered } = await writeFlowEvent(
+      ctx,
+      preconditionFlowEvent({ tool, cond, reason: "unmet" }),
+    );
     expect(delivered).toBe(true);
 
     const logs = await suDb.executionLog.count({
-      where: { tenantId, stage: "tool" },
+      where: { tenantId, stage: "tool", turnId: ctx.turnId },
     });
     expect(logs).toBe(1);
     expect(await suDb.alertDelivery.count({ where: { tenantId } })).toBe(
@@ -98,13 +107,38 @@ describe.skipIf(!dbUp)("a precondition refusal does not page anyone", () => {
     );
   });
 
-  test("positive control: the SAME line at warn does page, so the check is not vacuous", async () => {
-    // Without this, a test asserting "no alert" passes just as well against a channel that never
-    // matches, a stage allowlist that excludes `tool`, or a dispatcher that is not wired at all.
+  // Round 5 of PR #378: this refusal used to be indistinguishable from the one above. A pool timeout
+  // refuses EVERY guarded call for as long as it lasts, and the only trace was an `info`/`ok` line
+  // saying the rule had fired — an agent whose tools all went quiet, with nothing to alert on.
+  //
+  // It doubles as the positive control the previous test needs: without a line that DOES page,
+  // "no alert" passes just as well against a channel that never matches, a stage allowlist that
+  // excludes `tool`, or a dispatcher that is not wired at all.
+  test("a state read that FAILED does page, and that is what makes the check above non-vacuous", async () => {
     const before = await suDb.alertDelivery.count({ where: { tenantId } });
-    await writeFlowEvent(flow(), { ...refusalEvent, level: "warn" });
+    await writeFlowEvent(
+      flow(),
+      preconditionFlowEvent({
+        tool,
+        cond,
+        reason: "unreadable",
+        err: new Error("connection terminated"),
+      }),
+    );
     expect(await suDb.alertDelivery.count({ where: { tenantId } })).toBe(
       before + 1,
+    );
+  });
+
+  test("a rule matching no tool is reported without paging: it is config, not an incident", async () => {
+    const before = await suDb.alertDelivery.count({ where: { tenantId } });
+    const { delivered } = await writeFlowEvent(
+      flow(),
+      unmatchedPreconditionEvent([tool]),
+    );
+    expect(delivered).toBe(true);
+    expect(await suDb.alertDelivery.count({ where: { tenantId } })).toBe(
+      before,
     );
   });
 });

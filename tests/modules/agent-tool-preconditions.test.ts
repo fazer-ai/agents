@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { AppError } from "@/lib/errors";
 import { assertSettingsToolPreconditions } from "@/modules/agents/service";
 import {
   evaluatePrecondition,
   invalidToolPreconditions,
+  isGuardableToolName,
   readToolPreconditions,
   unmetPreconditionMessage,
 } from "@/modules/agents/tool-preconditions";
@@ -36,6 +38,10 @@ describe("readToolPreconditions", () => {
     });
   });
 
+  // The write boundary refuses a non-native name (isGuardableToolName); the RUNTIME reader does not,
+  // and the asymmetry is deliberate. An agent import copies a settings bag verbatim, so such an entry
+  // can exist without ever passing the write boundary, and dropping it here would remove a guard
+  // whose name still matches a tool. What the seam adds is a report when it matches nothing.
   test("accepts a custom (non-native) tool name, because the seam is name-keyed", () => {
     const read = readToolPreconditions({
       toolPreconditions: {
@@ -201,18 +207,69 @@ describe("invalidToolPreconditions", () => {
     expect(
       invalidToolPreconditions({
         toolPreconditions: {
-          good: { kind: "attribute", scope: "contact", key: "cpf" },
-          bad_kind: { kind: "nope" },
-          bad_scope: { kind: "attribute", scope: "moon", key: "cpf" },
+          private_note: { kind: "attribute", scope: "contact", key: "cpf" },
+          assign_label: { kind: "nope" },
+          send_image: { kind: "attribute", scope: "moon", key: "cpf" },
         },
       }),
-    ).toEqual(["bad_kind", "bad_scope"]);
+    ).toEqual(["assign_label", "send_image"]);
   });
 
   test("a bag of the wrong shape is ONE refusal, because there are no names", () => {
     expect(invalidToolPreconditions({ toolPreconditions: [] })).toEqual([
       "toolPreconditions",
     ]);
+  });
+
+  // Round 5 of PR #378: the key was not checked at all, only the value. Every case below parses as a
+  // perfectly good condition and names something the runtime will never match, so the API answered
+  // 200 on a rule that guards nothing and the tool the operator meant to fence kept running.
+  describe("the KEY is a tool name, and it is checked", () => {
+    const good = { kind: "attribute", scope: "contact", key: "cpf" } as const;
+
+    test("a padded name is refused, not trimmed", () => {
+      // Trimming would be the repair, and the repair is wrong here: ` handoff_to_human ` and
+      // `handoff_to_human` are different keys in the stored bag, so a save that silently canonicalized
+      // one onto the other could overwrite a rule the operator did not open.
+      expect(
+        invalidToolPreconditions({
+          toolPreconditions: { " handoff_to_human ": good },
+        }),
+      ).toEqual([" handoff_to_human "]);
+    });
+
+    test("the empty name is refused", () => {
+      expect(
+        invalidToolPreconditions({ toolPreconditions: { "": good } }),
+      ).toEqual([""]);
+    });
+
+    test("an MCP name is refused: its exposed form is not stable identity", () => {
+      // `mcp__<slug>__<tool>` where the slug falls back to the connection id, and an import recreates
+      // the connection under a different one. The rule would survive the import and match nothing.
+      expect(
+        invalidToolPreconditions({
+          toolPreconditions: { mcp__crm__create_deal: good },
+        }),
+      ).toEqual(["mcp__crm__create_deal"]);
+    });
+
+    test("every name in the native catalog is accepted", () => {
+      // Asserted over the CATALOG rather than a hand-written list: a native tool added later must be
+      // guardable the day it ships, and a hardcoded list here would pass while the console offered a
+      // name the API refused.
+      const bag: Record<string, unknown> = {};
+      for (const n of NATIVE_TOOL_NAMES) bag[n] = good;
+      expect(invalidToolPreconditions({ toolPreconditions: bag })).toEqual([]);
+    });
+
+    test("isGuardableToolName agrees with the catalog, both ways", () => {
+      for (const n of NATIVE_TOOL_NAMES)
+        expect(isGuardableToolName(n)).toBe(true);
+      for (const n of ["", " ", "create_invoice", "mcp__a__b", "__proto__"]) {
+        expect(isGuardableToolName(n)).toBe(false);
+      }
+    });
   });
 });
 
@@ -222,7 +279,7 @@ describe("assertSettingsToolPreconditions", () => {
   test("accepts a valid bag", () => {
     expect(() =>
       assertSettingsToolPreconditions(
-        { toolPreconditions: { create_invoice: good } },
+        { toolPreconditions: { handoff_to_human: good } },
         undefined,
       ),
     ).not.toThrow();
@@ -231,7 +288,7 @@ describe("assertSettingsToolPreconditions", () => {
   test("refuses a new invalid entry, naming the tool as the field", () => {
     try {
       assertSettingsToolPreconditions(
-        { toolPreconditions: { create_invoice: { kind: "nope" } } },
+        { toolPreconditions: { handoff_to_human: { kind: "nope" } } },
         undefined,
       );
       throw new Error("should have thrown");
@@ -239,7 +296,7 @@ describe("assertSettingsToolPreconditions", () => {
       const err = e as AppError;
       expect(err).toBeInstanceOf(AppError);
       expect(err.statusCode).toBe(400);
-      expect(err.field).toBe("toolPreconditions.create_invoice");
+      expect(err.field).toBe("toolPreconditions.handoff_to_human");
     }
   });
 
@@ -249,17 +306,22 @@ describe("assertSettingsToolPreconditions", () => {
     const stored = { toolPreconditions: { legacy: { kind: "nope" } } };
     expect(() =>
       assertSettingsToolPreconditions(
-        { toolPreconditions: { legacy: { kind: "nope" }, ok: good } },
+        {
+          toolPreconditions: {
+            legacy: { kind: "nope" },
+            private_note: good,
+          },
+        },
         stored,
       ),
     ).not.toThrow();
   });
 
   test("refuses when a stored-valid entry is edited into an invalid one", () => {
-    const stored = { toolPreconditions: { create_invoice: good } };
+    const stored = { toolPreconditions: { handoff_to_human: good } };
     expect(() =>
       assertSettingsToolPreconditions(
-        { toolPreconditions: { create_invoice: { kind: "attribute" } } },
+        { toolPreconditions: { handoff_to_human: { kind: "attribute" } } },
         stored,
       ),
     ).toThrow();

@@ -24,6 +24,8 @@
 // may loop, call out and fail; a precondition is authored by the OPERATOR, once, and has to always
 // terminate and always answer, because its answer decides whether a call happens at all. Letting the
 // model author the rule that binds the model is the failure mode issue #363 measured one layer down.
+import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+
 export interface PreconditionState {
   // The mirrored Chatwoot bags, read from OUR tables (never a live Chatwoot call), at the moment the
   // guarded tool is called rather than at turn build. The turn is exactly when they move: the
@@ -88,6 +90,12 @@ export function parseToolPrecondition(raw: unknown): ToolPrecondition | null {
 // none, because the operator would read the tool as guarded while the runtime treats it as open. The
 // write side refuses instead of dropping, so a dropped condition here means settings written before
 // this shipped, or written around the API.
+//
+// The NAME is not filtered here, only at the write boundary (isGuardableToolName). An agent import
+// copies a settings bag verbatim, so a rule on a non-native name can arrive without passing that
+// boundary, and the honest thing for the runtime to do with it is to guard the tool if the name
+// still matches one. When it matches nothing the seam says so (prepare.ts) rather than leaving the
+// operator to read an inert rule as protection.
 // NULL-PROTOTYPE, and both directions of that bit. A tool name is operator text: `__proto__` as a
 // key on a plain object mutates the prototype instead of storing a rule, so the guard the operator
 // wrote simply disappears; and a tool named `constructor` or `toString` finds an INHERITED value on
@@ -153,6 +161,37 @@ export function unmetPreconditionMessage(
   return `\`${toolName}\` was not run: it requires ${what}, and it is not. Continue the conversation and obtain it first — do not tell the customer about this restriction.`;
 }
 
+// WHICH NAMES MAY CARRY A RULE, and the answer is the native catalog — not "any tool name".
+//
+// The runtime applies a condition to whatever exposed name matches, at the one seam where all six
+// sources meet, and that stays true. What is refused here is WRITING a rule on a name whose exposed
+// form is not stable identity, because a precondition that follows a name onto a different tool, or
+// stops matching entirely, is a guard that silently stops guarding — the single failure this feature
+// must not have.
+//
+// Measured, per source:
+//   - NATIVE: the name IS the identity. `handoff_to_human` is not renameable, not namespaced, and
+//     `dropDuplicateToolNames` puts natives first, so no other source can take the name from one.
+//   - HTTP: `ToolDefinition.name` is normalized on write and `@@unique([tenantId, name])`. Stable
+//     today, but a rename is a plain PATCH away and nothing would carry the rule across it.
+//   - MCP: `mcp__<slug>__<tool>`, where the slug is derived from the connection's display name and
+//     FALLS BACK to the connection id when the name yields no ASCII (an emoji- or CJK-only name).
+//     An export/import recreates the connection under a different id, so the exposed name changes
+//     and the imported rule matches nothing. A `_2` suffix on two slug-colliding connections is
+//     decided by grant order, and `replaceAgentToolSelections` deletes and recreates every row.
+//   - INTEGRATION: two instances of one catalog type expose the SAME names; the later is dropped,
+//     and which one survives is again grant order.
+//
+// So the extension past native waits on stable exposed-name identity, which is its own change to
+// how MCP and toolpack tools are namespaced. The console offers exactly this set for the same
+// reason (ToolPreconditionsEditor), and docs/graph.md carries the boundary.
+export function isGuardableToolName(name: unknown): name is string {
+  return (
+    typeof name === "string" &&
+    (NATIVE_TOOL_NAMES as readonly string[]).includes(name)
+  );
+}
+
 // Every entry of a settings bag that does not parse, named. The write side refuses on a non-empty
 // result; the runtime reader drops the same entries silently, because by then the operator is not
 // there to be told.
@@ -166,6 +205,12 @@ export function invalidToolPreconditions(settings: unknown): string[] {
   if (typeof bag !== "object" || Array.isArray(bag))
     return ["toolPreconditions"];
   return Object.entries(bag as Record<string, unknown>)
-    .filter(([, raw]) => parseToolPrecondition(raw) === null)
+    .filter(
+      // NOTE: The KEY is checked as well as the value, and it is the half a value-only check misses: a
+      // padded name (`" handoff_to_human "`) parses fine as a condition, so the API reported success
+      // on a rule that can never match, for a tool that stayed unguarded.
+      ([name, raw]) =>
+        !isGuardableToolName(name) || parseToolPrecondition(raw) === null,
+    )
     .map(([name]) => name);
 }

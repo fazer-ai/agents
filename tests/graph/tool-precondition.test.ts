@@ -6,6 +6,8 @@ import { z } from "zod";
 import {
   applyToolPreconditions,
   guardedTool,
+  preconditionFlowEvent,
+  unmatchedPreconditionEvent,
 } from "@/graph/tools/precondition";
 import type { ToolPrecondition } from "@/modules/agents/tool-preconditions";
 
@@ -69,11 +71,37 @@ describe("guardedTool", () => {
     expect(String(out)).toContain("was not run");
   });
 
-  test("reports the refusal once, with the tool and the condition", async () => {
-    const seen: Array<{ tool: string; cond: ToolPrecondition }> = [];
+  test("reports the refusal once, with the tool, the condition and WHY", async () => {
+    const seen: unknown[] = [];
     const { tool: inner } = spyTool();
     await guardedTool(inner, COND, unmet, (i) => seen.push(i)).invoke({});
-    expect(seen).toEqual([{ tool: "handoff_to_human", cond: COND }]);
+    expect(seen).toEqual([
+      { tool: "handoff_to_human", cond: COND, reason: "unmet", err: undefined },
+    ]);
+  });
+
+  // Round 5 of PR #378: both refusals reported identically, so a database fault that refuses EVERY
+  // guarded call for as long as it lasts was indistinguishable from a rule doing its job — the same
+  // `info`/`ok` line, and nothing anywhere to page on. The model still gets the same sentence.
+  test("an unreadable state reports a DIFFERENT reason, carrying the error", async () => {
+    const seen: Array<{ reason: string; err?: unknown }> = [];
+    const { tool: inner, calls } = spyTool();
+    const boom = async () => {
+      throw new Error("connection terminated");
+    };
+    const out = await guardedTool(inner, COND, boom, (i) =>
+      seen.push(i),
+    ).invoke({});
+    expect(calls).toHaveLength(0);
+    expect(seen).toHaveLength(1);
+    const reported = seen[0] as { reason: string; err?: unknown };
+    expect(reported.reason).toBe("unreadable");
+    expect((reported.err as Error).message).toBe("connection terminated");
+    // Identical to what an unmet condition returns: the operator sees the difference, the customer
+    // does not.
+    expect(String(out)).toBe(
+      String(await guardedTool(inner, COND, unmet).invoke({})),
+    );
   });
 
   test("reports nothing when the tool actually ran", async () => {
@@ -174,6 +202,40 @@ describe("applyToolPreconditions", () => {
     const out = applyToolPreconditions([a], { not_granted: COND }, unmet);
     expect(out[0]).toBe(a);
   });
+
+  // Round 5 of PR #378: "changes nothing" is exactly the problem. On screen the rule is there, the
+  // tool runs anyway, and nothing connects the two. It happens without the operator doing anything —
+  // the grant is removed, or an imported MCP connection comes back under a different exposed name.
+  describe("a rule that matches nothing is REPORTED", () => {
+    test("names every unmatched tool, once", () => {
+      const { tool: a } = spyTool("a");
+      const seen: string[][] = [];
+      applyToolPreconditions(
+        [a],
+        { a: COND, gone: COND, also_gone: COND },
+        unmet,
+        undefined,
+        (n) => seen.push(n),
+      );
+      expect(seen).toEqual([["gone", "also_gone"]]);
+    });
+
+    test("says nothing when every rule matched", () => {
+      const { tool: a } = spyTool("a");
+      const seen: string[][] = [];
+      applyToolPreconditions([a], { a: COND }, unmet, undefined, (n) =>
+        seen.push(n),
+      );
+      expect(seen).toEqual([]);
+    });
+
+    test("says nothing when there are no rules at all", () => {
+      const { tool: a } = spyTool("a");
+      const seen: string[][] = [];
+      applyToolPreconditions([a], {}, unmet, undefined, (n) => seen.push(n));
+      expect(seen).toEqual([]);
+    });
+  });
 });
 
 // Round 1 of PR #378: the wrapper used to be a second `tool()`, which started a CHILD run under the
@@ -230,5 +292,81 @@ describe("round 1: one model-issued call is ONE tool run", () => {
     expect(out[0]).toBe(inner);
     await out[0]?.invoke({});
     expect(calls).toHaveLength(1);
+  });
+});
+
+// The half that decides whether anyone is paged. `tests/modules/tool-precondition-alerting.test.ts`
+// takes these same two events to a real database and counts the deliveries; here it is the mapping
+// itself, which is what a mutation would survive if only the end-to-end test existed.
+describe("preconditionFlowEvent", () => {
+  test("an unmet condition is info/ok — the rule working is not an incident", () => {
+    const ev = preconditionFlowEvent({
+      tool: "handoff_to_human",
+      cond: COND,
+      reason: "unmet",
+    });
+    expect(ev.level).toBe("info");
+    expect(ev.status).toBe("ok");
+    expect(ev.detail?.phase).toBe("precondition");
+  });
+
+  test("an unreadable state is warn/error — the database being down IS one", () => {
+    const ev = preconditionFlowEvent({
+      tool: "handoff_to_human",
+      cond: COND,
+      reason: "unreadable",
+      err: new TypeError("connection terminated"),
+    });
+    expect(ev.level).toBe("warn");
+    expect(ev.status).toBe("error");
+    expect(ev.detail?.phase).toBe("precondition_unreadable");
+  });
+
+  test("the error's CLASS travels, never its message", () => {
+    // Measured in this repo before (PR #292): a driver's own TypeError message carries the request
+    // that failed, headers included. This detail is rendered in the console.
+    const ev = preconditionFlowEvent({
+      tool: "handoff_to_human",
+      cond: COND,
+      reason: "unreadable",
+      err: new TypeError("connect ECONNREFUSED postgres://u:hunter2@db:5432"),
+    });
+    expect(ev.detail?.error).toBe("TypeError");
+    expect(JSON.stringify(ev)).not.toContain("hunter2");
+  });
+
+  test("a non-Error rejection still reports, as unknown", () => {
+    const ev = preconditionFlowEvent({
+      tool: "handoff_to_human",
+      cond: COND,
+      reason: "unreadable",
+      err: "nope",
+    });
+    expect(ev.detail?.error).toBe("unknown");
+  });
+
+  test("the attribute VALUE never appears in either event", () => {
+    const withValue = { ...COND, equals: "https://financefootball.com/x" };
+    for (const reason of ["unmet", "unreadable"] as const) {
+      const ev = preconditionFlowEvent({
+        tool: "handoff_to_human",
+        cond: withValue,
+        reason,
+      });
+      expect(ev.detail?.preconditionKey).toBe("article_url");
+      expect(JSON.stringify(ev)).not.toContain("financefootball");
+    }
+  });
+});
+
+describe("unmatchedPreconditionEvent", () => {
+  test("is info/ok: a static misconfiguration must not page once per turn", () => {
+    const ev = unmatchedPreconditionEvent(["gone"]);
+    expect(ev.level).toBe("info");
+    expect(ev.status).toBe("ok");
+    expect(ev.detail).toEqual({
+      phase: "precondition_unmatched",
+      tools: ["gone"],
+    });
   });
 });

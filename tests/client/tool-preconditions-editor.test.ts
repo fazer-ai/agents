@@ -4,7 +4,12 @@ import {
   parseToolPreconditionRows,
   serializeToolPreconditions,
 } from "@/client/pages/agents/ToolPreconditionsEditor";
-import { readToolPreconditions } from "@/modules/agents/tool-preconditions";
+import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { assertSettingsToolPreconditions } from "@/modules/agents/service";
+import {
+  invalidToolPreconditions,
+  readToolPreconditions,
+} from "@/modules/agents/tool-preconditions";
 
 // The editor's two pure halves, tested against the RUNTIME reader rather than against themselves.
 // The whole feature fails silently in one direction — a rule the console shows as saved and the turn
@@ -348,5 +353,87 @@ describe("round 2: the Tools save puts back everything it wrote", () => {
     expect(sent).toContain("toolGuidance");
     expect(sent.length).toBeGreaterThanOrEqual(4);
     expect(sent.filter((k) => !back.includes(k))).toEqual([]);
+  });
+});
+
+// Round 5 of PR #378 closed the write boundary to non-native tool names. That created a THIRD party
+// to keep in agreement — the console, the runtime reader, and now the API — and two of the three
+// disagreeing is invisible from inside any one of them: a console offering a name the API refuses
+// makes the save fail on a row the operator just filled in, and a console hiding a name the API
+// accepts invites them to delete a guard they cannot see.
+describe("the console offers exactly what the API accepts", () => {
+  test("every native name round-trips through the editor and the write boundary", () => {
+    const rows = NATIVE_TOOL_NAMES.map((tool) => ({
+      tool,
+      scope: "conversation" as const,
+      key: "article_url",
+      equals: "",
+    }));
+    const stored = serializeToolPreconditions(rows);
+    expect(Object.keys(stored).sort()).toEqual([...NATIVE_TOOL_NAMES].sort());
+    // Accepted by the API...
+    expect(invalidToolPreconditions({ toolPreconditions: stored })).toEqual([]);
+    // ...enforced by the runtime...
+    expect(
+      Object.keys(readToolPreconditions({ toolPreconditions: stored })).sort(),
+    ).toEqual([...NATIVE_TOOL_NAMES].sort());
+    // ...and shown back on the next load, every one of them.
+    expect(
+      parseToolPreconditionRows(stored)
+        .map((r) => r.tool)
+        .sort(),
+    ).toEqual([...NATIVE_TOOL_NAMES].sort());
+  });
+
+  test("a name the API refuses is one the editor never renders", () => {
+    for (const tool of [
+      "create_invoice",
+      "mcp__crm__deal",
+      " handoff_to_human ",
+    ]) {
+      const bag = {
+        [tool]: { kind: "attribute", scope: "conversation", key: "k" },
+      };
+      expect(invalidToolPreconditions({ toolPreconditions: bag })).toEqual([
+        tool,
+      ]);
+      expect(parseToolPreconditionRows(bag)).toEqual([]);
+    }
+  });
+
+  // The fixed point again, now against the write boundary rather than the reader: an entry the
+  // console cannot render is carried through verbatim, and a save that changed nothing must not be
+  // the moment the API starts refusing a rule the operator never opened.
+  test("saving an untouched tab does not turn a carried-through entry into a 400", () => {
+    const legacy = {
+      mcp__crm__create_deal: {
+        kind: "attribute",
+        scope: "conversation",
+        key: "cpf",
+      },
+    };
+    const stored = { toolPreconditions: legacy };
+    const rows = parseToolPreconditionRows(legacy);
+    expect(rows).toEqual([]);
+    const next = {
+      toolPreconditions: serializeToolPreconditions(rows, legacy),
+    };
+    expect(next.toolPreconditions).toEqual(legacy);
+    expect(() => assertSettingsToolPreconditions(next, stored)).not.toThrow();
+  });
+
+  test("but ADDING a refused name in the same save is still refused", () => {
+    // The exemption above is for what was already there, not a hole to write new rules through.
+    const stored = { toolPreconditions: {} };
+    const next = {
+      toolPreconditions: {
+        mcp__crm__create_deal: {
+          kind: "attribute",
+          scope: "conversation",
+          key: "cpf",
+        },
+      },
+    };
+    expect(() => assertSettingsToolPreconditions(next, stored)).toThrow();
   });
 });

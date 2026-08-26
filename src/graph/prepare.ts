@@ -9,7 +9,9 @@ import config from "@/config";
 import type { ModelOverride } from "@/graph/model-override";
 import {
   applyToolPreconditions,
+  preconditionFlowEvent,
   preconditionStateLoader,
+  unmatchedPreconditionEvent,
 } from "@/graph/tools/precondition";
 import { parseDbId } from "@/lib/db-id";
 import type { ScopedDb, TenantContext } from "@/lib/tenancy";
@@ -1251,27 +1253,19 @@ export async function buildToolset(
       contactDbId: cfg.contactDbId ?? null,
     }),
     flow
-      ? ({ tool: name, cond }) =>
-          emitFlowEvent(flow, {
-            stage: "tool",
-            // NOTE: INFO, deliberately. A precondition refusing a call is the system working as the
-            // operator configured it, and warn/error is what reaches the alert channels: a rule that
-            // fires on every third conversation would otherwise page all day. It still has to be
-            // VISIBLE, because "the agent never hands off any more" is exactly the report this
-            // feature will generate, and the answer has to be one line away in the Logs page.
-            level: "info",
-            status: "ok",
-            detail: {
-              tool: name,
-              phase: "precondition",
-              preconditionKind: cond.kind,
-              // NOTE: The KEY, never the value: an attribute bag holds whatever the operator put in it,
-              // and a flow-log detail is PII-free by contract (modules/flowlog).
-              preconditionKey: cond.key,
-              preconditionScope: cond.scope,
-            },
-          })
+      ? (info) => emitFlowEvent(flow, preconditionFlowEvent(info))
       : undefined,
+    (unmatched) => {
+      // A rule that matches no assembled tool guards nothing and reads on screen exactly like one
+      // that does. Reported at assembly because this is the first and only point where the whole
+      // toolset is known.
+      if (flow) emitFlowEvent(flow, unmatchedPreconditionEvent(unmatched));
+      logger.warn(
+        "agent %s: precondition(s) on tool(s) not in this turn's toolset (%s) — the tool is NOT guarded",
+        String(cfg.agentId),
+        unmatched.join(", "),
+      );
+    },
   );
   if (dropped.length > 0) {
     // The operator is the only one who can fix this, and the symptom they would otherwise see is a

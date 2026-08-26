@@ -4,7 +4,8 @@ import { Button } from "@/client/components/Button";
 import { FormField } from "@/client/components/FormField";
 import { Input } from "@/client/components/Input";
 import { Select } from "@/client/components/Select";
-import { NATIVE_TOOL_ICONS, nativeToolMeta } from "@/client/lib/nativeTools";
+import { nativeToolMeta } from "@/client/lib/nativeTools";
+import { isGuardableToolName } from "@/modules/agents/tool-preconditions";
 import type { ToolPreconditionRow } from "./types";
 
 // The enforceable half of the per-tool guidance: guidance tells the model WHEN to use a tool and is
@@ -12,15 +13,11 @@ import type { ToolPreconditionRow } from "./types";
 // (issue #101). Edited as a LIST rather than as the map it is stored as, because a map keyed by the
 // thing being edited loses the row the moment the operator clears the tool name to pick another.
 //
-// Scoped to NATIVE tools on purpose. The runtime applies a precondition to any tool by name, but the
-// names of HTTP/MCP/integration tools are defined elsewhere and namespaced at assembly, so a picker
-// here would be offering names that may not be the ones the turn uses — and a precondition whose
-// name does not match is silently no protection at all, which is the one failure this feature must
-// not have. Those are configurable over REST, whose settings bag is open-ended; docs/graph.md
-// carries the boundary and why it is where it is.
-// The native names this console knows how to show. A condition on any other name (an HTTP, MCP or
-// integration tool, configured over REST) is not this editor's to render — see parseToolPreconditionRows.
-const NATIVE_TOOL_NAMES_UI = new Set(Object.keys(NATIVE_TOOL_ICONS));
+// Scoped to NATIVE tools on purpose, and to the SAME set the write boundary accepts —
+// `isGuardableToolName` is the one predicate, imported rather than restated, because a console that
+// offers a name the API refuses and a console that hides a name the API accepts are both this
+// feature failing quietly. The reasoning for where that line sits is on the predicate itself
+// (modules/agents/tool-preconditions.ts); docs/graph.md carries the operator-facing half.
 
 interface Props {
   rows: ToolPreconditionRow[];
@@ -226,7 +223,7 @@ export function parseToolPreconditionRows(
   if (!stored || typeof stored !== "object" || Array.isArray(stored)) return [];
   const rows: ToolPreconditionRow[] = [];
   for (const [tool, raw] of Object.entries(stored as Record<string, unknown>)) {
-    if (!NATIVE_TOOL_NAMES_UI.has(tool)) continue;
+    if (!isGuardableToolName(tool)) continue;
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const c = raw as Record<string, unknown>;
     if (c.kind !== "attribute") continue;

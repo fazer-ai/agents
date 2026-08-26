@@ -1,10 +1,9 @@
 import "@testing-library/jest-dom";
-import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "@/../generated/prisma/client";
 import {
   DB_GATE_OPT_OUT,
   missingDbConfig,
-  PROBE_DEADLINE_MS,
+  PROBE_BACKSTOP_MS,
+  probePoolConfig,
   probeTargets,
   unreachableDb,
   withDeadline,
@@ -66,14 +65,21 @@ if (process.env[DB_GATE_OPT_OUT] !== "1") {
   // valid migration URL and a nonexistent app role, one file reported `6 pass, 14 skip, 0 fail`,
   // exit 0. The URLs read here are the ones forced above, so this asks the question in exactly the
   // shape the guarded files will ask it.
+  // Imported HERE, not at the top of the file. `generated/prisma` is gitignored and `bun install`
+  // does not produce it, so a static import fails on any checkout that has not run
+  // `bun run prisma:generate` yet, and it fails BEFORE the opt-out is read: measured, a run of a
+  // database-free test file with ALLOW_NO_DB=1 died on `Cannot find module`, where the same file on
+  // the base commit ran. The gate must not be the reason a run without a database cannot start.
+  const { PrismaPg } = await import("@prisma/adapter-pg");
+  const { PrismaClient } = await import("@/../generated/prisma/client");
   for (const { variable, url } of probeTargets(process.env)) {
     const probe = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: url }),
+      adapter: new PrismaPg(probePoolConfig(url)),
     });
     try {
       await withDeadline(
         probe.$queryRaw`SELECT 1`,
-        PROBE_DEADLINE_MS,
+        PROBE_BACKSTOP_MS,
         variable,
       );
       await probe.$disconnect();

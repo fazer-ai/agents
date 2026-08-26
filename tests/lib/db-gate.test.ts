@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   DB_GATE_OPT_OUT,
   missingDbConfig,
+  PROBE_BACKSTOP_MS,
+  PROBE_DEADLINE_MS,
+  probePoolConfig,
   probeTargets,
   unreachableDb,
   withDeadline,
@@ -157,6 +160,22 @@ describe("what the probe is called when it fails", () => {
     }).find((t) => t.variable === "TEST_MIGRATION_DATABASE_URL");
     expect(migration).toBeDefined();
     expect(migration?.url).toContain("derived_test");
+  });
+});
+
+// Racing a promise stops the WAITING, not the work: the query keeps a client checked out of the
+// pool. The driver's own limits are what cancel it, so they have to actually be passed, and the
+// outer backstop has to sit above them or it fires first and the cancellation never happens.
+describe("what cancels a probe that will not answer", () => {
+  test("the driver is given both limits, not just a connection string", () => {
+    const config = probePoolConfig("postgresql://u@localhost/x_test");
+    expect(config.connectionString).toContain("x_test");
+    expect(config.connectionTimeoutMillis).toBe(PROBE_DEADLINE_MS);
+    expect(config.query_timeout).toBe(PROBE_DEADLINE_MS);
+  });
+
+  test("the backstop leaves the driver room to speak first", () => {
+    expect(PROBE_BACKSTOP_MS).toBeGreaterThan(PROBE_DEADLINE_MS);
   });
 });
 

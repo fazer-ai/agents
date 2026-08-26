@@ -107,6 +107,20 @@ export function probeTargets(env: { [k: string]: string | undefined }): {
 // socket timeout, which is the wait it replaces.
 export const PROBE_DEADLINE_MS = 10_000;
 
+// The driver's own limits, which is what actually CANCELS the work. `Promise.race` alone stops the
+// waiting without stopping the query, leaving a client checked out of the pool. These two cover the
+// two phases (handshake, then query); the race below stays as the backstop for anything they do not
+// honour, and is given headroom so the driver's own error is the one a reader sees.
+export function probePoolConfig(url: string) {
+  return {
+    connectionString: url,
+    connectionTimeoutMillis: PROBE_DEADLINE_MS,
+    query_timeout: PROBE_DEADLINE_MS,
+  };
+}
+
+export const PROBE_BACKSTOP_MS = PROBE_DEADLINE_MS + 2_000;
+
 export function withDeadline<T>(
   work: Promise<T>,
   ms: number,

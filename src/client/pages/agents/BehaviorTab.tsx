@@ -1170,6 +1170,15 @@ export function BehaviorTab({
   const fallbackConfigured = !!(
     modelFallback.provider.trim() && modelFallback.model.trim()
   );
+  // Named, and on the save gate, because the round trip does not survive it: `modelFallbackToStored`
+  // persists `{provider: "openai", model: null}`, `hasModelFallback` answers false, and the form
+  // reader maps that straight back to "No fallback" — so the provider the operator picked is gone on
+  // the next load with nothing on screen to say why. The write boundary refuses it too
+  // (`assertSettingsModelFallback`, which is what covers the MCP patch); this is what keeps the
+  // operator from meeting that refusal as a 400 on a button they were never stopped from pressing.
+  const fallbackModelMissing = !!(
+    modelFallback.provider.trim() && !modelFallback.model.trim()
+  );
   const fallbackSource = overridePickerSource(
     fallbackOverride,
     agentModel,
@@ -2754,10 +2763,11 @@ export function BehaviorTab({
                 </FormField>
                 <FormField
                   label={t("editor.model", "Model")}
-                  // The one field whose absence is silent everywhere else: a provider with no model
-                  // stores cleanly, reads back as configured, and builds nothing.
+                  // The same predicate the save gate reads, so the red field and the disabled button
+                  // cannot drift apart: a provider with no model stores cleanly, comes back as "No
+                  // fallback", and builds nothing.
                   error={
-                    !modelFallback.model.trim()
+                    fallbackModelMissing
                       ? t(
                           "editor.modelFallbackModelRequired",
                           "Pick a model, or the fallback is saved and never runs.",
@@ -3156,7 +3166,8 @@ export function BehaviorTab({
           memoryBaseUrlInvalid ||
           memoryBaseUrlUnsupported ||
           fallbackBaseUrlInvalid ||
-          fallbackBaseUrlUnsupported
+          fallbackBaseUrlUnsupported ||
+          fallbackModelMissing
         }
         onOpenPlayground={onOpenPlayground}
       />

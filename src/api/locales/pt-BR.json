@@ -68,6 +68,7 @@
     "googleOAuthTooManyScopes": "Escopos do Google OAuth em excesso (no máximo {{max}})",
     "googleOAuthWrongKind": "Esta credencial não é uma credencial do Google OAuth",
     "googleSignInFailed": "Falha ao entrar com o Google",
+    "halfConfiguredFallback": "O provider de fallback precisa de provider e modelo; falta {{missing}}.",
     "imageDimensionsUnreadable": "Não foi possível ler o cabeçalho da imagem, então o tamanho dela não pode ser conferido. Exporte o arquivo novamente.",
     "imageTooLarge": "A imagem é muito grande",
     "imageTooManyPixels": "A imagem tem pixels demais: no máximo {{max}} no total (cerca de {{dimensions}})",

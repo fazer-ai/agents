@@ -316,6 +316,86 @@ export class DebugWindowTooLongError extends AppError {
   }
 }
 
+// A FALLBACK IS A PROVIDER AND A MODEL, OR IT IS NOTHING — and the write is the only place that can
+// say so, because every reader downstream agrees a half-named block is no fallback and none of them
+// has anywhere to say it.
+//
+// Measured on the stored bag: naming a provider and saving without a model persists
+// `{provider: "openai", model: null}`, `hasModelFallback` answers false, and the form reader maps it
+// straight back to "No fallback". So the operator's provider is gone on the next load, with no error
+// and nothing in the row to explain it, and the same bag reaches the MCP patch as a diff showing
+// `provider: openai` for a fallback that does not exist. That is the ONE difference from the two
+// other `*Required` fields this editor renders — theirs survive the round trip and come back with
+// their error still on screen.
+//
+// Refused rather than repaired for the reason the whole block exists: repairing means choosing which
+// half to drop, and both choices throw away something the operator typed. Whoever receives this can
+// fix it — the operator picks a model, the MCP caller sends one — which is the test for whether a
+// refusal belongs at a write boundary at all.
+//
+// Same shape as the two rules beside it: only a pair this write INTRODUCES or CHANGES is refused, so
+// a bag that already holds a half-named block does not freeze every later save. Per field, because
+// `mergeBehaviorSettings` merges a block one level deep: a patch naming only the model is a complete
+// statement when the stored block already names a provider.
+export class HalfConfiguredFallbackError extends AppError {
+  constructor(missing: "provider" | "model") {
+    super(
+      `settings.modelFallback needs both a provider and a model; ${missing} is missing`,
+      400,
+      "errors.halfConfiguredFallback",
+      { missing },
+      `settings.modelFallback.${missing}`,
+    );
+  }
+}
+
+// The two fields, plus whether the bag NAMED each of them. A key that is absent is a key this write
+// says nothing about, which is not the same as a key it set to null.
+function fallbackPair(settings: unknown): {
+  provider: unknown;
+  model: unknown;
+  sets: { provider: boolean; model: boolean };
+  present: boolean;
+} | null {
+  const bag =
+    settings && typeof settings === "object"
+      ? (settings as Record<string, unknown>).modelFallback
+      : undefined;
+  if (!bag || typeof bag !== "object" || Array.isArray(bag)) return null;
+  const o = bag as Record<string, unknown>;
+  return {
+    provider: o.provider,
+    model: o.model,
+    sets: { provider: "provider" in o, model: "model" in o },
+    present: true,
+  };
+}
+
+const named = (v: unknown): boolean => typeof v === "string" && !!v.trim();
+
+export function assertSettingsModelFallback(
+  settings: unknown,
+  stored: unknown,
+): void {
+  const next = fallbackPair(settings);
+  if (!next) return;
+  const prev = fallbackPair(stored);
+  // The merged pair, field by field, so the check answers about the bag that will be STORED rather
+  // than about the fragment that was sent.
+  const provider = next.sets.provider ? next.provider : prev?.provider;
+  const model = next.sets.model ? next.model : prev?.model;
+  if (named(provider) === named(model)) return;
+  // Unchanged is not a write: a bag already holding this pair is re-sent untouched by every save
+  // that edits some other block.
+  if (
+    named(provider) === named(prev?.provider) &&
+    named(model) === named(prev?.model)
+  ) {
+    return;
+  }
+  throw new HalfConfiguredFallbackError(named(provider) ? "model" : "provider");
+}
+
 export function assertSettingsDebugWindow(
   settings: unknown,
   stored: unknown,
@@ -494,6 +574,7 @@ export async function updateAgent(
     // would compare against a value another writer could have changed in between.
     assertSettingsTextSizes(rest.settings, before?.settings);
     assertSettingsDebugWindow(rest.settings, before?.settings);
+    assertSettingsModelFallback(rest.settings, before?.settings);
     // NOTE: Inside the lock and against the same row, for the reason above: "did this write change
     // the ref" has to be asked of the value this write replaces. It also rewrites `rest` in place,
     // so the normalization below copies the canonical bag rather than the submitted one.
@@ -628,6 +709,7 @@ export async function createAgent(
   assertPromptSize(input.systemPrompt);
   assertSettingsTextSizes(input.settings, undefined);
   assertSettingsDebugWindow(input.settings, undefined);
+  assertSettingsModelFallback(input.settings, undefined);
   const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);
   const bhId =

@@ -68,6 +68,7 @@
     "googleOAuthTooManyScopes": "Too many Google OAuth scopes (at most {{max}})",
     "googleOAuthWrongKind": "This credential is not a Google OAuth credential",
     "googleSignInFailed": "Google sign-in failed",
+    "halfConfiguredFallback": "The fallback provider needs both a provider and a model; {{missing}} is missing.",
     "imageDimensionsUnreadable": "The image header could not be read, so its size cannot be checked. Export the file again.",
     "imageTooLarge": "Image is too large",
     "imageTooManyPixels": "The image has too many pixels: at most {{max}} in total (about {{dimensions}})",

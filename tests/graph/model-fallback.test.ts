@@ -9,6 +9,7 @@ import {
   PRIMARY_TIMEOUT_MS,
 } from "@/graph/model-fallback";
 import { runModelCall } from "@/graph/model-limit";
+import { assertSettingsModelFallback } from "@/modules/agents/service";
 import {
   EmptyThenReplyModel,
   FailingModel,
@@ -398,5 +399,109 @@ describe("the fallback is asked the same question the primary was", () => {
     await graph.invoke({ messages: [new HumanMessage("oi")] });
     expect(primary.calls).toBeGreaterThan(0);
     expect(fallback.boundToolNames).toEqual(["check_slots"]);
+  });
+});
+
+// THE WRITE BOUNDARY: A FALLBACK IS A PROVIDER AND A MODEL, OR IT IS NOTHING.
+//
+// The runtime half of this was already written and tested when review asked what happens to a bag
+// that names only one of the two. Measured on the stored bag: it persists as
+// `{provider: "openai", model: null}`, `hasModelFallback` answers false, and `modelFallbackToForm`
+// maps it back to "No fallback" — so the operator's provider is gone on the next load with nothing
+// on screen to say why, and the same bag reaches the MCP patch as a diff showing `provider: openai`
+// for a fallback that does not exist.
+//
+// Refused rather than repaired, because repairing means choosing which half to throw away. And
+// refused at the WRITE rather than in the editor alone: the editor is one of three transports that
+// reach this bag (REST create, REST update, MCP patch), and the save gate only covers the first
+// operator who meets it.
+describe("assertSettingsModelFallback", () => {
+  const bag = (over: Record<string, unknown> | undefined) =>
+    over === undefined ? { stt: {} } : { modelFallback: over };
+  const refuses = (next: unknown, stored: unknown): string | null => {
+    try {
+      assertSettingsModelFallback(next, stored);
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+
+  test("a whole fallback is stored", () => {
+    expect(
+      refuses(bag({ provider: "openai", model: "gpt-5.4-mini" }), {}),
+    ).toBeNull();
+  });
+
+  test("neither half named is no fallback, which is a valid thing to store", () => {
+    expect(refuses(bag({ provider: null, model: null }), {})).toBeNull();
+  });
+
+  test("a write that does not touch the block says nothing about it", () => {
+    expect(refuses(bag(undefined), {})).toBeNull();
+  });
+
+  test("a provider with no model is refused, naming the half that is missing", () => {
+    expect(refuses(bag({ provider: "openai", model: null }), {})).toContain(
+      "model is missing",
+    );
+  });
+
+  test("a model with no provider is refused the same way", () => {
+    expect(
+      refuses(bag({ provider: null, model: "gpt-5.4-mini" }), {}),
+    ).toContain("provider is missing");
+  });
+
+  // Whitespace is not a name, and this is the one the editor's own trim already agreed with.
+  test("a blank string does not count as named", () => {
+    expect(refuses(bag({ provider: "openai", model: "   " }), {})).toContain(
+      "model is missing",
+    );
+  });
+
+  // PER FIELD, because mergeBehaviorSettings merges a block one level deep: the MCP patch sends the
+  // fields it means to change, and a patch naming only the model is a complete statement when the
+  // stored block already names a provider.
+  test("a patch naming only the model is whole against a stored provider", () => {
+    expect(
+      refuses(bag({ model: "other" }), {
+        modelFallback: { provider: "openai", model: "gpt-5.4-mini" },
+      }),
+    ).toBeNull();
+  });
+
+  test("a patch naming only the provider is still half a fallback", () => {
+    expect(refuses(bag({ provider: "openai" }), {})).toContain(
+      "model is missing",
+    );
+  });
+
+  // Clearing one half is how a half-named block gets made from a whole one, and it is the shape a
+  // patch reaches for when it means to turn the fallback off.
+  test("clearing the provider while the model stays is refused", () => {
+    expect(
+      refuses(bag({ provider: null }), {
+        modelFallback: { provider: "openai", model: "gpt-5.4-mini" },
+      }),
+    ).toContain("provider is missing");
+  });
+
+  // ONLY WHAT THE WRITE CHANGES. A bag that already holds a half-named block — written before this
+  // rule, or by a path that predates it — is re-sent untouched by every save that edits some other
+  // section, and refusing those would freeze the agent on a field the operator is not editing.
+  test("a stored half-block re-sent unchanged does not block an unrelated save", () => {
+    const legacy = { modelFallback: { provider: "openai", model: null } };
+    expect(
+      refuses(bag({ provider: "openai", model: null }), legacy),
+    ).toBeNull();
+  });
+
+  test("and it can still be repaired, or emptied", () => {
+    const legacy = { modelFallback: { provider: "openai", model: null } };
+    expect(
+      refuses(bag({ provider: "openai", model: "gpt-5.4-mini" }), legacy),
+    ).toBeNull();
+    expect(refuses(bag({ provider: null, model: null }), legacy)).toBeNull();
   });
 });

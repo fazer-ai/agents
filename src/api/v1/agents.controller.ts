@@ -67,6 +67,7 @@ import { listTtsOptions } from "@/modules/tts/listing";
 // translate('errors.sessionNotFound', 'Playground session not found.')
 // translate('errors.settingsTextTooLong', 'The text in {{field}} is too long: {{len}} characters (limit {{max}}).')
 // translate('errors.debugWindowTooLong', 'The log debug mode can be armed for at most {{hours}}h at a time.')
+// translate('errors.halfConfiguredFallback', 'The fallback provider needs both a provider and a model; {{missing}} is missing.')
 // translate('errors.sttCredentialMissing', 'The transcription credential was not found.')
 // translate('errors.sttFailed', 'Transcription failed: {{detail}}')
 // translate('errors.sttNotConfigured', 'Speech-to-text is not configured for this workspace.')

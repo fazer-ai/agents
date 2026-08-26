@@ -3,6 +3,10 @@ import {
   VAULT_REF_PREFIX,
 } from "@/client/lib/credentialRef";
 import { isValidHttpUrl } from "@/client/lib/validation";
+import {
+  hasModelFallback,
+  readModelFallbackConfig,
+} from "@/graph/fallback-settings";
 import { resolveModelOverride } from "@/graph/model-override";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { readAvailabilityConfig } from "@/modules/availability/away";
@@ -24,6 +28,7 @@ export type ConfigIssueKey =
   | "tts"
   | "ttsNormalize"
   | "memoryModel"
+  | "modelFallback"
   | "vision"
   | "guardrails"
   | "guardrailsFailing"
@@ -176,6 +181,7 @@ export interface ConfigHealthInput {
   // answers, and misses the opposite case — a credential endpoint on a vendor that never sends one.
   // Null until the vault list lands, which is what the deferral below is for.
   savedMemoryCredentialBaseURL?: string | null;
+  savedModelFallbackCredentialBaseURL?: string | null;
   sttEnabled: boolean;
   sttCredentialRef: string;
   // TTS has no boolean toggle — any mode other than "never" means audio replies are on.
@@ -491,6 +497,70 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       credIssue(
         compactionResolution !== null && Boolean(compaction.credentialRef),
         compaction.credentialRef ?? "",
+        pending,
+        known,
+      ),
+    );
+  }
+  // The second provider behind the agent's own, judged exactly like the summariser above and for a
+  // sharper reason: it is the one override whose whole purpose is to work on the day the primary
+  // does not. A fallback that cannot be built is indistinguishable from having named none, and the
+  // day it is asked for is the day nobody is watching a console.
+  //
+  // What made it worth a line of its own is the credential: this path is one of the eight in
+  // `SETTINGS_CREDENTIAL_PATHS`, so an import or a transfer rewrites it to a PENDING ref that
+  // carries no secret, and a deleted vault entry leaves it UNRESOLVED. Without an entry here both
+  // read on screen as a configured fallback with no warning and no fill action, while the runtime
+  // refuses to build it.
+  //
+  // No `enabled` flag to consult, unlike the summariser: `hasModelFallback` is the flag, and the two
+  // halves of it are what the write boundary refuses to store apart.
+  const fallback = readModelFallbackConfig(input.settings);
+  const fallbackResolution = hasModelFallback(fallback)
+    ? resolveModelOverride(
+        {
+          provider: fallback.provider,
+          model: fallback.model,
+          credentialRef: fallback.credentialRef,
+          baseURL: fallback.baseURL,
+        },
+        {
+          provider: input.savedModelProvider,
+          model: "",
+          baseURL: input.savedModelBaseURL ?? null,
+        },
+        {
+          ownCredentialBaseURL:
+            input.savedModelFallbackCredentialBaseURL ?? null,
+          isUsableBaseURL: isValidHttpUrl,
+        },
+      )
+    : null;
+  const fallbackIssue: ConfigIssue = {
+    key: "modelFallback",
+    tab: "behavior",
+    sectionId: "modelFallback",
+  };
+  // The same wait the two overrides above take: an endpoint can still arrive on a credential the
+  // vault has not answered for yet, and calling a runnable fallback broken is the false alarm the
+  // null-until-loaded rule exists to prevent.
+  const fallbackEndpointOwed =
+    !endpointsKnown &&
+    Boolean(fallback.credentialRef || input.savedModelCredentialRef);
+  const fallbackRefusalHolds =
+    fallbackResolution !== null &&
+    !fallbackResolution.runnable &&
+    !(
+      fallbackEndpointOwed && fallbackResolution.reason === "endpoint_unusable"
+    );
+  if (fallbackRefusalHolds) {
+    issues.push(fallbackIssue);
+  } else {
+    push(
+      fallbackIssue,
+      credIssue(
+        fallbackResolution !== null && Boolean(fallback.credentialRef),
+        fallback.credentialRef ?? "",
         pending,
         known,
       ),

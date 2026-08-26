@@ -320,6 +320,126 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
     });
   });
 
+  // The fallback provider is the one override whose whole purpose is to work on the day the primary
+  // does not, so a fallback that cannot be built is worth less than none: it looks configured and it
+  // is asked for exactly when nobody is watching a console. Review found it absent from here after
+  // the runtime half was already written and tested (#143, round 4).
+  describe("fallback provider", () => {
+    const fb = (over: Record<string, unknown>) => ({
+      ...base,
+      settings: { modelFallback: over },
+    });
+    const ISSUE = {
+      key: "modelFallback",
+      tab: "behavior",
+      sectionId: "modelFallback",
+    } as const;
+
+    // No `enabled` flag, unlike the summariser: a fallback exists exactly when both halves are
+    // named. Half of one is refused at the write boundary, so what reaches here is either a whole
+    // fallback or none, and none is not a configuration that can fail.
+    test("no fallback configured raises nothing", () => {
+      expect(computeConfigIssues(fb({}))).toEqual([]);
+      expect(computeConfigIssues({ ...base, settings: {} })).toEqual([]);
+    });
+
+    test("the agent's own provider, picked explicitly, needs no credential of its own", () => {
+      expect(
+        computeConfigIssues(fb({ provider: "openai", model: "gpt-5.4-mini" })),
+      ).toEqual([]);
+    });
+
+    test("a different provider with no key of its own is flagged", () => {
+      expect(
+        computeConfigIssues(fb({ provider: "anthropic", model: "claude" })),
+      ).toEqual([ISSUE]);
+    });
+
+    test("a different provider WITH its own key is fine", () => {
+      expect(
+        computeConfigIssues(
+          fb({
+            provider: "anthropic",
+            model: "claude",
+            credentialRef: "vault:3",
+          }),
+        ),
+      ).toEqual([]);
+    });
+
+    test("an openai-compatible endpoint that is not a URL is flagged", () => {
+      expect(
+        computeConfigIssues(
+          fb({
+            provider: "openai-compatible",
+            model: "llama",
+            baseURL: "llama:8080",
+          }),
+        ),
+      ).toEqual([ISSUE]);
+    });
+
+    // The endpoint the runtime uses comes off the CREDENTIAL when it carries one, and it outranks
+    // the bag. Same rule as the summariser's, and the same false alarm without it.
+    test("an endpoint carried by the credential is not reported as missing", () => {
+      expect(
+        computeConfigIssues({
+          ...fb({
+            provider: "openai-compatible",
+            model: "llama",
+            credentialRef: "vault:3",
+          }),
+          savedModelFallbackCredentialBaseURL:
+            "https://llm.internal.example/v1",
+          knownRefs: new Set(["vault:1", "vault:3"]),
+        }),
+      ).toEqual([]);
+    });
+
+    test("no verdict while the vault has not answered about its credential", () => {
+      expect(
+        computeConfigIssues({
+          ...fb({
+            provider: "openai-compatible",
+            model: "llama",
+            credentialRef: "vault:3",
+          }),
+          knownRefs: null,
+        }),
+      ).toEqual([]);
+    });
+
+    // THE ROW THE FINDING WAS ABOUT. An import strips secrets, so the ref comes back pending and the
+    // panel has to offer the fill action; without an entry here the screen shows a configured
+    // fallback and no warning at all.
+    test("its credential being a pending vault entry is flagged as pending", () => {
+      expect(
+        computeConfigIssues({
+          ...fb({
+            provider: "openai",
+            model: "gpt-5.4-mini",
+            credentialRef: "vault:3",
+          }),
+          pendingRefs: new Set(["vault:3"]),
+        }),
+      ).toEqual([{ ...ISSUE, pending: true, vaultId: "3" }]);
+    });
+
+    // And the other half of the same omission: an entry deleted after the fact. No `vaultId` on this
+    // one, unlike pending — there is no entry left to deep-link to, which is `credIssue`'s own rule.
+    test("its credential having been deleted is flagged as unresolved", () => {
+      const issues = computeConfigIssues({
+        ...fb({
+          provider: "openai",
+          model: "gpt-5.4-mini",
+          credentialRef: "vault:9",
+        }),
+        knownRefs: new Set(["vault:1"]),
+      });
+      expect(issues).toEqual([{ ...ISSUE, unresolved: true }]);
+    });
+  });
+
   // The speech rewrite fails SILENTLY when it cannot run (best-effort: the audio still goes out,
   // just unrewritten), so the editor is the only place this can be caught.
   describe("speech rewrite model", () => {

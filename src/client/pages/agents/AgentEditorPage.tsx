@@ -61,6 +61,7 @@ import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditMo
 import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
+import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import type { Schedule } from "@/modules/business-hours/hours";
 import {
@@ -1484,7 +1485,9 @@ function AgentEditor() {
   // t('editor.configIssue.ttsNormalize', 'The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.')
   // t('editor.configIssuePending.ttsNormalize', 'The speech-rewrite credential is referenced but not filled in yet.')
   // t('editor.configIssue.memoryModel', 'A separate model is set for attendance summaries but its configuration cannot run, so attendances that end will not be summarized and the contact keeps no memory of them. Check its provider, model, key and endpoint.')
+  // t('editor.configIssue.modelFallback', 'A fallback provider is set but its configuration cannot run, so a turn the primary provider drops is still lost. Check its provider, model, key and endpoint.')
   // t('editor.configIssuePending.memoryModel', 'The summary-model credential is referenced but not filled in yet, so attendances that end are not summarized.')
+  // t('editor.configIssuePending.modelFallback', 'The fallback-provider credential is referenced but not filled in yet, so the fallback cannot take a turn.')
   // t('editor.configIssue.vision', 'Image/document reading is on but has no API key set.')
   // t('editor.configIssue.guardrails', 'Guardrails are on but have no API key set, so messages go out unscreened.')
   // t('editor.configIssuePending.guardrails', 'The guardrails credential is referenced but not filled in yet, so messages go out unscreened.')
@@ -1508,6 +1511,7 @@ function AgentEditor() {
   // t('editor.configIssueUnresolved.tts', 'The audio-reply credential no longer exists, so replies are sent as text.')
   // t('editor.configIssueUnresolved.ttsNormalize', 'The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.')
   // t('editor.configIssueUnresolved.memoryModel', 'The summary-model credential no longer exists, so attendances that end are not summarized.')
+  // t('editor.configIssueUnresolved.modelFallback', 'The fallback-provider credential no longer exists, so the fallback cannot take a turn.')
   // t('editor.configIssueUnresolved.vision', 'The image-reading credential no longer exists, so images and documents are not read.')
   // t('editor.configIssueUnresolved.embedding', 'A knowledge base needs indexing, but the embedding credential no longer exists.')
   // Knowledge bases this agent uses (its RAG grant) that still have documents awaiting indexing —
@@ -1536,6 +1540,12 @@ function AgentEditor() {
     readMemoryConfig(syncedAgentRef.current?.settings).compaction
       .credentialRef ?? "",
   );
+  // Same rule, same reason: the fallback is judged on the STORED bag, so its endpoint has to come
+  // from the credential the row names rather than from the one the form is holding.
+  const savedModelFallbackCredBaseUrl = vaultBaseUrl(
+    readModelFallbackConfig(syncedAgentRef.current?.settings).credentialRef ??
+      "",
+  );
   const configIssues = computeConfigIssues({
     settings: syncedAgentRef.current?.settings,
     // Saved, like the settings above. Absent only before the first load lands, and nothing that
@@ -1551,6 +1561,7 @@ function AgentEditor() {
     savedModelBaseURL: savedModelBaseUrl,
     savedModelCredentialRef: savedModel.credentialRef,
     savedMemoryCredentialBaseURL: savedMemoryCredBaseUrl,
+    savedModelFallbackCredentialBaseURL: savedModelFallbackCredBaseUrl,
     ttsNormalize: tts.normalize,
     ttsNormalizeProvider: tts.normalizeProvider,
     ttsNormalizeModel: tts.normalizeModel,

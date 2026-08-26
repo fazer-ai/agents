@@ -1580,7 +1580,8 @@
       "stt": "Transcription",
       "tool": "Tool call",
       "tts": "Audio synthesis",
-      "vision": "Image reading"
+      "vision": "Image reading",
+      "webhook": "Outbound webhook"
     },
     "steps": "{{n}} steps",
     "subtitle": "Per-step execution flow for each agent turn: transcription, generation, audio, delivery and handoffs.",

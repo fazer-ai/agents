@@ -1586,7 +1586,8 @@
       "stt": "Transcrição",
       "tool": "Chamada de ferramenta",
       "tts": "Síntese de áudio",
-      "vision": "Leitura de imagem"
+      "vision": "Leitura de imagem",
+      "webhook": "Webhook de saída"
     },
     "steps": "{{n}} etapas",
     "subtitle": "Fluxo de execução passo a passo de cada turno do agente: transcrição, geração, áudio, entrega e transferências.",

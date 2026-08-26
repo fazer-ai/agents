@@ -31,6 +31,7 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
+import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
 import type { FollowUpDelayUnit } from "@/modules/followups/settings";
 import {
@@ -1054,17 +1055,16 @@ export async function getConversationDetail(
     // reason — and, because the completion marker yields to this flag, would hide a finished sequence
     // behind it. It also skips the query on every conversation with nothing to suppress.
     //
-    // NOTE: which step is about to fire decides it, not the agent (issue #103). `nextStep` is 1-based for
-    // display, so the step the worker will actually run is `steps[nextStep - 1]` — the same index the
-    // handler resolves from the job's payload, and the same one the sweep reads for step 0. The three
-    // agreeing is not the same condition copied three times: it is the three reading the same step.
+    // NOTE: which step is about to fire decides it, not the agent (issue #103). `nextStep` is
+    // 1-based for display, so the step the worker will actually run is `steps[nextStep - 1]` — the
+    // same index the handler resolves from the job's payload. The three sites agreeing is not the
+    // same condition written out three times: it is one function, asked here about this step.
     const upcomingStep =
       nextStep === null ? undefined : cfg.steps[nextStep - 1];
     const pausedByAppointment =
       nextStep !== null &&
       cfg.enabled &&
-      cfg.pauseWhileAppointment &&
-      !upcomingStep?.ignoreAppointmentPause &&
+      appointmentPauseApplies(cfg, upcomingStep) &&
       !managedByRedirect &&
       (await runScopedOn(
         base,

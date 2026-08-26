@@ -1211,6 +1211,58 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     ).toBeNull();
   });
 
+  // Review round 4, from a mutation that SURVIVED: dropping `!cfg.pauseWhileAppointment` from the
+  // exempt set broke no test. The agent-wide opt-out is the OLDER half of this predicate and it had
+  // no sweep coverage at all — every existing test exercised the fence staying up. Its positive
+  // case is what the boolean is for, and it is now the pair of the string test below.
+  test("(#103) pauseWhileAppointment false lets the sweep enqueue despite a live appointment", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          followUp: {
+            enabled: true,
+            pauseWhileAppointment: false,
+            steps: [
+              {
+                delayValue: 1,
+                delayUnit: "minutes",
+                instructions: "re-engajamento",
+              },
+            ],
+          },
+        },
+      },
+    });
+    await seedConversation(1114, {
+      assigneeType: "AgentBot",
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await withReminder(1114, "ev_103l");
+    registerFollowUpHandlers();
+    await getJobHandler("FOLLOWUP_SWEEP")?.(
+      {
+        id: 991n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1114)}`,
+        },
+      }),
+    ).not.toBeNull();
+  });
+
   // Review round 3. The SIBLING half of the same predicate, found by asking where else the sweep
   // states something the reader also states. `->>` renders a JSON string and a JSON boolean to the
   // same characters, and the reader does not: `bag.pauseWhileAppointment !== false` keeps the pause

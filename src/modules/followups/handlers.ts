@@ -14,6 +14,7 @@ import {
   parseSchedule,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
 import {
   type ClaimedJob,
@@ -24,7 +25,6 @@ import {
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
-  FOLLOW_UP_MAX_STEPS,
   type FollowUpStep,
   isNewFollowUpEpisode,
   readFollowUpConfig,
@@ -65,15 +65,18 @@ async function sweepHandler(
   const agents = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.agent.findMany({
       where: { enabled: true },
-      select: { settings: true },
+      select: { id: true, settings: true },
     }),
   );
+  const configs = agents.map((a) => ({
+    id: a.id,
+    cfg: readFollowUpConfig(a.settings),
+  }));
   // The sweep only ever STARTS a sequence (step 0), so its cutoff is the minimum FIRST-step delay
   // across enabled agents. Later steps are scheduled precisely by the handler, not the sweep.
-  const enabledDelays = agents
-    .map((a) => readFollowUpConfig(a.settings))
-    .filter((cfg) => cfg.enabled)
-    .map((cfg) => cfg.steps[0])
+  const enabledDelays = configs
+    .filter(({ cfg }) => cfg.enabled)
+    .map(({ cfg }) => cfg.steps[0])
     .filter((s): s is FollowUpStep => s !== undefined)
     .map((s) => stepDelayMinutes(s));
   if (enabledDelays.length === 0) {
@@ -84,6 +87,32 @@ async function sweepHandler(
   }
   const cutoffMin = Math.min(...enabledDelays);
   const cutoff = new Date(Date.now() - cutoffMin * 60_000);
+
+  // Agents the appointment fence does not apply to, asked of `appointmentPauseApplies` — the same
+  // function the handler and the console ask — about `cfg.steps[0]`, the only step this sweep ever
+  // starts a sequence with.
+  //
+  // Asked HERE, in TypeScript, and not mirrored in the query. Two JSON predicates used to live in
+  // the SQL, and three review rounds in a row found a way for them to disagree with the reader: raw
+  // index 0 is not the reader's step 0 (non-object entries are dropped BEFORE numbering), `->>`
+  // renders a JSON string and a JSON boolean identically while the reader does not, and an
+  // unbounded `jsonb_array_elements` expands whatever the opaque REST settings write happened to
+  // store, per conversation, every minute. All three are one defect: a second implementation of a
+  // reader that already exists and had already RUN, right above, to compute the cutoff. What is
+  // left in SQL is the liveness of the appointment, which is rows rather than settings.
+  //
+  // NOTE: read one tick before the query, so a settings change lands on the NEXT pass at worst
+  // (60s). Nothing is sent on this read: the handler re-checks against fresh settings before the
+  // nudge, which is where correctness lives.
+  const unfencedAgentIds = configs
+    .filter(({ cfg }) => !appointmentPauseApplies(cfg, cfg.steps[0]))
+    .map(({ id }) => id);
+  // NOTE: -1 stands in for the empty set. Prisma.join refuses an empty list, and an agent id is a
+  // positive bigint, so the sentinel can never match a row — `<> ALL` then holds for everyone,
+  // which is what "nobody is exempt" has to mean.
+  const unfencedIdsSql = Prisma.sql`ARRAY[${Prisma.join(
+    unfencedAgentIds.length > 0 ? unfencedAgentIds : [-1n],
+  )}]::bigint[]`;
 
   // NOTE: column-to-column comparison (lastInboundAt > lastFollowUpAt) requires raw SQL;
   // Prisma's query builder cannot express it. The filter mirrors the handler's watermark gate
@@ -124,57 +153,20 @@ async function sweepHandler(
         -- NULL = never armed → fail-safe skip.
         AND a.follow_up_armed_at IS NOT NULL
         AND c.last_inbound_at >= a.follow_up_armed_at
-        -- NOTE: Pause re-engagement while the conversation has a LIVE future appointment, unless the
-        -- agent opted out (followUp.pauseWhileAppointment = false). SQL mirror of
-        -- projectAppointmentEvents (appointments/context.ts): a non-tombstoned reminder row counts
-        -- while it is still queued (PENDING/CLAIMED) OR its startISO is still ahead — firing marks
-        -- rows DONE, so after the LAST reminder only the future-start arm keeps suppression on
-        -- (issue #39). The cast is guarded (CASE + pg_input_is_valid; deploy mandates pg17):
-        -- startISO can be all-day (YYYY-MM-DD) or model-supplied garbage, and an unguarded cast
-        -- would abort the WHOLE tenant sweep. Offset-less values are pinned to UTC exactly like
-        -- parseStartMs (all-day → UTC midnight; offset-less datetime → 'Z'), so the SQL and JS
-        -- liveness decisions agree regardless of the session/host time zones.
-        -- Invalid/absent start = not-future (fail-safe: only the queued arm suppresses then).
+        -- NOTE: Pause re-engagement while the conversation has a LIVE future appointment, unless
+        -- this agent is exempt (unfencedAgentIds above, issue #103).
         --
-        -- Both halves below are compared AS JSONB, never as text. ->> renders a JSON string and a
-        -- JSON boolean to the same characters, and the readers do not: bag.pauseWhileAppointment
-        -- !== false keeps the pause ON for a stored "false" while ->> read it as OFF, which is
-        -- the fence lifting itself on a spelling. = 'false'::jsonb is true for the boolean alone.
-        -- All seven spellings measured against the reader; that string was the only disagreement.
+        -- SQL mirror of projectAppointmentEvents (appointments/context.ts): a non-tombstoned
+        -- reminder row counts while it is still queued (PENDING/CLAIMED) OR its startISO is still
+        -- ahead — firing marks rows DONE, so after the LAST reminder only the future-start arm
+        -- keeps suppression on (issue #39). The cast is guarded (CASE + pg_input_is_valid; deploy
+        -- mandates pg17): startISO can be all-day (YYYY-MM-DD) or model-supplied garbage, and an
+        -- unguarded cast would abort the WHOLE tenant sweep. Offset-less values are pinned to UTC
+        -- exactly like parseStartMs (all-day → UTC midnight; offset-less datetime → 'Z'), so the
+        -- SQL and JS liveness decisions agree regardless of the session/host time zones.
+        -- Invalid/absent start = not-future (fail-safe: only the queued arm suppresses then).
         AND NOT (
-          coalesce(
-            a.settings->'followUp'->'pauseWhileAppointment',
-            'true'::jsonb
-          ) <> 'false'::jsonb
-          -- ...and the step this sweep is about to enqueue did not opt out of it (issue #103).
-          --
-          -- The subject is STEP 0, because step 0 is the only step the sweep ever enqueues, and it
-          -- is the reader's step 0, which is NOT raw index 0: readFollowUpConfig keeps the first
-          -- FOLLOW_UP_MAX_STEPS raw entries, drops every non-object among them, and numbers what is
-          -- left. Measured live — PATCH /api/v1/agents/:id types settings as an opaque record, not
-          -- as the MCP behaviour schema, so [7, {opted out}] stores with HTTP 200 — and read
-          -- positionally the sweep suppresses the very step the handler fires.
-          --
-          -- IN ('object','array') and not just 'object' because the reader's test is
-          -- typeof raw === "object" && raw !== null, which an array passes. No step at all leaves
-          -- the coalesce, matching the reader's fallback to a default step that carries no opt-out.
-          AND coalesce(
-            (
-              SELECT e.value->'ignoreAppointmentPause'
-              FROM jsonb_array_elements(
-                CASE
-                  WHEN jsonb_typeof(a.settings->'followUp'->'steps') = 'array'
-                    THEN a.settings->'followUp'->'steps'
-                  ELSE '[]'::jsonb
-                END
-              ) WITH ORDINALITY AS e(value, ord)
-              WHERE e.ord <= ${FOLLOW_UP_MAX_STEPS}
-                AND jsonb_typeof(e.value) IN ('object', 'array')
-              ORDER BY e.ord
-              LIMIT 1
-            ),
-            'false'::jsonb
-          ) <> 'true'::jsonb
+          a.id <> ALL(${unfencedIdsSql})
           AND EXISTS (
             SELECT 1
             FROM scheduler_jobs sj
@@ -361,12 +353,11 @@ export async function followUpHandler(
   // cancelled. Defense in depth — the inbound that booked the appointment already cancels any prior
   // FOLLOWUP, and the sweep won't enqueue a new one meanwhile.
   //
-  // NOTE: BELOW the step resolution, and that order is the feature: the question is not "does this agent
-  // pause?" but "does THIS STEP pause?" (issue #103), and the step is not known any earlier. Moving
-  // it down costs nothing the gate used to catch — the only thing between the two is the
-  // out-of-range check, which ends the sequence outright, and a sequence that is over has nothing
-  // left to suppress.
-  if (ctx.followUpCfg.pauseWhileAppointment && !step.ignoreAppointmentPause) {
+  // NOTE: BELOW the step resolution, and that order is the feature: the pair that decides is
+  // (agent, step), and the step is not known any earlier (issue #103). Moving it down costs nothing
+  // the gate used to catch — the only thing between the two positions is the out-of-range check,
+  // which ends the sequence outright, and a sequence that is over has nothing left to suppress.
+  if (appointmentPauseApplies(ctx.followUpCfg, step)) {
     const blockedByAppointment = await hasLiveAppointment(
       tenantId,
       threadId,

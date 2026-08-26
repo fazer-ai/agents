@@ -21815,7 +21815,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Lower bound on enqueue time (ISO date).",
+              "description": "Lower bound on enqueue time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
               "type": "string"
             }
           },
@@ -21824,7 +21824,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Upper bound on enqueue time (ISO date).",
+              "description": "Upper bound on enqueue time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
               "type": "string"
             }
           },

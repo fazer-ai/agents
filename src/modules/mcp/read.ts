@@ -39,6 +39,7 @@ import {
 import { listAlertChannels } from "@/modules/flowlog/channels";
 import { exportExecutionLogs } from "@/modules/flowlog/export";
 import { listExecutionLogs } from "@/modules/flowlog/read";
+import { parseIsoInstant } from "@/modules/flowlog/settings";
 import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
 import {
   listCatalog,
@@ -524,8 +525,16 @@ export async function webhookDeliveryList(
   const opts: Parameters<typeof listWebhookDeliveries>[1] = {};
   if (args.status !== undefined) opts.status = args.status;
   if (args.event !== undefined) opts.event = args.event;
-  if (args.since !== undefined) opts.since = new Date(args.since);
-  if (args.until !== undefined) opts.until = new Date(args.until);
+  // The same parse the REST filter uses, for the same reason: `new Date` normalises February 30
+  // into March 2 and resolves a non-ISO string against the server's timezone, and a filter that
+  // silently means something else is worse than one that is refused.
+  for (const key of ["since", "until"] as const) {
+    const raw = args[key];
+    if (raw === undefined) continue;
+    const d = parseIsoInstant(raw);
+    if (d === null) return err(`invalid ${key}`);
+    opts[key] = d;
+  }
   if (args.limit !== undefined) opts.limit = args.limit;
   if (args.subscription_id !== undefined) {
     const v = parseMcpId(args.subscription_id, "subscription_id");

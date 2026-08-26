@@ -238,43 +238,42 @@ export async function requeueWebhookDelivery(
   base: PrismaClient = basePrisma,
 ): Promise<WebhookDeliveryDto> {
   const { row, attemptsBefore } = await runScopedOn(base, ctx, async (db) => {
-    const current = await db.outboundWebhookDelivery.findFirst({
-      where: { id },
-      select: { id: true, status: true, attempts: true },
-    });
+    // `FOR UPDATE`, and the lock is the design of this function rather than an optimisation. Two
+    // writers reach this row: another operator requeueing it, and the WORKER finishing with it.
+    // Without the lock, both things this function then says can be stale by the time it says them
+    // — the status it refuses on (two operators both read DEAD; the second's update matches
+    // nothing and it would answer "this one is DEAD" about a row already PENDING) and the count it
+    // logs (a read of SENDING/7 while the worker is committing DEAD/8 still passes the update, and
+    // the line preserves 7 for a delivery that died at 8). Taking the lock first collapses both:
+    // whatever this reads is what the row is, and nobody can move it until this transaction ends.
+    //
+    // RLS is active on this connection (`runScopedOn`), so a foreign id selects nothing here — the
+    // same 404 a foreign id gets from every other read on this surface.
+    const locked = await db.$queryRaw<
+      Array<{ status: string; attempts: number }>
+    >`
+      SELECT status::text AS status, attempts
+      FROM outbound_webhook_deliveries
+      WHERE id = ${id}
+      FOR UPDATE
+    `;
+    const current = locked[0];
     if (!current)
       throw new NotFoundError(
         "webhook delivery not found",
         "errors.webhookDeliveryNotFound",
       );
-    const res = await db.outboundWebhookDelivery.updateMany({
-      where: { id, status: "DEAD" },
-      data: { status: "PENDING", attempts: 0, nextAttemptAt: null },
-    });
-    // count 0 = it was not DEAD when the write ran. The status to report is re-read rather than
-    // taken from the check above, because the two disagree in exactly the case that matters: two
-    // operators requeueing the same dead delivery both read DEAD, the second update blocks on the
-    // first and then matches nothing, and reporting the stale read would answer "this one is DEAD"
-    // about a row that is now PENDING — the one refusal a caller would be right to retry.
-    if (res.count === 0) {
-      const now = await db.outboundWebhookDelivery.findFirst({
-        where: { id },
-        select: { status: true },
-      });
-      if (!now)
-        throw new NotFoundError(
-          "webhook delivery not found",
-          "errors.webhookDeliveryNotFound",
-        );
+    if (current.status !== "DEAD")
       throw new AppError(
-        `only a dead delivery can be requeued (this one is ${now.status})`,
+        `only a dead delivery can be requeued (this one is ${current.status})`,
         409,
         "errors.webhookDeliveryNotDead",
-        { status: now.status },
+        { status: current.status },
+        "status",
       );
-    }
-    const updated = await db.outboundWebhookDelivery.findFirst({
+    const updated = await db.outboundWebhookDelivery.update({
       where: { id },
+      data: { status: "PENDING", attempts: 0, nextAttemptAt: null },
       select: SELECT,
     });
     return { row: updated, attemptsBefore: current.attempts };

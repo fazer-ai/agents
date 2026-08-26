@@ -374,6 +374,40 @@ describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
       expect(fresh.nextAttemptAt).not.toBeNull();
     });
 
+    test("a requeue that arrives as the worker is dying reads the count it died at", async () => {
+      // The narrow window the lock exists for. The worker is mid-outcome: the row still reads
+      // SENDING/7 to anyone who looks without a lock, and the transaction that will commit DEAD/8
+      // is already holding it. A requeue that reads before that commit would either refuse a row
+      // that is about to be dead, or requeue it while writing 7 into the line meant to preserve
+      // the count the delivery died at. `FOR UPDATE` makes it wait and then read the truth.
+      await clearDeliveries();
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`,
+      );
+      const id = await seed({ status: "SENDING", attempts: 7 });
+      const holder = suDb.$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(
+            `UPDATE outbound_webhook_deliveries SET status = 'DEAD', attempts = 8 WHERE id = ${id}`,
+          );
+          await Bun.sleep(500);
+        },
+        { timeout: 10_000 },
+      );
+      await Bun.sleep(120);
+      const [, requeued] = await Promise.all([
+        holder,
+        requeueWebhookDelivery(ctx(), id, appDb),
+      ]);
+      expect(requeued.status).toBe("PENDING");
+      expect(requeued.attempts).toBe(0);
+      const [line] = await webhookLines(1);
+      expect(line?.detail).toMatchObject({
+        action: "requeued",
+        attemptsBefore: 8,
+      });
+    });
+
     test("a delivery the worker is holding (SENDING) is refused, untouched", async () => {
       // The one that matters for safety: SENDING means a POST is in flight, and putting the row
       // back to PENDING would let a second claim deliver it again.

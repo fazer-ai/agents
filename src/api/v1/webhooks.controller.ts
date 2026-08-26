@@ -9,6 +9,7 @@ import {
 } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
+import { parseIsoInstant } from "@/modules/flowlog/settings";
 import {
   getWebhookDelivery,
   type ListDeliveriesOpts,
@@ -63,10 +64,16 @@ function badParam(param: string): never {
 // none of these open with `if (!s)`: `?subscriptionId=` and `?status=` are values a form submits
 // when its input is empty, and treating them as "no filter" answers a narrowed request with the
 // tenant's whole ledger. `""` is refused, exactly like `abc`.
+// `parseIsoInstant`, never `new Date(s)`. `Date.parse` NORMALISES rather than refuses, so
+// `2026-02-30T00:00:00Z` comes back as March 2 and the ledger is quietly queried with a bound the
+// caller never asked for; and it accepts `08/26/2026 10:00`, resolving it against the SERVER's
+// timezone, so the same filter means different instants on two installations. The helper checks
+// the shape, the calendar and the offset on the STRING. The cost is that a date alone is refused:
+// this filter takes an instant, `2026-01-01T00:00:00Z`, and the parameter's description says so.
 function parseDate(s: string | undefined, param: string): Date | undefined {
   if (s === undefined) return undefined;
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) badParam(param);
+  const d = parseIsoInstant(s);
+  if (d === null) badParam(param);
   return d;
 }
 
@@ -332,10 +339,16 @@ export const webhooksController = new Elysia({
           t.String({ description: "Filter by event name (from GET /events)." }),
         ),
         since: t.Optional(
-          t.String({ description: "Lower bound on enqueue time (ISO date)." }),
+          t.String({
+            description:
+              "Lower bound on enqueue time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+          }),
         ),
         until: t.Optional(
-          t.String({ description: "Upper bound on enqueue time (ISO date)." }),
+          t.String({
+            description:
+              "Upper bound on enqueue time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+          }),
         ),
         limit: t.Optional(
           t.String({

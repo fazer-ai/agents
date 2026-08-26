@@ -21,8 +21,18 @@ const VALUES: Record<string, string[]> = {
   // answers a narrowed request with the tenant's whole ledger.
   subscriptionId: ["", "abc", "-1", "1.5", "9223372036854775808"],
   cursor: ["", "abc", "9223372036854775808"],
-  since: ["", "garbage", "not-a-date"],
-  until: ["", "garbage"],
+  // The last three are the ones `new Date` ACCEPTS: February 30 normalises to March 2, a US-format
+  // string resolves against the server's timezone, and a date alone has no instant at all. A filter
+  // that silently means something else is worse than one that is refused.
+  since: [
+    "",
+    "garbage",
+    "not-a-date",
+    "2026-02-30T00:00:00Z",
+    "08/26/2026 10:00",
+    "2026-01-01",
+  ],
+  until: ["", "garbage", "2026-13-01T00:00:00Z"],
   // Syntax only here; `-2` is a well-formed integer and is refused one layer down, by the range
   // check the service owns so that MCP is held to it too (see the second describe).
   limit: ["", " ", "abc", "3.5"],
@@ -71,6 +81,12 @@ describe("the delivery query parser refuses what it cannot use", () => {
     expect(parsed.cursor).toBe(7n);
     expect(parsed.limit).toBe(10);
     expect(parsed.since?.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+    // An offset that crosses midnight is a valid instant, not a malformed date.
+    expect(
+      parseDeliveryQuery({
+        until: "2026-08-25T23:00:00-03:00",
+      }).until?.toISOString(),
+    ).toBe("2026-08-26T02:00:00.000Z");
   });
 });
 

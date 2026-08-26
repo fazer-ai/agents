@@ -61,6 +61,9 @@ const WEBHOOK = {
     status: "pending",
     last_activity_at: SENT_AT,
     contact_inbox: { id: CONTACT_INBOX },
+    // Always on the wire, nil included: the fork ships it from EventDataPresenter for every
+    // conversation, and PRESENCE of the key is what says this instance speaks about pairings.
+    redirect_origin_display_id: null,
     meta: {
       assignee_type: "AgentBot",
       assignee: { id: OTHER_BOT, name: "outro-bot" },
@@ -80,6 +83,7 @@ function rebuilt(
     inboxName?: string | null;
     createdAt?: number | null;
     attachments?: unknown[];
+    redirectOriginDisplayId?: number | null;
   } = {},
 ) {
   return buildRecoveryPayload({
@@ -93,6 +97,10 @@ function rebuilt(
       assigneeId: over.assigneeId === undefined ? OTHER_BOT : over.assigneeId,
       assigneeName:
         over.assigneeName === undefined ? "outro-bot" : over.assigneeName,
+      redirectOriginDisplayId:
+        over.redirectOriginDisplayId === undefined
+          ? null
+          : over.redirectOriginDisplayId,
     },
     inboxId: over.inboxId === undefined ? INBOX : over.inboxId,
     inboxName: over.inboxName === undefined ? "twobot-inbox" : over.inboxName,
@@ -153,6 +161,26 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
     expect(
       normalizeChatwootEvent(rebuilt({ createdAt: null }))?.lastActivityAt,
     ).toBeNull();
+  });
+
+  test("the redirect episode travels, because its consumer reads the event", () => {
+    // MEASURED both ways: the fork renders `redirect_origin_display_id` from `EventDataPresenter`
+    // only — the webhook path — and the REST conversation show does not carry it at all. So the
+    // mirror is authoritative for this one field and for nothing else in the conversation half.
+    //
+    // It has to travel because `processChatwootDelivery` arms the REDIRECT_FOLLOWUP ladder from
+    // `n.redirectOriginDisplayId` and not from the row: omitted, the ladder is armed with nothing
+    // and then messages and resolves whichever sibling the mirror last knew.
+    const e = normalizeChatwootEvent(rebuilt({ redirectOriginDisplayId: 991 }));
+    expect(e?.redirectOriginDisplayId).toBe(991);
+
+    // And the KEY is present even when there is no pairing, which is the statement the normalizer
+    // reads: absence means "this instance does not speak about pairings" and would leave a body
+    // unable to say anything at all about the episode.
+    const none = normalizeChatwootEvent(
+      rebuilt({ redirectOriginDisplayId: null }),
+    );
+    expect(none?.redirectOriginDisplayId).toBeNull();
   });
 
   test("a voice note already transcribed travels with its transcription", () => {

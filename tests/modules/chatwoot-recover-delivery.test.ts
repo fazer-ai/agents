@@ -197,6 +197,7 @@ async function seedConversation(
     assigneeId?: number | null;
     lastEventAt?: Date;
     status?: string;
+    redirectOriginDisplayId?: number | null;
   } = {},
 ) {
   return suDb.conversation.create({
@@ -211,6 +212,7 @@ async function seedConversation(
       threadId: threadOf(convId),
       lastEventAt: over.lastEventAt ?? new Date(),
       contactInboxId: 71_000 + convId,
+      redirectOriginDisplayId: over.redirectOriginDisplayId ?? null,
     },
     select: { id: true },
   });
@@ -735,6 +737,41 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
 
     expect(outcome).toBe("unreachable");
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+  });
+
+  test("the redirect episode survives the rescue instead of being cleared by it", async () => {
+    // `redirect_origin_display_id` is rendered by the fork's EventDataPresenter only — the REST
+    // conversation show does not carry it (MEASURED) — so the mirror is the one source for it, and a
+    // rebuild that leaves it out does not merely fail to arm the ladder: a body that STATES no
+    // pairing is a body that CLEARS one, on a row that already knew it.
+    const convId = 8932;
+    const messageId = 9435;
+    const conv = await seedConversation(convId, {
+      redirectOriginDisplayId: 991,
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(
+          stubChatwoot({
+            page: pageWith([{ id: messageId, content: "oi" }]),
+          }),
+        ),
+      }),
+    ).toBe("recovered");
+
+    const row = await suDb.conversation.findUniqueOrThrow({
+      where: { id: conv.id },
+      select: { redirectOriginDisplayId: true },
+    });
+    expect(row.redirectOriginDisplayId).toBe(991);
   });
 
   test("a control command is never replayed", async () => {

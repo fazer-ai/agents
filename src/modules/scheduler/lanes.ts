@@ -178,6 +178,14 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // of them at once — the deploy that stranded them stranded every delivery that was in flight. They
   // are armed for `now`, so they are also the oldest rows, which is the exact shape that fills every
   // batch and starves a reminder that exists to arrive BEFORE something.
+  //
+  // THE COST OF THIS ANSWER, stated because the two kinds in this share want opposite things from
+  // it: the claim is FIFO on `run_at`, so a recovery waits behind whatever ingestion rows were armed
+  // before it — and ingestion's own tick latency explicitly does not matter (a turn drains its
+  // thread before reading), while a recovery's does. FIFO bounds it — a recovery only ever waits for
+  // work older than itself — and past `MAX_RECOVERY_AGE_MS` the recovery is discarded, which is the
+  // right answer for a different reason: a reply that late is stale whatever delayed it. Reserving
+  // capacity here would be mechanism for a backlog nobody has measured.
   DELIVERY_RECOVERY: true,
 };
 

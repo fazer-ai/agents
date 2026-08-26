@@ -261,6 +261,8 @@ async function runRecovery(params: {
         // place the sweep filed the loss it closes.
         id: true,
         contactInboxId: true,
+        // The one field the live read cannot answer (see recover-payload.ts).
+        redirectOriginDisplayId: true,
         status: true,
         assigneeType: true,
         assigneeId: true,
@@ -379,6 +381,7 @@ async function runRecovery(params: {
         // From the mirror, and only this one: the REST conversation renders no `contact_inbox`
         // (MEASURED), and the pairing does not move anyway.
         contactInboxId: conv.contactInboxId,
+        redirectOriginDisplayId: conv.redirectOriginDisplayId,
         status: state.status,
         assigneeType: state.assigneeType,
         assigneeId: state.assigneeId,

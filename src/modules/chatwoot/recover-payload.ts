@@ -51,6 +51,18 @@ export interface RecoveryConversation {
   assigneeType: string | null;
   assigneeId: number | null;
   assigneeName: string | null;
+  // The WhatsApp thread this widget conversation is the redirect of, or null.
+  //
+  // The ONE field here the live account cannot answer, MEASURED both ways: the fork renders
+  // `redirect_origin_display_id` from `EventDataPresenter` only — the webhook and cable path — and
+  // the REST conversation show does not carry it at all. So the mirror is authoritative for this and
+  // for nothing else, which is the opposite of every other field in this struct.
+  //
+  // It has to travel because its consumer reads the EVENT and not the row: `processChatwootDelivery`
+  // arms the REDIRECT_FOLLOWUP ladder with `n.redirectOriginDisplayId`, and a body that omits it
+  // arms the ladder with nothing — which then messages and resolves whichever sibling the mirror
+  // last knew, or none.
+  redirectOriginDisplayId: number | null;
 }
 
 export interface RecoveryMessage {
@@ -113,6 +125,14 @@ export function buildRecoveryPayload(params: {
       id: c.chatwootConversationId,
       ...(params.inboxId !== null ? { inbox_id: params.inboxId } : {}),
       status: c.status,
+      // ALWAYS emitted, nil included, because PRESENCE of this key is the statement the normalizer
+      // reads: the fork always ships it and a Chatwoot without the feature never does, so absence
+      // means "this instance does not speak about pairings" and would leave the ladder unarmed.
+      //
+      // Sending the mirror's own value can only re-affirm what the row already holds. A null lands
+      // as a CLEAR only where the row already knew a pairing (`redirectOriginAnswers` requires
+      // `redirectOriginKnown`), and there the value being cleared is the one this read came from.
+      redirect_origin_display_id: c.redirectOriginDisplayId,
       // The customer's own clock, on the field `normalizeChatwootEvent` reads it from. On the wire
       // this is the CONVERSATION's activity time, and for a `message_created` that is exactly this
       // message's — which is why the message's own timestamp is the right source for it.

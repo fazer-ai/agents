@@ -50,7 +50,7 @@ export function RegisterMcpClientModal({
   const [firstParty, setFirstParty] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const refusal = useFieldRefusal(MCP_CLIENT_FIELDS);
+  const refusal = useFieldRefusal(MCP_CLIENT_FIELDS, modal.isOpen);
 
   const editingId = modal.payload?.clientId;
 

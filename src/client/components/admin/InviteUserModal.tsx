@@ -45,7 +45,7 @@ export function InviteUserModal({
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const refusal = useFieldRefusal(INVITE_FIELDS);
+  const refusal = useFieldRefusal(INVITE_FIELDS, modal.isOpen);
 
   // A SUPER_ADMIN must target a tenant; block submit until one is chosen.
   const noTarget = isSuperAdmin && !tenantId;

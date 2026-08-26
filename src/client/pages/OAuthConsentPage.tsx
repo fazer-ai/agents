@@ -5,7 +5,6 @@ import { useNavigate, useSearchParams } from "react-router";
 import { Badge, Button, Logo, Skeleton } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
-import { apiErrorMessage } from "@/client/lib/apiError";
 
 // Standalone OAuth 2.1 consent screen (outside the app shell, like Login). /authorize parks a
 // pending authorization and redirects here with ?req=<id>; we fetch its details, the user approves
@@ -79,6 +78,13 @@ export function OAuthConsentPage() {
   }, [req, navigate]);
 
   const decide = async (decision: Decision) => {
+    // The server's own sentence is NOT shown here, and this is the one screen on the sweep where that
+    // is the right answer. Measured: this endpoint's only two refusals are a bare
+    // `UnauthorizedError()` and a bare `NotFoundError()` — "Unauthorized" and "Not found" — and the
+    // second is the ordinary case (the pending authorization expired, was consumed in another tab, or
+    // the CSRF token no longer matches). Showing "Not found" would cost the only recovery action the
+    // person has and give nothing back. The better fix is on the server, where that 404 could carry a
+    // key saying what expired; until it does, the client's words are the more specific ones.
     const generic = t(
       "oauth.consent.genericError",
       "Something went wrong. Reconnect from the application to try again.",
@@ -92,16 +98,13 @@ export function OAuthConsentPage() {
         .consent({ req })
         .post({ decision, csrfToken: details.csrfToken });
       if (apiError || !data?.redirect) {
-        // The server's own words when it sent any: the consent request can be refused for a reason
-        // the person can act on (the request expired, the client was revoked), and this page has no
-        // input to attach it to — so the sentence IS the whole answer. Issue #329.
-        setError(apiErrorMessage(apiError) ?? generic);
+        setError(generic);
         return;
       }
       // Hand control back to the MCP client (full navigation to its redirect URI).
       window.location.assign(data.redirect);
-    } catch (e) {
-      setError(apiErrorMessage(e) ?? generic);
+    } catch {
+      setError(generic);
     } finally {
       inFlightRef.current = false;
       setSubmitting(null);

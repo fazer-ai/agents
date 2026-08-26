@@ -93,7 +93,6 @@ export function DocumentsPanel() {
   const [naming, setNaming] = useState<Starter | null>(null);
   const [draftName, setDraftName] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
-  const refusal = useFieldRefusal(STARTER_FIELDS);
   const draftRef = useRef(draftName);
   draftRef.current = draftName;
   const [deleting, setDeleting] = useState(false);
@@ -123,6 +122,7 @@ export function DocumentsPanel() {
   const editModal = useModalController<{ template: DocumentTemplate }>();
   const companyModal = useModalController();
   const starterModal = useModalController();
+  const refusal = useFieldRefusal(STARTER_FIELDS, starterModal.isOpen);
   const refsModal = useModalController<{ name: string }>();
   const deleteModal = useModalController<{ id: string; name: string }>();
   const confirm = useModalController<ConfirmPayload>();

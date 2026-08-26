@@ -846,7 +846,7 @@ function AgentEditor() {
   const [cloneName, setCloneName] = useState("");
   // The clone dialog is its own form: one input, and the route refuses a name already taken by name.
   // Separate from the editor's holder, because the two are on screen together.
-  const cloneRefusal = useFieldRefusal(CLONE_FIELDS);
+  const cloneRefusal = useFieldRefusal(CLONE_FIELDS, cloneModal.isOpen);
   const cloneRef = useRef("");
   cloneRef.current = cloneName;
   // The suggested name prefilled on open; the modal only warns about discarding

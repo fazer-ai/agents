@@ -40,7 +40,18 @@ export interface FieldRefusal {
   field: string | null;
 }
 
-export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
+// `onScreen` is whether the FORM is showing, and it defaults to "as long as this component is".
+//
+// For a page those are the same question. For a modal they are not, and the difference is silence:
+// `useModalController` keeps the wrapper mounted when the dialog closes, so a save still in flight
+// answers into a component that is alive and a form that is gone. The mark would be written, the
+// caller told "it is on the control", and nothing on screen would say anything at all. Pass
+// `modal.isOpen` from every dialog. Measured on McpEditModal: dismiss mid-save and the banner stayed
+// empty for a refusal the server had named.
+export function useFieldRefusal(
+  rendered: readonly string[],
+  onScreen = true,
+): FieldRefusal {
   const [held, setHeld] = useState<{
     field: string;
     message: string;
@@ -56,6 +67,10 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
       mounted.current = false;
     };
   }, []);
+  // Kept in step on every render rather than read from the closure: the answer is needed AFTER the
+  // await, and a closed-over boolean is the value from the render the request started in.
+  const showing = useRef(onScreen);
+  showing.current = onScreen;
 
   // The declared list is a literal at almost every call site (`COMPANY_FIELDS`), but a caller that
   // builds it inline would otherwise hand `capture` a new identity on every render.
@@ -71,7 +86,7 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
       current: Record<string, unknown>,
     ) => {
       const placed = placeRefusal(readRefusal(e), fields, fallback, {
-        mounted: mounted.current,
+        mounted: mounted.current && showing.current,
         sent,
         current,
       });

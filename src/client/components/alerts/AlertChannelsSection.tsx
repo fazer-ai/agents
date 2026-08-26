@@ -63,7 +63,7 @@ function AlertChannelModal({
   const [secretRef, setSecretRef] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState("");
-  const refusal = useFieldRefusal(ALERT_FIELDS);
+  const refusal = useFieldRefusal(ALERT_FIELDS, modal.isOpen);
   const [loading, setLoading] = useState(false);
 
   useOnModalOpen(modal, () => {

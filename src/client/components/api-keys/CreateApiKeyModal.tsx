@@ -31,7 +31,7 @@ export function CreateApiKeyModal({
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const refusal = useFieldRefusal(API_KEY_FIELDS);
+  const refusal = useFieldRefusal(API_KEY_FIELDS, modal.isOpen);
   // The CURRENT value, readable from inside a request that started before it: the operator can type
   // while the create is out, and a refusal about a name they have already replaced belongs in the
   // banner rather than under a box that no longer holds it.

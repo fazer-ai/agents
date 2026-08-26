@@ -223,6 +223,33 @@ export function uncleanedHolders(src: string): string[] {
   return holders.filter((h) => !new RegExp(`\\b${h}\\.clear\\(`).test(resets));
 }
 
+// A holder in a file with a dialog that never says whether its form is on SCREEN.
+//
+// The other half of the same confusion: `useModalController` keeps the wrapper mounted when the
+// dialog closes, so the hook's mounted check answers `true` for a form the operator has already
+// dismissed. `capture` then reports "it is on the control", the caller keeps the banner quiet, and a
+// refusal the server named reaches nobody. Silence is the one outcome this mechanism must never
+// produce, so the dialog's own `isOpen` is the second argument.
+export function holdersBlindToTheDialog(src: string): string[] {
+  if (!/useOnModalOpen\(|\.open\(/.test(src)) return [];
+  return [...src.matchAll(/const (\w+) = useFieldRefusal\(([^;]*?)\);/g)]
+    .filter((m) => topLevelArgCount(m[2] as string) < 2)
+    .map((m) => m[1] as string);
+}
+
+// How many arguments a call carries, counting only the commas that belong to IT.
+function topLevelArgCount(args: string): number {
+  if (!args.trim()) return 0;
+  let depth = 0;
+  let n = 1;
+  for (const c of args) {
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    else if (c === "," && depth === 0) n++;
+  }
+  return n;
+}
+
 export function silentDeclarations(src: string): string[] {
   const read = readFields(src);
   return declaredFields(src).filter((name) => !read.has(name));
@@ -440,6 +467,37 @@ describe("a form that writes holds the refusal it gets", () => {
       uncleaned,
       "the component outlives the dialog, so a mark from the last session is still held when it reopens: clear the holder in useOnModalOpen",
     ).toEqual([]);
+  });
+
+  test("a holder in a file with a dialog says whether its form is showing", () => {
+    const blind = sources(ROOT)
+      .flatMap((f) =>
+        holdersBlindToTheDialog(readFileSync(f, "utf8")).map(
+          (h) => `${f.slice(`${ROOT}/`.length)} :: ${h}`,
+        ),
+      )
+      .filter((h) => !(h in HELD_BY_THE_PAGE));
+    expect(
+      blind,
+      "the wrapper stays mounted when the dialog closes, so a save answering after that places a mark nobody renders: pass the dialog's isOpen",
+    ).toEqual([]);
+  });
+
+  test("the predicate flags a holder that takes only its field list", () => {
+    const src = `
+      const refusal = useFieldRefusal(FIELDS);
+      useOnModalOpen(modal, () => {});
+    `;
+    expect(holdersBlindToTheDialog(src)).toEqual(["refusal"]);
+  });
+
+  test("a holder given the dialog's own state is not flagged", () => {
+    // The argument can be an expression: one form reached from two dialogs answers for both.
+    const src = `
+      const refusal = useFieldRefusal(FIELDS, a.isOpen || b.isOpen);
+      useOnModalOpen(modal, () => {});
+    `;
+    expect(holdersBlindToTheDialog(src)).toEqual([]);
   });
 
   test("the predicate flags a modal holder that is never cleared", () => {

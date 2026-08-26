@@ -156,9 +156,12 @@ export function useKnowledgeManager(opts: {
   // Create/edit KB fields
   // Three forms here, three holders: the base (create and edit share their inputs and are never open
   // together), the "add text" document, and the document editor.
-  const baseRefusal = useFieldRefusal(BASE_FIELDS);
-  const addDocRefusal = useFieldRefusal(DOC_FIELDS);
-  const editDocRefusal = useFieldRefusal(DOC_FIELDS);
+  const baseRefusal = useFieldRefusal(
+    BASE_FIELDS,
+    createModal.isOpen || editModal.isOpen,
+  );
+  const addDocRefusal = useFieldRefusal(DOC_FIELDS, addContentModal.isOpen);
+  const editDocRefusal = useFieldRefusal(DOC_FIELDS, docEditModal.isOpen);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [chunkSize, setChunkSize] = useState(1000);

@@ -48,9 +48,11 @@ export type RefusalPlacement =
 // a placement can be held and never read, and they are all this: the question is not "is this input
 // one the form declared" but "will the operator actually read this".
 export interface FormAtAnswer {
-  // False once the form is gone. A modal body can unmount while its own save is in flight — this
-  // card's own comments record that the operator does exactly that — and a mark written to state
-  // nobody renders is silence, with `capture` having already reported "it is on the control".
+  // False once the form is GONE FROM THE SCREEN, which is not the same as the component being
+  // unmounted. A modal body can close while its own save is in flight — this card's own comments
+  // record that the operator does exactly that — and the wrapper around it stays mounted, so the
+  // hook takes the dialog's own `isOpen` as well. A mark written to state nobody renders is silence,
+  // with `capture` having already reported "it is on the control".
   mounted: boolean;
   // What the request carried. A refusal is about the value that was SENT.
   sent: Record<string, unknown>;

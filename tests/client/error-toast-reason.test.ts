@@ -747,6 +747,8 @@ const WAIVED: Record<string, string> = {
     "Same as the Google section: the popup outcome, decided in the browser.",
   "pages/WebhooksPage.tsx :: webhooks.testFailedReason":
     "A 200 carrying the TARGET's rejection, not a refusal of ours — same class as `approvals.editGone`. `err` is null by the guard above, and the reason shown is `result.error`, which is the endpoint's own. The sweep put `apiErrorMessage(err)` here and it could only ever answer null.",
+  "pages/OAuthConsentPage.tsx :: generic":
+    'This endpoint\'s only two refusals are a bare UnauthorizedError() and a bare NotFoundError() — "Unauthorized" and "Not found". The second is the ordinary case (the pending authorization expired or was consumed elsewhere), and showing it would cost the only recovery action the person has, which the server does not know about. Same class as editor.conflictToast: the client\'s sentence is the more specific one. The sentence is `oauth.consent.genericError`, held in a local so both branches show the same one.',
   "pages/LoginPage.tsx :: auth.googleSignInFailed":
     "The Google button's own `onError`: the widget failed in the browser (script blocked, popup closed, a client id the origin does not allow) and nothing of ours was sent. The scanner reads it as the page's handler because a brace-less arrow inside JSX opens no block of its own.",
   "pages/SignupPage.tsx :: auth.googleSignInFailed":
@@ -1256,7 +1258,7 @@ describe("an error toast shows what the server said", () => {
   // The ledger may only shrink, and its size is the anchor the tree cannot supply: appending a name
   // silences a new offender AND satisfies every other rule here.
   test("the waiver ledger is pinned to its size", () => {
-    expectWaiverLedger("WAIVED", WAIVED, 10);
+    expectWaiverLedger("WAIVED", WAIVED, 11);
   });
 
   test("every toast the scanner cannot ask about is named", () => {

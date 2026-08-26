@@ -242,9 +242,9 @@ export function ChannelsPage() {
   const [adminToken, setAdminToken] = useState("");
   // Three writes, three forms, three holders: the connect modal, the token modal, and the account
   // picker each save on their own, and a refusal about one must not mark another's input.
-  const connectRefusal = useFieldRefusal(CONNECT_FIELDS);
-  const tokenRefusal = useFieldRefusal(TOKEN_FIELDS);
-  const accountsRefusal = useFieldRefusal(ACCOUNTS_FIELDS);
+  const connectRefusal = useFieldRefusal(CONNECT_FIELDS, connectModal.isOpen);
+  const tokenRefusal = useFieldRefusal(TOKEN_FIELDS, tokenModal.isOpen);
+  const accountsRefusal = useFieldRefusal(ACCOUNTS_FIELDS, manageModal.isOpen);
   const connectRef = useRef({ baseUrl, adminToken });
   connectRef.current = { baseUrl, adminToken };
   const [connecting, setConnecting] = useState(false);

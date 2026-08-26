@@ -137,10 +137,17 @@ export function refuseUnstorable(
     // and `message` is only the untranslated fallback, so interpolating an English sentence into a
     // pt-BR template would answer in two languages at once. What stays English either way is the
     // field name, which names the request field to change the way a schema path does.
-    throw new AppError(bad.message, 400, "errors.unstorableText", {
-      field: bad.what,
-      codePoints: bad.codePoints.join(" "),
-    });
+    throw new AppError(
+      bad.message,
+      400,
+      "errors.unstorableText",
+      { field: bad.what, codePoints: bad.codePoints.join(" ") },
+      // On the WIRE as well, and not only interpolated into the sentence. The params are what the
+      // locale template reads; `field` is what a console keys on to put the sentence under the box
+      // holding the character (#231). Without it every one of these answered `{ error }` alone and
+      // the four titles/texts this helper guards could not be placed anywhere.
+      bad.what,
+    );
   }
 }
 

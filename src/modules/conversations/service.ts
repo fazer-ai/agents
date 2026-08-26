@@ -8,7 +8,7 @@ import {
   NotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
-import { assertUsableCount } from "@/lib/query-param";
+import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadAppointmentContext } from "@/modules/appointments/context";
 import {
@@ -65,7 +65,7 @@ export interface ListConversationsFilter {
   limit?: number;
   // Keyset cursor: the id of the last item from the previous page. The next page continues from just
   // past it in the (lastEventAt desc, id desc) ordering.
-  cursor?: string;
+  cursor?: bigint;
   // Free-text search: matches the contact display name or the Chatwoot conversation id (see
   // buildConversationsWhere). No message-body search — the mirror holds metadata only.
   q?: string;
@@ -104,19 +104,16 @@ function clampLimit(limit: number | undefined): number {
   return limit === undefined ? DEFAULT_LIMIT : Math.min(limit, MAX_LIMIT);
 }
 
+// A status outside the closed set is REFUSED, never dropped: dropping it answers a request for one
+// status with every status, which is the widening this whole surface exists to stop. `""` counts as
+// a value the caller sent, exactly as it does for the ids. The check lives here rather than in the
+// controller because MCP and internal callers reach this function without a query string, the same
+// split `assertUsableCount` follows.
 function normalizeStatus(status: string | undefined): string | undefined {
-  return status && (CONVERSATION_STATUSES as readonly string[]).includes(status)
-    ? status
-    : undefined;
-}
-
-function parseCursor(cursor: string | undefined): bigint | null {
-  if (!cursor) return null;
-  try {
-    return BigInt(cursor);
-  } catch {
-    return null;
-  }
+  if (status === undefined) return undefined;
+  if (!(CONVERSATION_STATUSES as readonly string[]).includes(status))
+    badQueryParam("status");
+  return status;
 }
 
 // Combine the status filter with an optional free-text search. Search matches the contact display
@@ -150,7 +147,7 @@ export async function listConversations(
 ): Promise<ConversationsPage> {
   const take = clampLimit(filter.limit);
   const status = normalizeStatus(filter.status);
-  const cursorId = parseCursor(filter.cursor);
+  const cursorId = filter.cursor ?? null;
   const where = buildConversationsWhere(status, filter.q);
   const rows = await runScopedOn(base, ctx, (db) =>
     db.conversation.findMany({

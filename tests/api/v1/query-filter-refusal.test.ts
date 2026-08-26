@@ -121,6 +121,19 @@ const REFUSED: Array<[path: string, param: string]> = [
   ["/v1/metrics/kpis?since=2026-02-30T00:00:00Z", "since"],
   ["/v1/metrics/timeseries?since=08/26/2026 10:00", "since"],
   ["/v1/metrics/costs?since=2026-01-01", "since"],
+  // Round 1 of review found these four: the same question in four places the first sweep missed.
+  // A cursor that restarts the page and a status that widens to every status are the two failures
+  // this endpoint's siblings already refuse; `tenantId=` empty is the fleet-wide listing answering
+  // a request narrowed to one tenant.
+  ["/v1/conversations?cursor=abc", "cursor"],
+  ["/v1/conversations?cursor=", "cursor"],
+  ["/v1/conversations?cursor=9223372036854775808", "cursor"],
+  // `status` and `maxRows=0` are refused one layer down, by the services that own the vocabulary
+  // and the range — and those services are stubbed here, so asserting them over HTTP would be
+  // vacuous. service-count-range.test.ts drives both.
+  ["/v1/logs/export?source=all&maxRows=abc", "maxRows"],
+  ["/v1/metrics/timeseries?tz=Not/AZone", "tz"],
+  ["/v1/metrics/timeseries?tz=", "tz"],
 ];
 
 describe("a query filter the server cannot use is a 400 that names it", () => {
@@ -133,6 +146,52 @@ describe("a query filter the server cannot use is a 400 that names it", () => {
       expect(body.field).toBe(param);
     });
   }
+});
+
+describe("the admin tenant filter, which only a SUPER_ADMIN can send", () => {
+  // `resolveScope` reads `tenantId` ONLY for a SUPER_ADMIN; for every other role the parameter is
+  // ignored on purpose (a tenant admin must never be able to aim a read at another tenant). So the
+  // refusal lives in that branch, and asserting it as a TENANT_ADMIN would pass with the parse
+  // deleted.
+  const su: MockUserEntity = {
+    ...mockUser,
+    role: "SUPER_ADMIN",
+    tenantId: null,
+  };
+
+  async function asSuperAdmin(path: string): Promise<Response> {
+    mockFindUnique.mockImplementation(() => Promise.resolve(su));
+    const minted = (await (
+      await new Elysia()
+        .use(authPlugin)
+        .post("/mint", async ({ setAuthCookie }) => ({
+          token: await setAuthCookie(su),
+        }))
+        .handle(new Request("http://localhost/mint", { method: "POST" }))
+    ).json()) as { token: string };
+    try {
+      return await app.handle(
+        new BunReq(`http://localhost/api${path}`, {
+          headers: { cookie: `fazerai_auth_token=${minted.token}` },
+        }),
+      );
+    } finally {
+      mockFindUnique.mockImplementation(() => Promise.resolve(admin));
+    }
+  }
+
+  for (const value of ["abc", "", "9223372036854775808"]) {
+    test(`tenantId=${value} → 400`, async () => {
+      const res = await asSuperAdmin(`/admin/users?tenantId=${value}`);
+      expect(`tenantId=${value}: ${res.status}`).toBe(`tenantId=${value}: 400`);
+      expect(((await res.json()) as { field?: string }).field).toBe("tenantId");
+    });
+  }
+
+  test("a usable tenant id still scopes the listing", async () => {
+    const res = await asSuperAdmin("/admin/users?tenantId=7");
+    expect(res.status).toBe(200);
+  });
 });
 
 describe("a filter the server CAN use still reaches the service", () => {

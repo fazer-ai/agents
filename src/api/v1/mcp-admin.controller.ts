@@ -1,5 +1,6 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
+import { parseQueryId } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
 import { instanceIdentity } from "@/lib/instance";
@@ -151,10 +152,7 @@ export const mcpAdminController = new Elysia({
     async ({ query }) => ({
       instance: instanceIdentity,
       tokens: await listActiveTokens({
-        tenantId:
-          query.tenantId != null && query.tenantId !== ""
-            ? BigInt(query.tenantId)
-            : null,
+        tenantId: parseQueryId(query.tenantId, "tenantId") ?? null,
       }),
     }),
     {

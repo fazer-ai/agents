@@ -2,7 +2,11 @@ import { Elysia, t } from "elysia";
 import { getUserById, verifyPassword } from "@/api/features/auth/auth.service";
 import { createInvite } from "@/api/features/invitations/invitation.service";
 import { doc, errors } from "@/api/lib/openapi";
-import { parseQueryCount, parseQueryInstant } from "@/api/lib/query-filters";
+import {
+  parseQueryCount,
+  parseQueryId,
+  parseQueryInstant,
+} from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
 import { AppError, ForbiddenError } from "@/lib/errors";
@@ -263,7 +267,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
       const page = await listConversations(ctxOrThrow(tenantContext), {
         status: query.status,
         limit: parseQueryCount(query.limit, "limit"),
-        cursor: query.cursor,
+        cursor: parseQueryId(query.cursor, "cursor"),
         q: query.q,
       });
       return {

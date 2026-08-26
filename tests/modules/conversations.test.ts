@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import type { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import { listConversations } from "@/modules/conversations/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -165,7 +166,12 @@ describe.skipIf(!dbUp)("listConversations", () => {
     expect(first.nextCursor).toBe(first.items[0]?.id ?? null);
     const second = await listConversations(
       ctx(tenantA),
-      { limit: 1, cursor: first.nextCursor ?? undefined },
+      // `nextCursor` crosses the wire as a string; the caller parses it back, which is what the
+      // REST route now does with `parseQueryId` instead of handing the raw value to the service.
+      {
+        limit: 1,
+        cursor: first.nextCursor ? BigInt(first.nextCursor) : undefined,
+      },
       appDb,
     );
     expect(second.items).toHaveLength(1);
@@ -183,13 +189,19 @@ describe.skipIf(!dbUp)("listConversations", () => {
     expect(open.items[0]?.status).toBe("open");
   });
 
-  test("an unknown status is ignored (returns all)", async () => {
-    const all = await listConversations(
-      ctx(tenantA),
-      { status: "bogus" },
-      appDb,
-    );
-    expect(all.items).toHaveLength(2);
+  test("an unknown status is REFUSED, not ignored", async () => {
+    // Changed in issue #372. The old contract dropped it and returned every conversation, which
+    // answers a request narrowed to one status with the tenant's whole list — and the caller has
+    // no way to tell that from a status that genuinely matches everything.
+    let err: unknown = null;
+    try {
+      await listConversations(ctx(tenantA), { status: "bogus" }, appDb);
+    } catch (e) {
+      err = e;
+    }
+    expect(err === null ? "accepted" : "refused").toBe("refused");
+    expect((err as AppError).statusCode).toBe(400);
+    expect((err as AppError).field).toBe("status");
   });
 
   test("tenant isolation: A never sees B's conversations", async () => {

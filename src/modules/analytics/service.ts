@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { NON_AGENT_TURN_NODES, type UsageSource } from "@/graph/usage";
+import { badQueryParam } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { classifyOutcome } from "@/modules/conversations/resolution-origin";
 
@@ -74,14 +75,20 @@ export interface MetricsFilter {
 }
 
 // Validate an IANA timezone before interpolating it into `AT TIME ZONE` (an unknown zone makes
-// Postgres throw). Unknown/missing → "UTC". `Intl.DateTimeFormat` throws RangeError for bad zones.
+// Postgres throw). `Intl.DateTimeFormat` throws RangeError for bad zones.
+//
+// A zone the caller SENT and this cannot read is refused, not replaced (issue #372). The fallback
+// this replaces is the worst shape of the family: `tz=America/Sao_Paolo` (one typo) silently
+// bucketed the dashboard in UTC, so a 21h local turn showed up on tomorrow — the exact bug the
+// zone parameter exists to prevent, with numbers that look right. ABSENT still means UTC, because
+// absent is not a value; `""` is one, and it is what a cleared select submits.
 export function normalizeTimeZone(tz: string | undefined): string {
-  if (!tz) return "UTC";
+  if (tz === undefined) return "UTC";
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: tz });
     return tz;
   } catch {
-    return "UTC";
+    badQueryParam("tz");
   }
 }
 

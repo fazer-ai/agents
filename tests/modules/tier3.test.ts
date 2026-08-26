@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import type { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
   getKpis,
@@ -1361,11 +1362,27 @@ describe.skipIf(!dbUp)(
 );
 
 describe("normalizeTimeZone", () => {
-  test("keeps a valid IANA zone, falls back to UTC otherwise", () => {
+  test("keeps a valid IANA zone; ABSENT means UTC", () => {
     expect(normalizeTimeZone("America/Sao_Paulo")).toBe("America/Sao_Paulo");
     expect(normalizeTimeZone(undefined)).toBe("UTC");
-    expect(normalizeTimeZone("")).toBe("UTC");
-    expect(normalizeTimeZone("Not/AZone")).toBe("UTC");
+  });
+
+  test("a zone the caller SENT and this cannot read is refused, not replaced", () => {
+    // Changed in issue #372. The old contract answered "UTC" here, which meant one typo
+    // (`America/Sao_Paolo`) bucketed the dashboard a day off with no way for the caller to tell.
+    for (const bad of ["", "Not/AZone", "America/Sao_Paolo", "UTC+3"]) {
+      let err: unknown = null;
+      try {
+        normalizeTimeZone(bad);
+      } catch (e) {
+        err = e;
+      }
+      expect(`${bad}: ${err === null ? "accepted" : "refused"}`).toBe(
+        `${bad}: refused`,
+      );
+      expect((err as AppError).statusCode).toBe(400);
+      expect((err as AppError).field).toBe("tz");
+    }
   });
 });
 

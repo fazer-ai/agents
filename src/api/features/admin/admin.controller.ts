@@ -10,7 +10,7 @@ import {
 import { type AuthUser, authPlugin } from "@/api/lib/auth";
 import { translate } from "@/api/lib/i18n";
 import { doc, errors } from "@/api/lib/openapi";
-import { parseQueryCount } from "@/api/lib/query-filters";
+import { parseQueryCount, parseQueryId } from "@/api/lib/query-filters";
 import config from "@/config";
 import { UnauthorizedError } from "@/lib/errors";
 import {
@@ -37,7 +37,12 @@ function resolveScope(
   paramTenantId: string | undefined,
 ): bigint | null {
   if (user.role === "SUPER_ADMIN") {
-    return paramTenantId ? BigInt(paramTenantId) : null;
+    // NOTE: `=== undefined`, not truthiness. `?tenantId=` is what the Users-tab filter submits when
+    // its select is cleared, and reading it as "no filter" answers a request narrowed to one tenant
+    // with the WHOLE FLEET. And `parseQueryId`, never `BigInt`: that spelling accepts an id past
+    // 2^63-1 and lets Postgres answer the malformed value with a 500.
+    if (paramTenantId === undefined) return null;
+    return parseQueryId(paramTenantId, "tenantId") ?? null;
   }
   return user.tenantId;
 }

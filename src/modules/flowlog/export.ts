@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { assertUsableCount } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   buildLogWhere,
@@ -98,8 +99,9 @@ export async function exportExecutionLogs(
   base: PrismaClient = basePrisma,
   now: Date = new Date(),
 ): Promise<ExportLogsResult> {
+  assertUsableCount(opts.maxRows, "maxRows");
   const cap = Math.min(
-    Math.max(opts.maxRows ?? MAX_LOG_EXPORT_ROWS, 1),
+    opts.maxRows ?? MAX_LOG_EXPORT_ROWS,
     MAX_LOG_EXPORT_ROWS,
   );
   const where = buildLogWhere(opts);

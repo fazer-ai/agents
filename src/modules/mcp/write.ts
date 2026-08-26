@@ -625,7 +625,7 @@ export async function agentSettingsSet(
     // stored bag, so re-sending a legacy value untouched is not a refusal.
     assertSettingsTextSizes(patch, current.settings);
     assertSettingsDebugWindow(patch, current.settings);
-    assertSettingsModelFallback(patch, current.settings);
+    assertSettingsModelFallback(patch, current.settings, "merge");
     const nextBag = mergeBehaviorSettings(
       (current.settings ?? {}) as Record<string, unknown>,
       patch,

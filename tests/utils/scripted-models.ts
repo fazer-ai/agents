@@ -560,3 +560,62 @@ export class SendDocumentThenReplyModel {
     };
   }
 }
+
+// Asks for the same tool N times, then answers. The point is the tool LOOP: `toolsCondition` routes
+// a tool call back through the agent node, so a model that calls a tool twice makes that node run
+// three times, which is the only way to observe what the node does on a round that is not the first.
+export class ToolLoopModel extends BaseChatModel {
+  calls = 0;
+  constructor(
+    private readonly toolName: string,
+    private readonly rounds: number,
+    private readonly reply = "pronto",
+  ) {
+    super({});
+  }
+  _llmType() {
+    return "fake-tool-loop";
+  }
+  override bindTools(_tools: BindToolsInput[]) {
+    return this;
+  }
+  async _generate(): Promise<ChatResult> {
+    this.calls += 1;
+    if (this.calls <= this.rounds) {
+      const message = new AIMessage({
+        content: "",
+        tool_calls: [
+          { name: this.toolName, args: {}, id: `call-${this.calls}` },
+        ],
+      });
+      return { generations: [{ text: "", message }] };
+    }
+    return {
+      generations: [{ text: this.reply, message: new AIMessage(this.reply) }],
+    };
+  }
+}
+
+// A provider that always fails the same way, after a measurable wait. `FailingModel` fails
+// instantly, which cannot separate "the primary was asked again" from "the turn cost nothing" — and
+// the cost is the whole subject when the failure being modelled is a timeout.
+export class SlowFailingModel extends BaseChatModel {
+  calls = 0;
+  constructor(
+    private readonly error: unknown,
+    private readonly delayMs: number,
+  ) {
+    super({});
+  }
+  _llmType() {
+    return "fake-slow-failing";
+  }
+  override bindTools(_tools: BindToolsInput[]) {
+    return this;
+  }
+  async _generate(): Promise<ChatResult> {
+    this.calls += 1;
+    await new Promise((r) => setTimeout(r, this.delayMs));
+    throw this.error;
+  }
+}

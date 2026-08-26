@@ -2,17 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
-import { buildAgentGraph } from "@/graph/graph";
+import { buildAgentGraph, lastAssistantText } from "@/graph/graph";
 import {
   isFallbackWorthy,
   PRIMARY_MAX_RETRIES,
   PRIMARY_TIMEOUT_MS,
 } from "@/graph/model-fallback";
 import { runModelCall } from "@/graph/model-limit";
-import { assertSettingsModelFallback } from "@/modules/agents/service";
+import {
+  assertSettingsModelFallback,
+  type SettingsWriteMode,
+} from "@/modules/agents/service";
 import {
   EmptyThenReplyModel,
   FailingModel,
+  SlowFailingModel,
+  ToolLoopModel,
   ToolRecordingModel,
 } from "../utils/scripted-models";
 
@@ -402,6 +407,183 @@ describe("the fallback is asked the same question the primary was", () => {
   });
 });
 
+// ONCE THE FALLBACK HAS THE TURN, IT KEEPS IT.
+//
+// A tool call routes back through the agent node, so a turn with tools runs that node once per
+// round. Without this, each round asks the dead primary again before failing over again, and the
+// cost is the failure's own latency multiplied by the rounds — which is the budget this whole change
+// exists to remove, reappearing inside a single turn.
+//
+// Measured on the three-round turn below (two tool calls, then the answer), with the primary failing
+// in 200ms: 3 primary calls, 3 "the fallback took the turn" warns for ONE failover, 609.3ms. After:
+// 1, 1, 204.8ms. At the 45s ceiling instead of 200ms those 3 calls are 135s of dead waiting.
+describe("the fallback keeps the turn once it has it", () => {
+  const peek = () =>
+    new DynamicStructuredTool({
+      name: "peek",
+      description: "look something up",
+      schema: z.object({}),
+      func: async () => "ok",
+    });
+
+  test("a dead primary is asked ONCE, however many tool rounds the turn takes", async () => {
+    const primary = new SlowFailingModel(
+      Object.assign(new Error("overloaded"), { status: 503 }),
+      0,
+    );
+    const fallback = new ToolLoopModel("peek", 2);
+    const took: string[] = [];
+    const graph = buildAgentGraph({
+      model: primary,
+      systemPrompt: "s",
+      tools: [peek()],
+      primary: PRIMARY,
+      fallback: {
+        model: fallback,
+        provider: "anthropic",
+        modelId: "claude-haiku-4-5",
+      },
+      onModelFallback: ({ reason }) => took.push(reason),
+    });
+    const out = await graph.invoke({ messages: [new HumanMessage("oi")] });
+
+    // The node ran three times: two tool rounds and the answer.
+    expect(fallback.calls).toBe(3);
+    // ...and the primary was asked on the first of them only.
+    expect(primary.calls).toBe(1);
+    // One failover, so one line on the trail. Three would read as three separate outages.
+    expect(took).toEqual(["HTTP 503"]);
+    expect(lastAssistantText(out.messages)).toBe("pronto");
+  });
+
+  // The cost, not just the count, because the count alone cannot say whether it mattered. The
+  // primary is given a measurable failure here for the same reason production's worst case is a
+  // hang: an instant failure makes every version of this code look identical.
+  test("and the turn does not pay that failure once per round", async () => {
+    const primary = new SlowFailingModel(
+      Object.assign(new Error("overloaded"), { status: 503 }),
+      120,
+    );
+    const fallback = new ToolLoopModel("peek", 2);
+    const graph = buildAgentGraph({
+      model: primary,
+      systemPrompt: "s",
+      tools: [peek()],
+      primary: PRIMARY,
+      fallback: {
+        model: fallback,
+        provider: "anthropic",
+        modelId: "claude-haiku-4-5",
+      },
+    });
+    const started = performance.now();
+    await graph.invoke({ messages: [new HumanMessage("oi")] });
+    const elapsed = performance.now() - started;
+    // One 120ms failure, not three. The bound is deliberately loose (a third round would put this
+    // past 360ms); what it asserts is that the failure is paid ONCE.
+    expect(elapsed).toBeLessThan(240);
+    expect(primary.calls).toBe(1);
+  });
+
+  // The demotion is not free: it costs the primary the rest of the turn. So it may only happen when
+  // the primary actually failed, and a healthy one has to keep every round.
+  test("a healthy primary keeps all of them", async () => {
+    const primary = new ToolLoopModel("peek", 2);
+    const fallback = new ToolLoopModel("peek", 2, "nunca");
+    const took: string[] = [];
+    const graph = buildAgentGraph({
+      model: primary,
+      systemPrompt: "s",
+      tools: [peek()],
+      primary: PRIMARY,
+      fallback: {
+        model: fallback,
+        provider: "anthropic",
+        modelId: "claude-haiku-4-5",
+      },
+      onModelFallback: ({ reason }) => took.push(reason),
+    });
+    const out = await graph.invoke({ messages: [new HumanMessage("oi")] });
+    expect(primary.calls).toBe(3);
+    expect(fallback.calls).toBe(0);
+    expect(took).toEqual([]);
+    expect(lastAssistantText(out.messages)).toBe("pronto");
+  });
+
+  // And the demotion dies with the turn. The graph is built inside the turn and invoked once, which
+  // is what makes a closure the right scope; a NEW graph over the same models starts at the primary
+  // again, the way the next turn on that conversation will.
+  test("the next turn starts at the primary again", async () => {
+    const err = Object.assign(new Error("overloaded"), { status: 503 });
+    const build = (primary: SlowFailingModel, fallback: ToolLoopModel) =>
+      buildAgentGraph({
+        model: primary,
+        systemPrompt: "s",
+        tools: [peek()],
+        primary: PRIMARY,
+        fallback: {
+          model: fallback,
+          provider: "anthropic",
+          modelId: "claude-haiku-4-5",
+        },
+      });
+    const first = new SlowFailingModel(err, 0);
+    await build(first, new ToolLoopModel("peek", 1)).invoke({
+      messages: [new HumanMessage("oi")],
+    });
+    expect(first.calls).toBe(1);
+    const second = new SlowFailingModel(err, 0);
+    await build(second, new ToolLoopModel("peek", 1)).invoke({
+      messages: [new HumanMessage("de novo")],
+    });
+    expect(second.calls).toBe(1);
+  });
+
+  // The last resort has no resort of its own: once it owns the turn, its failure is the turn's, and
+  // it is reported as ITS failure rather than as a second failover nobody caused.
+  test("when the fallback itself dies on a later round, it is named as the one that died", async () => {
+    const primary = new SlowFailingModel(
+      Object.assign(new Error("overloaded"), { status: 503 }),
+      0,
+    );
+    // Answers the first round with a tool call, then dies on the round after it.
+    let round = 0;
+    const fallback = new ToolLoopModel("peek", 1);
+    const original = fallback._generate.bind(fallback);
+    fallback._generate = async () => {
+      round += 1;
+      if (round === 2) {
+        throw Object.assign(new Error("gone"), { status: 500 });
+      }
+      return original();
+    };
+    const took: string[] = [];
+    const died: string[] = [];
+    const graph = buildAgentGraph({
+      model: primary,
+      systemPrompt: "s",
+      tools: [peek()],
+      primary: PRIMARY,
+      fallback: {
+        model: fallback,
+        provider: "anthropic",
+        modelId: "claude-haiku-4-5",
+      },
+      onModelFallback: ({ reason }) => took.push(reason),
+      onModelFallbackFailed: ({ provider, reason }) =>
+        died.push(`${provider}:${reason}`),
+    });
+    const err = (await graph
+      .invoke({ messages: [new HumanMessage("oi")] })
+      .catch((e) => e)) as Error;
+    expect(took).toEqual(["HTTP 503"]);
+    expect(died).toEqual(["anthropic:HTTP 500"]);
+    expect(err.message).toBe("HTTP 500");
+    // The primary was NOT asked again on that round, which is the point of the demotion.
+    expect(primary.calls).toBe(1);
+  });
+});
+
 // THE WRITE BOUNDARY: A FALLBACK IS A PROVIDER AND A MODEL, OR IT IS NOTHING.
 //
 // The runtime half of this was already written and tested when review asked what happens to a bag
@@ -418,14 +600,20 @@ describe("the fallback is asked the same question the primary was", () => {
 describe("assertSettingsModelFallback", () => {
   const bag = (over: Record<string, unknown> | undefined) =>
     over === undefined ? { stt: {} } : { modelFallback: over };
-  const refuses = (next: unknown, stored: unknown): string | null => {
-    try {
-      assertSettingsModelFallback(next, stored);
-      return null;
-    } catch (e) {
-      return (e as Error).message;
-    }
-  };
+  const refusesOn =
+    (mode: SettingsWriteMode) =>
+    (next: unknown, stored: unknown): string | null => {
+      try {
+        assertSettingsModelFallback(next, stored, mode);
+        return null;
+      } catch (e) {
+        return (e as Error).message;
+      }
+    };
+  // The editor's transport, which REPLACES the settings column with the bag it was handed.
+  const refuses = refusesOn("replace");
+  // The MCP patch, which merges the block one level deep before storing it.
+  const merged = refusesOn("merge");
 
   test("a whole fallback is stored", () => {
     expect(
@@ -465,15 +653,27 @@ describe("assertSettingsModelFallback", () => {
   // stored block already names a provider.
   test("a patch naming only the model is whole against a stored provider", () => {
     expect(
-      refuses(bag({ model: "other" }), {
+      merged(bag({ model: "other" }), {
         modelFallback: { provider: "openai", model: "gpt-5.4-mini" },
       }),
     ).toBeNull();
   });
 
   test("a patch naming only the provider is still half a fallback", () => {
-    expect(refuses(bag({ provider: "openai" }), {})).toContain(
+    expect(merged(bag({ provider: "openai" }), {})).toContain(
       "model is missing",
+    );
+  });
+
+  // THE TWO TRANSPORTS DISAGREE, AND THE MODE IS WHY THIS TAKES AN ARGUMENT. The same body is a
+  // complete statement to the MCP patch, which merges it, and a half-named row to REST, which
+  // replaces the column with it. Asking the merge question on the replace path is how a bag that
+  // stores no provider at all passes by borrowing one it is about to discard.
+  test("the same body that merges cleanly is refused when it REPLACES", () => {
+    const stored = { modelFallback: { provider: "openai", model: "gpt" } };
+    expect(merged(bag({ model: "other" }), stored)).toBeNull();
+    expect(refuses(bag({ model: "other" }), stored)).toContain(
+      "provider is missing",
     );
   });
 
@@ -481,7 +681,7 @@ describe("assertSettingsModelFallback", () => {
   // patch reaches for when it means to turn the fallback off.
   test("clearing the provider while the model stays is refused", () => {
     expect(
-      refuses(bag({ provider: null }), {
+      merged(bag({ provider: null }), {
         modelFallback: { provider: "openai", model: "gpt-5.4-mini" },
       }),
     ).toContain("provider is missing");
@@ -503,5 +703,33 @@ describe("assertSettingsModelFallback", () => {
       refuses(bag({ provider: "openai", model: "gpt-5.4-mini" }), legacy),
     ).toBeNull();
     expect(refuses(bag({ provider: null, model: null }), legacy)).toBeNull();
+  });
+
+  // BY VALUE, not by which half is filled. Swapping the provider of a broken pair for a different
+  // provider edits the pair and leaves it just as broken; a "same shape" exemption waves that
+  // through, which is a write this rule exists to refuse arriving under the exemption for writes
+  // that change nothing.
+  test("editing a stored half-block into a different half-block is refused", () => {
+    const legacy = { modelFallback: { provider: "openai", model: null } };
+    expect(
+      refuses(bag({ provider: "anthropic", model: null }), legacy),
+    ).toContain("model is missing");
+  });
+
+  // And the same rule on the other half: the model changes, the provider is still absent.
+  test("editing the named half of a half-block is refused too", () => {
+    const legacy = { modelFallback: { provider: null, model: "gpt" } };
+    expect(
+      refuses(bag({ provider: null, model: "gpt-5.4-mini" }), legacy),
+    ).toContain("provider is missing");
+  });
+
+  // Whitespace is not an edit either: the editor trims before it stores, so a blank added around a
+  // stored value has to land on the SAME side of this rule as the value it decorates.
+  test("whitespace around an unchanged value is still unchanged", () => {
+    const legacy = { modelFallback: { provider: "openai", model: null } };
+    expect(
+      refuses(bag({ provider: " openai ", model: "  " }), legacy),
+    ).toBeNull();
   });
 });

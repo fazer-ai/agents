@@ -150,6 +150,22 @@ export function buildAgentGraph({
       : fallback?.model;
   const max = maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
 
+  // ONCE THE FALLBACK HAS THE TURN, IT KEEPS IT.
+  //
+  // A tool call routes back through this node, and without this the node asks the primary again on
+  // every round. Measured on a three-round turn (two tool calls, then the answer) with the primary
+  // failing: the primary was asked 3 times, the trail got 3 "fallback took the turn" warns for one
+  // failover, and at 200ms per failure the turn cost 609.3ms of which ~600 was the primary. At the
+  // ceiling instead of 200ms that is 45s PER ROUND — worse than the 77-99s this whole change exists
+  // to remove, which is what makes it a defeat of the goal rather than an inefficiency.
+  //
+  // A closure and not a state channel, and the lifetime is the argument: `buildModelAndGraph` builds
+  // this graph inside the turn and invokes it once (webhook, nudge and playground alike), so this
+  // variable IS "this invocation". Putting it in graph state would persist it through the
+  // checkpointer and demote the primary for every later turn on the same conversation, which is the
+  // opposite of what a transient outage should cost.
+  let fallbackHasTheTurn = false;
+
   const agentNode = async (state: typeof MessagesAnnotation.State) => {
     // Exactly one system message, and it must be first: prepend the configured prompt and drop any
     // system message that leaked into the history (e.g. a proactive nudge persisted as a
@@ -179,42 +195,61 @@ export function buildAgentGraph({
     }
 
     const messages = [new SystemMessage(prompt), ...history];
+    // The SAME question, to the other provider, when there is one. Same messages and same prompt:
+    // this is not a second, cheaper attempt, it is the attempt the customer is waiting for.
+    const second =
+      fallback && fallbackLlm
+        ? {
+            labels: { provider: fallback.provider, model: fallback.modelId },
+            run: () =>
+              (hardLimit ? fallback.model : fallbackLlm).invoke(messages, {
+                // Metadata rather than callbacks, and measured: metadata MERGES with the turn's and
+                // reaches the handlers it already had, while `callbacks` replaces them — which
+                // would have billed this call to the primary's name or dropped the Langfuse trace.
+                metadata: { [USAGE_MODEL_METADATA_KEY]: fallback.modelId },
+              }),
+          }
+        : null;
+
+    // Already demoted this invocation: the fallback IS the model now, so it gets the
+    // empty-completion retry under its own name, and a failure of its own is reported as that
+    // rather than as a second failover the operator never caused.
+    if (second && fallbackHasTheTurn) {
+      try {
+        return {
+          messages: [
+            await runModelCall(second.run, {
+              primary: second.labels,
+              onRetry: onModelRetry,
+            }),
+          ],
+        };
+      } catch (err) {
+        onModelFallbackFailed?.({
+          ...second.labels,
+          reason: err instanceof Error ? err.message : "provider error",
+        });
+        throw err;
+      }
+    }
+
     const response = await runModelCall(
       () => (hardLimit ? model : llm).invoke(messages),
       {
         primary,
         onRetry: onModelRetry,
-        fallback:
-          fallback && fallbackLlm
-            ? {
-                labels: {
-                  provider: fallback.provider,
-                  model: fallback.modelId,
-                },
-                // The SAME question, to the other provider. Same messages and same prompt: this is
-                // not a second, cheaper attempt, it is the attempt the customer is waiting for.
-                run: () =>
-                  (hardLimit ? fallback.model : fallbackLlm).invoke(messages, {
-                    // Metadata rather than callbacks, and measured: metadata MERGES with the turn's
-                    // and reaches the handlers it already had, while `callbacks` replaces them —
-                    // which would have billed this call to the primary's name or dropped the
-                    // Langfuse trace.
-                    metadata: { [USAGE_MODEL_METADATA_KEY]: fallback.modelId },
-                  }),
-                onFallback: ({ reason }) =>
-                  onModelFallback?.({
-                    provider: fallback.provider,
-                    model: fallback.modelId,
-                    reason,
-                  }),
-                onFallbackFailed: ({ reason }) =>
-                  onModelFallbackFailed?.({
-                    provider: fallback.provider,
-                    model: fallback.modelId,
-                    reason,
-                  }),
-              }
-            : undefined,
+        fallback: second
+          ? {
+              labels: second.labels,
+              run: second.run,
+              onFallback: ({ reason }) => {
+                fallbackHasTheTurn = true;
+                onModelFallback?.({ ...second.labels, reason });
+              },
+              onFallbackFailed: ({ reason }) =>
+                onModelFallbackFailed?.({ ...second.labels, reason }),
+            }
+          : undefined,
       },
     );
     return { messages: [response] };

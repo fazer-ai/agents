@@ -286,7 +286,6 @@ model ChatwootInstance {
   @@unique([tenantId, accountId])
   // Global (no tenantId): one Chatwoot account belongs to a single tenant across the whole fleet.
   @@unique([serverKey, accountId])
-  @@index([tenantId])
   @@index([deploymentId])
   @@map("chatwoot_instances")
 }
@@ -317,7 +316,6 @@ model ChatwootAgentBot {
   agent    Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, chatwootInstanceId, agentId])
-  @@index([tenantId])
   @@map("chatwoot_agent_bots")
 }
 
@@ -397,7 +395,6 @@ model Inbox {
   conversations Conversation[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootInboxId])
-  @@index([tenantId])
   @@map("inboxes")
 }
 
@@ -448,7 +445,6 @@ model Contact {
   conversations Conversation[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootContactId])
-  @@index([tenantId])
   @@map("contacts")
 }
 
@@ -617,7 +613,6 @@ model Conversation {
   contact  Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, chatwootInstanceId, chatwootConversationId])
-  @@index([tenantId])
   @@index([threadId])
   @@map("conversations")
 }
@@ -671,7 +666,6 @@ model AgentThread {
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, chatwootInstanceId, contactInboxId])
-  @@index([tenantId])
   @@map("agent_threads")
 }
 
@@ -984,7 +978,6 @@ model VaultEntry {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, name, kind])
-  @@index([tenantId])
   @@map("vault_entries")
 }
 
@@ -1035,7 +1028,6 @@ model ToolDefinition {
   toolSelections AgentToolSelection[]
 
   @@unique([tenantId, name])
-  @@index([tenantId])
   @@map("tool_definitions")
 }
 
@@ -1055,7 +1047,6 @@ model McpServerConnection {
   toolSelections AgentToolSelection[]
 
   @@unique([tenantId, name])
-  @@index([tenantId])
   @@map("mcp_server_connections")
 }
 
@@ -1088,7 +1079,6 @@ model IntegrationInstance {
   externalRefs      IntegrationExternalRef[]
 
   @@unique([tenantId, catalogType, name])
-  @@index([tenantId])
   @@map("integration_instances")
 }
 
@@ -1143,7 +1133,6 @@ model IntegrationExternalRef {
   integrationInstance IntegrationInstance @relation(fields: [integrationInstanceId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, externalId])
-  @@index([tenantId])
   @@index([threadId])
   @@map("integration_external_refs")
 }
@@ -1169,7 +1158,6 @@ model InboundDelivery {
   integrationInstance IntegrationInstance @relation(fields: [integrationInstanceId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, integrationInstanceId, dedupeKey])
-  @@index([tenantId])
   @@map("inbound_deliveries")
 }
 
@@ -1186,7 +1174,6 @@ model ConversionEvent {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, threadId, source])
-  @@index([tenantId])
   @@map("conversion_events")
 }
 
@@ -1226,7 +1213,6 @@ model OutboundWebhookDelivery {
   tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 
-  @@index([tenantId])
   @@index([status, nextAttemptAt])
   // The operator's page (issue #305): keyset by id desc, filtered by status for the dead-letter
   // view. The two above are the WORKER's; see the migration for the measurement.
@@ -1265,7 +1251,6 @@ model SchedulerJob {
 
   @@unique([tenantId, kind, dedupeKey])
   @@index([status, runAt])
-  @@index([tenantId])
   @@map("scheduler_jobs")
 }
 
@@ -1305,7 +1290,6 @@ model DocumentTemplate {
 
   @@unique([tenantId, slug])
   @@unique([tenantId, name])
-  @@index([tenantId])
   @@map("document_templates")
 }
 
@@ -1347,7 +1331,6 @@ model IssuedDocument {
   template DocumentTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, idempotencyKey])
-  @@index([tenantId])
   @@index([tenantId, threadId])
   @@index([tenantId, templateId])
   @@map("issued_documents")
@@ -1384,7 +1367,6 @@ model PromptVariantAssignment {
   experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, threadId, experimentId])
-  @@index([tenantId])
   @@map("prompt_variant_assignments")
 }
 

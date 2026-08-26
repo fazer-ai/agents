@@ -27,6 +27,7 @@ import {
   enqueueJob,
   retireJobsByDedupeKey,
 } from "@/modules/scheduler/service";
+import { clearFlowLog } from "@/tests/utils/flowlog";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
@@ -817,7 +818,7 @@ describe.skipIf(!dbUp)("debounce", () => {
         data: { settings: before.settings as object },
       });
       await suDb.chatwootWebhookDelivery.delete({ where: { id: capped.id } });
-      await suDb.executionLog.deleteMany({ where: { tenantId } });
+      await clearFlowLog(suDb, { tenantId });
     }
   });
 
@@ -1081,9 +1082,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       "consumed_late",
     );
 
-    await suDb.executionLog.deleteMany({
-      where: { conversationId: await convRowId(convId) },
-    });
+    await clearFlowLog(suDb, { conversationId: await convRowId(convId) });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
   });
 
@@ -1136,9 +1135,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       "consumed_late",
     );
 
-    await suDb.executionLog.deleteMany({
-      where: { conversationId: await convRowId(convId) },
-    });
+    await clearFlowLog(suDb, { conversationId: await convRowId(convId) });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
   });
 
@@ -1369,9 +1366,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       "answered_late",
     );
 
-    await suDb.executionLog.deleteMany({
-      where: { conversationId: await convRowId(convId) },
-    });
+    await clearFlowLog(suDb, { conversationId: await convRowId(convId) });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
   });
 

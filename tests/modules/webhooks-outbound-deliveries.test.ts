@@ -10,6 +10,7 @@ import {
   requeueWebhookDelivery,
 } from "@/modules/webhooks/outbound/deliveries";
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
+import { clearFlowLog } from "@/tests/utils/flowlog";
 
 // ── THE DELIVERY LEDGER AS A SUPPORTED SURFACE (issue #305) ──
 // Integration, real DB, real RLS: every call goes through `runScopedOn` exactly as the controller
@@ -96,7 +97,10 @@ async function webhookLines(expected: number, waitMs = 3000) {
   for (;;) {
     // flowlog-scope: tenant-wide — the subject is HOW MANY lines a requeue writes, so scoping the
     // read to a turn would answer a different question and stay green with a second row present.
-    // The tenant is this file's own and the rows are cleared before each case that reads them.
+    // Scoping it to the requeued delivery would immunise this one assertion and leave every other
+    // clear site in the tree exposed, which is why issue #375 was answered at the clear instead: the
+    // tenant is this file's own, and `clearFlowLog` settles the scheduled writes before deleting, so
+    // the table is empty of the previous case's line AND of the one it had not written yet.
     const rows = await suDb.executionLog.findMany({
       where: { tenantId, stage: "webhook" },
       orderBy: { id: "asc" },
@@ -387,9 +391,7 @@ describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
       // that is about to be dead, or requeue it while writing 7 into the line meant to preserve
       // the count the delivery died at. `FOR UPDATE` makes it wait and then read the truth.
       await clearDeliveries();
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`,
-      );
+      await clearFlowLog(suDb, { tenantId });
       const id = await seed({ status: "SENDING", attempts: 7 });
       const holder = suDb.$transaction(
         async (tx) => {
@@ -474,9 +476,7 @@ describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
 
     test("the requeue writes one info line that keeps the count the row died at", async () => {
       await clearDeliveries();
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`,
-      );
+      await clearFlowLog(suDb, { tenantId });
       const id = await seed({ status: "DEAD", attempts: 8 });
       await requeueWebhookDelivery(ctx(), id, appDb);
       const [line, ...rest] = await webhookLines(1);

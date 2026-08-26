@@ -22,6 +22,7 @@ import {
   processInboundDelivery,
   receiveInbound,
 } from "@/modules/webhooks/inbound/service";
+import { clearFlowLog } from "@/tests/utils/flowlog";
 import { withJobHandler } from "@/tests/utils/job-registry";
 
 // ── A UNIT OF WORK THAT DIES PERMANENTLY HAS TO SAY SO (issue #356) ──
@@ -81,8 +82,10 @@ async function deadRows(expected: number, waitMs = 4000) {
     const rows = await suDb.executionLog.findMany({
       // flowlog-scope: tenant-wide — the subject is HOW MANY lines a terminal failure wrote, so a
       // reader scoped to one turn would answer a different question and stay green while a second,
-      // duplicate line existed. None of these units HAS a turn; `clearRows` empties this tenant
-      // before each case, and this file's tenant is its own.
+      // duplicate line existed. None of these units HAS a turn; this file's tenant is its own, and
+      // `clearRows` empties it before each case through `clearFlowLog`, which settles the scheduled
+      // writes first — without that the emptying misses whatever the previous case had scheduled and
+      // not yet written, and 23 cases share this tenant (issue #375).
       where: { tenantId, stage: "dead_letter" },
       orderBy: { id: "asc" },
     });
@@ -93,7 +96,7 @@ async function deadRows(expected: number, waitMs = 4000) {
 }
 
 async function clearRows() {
-  await suDb.$executeRaw`DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`;
+  await clearFlowLog(suDb, { tenantId });
   await suDb.$executeRaw`DELETE FROM alert_deliveries WHERE tenant_id = ${tenantId}`;
 }
 

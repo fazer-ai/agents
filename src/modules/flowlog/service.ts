@@ -9,6 +9,7 @@ import {
 } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { dispatchAlertsForEvent } from "./alerts";
+import { trackFlowWrite } from "./scheduled";
 import type { FlowLevel, FlowSource, FlowStage, FlowStatus } from "./stages";
 
 // Execution-flow log emit core. Verbose, per-stage operational telemetry (one row per stage per
@@ -102,7 +103,7 @@ function sysCtx(tenantId: bigint): TenantContext {
 // Fire-and-forget: schedules the row write (and, for warn/error on real traffic, alert dispatch)
 // without awaiting. Returns immediately; failures are swallowed (logged at warn).
 export function emitFlowEvent(ctx: FlowContext, ev: FlowEvent): void {
-  void writeFlowEvent(ctx, ev);
+  trackFlowWrite(writeFlowEvent(ctx, ev));
 }
 
 // THE SAME WRITE, AWAITED, and it exists for a caller whose line is the only record there will be.

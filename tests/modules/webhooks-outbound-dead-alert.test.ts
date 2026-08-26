@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { createAlertChannel } from "@/modules/flowlog/channels";
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
+import { clearFlowLog } from "@/tests/utils/flowlog";
 
 // ── A DEAD DELIVERY HAS TO SAY SO WHERE THE OPERATOR READS (issue #325) ──
 // Integration, real DB, real RLS: the claim runs cross-tenant under asSuperAdmin and the outcome
@@ -81,7 +82,9 @@ async function webhookRows(expected: number, waitMs = 3000) {
   for (;;) {
     // flowlog-scope: tenant-wide — the subject is HOW MANY lines the tick wrote, so scoping the
     // read to a turn would answer a different question and pass while a second row existed. The
-    // tenant is this file's own and `clearRows` empties it before each case.
+    // tenant is this file's own and `clearRows` empties it before each case — through `clearFlowLog`,
+    // which settles the scheduled writes first, or the emptying would not include the line the
+    // previous case had scheduled and not yet written (issue #375).
     const rows = await suDb.executionLog.findMany({
       where: { tenantId, stage: "webhook" },
       orderBy: { id: "asc" },
@@ -106,9 +109,7 @@ async function alertRows(expected: number, waitMs = 3000) {
 }
 
 async function clearRows() {
-  await suDb.$executeRawUnsafe(
-    `DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`,
-  );
+  await clearFlowLog(suDb, { tenantId });
   await suDb.$executeRawUnsafe(
     `DELETE FROM alert_deliveries WHERE tenant_id = ${tenantId}`,
   );

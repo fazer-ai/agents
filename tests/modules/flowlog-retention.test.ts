@@ -5,6 +5,7 @@ import config from "@/config";
 import { registerFlowlogRetentionHandler } from "@/modules/flowlog/retention";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler, type JobResult } from "@/modules/scheduler/worker";
+import { clearFlowLog } from "@/tests/utils/flowlog";
 
 // FLOWLOG_SWEEP retention handler: deletes execution_logs (+ terminal alert_deliveries) older than
 // the retention window, RLS-scoped to the job's tenant, and reschedules +24h (no attempt consumed).
@@ -45,9 +46,7 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
 
   afterAll(async () => {
     if (tenantId) {
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`,
-      );
+      await clearFlowLog(suDb, { tenantId });
       await suDb.$executeRawUnsafe(
         `DELETE FROM tenants WHERE id = ${tenantId}`,
       );

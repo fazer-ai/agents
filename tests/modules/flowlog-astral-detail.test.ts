@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
+import { clearFlowLog } from "@/tests/utils/flowlog";
 
 // THE EFFECT THE ISSUE NAMES: the stage line is not there.
 //
@@ -76,7 +77,7 @@ describe.skipIf(!dbUp)("execution_logs.detail survives bad characters", () => {
   });
   afterAll(async () => {
     if (!dbUp) return;
-    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await clearFlowLog(suDb, { tenantId });
     await suDb.tenant.delete({ where: { id: tenantId } });
     await suDb.$disconnect();
     await appDb.$disconnect();

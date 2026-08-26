@@ -8,6 +8,7 @@ import {
   serializeLogItems,
 } from "@/modules/flowlog/export";
 import type { ExecutionLogItem } from "@/modules/flowlog/read";
+import { clearFlowLog } from "@/tests/utils/flowlog";
 
 // ── pure serialization (no DB) ──
 
@@ -155,9 +156,7 @@ describe.skipIf(!dbUp)("exportExecutionLogs", () => {
   afterAll(async () => {
     for (const tid of [tenantA, tenantB]) {
       if (!tid) continue;
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM execution_logs WHERE tenant_id = ${tid}`,
-      );
+      await clearFlowLog(suDb, { tenantId: tid });
       await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tid}`);
     }
     await suDb.$disconnect();

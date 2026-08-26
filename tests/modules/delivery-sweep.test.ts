@@ -19,6 +19,7 @@ import {
   processChatwootDelivery,
   recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
+import { clearFlowLog } from "@/tests/utils/flowlog";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A Chatwoot delivery stranded by a process death, and the sweep that says so (issue #228).
@@ -428,7 +429,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect((await statusOf(rowId)).status).toBe("DEAD");
     expect(await deliveryLines(conv.id)).toHaveLength(1);
 
-    await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
+    await clearFlowLog(suDb, { conversationId: conv.id });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
@@ -472,7 +473,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       expect((await statusOf(id)).status).toBe("PROCESSING");
     }
 
-    await suDb.executionLog.deleteMany({ where: { conversationId: conv.id } });
+    await clearFlowLog(suDb, { conversationId: conv.id });
     await suDb.chatwootWebhookDelivery.deleteMany({
       where: { id: { in: [...live, starved] } },
     });
@@ -549,7 +550,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     const lines = await unscopedDeliveryLines();
     expect(lines.length).toBeGreaterThan(0);
 
-    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await clearFlowLog(suDb, { tenantId });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
@@ -879,7 +880,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.deleteMany({
       where: { id: { in: [own.id, sibling.id, reportedSibling.id] } },
     });
-    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await clearFlowLog(suDb, { tenantId });
     await suDb.schedulerJob.deleteMany({ where: { tenantId } });
   });
 
@@ -972,7 +973,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.deleteMany({
       where: { id: { in: [own.id, original.id] } },
     });
-    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await clearFlowLog(suDb, { tenantId });
   });
 
   test("a SUPERSEDED direct turn still settles: the graph ran over the message", async () => {
@@ -1089,7 +1090,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.deleteMany({
       where: { id: { in: [own.id, sibling.id] } },
     });
-    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await clearFlowLog(suDb, { tenantId });
     await suDb.schedulerJob.deleteMany({ where: { tenantId } });
   });
 
@@ -1188,7 +1189,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.deleteMany({
       where: { conversationId: convId },
     });
-    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await clearFlowLog(suDb, { tenantId });
   });
 
   test("OUR bot on a non-pending conversation is not another bot", async () => {
@@ -1225,7 +1226,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.deleteMany({
       where: { conversationId: convId },
     });
-    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await clearFlowLog(suDb, { tenantId });
   });
 
   test("a gate advances the watermark before it settles the row", async () => {
@@ -1334,7 +1335,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.alertDelivery.deleteMany({ where: { channelId: channel.id } });
     await suDb.alertChannel.delete({ where: { id: channel.id } });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
-    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await clearFlowLog(suDb, { tenantId });
   });
 
   test("a redelivery of a LEGACY row fills in what that row could not record", async () => {
@@ -1384,7 +1385,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(again.inboundMessageId).toBe(messageId);
 
     await suDb.chatwootWebhookDelivery.delete({ where: { id: legacy.id } });
-    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await clearFlowLog(suDb, { tenantId });
   });
 
   test("a GATE that consumes the message settles the row too", async () => {
@@ -1441,7 +1442,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.deleteMany({
       where: { id: { in: [sibling.id, reported.id] } },
     });
-    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await clearFlowLog(suDb, { tenantId });
   });
 
   test("stamps the claim, so the sweep dates the ATTEMPT and not the receipt", async () => {

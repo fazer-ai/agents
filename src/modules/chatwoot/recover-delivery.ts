@@ -5,6 +5,7 @@ import { chatwootThreadId } from "@/graph/checkpointer";
 import { isTurnInFlight } from "@/graph/inflight";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { agentBotChatwootId, loadChatwootClient } from "./instance";
@@ -73,6 +74,41 @@ import { processChatwootDelivery } from "./webhook";
 // retried for the life of the install.
 export const MAX_RECOVERY_ATTEMPTS = 3;
 
+// How old a stranded delivery may be and still be worth answering automatically, measured from when
+// the ledger row was RECEIVED — the customer's own clock, and the only one that matters here.
+//
+// SIX HOURS, and like the attempt cap it is policy rather than measurement. What is not arbitrary is
+// that a ceiling exists, and it answers two different questions with one rule:
+//
+//   - a reply is a RECOVERY only while the customer is still plausibly waiting. Hours later it is
+//     not a late answer, it is a stranger reopening a conversation that moved on, and the operator's
+//     DEAD worklist is the better place for it.
+//   - the delivery path replies FREE-FORM, and deliberately applies no WhatsApp service-window check
+//     because a reactive event has just arrived — which is true for a live delivery and is exactly
+//     what a stale recovery breaks. Outside the 24h window an official provider rejects the send,
+//     the path catches it, and the row is marked PROCESSED with the customer still unanswered. A
+//     ceiling well inside any plausible window is what keeps that unreachable, rather than a second
+//     copy of `proactiveSendMode` living here.
+//
+// What it does NOT cover, said plainly: an agent that configures `serviceWindow.windowHours` BELOW
+// this ceiling. That install can still produce a recovery outside its own window.
+export const MAX_RECOVERY_AGE_MS = 6 * 60 * 60 * 1000;
+
+// Conversations with a recovery running IN THIS PROCESS, so a second one defers instead of starting
+// a turn beside the first.
+//
+// The row CAS serializes recoveries of one ROW, and that is not the same fence: a conversation whose
+// process death stranded two messages has two DEAD rows, and the scheduler drains its lane
+// concurrently, so both are claimed in the same tick. `isTurnInFlight` cannot answer for them
+// either — a turn marks itself deep inside `runAgentTurn`, several awaits after this check, so both
+// recoveries read false and both go on to run one.
+//
+// Checked and added with NO AWAIT BETWEEN THE TWO, which is what makes it a claim rather than one
+// more read-then-act: JavaScript runs that pair to completion, so of two recoveries resuming from
+// the same row read, the first to resume owns the conversation and the second sees it taken.
+// Process-local, the same invariant the seven other in-flight callers already run under.
+const recovering = new Set<string>();
+
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
@@ -100,6 +136,9 @@ export interface RecoverStrandedDeliveryParams {
   deliveryRowId: bigint;
   base?: PrismaClient;
   deps?: RuntimeDeps;
+  // Injectable clock, for the age ceiling. A test that has to make a row genuinely six hours old is
+  // a test that seeds a timestamp and hopes; this makes the boundary askable directly.
+  now?: Date;
 }
 
 export async function recoverStrandedDelivery(
@@ -111,9 +150,13 @@ export async function recoverStrandedDelivery(
       where: { id: params.deliveryRowId },
       select: {
         id: true,
+        // The id an operator reads, and the one the sweep's loss line named. Carried so the closing
+        // line below can be tied to that one.
+        deliveryId: true,
         chatwootInstanceId: true,
         status: true,
         attempts: true,
+        receivedAt: true,
         conversationId: true,
         inboundMessageId: true,
       },
@@ -130,20 +173,55 @@ export async function recoverStrandedDelivery(
   if (!isRecoverableStrand(row)) return "unrecoverable";
   if (row.attempts >= MAX_RECOVERY_ATTEMPTS) return "unrecoverable";
 
+  // Too late to be a recovery. Asked before any network, on the row's own receipt.
+  const age = (params.now ?? new Date()).getTime() - row.receivedAt.getTime();
+  if (age > MAX_RECOVERY_AGE_MS) return "unrecoverable";
+
   const instanceId = row.chatwootInstanceId;
   const conversationId = row.conversationId;
   const messageId = row.inboundMessageId;
+  const threadId = chatwootThreadId(
+    params.tenantId,
+    instanceId,
+    conversationId,
+  );
 
-  // Asked BEFORE the claim, and about the conversation rather than the row: two deliveries for one
-  // conversation are two rows, and answering one while a turn runs on the other is what the fence
-  // exists to stop.
-  if (
-    isTurnInFlight(
-      chatwootThreadId(params.tenantId, instanceId, conversationId),
-    )
-  ) {
-    return "deferred";
+  // Both fences are about the CONVERSATION rather than the row, and for one reason: two deliveries
+  // for one conversation are two rows, so the row CAS says nothing about them. The first covers a
+  // turn already running; the second covers the recovery of the OTHER row, which the scheduler
+  // claims in the very same tick.
+  if (isTurnInFlight(threadId) || recovering.has(threadId)) return "deferred";
+  recovering.add(threadId);
+  try {
+    return await runRecovery({
+      ...params,
+      base,
+      row,
+      instanceId,
+      conversationId,
+      messageId,
+    });
+  } finally {
+    recovering.delete(threadId);
   }
+}
+
+interface LoadedRow {
+  id: bigint;
+  deliveryId: string;
+  attempts: number;
+}
+
+async function runRecovery(params: {
+  tenantId: bigint;
+  base: PrismaClient;
+  deps?: RuntimeDeps;
+  row: LoadedRow;
+  instanceId: bigint;
+  conversationId: number;
+  messageId: number;
+}): Promise<RecoveryOutcome> {
+  const { base, row, instanceId, conversationId, messageId } = params;
 
   const conv = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.conversation.findUnique({
@@ -155,6 +233,9 @@ export async function recoverStrandedDelivery(
         },
       },
       select: {
+        // The mirror's own row id, for filing the closing line against the conversation — the same
+        // place the sweep filed the loss it closes.
+        id: true,
         contactInboxId: true,
         status: true,
         assigneeType: true,
@@ -240,6 +321,8 @@ export async function recoverStrandedDelivery(
         content: typeof message.content === "string" ? message.content : null,
         messageType: message.message_type,
         private: message.private === true,
+        createdAt:
+          typeof message.created_at === "number" ? message.created_at : null,
         contentAttributes: isRecord(message.content_attributes)
           ? message.content_attributes
           : null,
@@ -267,7 +350,48 @@ export async function recoverStrandedDelivery(
   });
   // "skipped" means the claim matched nothing: another recovery took the row between the read above
   // and the CAS. The winner is running it, so this pass has nothing left to do and nothing to retry.
-  return outcome === "processed" ? "recovered" : "superseded";
+  if (outcome !== "processed") return "superseded";
+
+  // THE LINE THAT CLOSES THE LOSS, and it has to be written HERE rather than left to
+  // `retireCoveredDeliveries`. That function writes its correction only for rows it moves out of
+  // `DEAD` itself, and this row left `DEAD` at the claim above — so by the time the turn settles it,
+  // the row reads `PROCESSING` and takes the ordinary branch, which writes nothing. Without this the
+  // row simply leaves the worklist and an operator is left holding a page about a customer nobody
+  // can find any more, which is the exact failure the sweep's correction exists to prevent.
+  //
+  // "recovered" rather than "answered" or "consumed", because that is what this place knows. The
+  // delivery path decides which of those happened, and with coalescing on it has not happened yet —
+  // the reply is the flush's, minutes from now. Reporting an answer here would be the same class of
+  // lie the settlement vocabulary was split to avoid.
+  //
+  // `warn`, matching the correction it stands in for, and it does not page the channel the loss
+  // paged: a channel's `minLevel` defaults to `error`, so this is read on the Logs page. That gap is
+  // the existing correction's too, and the reason is written where that one is.
+  await writeFlowEvent(
+    {
+      tenantId: params.tenantId,
+      turnId: crypto.randomUUID(),
+      source: "inbox",
+      conversationId: conv.id,
+      agentId: conv.inbox?.agentId ?? null,
+      base,
+    },
+    {
+      stage: "delivery",
+      level: "warn",
+      status: "ok",
+      detail: {
+        outcome: "recovered",
+        deliveryEvent: "message_created",
+        // The three the sweep's own loss line carries, so the two can be read as one story, plus
+        // the delivery id its log line named.
+        deliveryId: row.deliveryId,
+        messageId,
+        conversationId,
+      },
+    },
+  );
+  return "recovered";
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

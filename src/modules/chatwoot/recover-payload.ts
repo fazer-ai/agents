@@ -63,6 +63,17 @@ export interface RecoveryMessage {
   contentAttributes: Record<string, unknown> | null;
   sender: Record<string, unknown> | null;
   attachments: unknown[];
+  // When the CUSTOMER sent it, in Chatwoot's epoch seconds, as the REST read gives it.
+  //
+  // Load-bearing, not decoration. It becomes the body's `last_activity_at`, which is what the mirror
+  // reads to advance `lastInboundAt` — and that column anchors BOTH the follow-up "new episode" gate
+  // and the WhatsApp 24h service window. Left out, `inboundAt` falls back to `now` and a recovery
+  // moves the anchor forward by however long the row sat stranded, so a proactive send made later
+  // reads as in-window when it is not. It also orders the mirror write correctly as OLD, so a
+  // recovery cannot clobber conversation state that moved while the row was DEAD.
+  //
+  // Null when the read gave no timestamp, which restores the old fallback rather than inventing one.
+  createdAt: number | null;
 }
 
 export function buildRecoveryPayload(params: {
@@ -102,6 +113,10 @@ export function buildRecoveryPayload(params: {
       id: c.chatwootConversationId,
       ...(params.inboxId !== null ? { inbox_id: params.inboxId } : {}),
       status: c.status,
+      // The customer's own clock, on the field `normalizeChatwootEvent` reads it from. On the wire
+      // this is the CONVERSATION's activity time, and for a `message_created` that is exactly this
+      // message's — which is why the message's own timestamp is the right source for it.
+      ...(m.createdAt !== null ? { last_activity_at: m.createdAt } : {}),
       ...(c.contactInboxId !== null
         ? { contact_inbox: { id: c.contactInboxId } }
         : {}),

@@ -25,6 +25,9 @@ const INBOX = 143;
 const MESSAGE = 7054;
 const CONTACT_INBOX = 771;
 const OTHER_BOT = 10;
+// Chatwoot's epoch SECONDS, which is what both sources give: the wire's
+// `conversation.last_activity_at` and the REST message's `created_at`.
+const SENT_AT = 1_787_780_064;
 
 // Captured. Two shapes here are the wire's and not the REST read's, and both were checked against
 // the fork's own source (`Message#webhook_data`, `Contact#webhook_data`):
@@ -33,6 +36,12 @@ const OTHER_BOT = 10;
 //     reason `messageTypeOf` exists;
 //   - a contact SENDER carries no `type` key at all on the wire, while the REST read stamps
 //     `type: "contact"` on it. MEASURED live against the local fork, not inferred.
+//
+// The conversation's `last_activity_at` is here for the same reason, read at the same source
+// (`Conversations::EventDataPresenter#push_timestamps`): every real body carries it in epoch
+// seconds, equal to `timestamp`. It is what the mirror advances `lastInboundAt` from, so a rebuild
+// that omits it moves the WhatsApp window's anchor to the recovery's own clock. The REST message's
+// `created_at` is the same instant, which is why it is the right source for it.
 //
 // `conversation.meta.assignee.type` is "agent_bot" on the wire; the mirror stores the "AgentBot"
 // spelling that `assignee_type` carries, which is what the rebuild has to reproduce.
@@ -50,6 +59,7 @@ const WEBHOOK = {
     id: CONV_DISPLAY,
     inbox_id: INBOX,
     status: "pending",
+    last_activity_at: SENT_AT,
     contact_inbox: { id: CONTACT_INBOX },
     meta: {
       assignee_type: "AgentBot",
@@ -68,6 +78,7 @@ function rebuilt(
     inboxId?: number | null;
     messageType?: unknown;
     inboxName?: string | null;
+    createdAt?: number | null;
   } = {},
 ) {
   return buildRecoveryPayload({
@@ -93,6 +104,7 @@ function rebuilt(
       contentAttributes: {},
       sender: { id: 1102, name: "cliente", type: "contact" },
       attachments: [],
+      createdAt: over.createdAt === undefined ? SENT_AT : over.createdAt,
     },
   });
 }
@@ -120,6 +132,26 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
     expect(fromRecovery?.message?.sender?.name).toBe(
       fromWire?.message?.sender?.name ?? null,
     );
+  });
+
+  test("the customer's own clock travels, so the 24h window is not moved by the rescue", () => {
+    // The anchor `lastInboundAt` is advanced from, and the mirror falls back to `now` when the body
+    // says nothing. A recovery runs at least a staleness window after the message, so the fallback
+    // would push the WhatsApp window forward by however long the row sat stranded — and in the
+    // unsafe direction: a proactive send made later reads as in-window when it is not.
+    const e = normalizeChatwootEvent(rebuilt());
+    expect(e?.lastActivityAt).toBe(SENT_AT);
+    // The same number the captured body carries, which is the point: the rebuild reproduces the
+    // wire rather than approximating it.
+    expect(e?.lastActivityAt).toBe(
+      normalizeChatwootEvent(WEBHOOK)?.lastActivityAt,
+    );
+
+    // Absent restores the old fallback rather than inventing a time, which is the honest answer
+    // when the REST read gave none — the mirror then stamps `now`, as it always did.
+    expect(
+      normalizeChatwootEvent(rebuilt({ createdAt: null }))?.lastActivityAt,
+    ).toBeNull();
   });
 
   test("the one field the two sources spell differently cannot decide anything", () => {

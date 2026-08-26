@@ -10,6 +10,7 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   deliveryRecoveryDedupeKey,
+  MAX_RECOVERY_AGE_MS,
   MAX_RECOVERY_ATTEMPTS,
   recoverStrandedDelivery,
   registerDeliveryRecoveryHandler,
@@ -58,6 +59,9 @@ const suDb = su as PrismaClient;
 const CHATWOOT_INBOX_ID = 71;
 const AGENT_BOT_ID = 11;
 const REPLY = "Desculpe a demora, estou aqui!";
+// When the customer wrote, in epoch seconds. Deliberately a fixed instant well in the past of any
+// test run, so a `lastInboundAt` stamped from the recovery's own clock cannot pass for it.
+const SENT_AT = 1_780_000_000;
 
 let tenantId = 0n;
 let agentDbId = 0n;
@@ -120,24 +124,46 @@ function depsWith(
 
 // One incoming message, in the shape the REST read returns it: `message_type` as an INTEGER, which
 // is the divergence from the webhook wire that `messageTypeOf` exists for.
-function pageWith(msgs: Array<{ id: number; content: string }>) {
+function pageWith(
+  msgs: Array<{ id: number; content: string; createdAt?: number }>,
+) {
   return {
     payload: msgs.map((m) => ({
       id: m.id,
       content: m.content,
       message_type: 0,
       private: false,
+      // Epoch SECONDS, as the REST read gives it.
+      created_at: m.createdAt ?? SENT_AT,
       sender: { id: 77, name: "Cliente", type: "contact" },
       attachments: [],
     })),
   };
 }
 
+// Polled and scoped: emitFlowEvent is fire-and-forget, so an unpolled read races the write it is
+// asserting and an unscoped one answers with a neighbour's row.
+async function deliveryLines(convDbId: bigint, waitMs = 2000) {
+  const started = Date.now();
+  while (true) {
+    const rows = await suDb.executionLog.findMany({
+      where: { tenantId, stage: "delivery", conversationId: convDbId },
+      select: { level: true, source: true, detail: true },
+    });
+    if (rows.length > 0 || Date.now() - started > waitMs) return rows;
+    await Bun.sleep(25);
+  }
+}
+
 async function seedConversation(
   convId: number,
-  over: { assigneeType?: string | null; assigneeId?: number | null } = {},
+  over: {
+    assigneeType?: string | null;
+    assigneeId?: number | null;
+    lastEventAt?: Date;
+  } = {},
 ) {
-  await suDb.conversation.create({
+  return suDb.conversation.create({
     data: {
       tenantId,
       chatwootInstanceId: instanceId,
@@ -147,9 +173,10 @@ async function seedConversation(
       assigneeId: over.assigneeId ?? null,
       inboxId: inboxDbId,
       threadId: threadOf(convId),
-      lastEventAt: new Date(),
+      lastEventAt: over.lastEventAt ?? new Date(),
       contactInboxId: 71_000 + convId,
     },
+    select: { id: true },
   });
 }
 
@@ -298,6 +325,66 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // reached the conversation nothing was going to answer.
     expect(stub.sent).toEqual([[convId, REPLY]]);
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
+  });
+
+  test("the loss the sweep reported is closed by a line of its own", async () => {
+    // `retireCoveredDeliveries` writes its correction only for rows it moves out of DEAD itself, and
+    // this row left DEAD at the claim — so the turn settling it afterwards sees PROCESSING and takes
+    // the branch that writes nothing. Without a line here the row just leaves the worklist while the
+    // page an operator already received stays open, pointing at a customer they can no longer find.
+    const convId = 8916;
+    const messageId = 9416;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "voltou?" }]),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+
+    const lines = await deliveryLines(conv.id);
+    const closing = lines.filter(
+      (l) => (l.detail as Record<string, unknown>).outcome === "recovered",
+    );
+    expect(closing).toHaveLength(1);
+    const detail = closing[0]?.detail as Record<string, unknown>;
+    // The ids the sweep's loss line carries, so an operator can read the two as one story.
+    expect(detail.messageId).toBe(messageId);
+    expect(detail.conversationId).toBe(convId);
+    // `warn`, matching the correction it stands in for: it must not page the channel the loss paged.
+    expect(closing[0]?.level).toBe("warn");
+    expect(closing[0]?.source).toBe("inbox");
+  });
+
+  test("a recovery that could not run leaves no closing line", async () => {
+    // The line says the loss ENDED. Written on a pass that recovered nothing, it would close a page
+    // about a customer who is still waiting, which is worse than not writing it at all.
+    const convId = 8917;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: 9417,
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stubChatwoot({ throwOnRead: true })),
+      }),
+    ).toBe("deferred");
+    expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
   });
 
   test("the page it reads is the one that ENDS at the stranded message", async () => {
@@ -588,6 +675,186 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([]);
     expect(stolen.sent).toEqual([]);
     expect(await ledger(rowId)).toEqual({ status: "PROCESSING", attempts: 0 });
+  });
+
+  test("the customer's own clock reaches the mirror, not the rescue's", async () => {
+    // `lastInboundAt` anchors the WhatsApp 24h window and the follow-up "new episode" gate, and the
+    // mirror falls back to `now` when the body names no activity time. A recovery runs at least a
+    // staleness window after the message, so the fallback moves the anchor forward by however long
+    // the row sat stranded — in the unsafe direction, since a proactive send made later then reads
+    // as in-window when it is not.
+    const convId = 8924;
+    const messageId = 9426;
+    // The mirror as the strand left it: its last known event predates the message nobody handled,
+    // because the delivery that would have mirrored it is the one that died.
+    await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 60) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(
+          stubChatwoot({
+            page: pageWith([{ id: messageId, content: "oi" }]),
+          }),
+        ),
+      }),
+    ).toBe("recovered");
+
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { lastInboundAt: true },
+    });
+    expect(row.lastInboundAt).toEqual(new Date(SENT_AT * 1000));
+  });
+
+  test("a second strand on a conversation just recovered is not blocked by the first", async () => {
+    // The other half of the per-conversation claim: it has to be RELEASED. Held, the recovery of a
+    // conversation's second stranded message would defer for the life of the process, which is the
+    // ordinary case — a process death strands every delivery it was working, and one conversation
+    // often has more than one.
+    const convId = 8925;
+    await seedConversation(convId);
+    const first = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: 9427,
+    });
+    const second = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: 9428,
+    });
+    const stubA = stubChatwoot({
+      page: pageWith([{ id: 9427, content: "oi" }]),
+    });
+    const stubB = stubChatwoot({
+      page: pageWith([{ id: 9428, content: "alguém?" }]),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: first,
+        base: appDb,
+        deps: depsWith(stubA),
+      }),
+    ).toBe("recovered");
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: second,
+        base: appDb,
+        deps: depsWith(stubB),
+      }),
+    ).toBe("recovered");
+    expect(stubB.sent).toEqual([[convId, REPLY]]);
+  });
+
+  test("a strand too old to still be a recovery is not answered", async () => {
+    // Past the ceiling the reply stops being a late answer and becomes a stranger reopening a
+    // conversation that moved on — and on an official WhatsApp provider a free-form send outside
+    // the 24h window is rejected outright, caught by the delivery path, and the row marked PROCESSED
+    // with the customer still unanswered. The DEAD worklist is the honest place for it.
+    const convId = 8918;
+    const messageId = 9418;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub),
+      now: new Date(Date.now() + MAX_RECOVERY_AGE_MS),
+    });
+
+    expect(outcome).toBe("unrecoverable");
+    // Refused before any network: the row's own receipt answers it.
+    expect(stub.asked).toEqual([]);
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+  });
+
+  test("a strand one minute inside the ceiling still runs", async () => {
+    // The pair that makes the ceiling a boundary rather than a direction. `seedDeadDelivery` dates
+    // its row an hour back, so this clock sits just under the limit.
+    const convId = 8919;
+    const messageId = 9419;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "ainda aí?" }]),
+    });
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub),
+      now: new Date(Date.now() + MAX_RECOVERY_AGE_MS - 61 * 60 * 1000),
+    });
+
+    expect(outcome).toBe("recovered");
+    expect(stub.sent).toEqual([[convId, REPLY]]);
+  });
+
+  test("two strands on one conversation do not run two turns at once", async () => {
+    // The scheduler drains its lane concurrently, so a process death that stranded two messages of
+    // one conversation has both rows claimed in the same tick. The row CAS says nothing about that —
+    // they are different rows — and `isTurnInFlight` cannot either, because a turn marks itself deep
+    // inside runAgentTurn, several awaits after the check. Both would read false and both would run.
+    const convId = 8923;
+    await seedConversation(convId);
+    const first = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: 9424,
+    });
+    const second = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: 9425,
+    });
+    const stubA = stubChatwoot({
+      page: pageWith([{ id: 9424, content: "oi" }]),
+    });
+    const stubB = stubChatwoot({
+      page: pageWith([{ id: 9425, content: "alguém?" }]),
+    });
+
+    const [a, b] = await Promise.all([
+      recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: first,
+        base: appDb,
+        deps: depsWith(stubA),
+      }),
+      recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: second,
+        base: appDb,
+        deps: depsWith(stubB),
+      }),
+    ]);
+
+    // One ran, the other deferred — which one is a race and does not matter, only that they are not
+    // the same answer.
+    expect([a, b].filter((o) => o === "recovered")).toHaveLength(1);
+    expect([a, b].filter((o) => o === "deferred")).toHaveLength(1);
+    // And exactly one reply reached the customer.
+    expect([...stubA.sent, ...stubB.sent]).toHaveLength(1);
   });
 
   test("the attempt budget is a ceiling, not a hint", async () => {

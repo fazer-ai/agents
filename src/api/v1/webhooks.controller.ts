@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import { parseDbId, requireDbId } from "@/lib/db-id";
 import {
   AppError,
   ForbiddenError,
@@ -10,6 +11,7 @@ import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   getWebhookDelivery,
+  type ListDeliveriesOpts,
   listWebhookDeliveries,
   OUTBOUND_DELIVERY_STATUSES,
   requeueWebhookDelivery,
@@ -57,27 +59,32 @@ function badParam(param: string): never {
   );
 }
 
+// PRESENT means the caller asked for this filter. Only ABSENT means they did not, which is why
+// none of these open with `if (!s)`: `?subscriptionId=` and `?status=` are values a form submits
+// when its input is empty, and treating them as "no filter" answers a narrowed request with the
+// tenant's whole ledger. `""` is refused, exactly like `abc`.
 function parseDate(s: string | undefined, param: string): Date | undefined {
-  if (!s) return undefined;
+  if (s === undefined) return undefined;
   const d = new Date(s);
   if (Number.isNaN(d.getTime())) badParam(param);
   return d;
 }
 
-function parseBigInt(s: string | undefined, param: string): bigint | undefined {
-  if (!s) return undefined;
-  try {
-    return BigInt(s);
-  } catch {
-    badParam(param);
-  }
+// `parseDbId`, never `BigInt(s)`: BigInt is arbitrary precision, so an id past 2^63-1 parses here
+// and is refused by POSTGRES when the query binds it — a 500 for a value this route documents as a
+// 400. See lib/db-id.ts, whose own header names `BigInt(params.id)` as the spelling to avoid.
+function parseId(s: string | undefined, param: string): bigint | undefined {
+  if (s === undefined) return undefined;
+  const id = parseDbId(s);
+  if (id === null) badParam(param);
+  return id;
 }
 
 // Syntax only; the range belongs to the service, so MCP is held to the same rule.
 function parseCount(s: string | undefined, param: string): number | undefined {
-  if (!s) return undefined;
+  if (s === undefined) return undefined;
   const n = Number(s);
-  if (!Number.isInteger(n)) badParam(param);
+  if (s.trim() === "" || !Number.isInteger(n)) badParam(param);
   return n;
 }
 
@@ -85,6 +92,28 @@ function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
   if (ctx.tenantId === null) throw new TenantTargetRequiredError();
   return ctx;
+}
+
+// Exported for the drift guard: the refusal matrix is what this route promises, and a test that
+// can only reach it through auth + tenancy would be testing three things to assert one.
+export function parseDeliveryQuery(query: {
+  status?: string;
+  subscriptionId?: string;
+  event?: string;
+  since?: string;
+  until?: string;
+  limit?: string;
+  cursor?: string;
+}): ListDeliveriesOpts {
+  return {
+    status: query.status,
+    subscriptionId: parseId(query.subscriptionId, "subscriptionId"),
+    event: query.event,
+    since: parseDate(query.since, "since"),
+    until: parseDate(query.until, "until"),
+    limit: parseCount(query.limit, "limit"),
+    cursor: parseId(query.cursor, "cursor"),
+  };
 }
 
 export const webhooksController = new Elysia({
@@ -280,15 +309,10 @@ export const webhooksController = new Elysia({
     "/deliveries",
     async ({ tenantContext, query }) => ({
       instance: instanceIdentity,
-      ...(await listWebhookDeliveries(ctxOrThrow(tenantContext), {
-        status: query.status,
-        subscriptionId: parseBigInt(query.subscriptionId, "subscriptionId"),
-        event: query.event,
-        since: parseDate(query.since, "since"),
-        until: parseDate(query.until, "until"),
-        limit: parseCount(query.limit, "limit"),
-        cursor: parseBigInt(query.cursor, "cursor"),
-      })),
+      ...(await listWebhookDeliveries(
+        ctxOrThrow(tenantContext),
+        parseDeliveryQuery(query),
+      )),
     }),
     {
       requireRole: "TENANT_ADMIN",
@@ -339,7 +363,7 @@ export const webhooksController = new Elysia({
       instance: instanceIdentity,
       delivery: await getWebhookDelivery(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id, "deliveryId"),
       ),
     }),
     {
@@ -366,7 +390,7 @@ export const webhooksController = new Elysia({
       instance: instanceIdentity,
       delivery: await requeueWebhookDelivery(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id, "deliveryId"),
       ),
     }),
     {

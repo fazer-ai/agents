@@ -518,18 +518,21 @@ export async function webhookDeliveryList(
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
+  // `!== undefined` on every filter, so an argument the caller SENT as empty is refused by the
+  // service instead of being dropped here and widening the page. The truthiness spelling is what
+  // makes `status: ""` mean "every status".
   const opts: Parameters<typeof listWebhookDeliveries>[1] = {};
-  if (args.status) opts.status = args.status;
-  if (args.event) opts.event = args.event;
-  if (args.since) opts.since = new Date(args.since);
-  if (args.until) opts.until = new Date(args.until);
+  if (args.status !== undefined) opts.status = args.status;
+  if (args.event !== undefined) opts.event = args.event;
+  if (args.since !== undefined) opts.since = new Date(args.since);
+  if (args.until !== undefined) opts.until = new Date(args.until);
   if (args.limit !== undefined) opts.limit = args.limit;
-  if (args.subscription_id) {
+  if (args.subscription_id !== undefined) {
     const v = parseMcpId(args.subscription_id, "subscription_id");
     if (typeof v !== "bigint") return v;
     opts.subscriptionId = v;
   }
-  if (args.cursor) {
+  if (args.cursor !== undefined) {
     const v = parseMcpId(args.cursor, "cursor");
     if (typeof v !== "bigint") return v;
     opts.cursor = v;

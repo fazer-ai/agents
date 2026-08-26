@@ -132,6 +132,13 @@ function assertUsableFilters(opts: ListDeliveriesOpts): void {
     badParam("limit");
 }
 
+// An event name is free text (the closed set lives in OUTBOUND_EVENTS, and a delivery can outlive
+// an event being retired), so the only thing to refuse here is the empty one.
+function assertUsableEvent(e: string): string {
+  if (e === "") badParam("event");
+  return e;
+}
+
 function assertKnownStatus(s: string): OutboundDeliveryStatus {
   if (!isOutboundDeliveryStatus(s)) {
     throw new AppError(
@@ -139,6 +146,7 @@ function assertKnownStatus(s: string): OutboundDeliveryStatus {
       400,
       "errors.unknownDeliveryStatus",
       { status: s },
+      "status",
     );
   }
   return s;
@@ -156,11 +164,19 @@ export async function listWebhookDeliveries(
   if (opts.until) createdAt.lte = opts.until;
   const where: Prisma.OutboundWebhookDeliveryWhereInput = {
     ...(opts.since || opts.until ? { createdAt } : {}),
-    ...(opts.status ? { status: assertKnownStatus(opts.status) } : {}),
+    // `!== undefined`, never truthiness: a filter the caller SENT is a filter, and an empty one is
+    // unusable rather than absent. `status: ""` under a truthiness check answers a request for one
+    // status with every status, which is the same widening the id parsers refuse one layer up —
+    // and this is the layer MCP arrives at, so the rule has to live here to hold for both.
+    ...(opts.status !== undefined
+      ? { status: assertKnownStatus(opts.status) }
+      : {}),
     ...(opts.subscriptionId !== undefined
       ? { subscriptionId: opts.subscriptionId }
       : {}),
-    ...(opts.event ? { event: opts.event } : {}),
+    ...(opts.event !== undefined
+      ? { event: assertUsableEvent(opts.event) }
+      : {}),
     ...(opts.cursor !== undefined ? { id: { lt: opts.cursor } } : {}),
   };
   const rows = await runScopedOn(base, ctx, (db) =>

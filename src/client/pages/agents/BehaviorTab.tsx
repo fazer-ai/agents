@@ -61,6 +61,7 @@ import {
   type ObservabilityConfig,
 } from "@/modules/flowlog/settings";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
+import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import {
   overrideBaseUrlInvalid,
@@ -1534,7 +1535,22 @@ export function BehaviorTab({
             {vision.enabled && (
               <>
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <FormField label={t("editor.visionProvider", "Provider")}>
+                  <FormField
+                    label={t("editor.visionProvider", "Provider")}
+                    // Said here, and not only in the docs, because the alternative way to learn it
+                    // is a PDF that comes back unextracted mid-attendance (issue #324).
+                    hint={
+                      visionAcceptsDocuments(
+                        vision.provider,
+                        visionCredBaseUrl ?? vision.baseURL,
+                      )
+                        ? undefined
+                        : t(
+                            "editor.visionImageOnly",
+                            "PDF attachments are skipped with this setup; only images are read.",
+                          )
+                    }
+                  >
                     <Select
                       value={vision.provider}
                       onChange={(e) =>
@@ -1569,9 +1585,13 @@ export function BehaviorTab({
                 <FormField
                   label={t("editor.visionModel", "Model")}
                   group
+                  // The per-provider sentence used to live here, as a static list naming which
+                  // providers read PDFs. It went stale the moment one of them changed (issue #324),
+                  // and it was in the wrong field anyway: what a provider reads is a property of the
+                  // provider, so it is said above, next to the provider.
                   description={t(
                     "editor.visionModelHint",
-                    "Leave blank for the provider default. OpenAI reads images only; Gemini and Anthropic also read PDFs.",
+                    "Leave blank for the provider default.",
                   )}
                 >
                   <ModelPicker

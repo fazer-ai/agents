@@ -47,38 +47,59 @@ function describeProviderFault(err: unknown): unknown {
   return asProviderFailure(err);
 }
 
+export interface ModelLabels {
+  provider: string;
+  model: string;
+}
+
 export interface ModelFallback<T> {
   // The same call, against the other provider. A thunk rather than a model, because only the caller
   // knows what "the same call" means — which messages, which bound tools, and which metadata names
   // the model for the usage row.
   run: () => Promise<T>;
-  // What answered, for the lines this module leaves about it. Labels only; nothing here dials.
-  provider: string;
-  model: string;
+  // What it runs on, for the lines this module writes about it.
+  labels: ModelLabels;
   // Fired when the fallback takes the turn, so the runtime can leave a warn on the trail. `reason`
   // is already the redacted word: the request carried the whole conversation, so the provider's own
   // sentence may be the customer's coming back.
   onFallback?: (info: { reason: string }) => void;
+  // Fired when the fallback ALSO failed, which is the turn's real ending. Its own line, because the
+  // `generate` stage wrapping this call is labelled with the PRIMARY by construction: without it an
+  // operator reads "the fallback took the turn (ok)" followed by an error attributed to the model
+  // that never made the second call, which reads as the primary failing twice.
+  onFallbackFailed?: (info: { reason: string }) => void;
 }
 
-export interface ModelRetryInfo {
+// WHICH MODEL AN EVENT IS ABOUT, carried on every event and NOT optional.
+//
+// It was optional for one round, defaulting to the agent's configured model at each of the four
+// places that write a flow line. Review found two of the four still reading only `attempt`, so a
+// retry made by the FALLBACK was published under the primary's name — the third time in this change
+// that a row named the wrong model. Optional-with-a-default is a rule every call site has to
+// remember; carried on the event is a rule there is nothing to remember about, because the only
+// place that knows which of the two models it just called is this one.
+export interface ModelRetryInfo extends ModelLabels {
   attempt: number;
   error: unknown;
-  // Which of the two models was retried. Absent on the primary, because that is what the field's
-  // absence meant before there was a second one, and every existing caller reads it that way.
-  provider?: string;
-  model?: string;
+}
+
+export interface ModelCallOptions<T> {
+  // What `fn` runs on. Required whenever anything is reported at all, which is what keeps a
+  // reporting caller from being written without the labels its lines need.
+  primary: ModelLabels;
+  // Fired when a call is retried, so the runtime can leave a warn on the turn's trail. Best-effort.
+  onRetry?: (info: ModelRetryInfo) => void;
+  // Absent for every caller that has nothing behind its provider, which is every caller today except
+  // the agent turn. Absent also means UNCHANGED: none of the bounds in `model-fallback` apply to a
+  // model built without one.
+  fallback?: ModelFallback<T>;
 }
 
 export async function runModelCall<T>(
   fn: () => Promise<T>,
-  // Fired when a call is retried, so the runtime can leave a warn on the turn's trail. Best-effort.
-  onRetry?: (info: ModelRetryInfo) => void,
-  // Absent for every caller that has nothing behind its provider, which is every caller today except
-  // the agent turn. Absent also means UNCHANGED: none of the bounds in `model-fallback` apply to a
-  // model built without one.
-  fallback?: ModelFallback<T>,
+  opts?: ModelCallOptions<T>,
 ): Promise<T> {
+  const fallback = opts?.fallback;
   // ONE attempt at ONE model, carrying the single recovery LangChain cannot make for us. Written
   // once and applied to BOTH models: the fallback answers the customer in the primary's place, so an
   // intermittent empty completion costs it the turn exactly the way it cost the primary one before
@@ -86,13 +107,13 @@ export async function runModelCall<T>(
   // The first version of this invoked the fallback bare, and review found it.
   const attemptOn = async (
     run: () => Promise<T>,
-    onEmpty: (err: unknown) => void,
+    labels: ModelLabels | undefined,
   ): Promise<T> => {
     try {
       return await run();
     } catch (err) {
       if (!isEmptyCompletionFault(err)) throw err;
-      onEmpty(err);
+      if (labels) opts?.onRetry?.({ attempt: 1, error: err, ...labels });
       logger.warn(
         { err },
         "model call returned no completion; retrying once before giving up on this model",
@@ -119,25 +140,19 @@ export async function runModelCall<T>(
       );
       fallback.onFallback?.({ reason });
       try {
-        return await attemptOn(fallback.run, (retried) =>
-          onRetry?.({
-            attempt: 1,
-            error: retried,
-            // Named, or the trail would report the retry against the model that did not make it.
-            provider: fallback.provider,
-            model: fallback.model,
-          }),
-        );
+        return await attemptOn(fallback.run, fallback.labels);
       } catch (fallbackErr) {
         // The fallback is the last thing there is, so what it failed with is what the turn reports.
         // Redacted the same way: a second vendor's prose is no safer than the first's.
-        throw describeProviderFault(fallbackErr);
+        const out = describeProviderFault(fallbackErr);
+        fallback.onFallbackFailed?.({
+          reason: out instanceof Error ? out.message : "provider error",
+        });
+        throw out;
       }
     };
     try {
-      return await attemptOn(fn, (err) =>
-        onRetry?.({ attempt: 1, error: err }),
-      );
+      return await attemptOn(fn, opts?.primary);
     } catch (err) {
       return failed(err);
     }

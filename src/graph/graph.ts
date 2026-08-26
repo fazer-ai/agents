@@ -12,7 +12,11 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import logger from "@/api/lib/logger";
 import { selectHistoryWindow } from "@/graph/history-window";
 import { contentToText } from "@/graph/message-text";
-import { type ModelRetryInfo, runModelCall } from "@/graph/model-limit";
+import {
+  type ModelLabels,
+  type ModelRetryInfo,
+  runModelCall,
+} from "@/graph/model-limit";
 import { countMessageTokens } from "@/graph/token-count";
 import { USAGE_MODEL_METADATA_KEY } from "@/graph/usage";
 
@@ -52,7 +56,15 @@ export interface BuildAgentGraphParams {
   // agent that configured none, which is every agent today, and absent means the node behaves
   // exactly as it did.
   fallback?: FallbackModel;
+  // What the agent's OWN model is, for the lines this node's callbacks carry. Not read to dial
+  // anything — `model` above is what dials.
+  primary: ModelLabels;
   onModelFallback?: (info: {
+    provider: string;
+    model: string;
+    reason: string;
+  }) => void;
+  onModelFallbackFailed?: (info: {
     provider: string;
     model: string;
     reason: string;
@@ -121,8 +133,10 @@ export function buildAgentGraph({
   maxToolCalls,
   onToolLimit,
   onModelRetry,
+  primary,
   fallback,
   onModelFallback,
+  onModelFallbackFailed,
   maxHistoryTokens,
   onHistoryTrim,
 }: BuildAgentGraphParams) {
@@ -167,28 +181,41 @@ export function buildAgentGraph({
     const messages = [new SystemMessage(prompt), ...history];
     const response = await runModelCall(
       () => (hardLimit ? model : llm).invoke(messages),
-      onModelRetry,
-      fallback && fallbackLlm
-        ? {
-            provider: fallback.provider,
-            model: fallback.modelId,
-            // The SAME question, to the other provider. Same messages and same prompt: this is not a
-            // second, cheaper attempt, it is the attempt the customer is waiting for.
-            run: () =>
-              (hardLimit ? fallback.model : fallbackLlm).invoke(messages, {
-                // Metadata rather than callbacks, and measured: metadata MERGES with the turn's and
-                // reaches the handlers it already had, while `callbacks` replaces them — which would
-                // have billed this call to the primary's name or dropped the Langfuse trace.
-                metadata: { [USAGE_MODEL_METADATA_KEY]: fallback.modelId },
-              }),
-            onFallback: ({ reason }) =>
-              onModelFallback?.({
-                provider: fallback.provider,
-                model: fallback.modelId,
-                reason,
-              }),
-          }
-        : undefined,
+      {
+        primary,
+        onRetry: onModelRetry,
+        fallback:
+          fallback && fallbackLlm
+            ? {
+                labels: {
+                  provider: fallback.provider,
+                  model: fallback.modelId,
+                },
+                // The SAME question, to the other provider. Same messages and same prompt: this is
+                // not a second, cheaper attempt, it is the attempt the customer is waiting for.
+                run: () =>
+                  (hardLimit ? fallback.model : fallbackLlm).invoke(messages, {
+                    // Metadata rather than callbacks, and measured: metadata MERGES with the turn's
+                    // and reaches the handlers it already had, while `callbacks` replaces them —
+                    // which would have billed this call to the primary's name or dropped the
+                    // Langfuse trace.
+                    metadata: { [USAGE_MODEL_METADATA_KEY]: fallback.modelId },
+                  }),
+                onFallback: ({ reason }) =>
+                  onModelFallback?.({
+                    provider: fallback.provider,
+                    model: fallback.modelId,
+                    reason,
+                  }),
+                onFallbackFailed: ({ reason }) =>
+                  onModelFallbackFailed?.({
+                    provider: fallback.provider,
+                    model: fallback.modelId,
+                    reason,
+                  }),
+              }
+            : undefined,
+      },
     );
     return { messages: [response] };
   };

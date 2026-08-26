@@ -1313,6 +1313,7 @@ function AgentEditor() {
       sendImage,
       observability,
       memory,
+      modelFallback,
     }),
     // The WhatsApp→website-chat redirect (own Save button). widgetInboxId is excluded (server-owned,
     // persisted on provision), so provisioning the widget never lights up this tab's unsaved-changes dot.

@@ -54,7 +54,10 @@ describe("runModelCall recovery from an empty completion", () => {
     const retries: number[] = [];
     const reply = await runModelCall(
       () => model.invoke([{ role: "user", content: "oi" }]),
-      ({ attempt }) => retries.push(attempt),
+      {
+        primary: { provider: "openai", model: "gpt-test" },
+        onRetry: ({ attempt }) => retries.push(attempt),
+      },
     );
     expect(reply.content).toBe("hi");
     expect(model.calls).toBe(2);

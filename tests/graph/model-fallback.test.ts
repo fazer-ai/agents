@@ -218,25 +218,30 @@ function failing(error: unknown) {
   };
 }
 
+const PRIMARY = { provider: "openai", model: "primary-mini" };
+const FALLBACK_LABELS = { provider: "anthropic", model: "claude-haiku-4-5" };
+
 describe("runModelCall with something behind the primary", () => {
   test("a 503 primary hands the turn to the fallback, and the answer comes through", async () => {
     const primary = failing(
       Object.assign(new Error("overloaded"), { status: 503 }),
     );
-    const fallback = { calls: 0 };
-    const seen: unknown[] = [];
-    const reply = await runModelCall<string>(primary.fn, undefined, {
-      provider: "anthropic",
-      model: "claude-haiku-4-5",
-      run: () => {
-        fallback.calls += 1;
-        return Promise.resolve("from the fallback");
+    let fallbackCalls = 0;
+    const seen: string[] = [];
+    const reply = await runModelCall<string>(primary.fn, {
+      primary: PRIMARY,
+      fallback: {
+        labels: FALLBACK_LABELS,
+        run: () => {
+          fallbackCalls += 1;
+          return Promise.resolve("from the fallback");
+        },
+        onFallback: ({ reason }) => seen.push(reason),
       },
-      onFallback: ({ reason }) => seen.push(reason),
     });
     expect(reply).toBe("from the fallback");
     expect(primary.calls).toBe(1);
-    expect(fallback.calls).toBe(1);
+    expect(fallbackCalls).toBe(1);
     // Already the redacted word: this reason reaches the flow log and the alert channel.
     expect(seen).toEqual(["HTTP 503"]);
   });
@@ -246,12 +251,14 @@ describe("runModelCall with something behind the primary", () => {
       Object.assign(new Error("bad key"), { status: 401 }),
     );
     let fallbackCalls = 0;
-    const err = (await runModelCall<string>(primary.fn, undefined, {
-      provider: "anthropic",
-      model: "claude-haiku-4-5",
-      run: () => {
-        fallbackCalls += 1;
-        return Promise.resolve("from the fallback");
+    const err = (await runModelCall<string>(primary.fn, {
+      primary: PRIMARY,
+      fallback: {
+        labels: FALLBACK_LABELS,
+        run: () => {
+          fallbackCalls += 1;
+          return Promise.resolve("from the fallback");
+        },
       },
     }).catch((e) => e)) as Error;
     expect(fallbackCalls).toBe(0);
@@ -275,15 +282,16 @@ describe("runModelCall with something behind the primary", () => {
     let fallbackCalls = 0;
     const reply = await runModelCall(
       () => model.invoke([{ role: "user", content: "oi" }]),
-      undefined,
       {
-        // The SAME return type as the primary, which is the type system holding the design: the
-        // fallback answers the customer, so whatever it returns has to be a reply the turn can post.
-        provider: "anthropic",
-        model: "claude-haiku-4-5",
-        run: () => {
-          fallbackCalls += 1;
-          return Promise.resolve(new AIMessage("from the fallback"));
+        primary: PRIMARY,
+        fallback: {
+          labels: FALLBACK_LABELS,
+          // The SAME return type as the primary, which is the type system holding the design: the
+          // fallback answers the customer, so whatever it returns has to be a reply the turn can post.
+          run: () => {
+            fallbackCalls += 1;
+            return Promise.resolve(new AIMessage("from the fallback"));
+          },
         },
       },
     );
@@ -301,53 +309,60 @@ describe("runModelCall with something behind the primary", () => {
       Object.assign(new Error("overloaded"), { status: 503 }),
     );
     const fallbackModel = new EmptyThenReplyModel("from the fallback", 1);
-    const retries: Array<{ provider?: string; model?: string }> = [];
-    const reply = await runModelCall(
-      primary.fn,
-      ({ provider, model }) => retries.push({ provider, model }),
-      {
-        provider: "anthropic",
-        model: "claude-haiku-4-5",
+    const retries: Array<{ provider: string; model: string }> = [];
+    const reply = await runModelCall(primary.fn, {
+      primary: PRIMARY,
+      onRetry: ({ provider, model }) => retries.push({ provider, model }),
+      fallback: {
+        labels: FALLBACK_LABELS,
         run: () => fallbackModel.invoke([{ role: "user", content: "oi" }]),
       },
-    );
+    });
     expect(fallbackModel.calls).toBe(2);
     expect(reply.content).toBe("from the fallback");
     // And the trail names the model that actually made the retry, or an operator reads the rate
     // against a provider that never saw the call.
-    expect(retries).toEqual([
-      { provider: "anthropic", model: "claude-haiku-4-5" },
-    ]);
+    expect(retries).toEqual([FALLBACK_LABELS]);
   });
 
-  // The primary's own retry keeps naming nothing, which is what every existing caller reads as
-  // "the configured model". Asserted so the field's absence stays a decision.
-  test("a retry on the PRIMARY names no model, as it always did", async () => {
+  // The primary's retry names the primary, and it is not optional: the labels ride on every event,
+  // so no emitter has a default to get wrong.
+  test("a retry on the PRIMARY names the primary", async () => {
     const model = new EmptyThenReplyModel("hi", 1);
-    const retries: Array<{ provider?: string; model?: string }> = [];
-    await runModelCall(
-      () => model.invoke([{ role: "user", content: "oi" }]),
-      ({ provider, model: m }) => retries.push({ provider, model: m }),
-    );
-    expect(retries).toEqual([{ provider: undefined, model: undefined }]);
+    const retries: Array<{ provider: string; model: string }> = [];
+    await runModelCall(() => model.invoke([{ role: "user", content: "oi" }]), {
+      primary: PRIMARY,
+      onRetry: ({ provider, model: m }) => retries.push({ provider, model: m }),
+    });
+    expect(retries).toEqual([PRIMARY]);
   });
 
-  // The fallback is the last thing there is. What it throws is what the turn reports, and it must
-  // still leave through the closed vocabulary rather than carrying the second vendor's prose.
-  test("when the fallback fails too, the turn reports the FALLBACK's failure, redacted", async () => {
+  // The turn's real ending, and its own line. The `generate` stage wrapping the call is labelled
+  // with the primary by construction, so without this an operator reads "the fallback took the turn
+  // (ok)" followed by an error attributed to the model that never made the second call.
+  test("when the fallback fails too, that failure is reported under the FALLBACK", async () => {
     const primary = failing(
       Object.assign(new Error("overloaded"), { status: 503 }),
     );
-    const err = (await runModelCall<string>(primary.fn, undefined, {
-      provider: "anthropic",
-      model: "claude-haiku-4-5",
-      run: () =>
-        Promise.reject(
-          Object.assign(new Error("the second vendor's own prose"), {
-            status: 500,
-          }),
-        ),
+    const took: string[] = [];
+    const died: string[] = [];
+    const err = (await runModelCall<string>(primary.fn, {
+      primary: PRIMARY,
+      fallback: {
+        labels: FALLBACK_LABELS,
+        run: () =>
+          Promise.reject(
+            Object.assign(new Error("the second vendor's own prose"), {
+              status: 500,
+            }),
+          ),
+        onFallback: ({ reason }) => took.push(reason),
+        onFallbackFailed: ({ reason }) => died.push(reason),
+      },
     }).catch((e) => e)) as Error;
+    expect(took).toEqual(["HTTP 503"]);
+    expect(died).toEqual(["HTTP 500"]);
+    // What the turn reports is still the fallback's failure, redacted the same way.
     expect(err.message).toBe("HTTP 500");
     expect(err.message).not.toContain("prose");
   });
@@ -373,6 +388,7 @@ describe("the fallback is asked the same question the primary was", () => {
       model: primary,
       systemPrompt: "s",
       tools: [tool],
+      primary: PRIMARY,
       fallback: {
         model: fallback,
         provider: "anthropic",

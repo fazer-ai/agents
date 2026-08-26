@@ -333,6 +333,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     });
     const model = new ToolCallThenReplyModel("probe_fail", "entendi");
     const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
       model: model as unknown as BaseChatModel,
       systemPrompt: "Você é prestativa.",
       checkpointer: new MemorySaver(),
@@ -384,6 +385,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     });
     const model = new ToolCallThenReplyModel("probe_alert", "ok");
     const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
       model: model as unknown as BaseChatModel,
       systemPrompt: "Você é prestativa.",
       checkpointer: new MemorySaver(),
@@ -430,6 +432,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       });
       const model = new ToolCallThenReplyModel("probe_image", "pronto", args);
       const graph = buildAgentGraph({
+        primary: { provider: "openai", model: "test-model" },
         model: model as unknown as BaseChatModel,
         systemPrompt: "Você é prestativa.",
         checkpointer: new MemorySaver(),

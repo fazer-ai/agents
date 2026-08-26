@@ -307,6 +307,11 @@ async function buildPlaygroundGraph(params: {
     model: string;
     reason: string;
   }) => void;
+  onModelFallbackFailed?: (info: {
+    provider: string;
+    model: string;
+    reason: string;
+  }) => void;
   onModelFallbackUnavailable?: (info: { reason: string }) => void;
   onHistoryTrim?: (info: {
     kept: number;
@@ -349,6 +354,7 @@ async function buildPlaygroundGraph(params: {
     checkpointer: params.deps?.checkpointer,
     onModelRetry: params.onModelRetry,
     onModelFallback: params.onModelFallback,
+    onModelFallbackFailed: params.onModelFallbackFailed,
     onModelFallbackUnavailable: params.onModelFallbackUnavailable,
     onHistoryTrim: params.onHistoryTrim,
   });
@@ -495,11 +501,13 @@ export async function runPlaygroundTurn(
       deps: params.deps,
       overrides: params.overrides,
       turnId,
-      onModelRetry: ({ attempt }) =>
+      onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "warn",
           status: "ok",
+          provider,
+          model,
           detail: { retriedEmptyResponse: attempt },
         }),
       onModelFallback: ({ provider, model, reason }) =>
@@ -510,6 +518,15 @@ export async function runPlaygroundTurn(
           provider,
           model,
           detail: { fallbackReason: reason },
+        }),
+      onModelFallbackFailed: ({ provider, model, reason }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "error",
+          status: "error",
+          provider,
+          model,
+          detail: { fallbackFailed: reason },
         }),
       onModelFallbackUnavailable: ({ reason }) =>
         emitFlowEvent(flow, {
@@ -840,11 +857,13 @@ export async function runPlaygroundFollowup(
       deps: params.deps,
       overrides: params.overrides,
       turnId,
-      onModelRetry: ({ attempt }) =>
+      onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "warn",
           status: "ok",
+          provider,
+          model,
           detail: { retriedEmptyResponse: attempt },
         }),
       onModelFallback: ({ provider, model, reason }) =>
@@ -855,6 +874,15 @@ export async function runPlaygroundFollowup(
           provider,
           model,
           detail: { fallbackReason: reason },
+        }),
+      onModelFallbackFailed: ({ provider, model, reason }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "error",
+          status: "error",
+          provider,
+          model,
+          detail: { fallbackFailed: reason },
         }),
       onModelFallbackUnavailable: ({ reason }) =>
         emitFlowEvent(flow, {

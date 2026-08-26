@@ -269,6 +269,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       responses: ["resposta-1", "resposta-2"],
     });
     const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
       model,
       systemPrompt: "Você é prestativa.",
       checkpointer: saver,
@@ -813,6 +814,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
 
     const model = new CapturingModel();
     await buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
       model,
       systemPrompt: "Você é prestativa.",
       checkpointer: saver,

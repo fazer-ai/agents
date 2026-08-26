@@ -1452,6 +1452,13 @@ export interface GraphBuildDeps {
   // exactly like having none. Separate from `onModelFallback` on purpose: one says the safety net
   // caught the turn, the other says there is no net, and folding them would let the second read as
   // the first.
+  // Fired when the fallback ALSO failed, which is the turn's real ending. Its own line, because the
+  // `generate` stage is labelled with the primary by construction.
+  onModelFallbackFailed?: (info: {
+    provider: string;
+    model: string;
+    reason: string;
+  }) => void;
   onModelFallbackUnavailable?: (info: { reason: string }) => void;
   // Fired when a turn dropped history to fit maxHistoryTokens (runtime records it in the trail).
   onHistoryTrim?: (info: {
@@ -1572,10 +1579,12 @@ export async function buildModelAndGraph(
     checkpointer,
     tools,
     maxToolCalls: cfg.maxToolCalls,
+    primary: { provider: cfg.mc.provider, model: cfg.mc.model },
     fallback,
     onToolLimit: deps.onToolLimit,
     onModelRetry: deps.onModelRetry,
     onModelFallback: deps.onModelFallback,
+    onModelFallbackFailed: deps.onModelFallbackFailed,
     maxHistoryTokens: cfg.maxHistoryTokens,
     onHistoryTrim: deps.onHistoryTrim,
   });

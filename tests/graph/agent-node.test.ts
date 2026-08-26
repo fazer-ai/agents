@@ -29,6 +29,7 @@ describe("agentNode system-message normalization", () => {
   test("prepends one system prompt and drops a system message leaked into history", async () => {
     const model = new RecordingModel();
     const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
       model: model as unknown as BaseChatModel,
       systemPrompt: "PROMPT",
       checkpointer: new MemorySaver(),
@@ -98,6 +99,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     const model = new ToolLoopModel();
     const hits: Array<{ maxToolCalls: number; toolCalls: number }> = [];
     const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
       model: model as unknown as BaseChatModel,
       systemPrompt: "PROMPT",
       checkpointer: new MemorySaver(),
@@ -143,6 +145,7 @@ describe("agentNode history ceiling", () => {
   test("without a ceiling the whole thread travels", async () => {
     const model = new RecordingModel();
     const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
       model: model as unknown as BaseChatModel,
       systemPrompt: "PROMPT",
       checkpointer: new MemorySaver(),
@@ -159,6 +162,7 @@ describe("agentNode history ceiling", () => {
     const model = new RecordingModel();
     const trims: Array<{ kept: number; dropped: number; tokens: number }> = [];
     const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
       model: model as unknown as BaseChatModel,
       systemPrompt: "PROMPT",
       checkpointer: new MemorySaver(),
@@ -189,6 +193,7 @@ describe("agentNode history ceiling", () => {
     const model = new RecordingModel();
     const trims: unknown[] = [];
     const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
       model: model as unknown as BaseChatModel,
       systemPrompt: "PROMPT",
       checkpointer: new MemorySaver(),

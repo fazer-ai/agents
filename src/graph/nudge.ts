@@ -804,11 +804,11 @@ export async function runAgentNudge(
         stage: "generate",
         level: "warn",
         status: "ok",
-        // NOTE: the retry can happen on either model, and the row has to name the one that made it.
-        // Absent means the primary, which is what the field's absence meant before there was a
-        // second one.
-        provider: provider ?? cfg.mc.provider,
-        model: model ?? cfg.mc.model,
+        // NOTE: the retry can happen on either model, and the row names the one that made it. The
+        // labels ride on the event rather than being defaulted here, so there is no default to get
+        // wrong — which is what two of the four emitters did while they were optional.
+        provider,
+        model,
         detail: { retriedEmptyResponse: attempt },
       }),
     // A fallback that ANSWERS produces a successful turn, so nothing else on it would ever say the
@@ -823,6 +823,19 @@ export async function runAgentNudge(
         provider,
         model,
         detail: { fallbackFrom: cfg.mc.provider, fallbackReason: reason },
+      }),
+    // The turn's real ending when there was a second provider and it failed too. `error` rather
+    // than `warn`: the customer got nothing. The stage line that wraps the call is labelled with the
+    // primary by construction, so without this the last thing an operator reads is an error against
+    // the model that never made the second call.
+    onModelFallbackFailed: ({ provider, model, reason }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "error",
+        status: "error",
+        provider,
+        model,
+        detail: { fallbackFailed: reason },
       }),
     // The mirror image, and it fires BEFORE any failure: a fallback the operator configured and that
     // cannot be built leaves the turn with nothing behind it, which is indistinguishable from having

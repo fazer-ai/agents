@@ -40,6 +40,7 @@ import {
   listAgents,
   updateAgent,
 } from "@/modules/agents/service";
+import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { type AuditEntry, recordAudit } from "@/modules/audit/service";
 import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
@@ -549,31 +550,34 @@ export async function agentSettingsSet(
   const agentId = parseMcpId(args.agent_id, "agent_id");
   if (typeof agentId !== "bigint") return agentId;
 
+  // FROM THE SCHEMA, not from a list beside it. This was seventeen `if (args.X !== undefined)` lines
+  // and the eighteenth block went in without one: `modelFallback` was published in this tool's
+  // schema, accepted by the parser, and then dropped here — a fallback-only call answered "no
+  // updatable fields" and a call that also touched some other block succeeded while silently
+  // ignoring the fallback. That is the seventh time in this change that a new block reached one
+  // registration point and not the next, so this one stops being a place a block can be forgotten:
+  // the keys ARE the schema's keys, and the refusal below names the same set.
+  //
+  // The cast is what a per-key copy costs, and it is safe for a reason worth stating: the keys come
+  // from `BEHAVIOR_PATCH_SHAPE` itself and `args` was parsed against that same shape, so every value
+  // reaching `patch[k]` has already been checked by the schema that defines `patch`'s own type.
   const patch: BehaviorSettingsPatch = {};
-  if (args.debounce !== undefined) patch.debounce = args.debounce;
-  if (args.stt !== undefined) patch.stt = args.stt;
-  if (args.tts !== undefined) patch.tts = args.tts;
-  if (args.vision !== undefined) patch.vision = args.vision;
-  if (args.split !== undefined) patch.split = args.split;
-  if (args.serviceWindow !== undefined)
-    patch.serviceWindow = args.serviceWindow;
-  if (args.grounding !== undefined) patch.grounding = args.grounding;
-  if (args.followUp !== undefined) patch.followUp = args.followUp;
-  if (args.handoff !== undefined) patch.handoff = args.handoff;
-  if (args.limits !== undefined) patch.limits = args.limits;
-  if (args.observability !== undefined)
-    patch.observability = args.observability;
-  if (args.availability !== undefined) patch.availability = args.availability;
-  if (args.contactAuth !== undefined) patch.contactAuth = args.contactAuth;
-  if (args.memory !== undefined) patch.memory = args.memory;
-  if (args.channelRedirect !== undefined)
-    patch.channelRedirect = args.channelRedirect;
-  if (args.attributeContext !== undefined)
-    patch.attributeContext = args.attributeContext;
-  if (args.sendImage !== undefined) patch.sendImage = args.sendImage;
+  const patchable = Object.keys(
+    BEHAVIOR_PATCH_SHAPE,
+  ) as (keyof BehaviorSettingsPatch)[];
+  for (const key of patchable) {
+    const value = (args as unknown as Record<string, unknown>)[key];
+    if (value !== undefined) {
+      (patch as Record<string, unknown>)[key] = value;
+    }
+  }
   if (Object.keys(patch).length === 0) {
+    // `filter`, not `slice`: the astral-cap sweep reads every bare `.slice(` in src/ as a possible
+    // surrogate cut, and a list of keys is not worth an entry in that registry.
+    const last = patchable.at(-1);
+    const rest = patchable.filter((k) => k !== last);
     return err(
-      "no updatable fields provided (debounce, stt, tts, vision, split, serviceWindow, followUp, handoff, limits, availability, contactAuth, channelRedirect, attributeContext, sendImage, observability, memory and/or grounding)",
+      `no updatable fields provided (${rest.join(", ")} and/or ${last})`,
     );
   }
 

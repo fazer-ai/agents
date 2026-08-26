@@ -36,7 +36,32 @@ describe("visionAcceptsDocuments", () => {
       "https://api.openai.com.evil.example/v1",
       false,
     ],
-    ["a subdomain of it", "openai", "https://eu.api.openai.com/v1", false],
+    [
+      "a host that only ends in the domain",
+      "openai",
+      "https://notapi.openai.com/v1",
+      false,
+    ],
+    // Data residency: the SAME API under a regional hostname. Skipping a PDF there would be a
+    // silent regression for exactly the customers who had to move region for legal reasons.
+    [
+      "the EU residency endpoint",
+      "openai",
+      "https://eu.api.openai.com/v1",
+      true,
+    ],
+    [
+      "the Japan residency endpoint",
+      "openai",
+      "https://jp.api.openai.com/v1",
+      true,
+    ],
+    [
+      "a region that does not exist yet",
+      "openai",
+      "https://zz.api.openai.com/v1",
+      true,
+    ],
     [
       "a proxy of the operator's",
       "openai",
@@ -68,6 +93,12 @@ describe("visionAcceptsDocuments", () => {
       "openrouter pointed at OpenAI",
       "openrouter",
       "https://api.openai.com/v1",
+      false,
+    ],
+    [
+      "openai-compatible pointed at a residency host",
+      "openai-compatible",
+      "https://eu.api.openai.com/v1",
       false,
     ],
     [

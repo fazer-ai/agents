@@ -19,6 +19,13 @@ const ENDPOINT_AGNOSTIC = new Set(["gemini", "anthropic"]);
 
 const OPENAI_HOST = "api.openai.com";
 
+// Data residency gives the same API a regional hostname: OpenAI documents ten of them today (us,
+// eu, au, ca, jp, in, sg, kr, gb, ae), all `<region>.api.openai.com`, all serving the endpoints the
+// default host serves. Matched by SUFFIX rather than by listing the ten, because a list of regions
+// goes stale the moment an eleventh opens, and it goes stale in the direction that hurts: every PDF
+// on that region silently skipped, with nothing in the product saying why. The suffix cannot be
+// spoofed, since everything under api.openai.com is served by whoever holds that domain.
+
 // A blank base URL means the adapter falls back to the provider's own endpoint (see
 // chatCompletionsExtract), so it is the official one.
 function isOpenAiOwnEndpoint(baseURL: string | null): boolean {
@@ -28,9 +35,9 @@ function isOpenAiOwnEndpoint(baseURL: string | null): boolean {
     const url = new URL(raw);
     // https only: the official endpoint is https, and a plaintext one carrying an API key and a
     // customer's document is not it, whatever the hostname says.
-    return (
-      url.protocol === "https:" && url.hostname.toLowerCase() === OPENAI_HOST
-    );
+    if (url.protocol !== "https:") return false;
+    const host = url.hostname.toLowerCase();
+    return host === OPENAI_HOST || host.endsWith(`.${OPENAI_HOST}`);
   } catch {
     // Not a URL at all. The call would fail anyway; answering "no documents" makes it fail as a
     // skip the operator can read instead of a 400 from a fetch that never had a chance.

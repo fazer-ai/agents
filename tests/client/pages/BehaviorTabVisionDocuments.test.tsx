@@ -99,7 +99,22 @@ function renderWithProvider(
     },
     setMemory: noop,
     memoryCredBaseUrl: null,
-    observability: { logToolValues: false },
+    // A SUPERSET of what this tree's component reads. The Free repo, where this PR opens, already
+    // carries the observability debug mode (#58/#335) and its tab reads `savedObservability` and
+    // `langfuseSendContent`; master has not been backported yet. The props go through a cast, so the
+    // tree that does not know a key ignores it, and the test renders in both. Leaving them out
+    // renders here and throws in CI, which is exactly how this was found.
+    observability: {
+      logToolValues: false,
+      fullDetail: false,
+      fullDetailUntil: null,
+    },
+    savedObservability: {
+      logToolValues: false,
+      fullDetail: false,
+      fullDetailUntil: null,
+    },
+    langfuseSendContent: false,
     setObservability: noop,
     sendImage: { allowedHosts: "" },
     setSendImage: noop,

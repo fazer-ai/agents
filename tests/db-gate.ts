@@ -21,9 +21,13 @@
 
 export const DB_GATE_OPT_OUT = "ALLOW_NO_DB";
 
+// Every line here has to be runnable FROM THE STATE THAT PRINTED IT. `bun run db:test:setup` on its
+// own is not: it reads the same two variables this gate just found missing, so on a fresh clone it
+// fails at its own first check. The order below is the one a fresh clone actually needs, measured by
+// following it from a clone with no `.env`.
 const HOW = [
-  `  - in a worktree: cp ../main/.env .env`,
-  `  - first time on this machine: bun run db:test:setup`,
+  `  - fresh clone: cp .env.example .env && docker compose up -d && bun run db:test:setup`,
+  `  - in a worktree, with the database already up: cp ../main/.env .env`,
   `  - deliberately without a database: ${DB_GATE_OPT_OUT}=1 bun test`,
 ].join("\n");
 

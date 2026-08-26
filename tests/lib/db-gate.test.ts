@@ -151,12 +151,12 @@ describe("what the probe is called when it fails", () => {
   // The label is not the value: the migration probe must still run against the DERIVED URL, which
   // is the one the guarded files connect with.
   test("the migration probe is labelled by its source and runs on the derived URL", () => {
-    const [migration] = probeTargets({
+    const migration = probeTargets({
       ...derived,
       MIGRATION_DATABASE_URL: "postgresql://su@localhost/derived_test",
-    });
-    expect(migration.variable).toBe("TEST_MIGRATION_DATABASE_URL");
-    expect(migration.url).toContain("derived_test");
+    }).find((t) => t.variable === "TEST_MIGRATION_DATABASE_URL");
+    expect(migration).toBeDefined();
+    expect(migration?.url).toContain("derived_test");
   });
 });
 

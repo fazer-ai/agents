@@ -293,16 +293,21 @@ export async function webhookDeliveryRequeue(
         },
       });
     }
-    const after = await requeueWebhookDelivery(ctx, id, base);
+    // `before` comes from the service's own LOCKED read, never from `current` above: between that
+    // read and the write, another operator can requeue this row and the worker can drive it back
+    // to DEAD (one tick, for a URL the SSRF guard refuses), and the audit would then describe the
+    // previous death instead of the one this call undid.
+    const { delivery: after, before } = await requeueWebhookDelivery(
+      ctx,
+      id,
+      base,
+    );
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
       action: "mcp.webhook_delivery_requeue",
       target,
-      before: truncForAudit({
-        status: current.status,
-        attempts: current.attempts,
-      }),
+      before: truncForAudit(before),
       after: truncForAudit({ status: after.status, attempts: after.attempts }),
     });
     return ok({ dryRun: false, applied: true, target, delivery: after });

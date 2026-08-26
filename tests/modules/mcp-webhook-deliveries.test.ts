@@ -188,6 +188,40 @@ describe.skipIf(!dbUp)("MCP delivery tools (DB)", () => {
     expect([row.status, row.attempts]).toEqual(["SENDING", 3]);
   });
 
+  test("the audit records the state the LOCKED write undid, not an earlier look", async () => {
+    // The window: the tool reads the row to build its preview, and between that read and the write
+    // the row can move — another operator requeues it and the worker kills it again, which for a
+    // URL the SSRF guard refuses takes one tick. Held open here by a transaction that changes the
+    // attempt count and commits only after the tool's `FOR UPDATE` is already waiting on it, so
+    // the unlocked read sees 8 and the locked one sees 1. The audit has to describe the second.
+    const id = await seed("DEAD", 8);
+    const holder = suDb.$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(
+          `UPDATE outbound_webhook_deliveries SET attempts = 1 WHERE id = ${id}`,
+        );
+        await Bun.sleep(500);
+      },
+      { timeout: 10_000 },
+    );
+    await Bun.sleep(120);
+    const [, r] = await Promise.all([
+      holder,
+      webhookDeliveryRequeue(
+        principal({ tenantId }),
+        { delivery_id: String(id), dry_run: false },
+        { base: appDb },
+      ),
+    ]);
+    expect(r.ok).toBe(true);
+    const audit = await suDb.auditLog.findFirstOrThrow({
+      where: { tenantId, target: `webhook_delivery:${id}` },
+      orderBy: { id: "desc" },
+    });
+    expect(audit.before).toMatchObject({ status: "DEAD", attempts: 1 });
+    expect(audit.after).toMatchObject({ status: "PENDING", attempts: 0 });
+  });
+
   test("the apply requeues the row and records who did it", async () => {
     const id = await seed("DEAD", 8);
     const r = await webhookDeliveryRequeue(

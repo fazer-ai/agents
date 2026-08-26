@@ -305,7 +305,13 @@ describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
     test("a dead delivery goes back to PENDING with its attempt count reset", async () => {
       await clearDeliveries();
       const id = await seed({ status: "DEAD", attempts: 8 });
-      const d = await requeueWebhookDelivery(ctx(), id, appDb);
+      const { delivery: d, before } = await requeueWebhookDelivery(
+        ctx(),
+        id,
+        appDb,
+      );
+      // What the requeue undid, read under the lock — the audit trail's `before` comes from here.
+      expect(before).toEqual({ status: "DEAD", attempts: 8 });
       expect(d).toMatchObject({
         status: "PENDING",
         attempts: 0,
@@ -399,8 +405,9 @@ describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
         holder,
         requeueWebhookDelivery(ctx(), id, appDb),
       ]);
-      expect(requeued.status).toBe("PENDING");
-      expect(requeued.attempts).toBe(0);
+      expect(requeued.delivery.status).toBe("PENDING");
+      expect(requeued.delivery.attempts).toBe(0);
+      expect(requeued.before).toEqual({ status: "DEAD", attempts: 8 });
       const [line] = await webhookLines(1);
       expect(line?.detail).toMatchObject({
         action: "requeued",
@@ -499,7 +506,7 @@ describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
     test("a requeue into a disabled subscription succeeds and says the queue is holding it", async () => {
       await clearDeliveries();
       const id = await seed({ sub: disabledSub, status: "DEAD", attempts: 8 });
-      const d = await requeueWebhookDelivery(ctx(), id, appDb);
+      const { delivery: d } = await requeueWebhookDelivery(ctx(), id, appDb);
       expect(d.status).toBe("PENDING");
       expect(d.subscriptionEnabled).toBe(false);
       const summary = await processOutboundBatch({

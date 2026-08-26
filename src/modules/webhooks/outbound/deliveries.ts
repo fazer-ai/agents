@@ -35,6 +35,12 @@ export interface WebhookDeliveryDto {
   updatedAt: string;
 }
 
+export interface RequeuedDelivery {
+  delivery: WebhookDeliveryDto;
+  // What the row was when the lock was taken, i.e. what this requeue actually undid.
+  before: { status: string; attempts: number };
+}
+
 export interface ListDeliveriesOpts {
   status?: string;
   subscriptionId?: bigint;
@@ -232,12 +238,18 @@ export async function getWebhookDelivery(
 // again. Refusing in the same statement that writes means no reader-then-writer gap to lose the
 // race in. PENDING is already queued, and replaying a DELIVERED event is a different promise with
 // a different consequence — re-sending data the receiver already took.
+// The pre-state travels back with the row, and it is the LOCKED read rather than a caller's own
+// earlier look. A caller that audits this mutation (the MCP tool does, and the contract in
+// docs/mcp.md requires `before`/`after` to describe the write that happened) would otherwise have
+// to read the row itself, outside the lock — and between that read and this one the row can have
+// been requeued by somebody else and died again, which for an SSRF-refused URL takes one tick. The
+// `before` it recorded would then belong to the previous death.
 export async function requeueWebhookDelivery(
   ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
-): Promise<WebhookDeliveryDto> {
-  const { row, attemptsBefore } = await runScopedOn(base, ctx, async (db) => {
+): Promise<RequeuedDelivery> {
+  const { row, before } = await runScopedOn(base, ctx, async (db) => {
     // `FOR UPDATE`, and the lock is the design of this function rather than an optimisation. Two
     // writers reach this row: another operator requeueing it, and the WORKER finishing with it.
     // Without the lock, both things this function then says can be stale by the time it says them
@@ -276,7 +288,10 @@ export async function requeueWebhookDelivery(
       data: { status: "PENDING", attempts: 0, nextAttemptAt: null },
       select: SELECT,
     });
-    return { row: updated, attemptsBefore: current.attempts };
+    return {
+      row: updated,
+      before: { status: current.status, attempts: current.attempts },
+    };
   });
   if (!row)
     throw new NotFoundError(
@@ -290,10 +305,12 @@ export async function requeueWebhookDelivery(
       deliveryId: id,
       subscriptionId: BigInt(dto.subscriptionId),
       event: dto.event,
-      attemptsBefore,
+      attemptsBefore: before.attempts,
       subscriptionEnabled: dto.subscriptionEnabled,
       base,
     });
   }
-  return dto;
+  // `before` is what the LOCKED read returned, not the constant "DEAD" the guard above proved it
+  // to be. The two are the same value and only one of them is evidence.
+  return { delivery: dto, before };
 }

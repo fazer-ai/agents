@@ -310,6 +310,35 @@ function topLevelArgCount(args: string): number {
   return n;
 }
 
+// A reading that CANNOT run, because the `??` in front of it never falls through.
+//
+// `at(…)` answers `string | null`, so it reads naturally as the fallback of a local validation
+// error — and it is dead there whenever that local error is a state initialized to `""`, since an
+// empty string is not nullish. Nothing about this is visible: the name is declared, the reading is
+// written, the fence's other rule sees an `at(…)` and is satisfied, and the refusal is placed onto a
+// holder whose one reader can never return it. `capture` has already told the caller "it is on the
+// control", so the toast stays quiet too. Measured on `useKnowledgeManager`: the chunk-size box
+// checks BOUNDS locally and the schema is `t.Integer`, so a size of 100.5 is refused by name and
+// answered with nothing at all.
+//
+// The left operand is the whole test. `refusal.at(a) ?? refusal.at(b)` — one control drawn for two
+// names, which ToolEditModal does — falls through exactly as intended.
+export function deadReadings(src: string): string[] {
+  const neverNullish = new Set(
+    [...src.matchAll(/const \[(\w+),[^\]]*\]\s*=\s*useState\(\s*["'`]/g)].map(
+      (m) => m[1] as string,
+    ),
+  );
+  if (neverNullish.size === 0) return [];
+  return [
+    ...codeSkeleton(src).matchAll(
+      /\b([A-Za-z_$][\w$]*)\s*\?\?\s*([A-Za-z_$][\w$]*)\.at\(/g,
+    ),
+  ]
+    .filter((m) => neverNullish.has(m[1] as string))
+    .map((m) => `${m[2]}.at behind ${m[1]}`);
+}
+
 export function silentDeclarations(src: string): string[] {
   return declarations(src).flatMap(({ holder, fields }) => {
     const read = readFields(src, holder);
@@ -484,6 +513,54 @@ describe("a form that writes holds the refusal it gets", () => {
       setError(r.capture(e, f, sent, current));
     `;
     expect(halfUsedHolders(src)).toEqual(["r (never read)"]);
+  });
+
+  test("no reading sits behind a fallback that never falls through", () => {
+    const dead = sources(ROOT).flatMap((f) =>
+      deadReadings(readFileSync(f, "utf8")).map(
+        (d) => `${f.slice(`${ROOT}/`.length)} :: ${d}`,
+      ),
+    );
+    expect(
+      dead,
+      'a local error state initialized to "" is never nullish, so the refusal behind `??` is unreachable and the toast is already quiet: use `||`',
+    ).toEqual([]);
+  });
+
+  test("the predicate flags a refusal behind an empty-string local error", () => {
+    const src = `
+      const [chunkSizeError, setChunkSizeError] = useState("");
+      <FormField error={chunkSizeError ?? r.at("chunkSize", v)} />
+    `;
+    expect(deadReadings(src)).toEqual(["r.at behind chunkSizeError"]);
+  });
+
+  test("the same reading behind a truthy fallback is fine", () => {
+    const src = `
+      const [chunkSizeError, setChunkSizeError] = useState("");
+      <FormField error={chunkSizeError || r.at("chunkSize", v)} />
+    `;
+    expect(deadReadings(src)).toEqual([]);
+  });
+
+  test("a local error that CAN be null keeps its fallback", () => {
+    // The filter's own control: the rule is about a state that is never nullish, not about `??`.
+    // A nullable local error is the shape this pattern is written for.
+    const src = `
+      const [touched, setTouched] = useState("");
+      const localError = invalid ? "Must be a number." : null;
+      <FormField error={localError ?? r.at("chunkSize", v)} />
+    `;
+    expect(deadReadings(src)).toEqual([]);
+  });
+
+  test("one control drawn for two names still falls through", () => {
+    // `at(…)` answers null when it is not the refused name, which is exactly what `??` is for.
+    const src = `
+      const [x, setX] = useState("");
+      <FormField error={r.at("label", a) ?? r.at("name", b)} />
+    `;
+    expect(deadReadings(src)).toEqual([]);
   });
 
   test("a declared name with no control behind it is flagged", () => {

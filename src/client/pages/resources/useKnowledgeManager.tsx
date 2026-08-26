@@ -1106,13 +1106,18 @@ export function useKnowledgeManager(opts: {
               rows={2}
             />
           </FormField>
+          {/* `||` and not `??`: these two hold "" when there is nothing wrong, so a nullish fallback
+              never reaches the refusal behind it. The local check tests BOUNDS only, and the schema
+              is `t.Integer` — a chunk size of 100.5 passes here and is refused there by name, which
+              is exactly the case that was landing on a reading nobody could reach. Local first
+              because it is about what the box holds now. */}
           <FormField
             label={t("knowledge.chunkSize", "Chunk size (chars)")}
             hint={t(
               "knowledge.chunkSizeHint",
               "Controls how large each indexed text chunk is. Smaller chunks give more precision; larger chunks preserve more context.",
             )}
-            error={chunkSizeError ?? baseRefusal.at("chunkSize", chunkSize)}
+            error={chunkSizeError || baseRefusal.at("chunkSize", chunkSize)}
           >
             <Input
               type="number"
@@ -1129,7 +1134,7 @@ export function useKnowledgeManager(opts: {
               "Number of characters shared between consecutive chunks. Helps preserve context across chunk boundaries.",
             )}
             error={
-              chunkOverlapError ?? baseRefusal.at("chunkOverlap", chunkOverlap)
+              chunkOverlapError || baseRefusal.at("chunkOverlap", chunkOverlap)
             }
           >
             <Input
@@ -1181,7 +1186,7 @@ export function useKnowledgeManager(opts: {
               "knowledge.chunkSizeHint",
               "Controls how large each indexed text chunk is. Smaller chunks give more precision; larger chunks preserve more context.",
             )}
-            error={chunkSizeError ?? baseRefusal.at("chunkSize", chunkSize)}
+            error={chunkSizeError || baseRefusal.at("chunkSize", chunkSize)}
           >
             <Input
               type="number"
@@ -1198,7 +1203,7 @@ export function useKnowledgeManager(opts: {
               "Number of characters shared between consecutive chunks. Helps preserve context across chunk boundaries.",
             )}
             error={
-              chunkOverlapError ?? baseRefusal.at("chunkOverlap", chunkOverlap)
+              chunkOverlapError || baseRefusal.at("chunkOverlap", chunkOverlap)
             }
           >
             <Input

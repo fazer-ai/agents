@@ -366,6 +366,9 @@ const BARE_SLICES: Record<
   "src/lib/text.ts": [3, "the-cut"],
   "src/modules/agents/credential-paths.ts": [2, "array"],
   "src/modules/agents/text-caps.ts": [1, "array"],
+  // `countNotStoredAsWritten`: the bundled entries a schedule cap lets through, so the ones past it
+  // count as loss rather than being tested. An array of JSON entries, never a string.
+  "src/modules/agents/transfer.ts": [1, "array"],
   "src/modules/analytics/langfuse-costs.ts": [2, "fixed-format"],
   "src/modules/api-keys/verify.ts": [1, "ascii"],
   "src/modules/appointments/settings.ts": [1, "array"],

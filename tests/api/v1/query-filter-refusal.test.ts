@@ -146,6 +146,19 @@ const REFUSED: Array<[path: string, param: string]> = [
   // `9007199254740993` comes back from `Number` as `...992`: a count the caller never named.
   ["/v1/logs?source=all&limit=9007199254740993", "limit"],
   ["/v1/conversations/1/messages?before=9007199254740993", "before"],
+  // Round 3: the EMPTY value in the text and vocabulary filters. An unknown `level` reaches the
+  // query and answers zero rows, which is correct; `level=` is dropped by `buildLogWhere`'s
+  // truthiness and answers the tenant's whole table, which is the widening this branch is about.
+  ["/v1/logs?source=all&level=", "level"],
+  ["/v1/logs?source=all&stage=", "stage"],
+  ["/v1/logs?source=all&turnId=", "turnId"],
+  ["/v1/logs?source=all&search=", "search"],
+  ["/v1/logs?source=all&search=%20%20", "search"],
+  ["/v1/logs/export?source=all&level=", "level"],
+  ["/v1/logs/export?source=all&search=", "search"],
+  ["/v1/audit?action=", "action"],
+  ["/v1/conversations?q=", "q"],
+  ["/v1/agents?q=", "q"],
 ];
 
 describe("a query filter the server cannot use is a 400 that names it", () => {
@@ -156,6 +169,24 @@ describe("a query filter the server cannot use is a 400 that names it", () => {
       expect(`${path}: ${res.status}`).toBe(`${path}: 400`);
       const body = (await res.json()) as { field?: string };
       expect(body.field).toBe(param);
+    });
+  }
+});
+
+describe("an unknown value is not an unusable one", () => {
+  // The line this branch draws: `level=bogus` reaches the query and answers zero rows, which is a
+  // correct answer to a filter nothing matches and is distinguishable by the client from a widened
+  // one. Refusing it would mean the server owning a vocabulary it does not own (`stage`/`level` are
+  // validated Strings on purpose, so a new stage does not need a deploy to be queryable).
+  for (const q of [
+    "level=bogus",
+    "stage=nosuchstage",
+    "turnId=nope",
+    "search=zzz",
+  ]) {
+    test(`${q} is accepted and narrows, not refused`, async () => {
+      const res = await get(`/v1/logs?source=all&${q}`);
+      expect(`${q}: ${res.status}`).toBe(`${q}: 200`);
     });
   }
 });

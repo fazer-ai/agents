@@ -56,6 +56,22 @@ export function parseQueryId(
 // way.
 const DECIMAL = /^\d+$/;
 
+// A free-text or closed-vocabulary filter, where the only unusable spelling is the EMPTY one.
+//
+// The value itself is not judged here — an unknown `level` reaches the query and answers zero rows,
+// which is a correct answer to a filter nothing matches. `""` is the one that is not: every service
+// on this surface writes `opts.x ? { x: opts.x } : {}`, so a present-but-empty filter is DROPPED
+// and the caller who narrowed the request gets the tenant's whole table back. Whitespace counts as
+// empty because `listAgentsPaged` already trims before the same truthiness check.
+export function parseQueryText(
+  s: string | undefined,
+  param: string,
+): string | undefined {
+  if (s === undefined) return undefined;
+  if (s.trim() === "") badQueryParam(param);
+  return s;
+}
+
 export function parseQueryCount(
   s: string | undefined,
   param: string,

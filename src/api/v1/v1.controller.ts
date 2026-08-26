@@ -6,6 +6,7 @@ import {
   parseQueryCount,
   parseQueryId,
   parseQueryInstant,
+  parseQueryText,
 } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
@@ -268,7 +269,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         status: query.status,
         limit: parseQueryCount(query.limit, "limit"),
         cursor: parseQueryId(query.cursor, "cursor"),
-        q: query.q,
+        q: parseQueryText(query.q, "q"),
       });
       return {
         instance: instanceIdentity,

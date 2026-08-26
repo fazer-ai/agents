@@ -1,6 +1,6 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
-import { parseQueryCount } from "@/api/lib/query-filters";
+import { parseQueryCount, parseQueryText } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
@@ -27,7 +27,7 @@ export const auditController = new Elysia({
       instance: instanceIdentity,
       entries: await listAudit(ctxOrThrow(tenantContext), {
         limit: parseQueryCount(query.limit, "limit"),
-        action: query.action,
+        action: parseQueryText(query.action, "action"),
       }),
     }),
     {

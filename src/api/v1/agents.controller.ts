@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { getUserById, verifyPassword } from "@/api/features/auth/auth.service";
 import { doc, errors } from "@/api/lib/openapi";
+import { parseQueryText } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
 import {
@@ -258,7 +259,7 @@ export const agentsController = new Elysia({
       const { agents, total } = await listAgentsPaged(
         ctxOrThrow(tenantContext),
         {
-          q: query.q,
+          q: parseQueryText(query.q, "q"),
           orderBy: query.orderBy,
           order: query.order,
           enabled: query.enabled,

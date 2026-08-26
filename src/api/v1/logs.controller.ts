@@ -4,6 +4,7 @@ import {
   parseQueryCount,
   parseQueryId,
   parseQueryInstant,
+  parseQueryText,
 } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
@@ -42,13 +43,13 @@ export const logsController = new Elysia({
       ...(await listExecutionLogs(ctxOrThrow(tenantContext), {
         since: parseQueryInstant(query.since, "since"),
         until: parseQueryInstant(query.until, "until"),
-        level: query.level,
-        stage: query.stage,
+        level: parseQueryText(query.level, "level"),
+        stage: parseQueryText(query.stage, "stage"),
         agentId: parseQueryId(query.agentId, "agentId"),
         conversationId: parseQueryId(query.conversationId, "conversationId"),
-        turnId: query.turnId,
+        turnId: parseQueryText(query.turnId, "turnId"),
         source: query.source,
-        search: query.search,
+        search: parseQueryText(query.search, "search"),
         limit: parseQueryCount(query.limit, "limit"),
         cursor: parseQueryId(query.cursor, "cursor"),
       })),
@@ -122,13 +123,13 @@ export const logsController = new Elysia({
       ...(await exportExecutionLogs(ctxOrThrow(tenantContext), {
         since: parseQueryInstant(query.since, "since"),
         until: parseQueryInstant(query.until, "until"),
-        level: query.level,
-        stage: query.stage,
+        level: parseQueryText(query.level, "level"),
+        stage: parseQueryText(query.stage, "stage"),
         agentId: parseQueryId(query.agentId, "agentId"),
         conversationId: parseQueryId(query.conversationId, "conversationId"),
-        turnId: query.turnId,
+        turnId: parseQueryText(query.turnId, "turnId"),
         source: query.source,
-        search: query.search,
+        search: parseQueryText(query.search, "search"),
         format: parseFormat(query.format),
         maxRows: parseQueryCount(query.maxRows, "maxRows"),
       })),

@@ -75,6 +75,7 @@
     "inboxNotBound": "Esta caixa de entrada não tem agente para reconectar.",
     "inboxNotFound": "Caixa de entrada não encontrada.",
     "inboxStillExists": "Esta caixa de entrada ainda existe no Chatwoot. Exclua-a lá primeiro.",
+    "integrationHeaderNameUnusable": "O valor de \"{{field}}\" não é um nome de header utilizável: use apenas letras, dígitos e !#$%&'*+-.^_`|~ (sem espaços nem quebras de linha).",
     "integrationHttpError": "{{provider}} respondeu HTTP {{status}}.",
     "integrationInstanceNotFound": "Instância de integração não encontrada.",
     "integrationNoInboundWebhook": "A integração {{integration}} não tem webhook de entrada.",

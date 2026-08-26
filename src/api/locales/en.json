@@ -75,6 +75,7 @@
     "inboxNotBound": "This inbox has no agent to reconnect.",
     "inboxNotFound": "Inbox not found.",
     "inboxStillExists": "This inbox still exists in Chatwoot. Delete it there first.",
+    "integrationHeaderNameUnusable": "The \"{{field}}\" value is not a usable header name: use only letters, digits and !#$%&'*+-.^_`|~ (no spaces or line breaks).",
     "integrationHttpError": "{{provider}} returned HTTP {{status}}.",
     "integrationInstanceNotFound": "Integration instance not found.",
     "integrationNoInboundWebhook": "The {{integration}} integration has no inbound webhook.",

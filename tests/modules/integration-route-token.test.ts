@@ -9,6 +9,7 @@ import {
   listIntegrationInstances,
   resolveInboundRouteByToken,
   rotateIntegrationRouteToken,
+  updateIntegrationInstance,
 } from "@/modules/integrations/service";
 
 // The context these calls take: the tenant id came from a row this test created, so it carries
@@ -217,6 +218,117 @@ describe.skipIf(!dbUp)("integration route token", () => {
     await expect(
       rotateIntegrationRouteToken(ctx(), created.id, appDb),
     ).rejects.toBeInstanceOf(AppError);
+  });
+
+  // Issue #362. Two of `config`'s keys are read back as HEADER NAMES, and nothing between the
+  // operator's JSON and `request.headers.get` asked whether they are ones — so a trailing space
+  // answered every delivery 500 instead of the uniform 401, and the provider retried a request that
+  // could never succeed. Refused rather than trimmed, the call issue #340 made for vault values:
+  // `x tok` has to be refused regardless of trimming, and the operator typing into raw JSON has no
+  // other feedback.
+  const unusable = [
+    "asaas-access-token ",
+    " x-tok",
+    "x tok",
+    "x-tök",
+    "x\ntok",
+  ];
+
+  for (const value of unusable) {
+    test(`create refuses config.authHeader ${JSON.stringify(value)}`, async () => {
+      const err = await createIntegrationInstance(
+        ctxOf(tenantId),
+        {
+          catalogType: "ASAAS",
+          name: `hdr-${value.length}-${Math.trunc(value.charCodeAt(0))}`,
+          config: { authHeader: value },
+        },
+        appDb,
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(AppError);
+      expect((err as AppError).statusCode).toBe(400);
+      // The sentence itself names the key: `AppError.field` does not survive the MCP writer, which
+      // sends `e.message` alone.
+      expect((err as AppError).message).toContain("config.authHeader");
+    });
+  }
+
+  test("create refuses config.signatureHeader too, on the same rule", async () => {
+    const err = await createIntegrationInstance(
+      ctxOf(tenantId),
+      {
+        catalogType: "ASAAS",
+        name: "hdr-sig",
+        config: { signatureHeader: "x-sig " },
+      },
+      appDb,
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).message).toContain("config.signatureHeader");
+  });
+
+  test("update refuses it as well, so an instance cannot be edited into it", async () => {
+    const created = await createIntegrationInstance(
+      ctxOf(tenantId),
+      { catalogType: "ASAAS", name: "hdr-editable" },
+      appDb,
+    );
+    const err = await updateIntegrationInstance(
+      ctxOf(tenantId),
+      created.id,
+      { config: { authHeader: "asaas-access-token " } },
+      appDb,
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).statusCode).toBe(400);
+  });
+
+  // The controls, and they are what say the rule is about the NAME. A legal custom name is the whole
+  // reason the field exists (Asaas fixes its own), and the punctuation RFC 7230 allows is not
+  // exotic — refusing `x_tok` would break instances that work today.
+  test("a legal header name still saves, punctuation included", async () => {
+    for (const value of ["asaas-access-token", "x_tok", "x.tok", "x|tok"]) {
+      const created = await createIntegrationInstance(
+        ctxOf(tenantId),
+        {
+          catalogType: "ASAAS",
+          name: `hdr-ok-${value}`,
+          config: { authHeader: value },
+        },
+        appDb,
+      );
+      expect(created.id).toBeDefined();
+    }
+  });
+
+  // A key holding something that is not a string is ignored by the reader, which falls back to the
+  // catalog's name and then ours. That is documented behaviour and rows already carry it, so
+  // refusing it here would turn an existing instance's next unrelated save into a 400.
+  test("a non-string under the same key is left alone, not refused", async () => {
+    const objectValued = await createIntegrationInstance(
+      ctxOf(tenantId),
+      {
+        catalogType: "ASAAS",
+        name: "hdr-object",
+        config: { authHeader: { a: 1 } },
+      },
+      appDb,
+    );
+    expect(objectValued.id).toBeDefined();
+
+    const created = await createIntegrationInstance(
+      ctxOf(tenantId),
+      {
+        catalogType: "ASAAS",
+        name: "hdr-nonstring",
+        // `{}` is the case that says the rule reads a STRING rather than whatever String() would
+        // make of the value: `[object Object]` has spaces in it, so a guard that coerced instead of
+        // narrowing would refuse this one.
+        config: { authHeader: 42, signatureHeader: null, extra: { a: 1 } },
+      },
+      appDb,
+    );
+    expect(created.id).toBeDefined();
   });
 
   test("rotating an unknown instance is a 404, not a silent mint", async () => {

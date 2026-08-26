@@ -9,6 +9,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { requireVaultRef } from "@/modules/vault/service";
+import { isUsableHeaderName } from "@/modules/webhooks/inbound/auth";
 import {
   generateRouteToken,
   hashRouteToken,
@@ -60,6 +61,44 @@ export async function resolveInboundRouteByToken(
   return { ...row, config: (row.config ?? {}) as Record<string, unknown> };
 }
 
+// `config` is a free-form bag on both writers (`z.record(z.string(), z.unknown())`, no allowlist),
+// and two of its keys are read back as HEADER NAMES by the inbound gate. `request.headers.get`
+// throws on a name outside RFC 7230's token, so before issue #362 a trailing space typed into that
+// JSON answered every delivery 500 — where every other refusal is a uniform 401, making the status
+// itself the oracle that uniformity exists to deny, and making the provider retry a request that
+// can never succeed.
+//
+// This REFUSES rather than trimming, the same call issue #340 made for vault values: the operator
+// typing a header name into raw JSON gets no feedback either way, and a refusal that names the key
+// is the only feedback there is. Trimming would also only cover the padded spelling — `x tok` has
+// to be refused regardless — so normalising would buy a second code path and still refuse.
+//
+// Only a STRING is judged. A key holding a number or null is already ignored by
+// `resolveInboundAuthConfig`'s `override`, which falls back to the catalog's name and then ours;
+// that is documented behaviour, and rows already carry it. Refusing it here would turn an existing
+// instance's next unrelated save into a 400.
+//
+// The read refuses too, and neither makes the other redundant: this one cannot reach a row already
+// written, and that one cannot tell the operator anything.
+const HEADER_NAME_KEYS = ["authHeader", "signatureHeader"] as const;
+
+function assertUsableHeaderNames(config: Record<string, unknown>): void {
+  for (const key of HEADER_NAME_KEYS) {
+    const value = config[key];
+    if (typeof value !== "string") continue;
+    if (isUsableHeaderName(value)) continue;
+    // The sentence names the key because `AppError.field` does not survive every caller: the MCP
+    // writer sends `e.message` alone (issue #340 measured the same loss on the vault path).
+    throw new AppError(
+      `config.${key} is not a usable header name`,
+      400,
+      "errors.integrationHeaderNameUnusable",
+      { field: `config.${key}` },
+      `config.${key}`,
+    );
+  }
+}
+
 export interface CreateIntegrationParams {
   catalogType: string;
   name: string;
@@ -82,6 +121,7 @@ export async function createIntegrationInstance(
   if (!entry) {
     throw new AppError(`unknown catalogType: ${params.catalogType}`, 400);
   }
+  if (params.config) assertUsableHeaderNames(params.config);
   // Only inbound-capable catalog entries mint a route token; the rest get no inbound surface.
   const minted = entry.supportsInbound ? generateRouteToken() : null;
   const tenantId = ctx.tenantId as bigint;
@@ -255,6 +295,7 @@ export async function updateIntegrationInstance(
   params: UpdateIntegrationParams,
   base: PrismaClient = basePrisma,
 ): Promise<IntegrationInstanceDto> {
+  if (params.config) assertUsableHeaderNames(params.config);
   return runScopedOn(base, ctx, async (db) => {
     const current = await db.integrationInstance.findUnique({
       where: { id },

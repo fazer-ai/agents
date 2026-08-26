@@ -39,6 +39,21 @@ export function resolveInboundAuthConfig(
   };
 }
 
+// A header NAME, by RFC 7230's `token`: the alphabet `Headers.get` accepts and nothing wider. The
+// name reaching here is operator text — `config.authHeader` is a free-form JSON field with no
+// allowlist on either writer — and `request.headers.get` THROWS on anything outside this, so before
+// issue #362 a trailing space answered the delivery 500 while every other refusal answered 401. The
+// status was then the oracle the uniform 401 exists to deny: 500 said "this token resolves to a live
+// instance", where an unknown token still said 401.
+//
+// The write refuses this too (integrations/service.ts), and that does not make this redundant: rows
+// already carry whatever they carry, and no write-side fix reaches a row already written.
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+export function isUsableHeaderName(name: string): boolean {
+  return HEADER_NAME.test(name);
+}
+
 function timingEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
   const bb = Buffer.from(b);
@@ -61,6 +76,7 @@ export type InboundAuthFailure =
   | "secret_ref_unresolved"
   | "secret_pending"
   | "secret_unusable"
+  | "header_name_unusable"
   | "header_missing"
   | "credential_mismatch"
   | "unsupported_strategy";
@@ -117,6 +133,11 @@ export function verifyInboundAuth(params: {
 
   if (strategy === "STATIC_HEADER") {
     const headerName = config?.authHeader ?? DEFAULT_STATIC_HEADER;
+    // Refused, never fallen back from. Comparing the secret against `x-webhook-token` because the
+    // configured name is unusable would authenticate on a header the operator never chose, which is
+    // a worse failure than refusing: it makes a misconfigured instance answer 200 to a request the
+    // provider never intended to be authenticated by that header.
+    if (!isUsableHeaderName(headerName)) return fail("header_name_unusable");
     const provided = getHeader(headerName);
     if (provided === null) return fail("header_missing");
     return timingEqual(provided, value)
@@ -126,6 +147,7 @@ export function verifyInboundAuth(params: {
 
   if (strategy === "HMAC_SHA256") {
     const headerName = config?.signatureHeader ?? DEFAULT_SIGNATURE_HEADER;
+    if (!isUsableHeaderName(headerName)) return fail("header_name_unusable");
     const provided = getHeader(headerName);
     if (provided === null) return fail("header_missing");
     const expected = createHmac("sha256", value).update(rawBody).digest("hex");

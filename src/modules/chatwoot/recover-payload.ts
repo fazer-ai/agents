@@ -63,6 +63,14 @@ export interface RecoveryConversation {
   // arms the ladder with nothing — which then messages and resolves whichever sibling the mirror
   // last knew, or none.
   redirectOriginDisplayId: number | null;
+  // The version that stamped that pairing (`chatwootRedirectOriginAt`), or null if nothing ever did.
+  //
+  // It travels WITH the pairing because on the wire the two are one fact: every real body carries
+  // the pairing and the `updated_at` that orders it, and the mirror refuses an older pairing by
+  // comparing them. Carrying one without the other is what makes a rebuilt body able to RESTORE a
+  // pairing a re-entry replaced while the recovery was doing its REST reads — it states the old
+  // value with no version, and an unversioned statement outranks nothing.
+  redirectOriginAt: number | null;
 }
 
 export interface RecoveryMessage {
@@ -133,6 +141,11 @@ export function buildRecoveryPayload(params: {
       // as a CLEAR only where the row already knew a pairing (`redirectOriginAnswers` requires
       // `redirectOriginKnown`), and there the value being cleared is the one this read came from.
       redirect_origin_display_id: c.redirectOriginDisplayId,
+      // Only when there IS one. A row nothing ever stamped cannot be regressed, and inventing a
+      // version for it would order every other field in this body by a number nobody measured.
+      ...(c.redirectOriginAt !== null
+        ? { updated_at: c.redirectOriginAt }
+        : {}),
       // The customer's own clock, on the field `normalizeChatwootEvent` reads it from. On the wire
       // this is the CONVERSATION's activity time, and for a `message_created` that is exactly this
       // message's — which is why the message's own timestamp is the right source for it.

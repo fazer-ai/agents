@@ -84,6 +84,7 @@ function rebuilt(
     createdAt?: number | null;
     attachments?: unknown[];
     redirectOriginDisplayId?: number | null;
+    redirectOriginAt?: number | null;
   } = {},
 ) {
   return buildRecoveryPayload({
@@ -101,6 +102,8 @@ function rebuilt(
         over.redirectOriginDisplayId === undefined
           ? null
           : over.redirectOriginDisplayId,
+      redirectOriginAt:
+        over.redirectOriginAt === undefined ? null : over.redirectOriginAt,
     },
     inboxId: over.inboxId === undefined ? INBOX : over.inboxId,
     inboxName: over.inboxName === undefined ? "twobot-inbox" : over.inboxName,

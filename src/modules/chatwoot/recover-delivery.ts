@@ -263,6 +263,7 @@ async function runRecovery(params: {
         contactInboxId: true,
         // The one field the live read cannot answer (see recover-payload.ts).
         redirectOriginDisplayId: true,
+        chatwootRedirectOriginAt: true,
         status: true,
         assigneeType: true,
         assigneeId: true,
@@ -382,6 +383,7 @@ async function runRecovery(params: {
         // (MEASURED), and the pairing does not move anyway.
         contactInboxId: conv.contactInboxId,
         redirectOriginDisplayId: conv.redirectOriginDisplayId,
+        redirectOriginAt: conv.chatwootRedirectOriginAt,
         status: state.status,
         assigneeType: state.assigneeType,
         assigneeId: state.assigneeId,

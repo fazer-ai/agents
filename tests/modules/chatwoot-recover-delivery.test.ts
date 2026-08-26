@@ -198,6 +198,7 @@ async function seedConversation(
     lastEventAt?: Date;
     status?: string;
     redirectOriginDisplayId?: number | null;
+    redirectOriginAt?: number;
   } = {},
 ) {
   return suDb.conversation.create({
@@ -213,6 +214,13 @@ async function seedConversation(
       lastEventAt: over.lastEventAt ?? new Date(),
       contactInboxId: 71_000 + convId,
       redirectOriginDisplayId: over.redirectOriginDisplayId ?? null,
+      // Stamped with the pairing, as the mirror always does: a pairing reaches the row from a
+      // webhook, and every webhook carries the `updated_at` that orders it. A fixture that sets one
+      // without the other is a row production cannot produce.
+      chatwootRedirectOriginAt:
+        over.redirectOriginDisplayId != null
+          ? (over.redirectOriginAt ?? SENT_AT)
+          : null,
     },
     select: { id: true },
   });
@@ -772,6 +780,65 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       select: { redirectOriginDisplayId: true },
     });
     expect(row.redirectOriginDisplayId).toBe(991);
+  });
+
+  test("a re-entry that lands mid-rescue keeps its pairing", async () => {
+    // The window the round-5 fix opened and this closes: the pairing is read BEFORE two REST reads
+    // and a reconcile, and the mirror write happens after them. A widget re-entered from a second
+    // WhatsApp thread in that window writes a NEW pairing with a proper version; replaying the old
+    // one restores the previous episode, retires the current ladder, and later messages or resolves
+    // the wrong sibling.
+    const convId = 8933;
+    const messageId = 9436;
+    const conv = await seedConversation(convId, {
+      redirectOriginDisplayId: 991,
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    // The re-entry lands exactly where a real one would: after the pairing was read, before the
+    // rebuilt body reaches the mirror. Stamped with a version, as the webhook that carries it is.
+    // ONCE, on the first client build: the delivery path builds a client of its own later, and a
+    // hook that fired again would re-apply the re-entry AFTER the mirror write and hide the very
+    // regression this is looking for.
+    let reentered = false;
+    const racing: RuntimeDeps = {
+      ...depsWith(stub),
+      makeClient: async (cfg) => {
+        if (!reentered) {
+          reentered = true;
+          await suDb.conversation.update({
+            where: { id: conv.id },
+            data: {
+              redirectOriginDisplayId: 992,
+              chatwootRedirectOriginAt: Date.now() / 1000,
+            },
+          });
+        }
+        const inner = stub.makeClient;
+        if (!inner) throw new Error("stub has no client factory");
+        return inner(cfg);
+      },
+    };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: racing,
+      }),
+    ).toBe("recovered");
+
+    const row = await suDb.conversation.findUniqueOrThrow({
+      where: { id: conv.id },
+      select: { redirectOriginDisplayId: true },
+    });
+    expect(row.redirectOriginDisplayId).toBe(992);
   });
 
   test("a control command is never replayed", async () => {

@@ -18,7 +18,10 @@ globalThis.fetch = (async () =>
     headers: { "content-type": "application/json" },
   })) as unknown as typeof globalThis.fetch;
 
-function renderWithProvider(provider: string): void {
+function renderWithProvider(
+  provider: string,
+  { baseURL = "", credBaseUrl = null as string | null } = {},
+): void {
   const noop = () => {};
   const props = {
     agentId: "1",
@@ -80,11 +83,11 @@ function renderWithProvider(provider: string): void {
       provider,
       model: "",
       credentialRef: "",
-      baseURL: "",
+      baseURL,
       extractionPrompt: "Leia.",
     },
     setVision: noop,
-    visionCredBaseUrl: null,
+    visionCredBaseUrl: credBaseUrl,
     limits: { maxToolCalls: "10", maxHistoryTokens: "" },
     setLimits: noop,
     memory: {
@@ -124,12 +127,16 @@ function renderWithProvider(provider: string): void {
   render(<BehaviorTab {...props} />);
 }
 
-// Counts every place the tab says "images only", not just the new hint: the model field carried a
-// STATIC sentence naming openai as image-only, which the same change turns into a lie. Whichever
-// line says it, an operator on a provider that reads PDFs must not read it.
 const warnings = () =>
-  screen.queryAllByText(/images only/i).length +
-  screen.queryAllByText(/apenas imagens/i).length;
+  screen.queryAllByText(/PDF attachments are skipped/i).length +
+  screen.queryAllByText(/anexos em PDF são ignorados/i).length;
+
+// The model field carried a STATIC sentence naming which providers read PDFs, which this change
+// turns into a lie. It is counted separately because it is a different failure from a missing
+// warning: nothing about it depends on the provider being rendered.
+const staleClaims = () =>
+  screen.queryAllByText(/reads images only/i).length +
+  screen.queryAllByText(/lê apenas imagens/i).length;
 
 describe("vision provider document support, at the point of choice", () => {
   afterEach(() => cleanup());
@@ -142,6 +149,30 @@ describe("vision provider document support, at the point of choice", () => {
     expect(warnings() > 0).toBe(true);
   });
 
+  // The endpoint is what has to be known, and a base URL survives the provider being switched: an
+  // agent moved off `openai-compatible` keeps posting to the operator's own server under the name
+  // `openai`. The warning has to follow the endpoint, not the name.
+  test("openai pointed at someone else's endpoint is called out too", () => {
+    renderWithProvider("openai", {
+      baseURL: "https://llm.internal.example/v1",
+    });
+    expect(warnings() > 0).toBe(true);
+  });
+
+  // Same thing arriving the other way: a credential can carry its own base URL, and it OUTRANKS the
+  // typed field (the field is rendered read-only when it does).
+  test("openai on a credential that carries its own endpoint is called out too", () => {
+    renderWithProvider("openai", {
+      credBaseUrl: "https://llm.internal.example/v1",
+    });
+    expect(warnings() > 0).toBe(true);
+  });
+
+  test("openai spelled out as its own endpoint is not", () => {
+    renderWithProvider("openai", { baseURL: "https://api.openai.com/v1" });
+    expect(warnings()).toBe(0);
+  });
+
   test("openai-compatible is called out as image-only", () => {
     renderWithProvider("openai-compatible");
     expect(warnings() > 0).toBe(true);
@@ -151,10 +182,12 @@ describe("vision provider document support, at the point of choice", () => {
   test("openai carries no such warning", () => {
     renderWithProvider("openai");
     expect(warnings()).toBe(0);
+    expect(staleClaims()).toBe(0);
   });
 
   test("gemini carries no such warning", () => {
     renderWithProvider("gemini");
     expect(warnings()).toBe(0);
+    expect(staleClaims()).toBe(0);
   });
 });

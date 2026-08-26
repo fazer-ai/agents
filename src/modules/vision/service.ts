@@ -13,6 +13,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import { tryResolveVaultEntry } from "@/modules/vault/service";
+import { visionAcceptsDocuments } from "./document-support";
 import {
   getVisionProvider,
   type VisionKind,
@@ -269,7 +270,12 @@ export async function extractInboundFile(
   }
   const kind = visionKindForMime(contentType);
   if (!kind) return skip("unsupported_mime"); // unsupported mime → marker
-  if (kind === "document" && !provider.supportsDocuments)
+  // The ENDPOINT decides, not the provider name: the same base URL that the call below posts to is
+  // what has to be known to read a PDF (see ./document-support).
+  if (
+    kind === "document" &&
+    !visionAcceptsDocuments(cfg.provider, entry.baseUrl ?? cfg.baseURL)
+  )
     return skip("document_not_supported");
 
   let extracted: VisionResult;
@@ -427,7 +433,11 @@ export async function extractPlaygroundFile(
   }
 
   const kind = visionKindForMime(params.mimeType);
-  if (!kind || (kind === "document" && !provider.supportsDocuments)) {
+  if (
+    !kind ||
+    (kind === "document" &&
+      !visionAcceptsDocuments(cfg.provider, entry.baseUrl ?? cfg.baseURL))
+  ) {
     return { kind: "unsupported", text: "" };
   }
 

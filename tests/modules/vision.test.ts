@@ -25,7 +25,9 @@ describe("visionKindForMime", () => {
 });
 
 describe("vision providers", () => {
-  test("registry exposes openai/openai-compatible/gemini/anthropic/openrouter with document support flags", () => {
+  // Which of them reads a PDF is NOT here: that answer depends on the endpoint the call goes to,
+  // and it lives in ./document-support with its own decision table.
+  test("registry exposes openai/openai-compatible/gemini/anthropic/openrouter", () => {
     // NOTE: sorted through a COPY. `sort` mutates, and this array is the exported registry — sorting
     // it here reordered it for every other test in the same process, which is how a schema test
     // comparing the published enum against this constant went red in CI and green locally.
@@ -36,13 +38,6 @@ describe("vision providers", () => {
       "openai-compatible",
       "openrouter",
     ]);
-    expect(getVisionProvider("openai")?.supportsDocuments).toBe(true);
-    expect(getVisionProvider("openai-compatible")?.supportsDocuments).toBe(
-      false,
-    );
-    expect(getVisionProvider("gemini")?.supportsDocuments).toBe(true);
-    expect(getVisionProvider("anthropic")?.supportsDocuments).toBe(true);
-    expect(getVisionProvider("openrouter")?.supportsDocuments).toBe(false);
     expect(getVisionProvider("nope")).toBeNull();
   });
 

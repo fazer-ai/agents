@@ -5,7 +5,6 @@ import {
   TTS_DEFAULT_VOICE,
   TTS_PROVIDERS,
   VISION_DEFAULT_MODEL,
-  VISION_SUPPORTS_DOCUMENTS,
 } from "@/client/lib/providerDefaults";
 import { getSttProvider, STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { getTtsProvider, TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
@@ -28,17 +27,6 @@ describe("provider defaults mirror", () => {
     for (const name of VISION_PROVIDER_NAMES) {
       expect(VISION_DEFAULT_MODEL[name]).toBe(
         getVisionProvider(name)?.defaultModel,
-      );
-    }
-  });
-
-  // Not a cosmetic mirror: this one is a CLAIM about the provider made to the operator while they
-  // choose. Drifting either way misinforms — saying a provider skips PDFs when it reads them steers
-  // them off a working setup, and the reverse leaves the silent skip the issue was about.
-  test("Vision document support matches the registry for every provider", () => {
-    for (const name of VISION_PROVIDER_NAMES) {
-      expect(VISION_SUPPORTS_DOCUMENTS[name]).toBe(
-        getVisionProvider(name)?.supportsDocuments as boolean,
       );
     }
   });

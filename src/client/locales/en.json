@@ -1224,7 +1224,7 @@
     "visionCredential": "API key",
     "visionEnabled": "Read images and documents",
     "visionHint": "Extract the content of images and PDFs the customer sends so the agent can read them.",
-    "visionImageOnly": "This provider reads images only; PDF attachments are skipped.",
+    "visionImageOnly": "PDF attachments are skipped with this setup; only images are read.",
     "visionModel": "Model",
     "visionModelHint": "Leave blank for the provider default.",
     "visionPrompt": "Extraction prompt",

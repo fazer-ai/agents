@@ -41,7 +41,6 @@ import {
   TTS_DEFAULT_VOICE,
   TTS_PROVIDERS,
   VISION_DEFAULT_MODEL,
-  VISION_SUPPORTS_DOCUMENTS,
 } from "@/client/lib/providerDefaults";
 import { providerLabel } from "@/client/lib/providerLabels";
 import { serverNow, serverNowDate } from "@/client/lib/serverClock";
@@ -62,6 +61,7 @@ import {
   type ObservabilityConfig,
 } from "@/modules/flowlog/settings";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
+import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import {
   overrideBaseUrlInvalid,
@@ -1540,12 +1540,15 @@ export function BehaviorTab({
                     // Said here, and not only in the docs, because the alternative way to learn it
                     // is a PDF that comes back unextracted mid-attendance (issue #324).
                     hint={
-                      VISION_SUPPORTS_DOCUMENTS[vision.provider] === false
-                        ? t(
+                      visionAcceptsDocuments(
+                        vision.provider,
+                        visionCredBaseUrl ?? vision.baseURL,
+                      )
+                        ? undefined
+                        : t(
                             "editor.visionImageOnly",
-                            "This provider reads images only; PDF attachments are skipped.",
+                            "PDF attachments are skipped with this setup; only images are read.",
                           )
-                        : undefined
                     }
                   >
                     <Select

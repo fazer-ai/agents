@@ -1228,7 +1228,7 @@
     "visionCredential": "Chave de API",
     "visionEnabled": "Ler imagens e documentos",
     "visionHint": "Extrai o conteúdo de imagens e PDFs que o cliente envia para que o agente possa lê-los.",
-    "visionImageOnly": "Este provedor lê apenas imagens; anexos em PDF são ignorados.",
+    "visionImageOnly": "Anexos em PDF são ignorados nesta configuração; apenas imagens são lidas.",
     "visionModel": "Modelo",
     "visionModelHint": "Deixe em branco para o padrão do provedor.",
     "visionPrompt": "Prompt de extração",

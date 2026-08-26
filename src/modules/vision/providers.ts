@@ -40,10 +40,6 @@ export interface VisionResult {
 
 export interface VisionProvider {
   defaultModel: string;
-  // Whether the provider can extract from PDFs (all support images). Every endpoint below takes a
-  // document through a DIFFERENT content part than an image, so this flag and the part chosen in
-  // `extract` answer the same question and have to agree.
-  supportsDocuments: boolean;
   extract(req: VisionRequest): Promise<VisionResult>;
 }
 
@@ -326,39 +322,26 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
 const PROVIDERS: Record<string, VisionProvider> = {
   openai: {
     defaultModel: "gpt-4o",
-    // PDFs go through the `file` content part above, measured live against gpt-4o. The vision
-    // models are the ones that read them: OpenAI's file-input guide requires "models with vision
-    // capabilities, such as gpt-4o and later", which is the same set this provider already needs
-    // for images.
-    supportsDocuments: true,
     extract: openaiExtract,
   },
   gemini: {
     defaultModel: "gemini-3.5-flash",
-    supportsDocuments: true,
     extract: geminiExtract,
   },
   anthropic: {
     defaultModel: "claude-sonnet-4-6",
-    supportsDocuments: true,
     extract: anthropicExtract,
   },
   openrouter: {
-    // Vendor-prefixed OpenRouter model id. NOT flipped along with `openai`: the request goes to a
-    // router in front of many vendors, so whether a `file` part is understood depends on the model
-    // behind the id — and OpenRouter charges PDF parsing as its own plugin. Nothing here can know
-    // that per id, and answering "supported" for a model that ignores the part costs the operator a
-    // silent wrong extraction instead of the skip they get today.
+    // Vendor-prefixed OpenRouter model id. A router in front of many vendors, so whether a `file`
+    // part is understood depends on the model behind the id — and OpenRouter charges PDF parsing as
+    // its own plugin. `./document-support` is where that answer lives, for every provider.
     defaultModel: "openai/gpt-4o",
-    supportsDocuments: false,
     extract: openrouterExtract,
   },
   "openai-compatible": {
-    // Base URL required + model is whatever the endpoint serves, so no default model. Same reason
-    // as openrouter for staying image-only: the endpoint is the operator's own, and a self-hosted
-    // server implementing the chat-completions shape need not implement `file` parts at all.
+    // Base URL required + model is whatever the endpoint serves, so no default model.
     defaultModel: "",
-    supportsDocuments: false,
     extract: openaiCompatibleExtract,
   },
 };

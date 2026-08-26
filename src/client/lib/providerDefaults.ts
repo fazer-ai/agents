@@ -19,18 +19,6 @@ export const VISION_DEFAULT_MODEL: Record<string, string> = {
   openrouter: "openai/gpt-4o",
 };
 
-// Client-side mirror of `supportsDocuments` in the vision registry. The editor uses it to say, at
-// the point of choice, that a provider will skip PDF attachments — the alternative being that the
-// operator learns it from extractions that quietly never happen (issue #324). Same drift test as
-// the defaults above.
-export const VISION_SUPPORTS_DOCUMENTS: Record<string, boolean> = {
-  openai: true,
-  "openai-compatible": false,
-  gemini: true,
-  anthropic: true,
-  openrouter: false,
-};
-
 export const TTS_DEFAULT_MODEL: Record<string, string> = {
   openai: "gpt-4o-mini-tts",
   elevenlabs: "eleven_flash_v2_5",

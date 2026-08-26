@@ -46,11 +46,13 @@ import type { FlowLevel, FlowSource, FlowStage, FlowStatus } from "./stages";
 // a 200-window summary (measured: 2,639 characters, ~13 per window), so this reserves what that
 // rule can still add on top of the template.
 //
-// A margin, not a proof. `MAX_SCHEDULE_WINDOWS` bounds what the business-hours API accepts and not
-// what the column holds — the agent import writes `windows` unvalidated (issue #346) — so one past it
-// renders past what is reserved here. What happens then is what happened to every line before this
-// mode existed: the audit is cut, and the row stays bounded, because the ceiling is also a budget.
-// Reserving for an unbounded input is not possible, and the alternative to a margin is no ceiling.
+// A bound, and only since issue #346. `MAX_SCHEDULE_WINDOWS` is asked at the READER (`parseWindows`),
+// so no stored row surfaces more than it however it was written, and the reserve above therefore
+// covers every schedule this runtime can render. It was a MARGIN while the number bounded only the
+// business-hours API: the agent import wrote `windows` unvalidated, and one past the cap rendered
+// past what is reserved here. That fallback is still here and still right — the audit is cut and the
+// row stays bounded, because the ceiling is also a budget — but reaching it no longer takes a
+// schedule. Reserving for an unbounded input is not possible, and that is why the input is bounded.
 const SCHEDULE_AUDIT_ALLOWANCE = 6 * 4_000;
 
 // The derivation as a FUNCTION, so it can be measured at a prompt ceiling other than this

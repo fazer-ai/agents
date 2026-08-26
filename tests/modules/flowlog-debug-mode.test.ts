@@ -5,7 +5,7 @@ import { auditedPromptVar, buildPromptAudit } from "@/graph/prompt-audit";
 import { MAX_STRING, redactSecretsDeep } from "@/lib/redact";
 import { assertSettingsDebugWindow } from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
-import { MAX_SCHEDULE_WINDOWS } from "@/modules/business-hours/service";
+import { MAX_SCHEDULE_WINDOWS } from "@/modules/business-hours/hours";
 import {
   parseVariants,
   variantSchema,
@@ -896,14 +896,15 @@ describe("a schedule variable expands once, not once per occurrence", () => {
   });
 
   test("the reserved allowance is a MARGIN, and what is past it degrades rather than breaks", () => {
-    // `MAX_SCHEDULE_WINDOWS` bounds the business-hours writer, not the column: the agent import
-    // takes `windows` as `z.array(z.unknown())` and writes it straight through, so a hand-authored
-    // bundle can store a schedule this API would refuse. The rendering is linear in the window
-    // count (~13 characters each, measured), so past the cap it outgrows what the ceiling reserved.
+    // This input is UNREACHABLE by construction, and is built by hand for that reason: since issue
+    // #346 `parseWindows` caps what any stored schedule surfaces at `MAX_SCHEDULE_WINDOWS`, so no
+    // row renders past the allowance reserved above however the column was written. It used to be
+    // reachable through the agent import, which took `windows` as `z.array(z.unknown())`.
     //
-    // What happens then is what happened to every line before this mode existed: the field is cut.
-    // No throw, no unbounded row — which is the property worth pinning, because the alternative to
-    // an allowance sized on a bound the column does not have is no ceiling at all.
+    // The test stays because what it pins is not the schedule, it is the ceiling's own fallback:
+    // past the reserve the field is CUT, with no throw and no unbounded row. That has to keep
+    // holding for whatever outgrows the reserve next, which is what makes the allowance a budget
+    // rather than an assumption about its inputs.
     const huge = {
       schedule: {
         windows: Array.from({ length: MAX_SCHEDULE_WINDOWS * 200 }, (_, i) => ({

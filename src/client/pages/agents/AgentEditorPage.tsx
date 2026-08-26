@@ -1774,6 +1774,18 @@ function AgentEditor() {
           'Business hours "{{name}}" already existed and were reused; check the schedule is right.',
           p,
         );
+      case "hoursWindowsDropped":
+        return t(
+          "editor.importWarning.hoursWindowsDropped",
+          'Business hours "{{name}}": {{count}} weekly window(s) were not stored as written. Open the schedule and check the days are right.',
+          p,
+        );
+      case "hoursExceptionsDropped":
+        return t(
+          "editor.importWarning.hoursExceptionsDropped",
+          'Business hours "{{name}}": {{count}} date exception(s) were not stored as written. Open the schedule and check the holidays and closures are right.',
+          p,
+        );
       case "httpToolBodyIgnored":
         return t(
           "editor.importWarning.httpToolBodyIgnored",

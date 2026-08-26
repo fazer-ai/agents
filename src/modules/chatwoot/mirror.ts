@@ -4,6 +4,7 @@ import basePrisma from "@/api/lib/prisma";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
+import { retireJobsByDedupeKeyOn } from "@/modules/scheduler/service";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import { isNewIncomingMessage } from "./normalize";
 import { decideConversationWrites, type StatePayload } from "./state-order";
@@ -61,12 +62,6 @@ export interface MirrorResult {
   assigneeId: number | null;
   assigneeType: string | null;
   lastEventAt: Date | null;
-  // This event moved the conversation into a DIFFERENT redirect episode, and the write above already
-  // released the episode's watermarks on the row. What the mirror cannot release is the work already
-  // armed for the old episode: the REDIRECT_FOLLOWUP ladder, whose stages message the paired WhatsApp
-  // thread and resolve it. Reported rather than retired here so the retirement sits with the other
-  // episode-lifecycle handling (and with /reset, which retires the same key for the same reason).
-  redirectEpisodeReleased: boolean;
 }
 
 export async function mirrorChatwootEvent(
@@ -78,7 +73,14 @@ export async function mirrorChatwootEvent(
   // command like /teste|/reset on a test-mode agent), so don't advance lastInboundAt — otherwise it
   // would look like a fresh reply and arm a follow-up / extend the 24h window. Mode is resolved by the
   // caller (the mirror is generic and runs before the gate).
-  opts: { suppressInboundWatermark?: boolean } = {},
+  opts: {
+    suppressInboundWatermark?: boolean;
+    // The dedupe key of the redirect ladder armed for this conversation, when the caller has one.
+    // Handed IN rather than derived here: the key belongs to the channel-redirect module and the
+    // mirror has no business knowing how it is spelled — what it owns is the instant it is retired at,
+    // which has to be the same transaction that moves the pairing. See `releasesEpisode` below.
+    redirectLadderDedupeKey?: string;
+  } = {},
 ): Promise<MirrorResult> {
   if (n.conversationId === null) {
     return {
@@ -91,7 +93,6 @@ export async function mirrorChatwootEvent(
       assigneeId: null,
       assigneeType: null,
       lastEventAt: null,
-      redirectEpisodeReleased: false,
     };
   }
   const convId = n.conversationId;
@@ -236,6 +237,38 @@ export async function mirrorChatwootEvent(
       const episodeRelease = releasesEpisode
         ? { redirectLinkedAt: null, redirectClosedAt: null }
         : {};
+      // The other half of the release, and it has to be ATOMIC with the pairing write, not merely
+      // after it. The ladder messages the paired WhatsApp thread and RESOLVES it, and retiring is the
+      // one signal that reaches a worker which has already claimed — a cancel touches PENDING rows
+      // only.
+      //
+      // Outside this transaction the ordering goes wrong in a way that has nothing to do with
+      // failure: the pairing's `conversation_updated` and the cloned `message_created` that follows
+      // it are two deliveries, and processed concurrently the message can arm the NEW episode's
+      // ladder between the pairing committing and a retirement running afterwards — which would then
+      // mark the new episode's own job DONE, on a dedupe key that carries no generation to tell them
+      // apart. Inside, the UPDATE takes the row lock on that key and holds it to commit, so an arm
+      // racing it blocks and lands after. Work armed for the next episode survives; work armed for
+      // the previous one does not.
+      //
+      // Best-effort for the DOMAIN, like the outbound emit above: a scheduler write must not be able
+      // to fail the mirror. A ladder left standing re-reads the pairing before it acts and its
+      // closing claim carries the origin it read, so the fences downstream are the floor.
+      if (releasesEpisode && opts.redirectLadderDedupeKey) {
+        await retireJobsByDedupeKeyOn(
+          db,
+          tenantId,
+          "REDIRECT_FOLLOWUP",
+          opts.redirectLadderDedupeKey,
+        ).catch((err) => {
+          logger.warn(
+            "chatwoot: could not retire the previous redirect episode's ladder (conv=%s): %s",
+            String(convId),
+            err instanceof Error ? err.message : String(err),
+          );
+          return 0;
+        });
+      }
 
       if (existing && decision.stale) {
         // NOTE: A stale event says nothing about the conversation's STATE, with three exceptions, all
@@ -296,7 +329,6 @@ export async function mirrorChatwootEvent(
           assigneeId: existing.assigneeId,
           assigneeType: existing.assigneeType,
           lastEventAt: existing.lastEventAt,
-          redirectEpisodeReleased: releasesEpisode,
         };
       }
 
@@ -359,7 +391,6 @@ export async function mirrorChatwootEvent(
           assigneeType: n.assigneeType ?? null,
           lastEventAt: createdLastEventAt,
           // A row born now has no previous episode to release.
-          redirectEpisodeReleased: false,
         };
       }
 
@@ -466,7 +497,6 @@ export async function mirrorChatwootEvent(
         assigneeId: nextAssigneeId,
         assigneeType: nextAssigneeType,
         lastEventAt: effectiveLastEventAt,
-        redirectEpisodeReleased: releasesEpisode,
       };
     });
   });

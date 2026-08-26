@@ -1163,6 +1163,7 @@ async function maybeConsumeCommandOrGate(params: {
         redirectCount: true,
         redirectLinkedAt: true,
         redirectOriginDisplayId: true,
+        chatwootRedirectOriginAt: true,
         inboxId: true,
       },
     });
@@ -1576,6 +1577,7 @@ async function maybeConsumeCommandOrGate(params: {
           testActivatedAt: ctx.conv.testActivatedAt,
           contactId: ctx.conv.contactId,
           redirectOriginDisplayId: ctx.conv.redirectOriginDisplayId,
+          chatwootRedirectOriginAt: ctx.conv.chatwootRedirectOriginAt,
         },
         base,
       });
@@ -2772,37 +2774,24 @@ export async function processChatwootDelivery(
     params.instanceId,
     n,
     base,
-    { suppressInboundWatermark: commandActive },
+    {
+      suppressInboundWatermark: commandActive,
+      // Which ladder goes with the episode, if this event turns out to move the pairing. Computed
+      // here because the key is this module's to spell, retired in there because it has to be
+      // atomic with the write that moves it.
+      ...(n.conversationId !== null
+        ? {
+            redirectLadderDedupeKey: followUpDedupeKey(
+              chatwootThreadId(
+                params.tenantId,
+                params.instanceId,
+                n.conversationId,
+              ),
+            ),
+          }
+        : {}),
+    },
   );
-
-  // The other half of the episode release the mirror just wrote. Clearing `redirectLinkedAt` and
-  // `redirectClosedAt` frees the NEXT episode's one-shots; it does nothing about the ladder already
-  // armed for the previous one, whose stages message the paired WhatsApp thread and RESOLVE it. That
-  // thread is no longer this conversation's pairing, so the ladder has to stand down — the same
-  // retirement, by the same key, that /reset makes for the same reason.
-  //
-  // Retiring is what reaches a worker that has ALREADY claimed, which cancelling does not: the
-  // ladder's own fence asks whether its job is still wanted before every send and before the closing
-  // claim, so a run in flight for the old episode stops at its next ask instead of finishing on a
-  // thread that moved. A run that never armed makes this a no-op — the key simply matches nothing.
-  //
-  // Best-effort, and deliberately not fatal: the mirror has committed by now, and a failure to
-  // retire must not drop the message that reported the change. The stages it leaves standing all
-  // re-read the pairing before they act.
-  if (mirror.redirectEpisodeReleased && n.conversationId !== null) {
-    await retireRedirectFollowUp(
-      params.tenantId,
-      chatwootThreadId(params.tenantId, params.instanceId, n.conversationId),
-      base,
-    ).catch((err) => {
-      logger.warn(
-        "chatwoot: could not retire the previous redirect episode's ladder (conv=%s): %s",
-        String(n.conversationId),
-        errMsg(err),
-      );
-      return 0;
-    });
-  }
 
   // NOTE: A command that will not run is otherwise indistinguishable from ordinary customer text, in the
   // logs and in the conversation alike — which is what left issue #270 undiagnosable from the

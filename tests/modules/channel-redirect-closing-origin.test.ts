@@ -386,6 +386,35 @@ describe.skipIf(!dbUp)(
       });
     };
 
+    // Review round 6 of #355, and the effect rather than the decision table. A STATED clear reaches
+    // this consumer as a stored null, which is also what "the fork never spoke about this
+    // conversation" looks like — and the old predicate answers the second one. Read as a gap it
+    // hands the closing the contact's most recent WhatsApp thread and that thread gets a goodbye and
+    // a resolve, on an episode the source said has no WhatsApp half at all.
+    test("a stated clear leaves the closing with no sibling to post on", async () => {
+      await rearm();
+      await suDb.conversation.updateMany({
+        where: { tenantId: tid, chatwootConversationId: WIDGET },
+        data: {
+          redirectOriginDisplayId: null,
+          // The mark is the whole difference: we have been told, and the answer was "none".
+          chatwootRedirectOriginAt: 1_786_000_000.5,
+        },
+      });
+      try {
+        await resolveWidget();
+        // The sibling exists and recency would have found it. Nothing is posted on it.
+        expect(
+          wire.filter((u) => u.includes(`/conversations/${SIBLING}/`)),
+        ).toEqual([]);
+      } finally {
+        await suDb.conversation.updateMany({
+          where: { tenantId: tid, chatwootConversationId: WIDGET },
+          data: { chatwootRedirectOriginAt: null },
+        });
+      }
+    });
+
     // Review round 5 of #355. The closing RESOLVES the WhatsApp conversation it names, and on this
     // path there is no job to ask about — the resolve webhook enters it directly — so the claim CAS is
     // the only thing standing between a run that read one episode and a conversation that is now in

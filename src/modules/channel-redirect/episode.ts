@@ -165,6 +165,12 @@ export interface EpisodeOriginParams {
   widget: {
     // The widget conversation's stored pairing, straight off the mirror. Non-null ⇒ this is the answer.
     redirectOriginDisplayId: number | null;
+    // The pairing's version mark, and here it is read for one bit only: whether the fork has EVER
+    // spoken about this conversation. Stored null is two different facts — "nobody ever told us" and
+    // "the fork said this episode has no WhatsApp half" — and they want opposite answers. Required
+    // rather than optional so a caller that has not thought about it does not get the old behaviour
+    // by omission.
+    chatwootRedirectOriginAt: number | null;
     contactId: bigint | null;
   };
 }
@@ -204,6 +210,17 @@ export function episodeOriginQuery(p: EpisodeOriginParams): {
       by: "stored",
     };
   }
+  // A STATED clear is an answer, not a gap. The fork writes it when a token resumes this conversation
+  // naming no origin, and falling back to recency there would hand the ladder the contact's most
+  // recent WhatsApp thread — one this episode was explicitly said not to have — on a consumer that
+  // messages it and RESOLVES it. The fallback exists for the populations that have no stored answer
+  // and never will, and a conversation the fork has spoken about is not one of them.
+  //
+  // The one case this cannot separate is a Chatwoot too old to send `updated_at`: it states the clear
+  // and stamps no mark, so the clear reads as silence and takes the fallback. That is the same
+  // degradation the pairing's ordering already has on those instances, and it fails to the behaviour
+  // they had before the field existed.
+  if (p.widget.chatwootRedirectOriginAt !== null) return null;
   if (p.widget.contactId === null) return null;
   return {
     where: {

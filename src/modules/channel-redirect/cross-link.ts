@@ -64,8 +64,10 @@ export interface LinkRedirectParams {
     testActivatedAt: Date | null;
     contactId: bigint | null;
     // The episode's stored origin, when the fork wrote one (#222). Null falls back to the old
-    // most-recently-active predicate, which is all a pre-#222 episode has.
+    // most-recently-active predicate, which is all a pre-#222 episode has — unless the mark below
+    // says the fork spoke and the answer was "none", in which case there is no sibling at all.
     redirectOriginDisplayId: number | null;
+    chatwootRedirectOriginAt: number | null;
   };
   base?: PrismaClient;
   now?: Date;
@@ -99,6 +101,7 @@ export async function linkRedirectConversations(
           entryInboxId,
           widget: {
             redirectOriginDisplayId: p.widgetConv.redirectOriginDisplayId,
+            chatwootRedirectOriginAt: p.widgetConv.chatwootRedirectOriginAt,
             contactId: p.widgetConv.contactId,
           },
         });

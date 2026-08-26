@@ -262,9 +262,27 @@ export async function retireJobsByDedupeKey(
   dedupeKey: string,
   base: PrismaClient = basePrisma,
 ): Promise<number> {
-  return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
-    return db.$executeRaw`
+  return runScopedOn(base, sysCtx(tenantId), (db) =>
+    retireJobsByDedupeKeyOn(db, tenantId, kind, dedupeKey),
+  );
+}
+
+// The same retirement on the CALLER'S connection, for a caller whose atomicity matters — the same
+// shape and the same reason as `revokeJobsByKeyPrefixOn` above.
+//
+// It is not only about sharing a pool slot here. Run inside the caller's transaction this UPDATE
+// takes the row lock on the dedupe key and holds it to commit, so a concurrent arm on that key
+// blocks and lands AFTER the retirement rather than before it. That ordering is the whole point for
+// the mirror's episode release: work armed for the NEW episode must survive the retirement of the
+// old one, and outside the transaction there is a window where it does not.
+export async function retireJobsByDedupeKeyOn(
+  db: ScopedDb,
+  tenantId: bigint,
+  kind: SchedulerJobKind,
+  dedupeKey: string,
+): Promise<number> {
+  const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
+  return db.$executeRaw`
       UPDATE scheduler_jobs
          SET status = 'DONE',
              payload = payload || ${stamp}::jsonb,
@@ -274,7 +292,6 @@ export async function retireJobsByDedupeKey(
          AND kind = ${kind}::"SchedulerJobKind"
          AND dedupe_key = ${dedupeKey}
          AND status IN ('PENDING', 'CLAIMED')`;
-  });
 }
 
 function readJobRetirement(

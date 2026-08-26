@@ -217,6 +217,7 @@ describe.skipIf(!dbUp)(
           testActivatedAt: null,
           contactId,
           redirectOriginDisplayId: ORIGIN_CONV,
+          chatwootRedirectOriginAt: null,
         },
         base: appDb,
       });
@@ -267,6 +268,7 @@ describe.skipIf(!dbUp)(
           contactId,
           // The snapshot this delivery started from: the origin as it stood before the move.
           redirectOriginDisplayId: ORIGIN_CONV,
+          chatwootRedirectOriginAt: null,
         },
         base: appDb,
       });
@@ -314,6 +316,7 @@ describe.skipIf(!dbUp)(
             testActivatedAt: null,
             contactId,
             redirectOriginDisplayId: ORIGIN_CONV,
+            chatwootRedirectOriginAt: null,
           },
           base: appDb,
         });

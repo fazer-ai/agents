@@ -282,7 +282,11 @@ async function resolveWhatsAppSibling(
           chatwootConversationId: widgetConversationId,
         },
       },
-      select: { contactId: true, redirectOriginDisplayId: true },
+      select: {
+        contactId: true,
+        redirectOriginDisplayId: true,
+        chatwootRedirectOriginAt: true,
+      },
     });
     if (!widgetConv) return null;
     const originQuery = episodeOriginQuery({
@@ -291,6 +295,7 @@ async function resolveWhatsAppSibling(
       entryInboxId,
       widget: {
         redirectOriginDisplayId: widgetConv.redirectOriginDisplayId,
+        chatwootRedirectOriginAt: widgetConv.chatwootRedirectOriginAt,
         contactId: widgetConv.contactId,
       },
     });

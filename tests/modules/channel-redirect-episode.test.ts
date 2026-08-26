@@ -64,10 +64,57 @@ describe("episodeOriginQuery", () => {
     entryInboxId: ENTRY_INBOX,
   };
 
+  // Review round 6 of #355. Two different facts arrive as the same stored null, and only one of them
+  // means "ask the old predicate". `chatwootRedirectOriginAt` is what separates them: it is set the
+  // first time the fork speaks about this conversation, whatever it says.
+  test("a STATED clear has no sibling: it is an answer, not a gap", () => {
+    const q = episodeOriginQuery({
+      ...base,
+      widget: {
+        chatwootRedirectOriginAt: 1_786_000_000.5,
+        redirectOriginDisplayId: null,
+        contactId: 9n,
+      },
+    });
+    // Not a recency fallback. The source said this episode has no WhatsApp half, and the consumers
+    // of this answer MESSAGE and RESOLVE what it names.
+    expect(q).toBeNull();
+  });
+
+  test("never having been told still falls back to recency", () => {
+    const q = episodeOriginQuery({
+      ...base,
+      widget: {
+        chatwootRedirectOriginAt: null,
+        redirectOriginDisplayId: null,
+        contactId: 9n,
+      },
+    });
+    expect(q?.by).toBe("recency");
+  });
+
+  // A stated pairing is the answer whether or not we hold a mark for it — a Chatwoot too old to send
+  // `updated_at` writes the value and stamps nothing.
+  test("a stored pairing with no mark is still the answer", () => {
+    const q = episodeOriginQuery({
+      ...base,
+      widget: {
+        chatwootRedirectOriginAt: null,
+        redirectOriginDisplayId: 41,
+        contactId: 9n,
+      },
+    });
+    expect(q?.by).toBe("stored");
+  });
+
   test("a stored pairing IS the answer: looked up by id, with no ordering to lose it", () => {
     const q = episodeOriginQuery({
       ...base,
-      widget: { redirectOriginDisplayId: 41, contactId: 9n },
+      widget: {
+        chatwootRedirectOriginAt: null,
+        redirectOriginDisplayId: 41,
+        contactId: 9n,
+      },
     });
     expect(q?.by).toBe("stored");
     expect(q?.where).toEqual({
@@ -84,11 +131,19 @@ describe("episodeOriginQuery", () => {
     // Same inputs as the fallback case below, plus the fact. The fact is what changes the answer.
     const stored = episodeOriginQuery({
       ...base,
-      widget: { redirectOriginDisplayId: 41, contactId: 9n },
+      widget: {
+        chatwootRedirectOriginAt: null,
+        redirectOriginDisplayId: 41,
+        contactId: 9n,
+      },
     });
     const inferred = episodeOriginQuery({
       ...base,
-      widget: { redirectOriginDisplayId: null, contactId: 9n },
+      widget: {
+        chatwootRedirectOriginAt: null,
+        redirectOriginDisplayId: null,
+        contactId: 9n,
+      },
     });
     expect(stored?.by).toBe("stored");
     expect(inferred?.by).toBe("recency");
@@ -98,7 +153,11 @@ describe("episodeOriginQuery", () => {
   test("no stored pairing falls back to the old most-recently-active predicate", () => {
     const q = episodeOriginQuery({
       ...base,
-      widget: { redirectOriginDisplayId: null, contactId: 9n },
+      widget: {
+        chatwootRedirectOriginAt: null,
+        redirectOriginDisplayId: null,
+        contactId: 9n,
+      },
     });
     expect(q?.by).toBe("recency");
     expect(q?.where).toEqual({
@@ -113,7 +172,11 @@ describe("episodeOriginQuery", () => {
     expect(
       episodeOriginQuery({
         ...base,
-        widget: { redirectOriginDisplayId: null, contactId: null },
+        widget: {
+          chatwootRedirectOriginAt: null,
+          redirectOriginDisplayId: null,
+          contactId: null,
+        },
       }),
     ).toBeNull();
   });
@@ -123,7 +186,11 @@ describe("episodeOriginQuery", () => {
   test("a stored pairing answers even with no contact on the row", () => {
     const q = episodeOriginQuery({
       ...base,
-      widget: { redirectOriginDisplayId: 41, contactId: null },
+      widget: {
+        chatwootRedirectOriginAt: null,
+        redirectOriginDisplayId: 41,
+        contactId: null,
+      },
     });
     expect(q?.by).toBe("stored");
   });

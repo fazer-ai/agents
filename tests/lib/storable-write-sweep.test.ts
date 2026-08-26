@@ -345,7 +345,9 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],
   "src/modules/conversations/service.ts": [12, "read"],
-  "src/modules/flowlog/alert-worker.ts": [4, "guarded + cleared"],
+  // Down from 4: both roads to DEAD now write through one `finalizeDead` (issue #356).
+  "src/modules/flowlog/alert-worker.ts": [3, "guarded + cleared"],
+  "src/modules/flowlog/dead-letter.ts": [1, "flow-event"],
   "src/modules/flowlog/read.ts": [4, "read"],
   "src/modules/flowlog/service.ts": [2, "guarded"],
   "src/modules/flowlog/webhook.ts": [1, "flow-event"],

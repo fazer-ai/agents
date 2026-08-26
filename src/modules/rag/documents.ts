@@ -10,6 +10,7 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { firstUnstorableField } from "@/lib/text";
+import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
@@ -706,6 +707,29 @@ async function runIngestJobForTenant(
         documentId: String(documentId),
         status: "FAILED",
         error: message,
+      });
+      // TERMINAL, which is not obvious from here: the row is now FAILED, the re-armed job re-reads
+      // it, finds it is no longer PENDING and returns `done`, so this document is never indexed
+      // again without somebody asking. The broadcast above reaches a console that is OPEN right now
+      // and nothing else; the trail is what is left for the operator who was not watching, and the
+      // only thing an alert channel can subscribe to (issue #356).
+      //
+      // `warn`, and it is the one site of the four that is: the document list shows FAILED with the
+      // stored reason and offers a re-index, so the operator has their own way back to it. The
+      // others lost work with no surface at all.
+      emitDeadLetter({
+        tenantId,
+        unit: "knowledge_document",
+        level: "warn",
+        // Either the i18n key of a known AppError or the sanitized provider text, whichever the row
+        // itself stores — the two say different things to a reader and the line must not diverge
+        // from the column beside it.
+        error: message,
+        detail: {
+          documentId: String(documentId),
+          knowledgeBaseId: String(doc.knowledgeBaseId),
+        },
+        base,
       });
     }
     return { outcome: "fail", error: message };

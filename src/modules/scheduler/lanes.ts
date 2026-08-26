@@ -1,3 +1,4 @@
+import type { FlowLevel } from "@/modules/flowlog/stages";
 import type { SchedulerJobKind } from "@/modules/scheduler/service";
 
 // Which drain each job kind belongs to, and the rule for when a new drain is warranted.
@@ -159,6 +160,48 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   INGEST_MESSAGE: true,
   // One row per tenant, re-armed forever. Bounded by the install's tenant count, not by traffic.
   DELIVERY_SWEEP: false,
+};
+
+// WHAT ONE KIND'S DEATH MEANS TO THE OPERATOR, at the only moment the scheduler can state it
+// (issue #356). Read by the generic dead-letter announcement in ./worker.ts.
+//
+// A Record over SchedulerJobKind, like its three neighbours above, and for the sharper reason here:
+// the thing this issue is about is a kind reaching DEAD with nobody having decided what that means.
+// A default would cover today's twelve and hand the thirteenth the same silence in a new shape —
+// this does not compile until the new kind has been asked the question.
+//
+// The rule the answers follow: `error` where the system accepted work and lost it, `warn` where the
+// operator has their own way back to it. Nothing is `info`, because `AlertChannel.minLevel` does not
+// accept `info` and a line nobody can subscribe to is not an announcement.
+export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
+  // A lead that will never be followed up, and nothing on the conversation says so.
+  FOLLOWUP: "error",
+  // The sweep that ARMS the follow-ups. Its death stops every future one, for every contact.
+  FOLLOWUP_SWEEP: "error",
+  // The retry drain for outbound deliveries; without it a subscriber's events stop arriving.
+  WEBHOOK_RETRY: "error",
+  // Registers its own hook (../debounce/handler.ts). This is the level of the generic line that
+  // stands in when nothing registered one, which is a real state: the hooks are installed at boot,
+  // and a lane can run with that registration never having happened.
+  DEBOUNCE: "warn",
+  // The one recoverable site. The document row itself goes FAILED and the knowledge-base page shows
+  // it with a re-index in reach, so this is "look when you can" rather than a loss to page about.
+  RAG_INGEST: "warn",
+  // Self-rescheduling: one death ends the loop, and outbound heartbeats stop for good.
+  HEARTBEAT: "error",
+  // Self-rescheduling, and the hardest of them to notice from outside: retention silently stops.
+  FLOWLOG_SWEEP: "error",
+  // A customer who is not reminded of an appointment, and nobody learns.
+  APPOINTMENT_REMINDER: "error",
+  REDIRECT_FOLLOWUP: "error",
+  // Registers its own hook (../memory/compact.ts); same standing-in reason as DEBOUNCE. `warn`
+  // because a re-armed attendance heals on its own and the customer sees nothing either way.
+  MEMORY_COMPACT: "warn",
+  // A message the turn will never see. The customer wrote and is waiting.
+  INGEST_MESSAGE: "error",
+  // Self-rescheduling: its death is stranded deliveries going unreported from then on, which is the
+  // silence #282 had just finished closing.
+  DELIVERY_SWEEP: "error",
 };
 
 export function kindsInLane(

@@ -2,7 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import type { FlowContext, FlowEvent } from "./service";
-import type { FlowLevel } from "./stages";
+import { ALERT_DELIVERY_UNIT, type FlowLevel } from "./stages";
 
 // Alert fan-out for a warn/error execution-flow event. Called fire-and-forget from emitFlowEvent
 // (real traffic only). Matches enabled channels by minLevel + stage allowlist, then COALESCES: a
@@ -29,6 +29,16 @@ export async function dispatchAlertsForEvent(
   ev: FlowEvent & { level: FlowLevel },
   base: PrismaClient,
 ): Promise<void> {
+  // THE ONE LINE THAT CANNOT BECOME AN ALERT: the alert bus reporting its own death (issue #356).
+  //
+  // A dead `AlertDelivery` is the operator's notification failing to arrive, and it is announced
+  // like every other terminal failure. Routing that announcement back through here would queue a
+  // new delivery to the very channel that just died — which dies, announces, and queues another.
+  // The coalescing below does not bound it: it bumps a PENDING row, and the row this one would
+  // follow is DEAD, so every cycle INSERTS. With two broken channels they alert about each other
+  // forever, so excluding the dying channel would not close it either; the only sink that is not
+  // the failing path is the flow-log row itself, which is written before this runs.
+  if (ev.detail?.unit === ALERT_DELIVERY_UNIT) return;
   const rank = LEVEL_RANK[ev.level] ?? 0;
   await runScopedOn(base, sysCtx(ctx.tenantId), async (db) => {
     const channels = await db.alertChannel.findMany({

@@ -35,12 +35,39 @@ export const FLOW_STAGES = [
   // channel subscribes to and what the Logs page filters by, and a dropped event that reaches
   // neither is a loss nobody is told about (issue #325).
   "webhook",
+  // NOT a turn step either, and the widest of the three: a unit of work that reached a TERMINAL
+  // failure state — a scheduled job past its budget, an alert the bus gave up on, an inbound event
+  // that will never be processed, a document that will never be indexed. One stage rather than one
+  // per bus because it is one question ("what did the system give up on?"), which is what an
+  // operator subscribes a channel to; `detail.unit` says which bus inside it (issue #356).
+  "dead_letter",
 ] as const;
 export type FlowStage = (typeof FLOW_STAGES)[number];
 
 export function isFlowStage(s: string): s is FlowStage {
   return (FLOW_STAGES as readonly string[]).includes(s);
 }
+
+// The buses that can reach a terminal failure. Closed, because the `dead_letter` line is only
+// legible if `unit` comes from a vocabulary and not from whatever each call site felt like writing —
+// and because ALERT_DELIVERY is compared against by name in ./alerts.ts, where a typo would silently
+// reopen the loop it exists to prevent.
+// Named apart from the list because ./alerts.ts compares against it to break the loop, and a second
+// spelling of the same string is exactly how that comparison would go quietly false.
+export const ALERT_DELIVERY_UNIT = "alert_delivery";
+
+export const DEAD_UNITS = [
+  // A scheduler job past its retry budget, by either road (failJob's cap, or the reaper).
+  "job",
+  // A notification the alert bus itself gave up on. The one unit that can never be alerted about.
+  ALERT_DELIVERY_UNIT,
+  // An authenticated inbound event the receptor cannot process, or that exhausted its processing
+  // attempts.
+  "inbound_delivery",
+  // A knowledge document whose indexing failed; the row stays FAILED and no retry is coming.
+  "knowledge_document",
+] as const;
+export type DeadUnit = (typeof DEAD_UNITS)[number];
 
 export const FLOW_LEVELS = ["info", "warn", "error"] as const;
 export type FlowLevel = (typeof FLOW_LEVELS)[number];

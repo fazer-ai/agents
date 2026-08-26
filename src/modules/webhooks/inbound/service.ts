@@ -7,6 +7,7 @@ import type { RuntimeDeps } from "@/graph/runtime";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { makeStorableDeep, unstorableProblem } from "@/lib/text";
+import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import { getMapper } from "@/modules/integrations/mappers";
 import {
   type ResolvedInboundRoute,
@@ -283,7 +284,29 @@ async function persistFailed(
       }),
     );
   try {
-    return (await create()).id;
+    const { id } = await create();
+    // ANNOUNCED ONLY ON A REAL INSERT (issue #356). A provider that retries an unprocessable body
+    // lands on the dedupe key below and gets the row it already has; announcing there would report
+    // one dropped event as many, at whatever rate the provider retries.
+    emitDeadLetter({
+      tenantId: route.tenantId,
+      unit: "inbound_delivery",
+      // The event happened at the provider and the platform accepted it with a 2xx. It is gone.
+      level: "error",
+      error: `inbound payload not processable: ${String(payload.reason)}`,
+      detail: {
+        deliveryId: String(id),
+        integrationInstanceId: String(route.id),
+        catalogType: route.catalogType,
+        // `no-mapper`, `invalid`, `unstorable-identity` — a closed vocabulary this module writes,
+        // and the three have different fixes. `issues` is the mapper's own diagnostic and never the
+        // body (the raw body is only ever hashed into the dedupe key).
+        reason: payload.reason,
+        ...(payload.issues ? { issues: payload.issues } : {}),
+      },
+      base,
+    });
+    return id;
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     const existing = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
@@ -382,6 +405,9 @@ export async function processInboundDelivery(
   params: ProcessParams,
 ): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
+  // Set inside the claim below, emitted AFTER it commits: a line written from inside the scope would
+  // survive a rollback of the very write it reports.
+  let exhausted: bigint | null | undefined;
   const plan: ProcessPlan = await runScopedOn(
     base,
     sysCtx(params.tenantId),
@@ -406,7 +432,7 @@ export async function processInboundDelivery(
       if (claimed.count === 0) {
         // Either not reclaimable (done / freshly PROCESSING) or the attempt cap is exhausted —
         // in the latter case move it to a terminal FAILED so it stops being retried.
-        await db.inboundDelivery.updateMany({
+        const killed = await db.inboundDelivery.updateMany({
           where: {
             id: params.deliveryId,
             attempts: { gte: MAX_PROCESS_ATTEMPTS },
@@ -414,6 +440,16 @@ export async function processInboundDelivery(
           },
           data: { status: "FAILED" },
         });
+        // The count separates the two cases the branch above collapses, and only one of them is a
+        // death: a row that was simply not reclaimable (already processed, or claimed a second ago
+        // by another replica) matched nothing here and must not be reported as lost.
+        if (killed.count > 0) {
+          const row = await db.inboundDelivery.findUnique({
+            where: { id: params.deliveryId },
+            select: { integrationInstanceId: true },
+          });
+          exhausted = row?.integrationInstanceId ?? null;
+        }
         return { kind: "skip" };
       }
 
@@ -509,6 +545,25 @@ export async function processInboundDelivery(
       return { kind: "done" };
     },
   );
+
+  // The row exhausted its processing budget and is terminally FAILED: the provider's event was
+  // accepted with a 2xx and will never be acted on (issue #356).
+  if (exhausted !== undefined) {
+    emitDeadLetter({
+      tenantId: params.tenantId,
+      unit: "inbound_delivery",
+      level: "error",
+      error: `inbound delivery exhausted ${MAX_PROCESS_ATTEMPTS} processing attempts`,
+      detail: {
+        deliveryId: String(params.deliveryId),
+        ...(exhausted !== null
+          ? { integrationInstanceId: String(exhausted) }
+          : {}),
+        reason: "attempts-exhausted",
+      },
+      base,
+    });
+  }
 
   if (plan.kind === "skip") return "skipped";
   if (plan.kind === "done") return "processed";

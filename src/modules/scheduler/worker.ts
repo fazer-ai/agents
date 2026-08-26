@@ -3,7 +3,9 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { Semaphore } from "@/lib/semaphore";
+import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
+  JOB_DEATH_LEVEL,
   JOB_SPENDS_PROVIDER,
   sharedProviderConcurrency,
 } from "@/modules/scheduler/lanes";
@@ -55,7 +57,12 @@ export function getJobHandler(kind: string): JobHandler | undefined {
 // Called when a job is DEAD-LETTERED, which is the only moment the scheduler can state that this
 // work is definitively lost — a failure is not that statement, because the next attempt may succeed
 // (issue #71). Registered per kind so the scheduler stays ignorant of what a given job's loss means
-// downstream; a kind with no hook simply dies quietly, as before.
+// downstream.
+//
+// OPTIONAL, and what a kind gets by NOT registering one is no longer silence: it is the generic
+// line below. A hook is for a kind whose loss can be said better than "a FOLLOWUP died" — attached
+// to the conversation it belongs to, suppressed when the row was re-armed underneath it — and two
+// kinds have earned one. Ten had not, and before issue #356 all ten died through an early return.
 export type DeadLetterHandler = (
   job: ClaimedJob,
   error: string,
@@ -82,13 +89,42 @@ function errMsg(err: unknown): string {
 
 // Best-effort: a hook that throws must not turn a failed job into a failed tick, and it runs AFTER
 // the row is DEAD so it can never be mistaken for part of the attempt.
+//
+// EVERY kind announces here, which is the whole of issue #356's biggest half. `if (!hook) return`
+// used to be the exit for ten of the twelve kinds, and it was invisible: the hook is optional by
+// design, so nothing anywhere counted how many kinds were leaving through it, and the count only
+// ever went down when somebody happened to write a hook for one more (#196, #71).
+//
+// A registered hook OWNS the announcement, including the decision NOT to write one — both existing
+// hooks re-read the row and stay quiet when it was re-armed underneath them, and a generic line
+// written over that would re-report a loss the hook just established had not happened.
 async function dispatchDeadLetter(
   job: ClaimedJob,
   error: string,
   base: PrismaClient,
 ): Promise<void> {
   const hook = deadLetterHandlers.get(job.kind);
-  if (!hook) return;
+  if (!hook) {
+    // The attempt count is deliberately absent, for the reason measured in ../memory/compact.ts:
+    // the two roads to DEAD disagree about the number while meaning the same thing (failJob hands
+    // the hook the claim it was given, the reaper increments in SQL). What tells the roads apart is
+    // the error itself, and only the reaper writes "the claim never finished".
+    emitDeadLetter({
+      tenantId: job.tenantId,
+      unit: "job",
+      level: JOB_DEATH_LEVEL[job.kind],
+      error,
+      detail: {
+        kind: job.kind,
+        jobId: String(job.id),
+        // Ids by construction (a dedupe key has to be stable), and the only field on this line an
+        // operator can act on: it says WHICH follow-up, WHICH document, WHICH reminder.
+        ...(job.dedupeKey ? { dedupeKey: job.dedupeKey } : {}),
+      },
+      base,
+    });
+    return;
+  }
   try {
     await hook(job, error, base);
   } catch (err) {

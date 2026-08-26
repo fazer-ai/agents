@@ -10,6 +10,7 @@ import { clipText } from "@/lib/text";
 import { tryResolveVaultSecret } from "@/modules/vault/service";
 import { nextBackoffMs } from "@/modules/webhooks/outbound/service";
 import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
+import { emitDeadLetter } from "./dead-letter";
 
 // Alert delivery worker (claim + deliver). Mirrors the outbound-webhook worker: a single-replica
 // tick reaps stale SENDING rows, claims due PENDING deliveries cross-tenant (FOR UPDATE SKIP
@@ -187,6 +188,52 @@ async function finalizeDelivered(
   );
 }
 
+// THE NOTIFICATION THAT WILL NEVER ARRIVE, AND THE ONE LINE THAT SAYS SO (issue #356).
+//
+// The sharpest site of the four, because the operator learns about everything else THROUGH this bus,
+// and this is the bus failing. It cannot report itself, so the sink is the flow-log row: it costs
+// nothing, it is not the failing path, and ../flowlog/alerts.ts refuses to turn this particular line
+// back into an alert (the loop is written out there).
+//
+// Both roads to DEAD come here, which is the same collapse #325 did for the outbound bus. They were
+// written apart and neither had a line to forget; a third added the same way would be silent again.
+async function finalizeDead(
+  base: PrismaClient,
+  a: ClaimedAlert,
+  attempts: number,
+  error: string,
+): Promise<Outcome> {
+  await runScopedOn(base, sysCtx(a.tenantId), (db) =>
+    db.alertDelivery.update({
+      where: { id: a.id },
+      data: { status: "DEAD", attempts, lastError: error },
+    }),
+  );
+  // Fire-and-forget, and AFTER the write: the row is the fact, the line is the notification, and a
+  // failed line must never leave a delivery claimed forever.
+  emitDeadLetter({
+    tenantId: a.tenantId,
+    unit: "alert_delivery",
+    // The operator asked to be told about something and was not. Nothing recovers that.
+    level: "error",
+    error,
+    detail: {
+      deliveryId: String(a.id),
+      channelId: String(a.channelId),
+      // The stage the UNDELIVERED alert was about, which is not this line's own stage. `summary` is
+      // the body that never arrived — already sanitized and PII-free by construction, since it is
+      // what would have been posted to Discord.
+      alertStage: a.stage,
+      alertLevel: a.level,
+      summary: a.summary,
+      count: a.count,
+      attempts,
+    },
+    base,
+  });
+  return "dead";
+}
+
 async function finalizeFailure(
   base: PrismaClient,
   a: ClaimedAlert,
@@ -195,13 +242,7 @@ async function finalizeFailure(
 ): Promise<Outcome> {
   const attemptsAfter = a.attempts + 1;
   if (attemptsAfter >= MAX_ATTEMPTS) {
-    await runScopedOn(base, sysCtx(a.tenantId), (db) =>
-      db.alertDelivery.update({
-        where: { id: a.id },
-        data: { status: "DEAD", attempts: attemptsAfter, lastError: error },
-      }),
-    );
-    return "dead";
+    return finalizeDead(base, a, attemptsAfter, error);
   }
   const nextAttemptAt = new Date(now() + nextBackoffMs(attemptsAfter));
   await runScopedOn(base, sysCtx(a.tenantId), (db) =>
@@ -259,17 +300,7 @@ async function deliverClaimed(
     url = decryptJson<string>(a.url);
     await assertSafe(url);
   } catch (err) {
-    await runScopedOn(base, sysCtx(a.tenantId), (db) =>
-      db.alertDelivery.update({
-        where: { id: a.id },
-        data: {
-          status: "DEAD",
-          attempts: a.attempts + 1,
-          lastError: errMsg(err),
-        },
-      }),
-    );
-    return "dead";
+    return finalizeDead(base, a, a.attempts + 1, errMsg(err));
   }
 
   // Optional HMAC secret (generic webhook), resolved through a tenant-scoped read (RLS active).

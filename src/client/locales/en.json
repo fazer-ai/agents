@@ -1585,6 +1585,7 @@
     "stage": {
       "command": "Control command",
       "contact_auth": "Contact authorization",
+      "dead_letter": "Abandoned work",
       "debounce": "Message grouping",
       "delivery": "Interrupted delivery",
       "embed": "Embedding",

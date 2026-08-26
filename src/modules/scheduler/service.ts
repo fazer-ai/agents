@@ -84,6 +84,13 @@ export interface ClaimedJob {
   // missing secret there is a hard failure, not an empty message quietly folded into a memory
   // (../../graph/ingest-job.ts).
   payloadSecret?: string | null;
+  // The row's dedupe key, which is the operator's handle on WHICH work this is (`followup:<thread>`,
+  // `doc:<id>`, `<reminder-prefix><offset>`) and the only field that survives into the dead-letter
+  // line as something to act on (../flowlog/dead-letter.ts). Both claim paths select it.
+  //
+  // OPTIONAL for the same reason `payloadSecret` above is: a required field would be chased through
+  // every hand-built fixture for a benefit only the two real claim paths deliver.
+  dedupeKey?: string;
   attempts: number;
   // The token this claim holds. Hand it back to completeJob/rescheduleJob/failJob: those three CAS
   // on it, so a run that was superseded while it worked writes nothing (issue #164).
@@ -503,6 +510,7 @@ async function claimWhere(
         kind: SchedulerJobKind;
         payload: unknown;
         payloadSecret: string | null;
+        dedupeKey: string;
         attempts: number;
         claimSeq: number;
       }>
@@ -518,13 +526,15 @@ async function claimWhere(
         LIMIT ${lim}
       )
       RETURNING id, tenant_id AS "tenantId", kind, payload,
-                payload_secret AS "payloadSecret", attempts, claim_seq AS "claimSeq"`);
+                payload_secret AS "payloadSecret", dedupe_key AS "dedupeKey",
+                attempts, claim_seq AS "claimSeq"`);
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenantId,
       kind: r.kind,
       payload: (r.payload ?? {}) as Record<string, unknown>,
       payloadSecret: r.payloadSecret,
+      dedupeKey: r.dedupeKey,
       attempts: r.attempts,
       claimSeq: r.claimSeq,
     }));
@@ -857,6 +867,7 @@ export async function reapStaleJobs(
         kind: string;
         payload: unknown;
         payload_secret: string | null;
+        dedupe_key: string;
         attempts: number;
         claim_seq: number;
         status: "PENDING" | "DEAD";
@@ -868,13 +879,15 @@ export async function reapStaleJobs(
           claimed_at = NULL,
           updated_at = now()
       WHERE status = 'CLAIMED' AND claimed_at < ${cutoff} ${tenantClause} ${kindClause}
-      RETURNING id, tenant_id, kind, payload, payload_secret, attempts, claim_seq, status`);
+      RETURNING id, tenant_id, kind, payload, payload_secret, dedupe_key,
+                attempts, claim_seq, status`);
     return rows.map((r) => ({
       id: r.id,
       tenantId: r.tenant_id,
       kind: r.kind as ClaimedJob["kind"],
       payload: (r.payload ?? {}) as ClaimedJob["payload"],
       payloadSecret: r.payload_secret,
+      dedupeKey: r.dedupe_key,
       attempts: r.attempts,
       claimSeq: r.claim_seq,
       status: r.status,

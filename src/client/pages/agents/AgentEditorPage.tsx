@@ -79,6 +79,7 @@ import {
   BehaviorTab,
   type ContactAuthState,
   type MemoryState,
+  type ModelFallbackState,
   type SendImageState,
 } from "./BehaviorTab";
 import {
@@ -92,6 +93,10 @@ import { GuardrailsTab } from "./GuardrailsTab";
 import { readGuardrailsFormState } from "./guardrailsFormState";
 import { KnowledgeTab } from "./KnowledgeTab";
 import { memoryToForm, memoryToStored } from "./memoryFormState";
+import {
+  modelFallbackToForm,
+  modelFallbackToStored,
+} from "./modelFallbackFormState";
 import {
   observabilityToForm,
   observabilityToStored,
@@ -428,6 +433,7 @@ function readBehaviorState(a: Agent) {
     // defaults to ON and a hand-rolled `=== true` would show the switch off on every agent whose bag
     // predates the feature, then persist that lie on the next save.
     memory: memoryToForm(s),
+    modelFallback: modelFallbackToForm(s),
   };
 }
 
@@ -714,6 +720,9 @@ function AgentEditor() {
   // the round-trip pair produces, so a field added to `compaction` cannot default differently here
   // than it does everywhere else.
   const [memory, setMemory] = useState<MemoryState>(() => memoryToForm({}));
+  const [modelFallback, setModelFallback] = useState<ModelFallbackState>(() =>
+    modelFallbackToForm({}),
+  );
   // NOTE: Hosts the send_image tool may fetch from. Mirrors agent.settings.sendImage
   // (modules/images/settings), edited as one host per line.
   const [sendImage, setSendImage] = useState<SendImageState>({
@@ -785,6 +794,7 @@ function AgentEditor() {
   const sttCredBaseUrl = vaultBaseUrl(stt.credentialRef);
   const visionCredBaseUrl = vaultBaseUrl(vision.credentialRef);
   const memoryCredBaseUrl = vaultBaseUrl(memory.credentialRef);
+  const modelFallbackCredBaseUrl = vaultBaseUrl(modelFallback.credentialRef);
   const ttsNormalizeCredBaseUrl = vaultBaseUrl(tts.normalizeCredentialRef);
 
   // Tool selection
@@ -914,6 +924,7 @@ function AgentEditor() {
     setObservability(b.observability);
     setSavedObservability(b.observability);
     setMemory(b.memory);
+    setModelFallback(b.modelFallback);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
     setChannelRedirect(readChannelRedirectState(a));
@@ -952,6 +963,7 @@ function AgentEditor() {
     setObservability(b.observability);
     setSavedObservability(b.observability);
     setMemory(b.memory);
+    setModelFallback(b.modelFallback);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
   }, []);
@@ -1253,6 +1265,7 @@ function AgentEditor() {
       // field the form dropped would be deleted on the next save — which is exactly how
       // `tts.baseURL` was lost once, and the round-trip test over ./memoryFormState is the guard.
       memory: memoryToStored(memory),
+      modelFallback: modelFallbackToStored(modelFallback),
       attributeContext: {
         conversation: attributeContext.conversation,
         contact: attributeContext.contact,
@@ -2091,6 +2104,7 @@ function AgentEditor() {
     setObservability(b.observability);
     setSavedObservability(b.observability);
     setMemory(b.memory);
+    setModelFallback(b.modelFallback);
     setSendImage(b.sendImage);
     setAttributeContext(b.attributeContext);
   };
@@ -3015,10 +3029,13 @@ function AgentEditor() {
                 setVision={setVision}
                 visionCredBaseUrl={visionCredBaseUrl}
                 memoryCredBaseUrl={memoryCredBaseUrl}
+                modelFallbackCredBaseUrl={modelFallbackCredBaseUrl}
                 limits={limits}
                 setLimits={setLimits}
                 memory={memory}
                 setMemory={setMemory}
+                modelFallback={modelFallback}
+                setModelFallback={setModelFallback}
                 observability={observability}
                 setObservability={setObservability}
                 sendImage={sendImage}

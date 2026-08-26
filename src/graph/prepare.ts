@@ -84,7 +84,14 @@ import { readTtsConfig, type TtsConfig } from "@/modules/tts/settings";
 import { resolveInjectableCredential } from "@/modules/vault/injectable";
 import { tryResolveVaultEntry } from "@/modules/vault/service";
 import { chatwootThreadId, getCheckpointer } from "./checkpointer";
-import { buildAgentGraph } from "./graph";
+import {
+  type FallbackConfig,
+  hasModelFallback,
+  readModelFallbackConfig,
+  resolveFallbackModel,
+} from "./fallback-settings";
+import { buildAgentGraph, type FallbackModel } from "./graph";
+import { PRIMARY_MAX_RETRIES, PRIMARY_TIMEOUT_MS } from "./model-fallback";
 import {
   createChatModel,
   type ModelConfig,
@@ -190,6 +197,16 @@ export interface AgentConfig {
   // the guardrails agent's, so the audio path never opens a DB read of its own.
   ttsNormalizeApiKey: string;
   ttsNormalizeCredentialBaseUrl: string | null;
+  // The second provider behind the agent's own, and its OWN resolved key / baseURL. Resolved here
+  // next to the other three, so the turn never opens a DB read while a customer is waiting.
+  //
+  // Its shape is the two siblings' and its DEFAULT is the opposite: everything absent means no
+  // fallback at all, never "the agent's own model" (see graph/fallback-settings). An unresolvable
+  // ref leaves the key empty, and `buildModelAndGraph` then builds NO fallback — the turn fails the
+  // way it does today rather than sending the agent's key to a vendor that never issued it.
+  modelFallback: FallbackConfig;
+  modelFallbackApiKey: string;
+  modelFallbackCredentialBaseUrl: string | null;
   contactVoiceReply: boolean | null;
   // Humanized text delivery (split into balloons + typing delay).
   splitConfig: SplitConfig;
@@ -393,6 +410,29 @@ export async function loadAgentConfig(
         "agent %s: tts normalize credentialRef %s did not resolve, so the speech rewrite is skipped",
         String(args.agentId),
         ttsCfg.normalizeCredentialRef,
+      );
+    }
+  }
+  // The fallback provider's own credential. Same fail-open shape as the three around it, and the
+  // failure mode it protects is the loudest of them: without a key the fallback is simply not built,
+  // so the turn behaves exactly as an install that configured none. Sending the agent's key instead
+  // would hand one vendor's secret to another on every 503.
+  const fallbackCfg = readModelFallbackConfig(effSettings);
+  let modelFallbackApiKey = "";
+  let modelFallbackCredentialBaseUrl: string | null = null;
+  if (hasModelFallback(fallbackCfg) && fallbackCfg.credentialRef) {
+    const fEntry = await tryResolveVaultEntry<string>(
+      db,
+      fallbackCfg.credentialRef,
+    );
+    if (fEntry) {
+      modelFallbackApiKey = fEntry.secret;
+      modelFallbackCredentialBaseUrl = fEntry.baseUrl;
+    } else {
+      logger.warn(
+        "agent %s: model fallback credentialRef %s did not resolve, so there is nothing behind the provider",
+        String(args.agentId),
+        fallbackCfg.credentialRef,
       );
     }
   }
@@ -703,6 +743,9 @@ export async function loadAgentConfig(
     ttsConfig: ttsCfg,
     ttsNormalizeApiKey,
     ttsNormalizeCredentialBaseUrl,
+    modelFallback: fallbackCfg,
+    modelFallbackApiKey,
+    modelFallbackCredentialBaseUrl,
     contactVoiceReply: conv?.contact?.voiceReply ?? null,
     splitConfig: readSplitConfig(effSettings),
     serviceWindowConfig: readServiceWindowConfig(effSettings),
@@ -1396,12 +1439,103 @@ export interface GraphBuildDeps {
   // Fired when the hard tool-call limit forces a no-tools answer (runtime emits a flow warn).
   onToolLimit?: (info: { maxToolCalls: number; toolCalls: number }) => void;
   onModelRetry?: (info: { attempt: number; error: unknown }) => void;
+  // Fired when the configured second provider took the turn, so the runtime can put it on the trail.
+  // A fallback that answers is a SUCCESSFUL turn, so nothing else on the turn would say it happened
+  // — and a cost break-down that cannot see it reads the fallback's spend as the primary's.
+  onModelFallback?: (info: {
+    provider: string;
+    model: string;
+    reason: string;
+  }) => void;
+  // Fired when a fallback was configured and could not be built, which is the state that looks
+  // exactly like having none. Separate from `onModelFallback` on purpose: one says the safety net
+  // caught the turn, the other says there is no net, and folding them would let the second read as
+  // the first.
+  onModelFallbackUnavailable?: (info: { reason: string }) => void;
   // Fired when a turn dropped history to fit maxHistoryTokens (runtime records it in the trail).
   onHistoryTrim?: (info: {
     kept: number;
     dropped: number;
     tokens: number;
   }) => void;
+}
+
+// The second provider, built or deliberately absent. Every way this returns undefined is a way an
+// install behaves exactly as it does today, which is the property that makes the whole feature safe
+// to ship on: the fallback can only ever ADD an attempt that would not have happened.
+//
+// The three refusals are the three ways a configuration can be wrong, and none of them is silent:
+//   * nothing named        — the ordinary state, and the only one with no line (there is nothing to
+//                            report about a feature the operator did not ask for);
+//   * named but unrunnable — `resolveModelOverride` refused the destination (unknown provider, a key
+//                            that belongs to another vendor, an endpoint that would be dropped);
+//   * named with a credential that did not resolve — the ref is stale or was deleted.
+function buildFallbackModel(
+  cfg: AgentConfig,
+  makeModel: (mc: ResolvedModelConfig) => BaseChatModel,
+  deps: GraphBuildDeps,
+): FallbackModel | undefined {
+  if (!hasModelFallback(cfg.modelFallback)) return undefined;
+  const unavailable = (reason: string): undefined => {
+    logger.warn(
+      "agent %s: a model fallback is configured but cannot run (%s), so the provider has nothing behind it",
+      String(cfg.agentId),
+      reason,
+    );
+    deps.onModelFallbackUnavailable?.({ reason });
+    return undefined;
+  };
+  const resolved = resolveFallbackModel(
+    cfg.modelFallback,
+    {
+      provider: cfg.mc.provider,
+      model: cfg.mc.model,
+      baseURL: cfg.credentialBaseUrl ?? cfg.mc.baseURL,
+    },
+    { ownCredentialBaseURL: cfg.modelFallbackCredentialBaseUrl },
+  );
+  if (!resolved.runnable) return unavailable(resolved.reason ?? "not_runnable");
+  const own = resolved.credential === "own";
+  if (own && !cfg.modelFallbackApiKey)
+    return unavailable("credential_not_found");
+  // Built from the resolution alone, never spread from the agent's config: a spread would carry the
+  // agent's credentialRef (and every field the schema grows later) across a provider switch, which
+  // is the one thing the resolution exists to refuse. The two sibling overrides are built the same
+  // way.
+  const mc: ResolvedModelConfig = {
+    provider: resolved.provider as ModelConfig["provider"],
+    model: resolved.model,
+    apiKey:
+      resolved.credential === "own"
+        ? cfg.modelFallbackApiKey
+        : resolved.credential === "agent"
+          ? cfg.apiKey
+          : "",
+    baseURL: resolved.baseURL ?? undefined,
+    // The agent's temperature and reasoningEffort DO carry, unlike the two sibling overrides: those
+    // rewrite or summarise something that already exists, while this answers the customer in the
+    // agent's place. A fallback that answers in a different register than the primary is a worse
+    // fallback, and the operator tuned those values for the answer, not for the vendor.
+    temperature: cfg.mc.temperature,
+    ...(resolved.provider === cfg.mc.provider && cfg.mc.reasoningEffort
+      ? { reasoningEffort: cfg.mc.reasoningEffort }
+      : {}),
+    maxRetries: PRIMARY_MAX_RETRIES,
+    timeoutMs: PRIMARY_TIMEOUT_MS,
+  };
+  // `createChatModel` REFUSES some configurations synchronously (openai-compatible with no effective
+  // base URL throws a 400). Uncaught here that would cost the turn the fallback exists to save, and
+  // it would cost it on EVERY turn, not just the ones the primary failed.
+  try {
+    return { model: makeModel(mc), provider: mc.provider, modelId: mc.model };
+  } catch (err) {
+    logger.warn(
+      { err, agentId: String(cfg.agentId) },
+      "model fallback config is not runnable",
+    );
+    deps.onModelFallbackUnavailable?.({ reason: "model_not_runnable" });
+    return undefined;
+  }
 }
 
 export async function buildModelAndGraph(
@@ -1411,10 +1545,17 @@ export async function buildModelAndGraph(
 ) {
   const makeModel = deps.makeModel ?? createChatModel;
   const effectiveBaseUrl = cfg.credentialBaseUrl ?? cfg.mc.baseURL;
+  const fallback = buildFallbackModel(cfg, makeModel, deps);
+  // Bounded ONLY when something was actually built behind it. An install with no fallback keeps
+  // LangChain's six retries and its unbounded wait, byte for byte — see ./model-fallback for what
+  // those cost when there IS a second provider waiting for the turn.
   const model = makeModel({
     ...cfg.mc,
     apiKey: cfg.apiKey,
     baseURL: effectiveBaseUrl,
+    ...(fallback
+      ? { maxRetries: PRIMARY_MAX_RETRIES, timeoutMs: PRIMARY_TIMEOUT_MS }
+      : {}),
   });
   const checkpointer = deps.checkpointer ?? (await getCheckpointer());
   // Append the MCP server-context block (each connected server's scope + native `instructions` + its
@@ -1430,8 +1571,10 @@ export async function buildModelAndGraph(
     checkpointer,
     tools,
     maxToolCalls: cfg.maxToolCalls,
+    fallback,
     onToolLimit: deps.onToolLimit,
     onModelRetry: deps.onModelRetry,
+    onModelFallback: deps.onModelFallback,
     maxHistoryTokens: cfg.maxHistoryTokens,
     onHistoryTrim: deps.onHistoryTrim,
   });

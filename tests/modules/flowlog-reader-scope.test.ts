@@ -177,6 +177,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/memory-compaction.test.ts": 3,
   "tests/modules/memory-dead-letter.test.ts": 1,
   "tests/modules/playground-guardrails.test.ts": 1,
+  "tests/modules/model-fallback-turn.test.ts": 1,
   "tests/modules/stt.test.ts": 1,
   "tests/modules/tts-normalize-observability.test.ts": 1,
   "tests/modules/tts.test.ts": 2,

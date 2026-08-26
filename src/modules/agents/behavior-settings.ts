@@ -1,3 +1,4 @@
+import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { readAvailabilityConfig } from "@/modules/availability/away";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
@@ -61,6 +62,9 @@ export interface BehaviorSettings {
   // NOTE: The one block in this bag whose default is ON (see modules/memory/settings), so a bag with
   // no `memory` key projects `enabled: true` rather than the usual "absent means off".
   memory: ReturnType<typeof readMemoryConfig>;
+  // NOTE: All four fields null is the ordinary state and means NO fallback, not "the agent's own
+  // model" the way the two sibling overrides read it (see graph/fallback-settings).
+  modelFallback: ReturnType<typeof readModelFallbackConfig>;
 }
 
 // The keys this surface owns inside the settings bag. Any other key (future/unknown) is preserved
@@ -84,6 +88,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "attributeContext",
   "observability",
   "memory",
+  "modelFallback",
 ] as const;
 export type BehaviorSettingsKey = (typeof BEHAVIOR_SETTINGS_KEYS)[number];
 
@@ -108,6 +113,7 @@ export function readBehaviorSettings(settings: unknown): BehaviorSettings {
     attributeContext: readAttributeContextConfig(settings),
     observability: readObservabilityConfig(settings),
     memory: readMemoryConfig(settings),
+    modelFallback: readModelFallbackConfig(settings),
   };
 }
 
@@ -132,6 +138,7 @@ export interface BehaviorSettingsPatch {
   attributeContext?: Record<string, unknown>;
   observability?: Record<string, unknown>;
   memory?: Record<string, unknown>;
+  modelFallback?: Record<string, unknown>;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

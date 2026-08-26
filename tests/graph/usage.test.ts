@@ -123,7 +123,10 @@ describe("UsageCapture", () => {
         rows.push(row);
       },
     });
-    await capture.handleLLMEnd(resultWithUsageMetadata(1_000_000, 1_000_000));
+    await capture.handleLLMEnd(
+      resultWithUsageMetadata(1_000_000, 1_000_000),
+      "run-1",
+    );
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       tenantId: 5n,
@@ -170,7 +173,7 @@ describe("UsageCapture", () => {
         ],
       ],
     } as unknown as LLMResult;
-    await capture.handleLLMEnd(r);
+    await capture.handleLLMEnd(r, "run-1");
     expect(rows[0]).toMatchObject({
       source: "playground",
       inboxId: 7n,
@@ -188,9 +191,10 @@ describe("UsageCapture", () => {
         rows.push(row);
       },
     });
-    await capture.handleLLMEnd({
-      generations: [[{ text: "x" }]],
-    } as unknown as LLMResult);
+    await capture.handleLLMEnd(
+      { generations: [[{ text: "x" }]] } as unknown as LLMResult,
+      "run-1",
+    );
     expect(rows).toEqual([]);
   });
 
@@ -203,7 +207,7 @@ describe("UsageCapture", () => {
       },
     });
     await expect(
-      capture.handleLLMEnd(resultWithUsageMetadata(10, 10)),
+      capture.handleLLMEnd(resultWithUsageMetadata(10, 10), "run-1"),
     ).resolves.toBeUndefined();
   });
 });

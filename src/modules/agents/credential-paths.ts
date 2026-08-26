@@ -39,6 +39,11 @@ export const SETTINGS_CREDENTIAL_PATHS = [
     tab: "behavior",
     sectionId: "memory",
   },
+  {
+    path: ["modelFallback", "credentialRef"],
+    tab: "behavior",
+    sectionId: "modelFallback",
+  },
 ] as const satisfies ReadonlyArray<{
   path: readonly [keyof BehaviorSettingsPatch, ...string[]];
   tab: "behavior" | "guardrails";
@@ -129,11 +134,11 @@ function bagOf(v: unknown): Record<string, unknown> | null {
     : null;
 }
 
-// Every credential ref a write INTRODUCES or CHANGES, over the eight fields an agent keeps one in
-// (modelConfig plus the seven settings paths above). A bag the write does not send is a bag it does
+// Every credential ref a write INTRODUCES or CHANGES, over the nine fields an agent keeps one in
+// (modelConfig plus the eight settings paths above). A bag the write does not send is a bag it does
 // not touch, and a ref equal to the stored one is not a write at all.
 //
-// Only what changes, and that is the whole design. These eight fields sit on three editor tabs and
+// Only what changes, and that is the whole design. These nine fields sit on three editor tabs and
 // several of them are only rendered with their section switched on, so a check over the whole bag
 // could answer 400 naming a field the operator has no way to open — and one deleted vault entry
 // would then freeze every agent that named it, down to the switch that turns the agent off. What a

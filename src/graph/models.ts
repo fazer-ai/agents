@@ -27,6 +27,39 @@ export { REASONING_EFFORTS, type ReasoningEffort } from "./openai-reasoning";
 
 export interface ResolvedModelConfig extends ModelConfig {
   apiKey: string;
+  // WHAT ONE CALL ON THIS MODEL MAY SPEND, and absent for every caller that has nothing behind it.
+  //
+  // Absent means UNCHANGED: LangChain's AsyncCaller keeps its six retries with exponential backoff
+  // and no request ceiling at all, which is what every install ships with today. That default is
+  // only wrong when there IS something behind the provider — measured through this factory against a
+  // local endpoint (issue #143), a single 503 becomes seven requests over 77s, a 502 99s, and a
+  // provider that accepts the connection and never answers holds the turn forever. See
+  // ./model-fallback for the bounds and the reasoning.
+  maxRetries?: number;
+  timeoutMs?: number;
+}
+
+// The two bounds as each SDK family spells them, and the spellings are MEASURED off the built
+// instances (tests/graph/model-limits-transport.test.ts), never read off the option types:
+//
+//   maxRetries   all six providers, landing on `caller.maxRetries`
+//   the ceiling  `timeout` on the four OpenAI-shaped clients, `clientOptions.timeout` on Anthropic,
+//                and NOWHERE on Google — its adapter accepts neither spelling and drops both.
+//
+// Anthropic is the correction that made this worth measuring: written as taking a plain `timeout` on
+// the strength of the option type ACCEPTING one, and the built instance showed the field arriving
+// undefined. It matters because the ceiling is the only bound a HANG has — a provider that accepts
+// the connection and never answers carries no status for the retry count to act on. So on Google a
+// hung endpoint still holds the turn and the fallback never gets it, which is the one gap this
+// change does not close.
+function limits(cfg: ResolvedModelConfig): {
+  maxRetries?: number;
+  timeout?: number;
+} {
+  return {
+    ...(cfg.maxRetries !== undefined ? { maxRetries: cfg.maxRetries } : {}),
+    ...(cfg.timeoutMs !== undefined ? { timeout: cfg.timeoutMs } : {}),
+  };
 }
 
 // OpenRouter is OpenAI-compatible with a fixed API root, so it reuses the ChatOpenAI client with this
@@ -151,6 +184,7 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
           model,
           apiKey,
           temperature: openaiTemperature(model, temperature),
+          ...limits(cfg),
         },
         planOpenAITransport(model, cfg.reasoningEffort),
       );
@@ -165,6 +199,7 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
           model: model.trim() || "default",
           apiKey,
           temperature: openaiTemperature(model, temperature),
+          ...limits(cfg),
           configuration: { baseURL: cfg.baseURL },
         },
         // NOTE: no operator choice reaches here — the config schema fences reasoningEffort to the
@@ -179,6 +214,7 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
           model,
           apiKey,
           temperature: openaiTemperature(model, temperature),
+          ...limits(cfg),
           configuration: { baseURL: cfg.baseURL || OPENROUTER_BASE_URL },
         },
         planOpenAITransport(model, undefined),
@@ -206,9 +242,25 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
     // rewritten in storage either — the value stays as the operator set it, so the day Anthropic
     // takes the parameter back this line is all that has to go.
     case "anthropic":
-      return new ChatAnthropic({ model, apiKey });
+      return new ChatAnthropic({
+        model,
+        apiKey,
+        ...(cfg.maxRetries !== undefined ? { maxRetries: cfg.maxRetries } : {}),
+        // NOTE: `clientOptions`, not the plain `timeout` the four OpenAI-shaped clients take.
+        // Measured: the option type accepts `timeout` and the built instance leaves it undefined.
+        ...(cfg.timeoutMs !== undefined
+          ? { clientOptions: { timeout: cfg.timeoutMs } }
+          : {}),
+      });
     case "google": {
-      const gemini = new ChatGoogleGenerativeAI({ model, apiKey, temperature });
+      const gemini = new ChatGoogleGenerativeAI({
+        model,
+        apiKey,
+        temperature,
+        // NOTE: no ceiling here in either spelling — measured, this adapter drops both. Picked apart
+        // rather than passed whole so the omission is visible instead of silently dropped.
+        ...(cfg.maxRetries !== undefined ? { maxRetries: cfg.maxRetries } : {}),
+      });
       // NOTE: the adapter declares tool parameters in the OpenAPI subset, whose closed field set
       // rejects the whole request over a single unknown key (issue #64). Redeclaring them as JSON
       // Schema is the carve-out; see ./gemini-tools for the field set and what was measured.
@@ -226,7 +278,7 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
       return gemini;
     }
     case "deepseek":
-      return new ChatDeepSeek({ model, apiKey, temperature });
+      return new ChatDeepSeek({ model, apiKey, temperature, ...limits(cfg) });
     default:
       throw new AppError(`unknown model provider: ${cfg.provider}`, 400);
   }

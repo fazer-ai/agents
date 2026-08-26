@@ -556,6 +556,32 @@ export async function runLoadedTurn(
         model: loaded.mc.model,
         detail: { retriedEmptyResponse: attempt },
       }),
+    // A fallback that ANSWERS produces a successful turn, so nothing else on it would ever say the
+    // primary was down: the reply went out, the customer was served, and the only trace would be a
+    // usage row under another model's name. Warn rather than info — this is the operator's one
+    // signal that a provider they are paying for is not taking their traffic.
+    onModelFallback: ({ provider, model, reason }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        provider,
+        model,
+        detail: { fallbackFrom: loaded.mc.provider, fallbackReason: reason },
+      }),
+    // The mirror image, and it fires BEFORE any failure: a fallback the operator configured and that
+    // cannot be built leaves the turn with nothing behind it, which is indistinguishable from having
+    // configured none. Reported once per turn build rather than on the failure, because by then it
+    // is too late to be the warning it needs to be.
+    onModelFallbackUnavailable: ({ reason }) =>
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        provider: loaded.mc.provider,
+        model: loaded.mc.model,
+        detail: { fallbackUnavailable: reason },
+      }),
     // The history ceiling dropped older attendances from this turn. INFO, not warn: emitFlowEvent
     // fans warn/error out to the alert channels, and a correctly configured ceiling trims on nearly
     // every turn of a long thread, so a warn here would page the operator forever for working.

@@ -15,6 +15,21 @@ import { emitOutbound } from "@/modules/webhooks/outbound/service";
 
 export type UsageSource = "inbox" | "playground";
 
+// HOW A CALL NAMES THE MODEL THAT ANSWERED IT, when that is not the one the agent is configured with.
+//
+// The capture is built once per turn and holds the configured id, which is right for every call
+// until a fallback provider takes one (issue #143). Nothing LangChain hands the handler settles it:
+// measured, `invocation_params.model` carries the configured id on openai/anthropic/deepseek and is
+// UNDEFINED on google, and `response_metadata.model_name` carries the vendor's dated snapshot
+// (`gpt-5.4-mini-2026-03-17`), which would silently rewrite the value of every row already in the
+// ledger and move the dashboard's per-model break-down with it.
+//
+// So the caller says. The graph node is the only thing that knows which of its two models it just
+// invoked, and it says so in the CALL's own metadata — measured to merge with the turn's metadata
+// and to reach the inherited handlers, unlike `callbacks`, which replaces them and would have cost
+// the Langfuse trace.
+export const USAGE_MODEL_METADATA_KEY = "fazerai_usage_model";
+
 export interface UsageRow {
   tenantId: bigint;
   agentId: bigint | null;
@@ -322,13 +337,38 @@ export class UsageCapture extends BaseCallbackHandler {
     this.persist = params.persist ?? defaultUsagePersist(params.base);
   }
 
-  override async handleLLMEnd(output: LLMResult): Promise<void> {
+  // Which model each in-flight run is on, when the caller said. Keyed by runId rather than held as
+  // one field because the two halves are separate callbacks: a field would be the last START to
+  // fire, which on a turn whose primary failed and whose fallback answered is exactly the wrong one.
+  // Bounded by the runs in flight on one turn, and erased by whichever of END / ERROR arrives.
+  private readonly runModel = new Map<string, string>();
+
+  override async handleLLMStart(
+    _llm: unknown,
+    _prompts: string[],
+    runId: string,
+    _parentRunId?: string,
+    _extraParams?: Record<string, unknown>,
+    _tags?: string[],
+    metadata?: Record<string, unknown>,
+  ): Promise<void> {
+    const named = metadata?.[USAGE_MODEL_METADATA_KEY];
+    if (typeof named === "string" && named) this.runModel.set(runId, named);
+  }
+
+  override async handleLLMError(_err: unknown, runId: string): Promise<void> {
+    this.runModel.delete(runId);
+  }
+
+  override async handleLLMEnd(output: LLMResult, runId: string): Promise<void> {
     const {
       promptTokens,
       completionTokens,
       cachedReadTokens,
       cacheCreationTokens,
     } = extractTokenUsage(output);
+    const model = this.runModel.get(runId) ?? this.model;
+    this.runModel.delete(runId);
     if (promptTokens === 0 && completionTokens === 0) return;
     try {
       await this.persist({
@@ -337,7 +377,7 @@ export class UsageCapture extends BaseCallbackHandler {
         conversationId: this.conversationId,
         inboxId: this.inboxId,
         threadId: this.threadId,
-        model: this.model,
+        model,
         node: this.node,
         source: this.source,
         promptTokens,

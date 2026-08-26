@@ -54,6 +54,25 @@ function httpStatus(v: unknown): number | null {
     : null;
 }
 
+// WHICH statuses describe the ENDPOINT's momentary state rather than our request. A fact about the
+// transport, not a policy: 408/504 the hop's own timeout, 429 the rate, 500/502/503 the overload,
+// 529 Anthropic's spelling of it. Everything else a server answers is about what we SENT (400, 401,
+// 403, 404, 413, 422) and answers the same way every time it is asked.
+//
+// It lives here, and the POLICIES live with their callers, because the two are different questions
+// and only the first one is shared. `modules/vision/retry` asks the SAME endpoint again and
+// therefore excludes a 401 as pointless; `graph/model-fallback` asks a DIFFERENT one, where a 401
+// would be answered — and excludes it anyway, because a fallback that covers a dead primary key
+// covers it forever and the operator never learns. Same set, opposite reasons, which is exactly why
+// the reasons are not written here.
+export function isTransientProviderStatus(status: number): boolean {
+  return TRANSIENT_PROVIDER_STATUSES.has(status);
+}
+
+const TRANSIENT_PROVIDER_STATUSES: ReadonlySet<number> = new Set([
+  408, 429, 500, 502, 503, 504, 529,
+]);
+
 export function statusOf(err: unknown): number | null {
   if (!(err instanceof Error)) return null;
   const bag = err as unknown as Record<string, unknown>;

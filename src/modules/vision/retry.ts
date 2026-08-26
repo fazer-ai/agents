@@ -1,4 +1,8 @@
-import { providerFailure, statusOf } from "@/lib/provider-failure";
+import {
+  isTransientProviderStatus,
+  providerFailure,
+  statusOf,
+} from "@/lib/provider-failure";
 import type { VisionKind } from "./providers";
 
 // WHEN A FAILED EXTRACTION IS WORTH ASKING FOR AGAIN, AND HOW LONG EACH ASK MAY TAKE.
@@ -12,10 +16,10 @@ import type { VisionKind } from "./providers";
 // The two halves are one decision, hence one file: retries on top of a 60s-per-call budget would
 // spend three minutes of a turn, and a shorter budget without retries is a stricter way to fail.
 
-// The ENDPOINT's momentary state rather than our request: 408/504 the hop's own timeout, 429 the
-// rate, 500/502/503 the overload, 529 Anthropic's spelling of it. A 4xx about what we SENT (400,
-// 401, 403, 404, 413, 422) answers the same way every time.
-const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
+// The ENDPOINT's momentary state rather than our request. The set itself is a fact about the
+// transport and moved to `provider-failure`, which is where the model fallback reads it too; what
+// stays here is what THIS policy does with the rest. A 4xx about what we SENT (400, 401, 403, 404,
+// 413, 422) answers the same way every time, so asking the SAME endpoint again buys nothing.
 
 // A connection that never opened is deliberately absent: it reads transient and is just as often a
 // base URL that will never resolve, which the operator needs to see fail on the first attempt.
@@ -25,7 +29,7 @@ export function isTransientVisionFailure(err: unknown): boolean {
   // setting `name`.
   if (providerFailure(err) === "timeout") return true;
   const status = statusOf(err);
-  return status !== null && TRANSIENT_STATUSES.has(status);
+  return status !== null && isTransientProviderStatus(status);
 }
 
 // The ceiling for the WHOLE extraction, attempts and waits included — the value the single call

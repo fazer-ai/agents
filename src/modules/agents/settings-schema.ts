@@ -416,7 +416,30 @@ const memory = z.looseObject({
     .optional(),
 });
 
-// The 17 behavior blocks of `agent_settings_set`, each a partial patch over the stored block.
+const modelFallback = z.looseObject({
+  // WHERE THE TURN GOES when the agent's own provider cannot take it. Resolved by the same
+  // `resolveModelOverride` the speech rewrite and the summariser use, so the rules about whose key
+  // may travel to which host are written once — a fallback on another vendor carries its own
+  // credential or it does not run.
+  //
+  // The one place this block reads DIFFERENTLY from its two siblings: there, everything absent means
+  // "run on the agent's own model", which is a useful default. Here that would be a fallback to the
+  // provider that just failed — configured-looking and a guaranteed no-op. So a fallback exists only
+  // when the operator named BOTH a provider and a model, and anything less is no fallback at all.
+  provider: oneOf(MODEL_PROVIDERS)
+    .nullable()
+    .optional()
+    .describe("the fallback's model PROVIDER; absent = no fallback"),
+  model: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("the fallback's model id; absent = no fallback"),
+  credentialRef: credentialRef(),
+  baseURL: baseURL(),
+});
+
+// The 18 behavior blocks of `agent_settings_set`, each a partial patch over the stored block.
 export const BEHAVIOR_PATCH_SHAPE = {
   debounce: debounce.optional(),
   stt: stt.optional(),
@@ -435,6 +458,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   sendImage: sendImage.optional(),
   observability: observability.optional(),
   memory: memory.optional(),
+  modelFallback: modelFallback.optional(),
 } satisfies z.ZodRawShape;
 
 export type BehaviorPatchArgs = z.infer<

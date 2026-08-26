@@ -14,6 +14,16 @@ import { selectHistoryWindow } from "@/graph/history-window";
 import { contentToText } from "@/graph/message-text";
 import { runModelCall } from "@/graph/model-limit";
 import { countMessageTokens } from "@/graph/token-count";
+import { USAGE_MODEL_METADATA_KEY } from "@/graph/usage";
+
+// The second provider as the graph needs it: the built model plus the two labels that name it on
+// the usage row and the flow trail. Built and bounded by `prepare.buildModelAndGraph`; the node only
+// ever calls it.
+export interface FallbackModel {
+  model: BaseChatModel;
+  provider: string;
+  modelId: string;
+}
 
 // Minimal functional supervisor: an agent node over the persisted message history, with an
 // optional tool-calling loop (agent ⇄ tools until the model stops calling tools). The
@@ -38,6 +48,15 @@ export interface BuildAgentGraphParams {
   // model-limit). Same purpose as onToolLimit: without it a recovered turn looks like a clean one
   // and the fault rate stays invisible.
   onModelRetry?: (info: { attempt: number; error: unknown }) => void;
+  // The second provider, already built and already bounded (see ./model-fallback). Absent for every
+  // agent that configured none, which is every agent today, and absent means the node behaves
+  // exactly as it did.
+  fallback?: FallbackModel;
+  onModelFallback?: (info: {
+    provider: string;
+    model: string;
+    reason: string;
+  }) => void;
   // Ceiling on the history tokens handed to the model (agent.settings.limits.maxHistoryTokens).
   // null/undefined = send the whole thread, which is the historical behavior.
   maxHistoryTokens?: number | null;
@@ -102,11 +121,19 @@ export function buildAgentGraph({
   maxToolCalls,
   onToolLimit,
   onModelRetry,
+  fallback,
+  onModelFallback,
   maxHistoryTokens,
   onHistoryTrim,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
+  // Bound to the SAME toolset, or the fallback would answer a question the primary was asked with
+  // tools it cannot call — and the tool-call budget below counts calls, not models.
+  const fallbackLlm =
+    fallback && hasTools
+      ? (fallback.model.bindTools?.(tools) ?? fallback.model)
+      : fallback?.model;
   const max = maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
 
   const agentNode = async (state: typeof MessagesAnnotation.State) => {
@@ -137,13 +164,29 @@ export function buildAgentGraph({
       onToolLimit?.({ maxToolCalls: max, toolCalls });
     }
 
+    const messages = [new SystemMessage(prompt), ...history];
     const response = await runModelCall(
-      () =>
-        (hardLimit ? model : llm).invoke([
-          new SystemMessage(prompt),
-          ...history,
-        ]),
+      () => (hardLimit ? model : llm).invoke(messages),
       onModelRetry,
+      fallback && fallbackLlm
+        ? {
+            // The SAME question, to the other provider. Same messages and same prompt: this is not a
+            // second, cheaper attempt, it is the attempt the customer is waiting for.
+            run: () =>
+              (hardLimit ? fallback.model : fallbackLlm).invoke(messages, {
+                // Metadata rather than callbacks, and measured: metadata MERGES with the turn's and
+                // reaches the handlers it already had, while `callbacks` replaces them — which would
+                // have billed this call to the primary's name or dropped the Langfuse trace.
+                metadata: { [USAGE_MODEL_METADATA_KEY]: fallback.modelId },
+              }),
+            onFallback: ({ reason }) =>
+              onModelFallback?.({
+                provider: fallback.provider,
+                model: fallback.modelId,
+                reason,
+              }),
+          }
+        : undefined,
     );
     return { messages: [response] };
   };

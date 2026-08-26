@@ -2,6 +2,11 @@ import logger from "@/api/lib/logger";
 import config from "@/config";
 import { asProviderFailure } from "@/lib/provider-failure";
 import { Semaphore } from "@/lib/semaphore";
+import {
+  EMPTY_COMPLETION_MESSAGE,
+  isEmptyCompletionFault,
+} from "./empty-completion";
+import { isFallbackWorthy } from "./model-fallback";
 
 // Policy point for every agent model call: the LLM round-trip in the LangGraph agent node
 // (graph.ts), the guardrail classifier and the opt-in TTS-normalize call. It caps how many calls are
@@ -20,33 +25,6 @@ function sem(): Semaphore {
 // NOTE: short on purpose — a customer is waiting on the other end of this call.
 const RETRY_DELAY_MS = 250;
 
-// NOTE: `TypeError` is the predicate, and it is narrow by design. LangChain's AsyncCaller already
-// retries everything the PROVIDER answered (6 attempts with backoff, aborting on 4xx), and the
-// OpenAI SDK's own retry is disabled in favour of it. What no retry covers is a 200 whose body
-// carries no completion: the provider returns `choices: []`, `_generate` returns
-// `{ generations: [] }`, the call RESOLVES, and only afterwards does BaseChatModel.invoke raise a
-// TypeError reading `generations[0][0].message`. That is issue #63 — an intermittent fault ended
-// the turn and the customer got no reply at all.
-//
-// Everything the provider actually answered arrives as a plain Error (an APIError carries `status`,
-// a timeout is named AbortError/TimeoutError, an oversized prompt is ContextOverflowError), so a
-// "retry unless 4xx" predicate would have to enumerate those three exclusions, double the latency
-// of failures that are already decided, and still miss the next such class.
-//
-// The failing expression is the only signal there is: the provider answered 200, so there is no
-// status, no code and no typed error to match on. Bun (JavaScriptCore) puts that expression in the
-// message — `undefined is not an object (evaluating '…generations[0][0].message')` — and Bun is what
-// the deploy runs. Matching it, rather than any TypeError, matters because `runModelCall` wraps
-// `invoke`, and LangChain runs its callback handlers INSIDE that: a TypeError from a tracing
-// callback fires after the provider already answered and was already billed, so retrying it would
-// pay for the same completion twice, every turn, until the callback is fixed.
-//
-// If a future runtime words the message differently the retry stops firing, which is the behaviour
-// that shipped before this change — a silent no-op, never a wrong retry.
-function isEmptyCompletionFault(err: unknown): boolean {
-  return err instanceof TypeError && err.message.includes("generations");
-}
-
 // The one place that knows an error came from a provider, which is what makes it the place to say
 // what it may repeat. This used to name the empty-completion fault and let everything else "travel
 // untouched" — and untouched is the leak: the request carried the whole conversation, so a refusal
@@ -64,24 +42,59 @@ function describeProviderFault(err: unknown): unknown {
     // No log of its own: this fault is only ever reached after the retry, which already logged the
     // failing expression with the error object. A second line here was written and removed once
     // mutation showed it killed nothing — the retry's log is what covers this path.
-    return new Error(
-      "the model provider returned no completion (empty generations)",
-      { cause: err },
-    );
+    return new Error(EMPTY_COMPLETION_MESSAGE, { cause: err });
   }
   return asProviderFailure(err);
+}
+
+export interface ModelFallback<T> {
+  // The same call, against the other provider. A thunk rather than a model, because only the caller
+  // knows what "the same call" means — which messages, which bound tools, and which metadata names
+  // the model for the usage row.
+  run: () => Promise<T>;
+  // Fired when the fallback takes the turn, so the runtime can leave a warn on the trail. `reason`
+  // is already the redacted word: the request carried the whole conversation, so the provider's own
+  // sentence may be the customer's coming back.
+  onFallback?: (info: { reason: string }) => void;
 }
 
 export async function runModelCall<T>(
   fn: () => Promise<T>,
   // Fired when a call is retried, so the runtime can leave a warn on the turn's trail. Best-effort.
   onRetry?: (info: { attempt: number; error: unknown }) => void,
+  // Absent for every caller that has nothing behind its provider, which is every caller today except
+  // the agent turn. Absent also means UNCHANGED: none of the bounds in `model-fallback` apply to a
+  // model built without one.
+  fallback?: ModelFallback<T>,
 ): Promise<T> {
   return sem().run(async () => {
+    // Reached with the error the PROVIDER raised, which is the whole reason the decision lives here
+    // rather than at the call site. One lane up, the error has already been through
+    // `describeProviderFault` and is one of our own three words: `statusOf` still reads (the status
+    // rides along), but "timeout" has become a message on an Error named "Error", so a predicate
+    // asking the SDK's question would answer no to the exact case it exists for.
+    const failed = async (err: unknown): Promise<T> => {
+      const described = describeProviderFault(err);
+      if (!fallback || !isFallbackWorthy(err)) throw described;
+      const reason =
+        described instanceof Error ? described.message : "provider error";
+      logger.warn(
+        { err },
+        "primary model provider failed; handing the turn to the fallback",
+      );
+      fallback.onFallback?.({ reason });
+      try {
+        return await fallback.run();
+      } catch (fallbackErr) {
+        // The fallback is the last thing there is, so what it failed with is what the turn reports.
+        // Redacted the same way: a second vendor's prose is no safer than the first's.
+        throw describeProviderFault(fallbackErr);
+      }
+    };
     try {
       return await fn();
     } catch (err) {
-      if (!isEmptyCompletionFault(err)) throw describeProviderFault(err);
+      if (!isEmptyCompletionFault(err)) return failed(err);
       onRetry?.({ attempt: 1, error: err });
       logger.warn(
         { err },
@@ -91,7 +104,7 @@ export async function runModelCall<T>(
       try {
         return await fn();
       } catch (retryErr) {
-        throw describeProviderFault(retryErr);
+        return failed(retryErr);
       }
     }
   });

@@ -7,6 +7,7 @@ import {
   Image,
   ImagePlus,
   Layers,
+  LifeBuoy,
   ListChecks,
   Megaphone,
   Mic,
@@ -192,6 +193,16 @@ export interface MemoryState {
   baseURL: string;
 }
 
+// The second provider behind the agent's own. No `enabled` flag of its own, deliberately: a
+// fallback exists exactly when a provider AND a model are named, so the switch would be a third way
+// to say the same thing and a way for the two to disagree.
+export interface ModelFallbackState {
+  provider: string;
+  model: string;
+  credentialRef: string;
+  baseURL: string;
+}
+
 export interface SendImageState {
   allowedHosts: string;
 }
@@ -263,6 +274,9 @@ interface BehaviorTabProps {
   limits: LimitsState;
   memory: MemoryState;
   setMemory: React.Dispatch<React.SetStateAction<MemoryState>>;
+  modelFallback: ModelFallbackState;
+  setModelFallback: React.Dispatch<React.SetStateAction<ModelFallbackState>>;
+  modelFallbackCredBaseUrl: string | null;
   // The base URL stored on the summarizer's OWN credential, when it has one. Outranks the typed
   // field, exactly as it does for the speech rewrite.
   memoryCredBaseUrl: string | null;
@@ -962,6 +976,9 @@ export function BehaviorTab({
   limits,
   memory,
   setMemory,
+  modelFallback,
+  setModelFallback,
+  modelFallbackCredBaseUrl,
   memoryCredBaseUrl,
   observability,
   savedObservability,
@@ -1140,6 +1157,43 @@ export function BehaviorTab({
     memoryCredBaseUrl,
     memory.compactionEnabled,
   );
+  const fallbackOverride = {
+    provider: modelFallback.provider,
+    model: modelFallback.model,
+    credentialRef: modelFallback.credentialRef,
+    baseURL: modelFallback.baseURL,
+  };
+  // A fallback is CONFIGURED once both halves are named, and that is the flag every check below
+  // reads. Half-named is the state the runtime refuses to build, so the editor has to be the place
+  // it becomes visible: after a save there is nothing to see but a turn that fails the way it
+  // always did.
+  const fallbackConfigured = !!(
+    modelFallback.provider.trim() && modelFallback.model.trim()
+  );
+  const fallbackSource = overridePickerSource(
+    fallbackOverride,
+    agentModel,
+    modelFallbackCredBaseUrl,
+  );
+  const fallbackEffectiveProvider =
+    modelFallback.provider || agentModelProvider;
+  const fallbackNeedsOwnCredential = overrideNeedsOwnCredential(
+    fallbackOverride,
+    agentModel,
+    modelFallbackCredBaseUrl,
+  );
+  const fallbackBaseUrlInvalid = overrideBaseUrlInvalid(
+    fallbackOverride,
+    agentModel,
+    modelFallbackCredBaseUrl,
+    fallbackConfigured,
+  );
+  const fallbackBaseUrlUnsupported = overrideBaseUrlUnsupported(
+    fallbackOverride,
+    agentModel,
+    modelFallbackCredBaseUrl,
+    fallbackConfigured,
+  );
   const normalizeBaseUrlInvalid = ttsNormalizerBaseUrlInvalid(
     tts,
     agentModel,
@@ -1227,6 +1281,11 @@ export function BehaviorTab({
       id: "memory",
       icon: Brain,
       label: t("editor.memory", "Memory"),
+    },
+    {
+      id: "modelFallback",
+      icon: LifeBuoy,
+      label: t("editor.modelFallback", "Fallback provider"),
     },
     {
       id: "observability",
@@ -2605,6 +2664,171 @@ export function BehaviorTab({
                       }
                       disabled={!!memoryCredBaseUrl}
                       placeholder="https://api.groq.com/openai/v1"
+                    />
+                  </FormField>
+                )}
+              </div>
+            )}
+          </Section>
+
+          <Section
+            id="modelFallback"
+            icon={LifeBuoy}
+            title={t("editor.modelFallback", "Fallback provider")}
+            description={t(
+              "editor.modelFallbackHint",
+              "Where a turn goes when the agent's own provider cannot take it: rate-limited, overloaded, or not answering. Only those. A key the provider rejected, a model id it does not know, or a request it refused are NOT failed over, because the second provider would answer them fine and you would never find out the first one is broken \u2014 you would just be billed by both. Leave it empty and nothing changes: a turn that fails today keeps failing the same way.",
+            )}
+          >
+            <FormField
+              label={t("editor.provider", "Provider")}
+              description={t(
+                "editor.modelFallbackProviderHint",
+                "Pick a different vendor than the agent's whenever you can. The same vendor rate-limits your account as a whole, so a second model there is usually down for the same reason at the same moment.",
+              )}
+            >
+              <Select
+                value={modelFallback.provider}
+                onChange={(e) =>
+                  setModelFallback((prev) => ({
+                    ...prev,
+                    ...overrideProviderChanged(
+                      {
+                        provider: prev.provider,
+                        model: prev.model,
+                        credentialRef: prev.credentialRef,
+                        baseURL: prev.baseURL,
+                      },
+                      e.target.value,
+                    ),
+                  }))
+                }
+              >
+                <option value="">
+                  {t("editor.modelFallbackNone", "No fallback")}
+                </option>
+                {MODEL_PROVIDERS.map((p) => (
+                  <option key={p} value={p}>
+                    {providerLabel(p, t)}
+                  </option>
+                ))}
+              </Select>
+            </FormField>
+            {!!modelFallback.provider && (
+              <div className="flex flex-col gap-3">
+                <FormField
+                  label={t("editor.credential", "API key")}
+                  description={t(
+                    "editor.modelFallbackCredentialHint",
+                    "Required when the provider differs from the agent's: the agent's key is never sent to another vendor, so without a key of its own there is nothing behind the provider and the turn fails as it would with no fallback at all.",
+                  )}
+                  group
+                >
+                  <CredentialPicker
+                    value={modelFallback.credentialRef}
+                    onChange={(v) =>
+                      setModelFallback((prev) => ({
+                        ...prev,
+                        ...overridePicked(
+                          {
+                            provider: prev.provider,
+                            model: prev.model,
+                            credentialRef: prev.credentialRef,
+                            baseURL: prev.baseURL,
+                          },
+                          "credentialRef",
+                          v,
+                          agentModelProvider,
+                        ),
+                      }))
+                    }
+                    required={fallbackNeedsOwnCredential}
+                    compatibleTypes={credentialCompat.model(
+                      fallbackEffectiveProvider,
+                    )}
+                    defaultCreateType={
+                      credentialCompat.model(fallbackEffectiveProvider)[0]
+                    }
+                    ariaLabel={t("editor.credential", "API key")}
+                  />
+                </FormField>
+                <FormField
+                  label={t("editor.model", "Model")}
+                  // The one field whose absence is silent everywhere else: a provider with no model
+                  // stores cleanly, reads back as configured, and builds nothing.
+                  error={
+                    !modelFallback.model.trim()
+                      ? t(
+                          "editor.modelFallbackModelRequired",
+                          "Pick a model, or the fallback is saved and never runs.",
+                        )
+                      : null
+                  }
+                  group
+                >
+                  <ModelPicker
+                    value={modelFallback.model}
+                    onChange={(v) =>
+                      setModelFallback((prev) => ({
+                        ...prev,
+                        ...overridePicked(
+                          {
+                            provider: prev.provider,
+                            model: prev.model,
+                            credentialRef: prev.credentialRef,
+                            baseURL: prev.baseURL,
+                          },
+                          "model",
+                          v,
+                          agentModelProvider,
+                        ),
+                      }))
+                    }
+                    provider={fallbackEffectiveProvider}
+                    credentialRef={fallbackSource.credentialRef || undefined}
+                    baseURL={fallbackSource.baseURL || undefined}
+                  />
+                </FormField>
+                {(fallbackEffectiveProvider === "openai-compatible" ||
+                  !!modelFallbackCredBaseUrl ||
+                  !!modelFallback.baseURL.trim()) && (
+                  <FormField
+                    label={t("editor.baseURL", "Base URL")}
+                    description={
+                      modelFallbackCredBaseUrl
+                        ? t(
+                            "editor.baseURLFromCredential",
+                            "Defined by the selected credential.",
+                          )
+                        : t(
+                            "editor.modelFallbackBaseURLHint",
+                            "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
+                          )
+                    }
+                    error={
+                      fallbackBaseUrlUnsupported
+                        ? t(
+                            "editor.baseURLNotSentByProvider",
+                            "This provider does not send a base URL: the request would go to its own endpoint instead. Pick a credential without one, or use an OpenAI-compatible provider.",
+                          )
+                        : fallbackBaseUrlInvalid && modelFallback.baseURL.trim()
+                          ? t(
+                              "common.invalidUrl",
+                              "Must be a valid http(s) URL.",
+                            )
+                          : null
+                    }
+                  >
+                    <Input
+                      value={modelFallbackCredBaseUrl ?? modelFallback.baseURL}
+                      onChange={(e) =>
+                        setModelFallback((prev) => ({
+                          ...prev,
+                          baseURL: e.target.value,
+                        }))
+                      }
+                      disabled={!!modelFallbackCredBaseUrl}
+                      placeholder="https://..."
                     />
                   </FormField>
                 )}

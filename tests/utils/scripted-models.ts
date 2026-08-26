@@ -27,6 +27,53 @@ export class EmptyThenReplyModel extends BaseChatModel {
   }
 }
 
+// A provider that always fails the same way. The error is handed in rather than built here, because
+// what the fallback policy reads off it (the numeric `status`, the class name) is the whole subject
+// of the test — a model that invented its own error would be testing the fixture.
+export class FailingModel extends BaseChatModel {
+  calls = 0;
+  constructor(private readonly error: unknown) {
+    super({});
+  }
+  _llmType() {
+    return "fake-failing";
+  }
+  // The graph binds tools before invoking; returning `this` keeps the bound and bare paths on the
+  // same counter, so "the primary was actually asked" is provable.
+  override bindTools(_tools: BindToolsInput[]) {
+    return this;
+  }
+  async _generate(): Promise<ChatResult> {
+    this.calls += 1;
+    throw this.error;
+  }
+}
+
+// Records the toolset it was BOUND to, which is the only way to see the difference between a model
+// asked the agent's question and one asked a stripped version of it. A reply arrives either way.
+export class ToolRecordingModel extends BaseChatModel {
+  boundToolNames: string[] | null = null;
+  constructor(private readonly reply: string) {
+    super({});
+  }
+  _llmType() {
+    return "fake-tool-recording";
+  }
+  override bindTools(tools: BindToolsInput[]) {
+    this.boundToolNames = tools.map((t) =>
+      typeof t === "object" && t !== null && "name" in t
+        ? String((t as { name: unknown }).name)
+        : "?",
+    );
+    return this;
+  }
+  async _generate(): Promise<ChatResult> {
+    return {
+      generations: [{ text: this.reply, message: new AIMessage(this.reply) }],
+    };
+  }
+}
+
 // Runs a side effect INSIDE the generate call, then answers. The point is the window: a fence that
 // only exists before the model and after it cannot be told apart from a correct one unless something
 // happens while the model is running, and the model call is the widest wait on the turn.

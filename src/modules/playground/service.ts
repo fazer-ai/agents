@@ -298,6 +298,15 @@ async function buildPlaygroundGraph(params: {
   // Same warn line the reactive turn leaves when a model call had to be retried. The caller passes
   // it because the FlowContext is the caller's.
   onModelRetry?: (info: { attempt: number; error: unknown }) => void;
+  // The same two lines the two production entrypoints leave. The playground is where an operator
+  // finds out what their agent does, so a fallback that silently answers here is a fallback they
+  // conclude the wrong things from.
+  onModelFallback?: (info: {
+    provider: string;
+    model: string;
+    reason: string;
+  }) => void;
+  onModelFallbackUnavailable?: (info: { reason: string }) => void;
   onHistoryTrim?: (info: {
     kept: number;
     dropped: number;
@@ -338,6 +347,8 @@ async function buildPlaygroundGraph(params: {
     makeModel: params.deps?.makeModel,
     checkpointer: params.deps?.checkpointer,
     onModelRetry: params.onModelRetry,
+    onModelFallback: params.onModelFallback,
+    onModelFallbackUnavailable: params.onModelFallbackUnavailable,
     onHistoryTrim: params.onHistoryTrim,
   });
   // Tag usage as playground so it never pollutes the real dashboard figures (the dashboard
@@ -489,6 +500,22 @@ export async function runPlaygroundTurn(
           level: "warn",
           status: "ok",
           detail: { retriedEmptyResponse: attempt },
+        }),
+      onModelFallback: ({ provider, model, reason }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          provider,
+          model,
+          detail: { fallbackReason: reason },
+        }),
+      onModelFallbackUnavailable: ({ reason }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          detail: { fallbackUnavailable: reason },
         }),
       onHistoryTrim: ({ kept, dropped, tokens }) =>
         emitFlowEvent(flow, {
@@ -818,6 +845,22 @@ export async function runPlaygroundFollowup(
           level: "warn",
           status: "ok",
           detail: { retriedEmptyResponse: attempt },
+        }),
+      onModelFallback: ({ provider, model, reason }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          provider,
+          model,
+          detail: { fallbackReason: reason },
+        }),
+      onModelFallbackUnavailable: ({ reason }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "warn",
+          status: "ok",
+          detail: { fallbackUnavailable: reason },
         }),
       onHistoryTrim: ({ kept, dropped, tokens }) =>
         emitFlowEvent(flow, {

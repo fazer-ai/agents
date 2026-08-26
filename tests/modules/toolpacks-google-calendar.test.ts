@@ -20,6 +20,52 @@ function stubFetch(status: number, json: unknown) {
   return { impl, calls };
 }
 
+// Since #345 the write tools READ availability before writing, so a create/update fixture has to
+// answer the freeBusy query too. Free by default: these tests are about what the write SENDS, not
+// about the booking rule (that one has its own file).
+function stubWriteFetch(
+  json: unknown,
+  busy: { start: string; end: string }[] = [],
+) {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const impl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const u = String(url);
+    const i = init ?? {};
+    calls.push({ url: u, init: i });
+    let body = json;
+    if (u.includes("/freeBusy")) {
+      const items = (JSON.parse(String(i.body)) as { items: { id: string }[] })
+        .items;
+      const calendars: Record<string, { busy: unknown }> = {};
+      for (const it of items) calendars[it.id] = { busy };
+      body = { calendars };
+    }
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+  return { impl, calls };
+}
+
+// The requests that MUTATE, past the availability reads that now precede them.
+function writeCalls(calls: Array<{ url: string; init: RequestInit }>) {
+  return calls.filter(
+    (c) =>
+      c.url.includes("/events") &&
+      (c.init.method === "POST" || c.init.method === "PATCH"),
+  );
+}
+
+// The request that MUTATES, past the availability read that now precedes it.
+function writeCall(calls: Array<{ url: string; init: RequestInit }>) {
+  return calls.find(
+    (c) =>
+      c.url.includes("/events") &&
+      (c.init.method === "POST" || c.init.method === "PATCH"),
+  ) as { url: string; init: RequestInit };
+}
+
 const noopAssert = async () => undefined;
 
 // América/Sao_Paulo is a fixed UTC-3 (no DST since 2019). Helpers to assert on slot wall-times.
@@ -382,19 +428,19 @@ describe("google calendar toolpack — per-contact isolation", () => {
   });
 
   test("create stamps the event with the contact and never sends attendees", async () => {
-    const { impl, calls } = stubFetch(200, { id: "ev_1" });
+    const { impl, calls } = stubWriteFetch({ id: "ev_1" });
     await toolFor(
       "calendar_create_event",
       {},
       baseCtx({ fetchImpl: impl }),
     )?.invoke({
       summary: "Consulta",
-      start: "2026-06-20T14:00:00-03:00",
-      end: "2026-06-20T15:00:00-03:00",
+      start: "2099-06-22T14:00:00-03:00",
+      end: "2099-06-22T15:00:00-03:00",
       // attendees is no longer in the schema; even if passed, it must never reach Google.
       attendees: ["lead@example.com"],
     });
-    const body = bodyOf(calls[0] as { init: RequestInit });
+    const body = bodyOf(writeCall(calls));
     expect(body.extendedProperties).toEqual(stampedExt);
     expect(body.attendees).toBeUndefined();
   });
@@ -519,9 +565,9 @@ describe("google calendar toolpack — per-contact isolation", () => {
 
 describe("google calendar toolpack — appointment reminders + confirmation", () => {
   test("create arms reminders via ctx (eventId + calendarId + startISO)", async () => {
-    const { impl } = stubFetch(200, {
+    const { impl } = stubWriteFetch({
       id: "ev_1",
-      start: { dateTime: "2026-06-25T10:00:00-03:00" },
+      start: { dateTime: "2099-06-23T10:00:00-03:00" },
     });
     const scheduled: Array<{
       eventId: string;
@@ -548,24 +594,24 @@ describe("google calendar toolpack — appointment reminders + confirmation", ()
       }),
     )?.invoke({
       summary: "Consulta",
-      start: "2026-06-25T10:00:00-03:00",
-      end: "2026-06-25T11:00:00-03:00",
+      start: "2099-06-23T10:00:00-03:00",
+      end: "2099-06-23T11:00:00-03:00",
     });
     expect(scheduled).toHaveLength(1);
     // The policy (offsets + confirmation) flows from the integration config, not the agent.
     expect(scheduled[0]).toMatchObject({
       eventId: "ev_1",
       calendarId: "primary",
-      startISO: "2026-06-25T10:00:00-03:00",
+      startISO: "2099-06-23T10:00:00-03:00",
       offsetsHours: [24, 1],
       askConfirmationOnLast: true,
     });
   });
 
   test("create does NOT arm reminders when the integration has them disabled", async () => {
-    const { impl } = stubFetch(200, {
+    const { impl, calls } = stubWriteFetch({
       id: "ev_2",
-      start: { dateTime: "2026-06-25T10:00:00-03:00" },
+      start: { dateTime: "2099-06-23T10:00:00-03:00" },
     });
     let armed = false;
     await toolFor(
@@ -579,9 +625,11 @@ describe("google calendar toolpack — appointment reminders + confirmation", ()
       }),
     )?.invoke({
       summary: "Consulta",
-      start: "2026-06-25T10:00:00-03:00",
-      end: "2026-06-25T11:00:00-03:00",
+      start: "2099-06-23T10:00:00-03:00",
+      end: "2099-06-23T11:00:00-03:00",
     });
+    // The create has to LAND, or "no reminder was armed" would be true of a refused write too.
+    expect(writeCall(calls)).toBeDefined();
     expect(armed).toBe(false);
   });
 
@@ -659,11 +707,11 @@ describe("google calendar toolpack — appointment reminders + confirmation", ()
 
 describe("google calendar toolpack — event date shaping + default timezone", () => {
   test("create: a timed start/end becomes dateTime + the config timeZone", async () => {
-    const { impl, calls } = stubFetch(200, {
+    const { impl, calls } = stubWriteFetch({
       id: "ev_1",
       summary: "Call",
-      start: { dateTime: "2026-06-20T14:00:00-03:00" },
-      end: { dateTime: "2026-06-20T15:00:00-03:00" },
+      start: { dateTime: "2099-06-22T14:00:00-03:00" },
+      end: { dateTime: "2099-06-22T15:00:00-03:00" },
       htmlLink: "https://cal/ev_1",
     });
     const out = (await toolFor(
@@ -672,51 +720,50 @@ describe("google calendar toolpack — event date shaping + default timezone", (
       baseCtx({ fetchImpl: impl }),
     )?.invoke({
       summary: "Call",
-      start: "2026-06-20T14:00:00-03:00",
-      end: "2026-06-20T15:00:00-03:00",
+      start: "2099-06-22T14:00:00-03:00",
+      end: "2099-06-22T15:00:00-03:00",
     })) as string;
-    const body = bodyOf(calls[0] as { init: RequestInit });
+    const body = bodyOf(writeCall(calls));
     expect(body.start).toEqual({
-      dateTime: "2026-06-20T14:00:00-03:00",
+      dateTime: "2099-06-22T14:00:00-03:00",
       timeZone: "America/Bahia",
     });
     expect(JSON.parse(out)).toMatchObject({
       id: "ev_1",
-      start: "2026-06-20T14:00:00-03:00",
+      start: "2099-06-22T14:00:00-03:00",
       htmlLink: "https://cal/ev_1",
     });
   });
 
-  test("create: a bare date is an all-day event (date, no timeZone)", async () => {
-    const { impl, calls } = stubFetch(200, { id: "ev_2" });
-    await toolFor(
+  test("create: a bare date is refused — a whole day is never a bookable slot", async () => {
+    const { impl, calls } = stubWriteFetch({ id: "ev_2" });
+    const out = (await toolFor(
       "calendar_create_event",
       {},
       baseCtx({ fetchImpl: impl }),
     )?.invoke({
       summary: "Holiday",
-      start: "2026-06-20",
-      end: "2026-06-21",
-    });
-    const body = bodyOf(calls[0] as { init: RequestInit });
-    expect(body.start).toEqual({ date: "2026-06-20" });
-    expect(body.end).toEqual({ date: "2026-06-21" });
+      start: "2099-06-22",
+      end: "2099-06-23",
+    })) as string;
+    expect(writeCall(calls)).toBeUndefined();
+    expect(out).toContain("start and end time");
   });
 
   test("create: with no configured timeZone, timed events anchor to São Paulo", async () => {
-    const { impl, calls } = stubFetch(200, { id: "ev_4" });
+    const { impl, calls } = stubWriteFetch({ id: "ev_4" });
     await toolFor(
       "calendar_create_event",
       {},
       baseCtx({ fetchImpl: impl }),
     )?.invoke({
       summary: "Call",
-      start: "2026-06-20T14:00:00",
-      end: "2026-06-20T15:00:00",
+      start: "2099-06-22T14:00:00-03:00",
+      end: "2099-06-22T15:00:00-03:00",
     });
-    const body = bodyOf(calls[0] as { init: RequestInit });
+    const body = bodyOf(writeCall(calls));
     expect(body.start).toEqual({
-      dateTime: "2026-06-20T14:00:00",
+      dateTime: "2099-06-22T14:00:00-03:00",
       timeZone: "America/Sao_Paulo",
     });
   });
@@ -724,11 +771,13 @@ describe("google calendar toolpack — event date shaping + default timezone", (
   // A patch that sets only dateTime leaves the all-day `date` on the event, and Google rejects an
   // event carrying both (HTTP 400). Both directions must null the field they replace.
   test("update: all-day → timed nulls the date field", async () => {
-    const { impl, calls } = stubFetch(200, {
+    // An all-day event created before #345 can still be MOVED onto a bookable slot, and the patch
+    // has to clear the `date` it replaces (Google rejects an event carrying both, HTTP 400).
+    const { impl, calls } = stubWriteFetch({
       id: "ev_5",
       extendedProperties: stampedExt,
-      start: { dateTime: "2026-06-20T00:00:00-03:00" },
-      end: { dateTime: "2026-06-20T23:59:00-03:00" },
+      start: { date: "2099-06-22" },
+      end: { date: "2099-06-23" },
     });
     await toolFor(
       "calendar_update_event",
@@ -736,42 +785,40 @@ describe("google calendar toolpack — event date shaping + default timezone", (
       baseCtx({ fetchImpl: impl }),
     )?.invoke({
       eventId: "ev_5",
-      start: "2026-06-20T00:00:00-03:00",
-      end: "2026-06-20T23:59:00-03:00",
+      start: "2099-06-22T14:00:00-03:00",
+      end: "2099-06-22T15:00:00-03:00",
     });
-    // calls[0] is the ownership re-fetch; calls[1] is the PATCH.
-    const body = bodyOf(calls[1] as { init: RequestInit });
+    const body = bodyOf(writeCall(calls));
     expect(body.start).toEqual({
-      dateTime: "2026-06-20T00:00:00-03:00",
+      dateTime: "2099-06-22T14:00:00-03:00",
       timeZone: "America/Sao_Paulo",
       date: null,
     });
     expect(body.end).toEqual({
-      dateTime: "2026-06-20T23:59:00-03:00",
+      dateTime: "2099-06-22T15:00:00-03:00",
       timeZone: "America/Sao_Paulo",
       date: null,
     });
   });
 
-  test("update: timed → all-day nulls the dateTime field", async () => {
-    const { impl, calls } = stubFetch(200, {
+  test("update: a move to a whole day is refused, and nothing is patched", async () => {
+    const { impl, calls } = stubWriteFetch({
       id: "ev_6",
       extendedProperties: stampedExt,
-      start: { date: "2026-06-20" },
-      end: { date: "2026-06-21" },
+      start: { dateTime: "2099-06-22T14:00:00-03:00" },
+      end: { dateTime: "2099-06-22T15:00:00-03:00" },
     });
-    await toolFor(
+    const out = (await toolFor(
       "calendar_update_event",
       {},
       baseCtx({ fetchImpl: impl }),
     )?.invoke({
       eventId: "ev_6",
-      start: "2026-06-20",
-      end: "2026-06-21",
-    });
-    const body = bodyOf(calls[1] as { init: RequestInit });
-    expect(body.start).toEqual({ date: "2026-06-20", dateTime: null });
-    expect(body.end).toEqual({ date: "2026-06-21", dateTime: null });
+      start: "2099-06-22",
+      end: "2099-06-23",
+    })) as string;
+    expect(writeCall(calls)).toBeUndefined();
+    expect(out).toContain("start and end time");
   });
 });
 
@@ -1290,26 +1337,26 @@ describe("google calendar toolpack — Meet room on create", () => {
   const CREATED = {
     id: "ev9",
     summary: "Demo",
-    start: { dateTime: "2026-08-10T14:00:00-03:00" },
-    end: { dateTime: "2026-08-10T15:00:00-03:00" },
+    start: { dateTime: "2099-06-22T14:00:00-03:00" },
+    end: { dateTime: "2099-06-22T15:00:00-03:00" },
     htmlLink: "https://cal/ev9",
     hangoutLink: "https://meet.google.com/abc-defg-hij",
   };
   const INPUT = {
     summary: "Demo",
-    start: "2026-08-10T14:00:00-03:00",
-    end: "2026-08-10T15:00:00-03:00",
+    start: "2099-06-22T14:00:00-03:00",
+    end: "2099-06-22T15:00:00-03:00",
   };
 
   test("create asks Google for a Meet room by default (body + conferenceDataVersion=1)", async () => {
-    const { impl, calls } = stubFetch(200, CREATED);
+    const { impl, calls } = stubWriteFetch(CREATED);
     await toolFor(
       "calendar_create_event",
       {},
       baseCtx({ fetchImpl: impl }),
     )?.invoke(INPUT);
-    expect(calls[0]?.url).toContain("conferenceDataVersion=1");
-    const body = bodyOf(calls[0] as { init: RequestInit });
+    expect(writeCall(calls).url).toContain("conferenceDataVersion=1");
+    const body = bodyOf(writeCall(calls));
     const conf = body.conferenceData as {
       createRequest?: {
         requestId?: string;
@@ -1323,7 +1370,7 @@ describe("google calendar toolpack — Meet room on create", () => {
   });
 
   test("each create uses a fresh requestId", async () => {
-    const { impl, calls } = stubFetch(200, CREATED);
+    const { impl, calls } = stubWriteFetch(CREATED);
     const tool = toolFor(
       "calendar_create_event",
       {},
@@ -1333,7 +1380,8 @@ describe("google calendar toolpack — Meet room on create", () => {
     await tool?.invoke(INPUT);
     const rid = (i: number) =>
       (
-        bodyOf(calls[i] as { init: RequestInit }).conferenceData as {
+        bodyOf(writeCalls(calls)[i] as { init: RequestInit })
+          .conferenceData as {
           createRequest?: { requestId?: string };
         }
       )?.createRequest?.requestId;
@@ -1343,7 +1391,7 @@ describe("google calendar toolpack — Meet room on create", () => {
   });
 
   test("the returned event exposes meetLink (hangoutLink), the link to hand the customer", async () => {
-    const { impl } = stubFetch(200, CREATED);
+    const { impl } = stubWriteFetch(CREATED);
     const out = (await toolFor(
       "calendar_create_event",
       {},
@@ -1356,36 +1404,35 @@ describe("google calendar toolpack — Meet room on create", () => {
   });
 
   test("createMeetLink: false keeps today's body and URL (calendar as a pure busy-block)", async () => {
-    const { impl, calls } = stubFetch(200, { id: "ev9" });
+    const { impl, calls } = stubWriteFetch({ id: "ev9" });
     await toolFor(
       "calendar_create_event",
       { createMeetLink: false },
       baseCtx({ fetchImpl: impl }),
     )?.invoke(INPUT);
-    expect(calls[0]?.url).not.toContain("conferenceDataVersion");
-    expect(
-      bodyOf(calls[0] as { init: RequestInit }).conferenceData,
-    ).toBeUndefined();
+    expect(writeCall(calls).url).not.toContain("conferenceDataVersion");
+    expect(bodyOf(writeCall(calls)).conferenceData).toBeUndefined();
   });
 
   test("a pending room is re-read once so the reply still carries meetLink", async () => {
     // NOTE: the POST answers without hangoutLink (createRequest still pending); one follow-up GET has it.
     const calls: Array<{ url: string; init: RequestInit }> = [];
-    const responses: unknown[] = [
-      {
-        ...CREATED,
-        hangoutLink: undefined,
-        conferenceData: {
-          createRequest: { status: { statusCode: "pending" } },
-        },
+    const pending = {
+      ...CREATED,
+      hangoutLink: undefined,
+      conferenceData: {
+        createRequest: { status: { statusCode: "pending" } },
       },
-      CREATED,
-    ];
-    let n = 0;
+    };
     const impl = (async (url: string | URL | Request, init?: RequestInit) => {
-      calls.push({ url: String(url), init: init ?? {} });
-      const body = responses[Math.min(n, responses.length - 1)];
-      n += 1;
+      const u = String(url);
+      const i = init ?? {};
+      calls.push({ url: u, init: i });
+      const body = u.includes("/freeBusy")
+        ? { calendars: { primary: { busy: [] } } }
+        : i.method === "POST"
+          ? pending
+          : CREATED;
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -1396,8 +1443,9 @@ describe("google calendar toolpack — Meet room on create", () => {
       {},
       baseCtx({ fetchImpl: impl }),
     )?.invoke(INPUT)) as string;
-    expect(calls).toHaveLength(2);
-    expect(calls[1]?.init.method).toBe("GET");
+    const after = calls.slice(calls.indexOf(writeCall(calls)));
+    expect(after).toHaveLength(2);
+    expect(after[1]?.init.method).toBe("GET");
     expect(JSON.parse(out)).toMatchObject({
       meetLink: "https://meet.google.com/abc-defg-hij",
     });

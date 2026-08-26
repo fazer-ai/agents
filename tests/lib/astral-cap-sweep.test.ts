@@ -405,6 +405,9 @@ const BARE_SLICES: Record<
     2,
     "parse-only + fixed-format",
   ],
+  // The refusal a calendar write answers with lists the nearest bookable slots; the cut bounds that
+  // LIST, and each entry is a slot object this code built, never received text.
+  "src/modules/integrations/toolpacks/calendar-slots.ts": [1, "array"],
   "src/modules/integrations/toolpacks/google-calendar.ts": [1, "parse-only"],
   "src/modules/integrations/toolpacks/google-drive.ts": [1, "parse-only"],
   // Zod issue PATHS, which name our own schema's keys, never the received values.

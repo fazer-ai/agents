@@ -7,6 +7,8 @@ import type {
 import {
   computeAggregatedSlots,
   computeAvailableSlots,
+  judgeBooking,
+  subtractWindow,
 } from "@/modules/integrations/toolpacks/calendar-slots";
 
 // America/Sao_Paulo is a fixed UTC-3 (no DST since 2019), so -03:00 ISO offsets are stable here.
@@ -342,5 +344,192 @@ describe("computeAggregatedSlots", () => {
     });
     expect(r.slots).toHaveLength(2);
     expect(localHM(r.coveredUntil as string)).toBe("09:30");
+  });
+});
+
+// Issue #345: the write path judges a requested appointment by asking the SAME generator the
+// availability tool answers with. A decision table pins the rule; the toolpack tests pin that the
+// write tools consult it.
+describe("judgeBooking — the rule a calendar write has to pass", () => {
+  const schedule: Schedule = {
+    windows: [{ day: DAY, start: "09:00", end: "18:00" }],
+    exceptions: [],
+    timezone: TZ,
+  };
+  const hourly = {
+    now: farPast,
+    schedule,
+    busy: [] as { start: string; end: string }[],
+    slotMinutes: 60,
+    granularityMinutes: 60,
+    minLeadMinutes: 0,
+  };
+
+  const cases: Array<{
+    name: string;
+    start: string;
+    end: string;
+    over?: Partial<typeof hourly>;
+    bookable: boolean;
+    // The local starts the refusal offers back, when the case checks them.
+    offers?: string[];
+  }> = [
+    {
+      name: "a start availability offers, at the length it offers",
+      start: iso("14:00"),
+      end: iso("15:00"),
+      bookable: true,
+    },
+    {
+      name: "a start between the offered ones (the 14:15 of the report)",
+      start: iso("14:15"),
+      end: iso("15:15"),
+      bookable: false,
+      // The six nearest bookable starts, chronological. 14:00 and 15:00 straddle the request.
+      offers: ["12:00", "13:00", "14:00", "15:00", "16:00", "17:00"],
+    },
+    {
+      name: "the offered start, at a length the business does not sell",
+      start: iso("14:00"),
+      end: iso("14:30"),
+      bookable: false,
+    },
+    {
+      name: "outside the service hours",
+      start: iso("20:00"),
+      end: iso("21:00"),
+      bookable: false,
+    },
+    {
+      name: "on a day the weekly grid closes",
+      start: iso("14:00"),
+      end: iso("15:00"),
+      over: { schedule: { ...schedule, windows: [] as WindowSpec[] } },
+      bookable: true,
+    },
+    {
+      name: "inside the minimum notice",
+      start: iso("14:00"),
+      end: iso("15:00"),
+      over: { now: new Date(iso("13:30")), minLeadMinutes: 120 },
+      bookable: false,
+    },
+    {
+      name: "already taken by another booking",
+      start: iso("14:00"),
+      end: iso("15:00"),
+      over: { busy: [{ start: iso("14:30"), end: iso("15:30") }] },
+      bookable: false,
+    },
+    {
+      name: "in the past",
+      start: iso("14:00"),
+      end: iso("15:00"),
+      over: { now: new Date(iso("16:00")) },
+      bookable: false,
+    },
+    {
+      name: "on a date exception that closes the day",
+      start: iso("14:00"),
+      end: iso("15:00"),
+      over: {
+        schedule: {
+          ...schedule,
+          exceptions: [{ date: "2026-06-22", ranges: [] } as ScheduleException],
+        },
+      },
+      bookable: false,
+      offers: [],
+    },
+  ];
+
+  for (const c of cases) {
+    test(c.name, () => {
+      const v = judgeBooking({
+        ...hourly,
+        ...c.over,
+        start: c.start,
+        end: c.end,
+      });
+      expect(v.bookable).toBe(c.bookable);
+      if (c.offers !== undefined) {
+        expect(v.alternatives.map((s) => localHM(s.start))).toEqual(c.offers);
+      }
+      // A bookable request carries no alternatives: there is nothing to offer instead.
+      if (c.bookable) expect(v.alternatives).toEqual([]);
+    });
+  }
+
+  test("the alternatives are bookable themselves, not just nearby", () => {
+    const v = judgeBooking({
+      ...hourly,
+      busy: [{ start: iso("14:00"), end: iso("15:00") }],
+      start: iso("14:15"),
+      end: iso("15:15"),
+    });
+    expect(v.bookable).toBe(false);
+    expect(v.alternatives.map((s) => localHM(s.start))).not.toContain("14:00");
+    for (const alt of v.alternatives) {
+      expect(
+        judgeBooking({
+          ...hourly,
+          busy: [{ start: iso("14:00"), end: iso("15:00") }],
+          start: alt.start,
+          end: alt.end,
+        }).bookable,
+      ).toBe(true);
+    }
+  });
+
+  test("an appointment running past local midnight is still judged whole", () => {
+    // The day window has to be widened by the request, or the slot the rule is asked about falls
+    // outside the range that was supposed to contain it and every late booking reads as unavailable.
+    const v = judgeBooking({
+      ...hourly,
+      schedule: { ...schedule, windows: [] },
+      granularityMinutes: 60,
+      slotMinutes: 120,
+      start: iso("23:00"),
+      end: "2026-06-23T01:00:00-03:00",
+    });
+    expect(v.bookable).toBe(true);
+  });
+});
+
+describe("subtractWindow — the appointment being moved gets out of its own way", () => {
+  const b = (s: string, e: string) => ({ start: iso(s), end: iso(e) });
+  const hm = (w: { start: string; end: string }) =>
+    `${localHM(w.start)}-${localHM(w.end)}`;
+
+  test("no cut leaves the list untouched", () => {
+    expect(subtractWindow([b("14:00", "15:00")], null).map(hm)).toEqual([
+      "14:00-15:00",
+    ]);
+  });
+
+  test("an interval that IS the cut disappears", () => {
+    expect(
+      subtractWindow([b("14:00", "15:00")], b("14:00", "15:00")).map(hm),
+    ).toEqual([]);
+  });
+
+  test("a merged block splits around the cut", () => {
+    // freeBusy merges adjacent bookings, so the appointment's own hour arrives fused to its
+    // neighbours. Removing only an exact match would leave the whole block standing.
+    expect(
+      subtractWindow([b("13:00", "17:00")], b("14:00", "15:00")).map(hm),
+    ).toEqual(["13:00-14:00", "15:00-17:00"]);
+  });
+
+  test("an overlap at one end is trimmed, not dropped", () => {
+    expect(
+      subtractWindow([b("14:30", "16:00")], b("14:00", "15:00")).map(hm),
+    ).toEqual(["15:00-16:00"]);
+  });
+
+  test("a disjoint interval survives whole", () => {
+    expect(
+      subtractWindow([b("16:00", "17:00")], b("14:00", "15:00")).map(hm),
+    ).toEqual(["16:00-17:00"]);
   });
 });

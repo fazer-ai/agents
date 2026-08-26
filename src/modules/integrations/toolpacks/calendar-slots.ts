@@ -1,5 +1,6 @@
 import {
   fitsWithinWindows,
+  localDateKey,
   type Schedule,
 } from "@/modules/business-hours/hours";
 
@@ -192,4 +193,140 @@ export function computeAggregatedSlots(input: AggregateInput): AggregateResult {
     i = j;
   }
   return { slots };
+}
+
+// The UTC offset of an instant in an IANA timezone, in ms (positive east of UTC). Lives here rather
+// than at the call site because both the blocking-calendar reader and the booking rule below need
+// "local midnight of a date", and two copies of zone math is one copy too many.
+function tzOffsetMs(at: number, tz: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(at));
+  const get = (type: string) =>
+    Number(parts.find((p) => p.type === type)?.value ?? "0");
+  const asUtc = Date.UTC(
+    get("year"),
+    get("month") - 1,
+    get("day"),
+    get("hour") % 24,
+    get("minute"),
+    get("second"),
+  );
+  return asUtc - at;
+}
+
+// The UTC instant of local midnight for a YYYY-MM-DD in an IANA timezone (DST-correct: one
+// refinement pass covers an offset shift between the UTC guess and the target instant).
+export function zonedMidnightMs(date: string, tz: string): number {
+  const utcGuess = Date.parse(`${date}T00:00:00Z`);
+  const first = utcGuess - tzOffsetMs(utcGuess, tz);
+  return utcGuess - tzOffsetMs(first, tz);
+}
+
+// How many bookable times a refusal offers back. Enough for the model to propose a real choice,
+// small enough that the refusal stays a sentence and not a listing.
+const MAX_ALTERNATIVES = 6;
+
+export interface BookingInput extends Omit<SlotInput, "timeMin" | "timeMax"> {
+  // The requested appointment, as the write tools received it.
+  start: string;
+  end: string;
+}
+
+export interface BookingVerdict {
+  bookable: boolean;
+  // Bookable times in the same local day, nearest to the request first. Empty when the day is full
+  // or closed; that is a real answer, not a failure.
+  alternatives: Slot[];
+}
+
+// The local day containing an instant, as the range the availability read has to cover. The END is
+// widened by the appointment itself, so a booking that runs past local midnight is still judged
+// whole instead of being cut by the window that was supposed to hold it. The start needs no such
+// guard: local midnight of the day holding an instant is never after it.
+export function bookingWindow(
+  startMs: number,
+  endMs: number,
+  timezone: string,
+): { timeMin: string; timeMax: string } {
+  const dayStart = zonedMidnightMs(
+    localDateKey(new Date(startMs), timezone),
+    timezone,
+  );
+  // 36h from local midnight lands inside the next local day whether it is 23, 24 or 25 hours long.
+  const dayEnd = zonedMidnightMs(
+    localDateKey(new Date(dayStart + 36 * 3_600_000), timezone),
+    timezone,
+  );
+  return {
+    timeMin: new Date(dayStart).toISOString(),
+    timeMax: new Date(Math.max(dayEnd, endMs)).toISOString(),
+  };
+}
+
+// THE RULE the write path enforces (issue #345), in one sentence: an appointment may only be written
+// on a (start, end) pair that `calendar_check_availability` would have returned for that day.
+//
+// It is expressed as membership in the generated list, not as a second copy of the four conditions
+// (service hours, slot grid, minimum lead, existing bookings). A re-implementation is how the two
+// paths drift: the write would keep honouring a rule the availability path had already changed, and
+// nothing would be red. Here there is one generator, and the write asks it a question.
+//
+// The same list is the refusal's content. A bare "not available" makes the agent apologise and stop;
+// the times it CAN offer are what lets the turn recover, and they cost nothing extra because the
+// availability read that answers the question already covers the whole day.
+export function judgeBooking(input: BookingInput): BookingVerdict {
+  const { start, end, ...slotInput } = input;
+  const startMs = Date.parse(start);
+  const endMs = Date.parse(end);
+  const window = bookingWindow(startMs, endMs, input.schedule.timezone);
+  const offered = computeAvailableSlots({ ...slotInput, ...window });
+  const bookable = offered.some(
+    (s) => Date.parse(s.start) === startMs && Date.parse(s.end) === endMs,
+  );
+  if (bookable) return { bookable: true, alternatives: [] };
+  const alternatives = offered
+    .map((s) => ({ s, d: Math.abs(Date.parse(s.start) - startMs) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, MAX_ALTERNATIVES)
+    .map((x) => x.s)
+    .sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+  return { bookable: false, alternatives };
+}
+
+// Removes one interval from a busy list, splitting any interval that strictly contains it.
+//
+// It exists for the reschedule: the appointment being moved is itself busy, so judging the new time
+// against a raw freeBusy answer refuses every move as a collision with itself. Dropping the interval
+// that matches the event's hour exactly is NOT enough, because freeBusy MERGES adjacent busy blocks:
+// an appointment at 14:00-15:00 followed by another at 15:00-16:00 comes back as one 14:00-16:00
+// block, and an equality test would leave the whole fused block standing.
+export function subtractWindow(
+  busy: { start: string; end: string }[],
+  cut: { start: string; end: string } | null,
+): { start: string; end: string }[] {
+  if (!cut) return busy;
+  const cs = Date.parse(cut.start);
+  const ce = Date.parse(cut.end);
+  if (Number.isNaN(cs) || Number.isNaN(ce) || ce <= cs) return busy;
+  const out: { start: string; end: string }[] = [];
+  for (const b of busy) {
+    const bs = Date.parse(b.start);
+    const be = Date.parse(b.end);
+    if (Number.isNaN(bs) || Number.isNaN(be) || be <= bs) continue;
+    if (ce <= bs || cs >= be) {
+      out.push(b);
+      continue;
+    }
+    if (bs < cs) out.push({ start: b.start, end: new Date(cs).toISOString() });
+    if (ce < be) out.push({ start: new Date(ce).toISOString(), end: b.end });
+  }
+  return out;
 }

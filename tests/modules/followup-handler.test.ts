@@ -763,6 +763,31 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.sent).toEqual([]);
   });
 
+  // The one behaviour the gate's move DOES change, measured rather than asserted away. The gate used
+  // to run above the step resolution, so a job whose stepIndex is past the end of a shrunk sequence
+  // met the appointment first and was rescheduled, again and again, until the appointment passed —
+  // only to end the sequence the moment it finally got through. Below the resolution it ends the
+  // sequence straight away. Nothing is lost, because there was no step left to send.
+  test("(#103) a job past the end of a shrunk sequence ends it, instead of waiting out the appointment", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "única etapa" },
+    ]);
+    await seedConversation(1107, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: new Date(Date.now() - 2 * 60_000),
+    });
+    await withReminder(1107, "ev_103e");
+    const s = stubClient();
+    const result = await followUpHandler(jobFor(1107, 3), appDb, {
+      makeModel: fakeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent).toEqual([]);
+  });
+
   // NOTE: Chatwoot ≥ 4.16.2 auto-assigns the connected Agent Bot at conversation creation, so
   // `assignee_type = 'AgentBot'` is the NORMAL bot-owned state — the sweep must treat it exactly
   // like unassigned (shouldBotHandle's `!== 'User'`), or follow-up never fires in ordinary

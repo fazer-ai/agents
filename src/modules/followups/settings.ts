@@ -165,9 +165,10 @@ export function readFollowUpConfig(settings: unknown): FollowUpConfig {
   const lastIdx = steps.length - 1;
   steps = steps.map((s, i) => {
     if (i === lastIdx || !s.resolve) return s;
-    // Removed with a rest spread, never rebuilt field by field. A rebuild lists what to keep, so every field
-    // added to a step after it was written is dropped here — silently, and only for a mid-sequence
-    // step that happens to carry `resolve`. `ignoreAppointmentPause` would have been the first.
+    // NOTE: removed with a rest spread, never rebuilt field by field. A rebuild lists what to
+    // keep, so every field added to a step after it was written is dropped here — silently, and
+    // only for a mid-sequence step that happens to carry `resolve`. `ignoreAppointmentPause` would
+    // have been the first.
     const { resolve: _dropped, ...kept } = s;
     return kept;
   });

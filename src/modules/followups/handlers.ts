@@ -331,7 +331,7 @@ export async function followUpHandler(
   // cancelled. Defense in depth — the inbound that booked the appointment already cancels any prior
   // FOLLOWUP, and the sweep won't enqueue a new one meanwhile.
   //
-  // BELOW the step resolution, and that order is the feature: the question is not "does this agent
+  // NOTE: BELOW the step resolution, and that order is the feature: the question is not "does this agent
   // pause?" but "does THIS STEP pause?" (issue #103), and the step is not known any earlier. Moving
   // it down costs nothing the gate used to catch — the only thing between the two is the
   // out-of-range check, which ends the sequence outright, and a sequence that is over has nothing

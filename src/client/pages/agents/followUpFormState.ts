@@ -54,14 +54,14 @@ export function followUpToStored(form: FollowUpState): {
         delayValue: Math.max(1, Number(s.delayValue) || 1),
         delayUnit: s.delayUnit,
         instructions: s.instructions.trim(),
-        // The optional actions are omitted when off, so the persisted shape stays minimal and an
-        // agent saved through this form is byte-comparable with one that was never opened.
+        // NOTE: the optional actions are omitted when off, so the persisted shape stays minimal
+        // and an agent saved through this form is byte-comparable with one that was never opened.
         ...(labels.length > 0 ? { assignLabels: labels } : {}),
-        // `resolve` is sent only for the LAST step (the server also enforces this).
+        // NOTE: `resolve` is sent only for the LAST step (the server also enforces this).
         ...(i === form.steps.length - 1 && s.resolve ? { resolve: true } : {}),
-        // Sent whatever `pauseWhileAppointment` says. The editor HIDES this switch while the
-        // agent-wide pause is off, because there the opt-out decides nothing; hiding it must not
-        // delete it, or turning the pause off and on again would silently clear every step's
+        // NOTE: sent whatever `pauseWhileAppointment` says. The editor HIDES this switch while
+        // the agent-wide pause is off, because there the opt-out decides nothing; hiding it must
+        // not delete it, or turning the pause off and on again would silently clear every step's
         // exemption.
         ...(s.ignoreAppointmentPause ? { ignoreAppointmentPause: true } : {}),
       };

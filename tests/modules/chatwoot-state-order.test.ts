@@ -288,10 +288,36 @@ const CASES: Case[] = [
     row: storedRow({ activityAt: LATER, redirectOriginAt: V_OLD }),
     want: { redirectOrigin: true, redirectOriginAt: V_NEW, unversioned: false },
   },
+  // The stale branch's one exception: `stale` means "behind on every axis this payload OFFERS", and
+  // the pairing is an axis of its own. The first payload to carry one is routinely behind on the
+  // others — a retry, or any event on a conversation the mirror followed since before the fork had
+  // the field, where the other two marks are set and this one is null.
   {
-    name: "a stale event writes no pairing at all",
+    name: "a stale event still delivers a pairing its own mark does not refuse",
     payload: conversationEvent({ version: V_OLD, redirectOriginStated: true }),
-    row: storedRow({ redirectOriginAt: V_OLD }),
+    row: storedRow({ redirectOriginAt: null }),
+    want: { stale: true, redirectOrigin: true, redirectOriginAt: V_OLD },
+  },
+  {
+    name: "...and nothing else leaks through with it",
+    payload: conversationEvent({
+      version: V_OLD,
+      reopensConversation: true,
+      redirectOriginStated: true,
+    }),
+    row: storedRow({ redirectOriginAt: null }),
+    want: { status: null, assignee: false, unversioned: false },
+  },
+  {
+    name: "a stale event behind the redirect mark too writes no pairing",
+    payload: conversationEvent({ version: V_OLD, redirectOriginStated: true }),
+    row: storedRow({ redirectOriginAt: V_NOW }),
+    want: { stale: true, redirectOrigin: false, redirectOriginAt: null },
+  },
+  {
+    name: "a stale event that names no pairing writes none",
+    payload: conversationEvent({ version: V_OLD }),
+    row: storedRow({ redirectOriginAt: null }),
     want: { stale: true, redirectOrigin: false, redirectOriginAt: null },
   },
   // No version to order by (Chatwoot < 4.0.2): the pre-fence behaviour, stated rather than implied.

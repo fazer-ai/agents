@@ -27,6 +27,10 @@
  * A message snapshot moves no state and claims no version. That single sentence closes issue #61:
  * the frozen tail has nothing to say, whatever second it landed in.
  *
+ * "Nothing to say" is about STATE. A payload also carries the redirect pairing, which is ordered by
+ * its own mark and is not conversation state at all — so a payload discarded for state can still be
+ * the only witness of a pairing, and is.
+ *
  * One exception, and it is the source's own doing: a brand-new incoming customer message reopens
  * the conversation BEFORE the event is dispatched (`Message#execute_after_create_commit_callbacks`
  * runs `reopen_conversation`, then `dispatch_create_events`). That is a status change, never an
@@ -92,7 +96,13 @@ export interface StateRow {
 }
 
 export interface StateDecision {
-  /** The payload is behind the row on every axis it offers: apply nothing, keep the row as is. */
+  /**
+   * The payload is behind the row on every STATE axis it offers, so none of the conversation state
+   * below is applied. Not "apply nothing": the redirect pairing has a mark of its own and is decided
+   * separately, precisely because the payload that first carries one is routinely behind on the rest
+   * (see the stale branch below). `mirrorChatwootEvent` returns early on this flag, and writes what
+   * the two exceptions — the pairing, and a refused close's `resolvedBy` — tell it to.
+   */
   stale: boolean;
   /** The status to write, or null to keep the stored one. */
   status: string | null;
@@ -135,6 +145,15 @@ export interface StateDecision {
    * reporting a delayed payload's older timestamp would rewind every client's idea of recency.
    */
   activityAt: Date;
+}
+
+// A mark moves only forward, and only when the payload carries a version to move it to. Shared by
+// both exits below because the stale branch writes the pairing too.
+function advancesFrom(
+  mark: number | null,
+  version: number | null,
+): number | null {
+  return version != null && (mark == null || version > mark) ? version : null;
 }
 
 export function decideConversationWrites(
@@ -197,6 +216,17 @@ export function decideConversationWrites(
       : payload.activityAt != null &&
         row.activityAt != null &&
         row.activityAt > payload.activityAt;
+  // NOTE: A stale payload still delivers a PAIRING it is ordered to deliver, and that is the one
+  // exception this branch has. `stale` means "behind the row on every axis this payload offers", and
+  // until the third mark existed those axes were the whole payload. They are not any more: the
+  // pairing is ordered by its own mark, and the first payload to carry one is routinely behind on the
+  // others — a retried snapshot, or any event at all on a conversation the mirror has been following
+  // since before the fork had the field, where the other two marks are set and this one is null.
+  // Discarding it wholesale leaves the episode unpaired and sends the caller to the recency fallback
+  // this column exists to remove, on a consumer that messages AND resolves what it picks.
+  //
+  // Nothing else leaks through: the flags below say so field by field, so a delayed message cannot
+  // reopen a conversation or rewind the activity watermark on the pairing's ticket.
   if (stale) {
     return {
       stale: true,
@@ -205,8 +235,11 @@ export function decideConversationWrites(
       unversioned: false,
       statusAt: null,
       assigneeAt: null,
-      redirectOrigin: false,
-      redirectOriginAt: null,
+      redirectOrigin: payload.redirectOriginStated && !olderThanRedirectOrigin,
+      redirectOriginAt:
+        payload.redirectOriginStated && !olderThanRedirectOrigin
+          ? advancesFrom(row.redirectOriginAt, payload.version)
+          : null,
       activityAt: row.activityAt ?? eventAt,
     };
   }
@@ -247,9 +280,7 @@ export function decideConversationWrites(
   // read from the row at dispatch (`set_conversation_activity` runs first), so a newer message
   // always saw the newer state.
   const advances = (mark: number | null): number | null =>
-    payload.version != null && (mark == null || payload.version > mark)
-      ? payload.version
-      : null;
+    advancesFrom(mark, payload.version);
 
   // NOTE: `>=` again, and here it is not only idempotence. The fork records the pairing and then the
   // conversation_updated it causes is dispatched, so the companions of that one write — and every

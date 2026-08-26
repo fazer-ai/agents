@@ -237,6 +237,72 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await storedOrigin(45)).toBe(91);
   });
 
+  // The pairing rides on payloads whose STATE is old news, and the two questions are independent. A
+  // conversation the mirror has been following for a while has newer status/assignee/activity marks
+  // and no redirect mark at all — the shape of every conversation live when the fork gains the field,
+  // and of a rolling deploy. The first payload to carry the pairing can easily be behind on those
+  // other axes (a retry, a frozen message snapshot), and discarding it wholesale would leave the
+  // episode unpaired and send the caller to the recency fallback this whole change exists to remove.
+  test("a payload behind on state still delivers a pairing it is the first to carry", async () => {
+    const T = 1_786_550_000;
+    // A conversation already being mirrored, with no pairing yet.
+    await mirror(
+      clonedMessage(46, {
+        messageId: 8500,
+        lastActivityAt: T + 600,
+        updatedAt: T + 600.5,
+      }),
+    );
+    expect(await storedOrigin(46)).toBeNull();
+
+    // The delayed delivery: older on every axis the row already holds, and the only witness of the
+    // pairing.
+    await mirror(
+      clonedMessage(46, {
+        messageId: 8499,
+        lastActivityAt: T,
+        updatedAt: T + 0.5,
+        origin: 77,
+      }),
+    );
+    expect(await storedOrigin(46)).toBe(77);
+  });
+
+  // ...and being let through for the pairing does not let the rest of that payload in. A brand-new
+  // incoming message normally reopens a conversation, which is the one status a message snapshot
+  // carries faithfully; a DELAYED one must not, and the pairing must not become the loophole.
+  test("...without letting the stale payload move any other state", async () => {
+    const T = 1_786_560_000;
+    await mirror({
+      event: "conversation_resolved",
+      ...convPayload(47, {
+        lastActivityAt: T + 600,
+        updatedAt: T + 600.5,
+      }),
+      status: "resolved",
+    });
+    await mirror(
+      clonedMessage(47, {
+        messageId: 8599,
+        lastActivityAt: T,
+        updatedAt: T + 0.5,
+        origin: 77,
+      }),
+    );
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 47 },
+      select: {
+        redirectOriginDisplayId: true,
+        status: true,
+        lastEventAt: true,
+      },
+    });
+    expect(row.redirectOriginDisplayId).toBe(77);
+    expect(row.status).toBe("resolved");
+    // And the activity watermark does not rewind to the delayed payload's.
+    expect(row.lastEventAt).toEqual(new Date((T + 600) * 1000));
+  });
+
   // A Chatwoot too old to send `updated_at` has nothing to order by. It keeps the pre-fence
   // behaviour — last write wins — rather than losing the pairing outright.
   test("without a version the payload still writes the pairing", async () => {

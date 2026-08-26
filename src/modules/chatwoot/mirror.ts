@@ -202,17 +202,21 @@ export async function mirrorChatwootEvent(
         });
 
       if (existing && decision.stale) {
-        // NOTE: A stale event says nothing about the conversation, with ONE exception: a close of ours
-        // that this ordering refused. Written here because this branch returns before the update.
-        // `resolvedBy != null` is a write-avoidance guard, not part of the rule: this branch is
-        // taken by every out-of-order delivery, and clearing a column that is already null would
-        // add an UPDATE to each one.
-        // NOTE: And a second exception, for the same reason stated the other way round: the ORDER
-        // this event lost is about the conversation's STATE. The SLA pair it carries is not state
-        // this side maintains — it is two immutable readings Chatwoot computed from its own
-        // messages table — so losing the ordering says nothing about them, and a row that has never
-        // seen them yet is exactly the row a late delivery can still teach. Compared rather than
-        // written blind so the common stale delivery, which repeats what is stored, adds no UPDATE.
+        // NOTE: A stale event says nothing about the conversation's STATE, with three exceptions, all
+        // written here because this branch returns before the update.
+        //
+        // One is a close of ours that this ordering refused. Another is the redirect pairing, which
+        // is ordered by a mark of its own and is routinely carried by a payload that is behind on
+        // everything else — see the stale branch of `decideConversationWrites`. `decision` decides
+        // both; this only spends the UPDATE when there is something to write, since every
+        // out-of-order delivery lands here.
+        //
+        // The third is the SLA pair, for the same reason stated the other way round: the ORDER this
+        // event lost is about the conversation's STATE. The SLA pair is not state this side
+        // maintains — it is two immutable readings Chatwoot computed from its own messages table —
+        // so losing the ordering says nothing about them, and a row that has never seen them yet is
+        // exactly the row a late delivery can still teach. Compared rather than written blind so the
+        // common stale delivery, which repeats what is stored, adds no UPDATE.
         const staleSla: typeof slaWrites = {};
         if (
           slaWrites.chatwootCreatedAt != null &&
@@ -226,15 +230,22 @@ export async function mirrorChatwootEvent(
             existing.chatwootFirstReplyAt?.getTime()
         )
           staleSla.chatwootFirstReplyAt = slaWrites.chatwootFirstReplyAt;
-        const clearsOrigin =
-          dropsResolutionOrigin && existing.resolvedBy != null;
-        if (clearsOrigin || Object.keys(staleSla).length > 0) {
+        const staleWrites = {
+          ...(dropsResolutionOrigin && existing.resolvedBy != null
+            ? { resolvedBy: null, resolvedByAt: null }
+            : {}),
+          ...(decision.redirectOrigin && n.redirectOriginDisplayId != null
+            ? { redirectOriginDisplayId: n.redirectOriginDisplayId }
+            : {}),
+          ...(decision.redirectOriginAt != null
+            ? { chatwootRedirectOriginAt: decision.redirectOriginAt }
+            : {}),
+          ...staleSla,
+        };
+        if (Object.keys(staleWrites).length > 0) {
           await db.conversation.update({
             where: { id: existing.id },
-            data: {
-              ...(clearsOrigin ? { resolvedBy: null, resolvedByAt: null } : {}),
-              ...staleSla,
-            },
+            data: staleWrites,
           });
         }
         return {

@@ -15,12 +15,14 @@ import {
   getJobHandler,
   registerJobHandler,
   runClaimed,
+  unregisterJobHandler,
 } from "@/modules/scheduler/worker";
 import { updateEmbeddingSettings } from "@/modules/tenant-settings/service";
 import {
   processInboundDelivery,
   receiveInbound,
 } from "@/modules/webhooks/inbound/service";
+import { withJobHandler } from "@/tests/utils/job-registry";
 
 // ── A UNIT OF WORK THAT DIES PERMANENTLY HAS TO SAY SO (issue #356) ──
 //
@@ -105,25 +107,6 @@ const cors = {
 };
 const BunRes = (globalThis as { BunResponse?: typeof Response })
   .BunResponse as typeof Response;
-
-// The job-handler registry is process-global and shared with every other test file in this worker:
-// a handler installed here for a kind another file drives is a poisoning that surfaces as THEIR
-// failure, not this one's. Measured, not hypothetical — an earlier draft of this file left a
-// throwing RAG_INGEST behind and took five tests in rag-ingest-stale-publish.test.ts with it, and
-// only in the full-suite run. Install, use, put back.
-async function withHandler<T>(
-  kind: Parameters<typeof registerJobHandler>[0],
-  handler: Parameters<typeof registerJobHandler>[1],
-  fn: () => Promise<T>,
-): Promise<T> {
-  const previous = getJobHandler(kind);
-  registerJobHandler(kind, handler);
-  try {
-    return await fn();
-  } finally {
-    if (previous) registerJobHandler(kind, previous);
-  }
-}
 
 describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
   beforeAll(async () => {
@@ -241,6 +224,32 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
 
   // ── THE SCHEDULER: the biggest half, and it was per kind ──
 
+  test("the test harness puts the registry back, including when it was empty", async () => {
+    // WEBHOOK_RETRY has no production handler at all — nothing registers one and nothing enqueues
+    // the kind — so it is the case a restore that only re-registers a PREVIOUS handler gets wrong,
+    // and the mistake is invisible from inside the file that makes it: the stub surfaces as another
+    // file's scheduler test inheriting it, order-dependently.
+    //
+    // The absent state is SET UP here rather than assumed, because asserting it would be asserting
+    // a global this file does not own — scheduler.test.ts installs a stub for this very kind and
+    // does not put it back, which is the adjacent shape this helper cannot fix from here. Whatever
+    // was there goes back at the end.
+    const outer = getJobHandler("WEBHOOK_RETRY");
+    unregisterJobHandler("WEBHOOK_RETRY");
+    try {
+      await withJobHandler(
+        "WEBHOOK_RETRY",
+        async () => ({ outcome: "done" }) as const,
+        async () => {
+          expect(getJobHandler("WEBHOOK_RETRY")).toBeDefined();
+        },
+      );
+      expect(getJobHandler("WEBHOOK_RETRY")).toBeUndefined();
+    } finally {
+      if (outer) registerJobHandler("WEBHOOK_RETRY", outer);
+    }
+  });
+
   test("a job that exhausts its budget announces, for a kind with no hand-written hook", async () => {
     await clearRows();
     const id = await enqueueJob({
@@ -257,7 +266,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
       (j) => j.id === id,
     );
     expect(claimed).toBeDefined();
-    await withHandler(
+    await withJobHandler(
       "WEBHOOK_RETRY",
       async () => {
         throw new Error("handler blew up");
@@ -333,7 +342,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     const claimed = (await claimDueJobs(20, appDb, new Date(), tenantId)).find(
       (j) => j.id === id,
     );
-    await withHandler(
+    await withJobHandler(
       "RAG_INGEST",
       async () => {
         throw new Error("indexing blew up");
@@ -382,6 +391,72 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     await announceReaped(reaped, appDb);
     await Bun.sleep(400);
     expect(await deadRows(0, 0)).toHaveLength(0);
+  });
+
+  test("a failed re-read loses one line, never the rest of the batch", async () => {
+    await clearRows();
+    const ids: bigint[] = [];
+    for (const k of ["a", "b"]) {
+      const id = await enqueueJob({
+        rearm: "same-work",
+        tenantId,
+        kind: "HEARTBEAT",
+        dedupeKey: `dk-356-batch-${k}`,
+        runAt: past(),
+        base: appDb,
+      });
+      await suDb.schedulerJob.update({
+        where: { id },
+        data: {
+          status: "CLAIMED",
+          attempts: 4,
+          claimedAt: new Date(Date.now() - 600_000),
+        },
+      });
+      ids.push(id);
+    }
+    const reaped = (
+      await reapStaleJobs(5 * 60_000, appDb, new Date(), tenantId, "HEARTBEAT")
+    ).filter((r) => ids.includes(r.id));
+    expect(reaped).toHaveLength(2);
+
+    // The database, refusing exactly once. `announceReaped` walks a BATCH, and a throw escaping the
+    // first job takes every later one with it — permanently, because a second reap will not return
+    // a row that is already DEAD. The error is the real one seen in this suite's own runs.
+    let scopedCalls = 0;
+    const flaky = {
+      $extends: (ext: unknown) => {
+        const real = (
+          appDb as unknown as {
+            $extends: (e: unknown) => {
+              $transaction: (fn: unknown, opts: unknown) => Promise<unknown>;
+            };
+          }
+        ).$extends(ext);
+        return {
+          $transaction: (fn: unknown, opts: unknown) => {
+            scopedCalls += 1;
+            if (scopedCalls === 1)
+              return Promise.reject(
+                new Error(
+                  "Timed out fetching a new connection from the connection pool",
+                ),
+              );
+            return real.$transaction(fn, opts);
+          },
+        };
+      },
+    } as unknown as PrismaClient;
+
+    await announceReaped(reaped, flaky);
+    const rows = await deadRows(1);
+    // The first job's read failed and its line is gone; the second is reported anyway.
+    expect(rows).toHaveLength(1);
+    const detail = (rows[0] as (typeof rows)[number]).detail as Record<
+      string,
+      unknown
+    >;
+    expect(detail.jobId).toBe(String(reaped[1]?.id));
   });
 
   test("a kind that registers its own hook does not get the generic line as well", async () => {

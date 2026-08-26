@@ -54,6 +54,13 @@ export function registerJobHandler(kind: string, handler: JobHandler): void {
 export function getJobHandler(kind: string): JobHandler | undefined {
   return handlers.get(kind);
 }
+// The counterpart, and it exists because the registry is process-global while a Bun worker shares
+// one process across test files: a test that installs a handler for a kind that had none could put
+// nothing back, so the stub outlived the file and the next file's scheduler test inherited it. With
+// this, "install, use, put back" is expressible for both starting states.
+export function unregisterJobHandler(kind: string): void {
+  handlers.delete(kind);
+}
 
 // Called when a job is DEAD-LETTERED, which is the only moment the scheduler can state that this
 // work is definitively lost — a failure is not that statement, because the next attempt may succeed
@@ -92,8 +99,16 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// Best-effort: a hook that throws must not turn a failed job into a failed tick, and it runs AFTER
-// the row is DEAD so it can never be mistaken for part of the attempt.
+// Best-effort, and the guarantee covers the WHOLE function rather than the hook call it started on:
+// nothing in here may turn a failed job into a failed tick. It runs AFTER the row is DEAD, so it can
+// never be mistaken for part of the attempt, and by then the announcement is the only thing left to
+// lose — but losing it is not the worst case. `announceReaped` walks a BATCH, so a throw escaping
+// here takes every later dead job in that batch with it, and no subsequent reap will return them:
+// they are already DEAD, and the reaper only claims rows still CLAIMED. One transient pool timeout
+// would permanently silence a whole tick's worth of deaths.
+//
+// That is why the re-read below is inside the try and not beside it. A guard added to prevent one
+// false report must not be able to destroy a batch of true ones.
 //
 // EVERY kind announces here, which is the whole of issue #356's biggest half. `if (!hook) return`
 // used to be the exit for ten of the twelve kinds, and it was invisible: the hook is optional by
@@ -108,8 +123,12 @@ async function dispatchDeadLetter(
   error: string,
   base: PrismaClient,
 ): Promise<void> {
-  const hook = deadLetterHandlers.get(job.kind);
-  if (!hook) {
+  try {
+    const hook = deadLetterHandlers.get(job.kind);
+    if (hook) {
+      await hook(job, error, base);
+      return;
+    }
     // NOTE: RE-READ rather than trust the dead-letter that got us here, which is what both
     // hand-written hooks do and for the same reason (../memory/compact.ts spells it out). A re-arm
     // lands on THIS row — `upsertJobRow` keys on (tenant, kind, dedupeKey) — so a FOLLOWUP the
@@ -151,14 +170,10 @@ async function dispatchDeadLetter(
       },
       base,
     });
-    return;
-  }
-  try {
-    await hook(job, error, base);
   } catch (err) {
     logger.warn(
       { err, jobId: String(job.id), kind: job.kind },
-      "scheduler: dead-letter hook failed",
+      "scheduler: dead-letter announcement failed",
     );
   }
 }

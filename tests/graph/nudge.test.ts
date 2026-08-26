@@ -31,7 +31,7 @@ import {
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { selectClosedPrefix } from "@/modules/memory/cut";
-import { getJobHandler, registerJobHandler } from "@/modules/scheduler/worker";
+import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
@@ -506,10 +506,6 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // One checkpointer for both, as production has: the drain runs its job through the scheduler's
     // registry, so this is where a test says which store it writes to.
     const saver = new MemorySaver();
-    const previous = getJobHandler("INGEST_MESSAGE");
-    registerJobHandler("INGEST_MESSAGE", (job, jobBase) =>
-      ingestHandler(job, jobBase, saver),
-    );
     const seen: string[] = [];
     class ContextObservingModel extends BaseChatModel {
       constructor() {
@@ -528,23 +524,23 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       }
     }
     const s = stub();
-    let outcome: string;
-    try {
-      outcome = await runAgentNudge({
-        tenantId,
-        threadId: `${tenantId}:${instanceId}:917`,
-        nudge: { source: "followup", kind: "inactivity", step: 1 },
-        base: appDb,
-        deps: {
-          makeModel: () => new ContextObservingModel(),
-          makeClient: s.makeClient,
-          checkpointer: saver,
-          persistUsage: async () => {},
-        },
-      });
-    } finally {
-      if (previous) registerJobHandler("INGEST_MESSAGE", previous);
-    }
+    const outcome = await withJobHandler(
+      "INGEST_MESSAGE",
+      (job, jobBase) => ingestHandler(job, jobBase, saver),
+      () =>
+        runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:917`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          base: appDb,
+          deps: {
+            makeModel: () => new ContextObservingModel(),
+            makeClient: s.makeClient,
+            checkpointer: saver,
+            persistUsage: async () => {},
+          },
+        }),
+    );
 
     expect(outcome).toBe("messaged");
     // The customer's owed words were in the context the nudge was written from.

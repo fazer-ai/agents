@@ -35,11 +35,8 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { runScopedOn } from "@/lib/tenancy";
 import { type CompactPayload, runCompaction } from "@/modules/memory/compact";
 import { MEMORY_HEAD_MAX_ATTENDANCES } from "@/modules/memory/cut";
-import {
-  getJobHandler,
-  type JobResult,
-  registerJobHandler,
-} from "@/modules/scheduler/worker";
+import type { JobResult } from "@/modules/scheduler/worker";
+import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { UsageReportingModel } from "../utils/scripted-models";
 
@@ -373,22 +370,18 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     // checkpointer they write to. In production every reader of a thread shares one; letting the
     // drain write to the process checkpointer here would assert against a store nothing else in this
     // test reads, and the summariser would see an empty thread no matter what the fence decided.
-    const previous = getJobHandler("INGEST_MESSAGE");
-    registerJobHandler("INGEST_MESSAGE", (job, jobBase) =>
-      ingestHandler(job, jobBase, saver),
-    );
     const model = new SummarizerModel("A cliente pediu o cartão da consulta.");
-    let res: JobResult;
-    try {
-      res = await runCompaction(
-        tenantId,
-        payload(contactInboxId, 710, "resolved"),
-        appDb,
-        { checkpointer: saver, makeModel: () => model },
-      );
-    } finally {
-      if (previous) registerJobHandler("INGEST_MESSAGE", previous);
-    }
+    const res = await withJobHandler(
+      "INGEST_MESSAGE",
+      (job, jobBase) => ingestHandler(job, jobBase, saver),
+      () =>
+        runCompaction(
+          tenantId,
+          payload(contactInboxId, 710, "resolved"),
+          appDb,
+          { checkpointer: saver, makeModel: () => model },
+        ),
+    );
 
     expect(res).toEqual({ outcome: "done" });
     // The owed message became real before the fence decided, so there IS an attendance here and it is

@@ -3154,7 +3154,9 @@ export function BehaviorTab({
           normalizeBaseUrlInvalid ||
           normalizeBaseUrlUnsupported ||
           memoryBaseUrlInvalid ||
-          memoryBaseUrlUnsupported
+          memoryBaseUrlUnsupported ||
+          fallbackBaseUrlInvalid ||
+          fallbackBaseUrlUnsupported
         }
         onOpenPlayground={onOpenPlayground}
       />

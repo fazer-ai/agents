@@ -12,7 +12,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import logger from "@/api/lib/logger";
 import { selectHistoryWindow } from "@/graph/history-window";
 import { contentToText } from "@/graph/message-text";
-import { runModelCall } from "@/graph/model-limit";
+import { type ModelRetryInfo, runModelCall } from "@/graph/model-limit";
 import { countMessageTokens } from "@/graph/token-count";
 import { USAGE_MODEL_METADATA_KEY } from "@/graph/usage";
 
@@ -47,7 +47,7 @@ export interface BuildAgentGraphParams {
   // Fired when a model call is retried after the provider answered with no completion (see
   // model-limit). Same purpose as onToolLimit: without it a recovered turn looks like a clean one
   // and the fault rate stays invisible.
-  onModelRetry?: (info: { attempt: number; error: unknown }) => void;
+  onModelRetry?: (info: ModelRetryInfo) => void;
   // The second provider, already built and already bounded (see ./model-fallback). Absent for every
   // agent that configured none, which is every agent today, and absent means the node behaves
   // exactly as it did.
@@ -170,6 +170,8 @@ export function buildAgentGraph({
       onModelRetry,
       fallback && fallbackLlm
         ? {
+            provider: fallback.provider,
+            model: fallback.modelId,
             // The SAME question, to the other provider. Same messages and same prompt: this is not a
             // second, cheaper attempt, it is the attempt the customer is waiting for.
             run: () =>

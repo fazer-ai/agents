@@ -6,6 +6,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { lastAssistantText } from "@/graph/graph";
+import type { ModelRetryInfo } from "@/graph/model-limit";
 import type { ResolvedModelConfig } from "@/graph/models";
 import {
   type AgentNudge,
@@ -297,7 +298,7 @@ async function buildPlaygroundGraph(params: {
   turnId?: string;
   // Same warn line the reactive turn leaves when a model call had to be retried. The caller passes
   // it because the FlowContext is the caller's.
-  onModelRetry?: (info: { attempt: number; error: unknown }) => void;
+  onModelRetry?: (info: ModelRetryInfo) => void;
   // The same two lines the two production entrypoints leave. The playground is where an operator
   // finds out what their agent does, so a fallback that silently answers here is a fallback they
   // conclude the wrong things from.

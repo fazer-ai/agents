@@ -56,8 +56,20 @@ function httpStatus(v: unknown): number | null {
 
 // WHICH statuses describe the ENDPOINT's momentary state rather than our request. A fact about the
 // transport, not a policy: 408/504 the hop's own timeout, 429 the rate, 500/502/503 the overload,
-// 529 Anthropic's spelling of it. Everything else a server answers is about what we SENT (400, 401,
-// 403, 404, 413, 422) and answers the same way every time it is asked.
+// 529 Anthropic's spelling of it, and 520-524 Cloudflare's — which matter because an
+// openai-compatible endpoint is an arbitrary server and a great many of them sit behind that proxy,
+// where an origin that is down never gets to answer 503 in the first place. Read off Cloudflare's
+// own documentation: 520 "web server returns an unknown error", 521 "web server is down", 522
+// "connection timed out", 523 "origin is unreachable", 524 "a timeout occurred".
+//
+// Its 525 and 526 are deliberately absent, and the line is the same one that keeps 401 out: an SSL
+// handshake that failed and an invalid certificate are CONFIGURATION, they answer identically on
+// every attempt, and a fallback covering them covers them forever while the broken endpoint is
+// never repaired. 530 is absent because it means "see the 1xxx error beside me" and names nothing on
+// its own.
+//
+// Everything else a server answers is about what we SENT (400, 401, 403, 404, 413, 422) and answers
+// the same way every time it is asked.
 //
 // It lives here, and the POLICIES live with their callers, because the two are different questions
 // and only the first one is shared. `modules/vision/retry` asks the SAME endpoint again and
@@ -70,7 +82,7 @@ export function isTransientProviderStatus(status: number): boolean {
 }
 
 const TRANSIENT_PROVIDER_STATUSES: ReadonlySet<number> = new Set([
-  408, 429, 500, 502, 503, 504, 529,
+  408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 529,
 ]);
 
 export function statusOf(err: unknown): number | null {

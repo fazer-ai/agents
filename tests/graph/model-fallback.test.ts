@@ -64,6 +64,39 @@ const TABLE: Array<{
     worthy: true,
     why: "the hop gave up waiting",
   },
+  // Cloudflare's own 5xx, and they are not exotic: `openai-compatible` accepts an arbitrary server
+  // and a great many sit behind that proxy, where an origin that is down never gets to answer 503
+  // itself. Read off Cloudflare's documentation rather than assumed.
+  {
+    name: "520 origin returned an unknown error",
+    err: Object.assign(new Error("x"), { status: 520 }),
+    worthy: true,
+    why: "the origin failed, and Cloudflare is reporting it on its behalf",
+  },
+  {
+    name: "521 origin is down",
+    err: Object.assign(new Error("x"), { status: 521 }),
+    worthy: true,
+    why: "the literal 'unavailable' of the issue title, one hop out",
+  },
+  {
+    name: "522 connection timed out",
+    err: Object.assign(new Error("x"), { status: 522 }),
+    worthy: true,
+    why: "the proxy could not reach the origin",
+  },
+  {
+    name: "523 origin is unreachable",
+    err: Object.assign(new Error("x"), { status: 523 }),
+    worthy: true,
+    why: "same, named differently",
+  },
+  {
+    name: "524 a timeout occurred",
+    err: Object.assign(new Error("x"), { status: 524 }),
+    worthy: true,
+    why: "the origin accepted and did not finish",
+  },
   {
     name: "529 overloaded",
     err: Object.assign(new Error("x"), { status: 529 }),
@@ -132,6 +165,18 @@ const TABLE: Array<{
     why: "far more often a wrong address than a down vendor, and a wrong address is PERMANENT; a vendor that is actually down answers 503",
   },
   {
+    name: "525 SSL handshake failed",
+    err: Object.assign(new Error("x"), { status: 525 }),
+    worthy: false,
+    why: "configuration, not weather: it answers identically every time, and a fallback would cover a broken endpoint forever",
+  },
+  {
+    name: "526 invalid SSL certificate",
+    err: Object.assign(new Error("x"), { status: 526 }),
+    worthy: false,
+    why: "the same line that keeps 401 out, on the transport instead of the credential",
+  },
+  {
     name: "not an Error at all",
     err: "just a string",
     worthy: false,
@@ -181,6 +226,8 @@ describe("runModelCall with something behind the primary", () => {
     const fallback = { calls: 0 };
     const seen: unknown[] = [];
     const reply = await runModelCall<string>(primary.fn, undefined, {
+      provider: "anthropic",
+      model: "claude-haiku-4-5",
       run: () => {
         fallback.calls += 1;
         return Promise.resolve("from the fallback");
@@ -200,6 +247,8 @@ describe("runModelCall with something behind the primary", () => {
     );
     let fallbackCalls = 0;
     const err = (await runModelCall<string>(primary.fn, undefined, {
+      provider: "anthropic",
+      model: "claude-haiku-4-5",
       run: () => {
         fallbackCalls += 1;
         return Promise.resolve("from the fallback");
@@ -230,6 +279,8 @@ describe("runModelCall with something behind the primary", () => {
       {
         // The SAME return type as the primary, which is the type system holding the design: the
         // fallback answers the customer, so whatever it returns has to be a reply the turn can post.
+        provider: "anthropic",
+        model: "claude-haiku-4-5",
         run: () => {
           fallbackCalls += 1;
           return Promise.resolve(new AIMessage("from the fallback"));
@@ -241,6 +292,46 @@ describe("runModelCall with something behind the primary", () => {
     expect(reply.content).toBe("from the fallback");
   });
 
+  // The fallback answers the customer in the primary's place, so it inherits the primary's one
+  // recovery too. Review found this: the fallback was invoked BARE, so a 200 carrying no completion
+  // — measured at 1 in 184 on one install (issue #63) — cost the turn on the very call that exists
+  // because the turn was already about to be lost.
+  test("an empty completion FROM THE FALLBACK is retried too", async () => {
+    const primary = failing(
+      Object.assign(new Error("overloaded"), { status: 503 }),
+    );
+    const fallbackModel = new EmptyThenReplyModel("from the fallback", 1);
+    const retries: Array<{ provider?: string; model?: string }> = [];
+    const reply = await runModelCall(
+      primary.fn,
+      ({ provider, model }) => retries.push({ provider, model }),
+      {
+        provider: "anthropic",
+        model: "claude-haiku-4-5",
+        run: () => fallbackModel.invoke([{ role: "user", content: "oi" }]),
+      },
+    );
+    expect(fallbackModel.calls).toBe(2);
+    expect(reply.content).toBe("from the fallback");
+    // And the trail names the model that actually made the retry, or an operator reads the rate
+    // against a provider that never saw the call.
+    expect(retries).toEqual([
+      { provider: "anthropic", model: "claude-haiku-4-5" },
+    ]);
+  });
+
+  // The primary's own retry keeps naming nothing, which is what every existing caller reads as
+  // "the configured model". Asserted so the field's absence stays a decision.
+  test("a retry on the PRIMARY names no model, as it always did", async () => {
+    const model = new EmptyThenReplyModel("hi", 1);
+    const retries: Array<{ provider?: string; model?: string }> = [];
+    await runModelCall(
+      () => model.invoke([{ role: "user", content: "oi" }]),
+      ({ provider, model: m }) => retries.push({ provider, model: m }),
+    );
+    expect(retries).toEqual([{ provider: undefined, model: undefined }]);
+  });
+
   // The fallback is the last thing there is. What it throws is what the turn reports, and it must
   // still leave through the closed vocabulary rather than carrying the second vendor's prose.
   test("when the fallback fails too, the turn reports the FALLBACK's failure, redacted", async () => {
@@ -248,6 +339,8 @@ describe("runModelCall with something behind the primary", () => {
       Object.assign(new Error("overloaded"), { status: 503 }),
     );
     const err = (await runModelCall<string>(primary.fn, undefined, {
+      provider: "anthropic",
+      model: "claude-haiku-4-5",
       run: () =>
         Promise.reject(
           Object.assign(new Error("the second vendor's own prose"), {

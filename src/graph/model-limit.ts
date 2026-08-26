@@ -52,21 +52,56 @@ export interface ModelFallback<T> {
   // knows what "the same call" means — which messages, which bound tools, and which metadata names
   // the model for the usage row.
   run: () => Promise<T>;
+  // What answered, for the lines this module leaves about it. Labels only; nothing here dials.
+  provider: string;
+  model: string;
   // Fired when the fallback takes the turn, so the runtime can leave a warn on the trail. `reason`
   // is already the redacted word: the request carried the whole conversation, so the provider's own
   // sentence may be the customer's coming back.
   onFallback?: (info: { reason: string }) => void;
 }
 
+export interface ModelRetryInfo {
+  attempt: number;
+  error: unknown;
+  // Which of the two models was retried. Absent on the primary, because that is what the field's
+  // absence meant before there was a second one, and every existing caller reads it that way.
+  provider?: string;
+  model?: string;
+}
+
 export async function runModelCall<T>(
   fn: () => Promise<T>,
   // Fired when a call is retried, so the runtime can leave a warn on the turn's trail. Best-effort.
-  onRetry?: (info: { attempt: number; error: unknown }) => void,
+  onRetry?: (info: ModelRetryInfo) => void,
   // Absent for every caller that has nothing behind its provider, which is every caller today except
   // the agent turn. Absent also means UNCHANGED: none of the bounds in `model-fallback` apply to a
   // model built without one.
   fallback?: ModelFallback<T>,
 ): Promise<T> {
+  // ONE attempt at ONE model, carrying the single recovery LangChain cannot make for us. Written
+  // once and applied to BOTH models: the fallback answers the customer in the primary's place, so an
+  // intermittent empty completion costs it the turn exactly the way it cost the primary one before
+  // issue #63 — measured at 1 in 184 on one install, which is not a rate a last resort may ignore.
+  // The first version of this invoked the fallback bare, and review found it.
+  const attemptOn = async (
+    run: () => Promise<T>,
+    onEmpty: (err: unknown) => void,
+  ): Promise<T> => {
+    try {
+      return await run();
+    } catch (err) {
+      if (!isEmptyCompletionFault(err)) throw err;
+      onEmpty(err);
+      logger.warn(
+        { err },
+        "model call returned no completion; retrying once before giving up on this model",
+      );
+      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      return await run();
+    }
+  };
+
   return sem().run(async () => {
     // Reached with the error the PROVIDER raised, which is the whole reason the decision lives here
     // rather than at the call site. One lane up, the error has already been through
@@ -84,7 +119,15 @@ export async function runModelCall<T>(
       );
       fallback.onFallback?.({ reason });
       try {
-        return await fallback.run();
+        return await attemptOn(fallback.run, (retried) =>
+          onRetry?.({
+            attempt: 1,
+            error: retried,
+            // Named, or the trail would report the retry against the model that did not make it.
+            provider: fallback.provider,
+            model: fallback.model,
+          }),
+        );
       } catch (fallbackErr) {
         // The fallback is the last thing there is, so what it failed with is what the turn reports.
         // Redacted the same way: a second vendor's prose is no safer than the first's.
@@ -92,20 +135,11 @@ export async function runModelCall<T>(
       }
     };
     try {
-      return await fn();
-    } catch (err) {
-      if (!isEmptyCompletionFault(err)) return failed(err);
-      onRetry?.({ attempt: 1, error: err });
-      logger.warn(
-        { err },
-        "model call returned no completion; retrying once before failing the turn",
+      return await attemptOn(fn, (err) =>
+        onRetry?.({ attempt: 1, error: err }),
       );
-      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-      try {
-        return await fn();
-      } catch (retryErr) {
-        return failed(retryErr);
-      }
+    } catch (err) {
+      return failed(err);
     }
   });
 }

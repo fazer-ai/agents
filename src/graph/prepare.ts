@@ -92,6 +92,7 @@ import {
 } from "./fallback-settings";
 import { buildAgentGraph, type FallbackModel } from "./graph";
 import { PRIMARY_MAX_RETRIES, PRIMARY_TIMEOUT_MS } from "./model-fallback";
+import type { ModelRetryInfo } from "./model-limit";
 import {
   createChatModel,
   type ModelConfig,
@@ -1438,7 +1439,7 @@ export interface GraphBuildDeps {
   checkpointer?: BaseCheckpointSaver;
   // Fired when the hard tool-call limit forces a no-tools answer (runtime emits a flow warn).
   onToolLimit?: (info: { maxToolCalls: number; toolCalls: number }) => void;
-  onModelRetry?: (info: { attempt: number; error: unknown }) => void;
+  onModelRetry?: (info: ModelRetryInfo) => void;
   // Fired when the configured second provider took the turn, so the runtime can put it on the trail.
   // A fallback that answers is a SUCCESSFUL turn, so nothing else on the turn would say it happened
   // — and a cost break-down that cannot see it reads the fallback's spend as the primary's.

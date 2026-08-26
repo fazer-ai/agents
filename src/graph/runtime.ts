@@ -547,13 +547,16 @@ export async function runLoadedTurn(
     // A turn recovered from an empty provider response must not read like a clean one: without this
     // line the fault is invisible and its rate (issue #63 measured 1 in 184 on one install) can
     // never be told apart from a turn that simply worked.
-    onModelRetry: ({ attempt }) =>
+    onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "warn",
         status: "ok",
-        provider: loaded.mc.provider,
-        model: loaded.mc.model,
+        // NOTE: the retry can happen on either model, and the row has to name the one that made it.
+        // Absent means the primary, which is what the field's absence meant before there was a
+        // second one.
+        provider: provider ?? loaded.mc.provider,
+        model: model ?? loaded.mc.model,
         detail: { retriedEmptyResponse: attempt },
       }),
     // A fallback that ANSWERS produces a successful turn, so nothing else on it would ever say the

@@ -799,13 +799,16 @@ export async function runAgentNudge(
     checkpointer,
     // Same warn line the reactive turn leaves: a proactive send that only worked on the second
     // attempt must not read like a clean one, and this path can page an alert channel.
-    onModelRetry: ({ attempt }) =>
+    onModelRetry: ({ attempt, provider, model }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "warn",
         status: "ok",
-        provider: cfg.mc.provider,
-        model: cfg.mc.model,
+        // NOTE: the retry can happen on either model, and the row has to name the one that made it.
+        // Absent means the primary, which is what the field's absence meant before there was a
+        // second one.
+        provider: provider ?? cfg.mc.provider,
+        model: model ?? cfg.mc.model,
         detail: { retriedEmptyResponse: attempt },
       }),
     // A fallback that ANSWERS produces a successful turn, so nothing else on it would ever say the

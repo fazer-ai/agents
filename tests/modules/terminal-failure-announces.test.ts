@@ -325,7 +325,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     );
   });
 
-  test("the level is the kind's own, not one default for all of them", async () => {
+  test("a RAG_INGEST death is a loss, because the recoverable half never reaches it", async () => {
     await clearRows();
     // Installed first so `withHandler` has the real one to put back: the registration is lazy and
     // may not have happened yet in this worker.
@@ -351,9 +351,12 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     );
     const rows = await deadRows(1);
     expect(rows).toHaveLength(1);
-    // An operator re-indexes a document from the UI, and the document row already shows FAILED
-    // there — so this one is "look when you can", not "something was lost".
-    expect((rows[0] as (typeof rows)[number]).level).toBe("warn");
+    // The handler THROWS here, which is what a failure before `runIngestJobForTenant`'s catch looks
+    // like to the scheduler (the scoped load, `resolveEmbeddingStatus`). The document is never
+    // stamped FAILED, so it stays PENDING and `retryDocument` refuses it with a 409: nothing about
+    // this is "look when you can". The recoverable case is announced by rag/documents.ts instead,
+    // and that one IS `warn` — see the document test below.
+    expect((rows[0] as (typeof rows)[number]).level).toBe("error");
   });
 
   test("a job re-armed under the announcement is not reported as lost", async () => {

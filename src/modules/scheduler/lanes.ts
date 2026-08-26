@@ -173,6 +173,12 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
 // The rule the answers follow: `error` where the system accepted work and lost it, `warn` where the
 // operator has their own way back to it. Nothing is `info`, because `AlertChannel.minLevel` does not
 // accept `info` and a line nobody can subscribe to is not an announcement.
+//
+// Every answer here is currently `error`, and that is a result rather than a default — one entry was
+// `warn` until a review round showed the reasoning behind it was about the wrong failure (see
+// RAG_INGEST). A table where the answers agree is not a table that could be replaced by a default:
+// the default would hand the thirteenth kind an answer nobody chose, and the RAG_INGEST entry is the
+// evidence that the answer is not obvious even for the twelve that exist.
 export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // A lead that will never be followed up, and nothing on the conversation says so.
   FOLLOWUP: "error",
@@ -187,9 +193,14 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // while the scheduler's reaper can still reap a stale DEBOUNCE claim. A burst that is never
   // answered is a customer waiting on nobody, so it is not an advisory.
   DEBOUNCE: "error",
-  // The one recoverable site. The document row itself goes FAILED and the knowledge-base page shows
-  // it with a re-index in reach, so this is "look when you can" rather than a loss to page about.
-  RAG_INGEST: "warn",
+  // NOT the recoverable case, which is the one this entry was written for and got wrong. A document
+  // whose INDEXING failed is stamped FAILED by ../rag/documents.ts, which announces it itself at
+  // `warn` — the knowledge-base page shows it with a re-index in reach. What reaches THIS line is
+  // the other half: a throw before that catch is entered (the scoped load, `resolveEmbeddingStatus`)
+  // propagates out of the handler, so after five of them the job is DEAD while the document is still
+  // PENDING — and `retryDocument` refuses anything that is not FAILED or UNINDEXED with a 409. The
+  // operator has no way back to it at all.
+  RAG_INGEST: "error",
   // Self-rescheduling: one death ends the loop, and outbound heartbeats stop for good.
   HEARTBEAT: "error",
   // Self-rescheduling, and the hardest of them to notice from outside: retention silently stops.

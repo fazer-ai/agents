@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import {
+  JOB_DEATH_LEVEL,
   JOB_DELETE_ON_DONE,
   JOB_LANE,
   JOB_SPENDS_PROVIDER,
@@ -146,6 +147,25 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   REDIRECT_FOLLOWUP: false,
   MEMORY_COMPACT: false,
   DELIVERY_SWEEP: false,
+};
+
+// Written out ON PURPOSE, like the tables above: derived, it would mirror whatever the source says.
+const EXPECTED_DEATH_LEVEL: Record<
+  SchedulerJobKind,
+  "info" | "warn" | "error"
+> = {
+  FOLLOWUP: "error",
+  FOLLOWUP_SWEEP: "error",
+  WEBHOOK_RETRY: "error",
+  DEBOUNCE: "error",
+  RAG_INGEST: "error",
+  HEARTBEAT: "error",
+  FLOWLOG_SWEEP: "error",
+  APPOINTMENT_REMINDER: "error",
+  REDIRECT_FOLLOWUP: "error",
+  MEMORY_COMPACT: "error",
+  INGEST_MESSAGE: "error",
+  DELIVERY_SWEEP: "error",
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];
@@ -392,6 +412,10 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     expect(JOB_SPENDS_PROVIDER).toEqual(EXPECTED_SPENDS_PROVIDER);
     expect(JOB_TRAFFIC_PROPORTIONAL).toEqual(EXPECTED_TRAFFIC_PROPORTIONAL);
     expect(JOB_DELETE_ON_DONE).toEqual(EXPECTED_DELETE_ON_DONE);
+    // What each kind's DEATH says to the operator (issue #356). Stated here for the same reason as
+    // the three above, and with one more: the answers currently agree, so no behavioural test can
+    // tell this table from a default. This is what says the thirteenth kind has to be asked.
+    expect(JOB_DEATH_LEVEL).toEqual(EXPECTED_DEATH_LEVEL);
   }, 30_000);
 
   // The production sizing, which the test above deliberately does not exercise: never the whole

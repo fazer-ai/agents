@@ -1582,7 +1582,6 @@
     "openConversation": "Abrir conversa",
     "page": "Página {{n}}",
     "scopedConversation": "Conversa #{{id}}",
-    "scopedTurn": "Turno {{id}}",
     "search": "Buscar",
     "searchPlaceholder": "Buscar nas mensagens de erro…",
     "source": {

@@ -400,6 +400,19 @@ export function LogsPage() {
   }, [load]);
 
   const groups = useMemo(() => groupByTurn(items), [items]);
+  // The chip that says what the page is scoped to, when the scope is a `turnId`. It names the group
+  // exactly as the group's own card names it (`logGroupTitle`, issue #357) and adds the id, which is
+  // the thing the chip exists to point at — before issue #374 it said "Turn <id>" whatever the rows
+  // were, so one screen carried two different answers about one group.
+  //
+  // Matched by id rather than taken as the first group: the rows in state still belong to the
+  // PREVIOUS filter for the render between a URL change and its response landing, and naming this id
+  // with that group's answer is the same class of lie in a shorter window. No match is the id alone.
+  const scopedTurnLabel = useMemo(() => {
+    const scoped = groups.find((g) => g.turnId === turnId);
+    if (!scoped) return turnId;
+    return `${groupTitleText(logGroupTitle(scoped), t)} · ${turnId}`;
+  }, [groups, t, turnId]);
   const pageIdx = cursorStack.length - 1;
 
   // The active filters, keyed to the export endpoint's query params (the server bounds + serializes).
@@ -503,7 +516,7 @@ export function LogsPage() {
               ? t("logs.scopedConversation", "Conversation #{{id}}", {
                   id: conversationId,
                 })
-              : t("logs.scopedTurn", "Turn {{id}}", { id: turnId })}
+              : scopedTurnLabel}
             <button
               type="button"
               onClick={() =>

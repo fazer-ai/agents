@@ -1576,7 +1576,6 @@
     "openConversation": "Open conversation",
     "page": "Page {{n}}",
     "scopedConversation": "Conversation #{{id}}",
-    "scopedTurn": "Turn {{id}}",
     "search": "Search",
     "searchPlaceholder": "Search error messages…",
     "source": {

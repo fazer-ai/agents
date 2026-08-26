@@ -1,0 +1,45 @@
+-- EIGHTEEN INDEXES ON `(tenant_id)` THAT A COMPOSITE ALREADY ANSWERS (issue #373), the first of
+-- them. The other seventeen are one per migration for the reason at the bottom of this comment.
+--
+-- A btree serves any leading prefix of its key columns, so `(tenant_id, x)` already answers
+-- `WHERE tenant_id = $1`. Where both exist, the bare one is a second index tuple to write on every
+-- insert and on every non-HOT update, and it answers nothing the composite could not.
+--
+-- Uniqueness is not part of the rule, and that is where the count comes from: sixteen of the
+-- eighteen are covered by a UNIQUE constraint rather than by a plain `@@index`, and a unique btree
+-- serves the prefix exactly like a plain one. Measured by leaving
+-- `issued_documents_tenant_id_idempotency_key_key` as the only tenant-led index on its table and
+-- watching the planner take it with `Index Cond: (tenant_id = 7)`.
+--
+-- WHAT THE DROP BUYS, on PostgreSQL 17.10 against 1,000,000 seeded delivery rows and 500,000 issued
+-- documents across 50 tenants, each arm run with the bare index dropped inside a rolled-back
+-- transaction so both saw the same table:
+--
+--   outbound_webhook_deliveries   INSERT +3.0   UPDATE +4.0   buffer accesses per row
+--   issued_documents              INSERT +3.0   UPDATE +4.0   buffer accesses per row
+--
+-- with `n_tup_hot_upd = 0` on both, so no update escapes the maintenance.
+--
+-- WHAT IT COSTS: the composite is wider, so the same prefix scan reads more index pages. Measured
+-- on the widest case in the set, the two tenant-wide aggregates in `analytics/service.ts` against
+-- 500,000 conversations, where the covering unique is ten times the bare index: 7,585 -> 7,665
+-- buffer accesses, +1.1%, because the heap scan of 10,000 blocks dominates either way.
+--
+-- ONE STATEMENT PER FILE, and that is the whole reason there are eighteen directories. A plain
+-- `DROP INDEX` takes ACCESS EXCLUSIVE, and the exposure is not how long it HOLDS the lock (an index
+-- drop has no work to hold it across) but how long it WAITS for one: while it waits behind an
+-- in-flight query, every later reader and writer queues behind it, so one slow query on `contacts`
+-- during a rolling deploy stalls that table for its duration. `CONCURRENTLY` takes SHARE UPDATE
+-- EXCLUSIVE instead, which conflicts with neither, and there is no reason to take the stall for a
+-- change that is pure optimisation.
+--
+-- Prisma is what forces the split. A neighbouring migration records that `prisma migrate deploy`
+-- never wraps a file in a transaction; that holds for `CREATE INDEX CONCURRENTLY` and does NOT hold
+-- for the DROP. Applied to scratch databases through the real command: one
+-- `DROP INDEX CONCURRENTLY` alone in a file applies, the same statement with ANY second statement
+-- beside it fails with `DROP INDEX CONCURRENTLY cannot run inside a transaction block`, while two
+-- `CREATE INDEX CONCURRENTLY` in one file both apply.
+--
+-- IF EXISTS, because a concurrent drop that is cancelled can leave the index marked invalid and the
+-- file is marked rolled back and run again.
+DROP INDEX CONCURRENTLY IF EXISTS "agent_threads_tenant_id_idx";

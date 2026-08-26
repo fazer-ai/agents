@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { Client } from "pg";
 
 // A BARE `@@index([tenantId])` BESIDE A COMPOSITE THAT LEADS WITH `tenantId` (issue #373).
@@ -62,6 +62,41 @@ describe("no bare tenantId index sits beside a composite that already covers it"
       m.indexes.some((i) => i.cols.length > 1 && i.cols[0] === "tenantId"),
     );
     expect(covered.map((m) => m.name)).toEqual([]);
+  });
+});
+
+describe("a concurrent index drop is alone in its migration", () => {
+  // The eighteen drops are one per file, and that is not a style choice: measured through
+  // `prisma migrate deploy` against scratch databases, a `DROP INDEX CONCURRENTLY` applies when it
+  // is the only statement in the file and fails with `cannot run inside a transaction block` as
+  // soon as ANY second statement joins it. `CREATE INDEX CONCURRENTLY` does not share the limit,
+  // which is why a neighbouring migration can use it beside other statements.
+  //
+  // Without this, merging two of those files back together is caught by nothing until a release
+  // deploy runs the migration and stops.
+  test("every file that drops one concurrently holds one statement", () => {
+    const dir = "prisma/migrations";
+    const offenders: string[] = [];
+    let concurrent = 0;
+    for (const name of readdirSync(dir)) {
+      const file = `${dir}/${name}/migration.sql`;
+      if (!existsSync(file)) continue;
+      const sql = readFileSync(file, "utf8");
+      // Comments carry semicolons of their own, and a comment is not a statement.
+      const statements = sql
+        .split("\n")
+        .filter((l) => !l.trimStart().startsWith("--"))
+        .join("\n")
+        .split(";")
+        .filter((s) => s.trim().length > 0);
+      if (!/DROP\s+INDEX\s+CONCURRENTLY/i.test(sql)) continue;
+      concurrent += 1;
+      if (statements.length !== 1)
+        offenders.push(`${name} (${statements.length} statements)`);
+    }
+    // The control: no file matching means the sweep is broken, not that the rule holds.
+    expect(concurrent).toBeGreaterThan(10);
+    expect(offenders).toEqual([]);
   });
 });
 

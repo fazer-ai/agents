@@ -8,7 +8,6 @@ import {
   contactInboxThreadId,
   getCheckpointer,
 } from "@/graph/checkpointer";
-import { isTurnInFlight } from "@/graph/inflight";
 import { drainPendingIngest } from "@/graph/ingest-drain";
 import { memoryHeadMessage, stampedConversationId } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
@@ -16,6 +15,7 @@ import type { ModelConfig } from "@/graph/model-config";
 import { resolveModelOverride } from "@/graph/model-override";
 import { createChatModel, type ResolvedModelConfig } from "@/graph/models";
 import { buildCallbacks, loadAgentConfig } from "@/graph/prepare";
+import { turnOwnsThread } from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -184,6 +184,10 @@ export async function runCompaction(
     instanceId,
     contactInboxId,
   );
+  // The thread's owner, asked of the ROW and not only of this process: compaction runs on the
+  // leader and a turn runs wherever the webhook landed, so an in-process registry reads a busy
+  // thread as free and the rewrite is undone by the turn that saves after it (issue #203).
+  const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
 
   const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const agent = await db.agent.findUnique({
@@ -324,7 +328,7 @@ export async function runCompaction(
   // A turn holding this thread will undo the rewrite below, so there is nothing to gain by reading
   // its channel now. Checked here as well as under the lock because this side is what avoids PAYING
   // for a summary that the locked check would then discard; the locked one is what makes it correct.
-  if (isTurnInFlight(graphThreadId)) {
+  if (await turnOwnsThread(owner, base)) {
     return deferForTurn(graphThreadId, "before reading the thread");
   }
 
@@ -645,7 +649,7 @@ export async function runCompaction(
     // Turns mark themselves under this same lock (src/graph/runtime.ts, src/graph/nudge.ts), so
     // reading the registry from inside it is exclusive: either no turn has started reading, or
     // this attempt stands down and comes back.
-    if (isTurnInFlight(graphThreadId)) return "busy" as const;
+    if (await turnOwnsThread(owner, base)) return "busy" as const;
     const fresh = await graph.getState(threadCfg);
     const current = ((fresh.values as { messages?: BaseMessage[] } | undefined)
       ?.messages ?? []) as BaseMessage[];

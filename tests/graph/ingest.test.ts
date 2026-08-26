@@ -967,4 +967,75 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     });
     expect(cut.closed.map((m) => String(m.content))).toEqual(["primeira"]);
   });
+
+  // Issue #203, the half that survives the claim: the row is READ at the top of the section and
+  // WRITTEN at the end, with checkpointer round-trips in between, and the queue that ordered them is
+  // process-local. Another replica writing in that window used to be erased by whichever append
+  // finished second, because it recomputed the mark and the dedupe ledger from what it had read
+  // BEFORE the other one landed.
+  //
+  // The other replica is personified by writing the row from inside `stillWanted`, which is called
+  // exactly in that window and for an unrelated reason. Nothing else in this file can reach it.
+  test("a concurrent write in the read-to-write window is not walked backwards", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 7301;
+    const key = {
+      tenantId_chatwootInstanceId_contactInboxId: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+      },
+    };
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await suDb.agentThread.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+        threadId: graphThreadId,
+        lastSyncedMessageId: 100,
+        recentSyncedMessageIds: [100],
+      },
+    });
+
+    const outcome = await ingestMessageIntoThread({
+      tenantId,
+      instanceId,
+      conversationId: 5,
+      contactInboxId,
+      graphThreadId,
+      messageId: 300,
+      text: "a minha",
+      base: appDb,
+      checkpointer: saver,
+      role: "customer" as const,
+      deferIfTurnInFlight: true,
+      stillWanted: async () => {
+        // The other replica folds in a HIGHER id and finishes first.
+        await suDb.agentThread.update({
+          where: key,
+          data: {
+            lastSyncedMessageId: 900,
+            recentSyncedMessageIds: [100, 900],
+          },
+        });
+        return true;
+      },
+    });
+    expect(outcome).toBe("ingested");
+
+    const row = await suDb.agentThread.findUniqueOrThrow({
+      where: key,
+      select: { lastSyncedMessageId: true, recentSyncedMessageIds: true },
+    });
+    // The scalar is the highest id ANY writer folded in, never this call's stale idea of it.
+    expect(row.lastSyncedMessageId).toBe(900);
+    // And the other replica's id is still in the ledger. Losing it is not cosmetic: membership is
+    // what recognises a re-delivery, so a dropped id is a message this thread would append twice.
+    expect(row.recentSyncedMessageIds).toEqual([100, 900, 300]);
+  });
 });

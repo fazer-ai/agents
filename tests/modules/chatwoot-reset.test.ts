@@ -2604,6 +2604,53 @@ describe.skipIf(!dbUp)(
       ).toEqual([]);
     });
 
+    // THE THIRD LATE READ, and the newest (issue #203). The turn half of that same fence used to be
+    // a Map lookup that could not fail; it is a row read now, so it can, and it sits in exactly the
+    // position the two tests above exist for: after the cleanup, outside every step. A rejection
+    // reaching the command means the operator gets no acknowledgement for work that DID happen and
+    // the delivery is left to retry.
+    //
+    // Driven by rejecting the claim query alone, matched on the column only it selects, so the
+    // cleanup's own reads of the same table are untouched and this measures the late read.
+    test("a claim read that fails does not strand the command", async () => {
+      let refused = 0;
+      const blind = appDb.$extends({
+        query: {
+          async $allOperations({ operation, args, query }) {
+            if (operation === "$queryRaw") {
+              const sql = ((args as { strings?: string[] }).strings ?? []).join(
+                " ",
+              );
+              if (sql.includes("AS held")) {
+                refused += 1;
+                throw new Error("connection reset");
+              }
+            }
+            return query(args);
+          },
+        },
+      }) as unknown as PrismaClient;
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset("/reset", CONV_ID, {
+        status: "open",
+        assigneeType: "User",
+        base: blind,
+      });
+
+      // The read the test is about actually ran; without this the assertions below would pass on a
+      // command that never reached it.
+      expect(refused).toBeGreaterThan(0);
+      expect(ackCalls(cw.calls).length).toBeGreaterThan(0);
+      // And an unreadable claim reads as a turn still running, so the conversation stays with the
+      // human rather than being taken from them on an answer nobody has.
+      expect(
+        cw.calls.filter((c) =>
+          c.path.endsWith(`/conversations/${CONV_ID}/assignments`),
+        ),
+      ).toEqual([]);
+    });
+
     // The same guard on the OTHER late ownership read: the sentence that explains a withheld
     // hand-back asks the question again, after everything has run. It reaches that line only while
     // the agent is disabled, which is why the failure has to be driven with the switch off.

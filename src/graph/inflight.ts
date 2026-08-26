@@ -16,12 +16,21 @@
 // state) or it sees the mark and defers. Marking outside the lock would leave the window where the
 // rewrite checks an unmarked thread that is about to be read.
 //
-// Safe under the single-replica / one-leader invariant: the webhook turn and the scheduler worker
-// share this process, so they share this Set. Not durable by design — a process restart clears it,
-// after which the next sweep re-evaluates purely from the persisted watermarks (lastEventAt /
-// lastFollowUpAt). At worst a restart mid-turn drops the guard for that one turn: the follow-up may
-// race one reply, and one compaction may be undone — recovered at the next attendance boundary,
-// where the summary row already exists and costs no second generation.
+// THIS IS NOW THE FAST HALF, NOT THE WHOLE ANSWER. It holds under the single-replica / one-leader
+// invariant, where the webhook turn and the scheduler worker share this process and therefore this
+// Map. On the scaled web tier docs/deploy.md §4 sanctions they do not, and the consumer whose
+// cross-process failure is irreversible, continuous ingestion, whose append is undone AND recorded
+// as handled, reads a busy thread as free. That half moved to ./thread-claim.ts, which keeps the
+// claim in the thread's own row; this Map stays in front of it as the answer that costs no query,
+// and it can only ever say MORE than the row, never less.
+//
+// What is left here alone is the key that has no row: the per-CONVERSATION thread the follow-up
+// nudge claims, and the graph thread of a conversation whose contact inbox is unknown. Their cost is
+// the one issue #203 measured: a nudge races one reply, a compaction is undone and re-armed at the
+// next attendance boundary where the summary row already exists. Neither loses a message.
+//
+// Not durable by design, a process restart clears it, after which the next sweep re-evaluates
+// purely from the persisted watermarks (lastEventAt / lastFollowUpAt).
 // COUNTED, not a set of present keys. Two turns really do overlap on one thread — two deliveries for
 // the same conversation race whenever debounce is off, and a follow-up nudge invokes on the same
 // memory thread as a reactive turn — and with plain membership the first one to finish releases a

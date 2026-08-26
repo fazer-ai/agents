@@ -71,11 +71,18 @@ describe("stillWanted strictness, per call site", () => {
     expect(line).toContain("strict");
   });
 
-  // Exactly one per file, and only in the two files that hold a critical section. The redirect
-  // follow-up has none: every ask it makes is around a send.
+  // TWO per file, and only in the two files that hold a critical section. The redirect follow-up has
+  // none: every ask it makes is around a send.
+  //
+  // Two and not one because the durable claim WAITS (issue #203). The first ask is before it, so a
+  // run already retired takes no claim it would have to release; the second is after it, because
+  // `markTurnOwning` blocks on an append's lease and on the row lock /reset itself takes, and a
+  // reset holding that row releases it straight into this waiter. A single ask before the claim
+  // answers about a moment that can be dozens of seconds in the past by the time anything is
+  // written.
   test.each([
-    ["src/graph/runtime.ts", 1],
-    ["src/graph/nudge.ts", 1],
+    ["src/graph/runtime.ts", 2],
+    ["src/graph/nudge.ts", 2],
     ["src/modules/channel-redirect/followup.ts", 0],
   ])("%s has %i strict ask(s)", (file, expected) => {
     const strict = asks(readFileSync(file as string, "utf8")).filter(
@@ -84,8 +91,8 @@ describe("stillWanted strictness, per call site", () => {
     expect(strict).toHaveLength(expected as number);
   });
 
-  // And the strict one is inside the critical section, not merely somewhere in the file. Anchored on
-  // `withKeyedQueue`, which is what the section is: an ask that drifts out of it stops being the
+  // And both strict asks are inside the critical section, not merely somewhere in the file. Anchored
+  // on `withKeyedQueue`, which is what the section is: an ask that drifts out of it stops being the
   // pre-write fence and starts being a probe that can abort a delivered message.
   test.each([["src/graph/runtime.ts"], ["src/graph/nudge.ts"]])(
     "%s asks strictly inside withKeyedQueue",
@@ -93,11 +100,48 @@ describe("stillWanted strictness, per call site", () => {
       const src = readFileSync(file as string, "utf8");
       const lines = src.split("\n");
       const strict = asks(src).filter((a) => a.strict);
-      expect(strict).toHaveLength(1);
+      expect(strict).toHaveLength(2);
       const queueOpens = lines.findIndex((l) => /withKeyedQueue\(/.test(l));
       expect(queueOpens).toBeGreaterThan(-1);
       // After the section opens, and before the first ask that follows the section's own writes.
-      expect(strict[0]?.line).toBeGreaterThan(queueOpens + 1);
+      for (const a of strict) expect(a.line).toBeGreaterThan(queueOpens + 1);
+    },
+  );
+
+  // THE ASK THAT STRADDLES THE WAIT. The claim is not instantaneous: it waits out an append's lease
+  // and the row lock /reset holds, so the ask that authorizes the writes has to come AFTER it. This
+  // is the rule the code broke on its way to being durable, and it broke it silently: the ask was
+  // still there, still strict, still inside the section, and only its position had stopped meaning
+  // anything.
+  //
+  // A source walk and not a behavioural test because the call site in `runLoadedTurn` is not
+  // reachable from a test (the webhook path passes `stillWanted: null`, and the debounce job that
+  // does pass a callback goes through the whole handler). `runAgentNudge` covers the same seam
+  // behaviourally in tests/graph/nudge.test.ts; this covers both files.
+  const WRITES =
+    /\.(?:updateState|upsert|create|update|createMany|updateMany|delete)\(|\$executeRaw/;
+  test.each([["src/graph/runtime.ts"], ["src/graph/nudge.ts"]])(
+    "%s asks again after the durable claim and before it writes",
+    (file) => {
+      const lines = readFileSync(file as string, "utf8").split("\n");
+      const claimed = lines.findIndex((l) => /await markTurnOwning\(/.test(l));
+      expect(claimed).toBeGreaterThan(-1);
+      // The first thing that happens after the claim, of the only two that matter: an ask that
+      // re-authorizes the run, or a write that no longer has authorization behind it. Comments are
+      // skipped, so prose naming a write does not stand in for one.
+      const after = lines.slice(claimed + 1);
+      const asked = after.findIndex(
+        (l) =>
+          !/^\s*(?:\/\/|\*)/.test(l) &&
+          /\bstillWanted\s*\(/.test(l) &&
+          /\bstrict:\s*true\b|stillWanted\(true\)/.test(l),
+      );
+      const wrote = after.findIndex(
+        (l) => !/^\s*(?:\/\/|\*)/.test(l) && WRITES.test(l),
+      );
+      expect(asked).toBeGreaterThan(-1);
+      expect(wrote).toBeGreaterThan(-1);
+      expect(asked).toBeLessThan(wrote);
     },
   );
 });

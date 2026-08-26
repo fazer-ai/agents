@@ -641,19 +641,31 @@ model Conversation {
 //     late, it was ABSENT — nothing re-delivers it and nothing restores it. Membership answers
 //     exactly for what it holds; below the OLDEST id it holds, the answer is "older than anything we
 //     remember", which is the ancient re-delivery the mark was guarding against in the first place.
+//   - turnHolders / turnHeldUntil / ingestWriteUntil: who owns this thread's message channel right
+//     now, across processes. A LangGraph invoke is a read-modify-write of the WHOLE channel, so a
+//     turn and an append cannot overlap; the in-process registry that used to answer this
+//     (src/graph/inflight.ts) is blind on a scaled web tier, where the turn runs wherever the
+//     webhook landed and the append runs on the leader (issue #203). The lease is what keeps a
+//     crashed holder from stranding the thread: it expires, and expiry lands on exactly the
+//     behaviour of the in-process registry, never worse.
 model AgentThread {
-  id                     BigInt   @id @default(autoincrement())
-  tenantId               BigInt   @map("tenant_id")
-  chatwootInstanceId     BigInt   @map("chatwoot_instance_id")
-  contactInboxId         Int      @map("contact_inbox_id")
-  threadId               String   @map("thread_id")
-  lastConversationId     Int?     @map("last_conversation_id")
-  lastSyncedMessageId    Int?     @map("last_synced_message_id")
-  lastAgentMessageId     Int?     @map("last_agent_message_id")
-  recentSyncedMessageIds Int[]    @default([]) @map("recent_synced_message_ids")
-  recentAgentMessageIds  Int[]    @default([]) @map("recent_agent_message_ids")
-  createdAt              DateTime @default(now()) @map("created_at")
-  updatedAt              DateTime @updatedAt @map("updated_at")
+  id                     BigInt    @id @default(autoincrement())
+  tenantId               BigInt    @map("tenant_id")
+  chatwootInstanceId     BigInt    @map("chatwoot_instance_id")
+  contactInboxId         Int       @map("contact_inbox_id")
+  threadId               String    @map("thread_id")
+  lastConversationId     Int?      @map("last_conversation_id")
+  lastSyncedMessageId    Int?      @map("last_synced_message_id")
+  lastAgentMessageId     Int?      @map("last_agent_message_id")
+  recentSyncedMessageIds Int[]     @default([]) @map("recent_synced_message_ids")
+  recentAgentMessageIds  Int[]     @default([]) @map("recent_agent_message_ids")
+  turnHolders            Int       @default(0) @map("turn_holders")
+  turnEpoch              BigInt    @default(0) @map("turn_epoch")
+  turnHeldUntil          DateTime? @map("turn_held_until")
+  ingestWriteUntil       DateTime? @map("ingest_write_until")
+  ingestWriteToken       String?   @map("ingest_write_token")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

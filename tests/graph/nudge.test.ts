@@ -28,6 +28,7 @@ import {
   renderNudge,
   runAgentNudge,
 } from "@/graph/nudge";
+import { claimIngestWrite, releaseIngestWrite } from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { selectClosedPrefix } from "@/modules/memory/cut";
@@ -847,6 +848,74 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       },
     });
     expect(row?.lastConversationId).toBe(942);
+  });
+
+  // Issue #203, the seam the DURABLE claim opened. `stillWanted({strict:true})` is asked before the
+  // claim, and back when the claim was a synchronous Map write that was the whole window. The row
+  // claim WAITS: on an append's lease, and on the row lock /reset itself takes. So a reset can
+  // retire this run and clear the thread while the call sits in that wait, and the lock case is
+  // worse than a coincidence, since a reset holding the row releases it straight into this waiter.
+  //
+  // The wait is personified by an append that holds the write claim; the retirement lands on the ask
+  // that immediately precedes the claim, which is exactly the answer that goes stale. What proves
+  // the fix is the thread's STATE, not the outcome: both versions end on "stale" (the fence after
+  // the invoke catches it), and only the broken one has written the marker back by then.
+  test("a run retired while the durable claim waits writes nothing", async () => {
+    const contactInboxId = 8815;
+    await seedConv(948, null, new Date(), contactInboxId);
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+    const key = {
+      tenantId_chatwootInstanceId_contactInboxId: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        contactInboxId,
+      },
+    };
+    const append = await claimIngestWrite(owner, appDb);
+    expect(append.state).not.toBe("busy");
+    let wanted = true;
+    let strictAsks = 0;
+    let releasing: Promise<void> | null = null;
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:948`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      // The ask right before the claim still answers yes, and /reset lands on that same instant.
+      // The append finishes shortly after, so the claim is granted into a thread that was cleared.
+      stillWanted: async ({ strict }) => {
+        if (!strict) return wanted;
+        strictAsks += 1;
+        if (strictAsks > 1) return wanted;
+        wanted = false;
+        releasing = Bun.sleep(150).then(() =>
+          releaseIngestWrite(owner, appDb, append),
+        );
+        return true;
+      },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    await releasing;
+    // The consequence first: a marker advanced here is a cleared thread recreated, and it is what
+    // arms compaction on the attendance the operator just wiped.
+    const row = await suDb.agentThread.findUnique({ where: key });
+    expect(row?.lastConversationId ?? null).toBeNull();
+    expect(outcome).toBe("stale");
+    expect(s.messages).toEqual([]);
+    // And the claim really was waited out, so the ask above is the one AFTER the wait rather than a
+    // second copy of the one before it.
+    expect(strictAsks).toBeGreaterThan(1);
   });
 
   // ORDER, and observed at the only moment that proves it. The divider used to ride in the nudge's

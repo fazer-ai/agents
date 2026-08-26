@@ -45,11 +45,7 @@ import {
   threadBelongsToTenant,
 } from "./checkpointer";
 import { lastAssistantText } from "./graph";
-import {
-  clearTurnInFlight,
-  isTurnInFlight,
-  markTurnInFlight,
-} from "./inflight";
+import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
 import { conversationDividerMessage, nudgeMessage } from "./markers";
 import {
@@ -61,6 +57,12 @@ import {
 } from "./prepare";
 import { undoRefusedTurn } from "./refused-turn";
 import type { RuntimeDeps } from "./runtime";
+import {
+  clearTurnOwning,
+  markTurnOwning,
+  type ThreadOwner,
+  type TurnHold,
+} from "./thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 import { buildNativeTools, handoffAnsweredTheTurn } from "./tools/native";
 
@@ -1026,7 +1028,11 @@ export async function runAgentNudge(
     }
   };
 
+  // Held in this process for a thread with no row to hang on (the conversation-keyed fallback
+  // below), and in the ROW for the one that has one. Issue #203.
   let claimedGraphThread = false;
+  let graphOwner: ThreadOwner | null = null;
+  let graphHold: TurnHold | null = null;
   let result: Awaited<ReturnType<typeof graph.invoke>>;
   try {
     // BARRIER (issue #194), for the same reason the reactive turn has one: a proactive turn reads
@@ -1080,17 +1086,26 @@ export async function runAgentNudge(
           contactInboxId,
         },
       };
+      // Taken in the row too, so an append on another replica stands down instead of landing inside
+      // this invoke (../graph/thread-claim.ts).
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      graphHold = await markTurnOwning(owner, base);
+      graphOwner = owner;
+      // ASKED AGAIN, for the reason ./runtime.ts gives at the same seam: `markTurnOwning` waits out
+      // an append's lease and the row lock /reset holds, so the ask above is stale by the time the
+      // claim lands, and a reset releasing that lock hands it straight to this waiter. Last moment
+      // before the divider and the marker below write the cleared thread back.
+      if (!(await stillWanted(true))) return null;
+      // READ AFTER THE CLAIM, for the reason ./runtime.ts states at the same seam: the claim can
+      // wait out an append that writes this very marker, so a row read before the wait is stale.
+      // Whether another invoke was already reading comes from the claim itself.
       const existing = await runScopedOn(base, sysCtx(tenantId), (db) =>
         db.agentThread.findUnique({
           where: key,
           select: { lastConversationId: true },
         }),
       );
-      // Read BEFORE this nudge marks its own claim: what matters is whether some OTHER invoke is
-      // mid-flight (./attendance-boundary.ts, case 1).
-      const anotherInvokeIsReading = isTurnInFlight(graphThreadId);
-      markTurnInFlight(graphThreadId);
-      claimedGraphThread = true;
+      const anotherInvokeIsReading = graphHold.heldBefore;
       const previous = existing?.lastConversationId ?? null;
       const alreadyStarted = needsAttendanceStartProbe(
         previous,
@@ -1203,7 +1218,24 @@ export async function runAgentNudge(
         throw e;
       });
   } finally {
-    if (claimedGraphThread) clearTurnInFlight(graphThreadId);
+    // NOTE: best-effort, for the reason ../graph/runtime.ts states at its own release: a throw here
+    // would leave through a `finally` that runs after the customer post, turning a delivered nudge
+    // into a failure the caller retries. The lease is the recovery path.
+    if (graphOwner) {
+      const heldOwner: ThreadOwner = graphOwner;
+      try {
+        await clearTurnOwning(
+          heldOwner,
+          base,
+          graphHold ?? { epoch: null, heldBefore: false },
+        );
+      } catch (err) {
+        logger.warn(
+          { err, thread: heldOwner.graphThreadId },
+          "failed to release the durable turn claim; its lease will expire",
+        );
+      }
+    } else if (claimedGraphThread) clearTurnInFlight(graphThreadId);
   }
   // Every refusal from here on suppresses the send and leaves the generated pair checkpointed, which
   // is what `refuse` is for: it takes the outcome back out through the rollback instead of returning

@@ -392,6 +392,71 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
   // own thread first, and the subtle half is that the drain ignores `run_at` — a job DEFERRED for a
   // previous turn sits a minute in the future, and those are exactly the messages a starting turn is
   // missing. A drain that only took due rows would skip them and look correct doing it.
+  // Issue #203, and the failure the in-process registry cannot see. The turn runs on whichever
+  // replica the Chatwoot webhook landed on and this job runs on the leader, so the Map that used to
+  // answer "is a turn reading this thread" is empty here and the append went in anyway, erased by
+  // that turn's save, and recorded as ingested, which is the loss #194 exists to close.
+  //
+  // The other replica is personified by what it actually leaves behind: the row, and nothing else.
+  // Marking through the module instead would mark THIS process's Map and the test would pass on the
+  // registry that is being replaced.
+  test("a turn held on another replica defers the append", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 12561;
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const job = await armAndClaim(contactInboxId, 981, 305, "ficou pronto?");
+    await suDb.$executeRawUnsafe(
+      `INSERT INTO agent_threads
+         (tenant_id, chatwoot_instance_id, contact_inbox_id, thread_id,
+          turn_holders, turn_held_until, created_at, updated_at)
+       VALUES (${tenantId}, ${instanceId}, ${contactInboxId}, '${graphThreadId}',
+          1, now() + interval '5 minutes', now(), now())`,
+    );
+
+    const deferred = await ingestHandler(job, appDb, saver);
+    expect(deferred.outcome).toBe("reschedule");
+
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    expect(
+      ((cp?.channel_values as { messages?: BaseMessage[] })?.messages ??
+        []) as BaseMessage[],
+    ).toEqual([]);
+    // And the thread does not claim the message was handled, so it is still OWED. That pairing is
+    // the whole difference between a late message and a lost one.
+    const owed = await suDb.agentThread.findUniqueOrThrow({
+      where: {
+        tenantId_chatwootInstanceId_contactInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          contactInboxId,
+        },
+      },
+      select: { recentSyncedMessageIds: true },
+    });
+    expect(owed.recentSyncedMessageIds).toEqual([]);
+
+    // The remote turn ends. Nothing in this process ever knew about it, and the retry ingests.
+    await suDb.$executeRawUnsafe(
+      `UPDATE agent_threads SET turn_holders = 0, turn_held_until = NULL
+        WHERE tenant_id = ${tenantId} AND contact_inbox_id = ${contactInboxId}`,
+    );
+    const done = await ingestHandler(job, appDb, saver);
+    expect(done.outcome).toBe("done");
+    const after = await saver.get({
+      configurable: { thread_id: graphThreadId },
+    });
+    expect(
+      (
+        ((after?.channel_values as { messages?: BaseMessage[] })?.messages ??
+          []) as BaseMessage[]
+      ).map((m) => String(m.content)),
+    ).toContain("ficou pronto?");
+  });
+
   test("a turn drains its thread first, deferred rows included", async () => {
     const contactInboxId = 12504;
     const graphThreadId = contactInboxThreadId(

@@ -17,6 +17,7 @@ import { isTurnInFlight } from "@/graph/inflight";
 import type { IngestRole } from "@/graph/ingest";
 import { armIngest } from "@/graph/ingest-job";
 import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
+import { threadBusyForResetOn, turnOwnsThread } from "@/graph/thread-claim";
 import { AppError, UnauthorizedError } from "@/lib/errors";
 import { withKeyedQueue } from "@/lib/locks";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -1993,9 +1994,22 @@ async function maybeConsumeCommandOrGate(params: {
               // Asked INSIDE the lock, which is what makes the two exclusive rather than merely
               // staggered: the turn takes this same lock to mark itself, so this either runs entirely
               // before the mark (and the turn then loads a cleared thread) or it sees the mark.
-              if (isTurnInFlight(graphThreadId)) {
+              //
+              // On `db`, and taking the row: same reason as `revokeJobsByKeyPrefixOn` below. A helper
+              // that opened its own transaction would wait for a connection this one cannot release
+              // (measured under `DB_POOL_MAX=1`: 2047ms, then "Unable to start a transaction in the
+              // given time"), and reading without the lock would leave the answer stale the moment
+              // it returns, since a turn on another replica claims by updating this same row.
+              if (
+                await threadBusyForResetOn(db, {
+                  tenantId,
+                  instanceId,
+                  contactInboxId,
+                  graphThreadId,
+                })
+              ) {
                 throw new Error(
-                  `a turn is still running on this thread (${graphThreadId}) — its save would restore what this clears`,
+                  `this thread (${graphThreadId}) is being written right now, by a turn or by an append; either would restore what this clears`,
                 );
               }
               // QUEUED INGESTION IS REVOKED FIRST, AND FROM IN HERE (issue #194). Continuous
@@ -2198,16 +2212,30 @@ async function maybeConsumeCommandOrGate(params: {
     // (../../graph/nudge.ts) while posting into the conversation, so neither key alone is the
     // question. `resolveGraphThreadId` is the same resolution the turn marks with, rather than a
     // second copy of the rule.
+    const graphKey = resolveGraphThreadId(
+      tenantId,
+      instanceId,
+      conversationId,
+      ctx.conv.contactInboxId,
+    );
+    // The graph half is asked of the ROW when there is one to ask (issue #203): a turn running on
+    // another replica is invisible to this process's registry, and handing the conversation back
+    // under it is the case this guard exists for. With a null contact inbox the graph thread IS the
+    // conversation thread and has no row, so that key keeps the in-process answer, which is what the
+    // conversation key has anyway.
     const turnStillRunning =
       isTurnInFlight(chatwootThreadId(tenantId, instanceId, conversationId)) ||
-      isTurnInFlight(
-        resolveGraphThreadId(
-          tenantId,
-          instanceId,
-          conversationId,
-          ctx.conv.contactInboxId,
-        ),
-      );
+      (ctx.conv.contactInboxId != null
+        ? await turnOwnsThread(
+            {
+              tenantId,
+              instanceId,
+              contactInboxId: ctx.conv.contactInboxId,
+              graphThreadId: graphKey,
+            },
+            base,
+          )
+        : isTurnInFlight(graphKey));
     if (
       notOursAtStart &&
       resetBlocker === "ownership" &&

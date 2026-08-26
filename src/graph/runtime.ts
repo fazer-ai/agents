@@ -58,11 +58,7 @@ import {
   resolveGraphThreadId,
 } from "./checkpointer";
 import { lastAssistantText } from "./graph";
-import {
-  clearTurnInFlight,
-  isTurnInFlight,
-  markTurnInFlight,
-} from "./inflight";
+import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
 import { conversationDividerMessage, conversationStamp } from "./markers";
 import type { ResolvedModelConfig } from "./models";
@@ -76,6 +72,12 @@ import {
 } from "./prepare";
 import { undoRefusedTurn } from "./refused-turn";
 import { AgentStatusReporter } from "./status";
+import {
+  clearTurnOwning,
+  markTurnOwning,
+  type ThreadOwner,
+  type TurnHold,
+} from "./thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 import { ToolFlowLogger } from "./tool-flowlog";
 import type { McpLoadDeps } from "./tools/mcp";
@@ -852,7 +854,11 @@ export async function runLoadedTurn(
   // above it: `getCheckpointer`, the divider write and the marker upsert can all throw, and a claim
   // that outlives its turn keeps every follow-up and every compaction for this contact backing off
   // until the process restarts.
-  let claimedGraphThread = false;
+  // The thread this turn holds against a concurrent append, DURABLY (issue #203). Null until the
+  // claim is taken, and it is what the `finally` releases: the contact-inbox id it needs goes out of
+  // scope long before then.
+  let graphOwner: ThreadOwner | null = null;
+  let graphHold: TurnHold | null = null;
   // Set inside the `ingest:` lock when the ask below says this run was called off. A flag and not a
   // throw: the lock's transaction has to commit and release before this function can return.
   let calledOff = false;
@@ -929,6 +935,43 @@ export async function runLoadedTurn(
               contactInboxId,
             },
           };
+          // Claim the thread against a memory-compaction rewrite, inside the critical section the
+          // rewrite also enters while it checks. That makes the two exclusive rather than merely
+          // staggered: the rewrite either completes before this claim, and the invoke below then
+          // loads the rewritten channel, or it finds the thread claimed and stands down. Claimed for
+          // EVERY turn, not only the ones that cross a boundary, because what has to be excluded is
+          // the invoke, and every turn has one. Released in the `finally` below, on every exit.
+          // Taken in the ROW as well as in this process, so a replica that does not share this Map
+          // still reads the thread as busy. It also WAITS OUT an append in flight, which is what
+          // makes the two exclusive rather than merely staggered across processes: the append's
+          // check and its write are not one step (../graph/thread-claim.ts).
+          const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+          graphHold = await markTurnOwning(owner, base);
+          graphOwner = owner;
+          // ASKED AGAIN, because the claim above can WAIT. The ask before it is still the right
+          // first ask (a run already retired takes no claim it would have to release), but
+          // `markTurnOwning` blocks on an append's lease and on the row lock /reset itself takes,
+          // so by the time the claim lands its answer can be dozens of seconds old. The lock case
+          // is not merely possible, it is ORDERED: a reset holding that row releases it straight
+          // into this waiter, so the turn resumes IMMEDIATELY after the clear and writes the
+          // divider and the marker back over it, arming compaction on a thread the operator was
+          // told was cleared. Everything below writes, so this is the last moment the question is
+          // still about a turn that has written nothing. The `finally` releases the claim:
+          // `graphOwner` is set above.
+          if (
+            params.stillWanted &&
+            !(await params.stillWanted({ strict: true }))
+          ) {
+            calledOff = true;
+            return null;
+          }
+          // READ AFTER THE CLAIM, never before it. `markTurnOwning` can wait out an append that is
+          // mid-flight on another replica, and that append writes exactly these markers: a row read
+          // before the wait is stale by the time it is used, and writing it back walks
+          // `lastSyncedMessageId` backwards, which is the frontier regression the markers exist to
+          // prevent. Whether ANOTHER invoke was already reading comes from the claim itself, for the
+          // reason ../graph/thread-claim.ts gives: two replicas starting together both read "nobody"
+          // if they ask separately.
           const existing = await runScopedOn(base, sysCtx(tenantId), (db) =>
             db.agentThread.findUnique({
               where: key,
@@ -938,17 +981,7 @@ export async function runLoadedTurn(
               },
             }),
           );
-          // Read BEFORE this turn adds its own claim: what matters is whether some OTHER invoke
-          // is mid-flight on this thread (./attendance-boundary.ts, case 1).
-          const anotherInvokeIsReading = isTurnInFlight(graphThreadId);
-          // Claim the thread against a memory-compaction rewrite, inside the critical section the
-          // rewrite also enters while it checks. That makes the two exclusive rather than merely staggered: the
-          // rewrite either completes before this claim — and the invoke below then loads the
-          // rewritten channel — or it finds the thread claimed and stands down. Claimed for EVERY
-          // turn, not only the ones that cross a boundary, because what has to be excluded is the
-          // invoke, and every turn has one. Released in the `finally` below, on every exit.
-          markTurnInFlight(graphThreadId);
-          claimedGraphThread = true;
+          const anotherInvokeIsReading = graphHold.heldBefore;
           const prev = existing?.lastConversationId ?? null;
           const alreadyStarted = needsAttendanceStartProbe(
             prev,
@@ -1416,7 +1449,26 @@ export async function runLoadedTurn(
     clearTurnInFlight(threadId);
     // Only what this turn actually took: releasing a claim we never made would release a CONCURRENT
     // turn's, and hand the thread to a compaction while that turn is still reading it.
-    if (claimedGraphThread) clearTurnInFlight(graphThreadId);
+    // NOTE: releasing is best-effort, and deliberately cannot fail the turn. By here the reply may
+    // already be with the customer; a throw from this line would skip `status.finished` and make the
+    // caller treat a delivered turn as failed, which a retry then answers a second time. The row
+    // carries a lease precisely so a release that never lands is recovered by expiry instead of by
+    // anyone waiting on it.
+    if (graphOwner) {
+      const heldOwner: ThreadOwner = graphOwner;
+      try {
+        await clearTurnOwning(
+          heldOwner,
+          base,
+          graphHold ?? { epoch: null, heldBefore: false },
+        );
+      } catch (err) {
+        logger.warn(
+          { err, thread: heldOwner.graphThreadId },
+          "failed to release the durable turn claim; its lease will expire",
+        );
+      }
+    }
     status.finished(deliveredBalloons);
   }
 }

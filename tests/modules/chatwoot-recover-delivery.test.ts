@@ -430,9 +430,9 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         base: appDb,
         deps: depsWith(stub),
       }),
-    ).toBe("deferred");
+    ).toBe("unreachable");
     expect(stub.sent).toEqual([]);
-    // A deferral spends no attempt: the row keeps its budget for a pass that can read the account.
+    // It spends no attempt either: the row keeps its budget for a pass that can read the account.
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
   });
 
@@ -555,7 +555,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         base: appDb,
         deps: depsWith(stubChatwoot({ throwOnRead: true })),
       }),
-    ).toBe("deferred");
+    ).toBe("unreachable");
     expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
   });
 
@@ -733,7 +733,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       deps: depsWith(stubChatwoot({ throwOnRead: true })),
     });
 
-    expect(outcome).toBe("deferred");
+    expect(outcome).toBe("unreachable");
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
   });
 
@@ -1181,12 +1181,12 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }
     });
 
-    test("a deferral FAILS the job, so the ladder is bounded and ends somewhere", async () => {
-      // `reschedule` would be the intuitive answer and it is the wrong one: it CLEARS the failure
-      // budget, so a conversation whose account stays unreachable would be retried for the life of
-      // the install with nothing ever saying so. `fail` backs off, dies at the scheduler's cap, and
-      // reaches the dead-letter hook, which is the only place that can state the recovery is not
-      // coming.
+    test("a BUSY conversation reschedules, so the ladder is not spent waiting on a turn", async () => {
+      // `fail` would be the intuitive answer and it is the wrong one here. A turn is deliberately
+      // unbounded — the sweep waits thirty minutes before calling one abandoned — while the
+      // scheduler's five backoffs are spent in about a minute. Failing, a conversation's SECOND
+      // stranded message would burn its whole ladder while the first message's turn was still
+      // legitimately running, and lose its recovery for good.
       const convId = 8921;
       const messageId = 9422;
       await seedConversation(convId);
@@ -1205,8 +1205,37 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         clearTurnInFlight(threadOf(convId));
       }
 
+      expect(result.outcome).toBe("reschedule");
+      // Soon, not on the shared tick's own cadence: the customer's second message is waiting behind
+      // the first one's turn, not behind a sweep.
+      if (result.outcome !== "reschedule") throw new Error("not rescheduled");
+      expect(result.runAt.getTime() - Date.now()).toBeLessThanOrEqual(120_000);
+      // Untouched: nothing was attempted, so the budget survives.
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("an unreadable account FAILS the job, so it ends somewhere and says so", async () => {
+      // The other road, and the reason the two are not one outcome: an account that stays unreadable
+      // is a durable condition an operator has to fix. Rescheduling it CLEARS the failure budget, so
+      // it would be retried for the life of the install with nothing ever announcing it. `fail`
+      // backs off, dies at the scheduler's cap, and reaches the dead-letter line.
+      const convId = 8929;
+      await seedConversation(convId);
+      const rowId = await seedDeadDelivery({
+        conversationId: convId,
+        inboundMessageId: 9432,
+      });
+
+      const handler = getJobHandler("DELIVERY_RECOVERY");
+      if (!handler) throw new Error("the recovery handler is not registered");
+      // No `deps` reaches the handler, so it builds a real client against the seeded account's base
+      // URL — which does not resolve. That is the unreachable case, on the shipped path.
+      const result = await handler(
+        jobFor({ deliveryRowId: String(rowId) }),
+        appDb,
+      );
+
       expect(result.outcome).toBe("fail");
-      // Untouched: a deferral spends no attempt, so the budget survives the failing job.
       expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
     });
 

@@ -95,6 +95,12 @@ export const MAX_RECOVERY_ATTEMPTS = 3;
 // this ceiling. That install can still produce a recovery outside its own window.
 export const MAX_RECOVERY_AGE_MS = 6 * 60 * 60 * 1000;
 
+// How long to wait before asking again about a conversation that was BUSY. A minute: long enough
+// that a short turn is over, short enough that a customer's second stranded message is not left
+// behind the first one for a scheduler interval. Nothing measures a turn's length — there is no
+// timeout on the model call or the tools — so this is a cadence, not an estimate of one.
+const BUSY_RETRY_MS = 60_000;
+
 // Conversations with a recovery running IN THIS PROCESS, so a second one defers instead of starting
 // a turn beside the first.
 //
@@ -125,9 +131,14 @@ export type RecoveryOutcome =
   // The row is not ours to recover: it is no longer DEAD, or another pass won the claim between the
   // read and the CAS. Somebody else is doing this work, so there is nothing to retry.
   | "superseded"
-  // Not now. A turn is live on the conversation, or the Chatwoot account could not be read — both
-  // repairable, neither a verdict, and the caller's retry budget is what bounds them.
+  // The conversation is BUSY: a turn is live on it, or another recovery holds it. Transient by
+  // construction and on a timescale nothing here controls — a turn is deliberately unbounded, which
+  // is why the sweep waits thirty minutes before calling one abandoned.
   | "deferred"
+  // The Chatwoot account could not be READ, or answered with a snapshot that cannot be trusted.
+  // Repairable by an operator, and durable until they do it, which is what makes it a different
+  // answer from `deferred`: one is waited out, the other has to be given up on eventually.
+  | "unreachable"
   // The row cannot be recovered, ever, and stays DEAD. Its message remains in the operator's
   // worklist, which is the honest place for it.
   | "unrecoverable";
@@ -318,7 +329,7 @@ async function runRecovery(params: {
       String(row.id),
       e instanceof Error ? e.message : String(e),
     );
-    return "deferred";
+    return "unreachable";
   }
   // Unreadable rather than absent: `parseLiveConversation` returns null for a snapshot it cannot
   // trust (no status, or an AgentBot assignee with no id — unverifiable ownership). Deferring is
@@ -330,7 +341,7 @@ async function runRecovery(params: {
       conversationId,
       String(row.id),
     );
-    return "deferred";
+    return "unreachable";
   }
   const reconciled = await reconcileMirrorFromLive({
     tenantId: params.tenantId,
@@ -581,20 +592,31 @@ async function deliveryRecoveryHandler(
     deliveryRowId,
     base,
   });
-  // The mapping the four outcomes exist for. Three of them are finished work — the recovery ran, or
-  // somebody else's did, or nothing ever can — and only "deferred" is a state a later attempt may
-  // find different.
+  // The mapping the five outcomes exist for, and the two retrying ones take DIFFERENT roads because
+  // they are waiting on different things.
   //
-  // Deferrals go to `fail` rather than `reschedule` deliberately: `reschedule` CLEARS the failure
-  // budget (it means the pass completed), so a conversation whose account stays unreachable would be
-  // retried for the life of the install with nothing ever saying so. `fail` backs off, bounds the
-  // ladder at the scheduler's own cap, and ends at the dead-letter hook below, which is the one
-  // place that can state the recovery is not coming.
+  // BUSY reschedules, which CLEARS the failure budget. A turn is deliberately unbounded — the sweep
+  // waits thirty minutes before calling one abandoned — while the scheduler's five backoffs are
+  // spent in about a minute. Mapped to `fail`, a conversation's SECOND stranded message would burn
+  // its whole ladder while the first message's turn was still legitimately running, and lose its
+  // recovery for good. Unbounded rescheduling is bounded anyway, by the one thing that does not
+  // depend on the conversation: `MAX_RECOVERY_AGE_MS` turns the row `unrecoverable`, and the job
+  // completes.
+  //
+  // UNREACHABLE fails, which spends the budget and backs off. An account that stays unreadable is a
+  // durable condition an operator has to fix, so this one has to be given up on and SAID — and
+  // `fail` is what reaches the dead-letter line at the scheduler's cap. Rescheduling it instead
+  // would retry for the life of the install with nothing ever announcing it.
   if (outcome === "deferred") {
     return {
+      outcome: "reschedule",
+      runAt: new Date(Date.now() + BUSY_RETRY_MS),
+    };
+  }
+  if (outcome === "unreachable") {
+    return {
       outcome: "fail",
-      error:
-        "recovery deferred: a live turn, or the Chatwoot account is unreachable",
+      error: "recovery: the Chatwoot account could not be read",
     };
   }
   return { outcome: "done" };

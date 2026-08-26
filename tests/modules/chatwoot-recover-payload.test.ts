@@ -79,6 +79,7 @@ function rebuilt(
     messageType?: unknown;
     inboxName?: string | null;
     createdAt?: number | null;
+    attachments?: unknown[];
   } = {},
 ) {
   return buildRecoveryPayload({
@@ -103,7 +104,7 @@ function rebuilt(
       private: false,
       contentAttributes: {},
       sender: { id: 1102, name: "cliente", type: "contact" },
-      attachments: [],
+      attachments: over.attachments ?? [],
       createdAt: over.createdAt === undefined ? SENT_AT : over.createdAt,
     },
   });
@@ -152,6 +153,34 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
     expect(
       normalizeChatwootEvent(rebuilt({ createdAt: null }))?.lastActivityAt,
     ).toBeNull();
+  });
+
+  test("a voice note already transcribed travels with its transcription", () => {
+    // MEASURED live against the fork, and it settles a review round that said otherwise: for
+    // `file_type: audio`, `Attachment#push_event_data` renders `transcribed_text` at the TOP LEVEL
+    // (`audio_metadata`: `meta&.[]('transcribed_text') || ''`), and the REST view calls that same
+    // method — so the field sits exactly where `normalizeChatwootEvent` reads it.
+    //
+    // What that buys is the eager-STT pass reusing it instead of transcribing again: the delivery
+    // path says so in as many words ("never re-transcribe"). A process that died AFTER the
+    // write-back therefore costs the recovery nothing, and the attachment is carried through
+    // untouched rather than remapped — the same bytes a live delivery gets.
+    const e = normalizeChatwootEvent(
+      rebuilt({
+        attachments: [
+          {
+            id: 43,
+            file_type: "audio",
+            data_url: "https://chat.example/blob/nota.ogg",
+            transcribed_text: "oi, preciso de ajuda",
+            meta: { transcribed_text: "oi, preciso de ajuda" },
+          },
+        ],
+      }),
+    );
+    expect(e?.message?.attachments?.[0]?.transcribedText).toBe(
+      "oi, preciso de ajuda",
+    );
   });
 
   test("the one field the two sources spell differently cannot decide anything", () => {

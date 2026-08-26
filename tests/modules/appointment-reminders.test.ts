@@ -9,11 +9,12 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { DATA_FENCE, renderNudge } from "@/graph/nudge";
 import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
+import { recordAppointment } from "@/modules/appointments/record";
 import {
   appointmentReminderHandler,
   authoritativeReminderStart,
-  cancelAppointmentReminders,
-  cancelThreadAppointmentReminders,
+  cancelAppointment,
+  cancelThreadAppointments,
   computeReminderJobs,
   enqueueAppointmentReminders,
   hasLiveAppointment,
@@ -320,6 +321,23 @@ describe("the start a reminder is judged and worded by", () => {
     expect(call.slice(0, call.indexOf("})"))).toContain(
       "startISO: authoritativeReminderStart(",
     );
+  });
+});
+
+describe("computeReminderJobs and the record read one parser", () => {
+  // (#376) The arming used a bare Date.parse while liveness used parseStartMs. Date.parse ROLLS an
+  // impossible date forward, so "2026-02-30" became March 2 and reminders were armed for an
+  // appointment the record refuses to hold — a reminder that would reach the customer about a
+  // booking nothing else in the platform knows about.
+  test("an impossible calendar date arms nothing, exactly as it records nothing", () => {
+    const now = new Date("2026-01-01T00:00:00Z");
+    expect(
+      computeReminderJobs("2026-02-30T10:00:00Z", [24, 1], now),
+    ).toHaveLength(0);
+    // The control: the day before it IS a date, and does arm.
+    expect(
+      computeReminderJobs("2026-02-28T10:00:00Z", [24, 1], now),
+    ).toHaveLength(2);
   });
 });
 
@@ -754,7 +772,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
 
     // The operator cancels the appointment in the window the handler just spent. Neither the status
     // nor the claim token moves, so the worker's compare-and-set below still matches.
-    await cancelAppointmentReminders(tenantId, eventId, appDb);
+    await cancelAppointment(tenantId, eventId, appDb);
 
     const { applied } = await rescheduleJob(
       tenantId,
@@ -807,7 +825,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
 
   test("is not sent, even though the worker still holds the pre-cancel payload", async () => {
     const job = await armed("reminder:evt-1:60");
-    await cancelThreadAppointmentReminders(tenantId, threadId, appDb);
+    await cancelThreadAppointments(tenantId, threadId, appDb);
     const s = stubClient();
 
     const result = await appointmentReminderHandler(job, appDb, {
@@ -835,7 +853,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
             const res = await query(args);
             reads += 1;
             if (reads === 1) {
-              await cancelThreadAppointmentReminders(tenantId, threadId, appDb);
+              await cancelThreadAppointments(tenantId, threadId, appDb);
             }
             return res;
           },
@@ -860,7 +878,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
   // alone would let a run that was already retired come back because the customer rebooked.
   test("a rebooking does not revive the run the reset stopped", async () => {
     const job = await armed("reminder:evt-4:60");
-    await cancelThreadAppointmentReminders(tenantId, threadId, appDb);
+    await cancelThreadAppointments(tenantId, threadId, appDb);
     await suDb.schedulerJob.updateMany({
       where: {
         tenantId,
@@ -884,12 +902,12 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     expect(s.sent).toEqual([]);
   });
 
-  // A dead-lettered reminder is still an APPOINTMENT. projectAppointmentEvents and the follow-up
-  // sweep both read a row whose start is ahead as LIVE whatever its status, so /reset has to reach it
-  // — a status fence on the whole statement would leave the appointment in the prompt and follow-ups
-  // paused on it, right after the operator was told the conversation had been cleared. And it has to
-  // reach it without erasing WHY the job died, which is the operator's only record of the failure.
-  // Its own thread, so the outcome does not depend on what the tests above left behind.
+  // A dead-lettered reminder does not retire the APPOINTMENT: the record stands until its start
+  // passes or somebody cancels it, whatever became of the job that was going to announce it. So
+  // /reset has to reach both — leaving the record would keep the appointment in the prompt and
+  // follow-ups paused on it, right after the operator was told the conversation had been cleared —
+  // and it has to reach the job without erasing WHY it died, which is the operator's only record of
+  // the failure. Its own thread, so the outcome does not depend on what the tests above left behind.
   test("a dead-lettered reminder is cancelled without losing its dead-letter", async () => {
     const deadThread = `${tenantId}:${instanceId}:${CONV_ID + 1}`;
     const startISO = new Date(Date.now() + 86_400_000).toISOString();
@@ -910,10 +928,18 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
         },
       },
     });
+    await recordAppointment({
+      tenantId,
+      threadId: deadThread,
+      externalId: "evt-5",
+      startISO,
+      calendarId: "primary",
+      base: appDb,
+    });
     // The control: dead-lettered, and the appointment it stands for is live all the same.
     expect(await hasLiveAppointment(tenantId, deadThread, appDb)).toBe(true);
 
-    await cancelThreadAppointmentReminders(tenantId, deadThread, appDb);
+    await cancelThreadAppointments(tenantId, deadThread, appDb);
 
     expect(await hasLiveAppointment(tenantId, deadThread, appDb)).toBe(false);
     const row = await suDb.schedulerJob.findFirst({

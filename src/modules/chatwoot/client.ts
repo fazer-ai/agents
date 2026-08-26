@@ -1067,6 +1067,13 @@ export class ChatwootClient {
   async mintRedirectToken(p: {
     inboxId: number;
     identifier: string;
+    // WHOSE identity this link carries. The identifier cannot answer it: `fzwa:<X>` is derived from a
+    // sequential contact id, so it is guessable, and it can move off the contact between the mint and
+    // a click a day later. When it has moved, the widget side finds nobody holding it and hands the
+    // value to the browser session instead of merging onto this lead, which leaves the lead with two
+    // contacts and lets the second one squat the identifier every later redirect needs (issue #286).
+    // The mint is admin-authenticated, so naming the contact here is a fact the widget side can spend.
+    contactId: number;
     message?: string;
     ttlSeconds?: number;
     originDisplayId?: number;
@@ -1078,6 +1085,7 @@ export class ChatwootClient {
       {
         inbox_id: p.inboxId,
         identifier: p.identifier,
+        contact_id: p.contactId,
         message: p.message,
         ttl_seconds: p.ttlSeconds,
         origin_display_id: p.originDisplayId,

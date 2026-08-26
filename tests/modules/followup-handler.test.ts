@@ -6,7 +6,11 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
-import { hasLiveAppointment } from "@/modules/appointments/reminders";
+import { recordAppointment } from "@/modules/appointments/record";
+import {
+  cancelAppointment,
+  hasLiveAppointment,
+} from "@/modules/appointments/reminders";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   ensureAllTenantSweeps,
@@ -616,7 +620,25 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(count).toBe(1);
   });
 
-  test("(m) follow-up is paused while a pending appointment reminder exists", async () => {
+  // (#376) An appointment is a RECORD now, not a projection of the reminder jobs, so a test that
+  // wants a conversation to be holding one writes the record. Where a job row also matters (a
+  // reminder that already fired, one still claimed, one dead-lettered) the test keeps writing that
+  // too — it just no longer decides whether the appointment exists.
+  async function seedAppointment(
+    convId: number,
+    externalId: string,
+    startISO: string = new Date(Date.now() + 2 * 3_600_000).toISOString(),
+  ) {
+    return recordAppointment({
+      tenantId,
+      threadId: threadOf(convId),
+      externalId,
+      startISO,
+      base: appDb,
+    });
+  }
+
+  test("(m) follow-up is paused while the conversation holds an appointment", async () => {
     await setAgentSteps([
       { delayValue: 1, delayUnit: "minutes", instructions: "" },
     ]);
@@ -624,17 +646,8 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    // A future appointment for THIS conversation: a pending reminder job keyed by the thread.
-    await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: "reminder:ev_m:1",
-        status: "PENDING",
-        runAt: new Date(Date.now() + 60 * 60_000),
-        payload: { threadId: threadOf(1012), eventId: "ev_m" },
-      },
-    });
+    // A future appointment for THIS conversation.
+    await seedAppointment(1012, "ev_m");
     const s = stubClient();
     const result = await followUpHandler(jobFor(1012), appDb, {
       makeModel: fakeModel,
@@ -666,16 +679,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: "reminder:ev_n:1",
-        status: "PENDING",
-        runAt: new Date(Date.now() + 60 * 60_000),
-        payload: { threadId: threadOf(1013), eventId: "ev_n" },
-      },
-    });
+    await seedAppointment(1013, "ev_n");
     const s = stubClient();
     const result = await followUpHandler(jobFor(1013), appDb, {
       makeModel: fakeModel,
@@ -694,18 +698,9 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
   // unconfirmed, and it is the step that later frees the slot. An operator who needs both in one
   // sequence has no way to say so today.
   //
-  // A live reminder in every one of these, so the only thing under test is which step is next.
+  // A live appointment in every one of these, so the only thing under test is which step is next.
   async function withReminder(convId: number, tag: string) {
-    await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: `reminder:${tag}:1`,
-        status: "PENDING",
-        runAt: new Date(Date.now() + 60 * 60_000),
-        payload: { threadId: threadOf(convId), eventId: tag },
-      },
-    });
+    await seedAppointment(convId, tag);
   }
 
   test("(#103) a step that opts out of the pause fires despite a live appointment", async () => {
@@ -1412,7 +1407,10 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    // NOTE: The last reminder already fired (DONE, runAt in the past) but the appointment is 2h ahead.
+    // NOTE: The last reminder already fired (DONE, runAt in the past) but the appointment is 2h
+    // ahead. The record is what still knows that; the spent job is kept so the scenario is the real
+    // one rather than an appointment nothing ever announced.
+    await seedAppointment(1040, "ev_q");
     await suDb.schedulerJob.create({
       data: {
         tenantId,
@@ -1420,11 +1418,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         dedupeKey: "reminder:ev_q:0",
         status: "DONE",
         runAt: new Date(Date.now() - 60 * 60_000),
-        payload: {
-          threadId: threadOf(1040),
-          eventId: "ev_q",
-          startISO: new Date(Date.now() + 2 * 3_600_000).toISOString(),
-        },
+        payload: { threadId: threadOf(1040), eventId: "ev_q" },
       },
     });
     const s = stubClient();
@@ -1440,7 +1434,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(await lastFollowUpOf(1040)).toBeNull();
   });
 
-  test("(r) sweep skips conversations with a live appointment: DONE + future start, and CLAIMED", async () => {
+  test("(r) sweep skips every conversation holding an appointment, whatever became of its reminder", async () => {
     await setAgentSteps([
       { delayValue: 1, delayUnit: "minutes", instructions: "" },
     ]);
@@ -1448,6 +1442,8 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
+    // Its reminder already fired.
+    await seedAppointment(1041, "ev_r");
     await suDb.schedulerJob.create({
       data: {
         tenantId,
@@ -1455,18 +1451,16 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         dedupeKey: "reminder:ev_r:0",
         status: "DONE",
         runAt: new Date(Date.now() - 60 * 60_000),
-        payload: {
-          threadId: threadOf(1041),
-          eventId: "ev_r",
-          startISO: new Date(Date.now() + 2 * 3_600_000).toISOString(),
-        },
+        payload: { threadId: threadOf(1041), eventId: "ev_r" },
       },
     });
-    // NOTE: The reminder's OWN turn runs with the row CLAIMED — also live, even without a startISO.
+    // NOTE: And this one's reminder is mid-flight (CLAIMED — the reminder's own turn runs on it).
+    // Neither status is what the sweep asks about any more: the record is.
     await seedConversation(1042, {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
+    await seedAppointment(1042, "ev_r2");
     await suDb.schedulerJob.create({
       data: {
         tenantId,
@@ -1511,20 +1505,11 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: "reminder:ev_s:0",
-        status: "DONE",
-        runAt: new Date(Date.now() - 3 * 3_600_000),
-        payload: {
-          threadId: threadOf(1043),
-          eventId: "ev_s",
-          startISO: new Date(Date.now() - 2 * 3_600_000).toISOString(),
-        },
-      },
-    });
+    await seedAppointment(
+      1043,
+      "ev_s",
+      new Date(Date.now() - 2 * 3_600_000).toISOString(),
+    );
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(
@@ -1549,7 +1534,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     ).not.toBeNull();
   });
 
-  test("(t) sweep resumes for a cancelled appointment (tombstoned rows, start still ahead)", async () => {
+  test("(t) sweep resumes for a cancelled appointment (start still ahead)", async () => {
     await setAgentSteps([
       { delayValue: 1, delayUnit: "minutes", instructions: "" },
     ]);
@@ -1557,22 +1542,9 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    // NOTE: Cancelling marks rows DONE too — the tombstone is what tells them apart from "fired".
-    await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: "reminder:ev_t:0",
-        status: "DONE",
-        runAt: new Date(Date.now() - 60 * 60_000),
-        payload: {
-          threadId: threadOf(1044),
-          eventId: "ev_t",
-          startISO: new Date(Date.now() + 2 * 3_600_000).toISOString(),
-          cancelledAt: new Date().toISOString(),
-        },
-      },
-    });
+    // NOTE: The start is still ahead, so only the cancellation can tell the sweep to resume.
+    await seedAppointment(1044, "ev_t");
+    await cancelAppointment(tenantId, "ev_t", appDb);
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(
@@ -1597,31 +1569,21 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     ).not.toBeNull();
   });
 
-  test("(u) a garbage startISO never aborts the sweep for the tenant", async () => {
+  test("(u) a garbage start yields no appointment, and never aborts the sweep for the tenant", async () => {
     await setAgentSteps([
       { delayValue: 1, delayUnit: "minutes", instructions: "" },
     ]);
-    // NOTE: Conv A carries model-supplied garbage in startISO; conv B is a plain eligible
-    // conversation. An unguarded ::timestamptz cast would throw on A and kill follow-ups for the
-    // WHOLE tenant.
+    // NOTE: Conv A books with model-supplied garbage for a start; conv B is a plain eligible
+    // conversation. The garbage is refused at the WRITE, so nothing unparseable ever reaches the
+    // sweep's query — where an unguarded cast used to be one bad payload away from killing
+    // follow-ups for the whole tenant.
     await seedConversation(1045, {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: "reminder:ev_u:0",
-        status: "DONE",
-        runAt: new Date(Date.now() - 60 * 60_000),
-        payload: {
-          threadId: threadOf(1045),
-          eventId: "ev_u",
-          startISO: "amanhã de manhã",
-        },
-      },
-    });
+    expect(await seedAppointment(1045, "ev_u", "amanhã de manhã")).toBe(
+      "unreadable-start",
+    );
     await seedConversation(1046, {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
@@ -1661,25 +1623,13 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    // NOTE: The model-input fallback can leave startISO WITHOUT an offset; both runtimes must pin it
-    // to UTC (parseStartMs / the SQL normalization) or their decisions diverge across time zones.
+    // NOTE: The model-input fallback can leave startISO WITHOUT an offset. parseStartMs pins it to
+    // UTC once, at the write, and every reader compares the column it produced — so the sweep and
+    // the handler's re-check cannot answer differently whatever the host and session zones are.
     const offsetLessFutureUtc = new Date(Date.now() + 2 * 3_600_000)
       .toISOString()
       .slice(0, 19);
-    await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: "reminder:ev_w:0",
-        status: "DONE",
-        runAt: new Date(Date.now() - 60 * 60_000),
-        payload: {
-          threadId: threadOf(1048),
-          eventId: "ev_w",
-          startISO: offsetLessFutureUtc,
-        },
-      },
-    });
+    await seedAppointment(1048, "ev_w", offsetLessFutureUtc);
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(
@@ -1715,23 +1665,12 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: "reminder:ev_v:0",
-        status: "DONE",
-        runAt: new Date(Date.now() - 60 * 60_000),
-        payload: {
-          threadId: threadOf(1047),
-          eventId: "ev_v",
-          // NOTE: All-day events carry a bare YYYY-MM-DD (UTC midnight, parseStartMs).
-          startISO: new Date(Date.now() + 3 * 86_400_000)
-            .toISOString()
-            .slice(0, 10),
-        },
-      },
-    });
+    // NOTE: All-day events carry a bare YYYY-MM-DD (UTC midnight, parseStartMs).
+    await seedAppointment(
+      1047,
+      "ev_v",
+      new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10),
+    );
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(
@@ -1819,23 +1758,12 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    // NOTE: Feb 30 of NEXT year: Date.parse would roll it over to a FUTURE March 2 (suppressing the
-    // follow-up), while pg_input_is_valid rejects it. Both sides must treat it as garbage.
+    // NOTE: Feb 30 of NEXT year. Date.parse would roll it over to a FUTURE March 2 and suppress the
+    // follow-up; parseStartMs refuses it, so no appointment is recorded at all.
     const impossibleFuture = `${new Date().getUTCFullYear() + 1}-02-30T00:00:00Z`;
-    await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: "reminder:ev_x:0",
-        status: "DONE",
-        runAt: new Date(Date.now() - 60 * 60_000),
-        payload: {
-          threadId: threadOf(1049),
-          eventId: "ev_x",
-          startISO: impossibleFuture,
-        },
-      },
-    });
+    expect(await seedAppointment(1049, "ev_x", impossibleFuture)).toBe(
+      "unreadable-start",
+    );
     registerFollowUpHandlers();
     const sweep = getJobHandler("FOLLOWUP_SWEEP");
     await sweep?.(

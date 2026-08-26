@@ -86,7 +86,14 @@ async function sweepHandler(
     };
   }
   const cutoffMin = Math.min(...enabledDelays);
-  const cutoff = new Date(Date.now() - cutoffMin * 60_000);
+  const sweptAt = Date.now();
+  const cutoff = new Date(sweptAt - cutoffMin * 60_000);
+  // NOTE: the instant the appointment fence is judged against, passed in rather than left to SQL's
+  // now(). Every DateTime column in this schema is `timestamp` without a zone (Prisma's default,
+  // storing UTC), so comparing one to `now()` would cast it through the SESSION TimeZone — correct
+  // only while that happens to be UTC. Every other due clause in this repo passes the instant the
+  // same way.
+  const now = new Date(sweptAt);
 
   // Agents the appointment fence does not apply to, asked of `appointmentPauseApplies` — the same
   // function the handler and the console ask — about `cfg.steps[0]`, the only step this sweep ever
@@ -163,46 +170,22 @@ async function sweepHandler(
         -- NULL = never armed → fail-safe skip.
         AND a.follow_up_armed_at IS NOT NULL
         AND c.last_inbound_at >= a.follow_up_armed_at
-        -- NOTE: Pause re-engagement while the conversation has a LIVE future appointment, unless
-        -- this agent is exempt (unfencedAgentIds above, issue #103).
+        -- NOTE: Pause re-engagement while the conversation holds a LIVE appointment, unless this
+        -- agent is exempt (unfencedAgentIds above, issue #103).
         --
-        -- SQL mirror of projectAppointmentEvents (appointments/context.ts): a non-tombstoned
-        -- reminder row counts while it is still queued (PENDING/CLAIMED) OR its startISO is still
-        -- ahead — firing marks rows DONE, so after the LAST reminder only the future-start arm
-        -- keeps suppression on (issue #39). The cast is guarded (CASE + pg_input_is_valid; deploy
-        -- mandates pg17): startISO can be all-day (YYYY-MM-DD) or model-supplied garbage, and an
-        -- unguarded cast would abort the WHOLE tenant sweep. Offset-less values are pinned to UTC
-        -- exactly like parseStartMs (all-day → UTC midnight; offset-less datetime → 'Z'), so the
-        -- SQL and JS liveness decisions agree regardless of the session/host time zones.
-        -- Invalid/absent start = not-future (fail-safe: only the queued arm suppresses then).
+        -- One predicate over one row, the same one loadAppointmentContext reads: not cancelled, and
+        -- the start still ahead. It used to project the reminder JOBS here, with a hand-written CASE
+        -- normalizing the payload's startISO that had to keep agreeing with parseStartMs in JS; the
+        -- start is parsed once now, at write time, and both readers compare the column (issue #376).
         AND NOT (
           a.id <> ALL(${unfencedIdsSql})
           AND EXISTS (
             SELECT 1
-            FROM scheduler_jobs sj
-            CROSS JOIN LATERAL (
-              SELECT CASE
-                WHEN sj.payload->>'startISO' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-                  THEN sj.payload->>'startISO' || 'T00:00:00Z'
-                WHEN sj.payload->>'startISO' ~ '[Tt ][0-9]{2}:'
-                     AND sj.payload->>'startISO' !~ '([Zz]|[+-][0-9]{2}:?[0-9]{2})$'
-                  THEN sj.payload->>'startISO' || 'Z'
-                ELSE sj.payload->>'startISO'
-              END AS start_iso
-            ) norm
-            WHERE sj.tenant_id = c.tenant_id
-              AND sj.kind = 'APPOINTMENT_REMINDER'
-              AND sj.payload->>'threadId' = c.thread_id
-              AND sj.payload->>'cancelledAt' IS NULL
-              AND (
-                sj.status IN ('PENDING', 'CLAIMED')
-                OR CASE
-                  WHEN norm.start_iso IS NOT NULL
-                       AND pg_input_is_valid(norm.start_iso, 'timestamptz')
-                    THEN norm.start_iso::timestamptz > now()
-                  ELSE false
-                END
-              )
+              FROM appointments ap
+             WHERE ap.tenant_id = c.tenant_id
+               AND ap.thread_id = c.thread_id
+               AND ap.cancelled_at IS NULL
+               AND ap.start_at > ${now}
           )
         )
         -- Skip a conversation managed by a WhatsApp→chat redirect (channelRedirect): both the WIDGET

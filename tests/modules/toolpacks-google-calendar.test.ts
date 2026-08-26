@@ -574,8 +574,10 @@ describe("google calendar toolpack — appointment reminders + confirmation", ()
       calendarId: string;
       startISO: string;
       credentialRef: string | null;
-      offsetsHours: number[];
-      askConfirmationOnLast: boolean;
+      reminders: {
+        offsetsHours: number[];
+        askConfirmationOnLast: boolean;
+      } | null;
     }> = [];
     await toolFor(
       "calendar_create_event",
@@ -588,7 +590,7 @@ describe("google calendar toolpack — appointment reminders + confirmation", ()
       },
       baseCtx({
         fetchImpl: impl,
-        scheduleAppointmentReminders: async (a) => {
+        appointmentBooked: async (a) => {
           scheduled.push(a);
         },
       }),
@@ -603,24 +605,27 @@ describe("google calendar toolpack — appointment reminders + confirmation", ()
       eventId: "ev_1",
       calendarId: "primary",
       startISO: "2099-06-23T10:00:00-03:00",
-      offsetsHours: [24, 1],
-      askConfirmationOnLast: true,
+      reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
     });
   });
 
-  test("create does NOT arm reminders when the integration has them disabled", async () => {
+  // (#376) The reminder toggle decides the REMINDERS and nothing else. It used to decide whether the
+  // toolpack said anything at all, so an integration with reminders off booked appointments the
+  // platform never heard of: no follow-up pause, no console indicator, no block in the agent's own
+  // prompt. Asserting `reminders: null` rather than "not called" is the whole point of the test.
+  test("create still reports the booking when the integration has reminders disabled, arming none", async () => {
     const { impl, calls } = stubWriteFetch({
       id: "ev_2",
       start: { dateTime: "2099-06-23T10:00:00-03:00" },
     });
-    let armed = false;
+    const booked: Array<{ eventId: string; reminders: unknown }> = [];
     await toolFor(
       "calendar_create_event",
       {},
       baseCtx({
         fetchImpl: impl,
-        scheduleAppointmentReminders: async () => {
-          armed = true;
+        appointmentBooked: async (a) => {
+          booked.push(a);
         },
       }),
     )?.invoke({
@@ -628,12 +633,14 @@ describe("google calendar toolpack — appointment reminders + confirmation", ()
       start: "2099-06-23T10:00:00-03:00",
       end: "2099-06-23T11:00:00-03:00",
     });
-    // The create has to LAND, or "no reminder was armed" would be true of a refused write too.
+    // The create has to LAND, or the assertions below would be true of a refused write too.
     expect(writeCall(calls)).toBeDefined();
-    expect(armed).toBe(false);
+    expect(booked).toHaveLength(1);
+    expect(booked[0]?.eventId).toBe("ev_2");
+    expect(booked[0]?.reminders).toBeNull();
   });
 
-  test("cancel drops reminders via ctx", async () => {
+  test("cancel retires the appointment via ctx", async () => {
     const { impl } = stubFetch(200, {
       id: "ev_9",
       extendedProperties: stampedExt,
@@ -644,12 +651,45 @@ describe("google calendar toolpack — appointment reminders + confirmation", ()
       {},
       baseCtx({
         fetchImpl: impl,
-        cancelAppointmentReminders: async (id) => {
+        cancelAppointment: async (id) => {
           cancelled.push(id);
         },
       }),
     )?.invoke({ eventId: "ev_9" });
     expect(cancelled).toEqual(["ev_9"]);
+  });
+
+  // (#376) 410 Gone is a SUCCESS shape, and it used to return before the cleanup. The event is gone
+  // in Google either way, so leaving the record behind kept the follow-up paused and the appointment
+  // in the prompt until its start passed. It matters more now that the record exists even for an
+  // integration with reminders switched off, where there was previously no row to leave behind.
+  test("cancel retires the appointment on 410 Gone too, not only on 204", async () => {
+    const calls: string[] = [];
+    const impl = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      calls.push(method);
+      if (method === "DELETE") return new Response("", { status: 410 });
+      return new Response(
+        JSON.stringify({ id: "ev_gone", extendedProperties: stampedExt }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+    const cancelled: string[] = [];
+    const out = await toolFor(
+      "calendar_cancel_event",
+      {},
+      baseCtx({
+        fetchImpl: impl,
+        cancelAppointment: async (id) => {
+          cancelled.push(id);
+        },
+      }),
+    )?.invoke({ eventId: "ev_gone" });
+    // The DELETE has to have been ATTEMPTED, or "the record was retired" would also be true of a
+    // path that never reached Google.
+    expect(calls).toContain("DELETE");
+    expect(cancelled).toEqual(["ev_gone"]);
+    expect(out).toContain("already cancelled");
   });
 
   test("confirm marks [CONFIRMADO] + records secv4Confirmed, keeps the contact stamp", async () => {

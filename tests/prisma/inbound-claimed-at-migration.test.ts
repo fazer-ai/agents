@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 
 // WHAT THE MIGRATION SHIPS, and the half a behavioural test cannot reach (issue #356).
@@ -34,6 +34,13 @@ if (suUrl) {
 const suDb = su as Client;
 
 describe.skipIf(!dbUp)("migration: the inbound claim clock", () => {
+  // The connection is opened at module load, so it outlives a `describe` that never runs and it is
+  // not the suite's to leak either way: an open TCP handle can keep `bun test` alive after the last
+  // assertion.
+  afterAll(async () => {
+    await su?.end();
+  });
+
   test("fences the claims that were running when it ran", async () => {
     const statements = sql
       .split("\n")

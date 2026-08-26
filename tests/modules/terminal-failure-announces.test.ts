@@ -810,6 +810,36 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     expect(await deadRows(0, 0)).toHaveLength(0);
   });
 
+  test("an unstamped row claimed a moment ago is not taken from under it", async () => {
+    await clearRows();
+    const row = await suDb.inboundDelivery.create({
+      data: {
+        tenantId,
+        integrationInstanceId: instanceId,
+        dedupeKey: `oldreplica-356-${process.pid}`,
+        payload: { kind: "conversion" },
+        status: "PROCESSING",
+        attempts: 5,
+        // The window the migration's own backfill cannot reach: a rolling pre-deploy leaves the
+        // previous version CLAIMING rows after the UPDATE has run, so this row was taken seconds
+        // ago by a replica that does not stamp. Reading NULL as stale would kill it mid-turn.
+        receivedAt: new Date(Date.now() - 30_000),
+        claimedAt: null,
+      },
+    });
+    await processInboundDelivery({
+      deliveryId: row.id,
+      tenantId,
+      base: appDb,
+    });
+    expect(
+      (await suDb.inboundDelivery.findUniqueOrThrow({ where: { id: row.id } }))
+        .status,
+    ).toBe("PROCESSING");
+    await Bun.sleep(400);
+    expect(await deadRows(0, 0)).toHaveLength(0);
+  });
+
   test("claiming stamps the clock the staleness rule reads", async () => {
     await clearRows();
     const row = await suDb.inboundDelivery.create({
@@ -841,7 +871,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     );
   });
 
-  test("a PROCESSING row nobody stamped reads as stale, and is killed", async () => {
+  test("an unstamped row falls back to the rule that shipped before the column", async () => {
     await clearRows();
     const row = await suDb.inboundDelivery.create({
       data: {
@@ -852,10 +882,9 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
         status: "PROCESSING",
         attempts: 5,
         receivedAt: new Date(Date.now() - 60 * 60_000),
-        // The only safe reading for a row nobody stamped: the alternative is a row no claim can
-        // ever take again. The migration itself stamps every PROCESSING row it finds, precisely so
-        // that a claim held by the previous version during a rolling deploy is not read this way —
-        // that half is proved in tests/prisma/inbound-claimed-at-migration.test.ts.
+        // What a claim taken by a replica that does not stamp yet looks like. It is judged by the
+        // receipt, which is exactly what shipped before this column — no worse than today for a row
+        // the old code claimed, and the arm stops being reachable once every replica stamps.
         claimedAt: null,
       },
     });

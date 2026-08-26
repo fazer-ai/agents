@@ -158,6 +158,9 @@ export async function resolveRedirectLink(
     const { token, websiteUrl } = await admin.mintRedirectToken({
       inboxId: p.widgetInboxId,
       identifier,
+      // The contact, alongside the value it carries: the identifier says WHAT to identify as and this
+      // says WHO, which is the half a moved identifier loses (issue #286).
+      contactId: p.chatwootContactId,
       message: p.clonedMessage,
       ttlSeconds: p.ttlSeconds,
       originDisplayId: p.originDisplayId,

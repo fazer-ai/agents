@@ -9,7 +9,11 @@ import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { agentBotChatwootId, loadChatwootClient } from "./instance";
-import { normalizeChatwootEvent, parseLiveConversation } from "./normalize";
+import {
+  controlCommand,
+  normalizeChatwootEvent,
+  parseLiveConversation,
+} from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
 import { buildRecoveryPayload } from "./recover-payload";
 import { processChatwootDelivery } from "./webhook";
@@ -57,6 +61,14 @@ import { processChatwootDelivery } from "./webhook";
 // detached and two live deliveries interleave the same way; neither spends a model call or writes
 // conversation state. Closing it means a claim-then-act ordering inside three gates this does not
 // own, which is a change to their contract and not to this one.
+//
+// AT LEAST ONCE, and that is a property of the design rather than a gap in it. A process that died
+// left the customer unanswered — that is why the row is DEAD — but it did not necessarily do
+// NOTHING first, and nothing in the ledger records how far it got. So a turn whose tools had already
+// fired is re-run and fires them again. Closing that needs a durable per-effect claim, which is a
+// change to the delivery path and to every tool, not to this. What IS refused here is the one class
+// where a replay is destructive rather than merely repeated: a control command (`/reset` deletes the
+// memory thread), which an operator authored and can retype.
 //
 // WHAT THIS DOES NOT DO, and it is a bound rather than an omission: it never runs a turn beside a
 // live one. The turn-in-flight fence is consulted first, and it is in-memory — safe under the
@@ -395,6 +407,31 @@ async function runRecovery(params: {
   // recovery that cannot produce an event has nothing to hand the delivery path, and saying so is
   // cheaper than a throw nobody catches.
   if (!normalized) return "unrecoverable";
+
+  // A CONTROL COMMAND IS NOT REPLAYED, and this is the one place a recovery refuses work it could
+  // technically do.
+  //
+  // The premise of re-running the delivery path is that the path did not complete. It does not
+  // follow that it did NOTHING: a process can die after an effect and before settling its row, and
+  // `/reset` performs its deletion before the tail settles. Replayed, a second `/reset` deletes the
+  // memory the conversation has accumulated SINCE the first one — a destructive effect, applied to a
+  // thread that had already been reset once and moved on.
+  //
+  // Refused rather than made idempotent, because the two things a command has that a customer
+  // message does not both point the same way: its author is an operator who is present and can
+  // retype it, and its effect is destructive rather than a reply. The row stays DEAD and stays in
+  // the worklist, which is exactly the operator-facing record that lets them do that.
+  //
+  // NOT a general answer to replayed effects, and the rest of that is stated at the head of this
+  // file: an agent turn can call side-effecting tools, and a recovery re-runs it at least once.
+  if (controlCommand(normalized) !== null) {
+    logger.info(
+      "chatwoot recovery: %s carries a control command; not replayed (conversation %d)",
+      row.deliveryId,
+      conversationId,
+    );
+    return "unrecoverable";
+  }
 
   // Asked AGAIN, immediately before the handoff. The check at the top spends no network on a
   // conversation that is already busy; this one is about the several awaits since — two REST reads

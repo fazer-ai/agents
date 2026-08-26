@@ -737,6 +737,65 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
   });
 
+  test("a control command is never replayed", async () => {
+    // The premise of re-running the delivery path is that the path did not complete — not that it
+    // did nothing. `/reset` performs its deletion BEFORE the tail settles the row, so a process that
+    // died in that window leaves a DEAD row whose replay deletes the memory the conversation has
+    // accumulated since. Destructive, and unlike a customer's message its author is an operator who
+    // is present and can retype it.
+    const convId = 8930;
+    const messageId = 9433;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "/reset" }]),
+    });
+    const turns = { built: 0 };
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub, turns),
+    });
+
+    expect(outcome).toBe("unrecoverable");
+    expect(turns.built).toBe(0);
+    expect(stub.sent).toEqual([]);
+    // Left DEAD, which is the operator-facing record that lets them retype it.
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+  });
+
+  test("a message that merely mentions a command is still recovered", async () => {
+    // The refusal is on the command ITSELF, which `controlCommand` reads as the whole trimmed
+    // content. A customer writing about one is a customer waiting for an answer.
+    const convId = 8931;
+    const messageId = 9434;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([
+        { id: messageId, content: "mandei /reset e não voltou" },
+      ]),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+    expect(stub.sent).toEqual([[convId, REPLY]]);
+  });
+
   test("a message Chatwoot no longer has is unrecoverable", async () => {
     // Deleted message, or a deleted conversation. There is nothing to answer, and no number of
     // passes changes that — so the row stays DEAD and stays in the operator's worklist.

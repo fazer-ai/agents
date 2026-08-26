@@ -5,6 +5,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import {
   isNewIncomingMessage,
+  messageTypeOf,
   normalizeChatwootEvent,
 } from "@/modules/chatwoot/normalize";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -287,6 +288,20 @@ describe.skipIf(!dbUp)(
     // The other three integers the enum defines, so the mapping is a TABLE rather than one case that
     // happened to be needed: an outgoing message rebuilt from REST must stay outgoing, or a
     // recovery would answer the bot's own reply.
+    test("a blank or unparsable message_type is NOT a customer message", () => {
+      // `Number("")` and `Number("  ")` are both 0, which is the integer spelling of `incoming` —
+      // and `incoming` is the one class that drives an agent turn. Reading the field as a number at
+      // all is a widened domain, and this is where the widening is closed: the string-only reader
+      // this replaced rejected these by simply not matching "incoming".
+      for (const v of ["", "   ", "\n", "0x0", " 0", "0 ", "abc", null, {}]) {
+        expect(messageTypeOf(v)).toBe("other");
+      }
+      // And the spellings that ARE the enum still map, from both sources.
+      expect(messageTypeOf(0)).toBe("incoming");
+      expect(messageTypeOf("0")).toBe("incoming");
+      expect(messageTypeOf("incoming")).toBe("incoming");
+    });
+
     test("the whole enum maps, not just the incoming case", () => {
       const table: Array<[number, string]> = [
         [0, "incoming"],

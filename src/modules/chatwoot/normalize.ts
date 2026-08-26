@@ -38,7 +38,17 @@ function num(v: unknown): number | null {
 export function messageTypeOf(
   v: unknown,
 ): "incoming" | "outgoing" | "activity" | "template" | "other" {
-  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  // A string is coerced only when it IS the integer spelling, digits and nothing else. `Number("")`
+  // and `Number("  ")` are both 0, so a bare coercion classifies an empty or blank `message_type` as
+  // `incoming` — and an incoming message is the one class that drives an agent turn. The old
+  // string-only reader rejected those by not matching "incoming"; widening the domain is what would
+  // have woken that branch (a defect this repo has paid for before), so the widening is closed here.
+  const n =
+    typeof v === "number"
+      ? v
+      : typeof v === "string" && /^[0-9]+$/.test(v)
+        ? Number(v)
+        : NaN;
   if (n === 0) return "incoming";
   if (n === 1) return "outgoing";
   if (n === 2) return "activity";

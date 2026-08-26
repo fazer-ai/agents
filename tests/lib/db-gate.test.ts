@@ -185,9 +185,13 @@ describe("the gate, as a run", () => {
   const appUrl = process.env.TEST_APP_DATABASE_URL as string;
 
   async function run(env: Record<string, string>) {
+    // The opt-out is stripped from the INHERITED environment and only ever set by a caller that
+    // means it. Otherwise a parent run started with ALLOW_NO_DB=1 would hand it to every child,
+    // and the refusal these tests are watching for would never happen.
+    const { [DB_GATE_OPT_OUT]: _optOut, ...inherited } = process.env;
     const proc = Bun.spawn(["bun", "test", noop], {
       cwd: repoRoot,
-      env: { ...process.env, ...env },
+      env: { ...inherited, ...env },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -199,18 +203,25 @@ describe("the gate, as a run", () => {
     return { code, output: `${out}\n${err}` };
   }
 
-  test("an app role that cannot log in stops the run, even with a healthy migration role", async () => {
-    const broken = new URL(appUrl);
-    broken.username = "no_such_role_351";
-    broken.password = "no_such_password";
-    const { code, output } = await run({
-      TEST_MIGRATION_DATABASE_URL: suUrl,
-      TEST_APP_DATABASE_URL: broken.toString(),
-    });
-    expect(code).not.toBe(0);
-    expect(output).toContain("TEST_APP_DATABASE_URL");
-    expect(output).toContain("would still exit 0");
-  }, 60_000);
+  // The one test here that needs a live database, so it is guarded like every other one in this
+  // suite. Under ALLOW_NO_DB=1 there is no app URL to break, and a run that DECLARED it has no
+  // database is exactly the run this may be silent in.
+  test.skipIf(process.env[DB_GATE_OPT_OUT] === "1")(
+    "an app role that cannot log in stops the run, even with a healthy migration role",
+    async () => {
+      const broken = new URL(appUrl);
+      broken.username = "no_such_role_351";
+      broken.password = "no_such_password";
+      const { code, output } = await run({
+        TEST_MIGRATION_DATABASE_URL: suUrl,
+        TEST_APP_DATABASE_URL: broken.toString(),
+      });
+      expect(code).not.toBe(0);
+      expect(output).toContain("TEST_APP_DATABASE_URL");
+      expect(output).toContain("would still exit 0");
+    },
+    60_000,
+  );
 
   test("the opt-out disarms the probe too, not only the variable check", async () => {
     const { code, output } = await run({

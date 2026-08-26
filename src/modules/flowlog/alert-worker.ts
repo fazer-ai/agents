@@ -209,20 +209,20 @@ async function finalizeDead(
       data: { status: "DEAD", attempts, lastError: error },
     }),
   );
-  // Fire-and-forget, and AFTER the write: the row is the fact, the line is the notification, and a
-  // failed line must never leave a delivery claimed forever.
+  // NOTE: fire-and-forget, and AFTER the write — the row is the fact, the line is the notification,
+  // and a failed line must never leave a delivery claimed forever.
   emitDeadLetter({
     tenantId: a.tenantId,
     unit: "alert_delivery",
-    // The operator asked to be told about something and was not. Nothing recovers that.
+    // NOTE: the operator asked to be told about something and was not. Nothing recovers that.
     level: "error",
     error,
     detail: {
       deliveryId: String(a.id),
       channelId: String(a.channelId),
-      // The stage the UNDELIVERED alert was about, which is not this line's own stage. `summary` is
-      // the body that never arrived — already sanitized and PII-free by construction, since it is
-      // what would have been posted to Discord.
+      // NOTE: the stage the UNDELIVERED alert was about, which is not this line's own stage.
+      // `summary` is the body that never arrived — already sanitized and PII-free by construction,
+      // since it is what would have been posted to Discord.
       alertStage: a.stage,
       alertLevel: a.level,
       summary: a.summary,

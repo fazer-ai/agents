@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { Semaphore } from "@/lib/semaphore";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
   JOB_DEATH_LEVEL,
@@ -83,6 +84,10 @@ export function getDeadLetterHandler(
   return deadLetterHandlers.get(kind);
 }
 
+function sysCtx(tenantId: bigint): TenantContext {
+  return { tenantId, userId: null, role: "TENANT_ADMIN" };
+}
+
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -105,10 +110,33 @@ async function dispatchDeadLetter(
 ): Promise<void> {
   const hook = deadLetterHandlers.get(job.kind);
   if (!hook) {
-    // The attempt count is deliberately absent, for the reason measured in ../memory/compact.ts:
-    // the two roads to DEAD disagree about the number while meaning the same thing (failJob hands
-    // the hook the claim it was given, the reaper increments in SQL). What tells the roads apart is
-    // the error itself, and only the reaper writes "the claim never finished".
+    // NOTE: RE-READ rather than trust the dead-letter that got us here, which is what both
+    // hand-written hooks do and for the same reason (../memory/compact.ts spells it out). A re-arm
+    // lands on THIS row — `upsertJobRow` keys on (tenant, kind, dedupeKey) — so a FOLLOWUP the
+    // sweep re-arms in the window between the DEAD write and this line is work that is queued
+    // again, and announcing it would page an operator about a loss that did not happen. Suppressing
+    // costs nothing: a cause that is still broken fails the new arm too, and announces then.
+    //
+    // It NARROWS the window and cannot close it: the trail write is fire-and-forget, so a re-arm
+    // landing between this read and that insert still gets announced over. What is left is a line
+    // the next pass's own outcome follows, which is legible; closing it would mean writing the row
+    // inside the job's transaction.
+    //
+    // Any status but DEAD suppresses, and a MISSING row suppresses too: for a kind with
+    // JOB_DELETE_ON_DONE the row is gone precisely because the work completed, and no row is not
+    // evidence that work was lost.
+    const row = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
+      db.schedulerJob.findUnique({
+        where: { id: job.id },
+        select: { status: true },
+      }),
+    );
+    if (row?.status !== "DEAD") return;
+    // NOTE: the attempt count is deliberately absent, for the reason measured in
+    // ../memory/compact.ts: the two roads to DEAD disagree about the number while meaning the same
+    // thing (failJob hands the hook the claim it was given, the reaper increments in SQL). What
+    // tells the roads apart is the error itself, and only the reaper writes "the claim never
+    // finished".
     emitDeadLetter({
       tenantId: job.tenantId,
       unit: "job",
@@ -117,8 +145,8 @@ async function dispatchDeadLetter(
       detail: {
         kind: job.kind,
         jobId: String(job.id),
-        // Ids by construction (a dedupe key has to be stable), and the only field on this line an
-        // operator can act on: it says WHICH follow-up, WHICH document, WHICH reminder.
+        // NOTE: ids by construction (a dedupe key has to be stable), and the only field on this
+        // line an operator can act on: it says WHICH follow-up, WHICH document, WHICH reminder.
         ...(job.dedupeKey ? { dedupeKey: job.dedupeKey } : {}),
       },
       base,

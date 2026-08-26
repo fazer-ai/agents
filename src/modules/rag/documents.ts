@@ -708,7 +708,7 @@ async function runIngestJobForTenant(
         status: "FAILED",
         error: message,
       });
-      // TERMINAL, which is not obvious from here: the row is now FAILED, the re-armed job re-reads
+      // NOTE: TERMINAL, which is not obvious from here — the row is now FAILED, the re-armed job re-reads
       // it, finds it is no longer PENDING and returns `done`, so this document is never indexed
       // again without somebody asking. The broadcast above reaches a console that is OPEN right now
       // and nothing else; the trail is what is left for the operator who was not watching, and the
@@ -721,9 +721,9 @@ async function runIngestJobForTenant(
         tenantId,
         unit: "knowledge_document",
         level: "warn",
-        // Either the i18n key of a known AppError or the sanitized provider text, whichever the row
-        // itself stores — the two say different things to a reader and the line must not diverge
-        // from the column beside it.
+        // NOTE: either the i18n key of a known AppError or the sanitized provider text, whichever
+        // the row itself stores — the two say different things to a reader and the line must not
+        // diverge from the column beside it.
         error: message,
         detail: {
           documentId: String(documentId),

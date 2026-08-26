@@ -283,30 +283,16 @@ async function persistFailed(
         select: { id: true },
       }),
     );
+  // NOTE: announced only on a REAL insert (issue #356). A provider that retries an unprocessable
+  // body lands on the dedupe key below and gets back the row it already has; announcing there would
+  // report one dropped event as many, at whatever rate the provider retries.
+  //
+  // The emit is OUTSIDE the try, not merely after the create: `emitFlowEvent` is fire-and-forget
+  // and cannot reject, but a throw from inside that try is read as "not a unique violation" and
+  // rethrown, which would turn a delivery that WAS persisted into a 500 for the provider.
+  let inserted: bigint | null = null;
   try {
-    const { id } = await create();
-    // ANNOUNCED ONLY ON A REAL INSERT (issue #356). A provider that retries an unprocessable body
-    // lands on the dedupe key below and gets the row it already has; announcing there would report
-    // one dropped event as many, at whatever rate the provider retries.
-    emitDeadLetter({
-      tenantId: route.tenantId,
-      unit: "inbound_delivery",
-      // The event happened at the provider and the platform accepted it with a 2xx. It is gone.
-      level: "error",
-      error: `inbound payload not processable: ${String(payload.reason)}`,
-      detail: {
-        deliveryId: String(id),
-        integrationInstanceId: String(route.id),
-        catalogType: route.catalogType,
-        // `no-mapper`, `invalid`, `unstorable-identity` — a closed vocabulary this module writes,
-        // and the three have different fixes. `issues` is the mapper's own diagnostic and never the
-        // body (the raw body is only ever hashed into the dedupe key).
-        reason: payload.reason,
-        ...(payload.issues ? { issues: payload.issues } : {}),
-      },
-      base,
-    });
-    return id;
+    inserted = (await create()).id;
   } catch (err) {
     if (!isUniqueViolation(err)) throw err;
     const existing = await runScopedOn(base, sysCtx(route.tenantId), (db) =>
@@ -318,6 +304,25 @@ async function persistFailed(
     if (!existing) throw err;
     return existing.id;
   }
+  emitDeadLetter({
+    tenantId: route.tenantId,
+    unit: "inbound_delivery",
+    // NOTE: the event happened at the provider and the platform accepted it with a 2xx. It is gone.
+    level: "error",
+    error: `inbound payload not processable: ${String(payload.reason)}`,
+    detail: {
+      deliveryId: String(inserted),
+      integrationInstanceId: String(route.id),
+      catalogType: route.catalogType,
+      // NOTE: `no-mapper`, `invalid`, `unstorable-identity` — a closed vocabulary this module
+      // writes, and the three have different fixes. `issues` is the mapper's own diagnostic and
+      // never the body (the raw body is only ever hashed into the dedupe key).
+      reason: payload.reason,
+      ...(payload.issues ? { issues: payload.issues } : {}),
+    },
+    base,
+  });
+  return inserted;
 }
 
 // create-then-catch across two transactions (a unique violation aborts its own transaction,
@@ -405,8 +410,8 @@ export async function processInboundDelivery(
   params: ProcessParams,
 ): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
-  // Set inside the claim below, emitted AFTER it commits: a line written from inside the scope would
-  // survive a rollback of the very write it reports.
+  // NOTE: set inside the claim below, emitted AFTER it commits: a line written from inside the
+  // scope would survive a rollback of the very write it reports.
   let exhausted: bigint | null | undefined;
   const plan: ProcessPlan = await runScopedOn(
     base,
@@ -432,17 +437,29 @@ export async function processInboundDelivery(
       if (claimed.count === 0) {
         // Either not reclaimable (done / freshly PROCESSING) or the attempt cap is exhausted —
         // in the latter case move it to a terminal FAILED so it stops being retried.
+        //
+        // NOTE: the PROCESSING half carries the SAME staleness cutoff the claim above does, and it
+        // has to: the claim says a PROCESSING row is only reclaimable once it is stale, so without
+        // the cutoff here the two disagree about the same row. The last attempt running RIGHT NOW
+        // is `attempts = MAX` and `PROCESSING`, and a duplicate webhook arriving mid-flight matched
+        // this and marked the delivery terminally FAILED under the invocation still working on it —
+        // which then marks it PROCESSED over the top. Silent before issue #356; announcing it is
+        // what made the disagreement visible, and a dead-letter line about work still in flight is
+        // the one thing this announcement must never say.
         const killed = await db.inboundDelivery.updateMany({
           where: {
             id: params.deliveryId,
             attempts: { gte: MAX_PROCESS_ATTEMPTS },
-            status: { in: ["PENDING", "PROCESSING"] },
+            OR: [
+              { status: "PENDING" },
+              { status: "PROCESSING", receivedAt: { lt: staleCutoff } },
+            ],
           },
           data: { status: "FAILED" },
         });
-        // The count separates the two cases the branch above collapses, and only one of them is a
-        // death: a row that was simply not reclaimable (already processed, or claimed a second ago
-        // by another replica) matched nothing here and must not be reported as lost.
+        // NOTE: the count separates the two cases the branch above collapses, and only one of them
+        // is a death: a row that was simply not reclaimable (already processed, freshly claimed by
+        // another replica, or still being worked on) matched nothing here and is not a loss.
         if (killed.count > 0) {
           const row = await db.inboundDelivery.findUnique({
             where: { id: params.deliveryId },
@@ -546,8 +563,8 @@ export async function processInboundDelivery(
     },
   );
 
-  // The row exhausted its processing budget and is terminally FAILED: the provider's event was
-  // accepted with a 2xx and will never be acted on (issue #356).
+  // NOTE: the row exhausted its processing budget and is terminally FAILED — the provider's event
+  // was accepted with a 2xx and will never be acted on (issue #356).
   if (exhausted !== undefined) {
     emitDeadLetter({
       tenantId: params.tenantId,

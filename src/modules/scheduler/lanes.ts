@@ -180,10 +180,13 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   FOLLOWUP_SWEEP: "error",
   // The retry drain for outbound deliveries; without it a subscriber's events stop arriving.
   WEBHOOK_RETRY: "error",
-  // Registers its own hook (../debounce/handler.ts). This is the level of the generic line that
-  // stands in when nothing registered one, which is a real state: the hooks are installed at boot,
-  // and a lane can run with that registration never having happened.
-  DEBOUNCE: "warn",
+  // Registers its own hook (../debounce/handler.ts), which announces where a burst's loss is
+  // actually felt: a private note on the customer's own conversation, by #71's decision, and not a
+  // trail line at all. This is the level of the GENERIC line that stands in when nothing registered
+  // one — a real state, since `registerDebounceHandler` runs only under DEBOUNCE_WORKER_ENABLED
+  // while the scheduler's reaper can still reap a stale DEBOUNCE claim. A burst that is never
+  // answered is a customer waiting on nobody, so it is not an advisory.
+  DEBOUNCE: "error",
   // The one recoverable site. The document row itself goes FAILED and the knowledge-base page shows
   // it with a re-index in reach, so this is "look when you can" rather than a loss to page about.
   RAG_INGEST: "warn",
@@ -194,9 +197,12 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // A customer who is not reminded of an appointment, and nobody learns.
   APPOINTMENT_REMINDER: "error",
   REDIRECT_FOLLOWUP: "error",
-  // Registers its own hook (../memory/compact.ts); same standing-in reason as DEBOUNCE. `warn`
-  // because a re-armed attendance heals on its own and the customer sees nothing either way.
-  MEMORY_COMPACT: "warn",
+  // Registers its own hook (../memory/compact.ts); same standing-in reason as DEBOUNCE, since that
+  // registration runs under the scheduler OR the compaction worker. `error` because the hook itself
+  // decided `error` with the reason written above it: a corrected configuration heals the NEXT
+  // attendance, and the one this job was carrying is gone. The stand-in must not undercut the line
+  // it stands in for.
+  MEMORY_COMPACT: "error",
   // A message the turn will never see. The customer wrote and is waiting.
   INGEST_MESSAGE: "error",
   // Self-rescheduling: its death is stranded deliveries going unreported from then on, which is the

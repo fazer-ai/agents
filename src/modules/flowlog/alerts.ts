@@ -29,7 +29,8 @@ export async function dispatchAlertsForEvent(
   ev: FlowEvent & { level: FlowLevel },
   base: PrismaClient,
 ): Promise<void> {
-  // THE ONE LINE THAT CANNOT BECOME AN ALERT: the alert bus reporting its own death (issue #356).
+  // NOTE: THE ONE LINE THAT CANNOT BECOME AN ALERT — the alert bus reporting its own death
+  // (issue #356).
   //
   // A dead `AlertDelivery` is the operator's notification failing to arrive, and it is announced
   // like every other terminal failure. Routing that announcement back through here would queue a

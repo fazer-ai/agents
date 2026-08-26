@@ -347,6 +347,43 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     expect((rows[0] as (typeof rows)[number]).level).toBe("warn");
   });
 
+  test("a job re-armed under the announcement is not reported as lost", async () => {
+    await clearRows();
+    const id = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "FLOWLOG_SWEEP",
+      dedupeKey: "dk-356-rearmed",
+      runAt: past(),
+      base: appDb,
+    });
+    await suDb.schedulerJob.update({
+      where: { id },
+      data: {
+        status: "CLAIMED",
+        attempts: 4,
+        claimedAt: new Date(Date.now() - 600_000),
+      },
+    });
+    const reaped = await reapStaleJobs(
+      5 * 60_000,
+      appDb,
+      new Date(),
+      tenantId,
+      "FLOWLOG_SWEEP",
+    );
+    expect(reaped.find((r) => r.id === id)?.status).toBe("DEAD");
+    // The re-arm: `upsertJobRow` keys on (tenant, kind, dedupeKey), so a sweep arming this work
+    // again lands on THIS row. The reaped object in hand still says DEAD; the row does not.
+    await suDb.schedulerJob.update({
+      where: { id },
+      data: { status: "PENDING", attempts: 0 },
+    });
+    await announceReaped(reaped, appDb);
+    await Bun.sleep(400);
+    expect(await deadRows(0, 0)).toHaveLength(0);
+  });
+
   test("a kind that registers its own hook does not get the generic line as well", async () => {
     await clearRows();
     const { registerDebounceHandler } = await import(
@@ -605,6 +642,68 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     expect(detail.deliveryId).toBe(String(row.id));
     expect(detail.integrationInstanceId).toBe(String(instanceId));
     expect(detail.reason).toBe("attempts-exhausted");
+  });
+
+  test("a last attempt still in flight is neither killed nor announced", async () => {
+    await clearRows();
+    const row = await suDb.inboundDelivery.create({
+      data: {
+        tenantId,
+        integrationInstanceId: instanceId,
+        dedupeKey: `inflight-356-${process.pid}`,
+        payload: { kind: "conversion" },
+        // The fifth attempt, RUNNING right now: at the cap, and claimed a moment ago.
+        status: "PROCESSING",
+        attempts: 5,
+        receivedAt: new Date(),
+      },
+    });
+    // A duplicate webhook from the provider, arriving mid-flight.
+    const outcome = await processInboundDelivery({
+      deliveryId: row.id,
+      tenantId,
+      base: appDb,
+    });
+    expect(outcome).toBe("skipped");
+    // The invocation still working on it may yet mark this PROCESSED, so nothing here may call it
+    // terminally failed — the claim's own staleness rule is what says the row is still owned.
+    expect(
+      (await suDb.inboundDelivery.findUniqueOrThrow({ where: { id: row.id } }))
+        .status,
+    ).toBe("PROCESSING");
+    await Bun.sleep(400);
+    expect(await deadRows(0, 0)).toHaveLength(0);
+  });
+
+  test("a stale processing claim at the cap is killed, and says so", async () => {
+    await clearRows();
+    const row = await suDb.inboundDelivery.create({
+      data: {
+        tenantId,
+        integrationInstanceId: instanceId,
+        dedupeKey: `stale-356-${process.pid}`,
+        payload: { kind: "conversion" },
+        status: "PROCESSING",
+        attempts: 5,
+        // Past the 5-minute cutoff: whoever claimed this is gone.
+        receivedAt: new Date(Date.now() - 10 * 60_000),
+      },
+    });
+    await processInboundDelivery({
+      deliveryId: row.id,
+      tenantId,
+      base: appDb,
+    });
+    expect(
+      (await suDb.inboundDelivery.findUniqueOrThrow({ where: { id: row.id } }))
+        .status,
+    ).toBe("FAILED");
+    const rows = await deadRows(1);
+    expect(rows).toHaveLength(1);
+    expect(
+      ((rows[0] as (typeof rows)[number]).detail as Record<string, unknown>)
+        .reason,
+    ).toBe("attempts-exhausted");
   });
 
   test("a delivery that was simply not reclaimable is not reported as lost", async () => {

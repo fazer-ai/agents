@@ -89,6 +89,19 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
     );
   });
 
+  test("adds its columns idempotently, so a failed concurrent build can be re-run", async () => {
+    // The same property that lets the indexes be concurrent forces this one: `prisma migrate deploy`
+    // does not wrap this migration in a transaction, so a concurrent build that is cancelled or
+    // fails leaves the columns already added. Marked rolled back and run again, a bare ADD COLUMN
+    // aborts on the first one and the index DROPs below it are never reached — the recovery path
+    // blocked by the half of the file that had already succeeded.
+    const adds = [
+      ...sql.matchAll(/ADD COLUMN(\s+IF NOT EXISTS)?\s+"([^"]+)"/g),
+    ];
+    expect(adds.length).toBe(3);
+    for (const m of adds) expect(m[1]?.trim()).toBe("IF NOT EXISTS");
+  });
+
   test("names every index it creates short enough for Postgres to keep the name", async () => {
     // Read from the FILE, not the catalog. The test below asks the database what it has, and the
     // database was built by an earlier `migrate deploy` — so it answers about the index that exists,

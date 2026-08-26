@@ -93,16 +93,6 @@ export interface FlowEvent {
   // Allowlisted ids/counts/enums only — never message text/PII. Redacted on write.
   detail?: Record<string, unknown>;
   errorMessage?: string;
-  // The level this event is ROUTED by, when that differs from the level it is WRITTEN at. Defaults
-  // to `level`, which is what every line wants.
-  //
-  // It exists for a line that CLOSES an earlier one: a channel's `minLevel` defaults to "error", so
-  // a `warn` written to say "the customer was answered after all" never reaches the operator the
-  // `error` paged, and the alert they are holding stands forever. Severity and routing are the same
-  // question for a line that reports something, and different questions for a line that resolves
-  // one — the resolution has to reach whoever the alert reached, and is no more severe than the good
-  // news it carries.
-  alertAs?: FlowLevel;
 }
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -178,11 +168,9 @@ export async function writeFlowEvent(
     logger.warn({ err, turnId: ctx.turnId }, "flowlog emit failed");
   }
   // Alerting: only warn/error, and only real (inbox) traffic — a playground error must not page.
-  // `alertAs` is the routing level when a line's severity and its audience differ; see FlowEvent.
-  const routed = ev.alertAs ?? level;
-  if ((routed === "warn" || routed === "error") && ctx.source === "inbox") {
+  if ((level === "warn" || level === "error") && ctx.source === "inbox") {
     try {
-      await dispatchAlertsForEvent(ctx, { ...ev, level: routed }, base);
+      await dispatchAlertsForEvent(ctx, { ...ev, level }, base);
     } catch (err) {
       logger.warn({ err, turnId: ctx.turnId }, "flowlog alert dispatch failed");
     }

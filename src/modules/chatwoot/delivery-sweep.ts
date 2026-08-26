@@ -252,11 +252,18 @@ export async function retireCoveredDeliveries(
       {
         stage: "delivery",
         level: "warn",
-        // ROUTED as the error it closes. A channel's `minLevel` defaults to "error", so written and
-        // routed at "warn" this line reaches the Logs page and nobody else — the operator the loss
-        // paged keeps holding an alert about a customer who was, in fact, answered. The severity is
-        // still "warn": this is good news, and the line says so.
-        alertAs: "error",
+        // A "warn", and it does NOT page the channel the loss paged. That is a real gap and it is
+        // deliberately not closed here: a channel's `minLevel` defaults to "error", so an operator
+        // who was paged about this customer learns of the answer from the Logs page or from the DEAD
+        // worklist, not from the channel.
+        //
+        // Routing it as an "error" instead was tried and is worse. `dispatchAlertsForEvent`
+        // coalesces a pending delivery by (channel, stage, level), so a correction landing inside
+        // the loss alert's window would not close it — it would INCREMENT it, and the operator would
+        // get a bigger loss alert carrying the original's summary. The alerting subsystem has levels
+        // and stages and no concept of a resolution, for any event; inventing half of one here buys
+        // a wrong notification instead of a missing one. `WHERE status = 'DEAD'` stays the list that
+        // answers "who is still unanswered", and it is correct the instant this write lands.
         status: "ok",
         detail: {
           outcome: answered ? "answered_late" : "consumed_late",

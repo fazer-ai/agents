@@ -120,6 +120,7 @@ import {
   firstAudioAttachment,
   firstLocationAttachment,
   firstVisualAttachment,
+  heldByAnotherParty,
   isIncomingMessage,
   isNewHumanAgentMessage,
   isNewIncomingMessage,
@@ -2877,9 +2878,20 @@ export async function processChatwootDelivery(
   // delivery of this same message may be running right now, and Chatwoot fans a message to two
   // routes whenever a conversation's assignee bot differs from the inbox's (`agent_bots_for`). The
   // settlement at the gate tail is scoped by this, and by nothing else about the gate.
+  //
+  // Asked of `heldByAnotherParty`, the same predicate the gate itself uses, rather than of `act`.
+  // `act` is false for a second reason — a status that is not `pending` — so `assigneeType is
+  // AgentBot && !act` calls OUR OWN bot another bot on every open or resolved conversation, and then
+  // scopes away the sibling settlement on the most ordinary gate exit there is.
   const heldByAnotherBot =
-    (assigneeKnown ? (n.assigneeType ?? null) : mirror.assigneeType) ===
-      "AgentBot" && !act;
+    effectiveAssigneeType === "AgentBot" &&
+    heldByAnotherParty(
+      {
+        assigneeType: effectiveAssigneeType,
+        assigneeId: assigneeKnown ? (n.assigneeId ?? null) : mirror.assigneeId,
+      },
+      { ourAgentBotId: params.agentBotId },
+    );
   const convLabel = n.conversationId === null ? "?" : String(n.conversationId);
 
   // ── A conversation this agent manages just transitioned TO resolved (by anyone: the agent's own

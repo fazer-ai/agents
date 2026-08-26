@@ -8,7 +8,7 @@
 -- Nullable with no backfill. An event that names no conversation leaves it null, and so does every
 -- row written before this migration — the sweep files those without a conversation rather than
 -- guessing.
-ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "conversation_id" INTEGER;
+ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN IF NOT EXISTS "conversation_id" INTEGER;
 
 -- Serves the sweep's only query, and it is PARTIAL and TENANT-LEADING for two reasons the table
 -- makes unavoidable.
@@ -25,6 +25,13 @@ ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "conversation_id" INTEGER;
 --
 -- Prisma cannot express a partial index, so this one is declared here and NOT in schema.prisma —
 -- the same arrangement the `agent_tool_selections` uniques use.
+-- Every statement in this file is IDEMPOTENT, and that is forced by the same property that lets the
+-- indexes be concurrent: `prisma migrate deploy` does not wrap this migration in a transaction, so a
+-- concurrent build that is cancelled or fails leaves the three columns above already added. Marked
+-- rolled back and run again, a bare `ADD COLUMN` would abort on the first one and the DROPs below
+-- would never be reached — the recovery path would be blocked by the half of the file that had
+-- already succeeded.
+--
 -- CONCURRENTLY, and this is the one thing in this file that is about the UPGRADE rather than about
 -- the sweep. A plain CREATE INDEX holds a SHARE lock for the whole build, which blocks INSERT on the
 -- table it is indexing. This migration runs while the previous release is still acking webhooks, and
@@ -47,7 +54,7 @@ CREATE INDEX CONCURRENTLY "chatwoot_webhook_deliveries_sweep_idx"
 -- The INBOUND message the delivery carried, for the same reason and with the same discipline: an id,
 -- never the content. Null on every event that is not a customer message, which is what lets the
 -- sweep tell a row where nothing was lost from one where a customer went unanswered.
-ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "inbound_message_id" INTEGER;
+ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN IF NOT EXISTS "inbound_message_id" INTEGER;
 -- Serves the other half of the same contract: when a turn answers a burst it retires the ledger rows
 -- of the messages that burst contained. ACCOUNT FIRST, because that is how the write is keyed —
 -- display ids and message ids are numbered per Chatwoot account, so a conversation id alone matches
@@ -72,7 +79,7 @@ CREATE INDEX CONCURRENTLY "chatwoot_webhook_deliveries_retire_idx"
 -- a lost message — while the process answering it is still running.
 --
 -- Null on a row never claimed, where receipt is the only clock there is and the right one.
-ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "claimed_at" TIMESTAMP(3);
+ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN IF NOT EXISTS "claimed_at" TIMESTAMP(3);
 
 
 -- NO BACKFILL, and that is a decision this file used to make the other way.

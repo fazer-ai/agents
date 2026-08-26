@@ -1144,6 +1144,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     //
     // A human holding the conversation is the opposite and keeps the wider scope: the test above is
     // that case, and it is the common one.
+    //
+    // The predicate is `heldByAnotherParty`, not `!act`, and the difference is not cosmetic: `act`
+    // is also false when the status is not `pending`, so reading it here would call OUR OWN bot
+    // another bot on every open or resolved conversation and scope away the sibling settlement on
+    // the most ordinary gate exit there is. The case below is that one.
     const convId = 8827;
     const messageId = 9761;
     const other = await suDb.chatwootWebhookDelivery.create({
@@ -1186,12 +1191,54 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.executionLog.deleteMany({ where: { tenantId } });
   });
 
-  test("the correction reaches the channel the loss paged, not just the Logs page", async () => {
-    // A channel's `minLevel` defaults to "error". The loss line is an error and pages; the closing
-    // line is a `warn`, because it is good news — and routed at its own level it would reach the
-    // Logs page and nobody else, leaving the operator who was paged holding an alert about a
-    // customer who was, in fact, answered. `alertAs` is the routing level, and it is the one the
-    // line it CLOSES used.
+  test("OUR bot on a non-pending conversation is not another bot", async () => {
+    // The other side of the predicate above. A conversation assigned to our own bot and left `open`
+    // takes the gate exit for a reason that has nothing to do with who holds it — the status is not
+    // `pending` — and the settlement there speaks for the message as usual. Read from `!act`, the
+    // assignee type alone would say "another bot" and leave a sibling row open to be reported as a
+    // customer nobody answered.
+    const convId = 8829;
+    const messageId = 9781;
+    const sibling = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `ourbot-open-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    await seedConversation(convId);
+
+    await deliverThrough(convId, messageId, "incoming", {
+      deliveryId: `ourbot-open-route-${process.pid}`,
+      assignee: { type: "AgentBot", id: AGENT_BOT_ID },
+    });
+
+    expect((await statusOf(sibling.id)).status).toBe("PROCESSED");
+
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { conversationId: convId },
+    });
+    await suDb.executionLog.deleteMany({ where: { tenantId } });
+  });
+
+  test("the correction does NOT page, and the reason is written down", async () => {
+    // The gap, pinned so it stays a decision. A channel's `minLevel` defaults to "error": the loss
+    // pages, and the `warn` that closes it reaches the Logs page and nobody else, so an operator who
+    // was paged learns of the answer from the log or from the DEAD worklist.
+    //
+    // Routing it as an "error" was tried and is worse, which is why this asserts the absence rather
+    // than a notification. `dispatchAlertsForEvent` coalesces a pending delivery by (channel, stage,
+    // level), so a correction landing inside the loss alert's window INCREMENTS it instead of
+    // closing it, and the operator gets a bigger loss alert still carrying the original's summary.
+    // The alerting subsystem has no concept of a resolution for any event; half of one here buys a
+    // wrong notification instead of a missing one.
     const convId = 8828;
     const conv = await seedConversation(convId);
     const channel = await suDb.alertChannel.create({
@@ -1231,17 +1278,14 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
 
     expect((await statusOf(reported.id)).status).toBe("PROCESSED");
-    const deadline = Date.now() + 2000;
-    let queued: Array<{ level: string; stage: string | null }> = [];
-    while (Date.now() < deadline) {
-      queued = await suDb.alertDelivery.findMany({
-        where: { tenantId, channelId: channel.id },
-        select: { level: true, stage: true },
-      });
-      if (queued.length > 0) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    expect(queued).toEqual([{ level: "error", stage: "delivery" }]);
+    // Polled for the LINE, which is what says the write happened at all — then the alert queue is
+    // read once. Polling for an absence only spends the timeout before answering the same thing.
+    expect(await correctionOutcome(convId)).toBe("answered_late");
+    const queued = await suDb.alertDelivery.findMany({
+      where: { tenantId, channelId: channel.id },
+      select: { level: true, stage: true },
+    });
+    expect(queued).toEqual([]);
 
     await suDb.alertDelivery.deleteMany({ where: { channelId: channel.id } });
     await suDb.alertChannel.delete({ where: { id: channel.id } });

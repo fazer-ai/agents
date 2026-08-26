@@ -30,7 +30,8 @@ function renderWithProvider(
   { baseURL = "", credBaseUrl = null as string | null } = {},
 ): void {
   const noop = () => {};
-  const props = {
+  const props: React.ComponentProps<typeof BehaviorTab> &
+    Record<string, unknown> = {
     agentId: "1",
     hours: [],
     businessHoursId: "",
@@ -106,11 +107,28 @@ function renderWithProvider(
     },
     setMemory: noop,
     memoryCredBaseUrl: null,
-    // A SUPERSET of what this tree's component reads. The Free repo, where this PR opens, already
-    // carries the observability debug mode (#58/#335) and its tab reads `savedObservability` and
-    // `langfuseSendContent`; master has not been backported yet. The props go through a cast, so the
-    // tree that does not know a key ignores it, and the test renders in both. Leaving them out
-    // renders here and throws in CI, which is exactly how this was found.
+    modelFallback: {
+      provider: "",
+      model: "",
+      credentialRef: "",
+      baseURL: "",
+    },
+    setModelFallback: noop,
+    modelFallbackCredBaseUrl: null,
+    // A SUPERSET of what this tree's component reads, because the two editions do not carry the same
+    // props: the observability debug mode (#58/#335) reached the Free repo, where this PR opens,
+    // before it reached master, and a bag written against one tree throws on render in the other.
+    // The extras are absorbed by the `Record<string, unknown>` half of the annotation.
+    //
+    // ANNOTATED, NOT CAST, and that is the whole point of the shape above. This bag used to end in
+    // `as unknown as React.ComponentProps<typeof BehaviorTab>`, which absorbs the extras by
+    // absorbing everything: a prop the component REQUIRES and this bag omits is then invisible to
+    // tsc and surfaces as `TypeError: undefined is not an object` inside `render`, in this one file,
+    // which is the only place in the suite that renders this tab. Measured: the fallback-provider
+    // block (#143) added three required props, the whole suite still type-checked, and these seven
+    // tests failed on a component they say nothing about. The intersection keeps the missing-key
+    // check that a cast throws away while still tolerating the edition that has extra keys, and it
+    // type-checks in BOTH trees (0 errors in each, and removing `modelFallback` reports TS2322).
     observability: {
       logToolValues: false,
       fullDetail: false,
@@ -145,7 +163,7 @@ function renderWithProvider(
     onSave: noop,
     onDiscard: noop,
     onOpenPlayground: noop,
-  } as unknown as React.ComponentProps<typeof BehaviorTab>;
+  };
   render(<BehaviorTab {...props} />);
 }
 

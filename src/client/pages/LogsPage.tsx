@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import {
   ChevronDown,
   ChevronLeft,
@@ -24,6 +25,7 @@ import {
 import { Tooltip } from "@/client/components/Tooltip";
 import { api } from "@/client/lib/api";
 import { flowLevelLabel, flowStageLabel } from "@/client/lib/flowLabels";
+import { type LogGroupTitle, logGroupTitle } from "@/client/lib/logGroupTitle";
 import { cn, formatDateTime } from "@/client/lib/utils";
 import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
 import { LogsExportModal } from "./LogsExportModal";
@@ -201,6 +203,24 @@ function StageRow({ row }: { row: LogItem }) {
   );
 }
 
+// The group's name, rendered. `logGroupTitle` decides WHICH of the four it is (issue #357); this
+// only turns that answer into text, so a stage that has no `case` in `flowStageLabel` degrades to
+// its slug here exactly as it does on every row.
+function groupTitleText(title: LogGroupTitle, t: TFunction): string {
+  switch (title.kind) {
+    case "conversation":
+      return t("logs.conversation", "Conversation #{{id}}", {
+        id: title.conversationId,
+      });
+    case "thread":
+      return title.threadId;
+    case "stage":
+      return flowStageLabel(title.stage, t);
+    case "turn":
+      return t("logs.turn", "Turn");
+  }
+}
+
 // One turn group: a controlled disclosure (chevron inline, no native triangle) plus per-group
 // actions when the turn is tied to a conversation — filter the log list to it (C2) or jump to the
 // conversation (C3). Error groups start expanded.
@@ -235,11 +255,7 @@ function TurnGroupCard({
           )}
           <LevelPill level={group.worstLevel} />
           <span className="truncate text-sm text-text-secondary">
-            {group.conversationId
-              ? t("logs.conversation", "Conversation #{{id}}", {
-                  id: group.conversationId,
-                })
-              : (group.threadId ?? t("logs.turn", "Turn"))}
+            {groupTitleText(logGroupTitle(group), t)}
           </span>
           <span className="text-text-muted text-xs">
             {t("logs.steps", "{{n}} steps", { n: group.rows.length })}

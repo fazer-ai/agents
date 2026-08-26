@@ -2216,7 +2216,11 @@ function AgentEditor() {
       else applyBehavior(data.agent);
       markSynced(String(data.agent.updatedAt));
       bumpSync(section);
-      refusal.clear();
+      // Only for the section this holder DRAWS. One function writes both, and a Behavior save
+      // carries neither `name` nor `systemPrompt` — clearing there takes the standing refusal off
+      // the General tab without anything having answered it, so the operator comes back to a form
+      // that looks fine and is still refused.
+      if (section === "general") refusal.clear();
       showToast(t("editor.saved", "Agent saved."), "success");
     } catch (e) {
       // The backend's localized message, at the input it names when this page renders one. The

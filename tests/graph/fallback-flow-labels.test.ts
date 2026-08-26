@@ -77,6 +77,67 @@ export function unlabelled(source: string): string[] {
   return bad;
 }
 
+// AND NONE OF THEM RAISES A SECOND ALARM FOR ONE FAILURE.
+//
+// `emitFlowEvent` dispatches an alert for every `warn` or `error` on inbox traffic, and the worker
+// coalesces on (channel, stage, level). The `generate` stage these callbacks sit inside emits its
+// OWN `generate`/`error` when the turn throws, so a fallback-failed line at that same level bumps
+// one delivery to "×2" — or, losing the race on the coalesce window, sends two — and the operator is
+// paged twice for one outage. The stage owns the alarm; the fallback line exists to say WHICH model
+// died, because the stage is labelled with the primary by construction.
+//
+// The two lines that describe a turn STILL RUNNING are a different case and stay at `warn`: nothing
+// else reports them, and `generate`/`warn` collides with no line the stage writes.
+export function levelOf(body: string): string | null {
+  return body.match(/level:\s*"(\w+)"/)?.[1] ?? null;
+}
+
+describe("one failure raises one alarm", () => {
+  const ALERTING = new Set(["warn", "error"]);
+
+  for (const file of FILES) {
+    test(`${file} does not alert twice for the fallback's own failure`, async () => {
+      const source = await Bun.file(file).text();
+      const bodies = allHandlerBodies(source, "onModelFallbackFailed").filter(
+        (b) => b.includes("emitFlowEvent"),
+      );
+      expect(bodies.length).toBeGreaterThanOrEqual(1);
+      for (const body of bodies) {
+        expect(ALERTING.has(levelOf(body) ?? "")).toBe(false);
+        // ...and it is still recorded as the failure it is.
+        expect(body).toContain('status: "error"');
+      }
+    });
+  }
+
+  // The other two lines report a turn nothing else will report, so they keep the level that reaches
+  // an operator. Asserted, not assumed: "do not alert twice" applied blindly would silence them.
+  test("the took-the-turn and unavailable lines still reach an operator", async () => {
+    const source = await Bun.file("src/graph/runtime.ts").text();
+    for (const name of ["onModelFallback", "onModelFallbackUnavailable"]) {
+      const [body] = allHandlerBodies(source, name);
+      expect(levelOf(body ?? "")).toBe("warn");
+    }
+  });
+
+  // POSITIVE CONTROL, in the shape the defect took.
+  test("a fallback-failed line at error level is caught", () => {
+    const broken = `
+      onModelFallbackFailed: ({ provider, model, reason }) =>
+        emitFlowEvent(flow, {
+          stage: "generate",
+          level: "error",
+          status: "error",
+          provider,
+          model,
+          detail: { fallbackFailed: reason },
+        }),
+    `;
+    const [body] = allHandlerBodies(broken, "onModelFallbackFailed");
+    expect(levelOf(body ?? "")).toBe("error");
+  });
+});
+
 describe("the fallback's flow lines carry their own model", () => {
   for (const file of FILES) {
     test(`${file} labels every fallback line it writes`, async () => {

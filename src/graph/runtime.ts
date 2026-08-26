@@ -576,10 +576,18 @@ export async function runLoadedTurn(
     // than `warn`: the customer got nothing. The stage line that wraps the call is labelled with the
     // primary by construction, so without this the last thing an operator reads is an error against
     // the model that never made the second call.
+    // ATTRIBUTION, NOT A SECOND ALARM, which is why this one line is `info` while the failure it
+    // describes is an error. The `generate` stage this call sits inside emits its OWN error when the
+    // turn throws, and alert coalescing keys on (channel, stage, level): two `generate`/`error` events
+    // for one failed turn bump one delivery to "×2" — or, losing the race on the coalesce window, send
+    // two — so the operator is paged twice for one outage and the Logs show two errors for one failure.
+    // The stage owns the alarm; this line exists only to say WHICH model died, because the stage is
+    // labelled with the primary by construction and would otherwise blame the model that never made
+    // the second call. `status` stays "error": the call did fail.
     onModelFallbackFailed: ({ provider, model, reason }) =>
       emitFlowEvent(flow, {
         stage: "generate",
-        level: "error",
+        level: "info",
         status: "error",
         provider,
         model,

@@ -418,6 +418,9 @@ const BARE_SLICES: Record<
   // Read only to be substring-matched against the provider's auth-failure shapes, then dropped:
   // never stored, never shown, never sent anywhere.
   "src/modules/vault/secret-test.ts": [1, "parse-only"],
+  // The page's own overshoot row, dropped: the list takes `limit + 1` to learn whether a next page
+  // exists. Same shape as flowlog/read.ts, and it cuts an array of rows, never a string.
+  "src/modules/webhooks/outbound/deliveries.ts": [1, "array"],
 };
 
 describe("every bare cut left in src/ is accounted for", () => {

@@ -101,6 +101,7 @@
     "invalidModelConfig": "A configuração do modelo precisa ser um objeto.",
     "invalidModelConfigDetail": "A configuração do modelo não é válida: {{reason}}",
     "invalidPassword": "Senha incorreta",
+    "invalidQueryParam": "Valor inválido para {{param}}",
     "invalidRequest": "A requisição não é válida.",
     "invalidRequestValue": "O valor enviado em {{field}} não é válido.",
     "invalidSecretType": "Este tipo de segredo não é válido.",
@@ -172,6 +173,7 @@
     "toolGrantUnknownTool": "Ferramenta {{source}} desconhecida: {{tool}}.",
     "toolNameTaken": "Este nome de ferramenta já está em uso.",
     "unauthorized": "Não autorizado",
+    "unknownDeliveryStatus": "Status de entrega desconhecido: {{status}}",
     "unknownFlowStage": "Etapa de fluxo desconhecida: {{stage}}",
     "unknownProvider": "Provedor de {{capability}} desconhecido: {{provider}}.",
     "unknownWebhookEvent": "Evento de webhook desconhecido: {{event}}",
@@ -191,6 +193,8 @@
     "visionCredentialMissing": "Credencial de visão não encontrada",
     "visionFailed": "Falha ao extrair imagem/documento",
     "visionNotConfigured": "A leitura de imagens/documentos não está configurada",
+    "webhookDeliveryNotDead": "Só uma entrega morta pode ser reenfileirada; esta está em {{status}}",
+    "webhookDeliveryNotFound": "Entrega de webhook não encontrada",
     "webhookSubscriptionNotFound": "Assinatura de webhook não encontrada"
   }
 }

@@ -57,9 +57,25 @@ TENANT_ADMIN. RLS fences every read/write to the active tenant; the secret value
 - `GET /webhooks/subscriptions` — list this tenant's subscriptions.
 - `POST /webhooks/subscriptions` — create (`url`, `events[]`, optional `secretRef`, `enabled`).
 - `PATCH /webhooks/subscriptions/:id` — update any of those (`secretRef: null` clears it).
-- `DELETE /webhooks/subscriptions/:id` — delete (clears its deliveries first, FK is `Restrict`).
+- `DELETE /webhooks/subscriptions/:id` — delete (clears its deliveries first, in the same scoped transaction).
 
 Validation: each `event` ∈ `OUTBOUND_EVENTS` (unknown → 400 `errors.unknownWebhookEvent`); `url` passes `assertSafeOutboundUrl` (anti-SSRF, https-only) on create/update. A foreign/missing id under RLS yields 404, never a cross-tenant write. UI: the `/webhooks` page (top-level nav, admin-gated).
+
+### Delivery ledger — `/api/v1/webhooks/deliveries*` (`deliveries.ts`)
+
+TENANT_ADMIN, RLS-scoped, keyset paginated by id desc (same shape as `/v1/logs`). Added by issue #305: before it there was no delivery-facing route at all, so watching for events that never arrived meant reading `outbound_webhook_deliveries` in Postgres — a table whose columns the worker owns and changes without a deprecation window.
+
+- `GET /webhooks/deliveries` — filters `status` (`PENDING|SENDING|DELIVERED|DEAD`, unknown → 400), `subscriptionId`, `event`, `since`/`until`, `limit` (default 50, max 200), `cursor`. `status=DEAD` is the dead-letter view.
+- `GET /webhooks/deliveries/:id` — one delivery.
+- `POST /webhooks/deliveries/:id/requeue` — put a **DEAD** delivery back in the worker's queue.
+
+**The payload never crosses this surface.** It is the tenant's own data, it does not go through the PII scrub `execution_logs` rows get at write, and the subscriber already receives it at their endpoint — the ledger answers whether the event arrived, not what was in it. Same call as the dead-delivery alert line (#325).
+
+**Requeue semantics.** `status` → `PENDING`, `attempts` → **0**, `nextAttemptAt` → null, `lastError` kept. The reset is what makes it a requeue: `finalizeFailure` gives up at `attempts + 1 >= MAX_ATTEMPTS`, so a row put back at 8 dies on its first post while the same row at 0 earns the full ladder. The count it died at survives in the `webhook` flow-log line. Only `DEAD` is accepted, and the guard is the `status: "DEAD"` in the update's own `where` rather than a branch above it: `SENDING` means a POST is in flight and a second claim would deliver it twice, `PENDING` is already queued, and replaying a `DELIVERED` event is a different promise. Any other status is refused with 409 naming it. The requeue writes one `info` `webhook` flow-log line (`action: "requeued"`, `attemptsBefore`, `subscriptionEnabled`) — `info` never pages, since `dispatchAlertsForEvent` only routes `warn`/`error`.
+
+`subscriptionEnabled` rides on every delivery DTO because the claim joins `enabled = true`: a delivery on a disabled subscription sits at `PENDING` untouched, and without that field a correct requeue is indistinguishable from one that did nothing.
+
+MCP: `webhook_delivery_list`, `webhook_delivery_get` (`mcp:read`), `webhook_delivery_requeue` (`mcp:write`, dry-run by default and audited on apply).
 
 ### Delivery worker — `src/modules/webhooks/outbound/worker.ts`
 
@@ -74,4 +90,4 @@ Headers: `x-fazerai-delivery` (the delivery id — a **stable dedupe key**, so a
 
 > **Compatibility window.** These headers were named `x-secretaria-*` before the brand rename. Both sets go out on every delivery, carrying identical values, so a receiver configured against either name keeps working. The legacy trio is dropped at `2.0` — point your receivers at `x-fazerai-*` before then.
 
-**Single-replica invariant.** The worker holds a reentrancy guard (`running`) and an interval on `globalThis` (so `bun --hot` does not stack phantom timers); `stopOutboundWorker` runs on `SIGTERM`/`SIGINT`. `FOR UPDATE SKIP LOCKED` already future-proofs the claim, but scaling the app beyond one replica needs a leader election or durable claim before the worker is enabled on every instance. `WebhookSubscription.onDelete` is `Restrict` (never `Cascade`, which would drop in-flight deliveries).
+**Single-replica invariant.** The worker holds a reentrancy guard (`running`) and an interval on `globalThis` (so `bun --hot` does not stack phantom timers); `stopOutboundWorker` runs on `SIGTERM`/`SIGINT`. `FOR UPDATE SKIP LOCKED` already future-proofs the claim, but scaling the app beyond one replica needs a leader election or durable claim before the worker is enabled on every instance. The delivery FK is `ON DELETE CASCADE` at the database (`20260727000000_init`), so what keeps a subscription delete from silently dropping rows the worker is mid-delivery is the service, not the constraint: `deleteWebhookSubscription` clears the deliveries explicitly inside the same RLS-scoped transaction, and that delete is operator-initiated.

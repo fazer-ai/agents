@@ -101,6 +101,7 @@
     "invalidModelConfig": "The model configuration must be an object.",
     "invalidModelConfigDetail": "The model configuration is not valid: {{reason}}",
     "invalidPassword": "Incorrect password",
+    "invalidQueryParam": "Invalid value for {{param}}",
     "invalidRequest": "The request is not valid.",
     "invalidRequestValue": "The value sent in {{field}} is not valid.",
     "invalidSecretType": "That secret type is not valid.",
@@ -172,6 +173,7 @@
     "toolGrantUnknownTool": "Unknown {{source}} tool: {{tool}}.",
     "toolNameTaken": "That tool name is already in use.",
     "unauthorized": "Unauthorized",
+    "unknownDeliveryStatus": "Unknown delivery status: {{status}}",
     "unknownFlowStage": "Unknown flow stage: {{stage}}",
     "unknownProvider": "Unknown {{capability}} provider: {{provider}}.",
     "unknownWebhookEvent": "Unknown webhook event: {{event}}",
@@ -191,6 +193,8 @@
     "visionCredentialMissing": "Vision credential not found",
     "visionFailed": "Image/document extraction failed",
     "visionNotConfigured": "Image/document reading is not configured",
+    "webhookDeliveryNotDead": "Only a dead delivery can be requeued; this one is {{status}}",
+    "webhookDeliveryNotFound": "Webhook delivery not found",
     "webhookSubscriptionNotFound": "Webhook subscription not found"
   }
 }

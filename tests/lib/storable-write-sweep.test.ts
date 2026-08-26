@@ -357,6 +357,10 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/vision/service.ts": [2, "flow-event"],
   // Was 4 until issue #325 collapsed the two DEAD writes into `finalizeDead`; the line that went
   // is the duplicate, not a guard.
+  // Three reads of `lastError`, and none of them a write: the DTO field, the projection that feeds
+  // it, and the type. The ledger surfaces the column an operator uses to decide whether to requeue
+  // (issue #305); the value was sanitized where the worker stored it.
+  "src/modules/webhooks/outbound/deliveries.ts": [3, "read"],
   "src/modules/webhooks/outbound/worker.ts": [3, "guarded + cleared"],
 };
 

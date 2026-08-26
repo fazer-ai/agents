@@ -39,6 +39,7 @@ import {
 import { listAlertChannels } from "@/modules/flowlog/channels";
 import { exportExecutionLogs } from "@/modules/flowlog/export";
 import { listExecutionLogs } from "@/modules/flowlog/read";
+import { parseIsoInstant } from "@/modules/flowlog/settings";
 import { FLOW_LEVELS, FLOW_STAGES } from "@/modules/flowlog/stages";
 import {
   listCatalog,
@@ -61,6 +62,10 @@ import {
   vaultNameByRef,
   vaultReferences,
 } from "@/modules/vault/service";
+import {
+  getWebhookDelivery,
+  listWebhookDeliveries,
+} from "@/modules/webhooks/outbound/deliveries";
 import { OUTBOUND_EVENTS } from "@/modules/webhooks/outbound/events";
 import { listWebhookSubscriptions } from "@/modules/webhooks/outbound/subscriptions";
 import type { VerifiedToken } from "./oauth/tokens";
@@ -490,6 +495,80 @@ export async function webhookEventsList(
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
   return ok({ events: [...OUTBOUND_EVENTS] });
+}
+
+// ── outbound webhook deliveries ──
+// The ledger the worker writes as it delivers. Read-only here; the requeue is a write tool
+// (`webhook_delivery_requeue`). The payload never crosses this surface — see `deliveries.ts`.
+
+export interface WebhookDeliveryListArgs {
+  status?: string;
+  subscription_id?: string;
+  event?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export async function webhookDeliveryList(
+  principal: VerifiedToken,
+  args: WebhookDeliveryListArgs = {},
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  // `!== undefined` on every filter, so an argument the caller SENT as empty is refused by the
+  // service instead of being dropped here and widening the page. The truthiness spelling is what
+  // makes `status: ""` mean "every status".
+  const opts: Parameters<typeof listWebhookDeliveries>[1] = {};
+  if (args.status !== undefined) opts.status = args.status;
+  if (args.event !== undefined) opts.event = args.event;
+  // The same parse the REST filter uses, for the same reason: `new Date` normalises February 30
+  // into March 2 and resolves a non-ISO string against the server's timezone, and a filter that
+  // silently means something else is worse than one that is refused.
+  for (const key of ["since", "until"] as const) {
+    const raw = args[key];
+    if (raw === undefined) continue;
+    const d = parseIsoInstant(raw);
+    if (d === null) return err(`invalid ${key}`);
+    opts[key] = d;
+  }
+  if (args.limit !== undefined) opts.limit = args.limit;
+  if (args.subscription_id !== undefined) {
+    const v = parseMcpId(args.subscription_id, "subscription_id");
+    if (typeof v !== "bigint") return v;
+    opts.subscriptionId = v;
+  }
+  if (args.cursor !== undefined) {
+    const v = parseMcpId(args.cursor, "cursor");
+    if (typeof v !== "bigint") return v;
+    opts.cursor = v;
+  }
+  try {
+    const res = await listWebhookDeliveries(ctx, opts, base);
+    return ok({ items: res.items, nextCursor: res.nextCursor });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+export async function webhookDeliveryGet(
+  principal: VerifiedToken,
+  args: { delivery_id: string },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.delivery_id, "delivery_id");
+  if (typeof id !== "bigint") return id;
+  try {
+    return ok({ delivery: await getWebhookDelivery(ctx, id, base) });
+  } catch (e) {
+    return failOf(e);
+  }
 }
 
 // ── alert channels ──

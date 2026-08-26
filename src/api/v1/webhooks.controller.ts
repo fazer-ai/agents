@@ -1,9 +1,22 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
-import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
+import { parseDbId, requireDbId } from "@/lib/db-id";
+import {
+  AppError,
+  ForbiddenError,
+  TenantTargetRequiredError,
+} from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
+import { parseIsoInstant } from "@/modules/flowlog/settings";
+import {
+  getWebhookDelivery,
+  type ListDeliveriesOpts,
+  listWebhookDeliveries,
+  OUTBOUND_DELIVERY_STATUSES,
+  requeueWebhookDelivery,
+} from "@/modules/webhooks/outbound/deliveries";
 import { OUTBOUND_EVENTS } from "@/modules/webhooks/outbound/events";
 import {
   createWebhookSubscription,
@@ -25,11 +38,89 @@ import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
 // them — its input glob does not reach src/modules.
 // translate('errors.unknownWebhookEvent', 'Unknown webhook event: {{event}}')
 // translate('errors.webhookSubscriptionNotFound', 'Webhook subscription not found')
+// translate('errors.webhookDeliveryNotFound', 'Webhook delivery not found')
+// translate('errors.webhookDeliveryNotDead', 'Only a dead delivery can be requeued; this one is {{status}}')
+// translate('errors.unknownDeliveryStatus', 'Unknown delivery status: {{status}}')
+// translate('errors.invalidQueryParam', 'Invalid value for {{param}}')
+
+// A filter value the server cannot parse is a REFUSAL, never a dropped filter. These started as
+// copies of the logs controller's lenient parsers, which answer an unparseable value with
+// `undefined` — and on a LEDGER that is the wrong answer twice over: a malformed `subscriptionId`
+// returns the tenant's whole ledger instead of one subscription's, and a malformed `cursor`
+// restarts pagination, which is a paging loop that never ends. Measured against the real client,
+// the numeric leg is worse than a wrong page: `take: NaN` and an invalid `Date` both reach Prisma
+// and throw (a 500 for a caller error), and `take: 3.5` quietly returns zero rows.
+function badParam(param: string): never {
+  throw new AppError(
+    `invalid value for ${param}`,
+    400,
+    "errors.invalidQueryParam",
+    { param },
+    param,
+  );
+}
+
+// PRESENT means the caller asked for this filter. Only ABSENT means they did not, which is why
+// none of these open with `if (!s)`: `?subscriptionId=` and `?status=` are values a form submits
+// when its input is empty, and treating them as "no filter" answers a narrowed request with the
+// tenant's whole ledger. `""` is refused, exactly like `abc`.
+// `parseIsoInstant`, never `new Date(s)`. `Date.parse` NORMALISES rather than refuses, so
+// `2026-02-30T00:00:00Z` comes back as March 2 and the ledger is quietly queried with a bound the
+// caller never asked for; and it accepts `08/26/2026 10:00`, resolving it against the SERVER's
+// timezone, so the same filter means different instants on two installations. The helper checks
+// the shape, the calendar and the offset on the STRING. The cost is that a date alone is refused:
+// this filter takes an instant, `2026-01-01T00:00:00Z`, and the parameter's description says so.
+function parseDate(s: string | undefined, param: string): Date | undefined {
+  if (s === undefined) return undefined;
+  const d = parseIsoInstant(s);
+  if (d === null) badParam(param);
+  return d;
+}
+
+// `parseDbId`, never `BigInt(s)`: BigInt is arbitrary precision, so an id past 2^63-1 parses here
+// and is refused by POSTGRES when the query binds it — a 500 for a value this route documents as a
+// 400. See lib/db-id.ts, whose own header names `BigInt(params.id)` as the spelling to avoid.
+function parseId(s: string | undefined, param: string): bigint | undefined {
+  if (s === undefined) return undefined;
+  const id = parseDbId(s);
+  if (id === null) badParam(param);
+  return id;
+}
+
+// Syntax only; the range belongs to the service, so MCP is held to the same rule.
+function parseCount(s: string | undefined, param: string): number | undefined {
+  if (s === undefined) return undefined;
+  const n = Number(s);
+  if (s.trim() === "" || !Number.isInteger(n)) badParam(param);
+  return n;
+}
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
   if (ctx.tenantId === null) throw new TenantTargetRequiredError();
   return ctx;
+}
+
+// Exported for the drift guard: the refusal matrix is what this route promises, and a test that
+// can only reach it through auth + tenancy would be testing three things to assert one.
+export function parseDeliveryQuery(query: {
+  status?: string;
+  subscriptionId?: string;
+  event?: string;
+  since?: string;
+  until?: string;
+  limit?: string;
+  cursor?: string;
+}): ListDeliveriesOpts {
+  return {
+    status: query.status,
+    subscriptionId: parseId(query.subscriptionId, "subscriptionId"),
+    event: query.event,
+    since: parseDate(query.since, "since"),
+    until: parseDate(query.until, "until"),
+    limit: parseCount(query.limit, "limit"),
+    cursor: parseId(query.cursor, "cursor"),
+  };
 }
 
 export const webhooksController = new Elysia({
@@ -214,5 +305,120 @@ export const webhooksController = new Elysia({
         }),
       }),
       response: errors(400, 401, 403, 404),
+    },
+  )
+  // ── deliveries ──
+  // The delivery ledger, read-only plus one requeue. Before issue #305 there was no delivery-facing
+  // route at all, so an integrator watching for events that never arrived had to read
+  // `outbound_webhook_deliveries` in Postgres — a table whose columns the worker owns and changes.
+  // Keyset pagination by id desc, same shape as /v1/logs. The payload is never returned.
+  .get(
+    "/deliveries",
+    async ({ tenantContext, query }) => ({
+      instance: instanceIdentity,
+      ...(await listWebhookDeliveries(
+        ctxOrThrow(tenantContext),
+        parseDeliveryQuery(query),
+      )),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      query: t.Object({
+        status: t.Optional(
+          t.String({
+            description: `Filter by delivery status: ${OUTBOUND_DELIVERY_STATUSES.join(", ")}. An unknown value is rejected with 400.`,
+          }),
+        ),
+        subscriptionId: t.Optional(
+          t.String({
+            description:
+              "Filter by webhook subscription id (BigInt serialized as a string).",
+          }),
+        ),
+        event: t.Optional(
+          t.String({ description: "Filter by event name (from GET /events)." }),
+        ),
+        since: t.Optional(
+          t.String({
+            description:
+              "Lower bound on enqueue time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+          }),
+        ),
+        until: t.Optional(
+          t.String({
+            description:
+              "Upper bound on enqueue time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+          }),
+        ),
+        limit: t.Optional(
+          t.String({
+            description:
+              "Max rows to return (positive integer string, default 50, capped at 200).",
+          }),
+        ),
+        cursor: t.Optional(
+          t.String({
+            description:
+              "Keyset cursor (id of the last row from the previous page).",
+          }),
+        ),
+      }),
+      detail: doc(
+        "List webhook deliveries",
+        "Lists this tenant's outbound webhook deliveries newest first, with keyset pagination. Returns delivery state (status, attempts, last error, the event and subscription it belongs to) and never the payload.",
+      ),
+      response: errors(400, 401, 403, 404),
+    },
+  )
+  .get(
+    "/deliveries/:id",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      delivery: await getWebhookDelivery(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id, "deliveryId"),
+      ),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Webhook delivery id (BigInt serialized as a string).",
+        }),
+      }),
+      detail: doc(
+        "Get webhook delivery",
+        "Returns one outbound webhook delivery by id; the payload is never included.",
+      ),
+      response: errors(400, 401, 403, 404),
+    },
+  )
+  // Puts a DEAD delivery back in the worker's queue: status PENDING, `attempts` reset to 0 so the
+  // retry ladder starts over, next attempt due immediately. Only DEAD can be requeued — a delivery
+  // the worker is currently posting (SENDING) would be at risk of a double delivery, and anything
+  // else is either already queued or already delivered. The refusal names the current status (409).
+  .post(
+    "/deliveries/:id/requeue",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      delivery: (
+        await requeueWebhookDelivery(
+          ctxOrThrow(tenantContext),
+          requireDbId(params.id, "deliveryId"),
+        )
+      ).delivery,
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Webhook delivery id (BigInt serialized as a string).",
+        }),
+      }),
+      detail: doc(
+        "Requeue webhook delivery",
+        "Returns a dead delivery to the worker queue with its attempt count reset. Only a delivery in DEAD is accepted; any other status is refused with 409 naming it.",
+      ),
+      response: errors(400, 401, 403, 404, 409),
     },
   );

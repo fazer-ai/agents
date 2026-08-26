@@ -224,6 +224,17 @@ describe("MCP tool descriptions", () => {
   // rather than trimmed: nothing here grew, the total simply now includes a block that was not in it
   // when the number was taken, and cutting a document description to fit an unrelated arrival is
   // cutting what is easiest rather than what is cheapest.
+  //
+  // The description figure moved again for issue #305, which added three tools (delivery list, get
+  // and requeue) at 748 characters against 467 of headroom. Raised deliberately, and only after the
+  // two that could be trimmed without costing the model anything were: `_get` stopped restating the
+  // field list that `_list` publishes one line above it. The delivery ledger is a surface an
+  // operator agent needs to be able to find, so the alternative here was not a smaller number, it
+  // was a tool nobody can call. The schema figure moved with it, by 345: most of that is
+  // `webhook_delivery_list`, whose seven filters and four-value status enum are the whole point of
+  // a dead-letter view, and the enum is derived from the module's vocabulary rather than hand-typed
+  // (see the note at its registration) so shrinking it here would mean advertising fewer statuses
+  // than the surface accepts.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -232,8 +243,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(26_500);
-    expect(schema).toBeLessThanOrEqual(40_850);
+    expect(desc).toBeLessThanOrEqual(27_250);
+    expect(schema).toBeLessThanOrEqual(41_650);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

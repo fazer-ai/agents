@@ -19,6 +19,7 @@ import {
   runPlaygroundFileTurn,
   runPlaygroundTurn,
 } from "@/modules/playground/service";
+import { OUTBOUND_DELIVERY_STATUSES } from "@/modules/webhooks/outbound/deliveries";
 import { hasScope, type VerifiedToken } from "./oauth/tokens";
 import {
   agentGet,
@@ -57,6 +58,8 @@ import {
   toolList,
   vaultList,
   vaultReferencesGet,
+  webhookDeliveryGet,
+  webhookDeliveryList,
   webhookEventsList,
   webhookList,
 } from "./read";
@@ -150,6 +153,7 @@ import {
   integrationUpdate,
   webhookCreate,
   webhookDelete,
+  webhookDeliveryRequeue,
   webhookTest,
   webhookUpdate,
 } from "./write-webhooks";
@@ -821,6 +825,59 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await webhookEventsList(eff)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "webhook_delivery_list",
+      {
+        description:
+          "List outbound webhook DELIVERIES (id, subscriptionId, subscriptionEnabled, event, status, attempts, nextAttemptAt, deliveredAt, lastError), newest first. status=DEAD is the dead-letter view: what the worker gave up on. The payload is never returned. Keyset paginated via cursor; limit max 200. Requeue a dead one with webhook_delivery_requeue.",
+        inputSchema: {
+          // NOTE: derived from the module's vocabulary, never hand-listed — the enum on the model
+          // also carries FAILED, which only the inbound side writes, and a hand copy is how a
+          // filter ends up advertising a value that can never match.
+          status: z.enum(OUTBOUND_DELIVERY_STATUSES).optional(),
+          subscription_id: z.string().optional(),
+          event: z.string().optional(),
+          since: z
+            .string()
+            .optional()
+            .describe("ISO date, lower bound on enqueue time."),
+          until: z
+            .string()
+            .optional()
+            .describe("ISO date, upper bound on enqueue time."),
+          limit: z.number().int().optional(),
+          cursor: z.string().optional(),
+        },
+      },
+      async (
+        args: {
+          status?: string;
+          subscription_id?: string;
+          event?: string;
+          since?: string;
+          until?: string;
+          limit?: number;
+          cursor?: string;
+        },
+        eff,
+      ) => writeContent(await webhookDeliveryList(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "webhook_delivery_get",
+      {
+        description:
+          "Get one outbound webhook delivery by id. Same fields as webhook_delivery_list; the payload is never returned.",
+        inputSchema: { delivery_id: z.string() },
+      },
+      async (args: { delivery_id: string }, eff) =>
+        writeContent(await webhookDeliveryGet(eff, args)),
     );
 
     registerTenantTool(
@@ -1904,6 +1961,22 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { webhook_id: string; dry_run?: boolean }, eff) =>
         writeContent(await webhookDelete(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "webhook_delivery_requeue",
+      {
+        description:
+          "Put a DEAD outbound webhook delivery back in the worker queue: status returns to PENDING and attempts resets to 0, so the full retry ladder runs again. Only DEAD is accepted — any other status is refused, naming it. Previews the row and changes NOTHING unless dry_run is false.",
+        inputSchema: {
+          delivery_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: { delivery_id: string; dry_run?: boolean }, eff) =>
+        writeContent(await webhookDeliveryRequeue(eff, args)),
     );
 
     registerTenantTool(

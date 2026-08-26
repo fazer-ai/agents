@@ -350,10 +350,10 @@ const BARE_SLICES: Record<
   "src/client/contexts/ThemeContext.tsx": [1, "index"],
   "src/client/lib/breadcrumbs.ts": [1, "array"],
   "src/client/pages/LogsPage.tsx": [1, "array"],
-  "src/client/pages/agents/AgentEditorPage.tsx": [1, "array"],
   "src/client/pages/agents/CapabilityMap.tsx": [1, "array"],
   "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
   "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
+  "src/client/pages/agents/followUpFormState.ts": [1, "array"],
   "src/client/pages/resources/ToolEditModal.tsx": [1, "index"],
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],

@@ -136,6 +136,15 @@ async function sweepHandler(
         -- Invalid/absent start = not-future (fail-safe: only the queued arm suppresses then).
         AND NOT (
           coalesce(a.settings->'followUp'->>'pauseWhileAppointment', 'true') <> 'false'
+          -- ...and STEP 0 did not opt out of it (issue #103). The sweep only ever enqueues step 0,
+          -- so step 0 is the only step whose flag it can read — the later ones are the handler's,
+          -- which knows its own stepIndex. Read beside pauseWhileAppointment for the same
+          -- reason it lives there: this predicate is the SQL mirror of the handler's gate, and the
+          -- two drifting apart is what issues #39 and #60 already cost once each.
+          AND coalesce(
+            a.settings->'followUp'->'steps'->0->>'ignoreAppointmentPause',
+            'false'
+          ) <> 'true'
           AND EXISTS (
             SELECT 1
             FROM scheduler_jobs sj
@@ -304,12 +313,30 @@ export async function followUpHandler(
   });
   if (!ctx) return { outcome: "done" };
 
+  // Which step of the sequence this job is. The sweep enqueues step 0 (no stepIndex); each fired step
+  // reschedules the SAME row with the next index. Out-of-range (config shrank) → end the sequence.
+  const steps = ctx.followUpCfg.steps;
+  const stepIndex =
+    typeof job.payload.stepIndex === "number" &&
+    Number.isInteger(job.payload.stepIndex)
+      ? job.payload.stepIndex
+      : 0;
+  const step = steps[stepIndex];
+  if (!step) return { outcome: "done" };
+  const isLast = stepIndex === steps.length - 1;
+
   // Appointment suppression: hold the follow-up while this conversation has a LIVE appointment —
   // queued reminder OR already-fired one with the start still ahead (issue #39). Re-check later
   // instead of nudging OR ending the sequence, so it resumes once the appointment passes / is
   // cancelled. Defense in depth — the inbound that booked the appointment already cancels any prior
   // FOLLOWUP, and the sweep won't enqueue a new one meanwhile.
-  if (ctx.followUpCfg.pauseWhileAppointment) {
+  //
+  // BELOW the step resolution, and that order is the feature: the question is not "does this agent
+  // pause?" but "does THIS STEP pause?" (issue #103), and the step is not known any earlier. Moving
+  // it down costs nothing the gate used to catch — the only thing between the two is the
+  // out-of-range check, which ends the sequence outright, and a sequence that is over has nothing
+  // left to suppress.
+  if (ctx.followUpCfg.pauseWhileAppointment && !step.ignoreAppointmentPause) {
     const blockedByAppointment = await hasLiveAppointment(
       tenantId,
       threadId,
@@ -322,18 +349,6 @@ export async function followUpHandler(
       };
     }
   }
-
-  // Which step of the sequence this job is. The sweep enqueues step 0 (no stepIndex); each fired step
-  // reschedules the SAME row with the next index. Out-of-range (config shrank) → end the sequence.
-  const steps = ctx.followUpCfg.steps;
-  const stepIndex =
-    typeof job.payload.stepIndex === "number" &&
-    Number.isInteger(job.payload.stepIndex)
-      ? job.payload.stepIndex
-      : 0;
-  const step = steps[stepIndex];
-  if (!step) return { outcome: "done" };
-  const isLast = stepIndex === steps.length - 1;
 
   const { lastFollowUpAt, lastInboundAt, lastEventAt } = ctx.conv;
 

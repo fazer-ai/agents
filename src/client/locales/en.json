@@ -896,6 +896,8 @@
     "followUpHoursDefault": "Follow agent's main schedule",
     "followUpHoursInherited": "Inherited:",
     "followUpHoursUnit": "Hours",
+    "followUpIgnorePause": "Send this step even during an appointment",
+    "followUpIgnorePauseHint": "Exempts THIS step from the pause below. Use it for a step that only means anything while the appointment stands, such as a payment deadline; the other steps keep waiting.",
     "followUpInstructions": "Follow-up instructions",
     "followUpInstructionsPlaceholder": "E.g.: Greet the customer warmly, remind them of the open question, and offer to help.",
     "followUpLabelMultiAccount": "This agent serves more than one Chatwoot account, so labels can't be listed. Type each label exactly as it appears.",

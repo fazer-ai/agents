@@ -70,7 +70,6 @@ import {
   type ChannelRedirectConfig,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
-import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import {
   GUARDRAILS_DEFAULTS,
   type GuardrailsConfig,
@@ -90,6 +89,7 @@ import {
 } from "./ChannelRedirectTab";
 import { ChannelsTab } from "./ChannelsTab";
 import { ExportAgentModal } from "./ExportAgentModal";
+import { followUpToForm, followUpToStored } from "./followUpFormState";
 import { GeneralTab } from "./GeneralTab";
 import { GuardrailsTab } from "./GuardrailsTab";
 import { readGuardrailsFormState } from "./guardrailsFormState";
@@ -242,17 +242,6 @@ function str(v: unknown): string {
 function num(v: unknown): string {
   return typeof v === "number" ? String(v) : "";
 }
-// Read the follow-up step's labels: the new `assignLabels` array, falling back to the legacy single
-// `assignLabel` string so an agent saved before multi-label keeps its label in the editor.
-function stepLabels(st: Record<string, unknown>): string[] {
-  if (Array.isArray(st.assignLabels)) {
-    return st.assignLabels.filter((l): l is string => typeof l === "string");
-  }
-  return typeof st.assignLabel === "string" && st.assignLabel
-    ? [st.assignLabel]
-    : [];
-}
-
 // Split the editor's "agent:<id>" | "team:<id>" | "" target back into the stored handoff shape. Only
 // "pinned" carries a concrete target; the other modes null both out. Mirrors readBehaviorState's
 // inverse (which packs targetAgentId/targetTeamId into `target`).
@@ -291,23 +280,6 @@ function readModelState(a: Agent) {
   };
 }
 
-// Map the raw followUp bag into the editor's step list from the multi-step `steps` array. No
-// back-compat: a bag without a steps array yields one default step (the old flat config is not read).
-// Always returns at least one step.
-function readFollowUpSteps(fu: Record<string, unknown>) {
-  const rawSteps =
-    Array.isArray(fu.steps) && fu.steps.length > 0
-      ? (fu.steps as Record<string, unknown>[])
-      : [{}];
-  return rawSteps.slice(0, FOLLOW_UP_MAX_STEPS).map((st) => ({
-    delayValue: num(st.delayValue) || "30",
-    delayUnit: str(st.delayUnit) || "minutes",
-    instructions: str(st.instructions),
-    assignLabels: stepLabels(st),
-    resolve: st.resolve === true,
-  }));
-}
-
 function readBehaviorState(a: Agent) {
   const s = (a.settings ?? {}) as Record<string, unknown>;
   const d = (s.debounce ?? {}) as Record<string, unknown>;
@@ -315,7 +287,6 @@ function readBehaviorState(a: Agent) {
   const tt = (s.tts ?? {}) as Record<string, unknown>;
   const sp = (s.split ?? {}) as Record<string, unknown>;
   const sw = (s.serviceWindow ?? {}) as Record<string, unknown>;
-  const fu = (s.followUp ?? {}) as Record<string, unknown>;
   const vi = (s.vision ?? {}) as Record<string, unknown>;
   const ho = (s.handoff ?? {}) as Record<string, unknown>;
   const ka = (s.kanban ?? {}) as Record<string, unknown>;
@@ -388,11 +359,7 @@ function readBehaviorState(a: Agent) {
         : "",
       templateContent: str(sw.templateContent),
     },
-    followUp: {
-      enabled: typeof fu.enabled === "boolean" ? fu.enabled : false,
-      steps: readFollowUpSteps(fu),
-      pauseWhileAppointment: fu.pauseWhileAppointment !== false,
-    },
+    followUp: followUpToForm(s),
     handoff: {
       mode: str(ho.mode) || "route",
       target: num(ho.targetAgentId)
@@ -681,6 +648,7 @@ function AgentEditor() {
         instructions: "",
         assignLabels: [] as string[],
         resolve: false,
+        ignoreAppointmentPause: false,
       },
     ],
     pauseWhileAppointment: true,
@@ -1216,26 +1184,7 @@ function AgentEditor() {
           .filter(Boolean),
         templateContent: serviceWindow.templateContent.trim() || null,
       },
-      followUp: {
-        enabled: followUp.enabled,
-        pauseWhileAppointment: followUp.pauseWhileAppointment,
-        // `resolve` is sent only for the LAST step (the server also enforces this); `assignLabels` is
-        // omitted when empty so the persisted shape stays minimal and round-trips cleanly.
-        steps: followUp.steps.map((s, i) => {
-          const labels = s.assignLabels
-            .map((l) => l.trim())
-            .filter((l) => l.length > 0);
-          return {
-            delayValue: Math.max(1, Number(s.delayValue) || 1),
-            delayUnit: s.delayUnit,
-            instructions: s.instructions.trim(),
-            ...(labels.length > 0 ? { assignLabels: labels } : {}),
-            ...(i === followUp.steps.length - 1 && s.resolve
-              ? { resolve: true }
-              : {}),
-          };
-        }),
-      },
+      followUp: followUpToStored(followUp),
       vision: {
         enabled: vision.enabled,
         provider: vision.provider,

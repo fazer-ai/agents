@@ -899,6 +899,8 @@
     "followUpHoursDefault": "Seguir o horário principal do agente",
     "followUpHoursInherited": "Herdado:",
     "followUpHoursUnit": "Horas",
+    "followUpIgnorePause": "Enviar esta etapa mesmo durante um agendamento",
+    "followUpIgnorePauseHint": "Isenta ESTA etapa da pausa abaixo. Use em uma etapa que só faz sentido enquanto o agendamento está de pé, como um prazo de pagamento; as demais etapas continuam esperando.",
     "followUpInstructions": "Instruções de follow-up",
     "followUpInstructionsPlaceholder": "Ex.: Cumprimente o cliente, relembre a pergunta em aberto e ofereça ajuda.",
     "followUpLabelMultiAccount": "Este agente atende mais de uma conta do Chatwoot, então as etiquetas não podem ser listadas. Digite cada etiqueta exatamente como aparece.",

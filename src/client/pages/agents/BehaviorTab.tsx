@@ -228,15 +228,16 @@ interface ServiceWindowState {
   templateContent: string;
 }
 
-interface FollowUpStepState {
+export interface FollowUpStepState {
   delayValue: string;
   delayUnit: string;
   instructions: string;
   assignLabels: string[]; // labels added to the conversation when this step fires
   resolve: boolean; // honored only on the last step
+  ignoreAppointmentPause: boolean; // fire this step even while an appointment stands
 }
 
-interface FollowUpState {
+export interface FollowUpState {
   enabled: boolean;
   steps: FollowUpStepState[];
   pauseWhileAppointment: boolean;
@@ -822,6 +823,7 @@ function FollowUpStepsEditor({
           instructions: "",
           assignLabels: [],
           resolve: false,
+          ignoreAppointmentPause: false,
         },
       ],
     }));
@@ -924,6 +926,28 @@ function FollowUpStepsEditor({
                 ariaLabel={t("editor.followUpAssignLabel", "Assign label")}
               />
             </FormField>
+            {/* Only while the agent-wide pause is ON: with it off nothing pauses, so this switch
+                would decide nothing. Hidden is not off — the value is kept and saved either way. */}
+            {followUp.pauseWhileAppointment && (
+              <div className="flex flex-col gap-1.5">
+                <SwitchField
+                  checked={step.ignoreAppointmentPause}
+                  onCheckedChange={(v) =>
+                    updateStep(index, { ignoreAppointmentPause: v })
+                  }
+                  label={t(
+                    "editor.followUpIgnorePause",
+                    "Send this step even during an appointment",
+                  )}
+                />
+                <p className="text-text-muted text-xs">
+                  {t(
+                    "editor.followUpIgnorePauseHint",
+                    "Exempts THIS step from the pause below. Use it for a step that only means anything while the appointment stands, such as a payment deadline; the other steps keep waiting.",
+                  )}
+                </p>
+              </div>
+            )}
             {isLast && (
               <SwitchField
                 checked={step.resolve}

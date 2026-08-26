@@ -112,6 +112,7 @@ type StepFixture = {
   instructions: string;
   assignLabel?: string;
   resolve?: boolean;
+  ignoreAppointmentPause?: boolean;
 };
 
 // A two-step sequence: step 0 (1 min) then a last step (1 day) that assigns a label and resolves.
@@ -687,6 +688,81 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.sent.length).toBeGreaterThan(0);
   });
 
+  // ISSUE #103. `pauseWhileAppointment` is one boolean for the whole agent, and it conflates two
+  // opposite things: a re-engagement nudge wants to be suppressed while a booking stands, and a
+  // payment-deadline step wants exactly the reverse — it only means anything WHILE the booking is
+  // unconfirmed, and it is the step that later frees the slot. An operator who needs both in one
+  // sequence has no way to say so today.
+  //
+  // A live reminder in every one of these, so the only thing under test is which step is next.
+  async function withReminder(convId: number, tag: string) {
+    await suDb.schedulerJob.create({
+      data: {
+        tenantId,
+        kind: "APPOINTMENT_REMINDER",
+        dedupeKey: `reminder:${tag}:1`,
+        status: "PENDING",
+        runAt: new Date(Date.now() + 60 * 60_000),
+        payload: { threadId: threadOf(convId), eventId: tag },
+      },
+    });
+  }
+
+  test("(#103) a step that opts out of the pause fires despite a live appointment", async () => {
+    await setAgentSteps([
+      {
+        delayValue: 1,
+        delayUnit: "minutes",
+        instructions: "cobrança de prazo",
+        ignoreAppointmentPause: true,
+      },
+    ]);
+    await seedConversation(1103, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await withReminder(1103, "ev_103a");
+    const s = stubClient();
+    const result = await followUpHandler(jobFor(1103), appDb, {
+      makeModel: fakeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(result).toEqual({ outcome: "done" });
+    expect(s.sent.length).toBeGreaterThan(0);
+  });
+
+  // The counter-assertion that makes the one above mean something: the opt-out is PER STEP, not a
+  // second way to spell `pauseWhileAppointment: false`. Step 0 opts out and step 1 does not, so the
+  // same agent, same conversation and same reminder must answer differently depending on which step
+  // the job is for.
+  test("(#103) the step WITHOUT the opt-out still pauses, on the same agent", async () => {
+    await setAgentSteps([
+      {
+        delayValue: 1,
+        delayUnit: "minutes",
+        instructions: "cobrança de prazo",
+        ignoreAppointmentPause: true,
+      },
+      { delayValue: 1, delayUnit: "days", instructions: "re-engajamento" },
+    ]);
+    await seedConversation(1104, {
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: new Date(Date.now() - 2 * 60_000),
+    });
+    await withReminder(1104, "ev_103b");
+    const s = stubClient();
+    const result = await followUpHandler(jobFor(1104, 1), appDb, {
+      makeModel: fakeModel,
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    expect(result.outcome).toBe("reschedule");
+    expect(s.sent).toEqual([]);
+  });
+
   // NOTE: Chatwoot ≥ 4.16.2 auto-assigns the connected Agent Bot at conversation creation, so
   // `assignee_type = 'AgentBot'` is the NORMAL bot-owned state — the sweep must treat it exactly
   // like unassigned (shouldBotHandle's `!== 'User'`), or follow-up never fires in ordinary
@@ -785,6 +861,83 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       persistUsage: async () => {},
     });
     expect(ours.sent).toEqual([[1031, REPLY]]);
+  });
+
+  // The SWEEP is the other half of the same question, and it answers it in SQL rather than in
+  // TypeScript (issue #103). Without it the opt-out is unreachable: a conversation with a live
+  // appointment never gets enqueued, so the handler gate that now honours the flag never runs.
+  // The sweep only ever enqueues STEP 0, so step 0 is the step whose flag it has to read.
+  test("(#103) the sweep enqueues when step 0 opts out of the pause", async () => {
+    await setAgentSteps([
+      {
+        delayValue: 1,
+        delayUnit: "minutes",
+        instructions: "cobrança",
+        ignoreAppointmentPause: true,
+      },
+    ]);
+    await seedConversation(1105, {
+      assigneeType: "AgentBot",
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await withReminder(1105, "ev_103c");
+    registerFollowUpHandlers();
+    await getJobHandler("FOLLOWUP_SWEEP")?.(
+      {
+        id: 998n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1105)}`,
+        },
+      }),
+    ).not.toBeNull();
+  });
+
+  // The counter-assertion, and it is the one that proves the SQL reads the flag rather than
+  // dropping the whole appointment fence: same sweep, same reminder, step 0 without the opt-out.
+  test("(#103) the sweep still skips when step 0 does NOT opt out", async () => {
+    await setAgentSteps([
+      { delayValue: 1, delayUnit: "minutes", instructions: "re-engajamento" },
+    ]);
+    await seedConversation(1106, {
+      assigneeType: "AgentBot",
+      lastInboundAt: new Date(Date.now() - 5 * 60_000),
+      lastFollowUpAt: null,
+    });
+    await withReminder(1106, "ev_103d");
+    registerFollowUpHandlers();
+    await getJobHandler("FOLLOWUP_SWEEP")?.(
+      {
+        id: 997n,
+        tenantId,
+        kind: "FOLLOWUP_SWEEP",
+        payload: {},
+        attempts: 0,
+        claimSeq: 0,
+      },
+      appDb,
+    );
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1106)}`,
+        },
+      }),
+    ).toBeNull();
   });
 
   // NOTE: Firing a reminder marks its row DONE. Suppression anchored on PENDING rows alone goes

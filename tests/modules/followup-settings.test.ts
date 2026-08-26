@@ -89,6 +89,35 @@ describe("readFollowUpConfig", () => {
     expect(cfg.steps[1]?.resolve).toBe(true);
   });
 
+  // The strip above takes `resolve` OFF a step, and everything else has to survive it. It used to
+  // rebuild the step field by field, which meant it listed what to keep — so a step field added
+  // later was dropped here, silently, and only in this one case: a mid-sequence step that happens
+  // to carry `resolve`. `ignoreAppointmentPause` (#103) is the first field that would have hit it.
+  test("stripping resolve keeps every OTHER field of that step", () => {
+    const cfg = readFollowUpConfig({
+      followUp: {
+        steps: [
+          {
+            delayValue: 1,
+            delayUnit: "hours",
+            instructions: "pay to keep the slot",
+            assignLabels: ["awaiting-payment"],
+            resolve: true,
+            ignoreAppointmentPause: true,
+          },
+          { delayValue: 2, delayUnit: "hours" },
+        ],
+      },
+    });
+    expect(cfg.steps[0]).toEqual({
+      delayValue: 1,
+      delayUnit: "hours",
+      instructions: "pay to keep the slot",
+      assignLabels: ["awaiting-payment"],
+      ignoreAppointmentPause: true,
+    });
+  });
+
   test("clamps delayValue to minimum 1 and unit falls back", () => {
     const cfg = readFollowUpConfig({
       followUp: { steps: [{ delayValue: 0, delayUnit: "weeks" }] },

@@ -17,6 +17,7 @@ import { buildMcpServer } from "@/modules/mcp/server";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
+import { followUpStepFields } from "../utils/followup-step-fields";
 
 // Issue #174. The blocks of `agent_settings_set` were `z.record(z.string(), z.unknown())`, so the
 // shape lived in the description and drifted there unwatched: `vision.provider` was published as
@@ -162,8 +163,11 @@ describe("agent_settings_set argument schema", () => {
     );
     const step = BEHAVIOR_PATCH_SHAPE.followUp.unwrap().shape.steps.unwrap()
       .element.shape;
-    expect(Object.keys(step)).toContain("delayValue");
-    expect(Object.keys(step)).toContain("assignLabels");
+    // Compared whole, not by membership: every field of a step is OPTIONAL, so the sweep above,
+    // which reads a DEFAULT bag, never sees one of them. The list comes off the interface itself,
+    // for the same reason the sweep reads the readers — a field added there and not declared here
+    // is a field no caller is ever told about.
+    expect(Object.keys(step).sort()).toEqual(followUpStepFields());
   });
 
   // What the stale prose got wrong, asserted against the registry rather than against a copy of it —

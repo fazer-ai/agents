@@ -221,6 +221,12 @@ const followUpStep = z.looseObject({
     .optional()
     .describe("merged into the conversation's labels, never replacing"),
   resolve: z.boolean().optional().describe("honored on the LAST step only"),
+  ignoreAppointmentPause: z
+    .boolean()
+    .optional()
+    .describe(
+      "let THIS step fire while a booking stands, with followUp.pauseWhileAppointment left on for the others; decides nothing when that flag is off",
+    ),
 });
 
 const followUp = z.looseObject({

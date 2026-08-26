@@ -21,6 +21,18 @@ export interface FollowUpStep {
   // Deterministic, system-applied actions when this step fires (even if the agent stays silent):
   assignLabels?: string[]; // Chatwoot labels to add (merged, never replacing the set)
   resolve?: boolean; // resolve the conversation — honored ONLY on the last step
+  // Let THIS step fire even while the conversation has a live appointment, with
+  // `pauseWhileAppointment` left on for every other step (issue #103).
+  //
+  // The agent-wide flag conflates two opposite things. A re-engagement nudge wants to be suppressed
+  // while a booking stands; a payment-deadline step wants exactly the reverse — it only means
+  // anything WHILE the booking is unconfirmed, and it is the step that later frees the slot. Without
+  // this, an operator who needs both in one sequence has to turn the pause off for the whole agent,
+  // which drops it where it was right.
+  //
+  // Deliberately NOT a notion of "paid" or "confirmed": the platform does not know what those mean
+  // for any given operator, and the step that does is the one they wrote.
+  ignoreAppointmentPause?: boolean;
 }
 
 export interface FollowUpConfig {
@@ -126,6 +138,7 @@ function readStep(raw: unknown): FollowUpStep | null {
   }
   if (labels.length > 0) step.assignLabels = labels;
   if (bag.resolve === true) step.resolve = true;
+  if (bag.ignoreAppointmentPause === true) step.ignoreAppointmentPause = true;
   return step;
 }
 
@@ -152,13 +165,11 @@ export function readFollowUpConfig(settings: unknown): FollowUpConfig {
   const lastIdx = steps.length - 1;
   steps = steps.map((s, i) => {
     if (i === lastIdx || !s.resolve) return s;
-    const stripped: FollowUpStep = {
-      delayValue: s.delayValue,
-      delayUnit: s.delayUnit,
-      instructions: s.instructions,
-    };
-    if (s.assignLabels) stripped.assignLabels = s.assignLabels;
-    return stripped;
+    // Removed with a rest spread, never rebuilt field by field. A rebuild lists what to keep, so every field
+    // added to a step after it was written is dropped here — silently, and only for a mid-sequence
+    // step that happens to carry `resolve`. `ignoreAppointmentPause` would have been the first.
+    const { resolve: _dropped, ...kept } = s;
+    return kept;
   });
 
   return {

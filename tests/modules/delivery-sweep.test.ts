@@ -1228,6 +1228,28 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.executionLog.deleteMany({ where: { tenantId } });
   });
 
+  test("a gate advances the watermark before it settles the row", async () => {
+    // The order of two writes that are not a transaction, asserted at the SOURCE because no end
+    // state can show which way round they ran.
+    //
+    // Settle first and a death between them leaves the row terminal while the watermark still sits
+    // below the message: the sweep can no longer see it, and a flush after the conversation comes
+    // back to the bot re-coalesces from that watermark and ANSWERS a message a gate deliberately
+    // suppressed — a reply the product decided not to send, reported by nothing. Watermark first
+    // leaves the row in the worklist for a message something handled, which is a false line the next
+    // turn over that message corrects.
+    const src = await Bun.file("src/modules/chatwoot/webhook.ts").text();
+    const tail = src.slice(
+      src.indexOf(
+        "A new inbound message the bot deliberately leaves unanswered",
+      ),
+    );
+    const mark = tail.indexOf("advanceHandledWatermark");
+    const settle = tail.indexOf("await settleDelivery(");
+    expect(mark).toBeGreaterThan(-1);
+    expect(settle).toBeGreaterThan(mark);
+  });
+
   test("retires the PROCESSING rows before it looks for DEAD ones", async () => {
     // The order of the two writes, asserted at the SOURCE, because the interleaving it protects
     // against is a write by another process landing between them and no end state can show which

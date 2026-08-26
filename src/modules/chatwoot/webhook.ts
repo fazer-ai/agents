@@ -3563,11 +3563,17 @@ export async function processChatwootDelivery(
     // human holding the conversation is the opposite: they answer the message, whichever route
     // carried it, and so is a command or a test-mode gate consuming it. Both keep the wider scope,
     // which is also what rescues a strand an earlier attempt left behind.
-    await settleDelivery(
-      n.message.id,
-      "consumed",
-      heldByAnotherBot ? "this-delivery" : "conversation",
-    );
+    // THE WATERMARK FIRST, and the order is chosen by which way the pair fails.
+    //
+    // They are two writes and not a transaction, so a process dying between them leaves one of two
+    // states. Settle first and the row is terminal while the watermark still sits below this
+    // message: the sweep can no longer see it, and a flush after the conversation comes back to the
+    // bot re-coalesces from that watermark and ANSWERS the message a gate deliberately suppressed —
+    // a reply the product decided not to send, with nothing anywhere reporting it. Watermark first
+    // and the row is left in the worklist for a message something did handle: a line in the loss
+    // list that is wrong and VISIBLE, and correctable by the next turn that runs over it.
+    //
+    // Wrong and visible over quiet and wrong is the rule this whole change is built on.
     try {
       await advanceHandledWatermark({
         tenantId: params.tenantId,
@@ -3582,6 +3588,11 @@ export async function processChatwootDelivery(
         errMsg(err),
       );
     }
+    await settleDelivery(
+      n.message.id,
+      "consumed",
+      heldByAnotherBot ? "this-delivery" : "conversation",
+    );
   }
 
   // Continuous ingestion (production + enabled only): fold the messages no turn handled into the

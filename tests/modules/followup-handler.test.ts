@@ -1263,6 +1263,88 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     ).not.toBeNull();
   });
 
+  // Review round 5. `unfencedAgentIds` answered for an agent whose follow-up is OFF, because
+  // `appointmentPauseApplies` is only asked about the pause and a retained step-0 exemption is
+  // still an exemption. Nothing downstream caught it: the sweep's SQL tests `follow_up_armed_at`,
+  // which is stamped on the OFF→ON transition and never cleared on the way back, so a disabled
+  // agent keeps passing that gate.
+  //
+  // The cost is the one the LIMIT 500 imposes. The handler discards these jobs on its first look,
+  // but the sweep re-enqueues them every minute, and each one occupies a slot that belongs to an
+  // agent that would actually send. Asking about a config whose follow-up is off is a question with
+  // no answer, so the filter is at the call site — NOT inside `appointmentPauseApplies`, which
+  // decides one thing and must keep deciding only that.
+  //
+  // The second agent is what makes this reachable: the sweep returns early when NO enabled agent
+  // has follow-up on, so a tenant with only the disabled one never runs the query at all.
+  test("(#103) an agent with follow-up OFF is not exempted from the fence by a retained opt-out", async () => {
+    const other = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Outra",
+        systemPrompt: "x",
+        followUpArmedAt: new Date(Date.now() - 30 * 86_400_000),
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: {
+          followUp: {
+            enabled: true,
+            steps: [{ delayValue: 1, delayUnit: "minutes", instructions: "" }],
+          },
+        },
+      },
+    });
+    try {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            followUp: {
+              enabled: false,
+              pauseWhileAppointment: true,
+              steps: [
+                {
+                  delayValue: 1,
+                  delayUnit: "minutes",
+                  instructions: "cobranca",
+                  ignoreAppointmentPause: true,
+                },
+              ],
+            },
+          },
+        },
+      });
+      await seedConversation(1115, {
+        assigneeType: "AgentBot",
+        lastInboundAt: new Date(Date.now() - 5 * 60_000),
+        lastFollowUpAt: null,
+      });
+      await withReminder(1115, "ev_103m");
+      registerFollowUpHandlers();
+      await getJobHandler("FOLLOWUP_SWEEP")?.(
+        {
+          id: 992n,
+          tenantId,
+          kind: "FOLLOWUP_SWEEP",
+          payload: {},
+          attempts: 0,
+          claimSeq: 0,
+        },
+        appDb,
+      );
+      expect(
+        await suDb.schedulerJob.findFirst({
+          where: {
+            tenantId,
+            kind: "FOLLOWUP",
+            dedupeKey: `followup:${threadOf(1115)}`,
+          },
+        }),
+      ).toBeNull();
+    } finally {
+      await suDb.agent.delete({ where: { id: other.id } });
+    }
+  });
+
   // Review round 3. The SIBLING half of the same predicate, found by asking where else the sweep
   // states something the reader also states. `->>` renders a JSON string and a JSON boolean to the
   // same characters, and the reader does not: `bag.pauseWhileAppointment !== false` keeps the pause

@@ -104,8 +104,18 @@ async function sweepHandler(
   // NOTE: read one tick before the query, so a settings change lands on the NEXT pass at worst
   // (60s). Nothing is sent on this read: the handler re-checks against fresh settings before the
   // nudge, which is where correctness lives.
+  //
+  // NOTE: `cfg.enabled` first, and it is not redundant. An agent whose follow-up is OFF can still
+  // carry a step-0 exemption from when it was on, and `appointmentPauseApplies` would answer about
+  // it — correctly, since it decides the pause and nothing else. Exempting it would lift the fence
+  // for an agent that sends nothing: the sweep's SQL never tests `followUp.enabled` (it tests
+  // `follow_up_armed_at`, which is stamped on the OFF→ON transition and never cleared going back),
+  // so those conversations would be enqueued every minute for the handler to discard on its first
+  // look, each one holding a slot of the LIMIT 500 away from an agent that would actually send.
   const unfencedAgentIds = configs
-    .filter(({ cfg }) => !appointmentPauseApplies(cfg, cfg.steps[0]))
+    .filter(
+      ({ cfg }) => cfg.enabled && !appointmentPauseApplies(cfg, cfg.steps[0]),
+    )
     .map(({ id }) => id);
   // NOTE: -1 stands in for the empty set. Prisma.join refuses an empty list, and an agent id is a
   // positive bigint, so the sentinel can never match a row — `<> ALL` then holds for everyone,

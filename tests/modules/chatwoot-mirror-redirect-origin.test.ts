@@ -47,7 +47,9 @@ const INBOX = 91;
 interface ConvOver {
   lastActivityAt: number;
   updatedAt?: number;
-  origin?: number;
+  // Omitted ⇒ the key is absent from the payload (a Chatwoot that does not speak about pairings);
+  // `null` ⇒ the key is present and states "no pairing", which is how the fork announces a clear.
+  origin?: number | null;
 }
 
 function convPayload(convId: number, over: ConvOver) {
@@ -317,9 +319,69 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await storedOrigin(43)).toBe(91);
   });
 
-  // A payload that names no origin leaves the stored one alone: most events on a widget conversation
-  // are ordinary traffic, and the fork omits the key outside a redirect episode.
-  test("a payload with no origin leaves the pairing standing", async () => {
+  // The fork CLEARS the pairing when a re-entry's token names no origin (fazer-ai/chatwoot#418), and
+  // states that clear as an explicit null rather than by omitting the key. Mirroring it is the whole
+  // point: the consumer holding the previous pairing is the one that has to stop acting on it.
+  test("an explicit null clears the stored pairing", async () => {
+    const T = 1_786_570_000;
+    await mirror(
+      clonedMessage(48, {
+        messageId: 8700,
+        lastActivityAt: T,
+        updatedAt: T + 0.1,
+        origin: 77,
+      }),
+    );
+    expect(await storedOrigin(48)).toBe(77);
+
+    await mirror({
+      event: "conversation_updated",
+      ...convPayload(48, {
+        lastActivityAt: T,
+        updatedAt: T + 5.4,
+        origin: null,
+      }),
+    });
+    expect(await storedOrigin(48)).toBeNull();
+  });
+
+  // ...and the clear is ordered like any other statement about the pairing: a retried delivery of the
+  // payload that set it cannot bring it back.
+  test("a stale payload cannot undo a clear", async () => {
+    const T = 1_786_580_000;
+    await mirror(
+      clonedMessage(49, {
+        messageId: 8800,
+        lastActivityAt: T,
+        updatedAt: T + 0.11,
+        origin: 77,
+      }),
+    );
+    await mirror({
+      event: "conversation_updated",
+      ...convPayload(49, {
+        lastActivityAt: T,
+        updatedAt: T + 0.62,
+        origin: null,
+      }),
+    });
+    expect(await storedOrigin(49)).toBeNull();
+
+    await mirror(
+      clonedMessage(49, {
+        messageId: 8800,
+        lastActivityAt: T,
+        updatedAt: T + 0.11,
+        origin: 77,
+      }),
+    );
+    expect(await storedOrigin(49)).toBeNull();
+  });
+
+  // A payload that OMITS the key leaves the stored one alone. Absent is not null: it is what a
+  // Chatwoot without fazer-ai/chatwoot#418 sends on every event, and reading it as a clear would wipe
+  // the pairing of every episode on the first ordinary message.
+  test("a payload with no origin key leaves the pairing standing", async () => {
     const T = 1_786_540_000;
     await mirror(
       clonedMessage(44, {

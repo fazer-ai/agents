@@ -170,7 +170,15 @@ export interface NormalizedChatwootEvent {
   kanbanAttributes?: Record<string, unknown>;
   // The WhatsApp entry conversation this widget thread was redirected FROM, as its display_id
   // (conversation.redirect_origin_display_id, which the fork's token resolve writes at the one moment
-  // the pairing is a fact). `undefined` ⇒ absent from this payload: the entry half, a conversation
-  // outside a redirect episode, or a Chatwoot too old to send it (issue #222).
-  redirectOriginDisplayId?: number;
+  // the pairing is a fact).
+  //
+  // THREE states, and the difference between the last two is load-bearing:
+  //   number    — this is the pairing.
+  //   null      — the payload STATES there is none. The fork clears the pairing when a re-entry's
+  //               token names no origin, and that clear has to reach the row: the consumer holding
+  //               the previous pairing is the one that must stop acting on it.
+  //   undefined — the payload said nothing, which is every event from a Chatwoot without
+  //               fazer-ai/chatwoot#418. Reading it as a clear would wipe every episode's pairing on
+  //               the first ordinary message (issue #222).
+  redirectOriginDisplayId?: number | null;
 }

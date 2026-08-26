@@ -101,7 +101,7 @@ export async function mirrorChatwootEvent(
     status: n.status ?? null,
     assigneeStated: n.assigneeType !== undefined,
     assigneeType: n.assigneeType ?? null,
-    redirectOriginStated: n.redirectOriginDisplayId != null,
+    redirectOriginStated: n.redirectOriginDisplayId !== undefined,
   };
   // The inbound watermark (`lastInboundAt`) advances only on a brand-new incoming customer message
   // (message_created), never on a message_updated — our own STT/vision write-back re-dispatches one
@@ -234,8 +234,8 @@ export async function mirrorChatwootEvent(
           ...(dropsResolutionOrigin && existing.resolvedBy != null
             ? { resolvedBy: null, resolvedByAt: null }
             : {}),
-          ...(decision.redirectOrigin && n.redirectOriginDisplayId != null
-            ? { redirectOriginDisplayId: n.redirectOriginDisplayId }
+          ...(decision.redirectOrigin
+            ? { redirectOriginDisplayId: n.redirectOriginDisplayId ?? null }
             : {}),
           ...(decision.redirectOriginAt != null
             ? { chatwootRedirectOriginAt: decision.redirectOriginAt }
@@ -297,8 +297,8 @@ export async function mirrorChatwootEvent(
                   kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue,
                 }
               : {}),
-            ...(n.redirectOriginDisplayId != null
-              ? { redirectOriginDisplayId: n.redirectOriginDisplayId }
+            ...(decision.redirectOrigin
+              ? { redirectOriginDisplayId: n.redirectOriginDisplayId ?? null }
               : {}),
           },
           select: { id: true },
@@ -381,8 +381,8 @@ export async function mirrorChatwootEvent(
           // fork records the pairing, so ordering this field by recency would both miss the race and
           // discard the conversation_updated that announces the change. The consumer messages AND
           // resolves the conversation this names, so a regression acts on the wrong thread.
-          ...(decision.redirectOrigin && n.redirectOriginDisplayId != null
-            ? { redirectOriginDisplayId: n.redirectOriginDisplayId }
+          ...(decision.redirectOrigin
+            ? { redirectOriginDisplayId: n.redirectOriginDisplayId ?? null }
             : {}),
           ...(decision.redirectOriginAt != null
             ? { chatwootRedirectOriginAt: decision.redirectOriginAt }

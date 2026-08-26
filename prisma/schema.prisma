@@ -603,6 +603,10 @@ model Conversation {
   // Chatwoot's primary key). Written by the fork's token resolve at the one moment the pairing is a fact
   // and mirrored from the webhook payload; NULL on the entry half, on every conversation outside a
   // redirect episode, and on episodes that began before the fork carried it (issue #222).
+  //
+  // It also goes BACK to NULL: the fork clears the pairing when a re-entry's token names no origin,
+  // and states that as an explicit null on the payload rather than by omitting the key — which is
+  // why the mirror distinguishes a stated null from an absent key (`normalize.ts`).
   redirectOriginDisplayId  Int?      @map("redirect_origin_display_id")
   createdAt                DateTime  @default(now()) @map("created_at")
   updatedAt                DateTime  @updatedAt @map("updated_at")

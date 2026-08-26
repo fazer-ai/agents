@@ -222,9 +222,14 @@ export function normalizeChatwootEvent(
   // The redirect episode's other half, when the fork wrote one. Absent rather than null on everything
   // that is not the widget side of an episode, so a payload that says nothing never clears a pairing
   // an earlier one established (issue #222).
-  const redirectOrigin = conv ? num(conv.redirect_origin_display_id) : null;
-  if (redirectOrigin !== null && redirectOrigin > 0) {
-    normalized.redirectOriginDisplayId = redirectOrigin;
+  // PRESENCE of the key is the statement, not the value: the fork always ships it (nil included) and
+  // a Chatwoot without it never does, so `in` is what separates "there is no pairing" from "this
+  // instance does not speak about pairings". A present-but-unusable value (0, a string, a negative)
+  // reads as none rather than as silence — the sender did speak, it just said nothing usable.
+  if (conv && "redirect_origin_display_id" in conv) {
+    const redirectOrigin = num(conv.redirect_origin_display_id);
+    normalized.redirectOriginDisplayId =
+      redirectOrigin !== null && redirectOrigin > 0 ? redirectOrigin : null;
   }
   normalized.inboxName = inboxObj ? str(inboxObj.name) : null;
   // `channel` (channel_type) is exposed by EventDataPresenter on conversation events.

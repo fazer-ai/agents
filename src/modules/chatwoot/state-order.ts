@@ -82,7 +82,12 @@ export interface StatePayload {
   assigneeStated: boolean;
   /** The assignee type stated, null meaning unassigned. Only meaningful when `assigneeStated`. */
   assigneeType: string | null;
-  /** True when the payload names a redirect origin. The fork omits the key outside an episode. */
+  /**
+   * True when the payload SPEAKS about the redirect pairing, which includes stating that there is
+   * none: the fork ships the key on every conversation, nil included, and clears the pairing when a
+   * re-entry's token names no origin. False only when the key is absent altogether, which is every
+   * payload from a Chatwoot without that change.
+   */
   redirectOriginStated: boolean;
 }
 

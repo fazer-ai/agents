@@ -116,3 +116,53 @@ describe("parseToolPreconditionRows", () => {
     ).toEqual([{ tool: "ok", scope: "contact", key: "k", equals: "" }]);
   });
 });
+
+// Round 1 of PR #378: the editor used to COERCE what it could not render, and the next save turned
+// an entry the runtime ignores into a live rule.
+describe("round 1: the editor renders exactly, or not at all", () => {
+  test.each([
+    ["an unknown scope", { kind: "attribute", scope: "moon", key: "k" }],
+    ["a missing key", { kind: "attribute", scope: "contact" }],
+    ["a blank key", { kind: "attribute", scope: "contact", key: "  " }],
+    [
+      "a non-string equals",
+      { kind: "attribute", scope: "contact", key: "k", equals: 42 },
+    ],
+    ["a kind this editor does not know", { kind: "linkOnHost", host: "x.com" }],
+  ])("does not render %s as a row", (_l, stored) => {
+    expect(parseToolPreconditionRows({ t: stored })).toEqual([]);
+  });
+
+  test("an entry it cannot render survives a save of unrelated rows", () => {
+    // Otherwise the first operator to save anything on the Tools tab deletes a rule written over
+    // REST, from a console that never showed it to them.
+    const stored = { legacy: { kind: "linkOnHost", host: "x.com" } };
+    const out = serializeToolPreconditions(
+      [{ tool: "t", scope: "contact", key: "k", equals: "" }],
+      stored,
+    );
+    expect(out.legacy).toEqual({ kind: "linkOnHost", host: "x.com" });
+    expect(out.t).toEqual({ kind: "attribute", scope: "contact", key: "k" });
+  });
+
+  test("a row the operator REMOVED is actually removed", () => {
+    // The passthrough above must not resurrect a rule that was rendered and then deleted.
+    const stored = {
+      gone: { kind: "attribute", scope: "contact", key: "k" },
+      kept: { kind: "attribute", scope: "contact", key: "j" },
+    };
+    const out = serializeToolPreconditions(
+      [{ tool: "kept", scope: "contact", key: "j", equals: "" }],
+      stored,
+    );
+    expect(Object.keys(out)).toEqual(["kept"]);
+  });
+
+  test("a malformed entry is NOT rewritten into a working rule by a save", () => {
+    const stored = { t: { kind: "attribute", scope: "moon", key: "k" } };
+    const out = serializeToolPreconditions([], stored);
+    expect(out.t).toEqual({ kind: "attribute", scope: "moon", key: "k" });
+    // And the runtime still ignores it, which is the state the operator asked for by never fixing it.
+    expect(readToolPreconditions({ toolPreconditions: out })).toEqual({});
+  });
+});

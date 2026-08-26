@@ -62,6 +62,12 @@ export function parseToolPrecondition(raw: unknown): ToolPrecondition | null {
     const key = str(c.key);
     const scope = str(c.scope);
     if (!key || !scope || !SCOPES.has(scope)) return null;
+    // `equals` presente com valor não-string é RECUSA, nunca "sem equals": dropar o campo
+    // transformaria "o atributo tem que valer X" em "o atributo tem que existir", que é uma regra
+    // mais fraca do que a que o operador escreveu — e mais fraca em silêncio.
+    if (c.equals !== undefined && c.equals !== null) {
+      if (typeof c.equals !== "string" || c.equals.trim() === "") return null;
+    }
     const equals = str(c.equals);
     return {
       kind: "attribute",
@@ -82,6 +88,14 @@ export function parseToolPrecondition(raw: unknown): ToolPrecondition | null {
 // none, because the operator would read the tool as guarded while the runtime treats it as open. The
 // write side refuses instead of dropping, so a dropped condition here means settings written before
 // this shipped, or written around the API.
+// NULL-PROTOTYPE, and both directions of that bit. A tool name is operator text: `__proto__` as a
+// key on a plain object mutates the prototype instead of storing a rule, so the guard the operator
+// wrote simply disappears; and a tool named `constructor` or `toString` finds an INHERITED value on
+// lookup, so an unguarded tool is blocked by something nobody configured.
+function emptyMap(): Record<string, ToolPrecondition> {
+  return Object.create(null) as Record<string, ToolPrecondition>;
+}
+
 export function readToolPreconditions(
   settings: unknown,
 ): Record<string, ToolPrecondition> {
@@ -89,8 +103,8 @@ export function readToolPreconditions(
     settings && typeof settings === "object" && !Array.isArray(settings)
       ? (settings as Record<string, unknown>).toolPreconditions
       : undefined;
-  if (!bag || typeof bag !== "object" || Array.isArray(bag)) return {};
-  const out: Record<string, ToolPrecondition> = {};
+  if (!bag || typeof bag !== "object" || Array.isArray(bag)) return emptyMap();
+  const out = emptyMap();
   for (const [name, raw] of Object.entries(bag as Record<string, unknown>)) {
     const cond = parseToolPrecondition(raw);
     if (cond) out[name] = cond;

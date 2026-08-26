@@ -1,8 +1,7 @@
 import { ToolMessage } from "@langchain/core/messages";
-import {
-  type StructuredToolInterface,
-  type ToolRunnableConfig,
-  tool,
+import type {
+  StructuredToolInterface,
+  ToolRunnableConfig,
 } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -36,39 +35,42 @@ export function guardedTool(
   onRefused?: (info: { tool: string; cond: ToolPrecondition }) => void,
 ): StructuredToolInterface {
   const refusal = unmetPreconditionMessage(inner.name, cond);
-  return tool(
-    async (input: unknown, config: ToolRunnableConfig) => {
-      let met: boolean;
-      try {
-        met = evaluatePrecondition(cond, await loadState());
-      } catch {
-        // FAIL CLOSED, the same way the contact-authorization gate does. A precondition exists
-        // because running the tool wrongly costs something the operator cannot undo (a conversation
-        // handed to a human, a document issued); a state read that failed cannot tell us the cost is
-        // safe to pay. The model is told the same sentence either way, so a database blip does not
-        // become a customer-visible difference in what the agent says.
-        met = false;
-      }
-      if (met) return inner.invoke(input as never, config);
-      onRefused?.({ tool: inner.name, cond });
-      const id = config?.toolCall?.id;
-      // Without a tool_call in scope (direct invocation, e.g. a unit test) there is no id to answer,
-      // so the plain string is the honest degradation — same shape failableTool settled on.
-      if (!id) return refusal;
-      return new ToolMessage({
-        content: refusal,
-        tool_call_id: id,
-        name: inner.name,
-      });
-    },
-    {
+  // DELEGATION, not a second tool(). Wrapping the inner tool in another `tool()` and calling
+  // `inner.invoke` from inside it starts a CHILD tool run under the outer one's callbacks:
+  // ToolFlowLogger and Langfuse then record two runs for one model-issued call, and an integration
+  // failure inside the inner tool emits its warn — and its alert — twice. Here the prototype carries
+  // name, description and schema unchanged, only `invoke` is shadowed, and a permitted call reaches
+  // exactly the run it would have had without any of this.
+  const guarded = Object.create(inner) as StructuredToolInterface;
+  guarded.invoke = (async (input: unknown, config?: ToolRunnableConfig) => {
+    let met: boolean;
+    try {
+      met = evaluatePrecondition(cond, await loadState());
+    } catch {
+      // FAIL CLOSED, the same way the contact-authorization gate does. A precondition exists because
+      // running the tool wrongly costs something the operator cannot undo (a conversation handed to
+      // a human, a document issued); a state read that failed cannot tell us the cost is safe to
+      // pay. The model is told the same sentence either way, so a database blip does not become a
+      // customer-visible difference in what the agent says.
+      met = false;
+    }
+    if (met) return inner.invoke(input as never, config);
+    onRefused?.({ tool: inner.name, cond });
+    // ToolNode hands the whole tool call in as the input, so the id is on it; a direct invocation
+    // with plain args (a unit test) has none, and the plain string is the honest degradation there —
+    // the same shape failableTool settled on.
+    const id =
+      (input as { type?: string; id?: string } | null)?.type === "tool_call"
+        ? (input as { id?: string }).id
+        : config?.toolCall?.id;
+    if (!id) return refusal;
+    return new ToolMessage({
+      content: refusal,
+      tool_call_id: id,
       name: inner.name,
-      description: inner.description,
-      // The DECLARED schema, unchanged. A guarded tool has to look identical to the model: the point
-      // is that the call is refused, not that the tool becomes harder to call correctly.
-      schema: inner.schema,
-    },
-  ) as unknown as StructuredToolInterface;
+    });
+  }) as StructuredToolInterface["invoke"];
+  return guarded;
 }
 
 // Applies the whole map in one pass. Names with no condition come through untouched and identical,
@@ -82,7 +84,12 @@ export function applyToolPreconditions(
 ): StructuredToolInterface[] {
   if (Object.keys(preconditions).length === 0) return tools;
   return tools.map((t) => {
-    const cond = preconditions[t.name];
+    // Own-property only: the map is null-prototype at its source, but this lookup is what a plain
+    // object would break — a tool named `toString` would find an inherited function here, and every
+    // call to it would be refused by a rule the operator never wrote.
+    const cond = Object.hasOwn(preconditions, t.name)
+      ? preconditions[t.name]
+      : undefined;
     return cond ? guardedTool(t, cond, loadState, onRefused) : t;
   });
 }

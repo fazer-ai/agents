@@ -265,3 +265,90 @@ describe("assertSettingsToolPreconditions", () => {
     ).toThrow();
   });
 });
+
+// Findings from review round 1 of PR #378. Each one is a way the rule was weaker than it read.
+describe("round 1: a condition that would be silently weaker is refused", () => {
+  test.each([
+    ["a number", 42],
+    ["a boolean", true],
+    ["an object", { v: "x" }],
+    ["an empty string", ""],
+    ["whitespace", "   "],
+  ])(
+    "refuses the whole condition when `equals` is %s, instead of dropping it",
+    (_label, equals) => {
+      // Dropping `equals` would turn "the attribute must be X" into "the attribute must exist",
+      // which is a weaker rule than the operator wrote — and weaker in silence.
+      const settings = {
+        toolPreconditions: {
+          t: { kind: "attribute", scope: "contact", key: "k", equals },
+        },
+      };
+      expect(readToolPreconditions(settings)).toEqual({});
+      expect(invalidToolPreconditions(settings)).toEqual(["t"]);
+    },
+  );
+
+  test("an absent `equals` still means ANY value", () => {
+    expect(
+      readToolPreconditions({
+        toolPreconditions: {
+          t: { kind: "attribute", scope: "contact", key: "k" },
+        },
+      }).t,
+    ).toEqual({ kind: "attribute", scope: "contact", key: "k" });
+  });
+});
+
+describe("round 1: tool names are operator text, so the map has no prototype", () => {
+  test("a rule named `__proto__` is stored as an entry, not as a prototype", () => {
+    // Built through JSON.parse on purpose: an object LITERAL with `__proto__` sets the prototype of
+    // the literal itself, so it cannot express the input this guards against. Production reads this
+    // bag as parsed JSON out of Postgres, which is exactly the shape below.
+    const read = readToolPreconditions(
+      JSON.parse(
+        '{"toolPreconditions":{"__proto__":{"kind":"attribute","scope":"contact","key":"k"}}}',
+      ),
+    );
+    expect(Object.hasOwn(read, "__proto__")).toBe(true);
+    expect(Object.getPrototypeOf(read)).toBe(null);
+  });
+
+  test("a tool named `toString` inherits nothing when it has no rule", () => {
+    const read = readToolPreconditions({
+      toolPreconditions: {
+        other: { kind: "attribute", scope: "contact", key: "k" },
+      },
+    });
+    // On a plain object this is a function, and a truthy one — every call to a tool with that name
+    // would be refused by a rule nobody wrote.
+    expect(read.toString).toBeUndefined();
+    expect(read.constructor).toBeUndefined();
+  });
+});
+
+describe("round 1: a stored-invalid entry is exempt only while it does not CHANGE", () => {
+  test("refuses rewriting one invalid entry into a DIFFERENT invalid entry", () => {
+    const stored = { toolPreconditions: { t: { kind: "nope" } } };
+    expect(() =>
+      assertSettingsToolPreconditions(
+        {
+          toolPreconditions: {
+            t: { kind: "attribute", scope: "moon", key: "k" },
+          },
+        },
+        stored,
+      ),
+    ).toThrow();
+  });
+
+  test("still accepts the byte-identical stored entry riding along untouched", () => {
+    const stored = { toolPreconditions: { t: { kind: "nope" } } };
+    expect(() =>
+      assertSettingsToolPreconditions(
+        { toolPreconditions: { t: { kind: "nope" } } },
+        stored,
+      ),
+    ).not.toThrow();
+  });
+});

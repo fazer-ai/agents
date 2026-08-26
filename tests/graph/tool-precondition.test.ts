@@ -175,3 +175,60 @@ describe("applyToolPreconditions", () => {
     expect(out[0]).toBe(a);
   });
 });
+
+// Round 1 of PR #378: the wrapper used to be a second `tool()`, which started a CHILD run under the
+// outer one. Two runs for one model-issued call is two flow-log lines and, on an integration
+// failure, two alerts.
+describe("round 1: one model-issued call is ONE tool run", () => {
+  function runCounter() {
+    const started: string[] = [];
+    return {
+      started,
+      handlers: [
+        {
+          // The 7th argument is the run NAME; the first is a serialized descriptor whose `name` is
+          // not the tool's. Measured, rather than assumed from the signature.
+          handleToolStart(
+            _tool: unknown,
+            _input: string,
+            _runId: string,
+            _parentRunId?: string,
+            _tags?: string[],
+            _metadata?: unknown,
+            runName?: string,
+          ) {
+            started.push(runName ?? "?");
+          },
+        },
+      ],
+    };
+  }
+
+  test("a permitted call starts exactly one run, under the inner tool's name", async () => {
+    const { tool: inner } = spyTool();
+    const { started, handlers } = runCounter();
+    await guardedTool(inner, COND, met).invoke({ reason: "2" }, {
+      callbacks: handlers,
+    } as never);
+    expect(started).toEqual(["handoff_to_human"]);
+  });
+
+  test("a refused call starts no run at all", async () => {
+    const { tool: inner } = spyTool();
+    const { started, handlers } = runCounter();
+    await guardedTool(inner, COND, unmet).invoke({ reason: "2" }, {
+      callbacks: handlers,
+    } as never);
+    expect(started).toEqual([]);
+  });
+
+  test("a tool whose NAME is an Object member is not guarded by an inherited value", async () => {
+    const { tool: inner, calls } = spyTool("toString");
+    // The map comes from the runtime reader (null-prototype), but this is the lookup that would
+    // break on a plain object, so it is asserted where it happens.
+    const out = applyToolPreconditions([inner], Object.create(null), unmet);
+    expect(out[0]).toBe(inner);
+    await out[0]?.invoke({});
+    expect(calls).toHaveLength(1);
+  });
+});

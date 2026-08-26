@@ -2278,7 +2278,10 @@ function AgentEditor() {
         handoff: handoffJson,
         kanban: kanbanJson,
         toolGuidance: toolGuidanceJson,
-        toolPreconditions: serializeToolPreconditions(toolPreconditions),
+        toolPreconditions: serializeToolPreconditions(
+          toolPreconditions,
+          syncedSettings.toolPreconditions,
+        ),
       };
       // The WHOLE bag, not just this tab's fields: the PATCH resends every block, so text typed on
       // another tab would refuse it just the same — after the grants had already been written.

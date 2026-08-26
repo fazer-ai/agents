@@ -147,10 +147,25 @@ export function ToolPreconditionsEditor({
 // The stored shape: a map keyed by tool name. Rows with no tool or no attribute key are DROPPED
 // rather than saved half-written — an incomplete rule would be refused by the write boundary, and
 // refusing the whole save because a row was left blank punishes the wrong edit.
+//
+// `stored` is passed so entries this editor could not RENDER are carried through untouched. Without
+// it, a condition kind added later (or written over REST) would be deleted by the first operator who
+// saves an unrelated change on this tab — silently, from a console that never showed it to them.
 export function serializeToolPreconditions(
   rows: ToolPreconditionRow[],
+  stored?: unknown,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+    const rendered = new Set(
+      parseToolPreconditionRows(stored).map((r) => r.tool),
+    );
+    for (const [name, raw] of Object.entries(
+      stored as Record<string, unknown>,
+    )) {
+      if (!rendered.has(name)) out[name] = raw;
+    }
+  }
   for (const row of rows) {
     const tool = row.tool.trim();
     const key = row.key.trim();
@@ -166,6 +181,10 @@ export function serializeToolPreconditions(
   return out;
 }
 
+// Only entries this editor can render EXACTLY. An unknown kind, an unknown scope or a missing key is
+// skipped rather than coerced: parsing `scope: "moon"` as `conversation` would let the next save on
+// this tab turn an entry the runtime IGNORES into a live rule, and the tool would start being
+// blocked without anyone having asked for it.
 export function parseToolPreconditionRows(
   stored: unknown,
 ): ToolPreconditionRow[] {
@@ -175,10 +194,13 @@ export function parseToolPreconditionRows(
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const c = raw as Record<string, unknown>;
     if (c.kind !== "attribute") continue;
+    if (c.scope !== "conversation" && c.scope !== "contact") continue;
+    if (typeof c.key !== "string" || c.key.trim() === "") continue;
+    if (c.equals !== undefined && typeof c.equals !== "string") continue;
     rows.push({
       tool,
-      scope: c.scope === "contact" ? "contact" : "conversation",
-      key: typeof c.key === "string" ? c.key : "",
+      scope: c.scope,
+      key: c.key,
       equals: typeof c.equals === "string" ? c.equals : "",
     });
   }

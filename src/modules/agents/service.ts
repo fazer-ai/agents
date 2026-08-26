@@ -344,10 +344,29 @@ export function assertSettingsToolPreconditions(
 ): void {
   const next = invalidToolPreconditions(settings);
   if (next.length === 0) return;
-  const before = new Set(invalidToolPreconditions(stored));
-  const introduced = next.find((name) => !before.has(name));
+  // Compared by VALUE, not by name. A name that was already invalid and is now invalid DIFFERENTLY
+  // is an edit, and an edit is exactly what this refuses: comparing name membership would accept the
+  // operator rewriting a broken rule into another broken rule and reading it as saved.
+  const before = storedPreconditionValues(stored);
+  const now = storedPreconditionValues(settings);
+  const introduced = next.find((name) => now.get(name) !== before.get(name));
   if (introduced === undefined) return;
   throw new InvalidToolPreconditionError(introduced);
+}
+
+// The raw entries, serialized, so "did this one change?" is one comparison. `undefined` for a name
+// that is not there, which is what makes an ADDED invalid entry differ from an absent one.
+function storedPreconditionValues(settings: unknown): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    return out;
+  }
+  const bag = (settings as Record<string, unknown>).toolPreconditions;
+  if (!bag || typeof bag !== "object" || Array.isArray(bag)) return out;
+  for (const [name, raw] of Object.entries(bag as Record<string, unknown>)) {
+    out.set(name, JSON.stringify(raw) ?? "undefined");
+  }
+  return out;
 }
 
 // A FALLBACK IS A PROVIDER AND A MODEL, OR IT IS NOTHING — and the write is the only place that can

@@ -106,6 +106,32 @@ function toDto(r: DeliveryRow): WebhookDeliveryDto {
   };
 }
 
+function badParam(param: string): never {
+  throw new AppError(
+    `invalid value for ${param}`,
+    400,
+    "errors.invalidQueryParam",
+    { param },
+    param,
+  );
+}
+
+// The RANGE of the filters lives here, not in the controller, so MCP is held to the same rule: its
+// `since`/`until` arrive as `new Date(string)` and its `limit` as a plain number, and both reach
+// Prisma and throw on a value the caller got wrong. A 500 for a caller's typo is the wrong answer
+// however the call arrived.
+function assertUsableFilters(opts: ListDeliveriesOpts): void {
+  for (const key of ["since", "until"] as const) {
+    const d = opts[key];
+    if (d && Number.isNaN(d.getTime())) badParam(key);
+  }
+  if (
+    opts.limit !== undefined &&
+    (!Number.isInteger(opts.limit) || opts.limit < 1)
+  )
+    badParam("limit");
+}
+
 function assertKnownStatus(s: string): OutboundDeliveryStatus {
   if (!isOutboundDeliveryStatus(s)) {
     throw new AppError(
@@ -123,7 +149,8 @@ export async function listWebhookDeliveries(
   opts: ListDeliveriesOpts = {},
   base: PrismaClient = basePrisma,
 ): Promise<ListDeliveriesResult> {
-  const take = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  assertUsableFilters(opts);
+  const take = Math.min(opts.limit ?? 50, 200);
   const createdAt: Prisma.DateTimeFilter = {};
   if (opts.since) createdAt.gte = opts.since;
   if (opts.until) createdAt.lte = opts.until;
@@ -208,15 +235,28 @@ export async function requeueWebhookDelivery(
       where: { id, status: "DEAD" },
       data: { status: "PENDING", attempts: 0, nextAttemptAt: null },
     });
-    // count 0 = it was not DEAD when the write ran, whether the read above already said so or
-    // another requeue got there first. One refusal, one message, naming what it is now.
-    if (res.count === 0)
+    // count 0 = it was not DEAD when the write ran. The status to report is re-read rather than
+    // taken from the check above, because the two disagree in exactly the case that matters: two
+    // operators requeueing the same dead delivery both read DEAD, the second update blocks on the
+    // first and then matches nothing, and reporting the stale read would answer "this one is DEAD"
+    // about a row that is now PENDING — the one refusal a caller would be right to retry.
+    if (res.count === 0) {
+      const now = await db.outboundWebhookDelivery.findFirst({
+        where: { id },
+        select: { status: true },
+      });
+      if (!now)
+        throw new NotFoundError(
+          "webhook delivery not found",
+          "errors.webhookDeliveryNotFound",
+        );
       throw new AppError(
-        `only a dead delivery can be requeued (this one is ${current.status})`,
+        `only a dead delivery can be requeued (this one is ${now.status})`,
         409,
         "errors.webhookDeliveryNotDead",
-        { status: current.status },
+        { status: now.status },
       );
+    }
     const updated = await db.outboundWebhookDelivery.findFirst({
       where: { id },
       select: SELECT,

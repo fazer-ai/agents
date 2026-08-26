@@ -1,7 +1,11 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
-import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
+import {
+  AppError,
+  ForbiddenError,
+  TenantTargetRequiredError,
+} from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import {
@@ -34,20 +38,47 @@ import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
 // translate('errors.webhookDeliveryNotFound', 'Webhook delivery not found')
 // translate('errors.webhookDeliveryNotDead', 'Only a dead delivery can be requeued; this one is {{status}}')
 // translate('errors.unknownDeliveryStatus', 'Unknown delivery status: {{status}}')
+// translate('errors.invalidQueryParam', 'Invalid value for {{param}}')
 
-function parseDate(s?: string): Date | undefined {
-  if (!s) return undefined;
-  const d = new Date(s);
-  return Number.isNaN(d.getTime()) ? undefined : d;
+// A filter value the server cannot parse is a REFUSAL, never a dropped filter. These started as
+// copies of the logs controller's lenient parsers, which answer an unparseable value with
+// `undefined` — and on a LEDGER that is the wrong answer twice over: a malformed `subscriptionId`
+// returns the tenant's whole ledger instead of one subscription's, and a malformed `cursor`
+// restarts pagination, which is a paging loop that never ends. Measured against the real client,
+// the numeric leg is worse than a wrong page: `take: NaN` and an invalid `Date` both reach Prisma
+// and throw (a 500 for a caller error), and `take: 3.5` quietly returns zero rows.
+function badParam(param: string): never {
+  throw new AppError(
+    `invalid value for ${param}`,
+    400,
+    "errors.invalidQueryParam",
+    { param },
+    param,
+  );
 }
 
-function parseBigInt(s?: string): bigint | undefined {
+function parseDate(s: string | undefined, param: string): Date | undefined {
+  if (!s) return undefined;
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) badParam(param);
+  return d;
+}
+
+function parseBigInt(s: string | undefined, param: string): bigint | undefined {
   if (!s) return undefined;
   try {
     return BigInt(s);
   } catch {
-    return undefined;
+    badParam(param);
   }
+}
+
+// Syntax only; the range belongs to the service, so MCP is held to the same rule.
+function parseCount(s: string | undefined, param: string): number | undefined {
+  if (!s) return undefined;
+  const n = Number(s);
+  if (!Number.isInteger(n)) badParam(param);
+  return n;
 }
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
@@ -251,12 +282,12 @@ export const webhooksController = new Elysia({
       instance: instanceIdentity,
       ...(await listWebhookDeliveries(ctxOrThrow(tenantContext), {
         status: query.status,
-        subscriptionId: parseBigInt(query.subscriptionId),
+        subscriptionId: parseBigInt(query.subscriptionId, "subscriptionId"),
         event: query.event,
-        since: parseDate(query.since),
-        until: parseDate(query.until),
-        limit: query.limit ? Number(query.limit) : undefined,
-        cursor: parseBigInt(query.cursor),
+        since: parseDate(query.since, "since"),
+        until: parseDate(query.until, "until"),
+        limit: parseCount(query.limit, "limit"),
+        cursor: parseBigInt(query.cursor, "cursor"),
       })),
     }),
     {

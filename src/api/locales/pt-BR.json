@@ -101,6 +101,7 @@
     "invalidModelConfig": "A configuração do modelo precisa ser um objeto.",
     "invalidModelConfigDetail": "A configuração do modelo não é válida: {{reason}}",
     "invalidPassword": "Senha incorreta",
+    "invalidQueryParam": "Valor inválido para {{param}}",
     "invalidRequest": "A requisição não é válida.",
     "invalidRequestValue": "O valor enviado em {{field}} não é válido.",
     "invalidSecretType": "Este tipo de segredo não é válido.",

@@ -5,6 +5,7 @@ import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   getWebhookDelivery,
+  type ListDeliveriesOpts,
   listWebhookDeliveries,
   requeueWebhookDelivery,
 } from "@/modules/webhooks/outbound/deliveries";
@@ -213,6 +214,28 @@ describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
       ).toEqual([String(onDisabled)]);
     });
 
+    test("a filter value the server cannot parse is refused, not dropped", async () => {
+      // Dropping it is the wrong answer twice: a bad `subscriptionId` would widen the page to the
+      // whole tenant, and a bad `limit` reaches Prisma, where NaN throws and 3.5 quietly returns
+      // nothing. The service owns the range so MCP, which never goes through the query parser, is
+      // held to the same rule.
+      const bad: Array<[string, ListDeliveriesOpts]> = [
+        ["since", { since: new Date("garbage") }],
+        ["until", { until: new Date("garbage") }],
+        ["limit", { limit: Number.NaN }],
+        ["limit", { limit: 3.5 }],
+        ["limit", { limit: 0 }],
+      ];
+      for (const [param, opts] of bad) {
+        const err = await listWebhookDeliveries(ctx(), opts, appDb).catch(
+          (e: unknown) => e,
+        );
+        expect(err).toBeInstanceOf(AppError);
+        expect((err as AppError).statusCode).toBe(400);
+        expect((err as AppError).field).toBe(param);
+      }
+    });
+
     test("an unknown status is refused, not answered with an empty page", async () => {
       // FAILED is the trap: it is a real value of the shared Prisma enum that only the INBOUND side
       // writes, so accepting it would answer "no deliveries" to a filter that can never match.
@@ -366,6 +389,34 @@ describe.skipIf(!dbUp)("outbound webhook delivery ledger", () => {
         where: { id },
       });
       expect([row.status, row.attempts]).toEqual(["SENDING", 3]);
+    });
+
+    test("a requeue that loses the race names the status the row has NOW", async () => {
+      // Two operators clearing the same dead-letter page. Both transactions read DEAD, the losers
+      // block on the winner and then match nothing — and the status to report is the one after
+      // that wait, not the one from before it. Reporting the stale read answers "this one is DEAD"
+      // about a row that is already PENDING, which is the single refusal a caller would be right
+      // to retry.
+      await clearDeliveries();
+      const id = await seed({ status: "DEAD", attempts: 8 });
+      const outcomes = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          requeueWebhookDelivery(ctx(), id, appDb).catch((e: unknown) => e),
+        ),
+      );
+      const won = outcomes.filter((o) => !(o instanceof Error));
+      const lost = outcomes.filter((o) => o instanceof AppError) as AppError[];
+      expect(won).toHaveLength(1);
+      expect(lost).toHaveLength(7);
+      for (const e of lost) {
+        expect(e.statusCode).toBe(409);
+        expect(e.message).toContain("PENDING");
+        expect(e.message).not.toContain("DEAD");
+      }
+      const row = await suDb.outboundWebhookDelivery.findUniqueOrThrow({
+        where: { id },
+      });
+      expect([row.status, row.attempts]).toEqual(["PENDING", 0]);
     });
 
     test("PENDING and DELIVERED are refused too, each naming itself", async () => {

@@ -669,8 +669,6 @@ const ALWAYS_ON_SCREEN: Record<string, string> = {
     "One credential picker, drawn with the panel.",
   "pages/resources/AdvancedPanel.tsx :: lfRefusal":
     "The Langfuse credential picker, likewise. The enable switch hides the SETTINGS below it, not the picker this holder names.",
-  "pages/admin/AdminBrandingPage.tsx :: refusal":
-    "The branding form is drawn unconditionally by the page. The only thing this file hides is the logo cropper, which writes no field.",
 };
 
 // A form that holds SOME of its refusals, with what is left. Neither rule above can see this — rule
@@ -1229,8 +1227,26 @@ describe("a form that writes holds the refusal it gets", () => {
     ).toEqual([]);
   });
 
+  test("every always-on-screen entry describes a holder that still exists", () => {
+    // Both directions, like the other ledgers here: an entry for a holder that has since started
+    // answering with an expression is describing code that is not there any more, and it would go on
+    // waiving whatever took its place. The branding page's holder became conditional the round this
+    // assertion was written, and nothing else noticed.
+    const flagged = new Set(
+      sources(ROOT).flatMap((f) =>
+        holdersBlindToTheScreen(readFileSync(f, "utf8")).map(
+          (h) => `${f.slice(`${ROOT}/`.length)} :: ${h}`,
+        ),
+      ),
+    );
+    expect(
+      Object.keys(ALWAYS_ON_SCREEN).filter((k) => !flagged.has(k)),
+      "these are waived and no longer flagged: delete the entry",
+    ).toEqual([]);
+  });
+
   test("the always-on-screen ledger is pinned to its size", () => {
-    expectWaiverLedger("ALWAYS_ON_SCREEN", ALWAYS_ON_SCREEN, 8);
+    expectWaiverLedger("ALWAYS_ON_SCREEN", ALWAYS_ON_SCREEN, 7);
   });
 
   test("the predicate flags a holder that claims every field, always", () => {

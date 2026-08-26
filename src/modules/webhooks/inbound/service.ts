@@ -423,36 +423,47 @@ export async function processInboundDelivery(
       // the row is marked FAILED instead of looping. (A periodic sweeper is added with the
       // scheduler; until then a redelivery reclaims a stranded row.)
       const staleCutoff = new Date(Date.now() - PROCESSING_STALE_MS);
+      // NOTE: staleness is measured from the CURRENT claim, not from the delivery's receipt. That
+      // distinction is the whole of it: `receivedAt` is stamped once and a claim never refreshes
+      // it, so five minutes after a webhook arrives the row is permanently "stale" by that measure
+      // and a duplicate delivery could take a row whose attempt was still running. `claimedAt` is
+      // NULL on every row that predates the column, which reads as stale and is correct — nothing
+      // has been running for those since before the deploy that added it (issue #356).
+      const stale = [
+        { claimedAt: { lt: staleCutoff } },
+        { claimedAt: null },
+      ] as const;
       const claimed = await db.inboundDelivery.updateMany({
         where: {
           id: params.deliveryId,
           attempts: { lt: MAX_PROCESS_ATTEMPTS },
-          OR: [
-            { status: "PENDING" },
-            { status: "PROCESSING", receivedAt: { lt: staleCutoff } },
-          ],
+          OR: [{ status: "PENDING" }, { status: "PROCESSING", OR: [...stale] }],
         },
-        data: { status: "PROCESSING", attempts: { increment: 1 } },
+        data: {
+          status: "PROCESSING",
+          attempts: { increment: 1 },
+          claimedAt: new Date(),
+        },
       });
       if (claimed.count === 0) {
         // Either not reclaimable (done / freshly PROCESSING) or the attempt cap is exhausted —
         // in the latter case move it to a terminal FAILED so it stops being retried.
         //
-        // NOTE: the PROCESSING half carries the SAME staleness cutoff the claim above does, and it
-        // has to: the claim says a PROCESSING row is only reclaimable once it is stale, so without
-        // the cutoff here the two disagree about the same row. The last attempt running RIGHT NOW
-        // is `attempts = MAX` and `PROCESSING`, and a duplicate webhook arriving mid-flight matched
-        // this and marked the delivery terminally FAILED under the invocation still working on it —
-        // which then marks it PROCESSED over the top. Silent before issue #356; announcing it is
-        // what made the disagreement visible, and a dead-letter line about work still in flight is
-        // the one thing this announcement must never say.
+        // NOTE: the PROCESSING half carries the SAME staleness rule the claim above does, and it
+        // has to: the claim says a PROCESSING row is only takeable once its claim went stale, so
+        // any other measure here would let this disagree with it about the same row. The last
+        // attempt running RIGHT NOW is `attempts = MAX` and `PROCESSING`, and a duplicate webhook
+        // arriving mid-flight would otherwise mark the delivery terminally FAILED under the
+        // invocation still working on it — which then marks it PROCESSED over the top. Silent
+        // before issue #356; announcing it is what made the disagreement visible, and a dead-letter
+        // line about work still in flight is the one thing this announcement must never say.
         const killed = await db.inboundDelivery.updateMany({
           where: {
             id: params.deliveryId,
             attempts: { gte: MAX_PROCESS_ATTEMPTS },
             OR: [
               { status: "PENDING" },
-              { status: "PROCESSING", receivedAt: { lt: staleCutoff } },
+              { status: "PROCESSING", OR: [...stale] },
             ],
           },
           data: { status: "FAILED" },

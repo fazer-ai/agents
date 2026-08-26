@@ -1,0 +1,13 @@
+-- When the CURRENT attempt on an inbound delivery was claimed, which is the only thing that can
+-- tell a claim still running from one whose process died (issue #356).
+--
+-- Staleness was read off `received_at`, and that is the delivery's RECEIPT, never refreshed by a
+-- claim. Five minutes after a webhook arrives the row is permanently "stale" by that measure, so a
+-- duplicate delivery landing while the last attempt was still working could reclaim it, and the
+-- attempt-cap path could mark it terminally FAILED under the invocation that then marked it
+-- PROCESSED.
+--
+-- Nullable, and no backfill: NULL reads as stale, which is correct for every row that exists today.
+-- A PROCESSING row written before this column was added has been sitting there since before the
+-- deploy, so nothing is running for it.
+ALTER TABLE "inbound_deliveries" ADD COLUMN "claimed_at" TIMESTAMP(3);

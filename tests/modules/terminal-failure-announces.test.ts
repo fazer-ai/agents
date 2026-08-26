@@ -727,10 +727,15 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
         integrationInstanceId: instanceId,
         dedupeKey: `inflight-356-${process.pid}`,
         payload: { kind: "conversion" },
-        // The fifth attempt, RUNNING right now: at the cap, and claimed a moment ago.
+        // The fifth attempt, RUNNING right now: at the cap, claimed a moment ago — and RECEIVED
+        // long before that, which is the shape the first version of this test missed. Four prior
+        // deaths take time, so by the last attempt the receipt is always ancient; a staleness rule
+        // read off `receivedAt` calls this row stale forever and the test passed for the wrong
+        // reason with a fresh receipt.
         status: "PROCESSING",
         attempts: 5,
-        receivedAt: new Date(),
+        receivedAt: new Date(Date.now() - 60 * 60_000),
+        claimedAt: new Date(),
       },
     });
     // A duplicate webhook from the provider, arriving mid-flight.
@@ -760,8 +765,9 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
         payload: { kind: "conversion" },
         status: "PROCESSING",
         attempts: 5,
-        // Past the 5-minute cutoff: whoever claimed this is gone.
-        receivedAt: new Date(Date.now() - 10 * 60_000),
+        receivedAt: new Date(Date.now() - 60 * 60_000),
+        // Past the 5-minute cutoff on the CLAIM: whoever took this one is gone.
+        claimedAt: new Date(Date.now() - 10 * 60_000),
       },
     });
     await processInboundDelivery({
@@ -802,6 +808,65 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     // another replica took a second ago reaches exactly the same `return { kind: "skip" }`.
     await Bun.sleep(400);
     expect(await deadRows(0, 0)).toHaveLength(0);
+  });
+
+  test("claiming stamps the clock the staleness rule reads", async () => {
+    await clearRows();
+    const row = await suDb.inboundDelivery.create({
+      data: {
+        tenantId,
+        integrationInstanceId: instanceId,
+        dedupeKey: `stamp-356-${process.pid}`,
+        payload: { kind: "conversion" },
+        status: "PENDING",
+        // Below the cap, so this run takes the row rather than killing it.
+        attempts: 0,
+        receivedAt: new Date(Date.now() - 60 * 60_000),
+      },
+    });
+    await processInboundDelivery({
+      deliveryId: row.id,
+      tenantId,
+      base: appDb,
+    });
+    const after = await suDb.inboundDelivery.findUniqueOrThrow({
+      where: { id: row.id },
+    });
+    expect(after.attempts).toBe(1);
+    // Without this stamp the whole rule reverts by omission: an unstamped row reads as stale
+    // forever, which is exactly the state `receivedAt` left every row in.
+    expect(after.claimedAt).not.toBeNull();
+    expect((after.claimedAt as Date).getTime()).toBeGreaterThan(
+      Date.now() - 60_000,
+    );
+  });
+
+  test("a row claimed before the column existed reads as stale, and is killed", async () => {
+    await clearRows();
+    const row = await suDb.inboundDelivery.create({
+      data: {
+        tenantId,
+        integrationInstanceId: instanceId,
+        dedupeKey: `legacy-356-${process.pid}`,
+        payload: { kind: "conversion" },
+        status: "PROCESSING",
+        attempts: 5,
+        receivedAt: new Date(Date.now() - 60 * 60_000),
+        // What every PROCESSING row looks like the moment the migration lands. It has been sitting
+        // there since before the deploy, so nothing is running for it.
+        claimedAt: null,
+      },
+    });
+    await processInboundDelivery({
+      deliveryId: row.id,
+      tenantId,
+      base: appDb,
+    });
+    expect(
+      (await suDb.inboundDelivery.findUniqueOrThrow({ where: { id: row.id } }))
+        .status,
+    ).toBe("FAILED");
+    expect(await deadRows(1)).toHaveLength(1);
   });
 
   // ── THE RAG INDEXER ──

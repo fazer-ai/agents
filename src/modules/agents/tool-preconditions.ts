@@ -185,6 +185,13 @@ export function unmetPreconditionMessage(
 // So the extension past native waits on stable exposed-name identity, which is its own change to
 // how MCP and toolpack tools are namespaced. The console offers exactly this set for the same
 // reason (ToolPreconditionsEditor), and docs/graph.md carries the boundary.
+//
+// This is the repo's existing shape for a settings bag keyed by tool name, not a new one:
+// `toolGuidance` is restricted to the same catalog in both of its readers (readToolGuidance drops a
+// non-native key, and text-caps.ts only caps the native ones, saying "an unknown one is text nothing
+// ever reads"). What differs is the POLICY, and deliberately: guidance DROPS an unusable key
+// silently, this REFUSES it at the write. A lost hint is a hint; a lost guard reads on screen as
+// protection that is not there.
 export function isGuardableToolName(name: unknown): name is string {
   return (
     typeof name === "string" &&

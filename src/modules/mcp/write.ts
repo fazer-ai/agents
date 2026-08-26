@@ -33,6 +33,7 @@ import {
 } from "@/modules/agents/credential-paths";
 import {
   assertPromptSize,
+  assertSettingsDebugWindow,
   assertSettingsTextSizes,
   getAgent,
   listAgents,
@@ -40,6 +41,8 @@ import {
 } from "@/modules/agents/service";
 import { type AuditEntry, recordAudit } from "@/modules/audit/service";
 import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
+import { readDebugModes } from "@/modules/flowlog/debug-mode";
+import { getTenantSettings } from "@/modules/tenant-settings/service";
 import {
   createPendingVaultEntry,
   isVaultIdRef,
@@ -499,7 +502,23 @@ export async function agentSettingsGet(
         slot.holder[slot.key] = await vaultNameByRef(ctx, ref, base);
       }
     }
-    return ok({ agentId: agent.id, settings });
+    // The unified debug-mode warning (#58). An agent connected over MCP reads this surface to find
+    // out how this agent is configured, and "something is recording more than the default" is part
+    // of that answer — including the tenant-level switch, which lives on another surface entirely
+    // and is exactly what an operator forgets. One extra read on a non-hot path buys not having a
+    // second copy of the same condition here.
+    const debugModes = readDebugModes(
+      agent.settings,
+      await getTenantSettings(ctx, base),
+    );
+    return ok({
+      agentId: agent.id,
+      settings,
+      debugModes: {
+        ...debugModes,
+        fullDetailUntil: debugModes.fullDetailUntil?.toISOString() ?? null,
+      },
+    });
   } catch (e) {
     if (e instanceof AppError) return err(e.message);
     if (e instanceof ZodError) return err(zodIssuesMessage(e));
@@ -604,6 +623,7 @@ export async function agentSettingsSet(
     // preview that promises a write the apply would refuse is worse than no preview. Against the
     // stored bag, so re-sending a legacy value untouched is not a refusal.
     assertSettingsTextSizes(patch, current.settings);
+    assertSettingsDebugWindow(patch, current.settings);
     const nextBag = mergeBehaviorSettings(
       (current.settings ?? {}) as Record<string, unknown>,
       patch,

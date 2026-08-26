@@ -1,4 +1,12 @@
-import { interpolatePromptVars, type PromptRenderOpts } from "./prompt";
+import {
+  interpolatePromptVars,
+  type PromptRenderOpts,
+  SCHEDULE_VARS,
+} from "./prompt";
+
+// Every spelling that resolves from the agent's Availability, EN aliases included: the collapse has
+// to key on the same names the interpolation answers, or one spelling would keep expanding.
+const SCHEDULE_VAR_NAMES = new Set<string>(Object.keys(SCHEDULE_VARS));
 
 // The system prompt as `execution_logs.detail` is allowed to keep it.
 //
@@ -77,12 +85,36 @@ export function buildPromptAudit(args: {
   // The blocks appended to the finished prompt, in the order they were appended.
   sections: readonly AuditedSection[];
 }): string {
+  // A schedule variable is kept in full ONCE PER NAME, and measured after that.
+  //
+  // Keeping them is deliberate — they answer from the agent's own configured hours, which is often
+  // the whole answer to "why did it say we were closed" — but a rendered schedule is not small: at
+  // the 200 windows a schedule may hold, `{{horario_atendimento}}` turns 23 characters into 2,639,
+  // a factor of 114. A prompt that uses it in every paragraph would therefore produce an audit two
+  // orders of magnitude past the ceiling the debug mode of #58 sizes from the prompt cap, and the
+  // field the mode exists to show would be truncated by the mode itself.
+  //
+  // The first occurrence carries the answer; the ones after it repeat it verbatim and add nothing.
+  // So they collapse into the same `{{name: string(N)}}` a masked context variable uses, which reads
+  // as "this variable again, this long" rather than as something withheld. The bound that buys is
+  // one full rendering per schedule name, three names in all.
+  const spent = new Set<string>();
   const body = interpolatePromptVars(args.template, args.vars, {
     ...args.opts,
     // `wrap` fires for time and schedule variables too, and those are kept: `name in vars` is what
     // tells them apart, because `buildPromptVars` answers neither a time nor a schedule name.
-    wrap: (resolved, name) =>
-      name in args.vars ? auditedPromptVar(name, resolved) : resolved,
+    wrap: (resolved, name) => {
+      if (name in args.vars) return auditedPromptVar(name, resolved);
+      if (!SCHEDULE_VAR_NAMES.has(name)) return resolved;
+      // Keyed on the RENDERING, not on the name: the placeholder takes a format suffix, so
+      // `{{next_open_at:YYYY}}` and `{{next_open_at:HH:mm}}` are the same variable answering two
+      // different things, and collapsing the second would drop an answer the operator asked for.
+      // What repeats verbatim is what adds nothing.
+      const seen = `${name}\u0000${resolved}`;
+      if (spent.has(seen)) return auditedPromptVar(name, resolved);
+      spent.add(seen);
+      return resolved;
+    },
   });
   if (args.sections.length === 0) return body;
   return `${body}\n\n${args.sections.map(auditedSection).join("\n")}`;

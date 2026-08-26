@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DEBUG_MAX_STRING } from "@/modules/flowlog/service";
 
 // THE GUARD AGAINST THE NEXT CAP THAT CUTS A CHARACTER IN HALF.
 //
@@ -69,6 +70,19 @@ const CAPS: {
     run: async (s) => {
       const { redactSecretsDeep } = await import("@/lib/redact");
       return (redactSecretsDeep({ t: s }) as { t: string }).t;
+    },
+  },
+  {
+    // The SAME function under the log debug mode (#58), which raises the ceiling rather than
+    // removing it. It is a second cap through one code path, which is precisely the shape this file
+    // exists to catch: the entry above would keep passing while the raised one cut a character in
+    // half, because nothing about a higher number makes a slice safe.
+    name: "redact: redactSecretsDeep under the log debug ceiling",
+    cap: DEBUG_MAX_STRING,
+    run: async (s) => {
+      const { redactSecretsDeep } = await import("@/lib/redact");
+      return (redactSecretsDeep({ t: s }, 0, DEBUG_MAX_STRING) as { t: string })
+        .t;
     },
   },
   {
@@ -372,6 +386,11 @@ const BARE_SLICES: Record<
   "src/modules/documents/slug.ts": [2, "ascii"],
   "src/modules/flowlog/export.ts": [2, "fixed-format + array"],
   "src/modules/flowlog/read.ts": [1, "array"],
+  // `parseIsoInstant`: the date half of an ISO instant, to check a calendar `Date.parse` would
+  // silently normalise instead (February 30 → March 2). Position 10 is the format's own boundary,
+  // and the string was already matched against an ASCII-only pattern, so there is no character
+  // there for a cut to land inside of.
+  "src/modules/flowlog/settings.ts": [1, "fixed-format"],
   "src/modules/followups/settings.ts": [1, "array"],
   "src/modules/images/fetch.ts": [1, "array"],
   // The five response-body caps below all feed `JSON.parse` and nothing else. When one of them

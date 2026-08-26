@@ -15962,7 +15962,8 @@
                           "type": "number"
                         },
                         "systemPrompt": {
-                          "description": "System prompt override applied when this variant is assigned.",
+                          "maxLength": 100000,
+                          "description": "System prompt override applied when this variant is assigned (up to 100000 characters, the same ceiling the agent's own prompt is held to).",
                           "type": "string"
                         }
                       }
@@ -16020,7 +16021,8 @@
                           "type": "number"
                         },
                         "systemPrompt": {
-                          "description": "System prompt override applied when this variant is assigned.",
+                          "maxLength": 100000,
+                          "description": "System prompt override applied when this variant is assigned (up to 100000 characters, the same ceiling the agent's own prompt is held to).",
                           "type": "string"
                         }
                       }
@@ -16078,7 +16080,8 @@
                           "type": "number"
                         },
                         "systemPrompt": {
-                          "description": "System prompt override applied when this variant is assigned.",
+                          "maxLength": 100000,
+                          "description": "System prompt override applied when this variant is assigned (up to 100000 characters, the same ceiling the agent's own prompt is held to).",
                           "type": "string"
                         }
                       }
@@ -16414,7 +16417,8 @@
                           "type": "number"
                         },
                         "systemPrompt": {
-                          "description": "System prompt override applied when this variant is assigned.",
+                          "maxLength": 100000,
+                          "description": "System prompt override applied when this variant is assigned (up to 100000 characters, the same ceiling the agent's own prompt is held to).",
                           "type": "string"
                         }
                       }
@@ -16468,7 +16472,8 @@
                           "type": "number"
                         },
                         "systemPrompt": {
-                          "description": "System prompt override applied when this variant is assigned.",
+                          "maxLength": 100000,
+                          "description": "System prompt override applied when this variant is assigned (up to 100000 characters, the same ceiling the agent's own prompt is held to).",
                           "type": "string"
                         }
                       }
@@ -16522,7 +16527,8 @@
                           "type": "number"
                         },
                         "systemPrompt": {
-                          "description": "System prompt override applied when this variant is assigned.",
+                          "maxLength": 100000,
+                          "description": "System prompt override applied when this variant is assigned (up to 100000 characters, the same ceiling the agent's own prompt is held to).",
                           "type": "string"
                         }
                       }

@@ -17,7 +17,7 @@ import {
   Trash2,
   Volume2,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -43,6 +43,7 @@ import {
   VISION_DEFAULT_MODEL,
 } from "@/client/lib/providerDefaults";
 import { providerLabel } from "@/client/lib/providerLabels";
+import { serverNow, serverNowDate } from "@/client/lib/serverClock";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
@@ -53,6 +54,12 @@ import {
 } from "@/modules/agents/text-caps";
 import { formatWindowsSummary } from "@/modules/business-hours/announce";
 import { SCOPE_MODEL } from "@/modules/chatwoot/attributes";
+import { debugModesFrom } from "@/modules/flowlog/debug-mode";
+import {
+  FULL_DETAIL_ARM_HOURS,
+  isFullDetailWindowOpen,
+  type ObservabilityConfig,
+} from "@/modules/flowlog/settings";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
 import {
@@ -258,10 +265,19 @@ interface BehaviorTabProps {
   // The base URL stored on the summarizer's OWN credential, when it has one. Outranks the typed
   // field, exactly as it does for the speech rewrite.
   memoryCredBaseUrl: string | null;
-  observability: { logToolValues: boolean };
-  setObservability: React.Dispatch<
-    React.SetStateAction<{ logToolValues: boolean }>
-  >;
+  observability: ObservabilityConfig;
+  setObservability: React.Dispatch<React.SetStateAction<ObservabilityConfig>>;
+  // What the SERVER is recording right now, which is not what the switches say once one is touched.
+  // The warning reads this and the switches read `observability`, because a switch flipped off stops
+  // recording when the save lands: a warning driven by the form goes quiet on the touch and tells
+  // the operator recording stopped while it is still running — and an operator who then leaves
+  // without saving takes that answer with them.
+  savedObservability: ObservabilityConfig;
+  // Whether the tenant asked for trace CONTENT to reach Langfuse. It is the third switch that
+  // widens what is recorded, it lives on another page entirely (Resources > Advanced), and it is
+  // therefore the one an operator forgets — so the warning here reads it too. Null while it is
+  // still loading, which reads as "not known yet" and never as "off".
+  langfuseSendContent: boolean | null;
   setLimits: React.Dispatch<React.SetStateAction<LimitsState>>;
   sendImage: SendImageState;
   setSendImage: React.Dispatch<React.SetStateAction<SendImageState>>;
@@ -947,6 +963,8 @@ export function BehaviorTab({
   setMemory,
   memoryCredBaseUrl,
   observability,
+  savedObservability,
+  langfuseSendContent,
   setObservability,
   setLimits,
   sendImage,
@@ -982,6 +1000,71 @@ export function BehaviorTab({
   // carrying `user:pass@` is refused here for the same reason the reader refuses it (credentials
   // belong in the vault); without this check the save would succeed and the runtime would read the
   // field as unconfigured.
+  // The shared warning of #58. It reads all three switches that widen what is recorded, INCLUDING
+  // the tenant-level one that lives on another page, because an operator does not remember which of
+  // three unrelated screens they touched last week. Empty (falsy) when nothing is on, so the block
+  // renders only when there is something to say.
+  // The saved config was read at load or at save, and one of its fields STOPS BEING TRUE ON ITS OWN:
+  // the size switch expires. An editor left open past the deadline would otherwise keep saying full
+  // detail is being recorded while the runtime already stopped, which is the same lie as the one
+  // this warning was just fixed for, arriving by the clock instead of by a click. So the state is
+  // re-derived once, exactly when the window closes.
+  const [judgedAt, setJudgedAt] = useState(() => serverNowDate());
+  const savedUntilMs = savedObservability.fullDetailUntil?.getTime() ?? null;
+  const formUntilMs = observability.fullDetailUntil?.getTime() ?? null;
+  // The deadlines are TRIGGERS here, not reads: the body uses neither, and their changing is the
+  // whole signal.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: trigger, not a read
+  useEffect(() => {
+    // Re-judged whenever a deadline CHANGES, not only when one expires. A tab left open overnight
+    // still holds its mount-time instant, and a deadline armed 12h ahead of NOW reads as more than
+    // 24h ahead of THAT — so the reader's far-side bound would refuse it and the warning would stay
+    // silent for the whole window it was just armed for.
+    setJudgedAt(serverNowDate());
+  }, [savedUntilMs, formUntilMs]);
+  // `judgedAt` is a TRIGGER here, not a read: it is what re-runs this after a timer fires, so the
+  // next deadline gets scheduled.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: trigger, not a read
+  useEffect(() => {
+    // The next moment either answer changes: the saved deadline governs the warning, the form's
+    // governs the switch, and whichever comes first is when something on screen stops being true.
+    const next = [savedUntilMs, formUntilMs]
+      .filter((v): v is number => v !== null && v > serverNow())
+      .sort((a, b) => a - b)[0];
+    if (next === undefined) return;
+    const ms = next - serverNow();
+    // `setTimeout` saturates past ~24.9 days, and a delay it cannot represent fires IMMEDIATELY,
+    // which would read as an expiry that already happened. The window is bounded far below that,
+    // so this only ever guards a hand-written deadline.
+    if (ms > 2_147_483_647) return;
+    const timer = setTimeout(() => setJudgedAt(serverNowDate()), ms);
+    return () => clearTimeout(timer);
+    // `judgedAt` is a dependency so this re-runs AFTER a timer fires and schedules whatever comes
+    // next. Without it the effect arms the earlier of the two deadlines and then never runs again,
+    // because neither deadline changed — so a form deadline of 12h and a saved one of 20h would
+    // leave the warning standing after the saved window closed.
+  }, [savedUntilMs, formUntilMs, judgedAt]);
+
+  const debugModesOn = useMemo(() => {
+    // Through the shared derivation, never a second copy of the same `||`: a switch added to it
+    // would light the indicator everywhere except in the copy, and the copy is the one place the
+    // tests that cover that file cannot see.
+    const m = debugModesFrom(
+      savedObservability,
+      langfuseSendContent === true,
+      judgedAt,
+    );
+    if (!m.any) return null;
+    const on: string[] = [];
+    if (m.logToolValues)
+      on.push(t("editor.observabilityOnToolValues", "tool values"));
+    if (m.fullDetail)
+      on.push(t("editor.observabilityOnFullDetail", "full log detail"));
+    if (m.langfuseSendContent)
+      on.push(t("editor.observabilityOnLangfuse", "content sent to Langfuse"));
+    return on;
+  }, [savedObservability, langfuseSendContent, judgedAt, t]);
+
   const contactAuthUrlHasCredentials = (() => {
     try {
       const u = new URL(contactAuth.url.trim());
@@ -2518,14 +2601,88 @@ export function BehaviorTab({
               'By default a tool line on the Logs page records the SHAPE of each argument and result ({ cpf: "string(11)" }): enough to see which arguments the agent sent, which it left out and whether a format is wrong, with no customer data. Turning the switch on records the values themselves, which is what answers which record it actually looked up, and keeps those values for the whole log retention window, including in every log export. Turn it on while investigating, off afterwards.',
             )}
           >
+            {debugModesOn && (
+              <div className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-text-primary text-xs">
+                <AlertTriangle
+                  className="mt-0.5 h-4 w-4 shrink-0 text-warning"
+                  aria-hidden="true"
+                />
+                <span>
+                  {t(
+                    "editor.observabilityDebugOn",
+                    "Recording more than the default right now:",
+                  )}{" "}
+                  {debugModesOn.join(" · ")}
+                </span>
+              </div>
+            )}
             <SwitchField
               checked={observability.logToolValues}
-              onCheckedChange={(v) => setObservability({ logToolValues: v })}
+              onCheckedChange={(v) =>
+                setObservability((o) => ({ ...o, logToolValues: v }))
+              }
               label={t(
                 "editor.observabilityLogToolValues",
                 "Log the values sent to tools",
               )}
             />
+            <SwitchField
+              // Derived, not read off the form: `fullDetail` was computed when the config was read,
+              // and the one thing it describes turns itself off. A switch frozen at that answer
+              // stays checked past its own deadline and shows a hint naming a moment that has gone,
+              // and re-arming then takes two clicks because the first only sets it to what it
+              // already claims to be.
+              checked={isFullDetailWindowOpen(
+                observability.fullDetailUntil,
+                judgedAt,
+              )}
+              onCheckedChange={(v) =>
+                setObservability((o) => ({
+                  ...o,
+                  fullDetail: v,
+                  // The stored value IS the end of the window, so turning the switch on is choosing
+                  // an instant. It cannot be armed for longer than the schema accepts, and it stops
+                  // on its own, which is the point: an operator who forgets loses at most one day of
+                  // full-size rows instead of the whole retention window.
+                  //
+                  // Chosen on the SERVER's clock, because the server is what enforces it. Off the
+                  // browser's, a wrong machine arms a window of a different length than the one the
+                  // screen names, and a machine wrong by more than the arming gap arms one that was
+                  // already over.
+                  fullDetailUntil: v
+                    ? new Date(serverNow() + FULL_DETAIL_ARM_HOURS * 3_600_000)
+                    : null,
+                }))
+              }
+              label={t(
+                "editor.observabilityFullDetail",
+                "Store log detail in full (expires on its own)",
+              )}
+            />
+            <p className="text-text-secondary text-xs">
+              {/* Which of the two sentences depends on whether this deadline is the SAVED one.
+                  Both are "the window is open until X", and only the unsaved one is waiting on a
+                  click: an armed-and-saved window that kept saying "Save to apply" contradicted the
+                  warning above it, which speaks for the server, and left an operator no way to tell
+                  a mode that is running from one that is merely typed. */}
+              {isFullDetailWindowOpen(observability.fullDetailUntil, judgedAt)
+                ? formUntilMs === savedUntilMs
+                  ? t("editor.observabilityFullDetailUntil", {
+                      defaultValue: "On until {{when}}.",
+                      when:
+                        observability.fullDetailUntil?.toLocaleString() ?? "",
+                    })
+                  : t("editor.observabilityFullDetailUntilUnsaved", {
+                      defaultValue: "On until {{when}} once you save.",
+                      when:
+                        observability.fullDetailUntil?.toLocaleString() ?? "",
+                    })
+                : t("editor.observabilityFullDetailHint", {
+                    defaultValue:
+                      "A log line cuts every stored string at 2,000 characters, which is where a long system prompt stops being readable on the Logs page. This keeps them whole for the next {{hours}}h, then goes back to cutting them without anyone having to remember.",
+                    hours: FULL_DETAIL_ARM_HOURS,
+                  })}
+            </p>
           </Section>
 
           <Section

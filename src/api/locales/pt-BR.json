@@ -28,6 +28,7 @@
     "credentialPendingUnsupportedKind": "Este tipo de credencial é configurado por um fluxo de conexão e não pode ser criado como referência pendente",
     "credentialRequired": "Uma credencial é obrigatória para listar os modelos do provedor.",
     "currentPasswordIncorrect": "A senha atual está incorreta",
+    "debugWindowTooLong": "O modo debug de logs pode ficar ligado por no máximo {{hours}}h de cada vez.",
     "documentNameIsBuiltinTool": "\"{{name}}\" produziria a ferramenta {{tool}}, que já é nativa. Escolha outro nome.",
     "documentNotFound": "Documento não encontrado",
     "documentNotNumbered": "Não foi possível numerar este documento porque o modelo dele não existe mais",

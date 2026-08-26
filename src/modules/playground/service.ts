@@ -50,7 +50,6 @@ import {
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
-import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import {
   readFollowUpConfig,
   stepDelayMinutes,
@@ -503,6 +502,12 @@ export async function runPlaygroundTurn(
           },
         }),
     });
+  // Assigned rather than passed at construction: the debug mode is an agent SETTING, and the agent's
+  // settings are what `buildPlaygroundGraph` just read. Every callback above only fires during
+  // `graph.invoke` below, so none of them can emit before this line runs. Playground rows are on the
+  // Logs page like any other, so an operator who turned the mode on for this agent gets the same
+  // answer here as on real traffic (#58).
+  flow.fullDetail = loaded.fullDetail;
 
   // The SAME gate the inbox path runs (issue #136). Without it the operator read the agent's raw
   // reply while the customer would have received the template, or nothing at all — the one setting
@@ -826,6 +831,8 @@ export async function runPlaygroundFollowup(
           },
         }),
     });
+  // Same reason as the turn path above: set after the settings read, before any callback can emit.
+  flow.fullDetail = loaded.fullDetail;
 
   // Draft settings (if present) drive the follow-up instructions/delay so the simulation matches
   // what the operator is editing live; otherwise the saved settings.
@@ -860,7 +867,11 @@ export async function runPlaygroundFollowup(
         callbacks: [
           ...callbacks,
           new ToolFlowLogger(flow, {
-            logValues: readObservabilityConfig(settings).logToolValues,
+            // From the loaded config, which reads this block off the SAVED bag — never from
+            // `settings` here, which is the draft. Recording policy does not follow a draft (see
+            // `prepare.ts`), and this line reading it separately is how the follow-up path came to
+            // answer differently from the turn path for the same agent.
+            logValues: loaded.logToolValues,
             tools,
           }),
         ],

@@ -1,5 +1,5 @@
 import type { BaseMessage } from "@langchain/core/messages";
-import { redactSecretsDeep, redactSecretsInText, truncate } from "@/lib/redact";
+import { redactSecretsDeep, scrubbedClip } from "@/lib/redact";
 import type { GuardrailReport } from "@/modules/guardrails/gate";
 
 // Builds a sanitized, human-readable execution trace from the graph's final message list, for the
@@ -99,11 +99,11 @@ export function traceGuardrail(r: GuardrailReport): TraceGuardrail {
           // limits how many labels come back.
           categories: r.categories
             .slice(0, CATEGORIES_MAX)
-            .map((c) => redactSecretsInText(truncate(c, CATEGORY_MAX))),
+            .map((c) => scrubbedClip(c, CATEGORY_MAX)),
         }
       : {}),
     ...(r.rationale
-      ? { rationale: redactSecretsInText(truncate(r.rationale, OUTPUT_MAX)) }
+      ? { rationale: scrubbedClip(r.rationale, OUTPUT_MAX) }
       : {}),
   };
 }
@@ -198,7 +198,7 @@ export function buildPlaygroundTrace(
       if (text) {
         entries.push({
           type: "assistant",
-          text: redactSecretsInText(truncate(text, OUTPUT_MAX)),
+          text: scrubbedClip(text, OUTPUT_MAX),
         });
       }
       const calls = (
@@ -233,9 +233,7 @@ export function buildPlaygroundTrace(
         type: "tool_result",
         id: tm.tool_call_id ?? null,
         name,
-        output: redactSecretsInText(
-          truncate(contentToText(tm.content), OUTPUT_MAX),
-        ),
+        output: scrubbedClip(contentToText(tm.content), OUTPUT_MAX),
         isError: tm.status === "error",
         ...(sources ? { sources } : {}),
         ...(mocked ? { mocked: true } : {}),
@@ -261,7 +259,7 @@ export function buildVisionTraceEntry(args: {
     mediaKind: args.mediaKind,
     provider: args.provider,
     model: args.model ?? null,
-    output: redactSecretsInText(truncate(args.text, OUTPUT_MAX)),
+    output: scrubbedClip(args.text, OUTPUT_MAX),
   };
 }
 

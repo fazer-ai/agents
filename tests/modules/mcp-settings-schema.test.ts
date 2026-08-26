@@ -8,7 +8,10 @@ import {
   readBehaviorSettings,
 } from "@/modules/agents/behavior-settings";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
-import { readObservabilityConfig } from "@/modules/flowlog/settings";
+import {
+  readObservabilityConfig,
+  storableObservability,
+} from "@/modules/flowlog/settings";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { buildMcpServer } from "@/modules/mcp/server";
 import { readMemoryConfig } from "@/modules/memory/settings";
@@ -90,6 +93,14 @@ function keywordOf(
 // take, so the drift check must not demand a schema for it.
 const EXPOSED = BEHAVIOR_SETTINGS_KEYS.filter((k) => k !== "guardrails");
 
+// Fields a reader DERIVES rather than stores. Computed from the block's own storable projection, so
+// it cannot describe a state the code has left — see the test below it.
+const DERIVED = new Set(
+  Object.keys(readObservabilityConfig({}))
+    .filter((k) => !(k in storableObservability(readObservabilityConfig({}))))
+    .map((k) => `observability.${k}`),
+);
+
 describe("agent_settings_set argument schema", () => {
   test("every block the tool exposes is declared", () => {
     expect(Object.keys(BEHAVIOR_PATCH_SHAPE).sort()).toEqual(
@@ -109,10 +120,36 @@ describe("agent_settings_set argument schema", () => {
     for (const key of EXPOSED) {
       const declared = Object.keys(BEHAVIOR_PATCH_SHAPE[key].unwrap().shape);
       for (const field of Object.keys(produced[key] ?? {})) {
-        if (!declared.includes(field)) missing.push(`${key}.${field}`);
+        if (declared.includes(field) || DERIVED.has(`${key}.${field}`))
+          continue;
+        missing.push(`${key}.${field}`);
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  // The one field a reader produces that must NOT be declared, and why the exception is COMPUTED
+  // rather than written down: `observability.fullDetail` is derived from `fullDetailUntil` on every
+  // read (issue #58), so declaring it would let a caller write a value the next read recomputes,
+  // and the stored answer and the computed one could then disagree. `storableObservability` is
+  // already the single projection every writer of that block goes through, so the difference
+  // between what the reader answers and what that projection stores IS the derived set. Written by
+  // hand it would go stale the moment the block gains or loses one.
+  test("the derived set is exactly what the storable projection drops", () => {
+    const read = readObservabilityConfig({});
+    const dropped = Object.keys(read).filter(
+      (k) => !(k in storableObservability(read)),
+    );
+    expect(dropped).toEqual(["fullDetail"]);
+    expect([...DERIVED]).toEqual(dropped.map((k) => `observability.${k}`));
+    // And a derived field must genuinely be absent from the schema, or the exception is hiding a
+    // declaration rather than excusing one.
+    for (const name of DERIVED) {
+      const field = name.split(".")[1] as string;
+      expect(
+        Object.keys(BEHAVIOR_PATCH_SHAPE.observability.unwrap().shape),
+      ).not.toContain(field);
+    }
   });
 
   // The two nested shapes the loop above only sees the top of.

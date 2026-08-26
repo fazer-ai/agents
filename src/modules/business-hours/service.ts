@@ -18,6 +18,20 @@ import {
   windowSpecSchema,
 } from "./hours";
 
+// How many windows one schedule may be WRITTEN with through this API. Named rather than inline
+// because a SECOND place sizes itself from it: the audited prompt renders a schedule in full once
+// per variable name, and the log debug mode's ceiling reserves room for that
+// (`src/modules/flowlog/service.ts`, issue #58).
+//
+// It bounds this writer, not the column. The agent import writes `windows` straight through
+// (`exportedBusinessHoursSchema` takes `z.array(z.unknown())`), so a hand-authored bundle can store
+// a schedule this schema would refuse — tracked as issue #346, which is the wider defect, since the
+// same path also lets one malformed window empty a schedule and turn the agent always-open. What it
+// means HERE is that the allowance sized from this number is a margin rather than a proof: a
+// schedule past it renders longer than reserved, and the audit is then cut like any other oversized
+// detail, which is the behaviour every line already had.
+export const MAX_SCHEDULE_WINDOWS = 200;
+
 // Business-hours schedules (per-tenant). An agent references one via Agent.businessHoursId; the
 // follow-up scheduler and out-of-hours behavior use the windows + timezone. API-created rows are
 // always source=LOCAL; CHATWOOT_MIRROR rows are written by the inbox sync (a separate path).
@@ -135,7 +149,7 @@ export const businessHoursCreateSchema = z
   .object({
     name: z.string().min(1).max(200),
     timezone: z.string().min(1).max(64).optional(),
-    windows: z.array(windowSpecSchema).max(200).optional(),
+    windows: z.array(windowSpecSchema).max(MAX_SCHEDULE_WINDOWS).optional(),
     exceptions: z.array(scheduleExceptionSchema).max(400).optional(),
   })
   .strict();

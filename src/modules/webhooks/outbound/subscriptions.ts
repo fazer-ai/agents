@@ -206,10 +206,11 @@ export async function deleteWebhookSubscription(
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  // The delivery FK is onDelete: Restrict (never Cascade — a Cascade would silently drop in-flight
-  // rows the worker is mid-delivery). Clear this subscription's deliveries first inside the same
-  // scoped tx (RLS-fenced), then remove the subscription. Operator-initiated, so dropping its
-  // delivery ledger is acceptable.
+  // The delivery FK is ON DELETE CASCADE at the database (20260727000000_init), so what keeps this
+  // from silently dropping rows the worker is mid-delivery is THIS function, not the constraint:
+  // clear the subscription's deliveries first inside the same scoped tx (RLS-fenced), then remove
+  // the subscription. Operator-initiated, so dropping its delivery ledger is acceptable — and it is
+  // now a ledger somebody may be reading (issue #305), which is why the order is written down.
   const count = await runScopedOn(base, ctx, async (db) => {
     await db.outboundWebhookDelivery.deleteMany({
       where: { subscriptionId: id },

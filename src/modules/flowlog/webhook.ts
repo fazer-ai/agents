@@ -62,3 +62,56 @@ export function emitDeliveryDead(args: {
     },
   );
 }
+
+// THE SAME DELIVERY, PUT BACK IN THE QUEUE BY AN OPERATOR (issue #305).
+//
+// It sits next to the death line for one reason: without it, the requeue is a silent mutation of
+// the very row whose silence #325 was about. The ledger has to read "gave up after 8 attempts" and
+// then "sent back to the queue", or the operator who did neither cannot tell a delivery that was
+// never retried from one that was retried and died again.
+//
+// `info`, and that is not a softer `warn`: a requeue is somebody doing their job, not a failure.
+// The level also decides the blast radius, because `dispatchAlertsForEvent` only routes `warn` and
+// `error` — an `info` line lands in the Logs page and pages nobody, which is what an operator
+// clearing a hundred dead deliveries needs it to do.
+//
+// `attemptsBefore` is the count the row died at, and the line is where it survives: the requeue
+// resets `attempts` to 0 so the retry ladder starts over, so a minute later the row itself can no
+// longer say how hard the bus already tried. `subscriptionEnabled` is here because a requeue into
+// a disabled subscription is legal and does nothing until it is re-enabled (the worker's claim
+// joins `enabled = true`) — the one case where a correct requeue looks like an ignored one.
+//
+// WHO did it is deliberately absent. This line is the delivery's history, not the actor's; the
+// actor ledger is `audit_logs`, and that REST mutations do not reach it is issue #306, not
+// something to patch one endpoint at a time.
+export function emitDeliveryRequeued(args: {
+  tenantId: bigint;
+  deliveryId: bigint;
+  subscriptionId: bigint;
+  event: string;
+  attemptsBefore: number;
+  subscriptionEnabled: boolean;
+  base?: PrismaClient;
+}): void {
+  emitFlowEvent(
+    {
+      tenantId: args.tenantId,
+      turnId: crypto.randomUUID(),
+      source: "inbox",
+      base: args.base,
+    },
+    {
+      stage: "webhook",
+      level: "info",
+      status: "ok",
+      detail: {
+        deliveryId: String(args.deliveryId),
+        subscriptionId: String(args.subscriptionId),
+        event: args.event,
+        action: "requeued",
+        attemptsBefore: args.attemptsBefore,
+        subscriptionEnabled: args.subscriptionEnabled,
+      },
+    },
+  );
+}

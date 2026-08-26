@@ -14,6 +14,10 @@ import {
   getIntegrationInstance,
   updateIntegrationInstance,
 } from "@/modules/integrations/service";
+import {
+  getWebhookDelivery,
+  requeueWebhookDelivery,
+} from "@/modules/webhooks/outbound/deliveries";
 import { isOutboundEvent } from "@/modules/webhooks/outbound/events";
 import {
   createWebhookSubscription,
@@ -238,6 +242,70 @@ export async function webhookDelete(
       after: null,
     });
     return ok({ dryRun: false, applied: true, target });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// Put a DEAD outbound delivery back in the worker's queue (issue #305). The state change is the
+// service's; what this adds is the MCP contract around it.
+//
+// The dry run READS THE ROW instead of echoing the argument back, and that is the whole point of
+// it here: the only way this call fails is the row not being DEAD, so a preview built from the id
+// alone would approve exactly the requests the apply refuses. It answers with the same refusal, on
+// the same read, one step earlier.
+export async function webhookDeliveryRequeue(
+  principal: VerifiedToken,
+  args: { delivery_id: string; dry_run?: boolean },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = gate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.delivery_id, "delivery_id");
+  if (typeof id !== "bigint") return id;
+  const target = `webhook_delivery:${id}`;
+  try {
+    const current = await getWebhookDelivery(ctx, id, base);
+    if (current.status !== "DEAD")
+      return err(
+        `only a dead delivery can be requeued (this one is ${current.status})`,
+      );
+    if (args.dry_run !== false) {
+      return ok({
+        dryRun: true,
+        action: "requeue",
+        target,
+        current: {
+          id: current.id,
+          status: current.status,
+          attempts: current.attempts,
+          event: current.event,
+          subscriptionId: current.subscriptionId,
+          subscriptionEnabled: current.subscriptionEnabled,
+        },
+        // Named rather than implied: `attempts` going back to 0 is what buys a full retry ladder
+        // instead of a single post, and a disabled subscription means the queue holds the row.
+        preview: {
+          status: "PENDING",
+          attempts: 0,
+          willBeClaimed: current.subscriptionEnabled,
+        },
+      });
+    }
+    const after = await requeueWebhookDelivery(ctx, id, base);
+    await recordMcpAudit(ctx, base, {
+      actorId: principal.userId,
+      actorType: "mcp",
+      action: "mcp.webhook_delivery_requeue",
+      target,
+      before: truncForAudit({
+        status: current.status,
+        attempts: current.attempts,
+      }),
+      after: truncForAudit({ status: after.status, attempts: after.attempts }),
+    });
+    return ok({ dryRun: false, applied: true, target, delivery: after });
   } catch (e) {
     return failOf(e);
   }

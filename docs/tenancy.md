@@ -44,4 +44,4 @@ Lives in a separate `langgraph` Postgres schema (outside Prisma). `thread_id` is
 
 ## Verifying isolation
 
-[`tests/lib/tenancy.integration.test.ts`](../tests/lib/tenancy.integration.test.ts) proves fail-closed, scoped reads, RLS overriding an explicit cross-tenant `WHERE`, blocked cross-tenant writes, and `asSuperAdmin` visibility against a real Postgres. It reads `TEST_APP_DATABASE_URL` (the app role) and skips when no DB is reachable.
+[`tests/lib/tenancy.integration.test.ts`](../tests/lib/tenancy.integration.test.ts) proves fail-closed, scoped reads, RLS overriding an explicit cross-tenant `WHERE`, blocked cross-tenant writes, and `asSuperAdmin` visibility against a real Postgres. It reads `TEST_APP_DATABASE_URL` (the app role) and skips when no DB is reachable, though the suite no longer starts at all in that state unless the run declares `ALLOW_NO_DB=1` (see [`tests/db-gate.ts`](../tests/db-gate.ts)).

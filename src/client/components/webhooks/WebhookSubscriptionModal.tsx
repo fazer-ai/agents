@@ -59,6 +59,8 @@ export function WebhookSubscriptionModal({
   const [loading, setLoading] = useState(false);
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     const sub = modal.payload?.subscription;
     setUrl(sub?.url ?? "");
     setSelected(new Set(sub?.events ?? []));

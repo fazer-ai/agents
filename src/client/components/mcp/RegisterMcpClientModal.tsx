@@ -55,6 +55,8 @@ export function RegisterMcpClientModal({
   const editingId = modal.payload?.clientId;
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     setName(modal.payload?.name ?? "");
     setRedirectUris((modal.payload?.redirectUris ?? []).join("\n"));
     setScopes(modal.payload?.scopes ?? ["mcp:read"]);

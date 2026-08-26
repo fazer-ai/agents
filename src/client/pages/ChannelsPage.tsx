@@ -407,6 +407,8 @@ export function ChannelsPage() {
           : `https://${connectParam}`,
       );
       setAdminToken("");
+      // The component outlives the dialog, so a mark from the last session is still held here.
+      connectRefusal.clear();
       connectModal.open();
     }
     setSearchParams(
@@ -529,6 +531,8 @@ export function ChannelsPage() {
   // removing happens from the list (a hard, slot-freeing delete that returns the account to this picker).
   function openManage() {
     setSelected(new Set());
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    accountsRefusal.clear();
     manageModal.open();
     void loadReachable();
   }
@@ -584,6 +588,8 @@ export function ChannelsPage() {
 
   function openToken() {
     setNewToken("");
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    tokenRefusal.clear();
     tokenModal.open();
   }
 

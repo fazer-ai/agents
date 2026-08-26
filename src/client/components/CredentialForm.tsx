@@ -437,6 +437,12 @@ export function CredentialForm({
     }
   }
 
+  // The inner inputs of a multi-field secret, by the names the server refuses them under.
+  const fieldSnapshot = () =>
+    Object.fromEntries(
+      (fields ?? []).map((f) => [f.key, fieldValues[f.key] ?? ""]),
+    );
+
   // What the inputs hold right now, in the server's vocabulary. Each write below sends a subset of
   // these, and `capture` compares only the key it was refused about.
   const currentRef = useRef<Record<string, unknown>>({});
@@ -464,7 +470,12 @@ export function CredentialForm({
     refusal.capture(
       e,
       t("vault.saveError", "Could not save the secret."),
-      sent,
+      // The per-field values ride along, and they are not on the wire: a multi-field secret is sent
+      // as ONE `value` blob, so a snapshot built from the body alone carries no `api_key` for
+      // `placeRefusal` to compare against. Without them the staleness check has nothing to check,
+      // and a value the operator replaced while the request was out gets marked as the one the
+      // server refused.
+      { ...sent, ...fieldSnapshot() },
       currentRef.current,
     );
 

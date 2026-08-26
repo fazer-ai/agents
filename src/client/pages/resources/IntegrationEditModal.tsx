@@ -691,6 +691,8 @@ export function IntegrationEditModal({
   const editId = modal.payload?.id;
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     setLoadError(false);
     setAvailableCals([]);
     setCalError(false);

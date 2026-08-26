@@ -65,6 +65,8 @@ export function InviteUserModal({
     (email.trim() !== "" || role !== "AGENT" || tenantId !== defaultTenantId);
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     setEmail("");
     setRole("AGENT");
     setTenantId(defaultTenantId);

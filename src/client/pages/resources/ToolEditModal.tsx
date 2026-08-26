@@ -674,6 +674,8 @@ export function ToolEditModal({
   const current = payloadOf(form) ?? ({} as Record<string, unknown>);
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     setFormError(null);
     setLoadError(false);
     setSelectedCredential(null);

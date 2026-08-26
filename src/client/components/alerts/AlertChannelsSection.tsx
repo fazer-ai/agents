@@ -67,6 +67,8 @@ function AlertChannelModal({
   const [loading, setLoading] = useState(false);
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     const ch = modal.payload?.channel;
     setName(ch?.name ?? "");
     setType((ch?.type as "discord" | "webhook") ?? "discord");

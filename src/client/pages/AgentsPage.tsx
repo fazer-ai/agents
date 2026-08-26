@@ -128,6 +128,8 @@ export function AgentsPage() {
 
   function openCreate() {
     setName("");
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     createModal.open();
   }
 

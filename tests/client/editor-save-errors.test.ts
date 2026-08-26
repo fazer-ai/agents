@@ -57,12 +57,15 @@ describe("agent editor save errors", () => {
       "saveGuardrails",
       "saveTools",
     ]);
+    // The holder is often under a qualified name (`cloneRefusal`), because a page with two forms needs
+    // one per form.
+    //
     // `refusal.capture` is the same read plus a placement: it answers the server's sentence, or null
     // once that sentence is already rendered at the input it names (#320). A handler that routes
     // through it has not stopped showing what the server said — it has stopped needing a toast.
     expect(
       writers
-        .filter((h) => !/apiErrorMessage|refusal\.capture/.test(h.body))
+        .filter((h) => !/apiErrorMessage|[Rr]efusal\.capture/.test(h.body))
         .map((h) => h.name),
     ).toEqual([]);
   });

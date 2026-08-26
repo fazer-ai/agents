@@ -233,6 +233,8 @@ export function DocumentsPanel() {
   // naming step and reopens would otherwise be handed that step again, prefilled with the name they
   // just abandoned (docs/modals.md).
   useOnModalOpen(starterModal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     setNaming(null);
     setDraftName("");
     setCreateError(null);

@@ -172,6 +172,7 @@ export function useKnowledgeManager(opts: {
   // What each form's inputs hold right now, readable from inside a request that started before them.
   const baseRef = useRef<Record<string, unknown>>({});
   const editDocRef = useRef<Record<string, unknown>>({});
+  const addDocRef = useRef<Record<string, unknown>>({});
   const [text, setText] = useState("");
   const [picked, setPicked] = useState<PickedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -231,6 +232,10 @@ export function useKnowledgeManager(opts: {
     chunkOverlap,
   };
   editDocRef.current = { title: editDocTitle.trim(), text: editDocText };
+  addDocRef.current = {
+    title: docTitle.trim() || t("knowledge.docTitle", "Title"),
+    text: text.trim(),
+  };
   const [editDocLoading, setEditDocLoading] = useState(false);
   const [editDocOriginal, setEditDocOriginal] = useState({
     title: "",
@@ -359,6 +364,8 @@ export function useKnowledgeManager(opts: {
   }
 
   useOnModalOpen(createModal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    baseRefusal.clear();
     setName("");
     setDescription("");
     setChunkSize(1000);
@@ -368,6 +375,8 @@ export function useKnowledgeManager(opts: {
   });
 
   useOnModalOpen(editModal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    baseRefusal.clear();
     const b = editModal.payload;
     if (!b) return;
     setName(b.name);
@@ -379,6 +388,8 @@ export function useKnowledgeManager(opts: {
   });
 
   useOnModalOpen(addContentModal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    addDocRefusal.clear();
     setAddTab("texto");
     setDocTitle("");
     setText("");
@@ -407,6 +418,8 @@ export function useKnowledgeManager(opts: {
   });
 
   useOnModalOpen(docEditModal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    editDocRefusal.clear();
     const payload = docEditModal.payload;
     if (!payload) return;
     setEditDocTitle(payload.title);
@@ -533,13 +546,15 @@ export function useKnowledgeManager(opts: {
     if (!payload || !text.trim()) return;
     setBusy(true);
     try {
+      const sent = {
+        title: docTitle.trim() || t("knowledge.docTitle", "Title"),
+        text: text.trim(),
+      };
       const { error: err } = await api.api.v1.knowledge
         .bases({ id: payload.id })
-        .documents.post({
-          title: docTitle.trim() || t("knowledge.docTitle", "Title"),
-          text: text.trim(),
-        });
+        .documents.post(sent);
       if (err) throw err;
+      addDocRefusal.clear();
       showToast(
         t("knowledge.addedQueued", "Document queued for processing."),
         "success",
@@ -552,12 +567,17 @@ export function useKnowledgeManager(opts: {
     } catch (e) {
       // The server's own message when it sent one: a refusal that names the field and the character
       // is the whole answer, and collapsing it into "Could not add document" throws away the only
-      // part the operator can act on (issue #247).
-      showToast(
-        apiErrorMessage(e) ??
-          t("knowledge.addError", "Could not add document."),
-        "error",
+      // part the operator can act on (issue #247) — at the input it named, when this form draws one.
+      const toast = addDocRefusal.capture(
+        e,
+        t("knowledge.addError", "Could not add document."),
+        {
+          title: docTitle.trim() || t("knowledge.docTitle", "Title"),
+          text: text.trim(),
+        },
+        addDocRef.current,
       );
+      if (toast) showToast(toast, "error");
     } finally {
       setBusy(false);
     }

@@ -39,6 +39,8 @@ export function CreateApiKeyModal({
   nameRef.current = displayName;
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     setDisplayName("");
     setToken(null);
     setCopied(false);

@@ -423,6 +423,9 @@ const baseAuthController = new Elysia({
               "errors.currentPasswordIncorrect",
               "Current password is incorrect",
             ),
+            // The form has two password boxes and this refusal is about exactly one of them. Built by
+            // hand here rather than raised as an AppError, so `refusalBody` never sees it.
+            field: "currentPassword",
           };
         }
         throw error;

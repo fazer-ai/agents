@@ -575,6 +575,7 @@ function AgentEditorSkeleton() {
 // also taking the operator to the tab that holds it, which is its own change (fazer-ai/agents#349;
 // the abstention is recorded in tests/client/field-refusal-fence.test.ts).
 const EDITOR_FIELDS = ["name", "systemPrompt"] as const;
+const CLONE_FIELDS = ["name"] as const;
 
 export function AgentEditorPage() {
   const { id = "" } = useParams();
@@ -843,6 +844,11 @@ function AgentEditor() {
   const fillCredModal = useModalController<VaultEntry>();
   const exportModal = useModalController();
   const [cloneName, setCloneName] = useState("");
+  // The clone dialog is its own form: one input, and the route refuses a name already taken by name.
+  // Separate from the editor's holder, because the two are on screen together.
+  const cloneRefusal = useFieldRefusal(CLONE_FIELDS);
+  const cloneRef = useRef("");
+  cloneRef.current = cloneName;
   // The suggested name prefilled on open; the modal only warns about discarding
   // when the user actually edited it.
   const cloneNameDefaultRef = useRef("");
@@ -2449,17 +2455,22 @@ function AgentEditor() {
         .agents({ id })
         .clone.post({ name: cloneName.trim() || undefined });
       if (err || !data) throw err ?? new Error("no data");
+      cloneRefusal.clear();
       cloneModal.close();
       showToast(t("editor.cloned", "Agent cloned (disabled)."), "success");
       navigate(`/agents/${data.agent.id}`);
     } catch (e) {
       // The clone carries the source agent's settings verbatim, so a source written before the text
       // caps is refused by name — the generic message would leave the operator with a button that
-      // fails and no field to shorten.
-      showToast(
-        apiErrorMessage(e) || t("editor.cloneError", "Could not clone."),
-        "error",
+      // fails and no field to shorten. A refusal about the NEW NAME lands on the one input this
+      // dialog draws; one about the copied settings has no control here and stays a toast.
+      const toast = cloneRefusal.capture(
+        e,
+        t("editor.cloneError", "Could not clone."),
+        { name: cloneName.trim() || undefined },
+        { name: cloneRef.current.trim() || undefined },
       );
+      if (toast) showToast(toast, "error");
     }
   }
 
@@ -2696,6 +2707,8 @@ function AgentEditor() {
                     );
                     cloneNameDefaultRef.current = suggested;
                     setCloneName(suggested);
+                    // The component outlives the dialog, so a mark from the last session is still held here.
+                    cloneRefusal.clear();
                     cloneModal.open();
                   }}
                 >
@@ -3148,7 +3161,10 @@ function AgentEditor() {
               )}
             </div>
           )}
-          <FormField label={t("editor.cloneName", "New agent name")}>
+          <FormField
+            label={t("editor.cloneName", "New agent name")}
+            error={cloneRefusal.at("name", cloneName.trim() || undefined)}
+          >
             <Input
               value={cloneName}
               onChange={(e) => setCloneName(e.target.value)}

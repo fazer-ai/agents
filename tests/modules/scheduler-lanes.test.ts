@@ -86,9 +86,12 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // deciding correctness — and the debounce lane can be switched off entirely, which would have
   // stranded every queued message on an install that does not use debounce.
   INGEST_MESSAGE: "shared",
-  // Shared: a sweep with a cadence of minutes and one indexed query per tenant. The recovery it
-  // arms is a DEBOUNCE job, which is claimed on the fast lane on its own account (issue #228).
+  // Shared: a sweep with a cadence of minutes and one indexed query per tenant (issue #228).
   DELIVERY_SWEEP: "shared",
+  // Shared: the message it answers has already waited out the sweep's staleness window, so a tick's
+  // wait is not what the customer feels, and the cap it needs is the shared lane's provider
+  // concurrency rather than a budget independent of the turns live customers are queueing for.
+  DELIVERY_RECOVERY: "shared",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -109,8 +112,11 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   MEMORY_COMPACT: false,
   INGEST_MESSAGE: false,
   // Reads and writes rows, emits log lines, invokes nothing: the sweep reports a stranded delivery
-  // rather than answering it (issue #295).
+  // and arms the recovery, rather than answering it itself (issue #295).
   DELIVERY_SWEEP: false,
+  // It runs the delivery path, which runs a real turn: a model call plus whatever tools it decides
+  // to use. This is the reason the recovery is a kind of its own instead of work the sweep does.
+  DELIVERY_RECOVERY: true,
 };
 
 // Same discipline again, and both of these maps were added by the change that introduced
@@ -132,6 +138,10 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   REDIRECT_FOLLOWUP: false,
   MEMORY_COMPACT: false,
   DELIVERY_SWEEP: false,
+  // One row per stranded DELIVERY, and one sweep pass can declare a whole batch lost at once — the
+  // deploy that stranded them stranded every delivery in flight. Armed for `now`, they are the
+  // oldest rows too, which is the shape that fills the batch and starves a fixed-rate kind.
+  DELIVERY_RECOVERY: true,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
@@ -147,6 +157,10 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   REDIRECT_FOLLOWUP: false,
   MEMORY_COMPACT: false,
   DELIVERY_SWEEP: false,
+  // The key names ONE ledger row — it has to, or a second stranded delivery would overwrite the
+  // first — so nothing reuses the row and the count grows with every delivery ever stranded. The
+  // record that the work happened is the ledger row, which is terminal either way.
+  DELIVERY_RECOVERY: true,
 };
 
 // Written out ON PURPOSE, like the tables above: derived, it would mirror whatever the source says.
@@ -166,6 +180,10 @@ const EXPECTED_DEATH_LEVEL: Record<
   MEMORY_COMPACT: "error",
   INGEST_MESSAGE: "error",
   DELIVERY_SWEEP: "error",
+  // The only kind whose death is not an `error`, which is why writing it out matters more here than
+  // anywhere else in this file: the sweep already paged about this exact delivery at `error`, and
+  // the DEAD ledger row is still the operator's worklist. What died is the automatic second attempt.
+  DELIVERY_RECOVERY: "warn",
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];

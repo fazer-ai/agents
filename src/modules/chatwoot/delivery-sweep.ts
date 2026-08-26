@@ -5,6 +5,7 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
+import { armDeliveryRecovery } from "./recover-delivery";
 import {
   classifyStrandedDelivery,
   type StrandedVerdict,
@@ -13,20 +14,24 @@ import {
 // Finds Chatwoot deliveries stranded by a process death and says so (issue #228). One DELIVERY_SWEEP
 // job per tenant, armed at boot and when a Chatwoot account is connected, self-rearming.
 //
-// IT DOES NOT ANSWER THE CUSTOMER, and that is the design rather than a shortcut. Recovering the
-// turn means running one, and a turn run from here is not the turn the delivery would have run: the
-// flush machinery re-checks ownership and contact authorization itself, but the test-mode gate, the
-// availability window and the redirect gate are applied by the delivery path and are gone with the
-// process that died. A recovery that skips them answers out of hours, or on a conversation whose
-// test mode was never activated — a reply the original delivery would have suppressed. Two earlier
-// designs here (arming the flush, running it inline) were both wrong for that same reason, and the
-// recovery half is issue #295.
+// IT STILL DOES NOT ANSWER THE CUSTOMER ITSELF, and that is the design rather than a shortcut.
+// Recovering the turn means running one, and a turn run from HERE is not the turn the delivery would
+// have run: the flush machinery re-checks ownership and contact authorization itself, but the
+// test-mode gate, the availability window and the redirect gate are applied by the delivery path and
+// are gone with the process that died. Two earlier designs (arming the flush, running it inline)
+// were both wrong for that same reason.
 //
-// What is left is worth having on its own. The issue's harm has two halves — the message is gone,
-// and it is gone SILENTLY — and this closes the second completely: every stranded row becomes
-// terminal, `WHERE status = 'DEAD'` is the list of customers who wrote and were never answered, and
-// each one leaves an error-level line on the conversation, which is what the console reads and what
-// the alert channels dispatch.
+// What it does instead is arm one DELIVERY_RECOVERY per row it declares lost (issue #295), and that
+// job re-runs the DELIVERY PATH, where every one of those gates already lives. A kind of its own
+// because it spends a whole agent turn and this sweep spends an indexed query — lanes.ts states the
+// rule, and folding the turn in here would start a batch's worth of them inside a job sized for
+// queries.
+//
+// The reporting half stands on its own and is not conditional on the recovery working. The issue's
+// harm has two halves — the message is gone, and it is gone SILENTLY — and this closes the second
+// completely: every stranded row becomes terminal, `WHERE status = 'DEAD'` is the list of customers
+// who wrote and were never answered, and each one leaves an error-level line on the conversation,
+// which is what the console reads and what the alert channels dispatch.
 
 // Longer than any legitimate delivery. There is no number to derive it from — the direct path runs
 // the agent turn INSIDE `processChatwootDelivery` and neither the model call nor the tools have a
@@ -374,8 +379,9 @@ async function mirrorOf(
 // with it the one path that could still have answered the customer through the real gates. The
 // report is still true (nothing had processed the message), and the window needs a manual replay to
 // land inside the sweep's write, since Chatwoot holds a 200 and does not redeliver on its own.
-// Closing it means letting a claim take a row back from a terminal state, which is recovery, and
-// recovery is issue #295 rather than something to smuggle in here.
+// Closing it means letting a claim take a row back from a terminal state, which is recovery: the
+// DELIVERY_RECOVERY armed below does exactly that, from `DEAD` and through the real gates (issue
+// #295), rather than this write being widened to allow it.
 // Exported for the test: the false branch is a race between the scan and the write, and a test that
 // tries to construct one goes green for the wrong reason more often than it detects.
 export async function finish(
@@ -523,6 +529,26 @@ async function record(
     counts.raced += 1;
     return;
   }
+
+  // The recovery, armed at the only moment anything knows this row just became recoverable: the
+  // query above reads PENDING and PROCESSING, so from here on the row is invisible to every later
+  // pass of this sweep.
+  //
+  // BEST-EFFORT, and the failure is survivable in exactly the way the loss line's is not: the row is
+  // already DEAD and already in the worklist, so an operator still learns. What is lost is the
+  // automatic attempt, which is why it is logged loudly rather than swallowed.
+  //
+  // Armed BEFORE the line rather than after, so the alert an operator receives is never newer than
+  // the attempt to make it moot.
+  try {
+    await armDeliveryRecovery(tenantId, row.id, base);
+  } catch (error) {
+    logger.error(
+      { error },
+      `chatwoot delivery sweep: ${label} is DEAD and its recovery could not be armed; the row stays in the DEAD list and nothing will retry it`,
+    );
+  }
+
   const written = await writeFlowEvent(
     {
       tenantId,

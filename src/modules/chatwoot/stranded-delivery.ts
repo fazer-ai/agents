@@ -12,10 +12,11 @@
 // ordinary exception does NOT reach here — the agent turn, the eager media pass and the mirror write
 // are each caught, so the delivery still reaches PROCESSED.
 //
-// This says whether a customer message was LOST, and nothing else. It does not answer, and the sweep
-// that consumes it does not either — recovering the turn needs the gates the delivery path applies
-// before a flush (test mode, availability, redirect) and none of them survive the process that died.
-// That is issue #295.
+// This says whether a customer message was LOST, and nothing else. It does not answer, and neither
+// does the sweep that consumes it: recovering the turn needs the gates the delivery path applies
+// before a flush (test mode, availability, redirect) and none of them survive the process that died,
+// so the sweep arms a DELIVERY_RECOVERY that re-runs that path where the gates already live (issue
+// #295, ./recover-delivery.ts).
 //
 // A pure function of the row alone, and it got there by DELETION. What used to live here was a
 // comparison against the conversation's watermarks, meant to tell a message a later burst covered

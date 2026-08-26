@@ -15,6 +15,7 @@ import {
 } from "@/modules/chatwoot/delivery-sweep";
 import { setConnectedAccounts } from "@/modules/chatwoot/management";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import { deliveryRecoveryDedupeKey } from "@/modules/chatwoot/recover-delivery";
 import {
   processChatwootDelivery,
   recordAndProcessChatwootDelivery,
@@ -34,9 +35,11 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 // an interruption between the two CAS points on this repo's own code — it leaves
 // `status = PROCESSING, attempts = 0`, exactly the row below.
 //
-// The sweep does NOT answer the customer (that is #295), so the effect asserted is the pair a
-// stranded row leaves for an operator: the ledger row terminal on DEAD, and an error-level line on
-// the conversation, which is what the Logs page reads and the alert channels dispatch.
+// The sweep does not answer the customer ITSELF: it arms a DELIVERY_RECOVERY for each row it
+// declares lost (issue #295, tests/modules/chatwoot-recover-delivery.test.ts). What is asserted here
+// is what the sweep owns — the ledger row terminal on DEAD, an error-level line on the conversation,
+// which is what the Logs page reads and the alert channels dispatch, and the recovery armed for
+// exactly the rows that are recoverable.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -101,7 +104,7 @@ async function seedStrandedDelivery(over: {
   // How long ago the CURRENT attempt claimed the row, when something has. Omitted = never claimed.
   claimedAgoMs?: number;
   inboundMessageId?: number | null;
-  status?: "PENDING" | "PROCESSING";
+  status?: "PENDING" | "PROCESSING" | "DEAD";
   event?: string;
 }): Promise<bigint> {
   deliverySeq += 1;
@@ -128,7 +131,7 @@ async function seedStrandedDelivery(over: {
 async function statusOf(rowId: bigint) {
   return suDb.chatwootWebhookDelivery.findUniqueOrThrow({
     where: { id: rowId },
-    select: { status: true, processedAt: true },
+    select: { status: true, processedAt: true, attempts: true },
   });
 }
 
@@ -308,6 +311,150 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
+  // The door the sweep's verdict leaves, and the one issue #295 opens. `DEAD` is reached by
+  // INFERENCE — nothing has moved this row — and a recovery that actually runs the turn is direct
+  // evidence, which outranks it. The same ordering a turn already uses when it corrects a `DEAD` row
+  // it ran over (retireCoveredDeliveries).
+  describe("reclaiming a row the sweep gave up on", () => {
+    async function deadRowFor(convId: number, messageId: number) {
+      await seedConversation(convId);
+      return seedStrandedDelivery({
+        conversationId: convId,
+        ageMs: STALE_MS * 2,
+        inboundMessageId: messageId,
+        status: "DEAD",
+      });
+    }
+
+    function eventFor(convId: number, messageId: number) {
+      const n = normalizeChatwootEvent({
+        event: "message_created",
+        id: messageId,
+        private: false,
+        content: "oi, continua aí?",
+        message_type: "incoming",
+        sender: { id: 77, name: "Cliente", type: null },
+        conversation: {
+          id: convId,
+          inbox_id: CHATWOOT_INBOX_ID,
+          status: "pending",
+          contact_inbox: { id: 61_000 + convId },
+          meta: { assignee: null, sender: { id: 77, name: "Cliente" } },
+          channel: "Channel::Api",
+        },
+      });
+      if (!n) throw new Error("payload did not normalize");
+      return n;
+    }
+
+    test("a DEAD row is claimable, and the claim counts as an attempt", async () => {
+      const convId = 8840;
+      const rowId = await deadRowFor(convId, 9201);
+      const before = await statusOf(rowId);
+      expect(before.attempts).toBe(0);
+
+      const outcome = await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: rowId,
+        agentBotId: AGENT_BOT_ID,
+        normalized: eventFor(convId, 9201),
+        claimFrom: "DEAD",
+        base: appDb,
+      });
+      expect(outcome).toBe("processed");
+      // `attempts` was carried unused since the ledger existed; this is its first writer, and it is
+      // what bounds the retry ladder a recovery runs on.
+      expect((await statusOf(rowId)).attempts).toBe(1);
+
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+    });
+
+    test("a second recovery of the same row claims nothing", async () => {
+      // The reason the claim is ONE statement rather than a reclaim followed by the ordinary claim:
+      // the winner owns the row, and there is no window in which the row sits PROCESSING with
+      // nothing holding it — which is the exact state this whole subsystem exists to make
+      // impossible to reach silently.
+      const convId = 8841;
+      const rowId = await deadRowFor(convId, 9202);
+      const first = await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: rowId,
+        agentBotId: AGENT_BOT_ID,
+        normalized: eventFor(convId, 9202),
+        claimFrom: "DEAD",
+        base: appDb,
+      });
+      const second = await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: rowId,
+        agentBotId: AGENT_BOT_ID,
+        normalized: eventFor(convId, 9202),
+        claimFrom: "DEAD",
+        base: appDb,
+      });
+      expect(first).toBe("processed");
+      expect(second).toBe("skipped");
+      expect((await statusOf(rowId)).attempts).toBe(1);
+
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+    });
+
+    test("a row still PROCESSING is not reclaimable: something may still hold it", async () => {
+      // A recovery takes back what the sweep GAVE UP ON, and nothing else. A PROCESSING row is one
+      // whose owner has not been declared gone; claiming it would run a second turn beside a live
+      // one, and both turns' tools would execute.
+      const convId = 8842;
+      await seedConversation(convId);
+      const rowId = await seedStrandedDelivery({
+        conversationId: convId,
+        ageMs: STALE_MS * 2,
+        inboundMessageId: 9203,
+        status: "PROCESSING",
+      });
+      const outcome = await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: rowId,
+        agentBotId: AGENT_BOT_ID,
+        normalized: eventFor(convId, 9203),
+        claimFrom: "DEAD",
+        base: appDb,
+      });
+      expect(outcome).toBe("skipped");
+      expect((await statusOf(rowId)).status).toBe("PROCESSING");
+
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+    });
+
+    test("a live delivery spends no attempt: its claim is not a retry", async () => {
+      // `attempts` bounds RECOVERY, so the ordinary path must leave it alone — otherwise every
+      // conversation would arrive with its recovery budget already partly spent.
+      const convId = 8843;
+      await seedConversation(convId);
+      const rowId = await seedStrandedDelivery({
+        conversationId: convId,
+        ageMs: 0,
+        inboundMessageId: 9204,
+        status: "PENDING",
+      });
+      const outcome = await processChatwootDelivery({
+        tenantId,
+        instanceId,
+        deliveryRowId: rowId,
+        agentBotId: AGENT_BOT_ID,
+        normalized: eventFor(convId, 9204),
+        base: appDb,
+      });
+      expect(outcome).toBe("processed");
+      expect((await statusOf(rowId)).attempts).toBe(0);
+
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+    });
+  });
+
   test("is recorded as a loss the operator can find", async () => {
     const convId = 8802;
     const messageId = 9101;
@@ -343,6 +490,86 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(detail.outcome).toBe("stranded");
     expect(detail.messageId).toBe(messageId);
     expect(detail.knownToMirror).toBe(true);
+
+    // The other half, and the one the reporting alone never had: a recovery is armed for this exact
+    // row (issue #295). Armed HERE or nowhere — the sweep's query reads PENDING and PROCESSING, so
+    // from this moment on the row is invisible to every later pass.
+    const job = await suDb.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "DELIVERY_RECOVERY",
+        dedupeKey: deliveryRecoveryDedupeKey(rowId),
+      },
+      select: { status: true, payload: true },
+    });
+    expect(job?.status).toBe("PENDING");
+    // A bigint does not survive JSON, so the id is carried as a string and the handler parses it
+    // back. Asserted because a payload that says `{}` costs nothing at arming time and loses the
+    // message at claim time.
+    expect(
+      (job?.payload as Record<string, unknown> | undefined)?.deliveryRowId,
+    ).toBe(String(rowId));
+  });
+
+  test("arms no recovery for a strand it closes rather than loses", async () => {
+    // Only a LOSS is recoverable. A row the sweep closes has nothing outstanding — the message was
+    // answered, or the event could never carry one — and a recovery armed there would run a second
+    // turn over a conversation that already had its answer.
+    const convId = 8817;
+    await seedConversation(convId);
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      claimedAgoMs: STALE_MS * 2,
+      inboundMessageId: null,
+      event: "conversation_updated",
+    });
+
+    await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect((await statusOf(rowId)).status).toBe("PROCESSED");
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(rowId),
+        },
+        select: { id: true },
+      }),
+    ).toBeNull();
+  });
+
+  test("arms no recovery for a row that was already terminal", async () => {
+    // The scan reads PENDING and PROCESSING only, so a row something else finished is never looked
+    // at — and a recovery armed on one would run a turn over a message that already had its answer.
+    // The narrower race (the row moving BETWEEN the scan and the CAS) is settled by `finish` losing
+    // its CAS, asked directly in its own test below for the reason stated there.
+    const convId = 8818;
+    await seedConversation(convId);
+    const rowId = await seedStrandedDelivery({
+      conversationId: convId,
+      ageMs: STALE_MS * 2,
+      inboundMessageId: 9111,
+    });
+    await suDb.chatwootWebhookDelivery.update({
+      where: { id: rowId },
+      data: { status: "PROCESSED", processedAt: new Date() },
+    });
+
+    await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect((await statusOf(rowId)).status).toBe("PROCESSED");
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(rowId),
+        },
+        select: { id: true },
+      }),
+    ).toBeNull();
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
   test("records a PENDING strand too, which the CAS never reached", async () => {

@@ -57,6 +57,12 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // per tenant — the arming it may do costs nothing, and the flush that follows is a DEBOUNCE job
   // that gets claimed on its own lane with its own budget.
   DELIVERY_SWEEP: "shared",
+  // Shared, and neither reason applies. Cadence: the message it answers has been unanswered for at
+  // least the sweep's staleness window, so a wait of one shared tick is not what the customer feels.
+  // Budget: it does spend the model, but the cap that needs is the shared lane's own provider
+  // concurrency (below), not a tick of its own — a lane would give it a budget INDEPENDENT of the
+  // turns a live customer is queueing for, which is the opposite of what a recovery should get.
+  DELIVERY_RECOVERY: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider that the rest of the product
@@ -91,10 +97,13 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // No model, no embedding: it appends to a checkpointer channel and writes one row.
   INGEST_MESSAGE: false,
   // It reads and writes rows and emits log lines. Answering the stranded message would make this
-  // true, and that is exactly why answering is not done here (issue #295): the delivery path's own
-  // gates do not survive the process that died, so a turn run from a sweep is not the turn the
-  // delivery would have run.
+  // true, and that is exactly why answering is not done here (issue #295): the sweep arms a
+  // DELIVERY_RECOVERY per row it declares lost, and that kind carries the spend.
   DELIVERY_SWEEP: false,
+  // It runs the delivery path, which runs a real agent turn: a model call, and whatever tools the
+  // turn decides to use. The whole reason it is a kind of its own rather than work the sweep does
+  // inline.
+  DELIVERY_RECOVERY: true,
 };
 
 // How many provider-spending jobs the shared lane may run at once, out of the model budget. NEVER
@@ -128,6 +137,11 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   MEMORY_COMPACT: false,
   INGEST_MESSAGE: true,
   DELIVERY_SWEEP: false,
+  // Same reason as INGEST_MESSAGE, and the same shape: the key names ONE ledger row — it has to, or
+  // a second stranded delivery would overwrite the first — so nothing ever reuses the row and the
+  // count is bounded by how many deliveries have ever been stranded. What the record of the work is
+  // here is the ledger row itself, which is terminal either way.
+  DELIVERY_RECOVERY: true,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic, rather than a population the
@@ -160,6 +174,11 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   INGEST_MESSAGE: true,
   // One row per tenant, re-armed forever. Bounded by the install's tenant count, not by traffic.
   DELIVERY_SWEEP: false,
+  // One row per DELIVERY the sweep declared lost, and a single sweep pass can declare a whole batch
+  // of them at once — the deploy that stranded them stranded every delivery that was in flight. They
+  // are armed for `now`, so they are also the oldest rows, which is the exact shape that fills every
+  // batch and starves a reminder that exists to arrive BEFORE something.
+  DELIVERY_RECOVERY: true,
 };
 
 // WHAT ONE KIND'S DEATH MEANS TO THE OPERATOR, at the only moment the scheduler can state it
@@ -219,6 +238,14 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // Self-rescheduling: its death is stranded deliveries going unreported from then on, which is the
   // silence #282 had just finished closing.
   DELIVERY_SWEEP: "error",
+  // The one `warn` here, and it is the rule above applied rather than an exception to it: the
+  // operator has their own way back to this work, twice over. The sweep already announced this exact
+  // delivery at `error` when it declared the row DEAD, and the row is still in the
+  // `WHERE status = 'DEAD'` worklist that #228 exists to produce. What died is the AUTOMATIC second
+  // attempt, which leaves the state exactly as the sweep left it — already paged, still listed. A
+  // second `error` would be the same customer message waking somebody twice, which is how a channel
+  // stops being read.
+  DELIVERY_RECOVERY: "warn",
 };
 
 export function kindsInLane(

@@ -18,6 +18,38 @@ function num(v: unknown): number | null {
   return null;
 }
 
+// What kind of message this is, in the ONE vocabulary the rest of the code compares against.
+//
+// It takes both spellings because Chatwoot has two serializers and they disagree. MEASURED on the
+// fork, one message, both of them: `Message#webhook_data[:message_type]` is the string `"incoming"`
+// and `Message#push_event_data[:message_type]` is the integer `0`. The webhook carries the first and
+// every REST read carries the second, so a body's provenance decides its spelling.
+//
+// This used to be `str()` here and a private copy in ./messages.ts, which is the shape of defect
+// that keeps costing this repo: one question, two places, two tolerances. The copy in messages.ts
+// took both and this one took only the string, so an event rebuilt from a REST read normalized to
+// `messageType: null` and `isNewIncomingMessage` answered false — a customer's message classified as
+// not-incoming, with no throw and no line. Nothing rebuilt events from REST until issue #295, which
+// is why the divergence had never fired.
+//
+// Unknown input collapses to "other" rather than passing through, and that is not a widening: the
+// only two readers of this field ask `=== "incoming"` and `=== "outgoing"`, so a value neither of
+// them matches already meant "neither".
+export function messageTypeOf(
+  v: unknown,
+): "incoming" | "outgoing" | "activity" | "template" | "other" {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  if (n === 0) return "incoming";
+  if (n === 1) return "outgoing";
+  if (n === 2) return "activity";
+  if (n === 3) return "template";
+  if (v === "incoming") return "incoming";
+  if (v === "outgoing") return "outgoing";
+  if (v === "activity") return "activity";
+  if (v === "template") return "template";
+  return "other";
+}
+
 function str(v: unknown): string | null {
   return typeof v === "string" ? v : null;
 }
@@ -155,7 +187,7 @@ export function normalizeChatwootEvent(
     normalized.message = {
       id: num(payload.id),
       content: str(payload.content),
-      messageType: str(payload.message_type),
+      messageType: messageTypeOf(payload.message_type),
       private: payload.private === true,
       sender: msgSender
         ? {

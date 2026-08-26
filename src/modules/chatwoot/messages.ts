@@ -1,4 +1,4 @@
-import { firstLocationAttachment } from "./normalize";
+import { firstLocationAttachment, messageTypeOf } from "./normalize";
 import {
   cleanTranscription,
   type RenderableLocation,
@@ -46,20 +46,6 @@ function num(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && /^\d+$/.test(v)) return Number(v);
   return null;
-}
-
-function messageType(v: unknown): ChatwootMessageRow["messageType"] {
-  // REST API: integer enum. Tolerate the webhook's string form too, for robustness.
-  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
-  if (n === 0) return "incoming";
-  if (n === 1) return "outgoing";
-  if (n === 2) return "activity";
-  if (n === 3) return "template";
-  if (v === "incoming") return "incoming";
-  if (v === "outgoing") return "outgoing";
-  if (v === "activity") return "activity";
-  if (v === "template") return "template";
-  return "other";
 }
 
 // A string value written back onto an attachment's meta by an eager pass (STT/vision), read from
@@ -141,7 +127,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
     out.push({
       id,
       content: typeof item.content === "string" ? item.content : "",
-      messageType: messageType(item.message_type),
+      messageType: messageTypeOf(item.message_type),
       private: item.private === true,
       attachmentTypes: attachmentTypesFrom(item.attachments),
       transcribedText: metaStringFrom(item.attachments, "transcribed_text"),

@@ -666,6 +666,10 @@ export interface ProcessChatwootParams {
   deliveryRowId: bigint;
   agentBotId: number | null;
   normalized: NormalizedChatwootEvent;
+  // Which state the opening CAS claims from. Omitted = "PENDING", a delivery arriving. "DEAD" is a
+  // recovery taking back a row the sweep gave up on (issue #295); see the CAS for why it is one
+  // statement and not two.
+  claimFrom?: "PENDING" | "DEAD";
   base?: PrismaClient;
   // Injectable runtime deps (tests): fake model/client/checkpointer + the contact-auth fetch.
   deps?: RuntimeDeps;
@@ -2905,7 +2909,7 @@ export async function processChatwootDelivery(
 ): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
 
-  // tx1: CAS PENDING→PROCESSING. A re-entry (duplicate POST that found a stranded PENDING) sees
+  // tx1: CAS <claimFrom>→PROCESSING. A re-entry (duplicate POST that found a stranded PENDING) sees
   // 0 rows and skips.
   //
   // The claim is STAMPED, because the winner of this CAS is not always the first attempt: a
@@ -2914,10 +2918,35 @@ export async function processChatwootDelivery(
   // measures a PROCESSING row by; without it the sweep dates this live attempt to the original
   // receipt, calls it abandoned the instant it starts, and reports a lost message while the process
   // answering it is still running (issue #228).
+  //
+  // WHICH state it claims FROM is the caller's, and there are exactly two answers because there are
+  // exactly two ways a delivery reaches this function.
+  //
+  //   "PENDING"  a delivery arriving, or a redelivery of one that never started. The row was just
+  //              inserted, or was left where an insert put it.
+  //   "DEAD"     a recovery of a delivery a process death stranded and the sweep gave up on (issue
+  //              #295). `DEAD` is the sweep's verdict, reached by INFERENCE — nothing has moved this
+  //              row — and a recovery that runs the turn is direct evidence that outranks it, the
+  //              same way a turn already corrects a `DEAD` row it ran over (retireCoveredDeliveries).
+  //
+  // ONE CAS with two predicates, rather than a reclaim step followed by the ordinary claim. The
+  // difference is a window: reclaiming first would leave the row PROCESSING with nothing holding it
+  // if the process died between the two statements, which is the exact state this whole subsystem
+  // exists to make impossible to reach silently. Here the winner of the single statement owns the
+  // row, and a second recovery for the same row matches nothing and skips.
+  //
+  // `attempts` is incremented, and this is its first reader: it was carried unused since the ledger
+  // was introduced, and the caller bounds a retry on it. A live delivery does not touch it — its
+  // claim is not an attempt at recovery, it is the first attempt at all.
+  const claimFrom = params.claimFrom ?? "PENDING";
   const claimed = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.chatwootWebhookDelivery.updateMany({
-      where: { id: params.deliveryRowId, status: "PENDING" },
-      data: { status: "PROCESSING", claimedAt: new Date() },
+      where: { id: params.deliveryRowId, status: claimFrom },
+      data: {
+        status: "PROCESSING",
+        claimedAt: new Date(),
+        ...(claimFrom === "DEAD" ? { attempts: { increment: 1 } } : {}),
+      },
     }),
   );
   if (claimed.count === 0) return "skipped";
@@ -3871,9 +3900,10 @@ export async function processChatwootDelivery(
 
   // tx2: mark processed. NOTE: a crash between tx1 and tx2 still strands the row in PROCESSING —
   // nothing here can close that window, because the process is gone. What closes it is the
-  // stranded-delivery sweep (./delivery-sweep.ts): it does not replay the event, it REPORTS the row,
-  // so the payload never had to be stored. Answering the customer is issue #295, and the reason it
-  // is not done from a sweep is written down there and at the head of that file.
+  // stranded-delivery sweep (./delivery-sweep.ts): it does not replay the event, it REPORTS the row
+  // and arms a recovery, so the payload never had to be stored. The recovery rebuilds a body from
+  // the mirror plus one REST read and comes back through THIS function with `claimFrom: "DEAD"`
+  // (issue #295, ./recover-delivery.ts).
   //
   // NOTE: By ID and with no CAS, which matters for one race and is the right side of it. A turn that
   // outlives the sweep's staleness threshold (nothing bounds a model call or a tool here) has its

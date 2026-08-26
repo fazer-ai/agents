@@ -1,0 +1,122 @@
+// The webhook body a stranded delivery no longer has, rebuilt from what survived it.
+//
+// A delivery that a process death stranded left a ledger row naming a conversation and a message,
+// and nothing else: the event body was deliberately never stored, so that a customer's words are not
+// held at rest a second time (issue #228). Recovering the turn (issue #295) means running the
+// delivery path again, and the delivery path takes a webhook body.
+//
+// SO THIS REBUILDS A BODY, and hands it to `normalizeChatwootEvent` like any other. It does NOT
+// build a `NormalizedChatwootEvent` directly, and that is the whole design: exactly one place knows
+// how a Chatwoot payload becomes an event, the same place a live delivery goes through. Building the
+// event here would be a second reader of the same shape, which is the defect this repo keeps paying
+// for (issues #134, #177, and the `message_type` divergence this very path uncovered).
+//
+// THE TWO SOURCES, and why each field comes from the one it does:
+//
+//   - the CONVERSATION comes from the mirror, not from a re-read. The mirror is what every gate
+//     downstream already consults, it is current rather than as-of-the-strand, and a recovery asks
+//     "may this be answered NOW" — a status or an assignee that moved while the row sat stranded is
+//     the answer, not noise to be papered over.
+//   - the MESSAGE comes from a REST read, because it is the one thing the mirror does not hold.
+//
+// The two sources for the message spell two fields differently, and BOTH were measured live against
+// the local fork rather than assumed — the REST view renders `message_type_before_type_cast` and
+// `sender.push_event_data`, the wire renders the enum and `sender.webhook_data`:
+//
+//   - `message_type` is an INTEGER over REST and the enum STRING on the wire. `messageTypeOf` takes
+//     both, which is the entire reason it exists (see normalize.ts).
+//   - a contact SENDER carries `type: "contact"` over REST and no `type` key at all on the wire.
+//     Carried through as REST gave it: the reader is `isHumanAgentMessage`, which needs an OUTGOING
+//     message, and a recovery only ever rebuilds an inbound one.
+//
+// ATTACHMENTS are the field that does NOT diverge, and that was worth measuring too, because the
+// eager-STT pass downloads a voice note from `data_url` off this body: both views render
+// `attachments.map(&:push_event_data)`, the same method, so what a recovery hands the delivery path
+// is what a live delivery handed it.
+//
+// WHAT IT DELIBERATELY DOES NOT CARRY, each one a field `normalizeChatwootEvent` reads and this body
+// leaves out, so the omission is a decision on the record rather than an oversight:
+//
+//   - `meta.sender` (the contact's attribute bag) and `conversation.custom_attributes`. Those drive
+//     the MIRROR's attribute merge, and the mirror is where this body's conversation half came from:
+//     re-merging them here would write the mirror back onto itself, and a stale read would undo an
+//     attribute an operator set while the row was stranded. Absent means "said nothing", which is
+//     the sentinel the mirror already honours.
+//   - the kanban card. Same reason, same sentinel.
+export interface RecoveryConversation {
+  // Chatwoot's per-account DISPLAY id — the only id this may hold (issue #257).
+  chatwootConversationId: number;
+  contactInboxId: number | null;
+  status: string;
+  assigneeType: string | null;
+  assigneeId: number | null;
+  assigneeName: string | null;
+}
+
+export interface RecoveryMessage {
+  id: number;
+  content: string | null;
+  // Either spelling. The REST read gives the integer; a caller replaying a captured body may give
+  // the string. `messageTypeOf` is the one place that knows both.
+  messageType: unknown;
+  private: boolean;
+  contentAttributes: Record<string, unknown> | null;
+  sender: Record<string, unknown> | null;
+  attachments: unknown[];
+}
+
+export function buildRecoveryPayload(params: {
+  conversation: RecoveryConversation;
+  // The CHATWOOT inbox id, not the mirror's foreign key. The mirror stores the FK, so the caller
+  // resolves it; the body must carry what a real one carries.
+  inboxId: number | null;
+  // The inbox's name, from the same row the id came from.
+  //
+  // Carried even though nothing would break without it, and the reason is the rule rather than this
+  // field: its only consumer is the mirror's inbox upsert, where null means "preserve" and the
+  // create-with-placeholder branch cannot be reached by a conversation the mirror already knows. So
+  // it is harmless to drop — and "the rebuild reproduces the body" is an invariant worth more than
+  // "the rebuild reproduces the body except where I argued the gap was harmless", because the second
+  // one has to be re-argued every time a field is added. The A/B test is what found it.
+  inboxName: string | null;
+  message: RecoveryMessage;
+}): Record<string, unknown> {
+  const { conversation: c, message: m } = params;
+  return {
+    // Always the turn-bearing name. A recovery exists only for a message that owed an answer, and
+    // `classifyStrandedDelivery` has already refused every other event before a row reaches here.
+    event: "message_created",
+    id: m.id,
+    content: m.content,
+    message_type: m.messageType,
+    private: m.private,
+    content_attributes: m.contentAttributes ?? {},
+    sender: m.sender,
+    attachments: m.attachments,
+    // `inbox` carries the id for the shape that has no conversation scalar (issue #270). Both are
+    // filled here because a real message body fills both.
+    ...(params.inboxId !== null
+      ? { inbox: { id: params.inboxId, name: params.inboxName } }
+      : {}),
+    conversation: {
+      id: c.chatwootConversationId,
+      ...(params.inboxId !== null ? { inbox_id: params.inboxId } : {}),
+      status: c.status,
+      ...(c.contactInboxId !== null
+        ? { contact_inbox: { id: c.contactInboxId } }
+        : {}),
+      // The assignee block is the one the ownership gate reads, and it is present whenever the
+      // mirror knows the conversation at all — which it does, or this row would not have been
+      // classified. An unassigned conversation is `assignee: null` INSIDE a present meta, which is
+      // "really unassigned"; omitting meta would say "said nothing" and leave the gate reading a
+      // stale mirror it just came from.
+      meta: {
+        assignee_type: c.assigneeType,
+        assignee:
+          c.assigneeId === null
+            ? null
+            : { id: c.assigneeId, name: c.assigneeName },
+      },
+    },
+  };
+}

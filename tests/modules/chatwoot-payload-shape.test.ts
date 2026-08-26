@@ -3,7 +3,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
-import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
+import {
+  isNewIncomingMessage,
+  normalizeChatwootEvent,
+} from "@/modules/chatwoot/normalize";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Issue #257. `chatwoot_conversation_id` stores Chatwoot's per-account DISPLAY id, and the mirror is
@@ -248,6 +251,57 @@ describe.skipIf(!dbUp)(
         select: { redirectOriginDisplayId: true },
       });
       expect(after.redirectOriginDisplayId).toBe(ORIGIN_DISPLAY);
+    });
+
+    // The SAME divergence between the two serializers, on a different field, and the one that
+    // decides whether a customer gets answered at all.
+    //
+    // MEASURED on the fork, one message, both serializers: `Message#webhook_data[:message_type]` is
+    // the string `"incoming"` and `Message#push_event_data[:message_type]` is the integer `0`. The
+    // webhook carries the first; every REST read carries the second. `parseChatwootMessages` already
+    // maps both (`// REST API: integer enum. Tolerate the webhook's string form too`), and
+    // `normalizeChatwootEvent` did not — so an event rebuilt from a REST read normalized to
+    // `messageType: null`, `isNewIncomingMessage` answered false, and the customer's message was
+    // classified as not-incoming. Silently: no throw, no line, nothing.
+    //
+    // Nothing fed REST-shaped bodies to the normalizer on the reactive path until issue #295 —
+    // recovering a stranded delivery means rebuilding the event, and the only surviving source for
+    // its message is the REST read. This is the fence that stops the recovery from reintroducing the
+    // exact silence #228 removed.
+    test("a message_type spelled the REST way is the same message", () => {
+      const asWebhook = normalizeChatwootEvent({
+        event: "message_created",
+        ...messageBody(),
+      });
+      const asRest = normalizeChatwootEvent({
+        event: "message_created",
+        ...messageBody(),
+        message_type: 0,
+      });
+      expect(asWebhook?.message?.messageType).toBe("incoming");
+      expect(asRest?.message?.messageType).toBe("incoming");
+      // And the verdict that hangs off it, which is what actually gates the turn.
+      expect(asRest && isNewIncomingMessage(asRest)).toBe(true);
+    });
+
+    // The other three integers the enum defines, so the mapping is a TABLE rather than one case that
+    // happened to be needed: an outgoing message rebuilt from REST must stay outgoing, or a
+    // recovery would answer the bot's own reply.
+    test("the whole enum maps, not just the incoming case", () => {
+      const table: Array<[number, string]> = [
+        [0, "incoming"],
+        [1, "outgoing"],
+        [2, "activity"],
+        [3, "template"],
+      ];
+      for (const [n, expected] of table) {
+        const e = normalizeChatwootEvent({
+          event: "message_created",
+          ...messageBody(),
+          message_type: n,
+        });
+        expect(e?.message?.messageType).toBe(expected);
+      }
     });
 
     // Same rule from the other end: a body about a different SUBJECT writes nothing at all, rather

@@ -635,3 +635,35 @@ describe("calendar writes honor availability — round 3 (#345)", () => {
     ).toBe(false);
   });
 });
+
+describe("calendar writes honor availability — round 4 (#345)", () => {
+  test("changing a legacy all-day date reaches the refusal instead of being dropped", async () => {
+    // Both bare dates resolve to no instant, so comparing instants alone made every all-day value
+    // equal to every other: the move was classified as "nothing changed" and silently discarded.
+    const { impl, calls } = routeFetch((url, init) => {
+      if (url.includes("/freeBusy"))
+        return { json: { calendars: { primary: { busy: [] } } } };
+      if (init.method === "GET")
+        return {
+          json: {
+            id: "ev_legacy",
+            extendedProperties: stampedExt,
+            start: { date: DAY },
+            end: { date: "2099-06-23" },
+          },
+        };
+      return { json: { id: "ev_legacy" } };
+    });
+    const out = (await toolFor(
+      "calendar_update_event",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      eventId: "ev_legacy",
+      start: "2099-06-23",
+      end: "2099-06-24",
+    })) as string;
+    expect(writes(calls)).toHaveLength(0);
+    expect(out).toContain("start and end time");
+  });
+});

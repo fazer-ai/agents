@@ -1421,9 +1421,18 @@ function buildUpdateEventTool(
       const nextEnd = input.end ?? currentEnd;
       const at = (v: string | null) =>
         v === null ? null : timedInstantMs(v, timeZone);
+      // Two values are the same time when they resolve to the same INSTANT, or, for a shape that
+      // has no instant (a legacy all-day date), when they are the same string. Comparing instants
+      // alone makes every all-day value equal to every other, so moving an appointment from
+      // 2099-06-22 to 2099-06-23 read as "nothing changed" and was dropped without a word.
+      const sameTime = (a: string | null, b: string | null) => {
+        if (a === b) return true;
+        const ai = at(a);
+        return ai !== null && ai === at(b);
+      };
       const moved =
         (input.start !== undefined || input.end !== undefined) &&
-        (at(nextStart) !== at(currentStart) || at(nextEnd) !== at(currentEnd));
+        (!sameTime(nextStart, currentStart) || !sameTime(nextEnd, currentEnd));
       // The times go in the patch only when they MOVED, which is the same condition that decides
       // whether to judge them. Echoing an unchanged value back would rewrite its representation for
       // no reason, and for a legacy all-day appointment that rewrite is invalid: `toEventTimePatch`

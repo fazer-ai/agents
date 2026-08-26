@@ -31,6 +31,9 @@ afterAll(() => {
   globalThis.fetch = realFetch;
 });
 
+// Holds the write until the test lets it go, so the type picker can be tried mid-save.
+let holdWrite: Promise<void> | null = null;
+
 function refusing(body: { error: string; field?: string }) {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -47,6 +50,7 @@ function refusing(body: { error: string; field?: string }) {
       url.includes("/v1/vault") &&
       !url.includes("/test")
     ) {
+      if (holdWrite) await holdWrite;
       return new Response(JSON.stringify(body), {
         status: 409,
         headers: { "content-type": "application/json" },
@@ -141,3 +145,47 @@ test.each(["publicKey", "baseUrl"])(
     expect(marked).toBe(false);
   },
 );
+
+test("the type cannot change out from under a save that is still out", async () => {
+  // The race the clear on select cannot answer: it runs first, and the 409 for the OLD pair lands
+  // after it, reattaching a conflict under a pair the server has said nothing about. The mark
+  // expires by the name, and the name did not change.
+  refusing({ error: REASON, field: "name" });
+  let release: () => void = () => {};
+  holdWrite = new Promise<void>((r) => {
+    release = r;
+  });
+  const { container } = render(
+    <ToastProvider>
+      <CredentialForm
+        mode="create"
+        initialKind="openai"
+        onSaved={() => {}}
+        onCancel={() => {}}
+      />
+    </ToastProvider>,
+  );
+
+  fireEvent.change(screen.getByRole("textbox", { name: /name|nome/i }), {
+    target: { value: "Alfa" },
+  });
+  const value = container.querySelector('input[type="password"]');
+  if (!value) throw new Error("no secret input rendered");
+  fireEvent.change(value, { target: { value: "sk-secret" } });
+  fireEvent.click(screen.getByRole("button", { name: /^(save|salvar)$/i }));
+
+  const picker = await screen.findByRole("button", { name: /type|tipo/i });
+  await waitFor(() => {
+    expect((picker as HTMLButtonElement).disabled).toBe(true);
+  });
+  // And it does not open, which is the half a disabled attribute alone would not prove.
+  fireEvent.pointerDown(picker, { button: 0, ctrlKey: false });
+  fireEvent.click(picker);
+  expect(screen.queryAllByRole("menuitem").length).toBe(0);
+
+  release();
+  holdWrite = null;
+  await waitFor(() => {
+    expect(screen.queryAllByText(REASON).length).toBeGreaterThan(0);
+  });
+});

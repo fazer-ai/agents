@@ -729,10 +729,15 @@ export function CredentialForm({
             if (next) setTypeSearch("");
           }}
         >
-          <DropdownMenuPrimitive.Trigger asChild disabled={isUpdate}>
+          {/* Locked once created, and locked again while a create is in flight: the write is about a
+              (name, kind) PAIR and the held refusal expires by the name alone, so a type changed
+              mid-save would put a 409 answered for the old pair under a new one that is free. The
+              clear on select below covers the ordinary switch, between attempts; this covers the
+              one that races the answer. */}
+          <DropdownMenuPrimitive.Trigger asChild disabled={isUpdate || saving}>
             <button
               type="button"
-              disabled={isUpdate}
+              disabled={isUpdate || saving}
               aria-label={t("vault.type", "Type")}
               className="flex w-full items-center gap-2 rounded-lg border border-border bg-bg-tertiary py-2 pr-3 pl-3 text-sm text-text-primary focus:border-border-focus focus:outline-none disabled:opacity-60"
             >

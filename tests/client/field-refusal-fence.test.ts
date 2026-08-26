@@ -58,7 +58,15 @@ export function writesAForm(src: string): boolean {
 const HANDLER_HEAD =
   /\n {2}(?:export )?(?:async function (\w+)|const (\w+) = (?:async )?(?:\([^)]*\)|\w+) =>|function (\w+))/g;
 
-export function handlers(src: string): { name: string; body: string }[] {
+export function handlers(src: string): {
+  name: string;
+  body: string;
+  // The same span with comments and string CONTENTS blanked out, offsets preserved. Every question
+  // this file asks of a handler is about what it runs, and prose is where those words appear
+  // innocently: `useKnowledgeManager`'s reindex button sends no body at all, and read raw it looked
+  // like a form write because a comment inside it says "Same text as the banner".
+  code: string;
+}[] {
   // Bounded by its own closing brace, not by where the next handler starts. Slicing to the next head
   // makes the LAST handler of a nested component swallow everything after it, and this file's whole
   // subject is per-handler attribution: measured, that made `ChannelsPage`'s `select` — which awaits
@@ -79,6 +87,7 @@ export function handlers(src: string): { name: string; body: string }[] {
     return {
       name: (m[1] ?? m[2] ?? m[3]) as string,
       body: src.slice(m.index, end),
+      code: code.slice(m.index, end),
     };
   });
 }
@@ -88,22 +97,24 @@ export function handlers(src: string): { name: string; body: string }[] {
 // those carry a form's values, so none of them can refuse one.
 export function writeHandlers(src: string): string[] {
   return handlers(src)
-    .filter((h) =>
-      h.body
-        .split("\n")
-        .some((line) => WRITES.test(line) && !NOT_A_WRITE.test(line)),
-    )
+    .filter((h) => writes(h.code))
     .map((h) => h.name);
+}
+
+function writes(code: string): boolean {
+  return code
+    .split("\n")
+    .some((line) => WRITES.test(line) && !NOT_A_WRITE.test(line));
 }
 
 // The names that carry a capture, directly or through another name. A form with two failure branches
 // writes one helper and calls it twice — `const held = (e, sent) => refusal.capture(…)` — and the
 // helper lives at component scope, outside every handler body.
-function capturingNames(src: string): Set<string> {
+function capturingNames(code: string): Set<string> {
   const names = new Set<string>();
   for (;;) {
     const before = names.size;
-    for (const m of src.matchAll(/\b([A-Za-z_$][\w$]*)\s*=([^;]*)/g)) {
+    for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*)\s*=([^;]*)/g)) {
       const name = m[1] as string;
       const rhs = m[2] as string;
       if (names.has(name)) continue;
@@ -135,16 +146,13 @@ export function unheldWrites(src: string): string[] {
   const sends = new RegExp(
     `\\b(?:${declared.map((f) => f.split(".").pop()).join("|")})\\b`,
   );
-  const carriers = capturingNames(src);
+  const carriers = capturingNames(codeSkeleton(src));
   return handlers(src)
     .filter((h) => {
-      const writes = h.body
-        .split("\n")
-        .some((line) => WRITES.test(line) && !NOT_A_WRITE.test(line));
-      if (!writes || !sends.test(h.body)) return false;
-      if (/\.capture\(/.test(h.body)) return false;
+      if (!writes(h.code) || !sends.test(h.code)) return false;
+      if (/\.capture\(/.test(h.code)) return false;
       return ![...carriers].some((n) =>
-        new RegExp(`\\b${n}\\s*\\(`).test(h.body),
+        new RegExp(`\\b${n}\\s*\\(`).test(h.code),
       );
     })
     .map((h) => h.name);
@@ -165,26 +173,72 @@ export function halfUsedHolders(src: string): string[] {
   return out;
 }
 
-// The names a file declares it can render, from the `as const` list every form keeps next to its
-// component. Read from the source rather than imported because the point is to compare the
-// declaration against the RENDER, and only the source has both.
-export function declaredFields(src: string): string[] {
-  const at = src.indexOf("useFieldRefusal(");
-  if (at === -1) return [];
-  const arg = src.slice(at + "useFieldRefusal(".length).match(/^\s*(\w+)/);
-  if (!arg) return [];
-  const list = new RegExp(`${arg[1]}\\s*=\\s*\\[([^\\]]*)\\]`).exec(src);
-  if (!list) return [];
-  return [...(list[1] as string).matchAll(/["']([^"']+)["']/g)].map(
-    (m) => m[1] as string,
-  );
+// EVERY holder in the file with the names it declares, not the first one that happens to appear.
+//
+// A file with one form is the easy case and it is not the common one here: `ChannelsPage` keeps
+// three holders, `useKnowledgeManager` three, `AdvancedPanel` two, and the agent editor two. Reading
+// only the first meant the fence agreed with itself about one form per file and asked nothing at all
+// of the rest — a declared name with no control behind it, in any of them, passed. Attributed per
+// holder for the same reason `unheldWrites` names its handler: "this file declares a name it never
+// renders" is not a finding anyone can act on.
+//
+// Read from the source rather than imported because the point is to compare the declaration against
+// the RENDER, and only the source has both.
+export function declarations(
+  src: string,
+): { holder: string; fields: string[] }[] {
+  return [...src.matchAll(/const (\w+) = useFieldRefusal\(/g)].map((m) => ({
+    holder: m[1] as string,
+    fields: declaredArg(
+      src.slice((m.index as number) + (m[0] as string).length),
+      src,
+    ),
+  }));
 }
 
-// The names the file actually reads back onto a control.
-export function readFields(src: string): Set<string> {
-  return new Set(
-    [...src.matchAll(/\.at\(\s*["']([^"']+)["']/g)].map((m) => m[1] as string),
-  );
+// The first argument's names, however it is spelled. Both spellings are in the tree: the `as const`
+// list beside the component, and — where the list depends on what the form is drawing — an array
+// built inline (`CredentialForm`, whose multi-field types contribute one name per input). The inline
+// one was skipped entirely by the identifier-only version.
+//
+// A computed element contributes nothing, which is the honest answer rather than a hole: a spread of
+// `fields.map(f => f.key)` is read back by an `at(f.key, …)` the source cannot see either, so both
+// sides of the comparison drop it together.
+function declaredArg(rest: string, src: string): string[] {
+  const lead = rest.match(/^\s*/)?.[0].length ?? 0;
+  const arg = rest.slice(lead);
+  if (arg.startsWith("[")) {
+    let depth = 0;
+    for (let i = 0; i < arg.length; i++) {
+      if (arg[i] === "[") depth++;
+      else if (arg[i] === "]" && --depth === 0)
+        return literals(arg.slice(1, i));
+    }
+    return [];
+  }
+  const ident = arg.match(/^([A-Za-z_$][\w$]*)/)?.[1];
+  if (!ident) return [];
+  const list = new RegExp(`${ident}\\s*=\\s*\\[([^\\]]*)\\]`).exec(src);
+  return list ? literals(list[1] as string) : [];
+}
+
+function literals(list: string): string[] {
+  return [...list.matchAll(/["']([^"']+)["']/g)].map((m) => m[1] as string);
+}
+
+// Every name declared anywhere in the file, which is what "did this handler send something the form
+// named" asks: any holder's control can receive it.
+export function declaredFields(src: string): string[] {
+  return [...new Set(declarations(src).flatMap((d) => d.fields))];
+}
+
+// The names read back onto a control — by ONE holder when asked for one, since a name `refusal`
+// declares is not rendered by `cloneRefusal.at(…)` two forms away.
+export function readFields(src: string, holder?: string): Set<string> {
+  const re = holder
+    ? new RegExp(`\\b${holder}\\.at\\(\\s*["']([^"']+)["']`, "g")
+    : /\.at\(\s*["']([^"']+)["']/g;
+  return new Set([...src.matchAll(re)].map((m) => m[1] as string));
 }
 
 // A holder inside a modal that is not cleared when the modal opens.
@@ -223,15 +277,21 @@ export function uncleanedHolders(src: string): string[] {
   return holders.filter((h) => !new RegExp(`\\b${h}\\.clear\\(`).test(resets));
 }
 
-// A holder in a file with a dialog that never says whether its form is on SCREEN.
+// A holder in a file that can HIDE its form and never says when.
 //
 // The other half of the same confusion: `useModalController` keeps the wrapper mounted when the
 // dialog closes, so the hook's mounted check answers `true` for a form the operator has already
 // dismissed. `capture` then reports "it is on the control", the caller keeps the banner quiet, and a
 // refusal the server named reaches nobody. Silence is the one outcome this mechanism must never
-// produce, so the dialog's own `isOpen` is the second argument.
-export function holdersBlindToTheDialog(src: string): string[] {
-  if (!/useOnModalOpen\(|\.open\(/.test(src)) return [];
+// produce, so what makes the form visible is the second argument.
+//
+// A dialog is not the only way to hide a form, and asking only about dialogs is how the agent
+// editor got through the round that added this rule: its `name` and `systemPrompt` live in
+// `GeneralTab`, mounted only while `tab === "general"`, and its holder had been waived as a page's
+// because the file's dialog belongs to something else. A tab test in the file asks the same
+// question of every holder in it.
+export function holdersBlindToTheScreen(src: string): string[] {
+  if (!/useOnModalOpen\(|\.open\(|\btab === "/.test(src)) return [];
   return [...src.matchAll(/const (\w+) = useFieldRefusal\(([^;]*?)\);/g)]
     .filter((m) => topLevelArgCount(m[2] as string) < 2)
     .map((m) => m[1] as string);
@@ -251,8 +311,10 @@ function topLevelArgCount(args: string): number {
 }
 
 export function silentDeclarations(src: string): string[] {
-  const read = readFields(src);
-  return declaredFields(src).filter((name) => !read.has(name));
+  return declarations(src).flatMap(({ holder, fields }) => {
+    const read = readFields(src, holder);
+    return fields.filter((n) => !read.has(n)).map((n) => `${holder}.${n}`);
+  });
 }
 
 // A form that writes and does not hold its refusal, with the reason. Asserted in both directions, so
@@ -272,7 +334,16 @@ const HELD_BY_THE_PAGE: Record<string, string> = {
   "pages/admin/AdminBrandingPage.tsx :: refusal":
     "The branding form is the page itself; the `.open()` in this file is the logo cropper, which writes no field.",
   "pages/agents/AgentEditorPage.tsx :: refusal":
-    "The editor's own holder covers `name` and `systemPrompt` on the General TAB, not a dialog. The dialog in this file is the clone one, and it has its own holder (`cloneRefusal`) cleared on open.",
+    "The editor's own holder covers `name` and `systemPrompt`, which no dialog in this file draws — the clone dialog has its own holder (`cloneRefusal`), cleared on open. It IS hidden, by its tab, and answers for that itself: see ALWAYS_ON_SCREEN, which this entry is deliberately not in.",
+};
+
+// A holder whose form cannot be hidden, in a file that can hide something else. Separate from the
+// ledger above because the two rules ask different questions, and one entry answers only one of
+// them: the agent editor's holder is a page's for the clearing rule and a hidden form's for this
+// one. Waiving it in both was how the tab case survived the round that found the modal case.
+const ALWAYS_ON_SCREEN: Record<string, string> = {
+  "pages/admin/AdminBrandingPage.tsx :: refusal":
+    "The branding form is drawn unconditionally by the page. The only thing this file hides is the logo cropper, which writes no field.",
 };
 
 // A form that holds SOME of its refusals, with what is left. Neither rule above can see this — rule
@@ -358,6 +429,22 @@ describe("a form that writes holds the refusal it gets", () => {
     expect(writeHandlers(src)).toEqual(["save"]);
   });
 
+  test("a declared name inside a COMMENT is not a form write", () => {
+    // Measured on `useKnowledgeManager`: the reindex button sends no body at all, and the only
+    // mention of a declared name inside it is a comment that says "Same text as the banner".
+    const src = `
+      const F = ["title", "text"] as const;
+      const r = useFieldRefusal(F, m.isOpen);
+      <FormField error={r.at("title", v)} /><FormField error={r.at("text", w)} />
+
+  async function reindex(id: string) {
+    // Same text as the banner, from the same function.
+    const { error } = await api.bases({ id }).reindex.post();
+  }
+    `;
+    expect(unheldWrites(src)).toEqual([]);
+  });
+
   test("an unheld handler is named, even next to a held one", () => {
     // The shape the file-level rule could not see: two forms in one file, one wired.
     const src = `
@@ -405,7 +492,48 @@ describe("a form that writes holds the refusal it gets", () => {
       const refusal = useFieldRefusal(FIELDS);
       <FormField error={refusal.at("name", current.name)} />
     `;
-    expect(silentDeclarations(src)).toEqual(["allowedHosts"]);
+    expect(silentDeclarations(src)).toEqual(["refusal.allowedHosts"]);
+  });
+
+  test("the second holder of a file is asked the same question", () => {
+    // The shape the first-call-only version could not see: two forms, and the one that is wrong is
+    // not the one declared first.
+    const src = `
+      const A = ["name"] as const;
+      const B = ["name", "slug"] as const;
+      const a = useFieldRefusal(A, x.isOpen);
+      const b = useFieldRefusal(B, y.isOpen);
+      <FormField error={a.at("name", u)} />
+      <FormField error={b.at("name", v)} />
+    `;
+    expect(silentDeclarations(src)).toEqual(["b.slug"]);
+  });
+
+  test("a name read by ANOTHER holder does not answer for this one", () => {
+    // Two forms with a `name` each is the normal case here — a modal over the panel that opened it —
+    // and a file-wide reading let one form's control vouch for the other's declaration.
+    const src = `
+      const A = ["name"] as const;
+      const B = ["name"] as const;
+      const a = useFieldRefusal(A, x.isOpen);
+      const b = useFieldRefusal(B, y.isOpen);
+      <FormField error={a.at("name", u)} />
+    `;
+    expect(silentDeclarations(src)).toEqual(["b.name"]);
+  });
+
+  test("an inline field list is read, not skipped", () => {
+    // `CredentialForm` builds its list from the secret type it is drawing. The identifier-only
+    // version returned nothing for it, so the whole form was outside the fence.
+    const src = `
+      const refusal = useFieldRefusal([
+        "name",
+        "value",
+        ...(fields ?? []).map((f) => f.key),
+      ]);
+      <FormField error={refusal.at("name", u)} />
+    `;
+    expect(silentDeclarations(src)).toEqual(["refusal.value"]);
   });
 
   test("a declared name that is read is not flagged", () => {
@@ -469,18 +597,22 @@ describe("a form that writes holds the refusal it gets", () => {
     ).toEqual([]);
   });
 
-  test("a holder in a file with a dialog says whether its form is showing", () => {
+  test("a holder in a file that hides a form says when its own is showing", () => {
     const blind = sources(ROOT)
       .flatMap((f) =>
-        holdersBlindToTheDialog(readFileSync(f, "utf8")).map(
+        holdersBlindToTheScreen(readFileSync(f, "utf8")).map(
           (h) => `${f.slice(`${ROOT}/`.length)} :: ${h}`,
         ),
       )
-      .filter((h) => !(h in HELD_BY_THE_PAGE));
+      .filter((h) => !(h in ALWAYS_ON_SCREEN));
     expect(
       blind,
-      "the wrapper stays mounted when the dialog closes, so a save answering after that places a mark nobody renders: pass the dialog's isOpen",
+      "the component outlives the form when a dialog closes or a tab changes, so a save answering after that places a mark nobody renders: pass what makes the form visible",
     ).toEqual([]);
+  });
+
+  test("the always-on-screen ledger is pinned to its size", () => {
+    expectWaiverLedger("ALWAYS_ON_SCREEN", ALWAYS_ON_SCREEN, 1);
   });
 
   test("the predicate flags a holder that takes only its field list", () => {
@@ -488,7 +620,17 @@ describe("a form that writes holds the refusal it gets", () => {
       const refusal = useFieldRefusal(FIELDS);
       useOnModalOpen(modal, () => {});
     `;
-    expect(holdersBlindToTheDialog(src)).toEqual(["refusal"]);
+    expect(holdersBlindToTheScreen(src)).toEqual(["refusal"]);
+  });
+
+  test("a form behind a tab is asked the same question as one behind a dialog", () => {
+    // No dialog in sight, and the form is hidden just as completely: `GeneralTab` is not mounted
+    // while the operator reads another tab, and a save started before the switch answers after it.
+    const src = `
+      const refusal = useFieldRefusal(EDITOR_FIELDS);
+      {tab === "general" && <GeneralTab />}
+    `;
+    expect(holdersBlindToTheScreen(src)).toEqual(["refusal"]);
   });
 
   test("a holder given the dialog's own state is not flagged", () => {
@@ -497,7 +639,7 @@ describe("a form that writes holds the refusal it gets", () => {
       const refusal = useFieldRefusal(FIELDS, a.isOpen || b.isOpen);
       useOnModalOpen(modal, () => {});
     `;
-    expect(holdersBlindToTheDialog(src)).toEqual([]);
+    expect(holdersBlindToTheScreen(src)).toEqual([]);
   });
 
   test("the predicate flags a modal holder that is never cleared", () => {

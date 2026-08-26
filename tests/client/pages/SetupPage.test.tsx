@@ -48,27 +48,33 @@ mock.module("react-i18next", () => ({
 }));
 
 const { SetupPage } = await import("@/client/pages/SetupPage");
+const { ToastProvider } = await import("@/client/components/Toast");
 
 function LocationProbe() {
   const location = useLocation();
   return <div data-testid="location-search">{location.search}</div>;
 }
 
+// The provider is not decoration here: `useFieldRefusal` reaches for the global toast when the form
+// it is holding for has left the screen, so a holder outside a ToastProvider is one that cannot keep
+// its promise that exactly one channel fires. The app mounts every route inside one.
 function renderAt(path: string) {
   return render(
-    <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        <Route
-          path="/setup"
-          element={
-            <>
-              <SetupPage />
-              <LocationProbe />
-            </>
-          }
-        />
-      </Routes>
-    </MemoryRouter>,
+    <ToastProvider>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route
+            path="/setup"
+            element={
+              <>
+                <SetupPage />
+                <LocationProbe />
+              </>
+            }
+          />
+        </Routes>
+      </MemoryRouter>
+    </ToastProvider>,
   );
 }
 

@@ -620,7 +620,11 @@ function AgentEditor() {
   // Agent fields
   const [name, setName] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
-  const refusal = useFieldRefusal(EDITOR_FIELDS);
+  // Gated on the TAB, for the same reason a dialog's holder is gated on `isOpen`: `GeneralTab` is
+  // only mounted while `tab === "general"`, so a save that answers after the operator has moved on —
+  // or the "Save and export" that writes General from wherever they are — would place its mark on a
+  // control nobody is rendering. Off that tab the sentence goes to the toast.
+  const refusal = useFieldRefusal(EDITOR_FIELDS, tab === "general");
   // What the two placeable inputs hold right now, readable from inside a save that started before
   // them: this page's saves are long and the operator keeps typing during them.
   const currentRef = useRef<Record<string, unknown>>({});

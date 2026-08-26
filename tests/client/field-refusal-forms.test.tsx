@@ -2,6 +2,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -37,13 +38,20 @@ afterEach(() => {
 });
 
 // Everything the tree needs to render answers 200; the one write under test answers the refusal.
-function refusing(body: { error: string; field?: string }, status = 409) {
+// `hold` keeps that answer in flight until the test lets it go, which is how the operator dismissing
+// a dialog mid-save is reproduced.
+function refusing(
+  body: { error: string; field?: string },
+  status = 409,
+  hold?: Promise<void>,
+) {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(
       typeof input === "string" || input instanceof URL ? input : input.url,
     );
     const method = (init?.method ?? "GET").toUpperCase();
     if (method === "POST" && url.includes("/api/v1/mcp-connections")) {
+      if (hold) await hold;
       return new Response(JSON.stringify(body), {
         status,
         headers: { "Content-Type": "application/json" },
@@ -64,14 +72,15 @@ function refusing(body: { error: string; field?: string }, status = 409) {
   }) as typeof fetch;
 }
 
-function OpenMcpModal() {
+function OpenMcpModal({ onReady }: { onReady?: (close: () => void) => void }) {
   const modal = useModalController<{ id?: string }>();
   const opened = useRef(false);
   useEffect(() => {
     if (opened.current) return;
     opened.current = true;
     modal.open({});
-  }, [modal]);
+    onReady?.(() => modal.close());
+  }, [modal, onReady]);
   return (
     <McpEditModal
       modal={modal as unknown as Parameters<typeof McpEditModal>[0]["modal"]}
@@ -79,13 +88,13 @@ function OpenMcpModal() {
   );
 }
 
-function mount() {
+function mount(onReady?: (close: () => void) => void) {
   return render(
     <MemoryRouter>
       <ThemeProvider>
         <AuthProvider>
           <ToastProvider>
-            <OpenMcpModal />
+            <OpenMcpModal onReady={onReady} />
           </ToastProvider>
         </AuthProvider>
       </ThemeProvider>
@@ -144,4 +153,40 @@ test("a refusal about no input at all still reaches the operator", async () => {
   await waitFor(() => {
     expect(screen.queryAllByText(reason).length).toBeGreaterThan(0);
   });
+});
+
+test("a refusal that lands after the dialog is dismissed is still read out", () => {
+  // The half a mounted check could not answer. `useModalController` keeps this wrapper mounted when
+  // the dialog closes, so the save that was in flight comes back to a live component and a form the
+  // operator has already dismissed — and the error line it would be written to is drawn between the
+  // dialog's title and its buttons. Placing the mark there, or handing the caller a sentence for
+  // that line, are two spellings of the same silence.
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => {
+    release = r;
+  });
+  const reason = "mcp connection name already in use";
+  refusing({ error: reason, field: "name" }, 409, held);
+  // Closed through the controller rather than by Escape: the dialog's own Cancel is disabled while
+  // the save is out, and Escape on a dirty form raises the discard prompt first. Both paths end at
+  // this call, which is the state the refusal has to answer into.
+  let close: () => void = () => {};
+  mount((c) => {
+    close = c;
+  });
+
+  return (async () => {
+    await fillAndSave("Servidor Gama", "https://mcp.example.com/sse");
+    act(() => close());
+    await waitFor(() => {
+      expect(screen.queryAllByRole("dialog").length).toBe(0);
+    });
+    release();
+
+    await waitFor(() => {
+      expect(screen.queryAllByText(reason).length).toBeGreaterThan(0);
+    });
+    // On the screen the operator is looking at, not under a control that is gone.
+    expect(fieldShowing(reason)).toBeNull();
+  })();
 });

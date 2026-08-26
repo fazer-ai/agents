@@ -873,7 +873,7 @@ export function CredentialForm({
           error={
             paramNameMissing && paramNameTouched
               ? t("vault.paramNameRequired", "Parameter name is required.")
-              : null
+              : refusal.at("paramName", paramName.trim() || undefined)
           }
         >
           <Input

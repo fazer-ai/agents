@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useToast } from "@/client/components/Toast";
 import {
   placeRefusal,
   readRefusal,
@@ -20,8 +21,9 @@ export interface FieldRefusal {
   // holding what the server refused, so there is no `onChange` line to forget. Forgetting the
   // argument is a type error; forgetting a `clear(field)` was invisible.
   at: (field: string, value: unknown) => string | null;
-  // Take a failed call. Returns the sentence the caller must TOAST, or null when it landed on an
-  // input and the toast must stay silent. `sent` is what this request carried and `current` is what
+  // Take a failed call. Returns the sentence the CALLER must render, or null once the operator has
+  // already been told — either because it landed on an input, or because the form was gone and this
+  // hook raised the global toast itself. `sent` is what this request carried and `current` is what
   // the inputs hold now — the placement is refused when they disagree about the refused field, or
   // when this form is already gone, because both render the mark unreadable.
   capture: (
@@ -42,16 +44,21 @@ export interface FieldRefusal {
 
 // `onScreen` is whether the FORM is showing, and it defaults to "as long as this component is".
 //
-// For a page those are the same question. For a modal they are not, and the difference is silence:
-// `useModalController` keeps the wrapper mounted when the dialog closes, so a save still in flight
-// answers into a component that is alive and a form that is gone. The mark would be written, the
-// caller told "it is on the control", and nothing on screen would say anything at all. Pass
-// `modal.isOpen` from every dialog. Measured on McpEditModal: dismiss mid-save and the banner stayed
-// empty for a refusal the server had named.
+// For a page those are the same question. Wherever the form can be hidden while its component lives
+// on, they are not, and the difference is silence: `useModalController` keeps the wrapper mounted
+// when the dialog closes, and the agent editor keeps `name` and `systemPrompt` in state while the
+// operator reads another tab. A save still in flight then answers into a component that is alive and
+// a form that is gone: the mark would be written, the caller told "it is on the control", and
+// nothing on screen would say anything at all.
+//
+// So it takes whatever makes the form visible — `modal.isOpen` from a dialog, `tab === "general"`
+// from a tab — and `capture` routes around it (see there). Measured on McpEditModal: dismiss
+// mid-save and the banner stayed empty for a refusal the server had named.
 export function useFieldRefusal(
   rendered: readonly string[],
   onScreen = true,
 ): FieldRefusal {
+  const { showToast } = useToast();
   const [held, setHeld] = useState<{
     field: string;
     message: string;
@@ -85,8 +92,9 @@ export function useFieldRefusal(
       sent: Record<string, unknown>,
       current: Record<string, unknown>,
     ) => {
+      const onForm = mounted.current && showing.current;
       const placed = placeRefusal(readRefusal(e), fields, fallback, {
-        mounted: mounted.current && showing.current,
+        mounted: onForm,
         sent,
         current,
       });
@@ -102,9 +110,22 @@ export function useFieldRefusal(
       // clear": a mark left over from a refusal the server has stopped making would sit on a control
       // while the toast says something else.
       setHeld(null);
+      // The caller's OTHER channel is inside the form for ten of the holders here: an error line
+      // drawn between the dialog's title and its buttons, which `useOnModalOpen` then clears on the
+      // next opening. Handing them a sentence for a form the operator has dismissed only moves the
+      // silence one step over — the mark used to be written where nobody looked, and the sentence
+      // would be. So when the form is gone the hook raises the global toast itself.
+      //
+      // Only for a sentence it HAS. An empty fallback is how a caller says it words this refusal
+      // better than the server does (ChannelsPage names the affordance — disconnect first — which
+      // the server cannot know about); swallowing its turn would be the new silence.
+      if (!onForm && placed.toast) {
+        showToast(placed.toast, "error");
+        return null;
+      }
       return placed.toast;
     },
-    [fields],
+    [fields, showToast],
   );
 
   const clear = useCallback(() => setHeld(null), []);

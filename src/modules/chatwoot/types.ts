@@ -168,4 +168,9 @@ export interface NormalizedChatwootEvent {
   // Kanban::Task#common_event_data carries `custom_attributes`). `undefined` ⇒ absent (upstream
   // Chatwoot, or a conversation with no card).
   kanbanAttributes?: Record<string, unknown>;
+  // The WhatsApp entry conversation this widget thread was redirected FROM, as its display_id
+  // (conversation.redirect_origin_display_id, which the fork's token resolve writes at the one moment
+  // the pairing is a fact). `undefined` ⇒ absent from this payload: the entry half, a conversation
+  // outside a redirect episode, or a Chatwoot too old to send it (issue #222).
+  redirectOriginDisplayId?: number;
 }

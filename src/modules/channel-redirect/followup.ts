@@ -25,7 +25,7 @@ import {
   proactiveSendMode,
   readServiceWindowConfig,
 } from "@/modules/service-window/service";
-import { episodeTestActivatedAt } from "./episode";
+import { episodeOriginQuery, episodeTestActivatedAt } from "./episode";
 import { interpolateLink, resolveRedirectLink } from "./gate";
 import {
   type ChannelRedirectConfig,
@@ -255,12 +255,17 @@ interface WhatsAppSibling {
   provider: string | null;
 }
 
-// Resolve the WhatsApp sibling conversation of a widget conversation's contact: the OTHER conversation
-// on the SAME contact whose inbox is the agent's configured entry (official WhatsApp) inbox, most-
-// recently-active. Returns everything the proactive WhatsApp touches need — the sibling's conversation id
-// (to post on), the contact's Chatwoot id (the token identity), plus the 24h-window inputs (lastInboundAt
-// + inbox channel/provider). Powers stage 2 (re-send the link) AND the closing. null when the contact has
-// no such conversation (never messaged that inbox, or the merge never linked it).
+// Resolve the WhatsApp entry half of a widget conversation's redirect episode. Returns everything the
+// proactive WhatsApp touches need — the sibling's conversation id (to post on), the contact's Chatwoot
+// id (the token identity), plus the 24h-window inputs (lastInboundAt + inbox channel/provider). Powers
+// stage 2 (re-send the link) AND the closing, which RESOLVES the conversation it names.
+//
+// WHICH row that is comes from episodeOriginQuery: the pairing the fork stored at resolve time, or —
+// only when there is none — the most-recently-active predicate this function used to apply on its own.
+// #222 is why: the closing acts destructively on the answer, and the old predicate is an inference
+// about an event this side never observes.
+//
+// null when there is no such conversation (never messaged that inbox, or the merge never linked it).
 async function resolveWhatsAppSibling(
   tenantId: bigint,
   instanceId: bigint,
@@ -277,15 +282,22 @@ async function resolveWhatsAppSibling(
           chatwootConversationId: widgetConversationId,
         },
       },
-      select: { contactId: true },
+      select: { contactId: true, redirectOriginDisplayId: true },
     });
-    if (!widgetConv?.contactId) return null;
-    const sibling = await db.conversation.findFirst({
-      where: {
+    if (!widgetConv) return null;
+    const originQuery = episodeOriginQuery({
+      tenantId,
+      instanceId,
+      entryInboxId,
+      widget: {
+        redirectOriginDisplayId: widgetConv.redirectOriginDisplayId,
         contactId: widgetConv.contactId,
-        chatwootInstanceId: instanceId,
-        inbox: { chatwootInboxId: entryInboxId },
       },
+    });
+    if (!originQuery) return null;
+    const sibling = await db.conversation.findFirst({
+      where: originQuery.where,
+      ...(originQuery.orderBy ? { orderBy: originQuery.orderBy } : {}),
       select: {
         chatwootConversationId: true,
         status: true,
@@ -294,7 +306,6 @@ async function resolveWhatsAppSibling(
         contact: { select: { chatwootContactId: true } },
         inbox: { select: { channelType: true, provider: true } },
       },
-      orderBy: { lastEventAt: "desc" },
     });
     if (!sibling?.contact?.chatwootContactId) return null;
     return {
@@ -367,6 +378,8 @@ export async function sendWhatsAppFollowUp(
     instanceId: p.instanceId,
     chatwootContactId: sibling.chatwootContactId,
     widgetInboxId: p.cfg.widgetInboxId,
+    // The link is re-sent ON the sibling, so the sibling IS this redirect's origin.
+    originDisplayId: sibling.chatwootConversationId,
     openWidget: p.cfg.openWidget,
     ttlSeconds: REDIRECT_LINK_TTL_SECONDS,
     base: p.base,

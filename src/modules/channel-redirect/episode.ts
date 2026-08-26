@@ -136,3 +136,82 @@ export async function episodeTestActivatedAt(
   });
   return sibling?.testActivatedAt ?? null;
 }
+
+// ── the episode's other half ──────────────────────────────────────────────────────────────────────
+
+// WHICH conversation is the WhatsApp entry half of a widget conversation's episode. Two callers ask
+// it — the cross-link (to post the pair of notes) and the follow-up ladder (to re-send the link and,
+// at the closing stage, to RESOLVE that conversation) — and until #222 each answered it on its own by
+// taking the contact's most-recently-active conversation on the entry inbox.
+//
+// That predicate is wrong, and so were the four others written before it: activity is not the funnel
+// (writing into an old entry conversation makes it the latest); the most recent `redirectSentAt` can
+// name a link that was never clicked while an older unconsumed one still is; `/reset` clears that
+// anchor without revoking the link it already sent; and uniqueness on the inbox proves uniqueness,
+// not origin. Each is an inference about an event this side never observes, and the consumers act on
+// it destructively.
+//
+// So the answer is read, not inferred: the fork's token resolve writes the origin onto the widget
+// conversation at the one moment both halves are known together, and it reaches us on the webhook
+// payload. `redirectOriginDisplayId` IS the answer whenever it is there.
+//
+// The old predicate stays as the fallback, for the two populations that have no stored answer and
+// never will: episodes that began before the fork carried the field, and instances running a Chatwoot
+// that does not send it. It is not a second opinion — it is only consulted when there is no fact.
+export interface EpisodeOriginParams {
+  tenantId: bigint;
+  instanceId: bigint;
+  entryInboxId: number;
+  widget: {
+    // The widget conversation's stored pairing, straight off the mirror. Non-null ⇒ this is the answer.
+    redirectOriginDisplayId: number | null;
+    contactId: bigint | null;
+  };
+}
+
+// Whether the pairing is a stored fact. Pure, and the reason a caller can tell the two apart when it
+// reports what it acted on.
+export function hasStoredOrigin(
+  redirectOriginDisplayId: number | null,
+): boolean {
+  return redirectOriginDisplayId !== null;
+}
+
+// What to look the origin up BY, rather than the row itself: the two callers need different columns
+// off it (the cross-link wants the activation stamp, the ladder wants the 24h-window inputs), so each
+// keeps its own `select` and shares the only part that was ever wrong — which row to select.
+//
+// `null` ⇒ there is nothing to look up at all, and the caller has no sibling.
+export function episodeOriginQuery(p: EpisodeOriginParams): {
+  where: {
+    chatwootInstanceId: bigint;
+    chatwootConversationId?: number;
+    contactId?: bigint;
+    inbox?: { chatwootInboxId: number };
+  };
+  orderBy?: { lastEventAt: "desc" };
+  // How the row was chosen, for the caller's log line: an episode acted on by inference is one whose
+  // answer can be wrong, and that is worth being able to see from the outside.
+  by: "stored" | "recency";
+} | null {
+  const stored = p.widget.redirectOriginDisplayId;
+  if (stored !== null) {
+    return {
+      where: {
+        chatwootInstanceId: p.instanceId,
+        chatwootConversationId: stored,
+      },
+      by: "stored",
+    };
+  }
+  if (p.widget.contactId === null) return null;
+  return {
+    where: {
+      chatwootInstanceId: p.instanceId,
+      contactId: p.widget.contactId,
+      inbox: { chatwootInboxId: p.entryInboxId },
+    },
+    orderBy: { lastEventAt: "desc" },
+    by: "recency",
+  };
+}

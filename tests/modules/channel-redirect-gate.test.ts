@@ -73,6 +73,10 @@ const calls: {
   searches: number;
   unlinks: number;
   mintedFor: string[];
+  // The conversation each token names as the redirect's ORIGIN (#222). The mint is the only moment
+  // the two halves of an episode are known together, so a token minted without it produces a link
+  // whose episode can never be paired.
+  mintedOrigin: Array<number | undefined>;
   selfReads: number;
 } = {
   merges: [],
@@ -80,6 +84,7 @@ const calls: {
   searches: 0,
   unlinks: 0,
   mintedFor: [],
+  mintedOrigin: [],
   selfReads: 0,
 };
 // The race the recovery has to survive: the holder released the identifier between the 422 and the
@@ -120,6 +125,11 @@ function installChatwootDouble(): void {
       // What the token was minted FOR. The widget identifies with this value, so a token carrying the
       // old identifier would hand the lead to whoever holds it.
       calls.mintedFor.push(String(body.identifier));
+      calls.mintedOrigin.push(
+        body.origin_display_id === undefined
+          ? undefined
+          : Number(body.origin_display_id),
+      );
       return json({
         token: "tok-123",
         website_url: "https://chat.example.com",
@@ -294,6 +304,7 @@ describe.skipIf(!dbUp)("runRedirectGate delivery accounting", () => {
     calls.searches = 0;
     calls.unlinks = 0;
     calls.mintedFor = [];
+    calls.mintedOrigin = [];
     calls.selfReads = 0;
     releaseHolderAfterCollision = false;
     failStampWith = null;
@@ -406,6 +417,8 @@ describe.skipIf(!dbUp)("runRedirectGate delivery accounting", () => {
     expect(outcome).toBe("sent");
     expect(calls.stamps).toBe(0);
     expect(calls.mintedFor).toEqual([`fzwa:${conv.chatwootContactId}`]);
+    // The token names the conversation the gate is running on, which IS the episode's entry half.
+    expect(calls.mintedOrigin).toEqual([7305]);
   });
   test("a WhatsApp contact that already carries another identifier still ends up holding ours", async () => {
     const conv = await seedConversation(7306);

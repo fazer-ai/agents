@@ -4,7 +4,9 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { runScopedOn } from "@/lib/tenancy";
 import {
+  episodeOriginQuery,
   episodeTestActivatedAt,
+  hasStoredOrigin,
   needsEpisodeLookup,
   redirectSide,
 } from "@/modules/channel-redirect/episode";
@@ -53,6 +55,87 @@ describe("redirectSide", () => {
 
 // Each row is a reason NOT to touch the database, and the reactive gate runs on every inbound
 // message, so this is the predicate that keeps that path free.
+// Issue #222. WHICH conversation is the entry half is the one question the cross-link and the ladder
+// share, and the ladder's closing RESOLVES the row it names — so a decision table, not a fixture.
+describe("episodeOriginQuery", () => {
+  const base = {
+    tenantId: 1n,
+    instanceId: 7n,
+    entryInboxId: ENTRY_INBOX,
+  };
+
+  test("a stored pairing IS the answer: looked up by id, with no ordering to lose it", () => {
+    const q = episodeOriginQuery({
+      ...base,
+      widget: { redirectOriginDisplayId: 41, contactId: 9n },
+    });
+    expect(q?.by).toBe("stored");
+    expect(q?.where).toEqual({
+      chatwootInstanceId: 7n,
+      chatwootConversationId: 41,
+    });
+    // No orderBy: one row answers, so there is nothing to rank — which is the whole point.
+    expect(q?.orderBy).toBeUndefined();
+    // And the contact is not part of the question, so a merge that moved it cannot change the answer.
+    expect(Object.keys(q?.where ?? {})).not.toContain("contactId");
+  });
+
+  test("the stored pairing wins even when a newer entry conversation exists", () => {
+    // Same inputs as the fallback case below, plus the fact. The fact is what changes the answer.
+    const stored = episodeOriginQuery({
+      ...base,
+      widget: { redirectOriginDisplayId: 41, contactId: 9n },
+    });
+    const inferred = episodeOriginQuery({
+      ...base,
+      widget: { redirectOriginDisplayId: null, contactId: 9n },
+    });
+    expect(stored?.by).toBe("stored");
+    expect(inferred?.by).toBe("recency");
+    expect(stored?.where).not.toEqual(inferred?.where);
+  });
+
+  test("no stored pairing falls back to the old most-recently-active predicate", () => {
+    const q = episodeOriginQuery({
+      ...base,
+      widget: { redirectOriginDisplayId: null, contactId: 9n },
+    });
+    expect(q?.by).toBe("recency");
+    expect(q?.where).toEqual({
+      chatwootInstanceId: 7n,
+      contactId: 9n,
+      inbox: { chatwootInboxId: ENTRY_INBOX },
+    });
+    expect(q?.orderBy).toEqual({ lastEventAt: "desc" });
+  });
+
+  test("no pairing and no contact ⇒ nothing to look up at all", () => {
+    expect(
+      episodeOriginQuery({
+        ...base,
+        widget: { redirectOriginDisplayId: null, contactId: null },
+      }),
+    ).toBeNull();
+  });
+
+  // A contactless widget row still answers when the pairing is stored: the fact does not need the
+  // contact, and refusing there would strand exactly the episodes this change exists to pair.
+  test("a stored pairing answers even with no contact on the row", () => {
+    const q = episodeOriginQuery({
+      ...base,
+      widget: { redirectOriginDisplayId: 41, contactId: null },
+    });
+    expect(q?.by).toBe("stored");
+  });
+});
+
+describe("hasStoredOrigin", () => {
+  test("separates a fact from an inference", () => {
+    expect(hasStoredOrigin(41)).toBe(true);
+    expect(hasStoredOrigin(null)).toBe(false);
+  });
+});
+
 describe("needsEpisodeLookup", () => {
   const base = {
     agentMode: "test",

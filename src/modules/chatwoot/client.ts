@@ -1057,11 +1057,19 @@ export class ChatwootClient {
     );
   }
 
+  // NOTE: `originDisplayId` is the conversation the link is being SENT ON (the WhatsApp entry
+  // thread), and the mint is the only moment the two halves of a redirect episode are known
+  // together — the resolve endpoint identifies the CONTACT, and a contact does not say which of its
+  // conversations minted the link (issue #222). The fork carries it in the token and stamps it on
+  // the widget conversation, where it reaches us on the webhook payload. It authorizes the value
+  // against the caller: an origin this token cannot see is REFUSED (404/401), not dropped, so a
+  // link whose episode could not be paired is never handed back.
   async mintRedirectToken(p: {
     inboxId: number;
     identifier: string;
     message?: string;
     ttlSeconds?: number;
+    originDisplayId?: number;
   }): Promise<{ token: string; websiteUrl: string | null }> {
     const res = (await this.request(
       this.config.adminToken,
@@ -1072,6 +1080,7 @@ export class ChatwootClient {
         identifier: p.identifier,
         message: p.message,
         ttl_seconds: p.ttlSeconds,
+        origin_display_id: p.originDisplayId,
       },
     )) as { token?: string; website_url?: string | null } | null;
     if (!res?.token) {

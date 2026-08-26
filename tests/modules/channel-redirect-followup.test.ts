@@ -623,6 +623,72 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
   // The other ordering, and the one the anchor alone cannot see. Above, the reset lands AFTER the
   // claim and the post-claim re-read catches it. Here it lands BEFORE: the resolve trigger reaches
   // this function straight from a webhook, so it carries no `stillWanted`, and while it is loading
+  // Issue #222. The closing MESSAGES and RESOLVES the conversation it picks, and it used to pick the
+  // contact's most-recently-active conversation on the entry inbox. Writing into an older entry
+  // conversation is enough to make it the latest, so the goodbye and the resolve land on a thread that
+  // was never this episode's origin. Here the decoy is deliberately newer, and the stored pairing
+  // still wins.
+  test("the closing acts on the STORED origin, not the most recently active entry conversation", async () => {
+    await restoreAnchor();
+    const DECOY_CONV = 7173;
+    const entryInboxRow = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 110 },
+      select: { id: true },
+    });
+    const contactRow = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: ENTRY_CONV },
+      select: { contactId: true },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: entryInboxRow.id,
+        contactId: contactRow.contactId,
+        chatwootConversationId: DECOY_CONV,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${DECOY_CONV}`,
+        // NEWER than the origin: the old predicate would take this one.
+        lastEventAt: new Date(Date.now() + 60_000),
+        lastInboundAt: new Date(),
+      },
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: WIDGET_CONV },
+      data: { redirectOriginDisplayId: ENTRY_CONV },
+    });
+
+    const s = stubClient();
+    try {
+      const outcome = await deliverRedirectClosing({
+        tenantId,
+        instanceId,
+        widgetConversationId: WIDGET_CONV,
+        entryInboxId: 110,
+        closingMessage: "Vamos encerrar por aqui.",
+        closeChat: true,
+        base: suDb as unknown as PrismaClient,
+        deps: { makeClient: s.makeClient },
+      });
+
+      expect(outcome).toBe("delivered");
+      expect(s.sent.map(([c]) => c)).toEqual([WIDGET_CONV, ENTRY_CONV]);
+      expect(s.resolved).toContain(ENTRY_CONV);
+      // The decoy is untouched: not messaged, and above all not resolved.
+      expect(s.sent.map(([c]) => c)).not.toContain(DECOY_CONV);
+      expect(s.resolved).not.toContain(DECOY_CONV);
+    } finally {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        data: { redirectOriginDisplayId: null },
+      });
+      await suDb.conversation.deleteMany({
+        where: { tenantId, chatwootConversationId: DECOY_CONV },
+      });
+      await restoreAnchor();
+    }
+  });
+
   // the conversation, the agent, the bot and the client, /reset clears the anchor. The claim then
   // SUCCEEDS -- `redirectClosedAt: null` reads the same whether nobody ever closed it or the command
   // just wiped it -- and every check downstream is happy with the timestamp this run itself wrote.

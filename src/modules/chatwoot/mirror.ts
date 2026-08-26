@@ -282,6 +282,9 @@ export async function mirrorChatwootEvent(
                   kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue,
                 }
               : {}),
+            ...(n.redirectOriginDisplayId != null
+              ? { redirectOriginDisplayId: n.redirectOriginDisplayId }
+              : {}),
           },
           select: { id: true },
         });
@@ -354,6 +357,15 @@ export async function mirrorChatwootEvent(
             : {}),
           ...(decision.unversioned && n.kanbanAttributes
             ? { kanbanAttributes: n.kanbanAttributes as Prisma.InputJsonValue }
+            : {}),
+          // NOTE: Written whenever the payload names one, WITHOUT the version fence the bags carry.
+          // The pairing is not conversation state that a stale event could regress — the fork writes
+          // it once, before any event that carries the conversation exists, and re-entry only ever
+          // moves it forward to the origin of the redirect that just happened. What a fence would buy
+          // is nothing; what it would cost is the episode staying unpaired because the payload that
+          // named it happened to lose the ordering race.
+          ...(n.redirectOriginDisplayId != null
+            ? { redirectOriginDisplayId: n.redirectOriginDisplayId }
             : {}),
         },
       });

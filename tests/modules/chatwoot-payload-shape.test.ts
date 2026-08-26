@@ -220,6 +220,36 @@ describe.skipIf(!dbUp)(
       expect(rows.map((r) => r.chatwootConversationId)).toEqual([DISPLAY_ID]);
     });
 
+    // Issue #222, and the same display-id-not-table-id rule this file exists for. The fork stamps the
+    // redirect episode's origin on the widget conversation and ships it on push_data; it is the ENTRY
+    // conversation's display id, so it lands in a column the mirror compares against
+    // chatwootConversationId.
+    test("the redirect origin rides in on the payload and lands in the column", async () => {
+      const ORIGIN_DISPLAY = 4242;
+      await mirror({
+        event: "message_created",
+        ...messageBody(),
+        conversation: {
+          ...conversationBody(),
+          redirect_origin_display_id: ORIGIN_DISPLAY,
+        },
+      });
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: DISPLAY_ID },
+        select: { redirectOriginDisplayId: true },
+      });
+      expect(row.redirectOriginDisplayId).toBe(ORIGIN_DISPLAY);
+
+      // A later payload that says nothing about the pairing must not wipe it: absent is "this event
+      // did not mention it", the same convention the attribute bags follow.
+      await mirror({ event: "conversation_updated", ...conversationBody() });
+      const after = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: DISPLAY_ID },
+        select: { redirectOriginDisplayId: true },
+      });
+      expect(after.redirectOriginDisplayId).toBe(ORIGIN_DISPLAY);
+    });
+
     // Same rule from the other end: a body about a different SUBJECT writes nothing at all, rather
     // than a row keyed by that subject's id.
     test("a contact body opens no conversation row", async () => {

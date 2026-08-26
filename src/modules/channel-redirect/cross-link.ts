@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadAgentBot, loadChatwootClient } from "@/modules/chatwoot/instance";
+import { episodeOriginQuery } from "./episode";
 import type { ChannelRedirectConfig } from "./service";
 
 // After the WhatsApp→chat redirect merges a lead onto the widget conversation, this links the two
@@ -62,6 +63,9 @@ export interface LinkRedirectParams {
     displayId: number;
     testActivatedAt: Date | null;
     contactId: bigint | null;
+    // The episode's stored origin, when the fork wrote one (#222). Null falls back to the old
+    // most-recently-active predicate, which is all a pre-#222 episode has.
+    redirectOriginDisplayId: number | null;
   };
   base?: PrismaClient;
   now?: Date;
@@ -83,21 +87,29 @@ export async function linkRedirectConversations(
   const now = p.now ?? new Date();
   const entryInboxId = p.cfg.entryInboxId;
 
-  // The WhatsApp sibling: the same contact's most-recently-active conversation on the entry inbox.
-  const sibling =
-    p.widgetConv.contactId === null || entryInboxId === null
+  // The WhatsApp entry half of this episode: the stored pairing when there is one, the old
+  // most-recently-active predicate when there is not (episodeOriginQuery's header says why).
+  const originQuery =
+    entryInboxId === null
       ? null
-      : await runScopedOn(base, sysCtx(p.tenantId), (db) =>
-          db.conversation.findFirst({
-            where: {
-              contactId: p.widgetConv.contactId,
-              chatwootInstanceId: p.instanceId,
-              inbox: { chatwootInboxId: entryInboxId },
-            },
-            select: { chatwootConversationId: true, testActivatedAt: true },
-            orderBy: { lastEventAt: "desc" },
-          }),
-        );
+      : episodeOriginQuery({
+          tenantId: p.tenantId,
+          instanceId: p.instanceId,
+          entryInboxId,
+          widget: {
+            redirectOriginDisplayId: p.widgetConv.redirectOriginDisplayId,
+            contactId: p.widgetConv.contactId,
+          },
+        });
+  const sibling = originQuery
+    ? await runScopedOn(base, sysCtx(p.tenantId), (db) =>
+        db.conversation.findFirst({
+          where: originQuery.where,
+          select: { chatwootConversationId: true, testActivatedAt: true },
+          ...(originQuery.orderBy ? { orderBy: originQuery.orderBy } : {}),
+        }),
+      )
+    : null;
 
   const propagate = shouldPropagateTestMode(
     p.mode,

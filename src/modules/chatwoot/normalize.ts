@@ -219,6 +219,13 @@ export function normalizeChatwootEvent(
     ? attrs(kanbanTask.custom_attributes)
     : undefined;
   if (taskAttrs) normalized.kanbanAttributes = taskAttrs;
+  // The redirect episode's other half, when the fork wrote one. Absent rather than null on everything
+  // that is not the widget side of an episode, so a payload that says nothing never clears a pairing
+  // an earlier one established (issue #222).
+  const redirectOrigin = conv ? num(conv.redirect_origin_display_id) : null;
+  if (redirectOrigin !== null && redirectOrigin > 0) {
+    normalized.redirectOriginDisplayId = redirectOrigin;
+  }
   normalized.inboxName = inboxObj ? str(inboxObj.name) : null;
   // `channel` (channel_type) is exposed by EventDataPresenter on conversation events.
   normalized.channel = conv ? str(conv.channel) : null;

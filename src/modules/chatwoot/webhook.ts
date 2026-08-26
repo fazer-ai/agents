@@ -1162,6 +1162,7 @@ async function maybeConsumeCommandOrGate(params: {
         redirectSentAt: true,
         redirectCount: true,
         redirectLinkedAt: true,
+        redirectOriginDisplayId: true,
         inboxId: true,
       },
     });
@@ -1574,6 +1575,7 @@ async function maybeConsumeCommandOrGate(params: {
           displayId: conversationId,
           testActivatedAt: ctx.conv.testActivatedAt,
           contactId: ctx.conv.contactId,
+          redirectOriginDisplayId: ctx.conv.redirectOriginDisplayId,
         },
         base,
       });

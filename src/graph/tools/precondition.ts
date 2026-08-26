@@ -35,7 +35,7 @@ export function guardedTool(
   onRefused?: (info: { tool: string; cond: ToolPrecondition }) => void,
 ): StructuredToolInterface {
   const refusal = unmetPreconditionMessage(inner.name, cond);
-  // DELEGATION, not a second tool(). Wrapping the inner tool in another `tool()` and calling
+  // NOTE: DELEGATION, not a second tool(). Wrapping the inner tool in another `tool()` and calling
   // `inner.invoke` from inside it starts a CHILD tool run under the outer one's callbacks:
   // ToolFlowLogger and Langfuse then record two runs for one model-issued call, and an integration
   // failure inside the inner tool emits its warn — and its alert — twice. Here the prototype carries
@@ -47,7 +47,7 @@ export function guardedTool(
     try {
       met = evaluatePrecondition(cond, await loadState());
     } catch {
-      // FAIL CLOSED, the same way the contact-authorization gate does. A precondition exists because
+      // NOTE: FAIL CLOSED, the same way the contact-authorization gate does. A precondition exists because
       // running the tool wrongly costs something the operator cannot undo (a conversation handed to
       // a human, a document issued); a state read that failed cannot tell us the cost is safe to
       // pay. The model is told the same sentence either way, so a database blip does not become a
@@ -56,7 +56,7 @@ export function guardedTool(
     }
     if (met) return inner.invoke(input as never, config);
     onRefused?.({ tool: inner.name, cond });
-    // ToolNode hands the whole tool call in as the input, so the id is on it; a direct invocation
+    // NOTE: ToolNode hands the whole tool call in as the input, so the id is on it; a direct invocation
     // with plain args (a unit test) has none, and the plain string is the honest degradation there —
     // the same shape failableTool settled on.
     const id =
@@ -84,7 +84,7 @@ export function applyToolPreconditions(
 ): StructuredToolInterface[] {
   if (Object.keys(preconditions).length === 0) return tools;
   return tools.map((t) => {
-    // Own-property only: the map is null-prototype at its source, but this lookup is what a plain
+    // NOTE: Own-property only: the map is null-prototype at its source, but this lookup is what a plain
     // object would break — a tool named `toString` would find an inherited function here, and every
     // call to it would be refused by a rule the operator never wrote.
     const cond = Object.hasOwn(preconditions, t.name)

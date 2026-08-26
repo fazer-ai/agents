@@ -39,7 +39,7 @@ export function ToolPreconditionsEditor({
   const patch = (i: number, next: Partial<ToolPreconditionRow>) =>
     onChange(rows.map((r, idx) => (idx === i ? { ...r, ...next } : r)));
 
-  // A tool already claimed by ANOTHER row is not offered: two rows on one tool collapse into one
+  // NOTE: A tool already claimed by ANOTHER row is not offered: two rows on one tool collapse into one
   // stored rule, so the second is a guard the operator can see and cannot save. The row's own tool is
   // always included, even if the grant was since removed — a select whose value is not among its
   // options renders BLANK, and a blank row invites the operator to delete a rule they never read.
@@ -176,7 +176,7 @@ export function serializeToolPreconditions(
   rows: ToolPreconditionRow[],
   stored?: unknown,
 ): Record<string, unknown> {
-  // NULL-PROTOTYPE, for the same reason the runtime map is: a tool named `__proto__` assigned onto
+  // NOTE: NULL-PROTOTYPE, for the same reason the runtime map is: a tool named `__proto__` assigned onto
   // an ordinary object changes its prototype, the key never appears in the JSON, and the guard the
   // operator configured disappears on the next save.
   const out = Object.create(null) as Record<string, unknown>;
@@ -195,7 +195,7 @@ export function serializeToolPreconditions(
     const tool = row.tool.trim();
     const key = row.key.trim();
     if (!tool || !key) continue;
-    // FIRST wins, not last. Two rows naming one tool collapse into one map key, and silently keeping
+    // NOTE: FIRST wins, not last. Two rows naming one tool collapse into one map key, and silently keeping
     // the last one discards a guard the operator can still see on screen. The select stops the
     // duplicate from being created; this is what happens to one that got there anyway.
     if (seen.has(tool)) continue;

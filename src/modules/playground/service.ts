@@ -257,6 +257,11 @@ function buildPlaygroundToolset(
     threadId: string;
     base: PrismaClient;
     deps?: PlaygroundDeps;
+    // The turn's telemetry context, so a tool-stage line the toolset produces lands in the Logs page
+    // under source=playground. Without it a precondition refusal is invisible exactly where an
+    // operator goes to find out what their agent does — a refused call never reaches the inner tool,
+    // so ToolFlowLogger sees no run either and there is nothing else to read.
+    flow: FlowContext | undefined;
   },
 ): Promise<StructuredToolInterface[]> {
   return buildToolset(
@@ -280,6 +285,7 @@ function buildPlaygroundToolset(
       // produces. Simulated, the operator sees the agent choose it — which is what they came to see.
       simulateDocuments: true,
       mcp: params.deps?.mcp,
+      flow: params.flow,
     },
   );
 }
@@ -292,6 +298,9 @@ async function buildPlaygroundGraph(params: {
   agentId: bigint;
   threadId: string;
   base: PrismaClient;
+  // Passed down to the toolset so a tool-stage line has somewhere to land. The graph's own callbacks
+  // below already write to this same context; the toolset was the one seam that did not receive it.
+  flow?: FlowContext;
   deps?: PlaygroundDeps;
   overrides?: AgentConfigOverrides;
   // Reused as the Langfuse trace id (item 10) so a playground trace correlates with the turn.
@@ -337,6 +346,7 @@ async function buildPlaygroundGraph(params: {
     threadId,
     base,
     deps: params.deps,
+    flow: params.flow,
   });
   const toolMocks = params.overrides?.toolMocks;
   const tools = applyToolMocks(rawTools, toolMocks);
@@ -420,6 +430,10 @@ export async function listPlaygroundTools(params: {
     threadId,
     base,
     deps: params.deps,
+    // NOTE: A LISTING, not a turn: nothing here executes a tool, so there is no tool-stage line to
+    // write and no FlowContext to write it to. Spelled out rather than omitted because the field is
+    // required — the next caller has to answer the same question instead of inheriting a default.
+    flow: undefined,
   });
 
   const conversation = new Set<string>(CONVERSATION_NATIVE_TOOL_NAMES);
@@ -505,6 +519,7 @@ export async function runPlaygroundTurn(
       deps: params.deps,
       overrides: params.overrides,
       turnId,
+      flow,
       onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",
@@ -871,6 +886,7 @@ export async function runPlaygroundFollowup(
       deps: params.deps,
       overrides: params.overrides,
       turnId,
+      flow,
       onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",

@@ -15,7 +15,7 @@
 // stays open: a closed set of conditions translates mechanically into an expression later, while an
 // expression published to operators is a contract that cannot be taken back.
 
-// NOTE: [code-tool] This type is the STATE NAMESPACE — the one piece a future sandboxed code tool
+// [code-tool] This type is the STATE NAMESPACE — the one piece a future sandboxed code tool
 // genuinely shares with this file, because "what can a rule see about the conversation" is the same
 // question for both and it is the expensive half to get right. When that tool lands, reconcile HERE
 // rather than growing a second vocabulary: a rule that reads `conversationAttributes` in one place
@@ -62,7 +62,7 @@ export function parseToolPrecondition(raw: unknown): ToolPrecondition | null {
     const key = str(c.key);
     const scope = str(c.scope);
     if (!key || !scope || !SCOPES.has(scope)) return null;
-    // `equals` presente com valor não-string é RECUSA, nunca "sem equals": dropar o campo
+    // NOTE: `equals` presente com valor não-string é RECUSA, nunca "sem equals": dropar o campo
     // transformaria "o atributo tem que valer X" em "o atributo tem que existir", que é uma regra
     // mais fraca do que a que o operador escreveu — e mais fraca em silêncio.
     if (c.equals !== undefined && c.equals !== null) {
@@ -120,14 +120,14 @@ export function evaluatePrecondition(
     cond.scope === "conversation"
       ? state.conversationAttributes
       : state.contactAttributes;
-  // OWN property, and the attribute key is operator text just like the tool name. `constructor`,
+  // NOTE: OWN property, and the attribute key is operator text just like the tool name. `constructor`,
   // `toString` and `__proto__` all resolve to something non-blank on an ordinary bag parsed from
   // jsonb, so a presence-only rule would read as SATISFIED on an empty conversation — the tool runs
   // exactly where the operator asked for it not to.
   if (!Object.hasOwn(bag, cond.key)) return false;
   const value = bag[cond.key];
   if (value === null || value === undefined) return false;
-  // A non-string value (a number, a boolean, `false`, `0`) is PRESENT, and presence is the
+  // NOTE: A non-string value (a number, a boolean, `false`, `0`) is PRESENT, and presence is the
   // question. Only a string can be blank, and a blank string is the shape an attribute takes when
   // it was cleared rather than set.
   if (typeof value === "string") {
@@ -162,7 +162,7 @@ export function invalidToolPreconditions(settings: unknown): string[] {
       ? (settings as Record<string, unknown>).toolPreconditions
       : undefined;
   if (bag === undefined || bag === null) return [];
-  // The bag itself being the wrong shape is one refusal, not N: there are no names to list.
+  // NOTE: The bag itself being the wrong shape is one refusal, not N: there are no names to list.
   if (typeof bag !== "object" || Array.isArray(bag))
     return ["toolPreconditions"];
   return Object.entries(bag as Record<string, unknown>)

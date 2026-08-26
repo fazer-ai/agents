@@ -90,6 +90,12 @@ export async function loadToolSelections(
 ): Promise<AgentToolSelections> {
   const rows = await db.agentToolSelection.findMany({
     where: { agentId },
+    // NOTE: ORDERED, because two grants can compete for one exposed tool name. `namespacedToolName`
+    // hands the plain name to whoever asks first and `_2` to the next, so with Postgres free to
+    // return rows in any order the SAME configuration can expose the two names swapped between one
+    // turn and the next — and a precondition, which is keyed by exposed name, would follow the name
+    // onto the other tool. Row order is not a detail here, it is an identity.
+    orderBy: { id: "asc" },
     select: {
       source: true,
       enabledTools: true,

@@ -1237,7 +1237,7 @@ export async function buildToolset(
       cfg.ragConfig?.tools,
     ),
   ]);
-  // The precondition seam, and the reason the whole feature is six lines: every source's tools have
+  // NOTE: The precondition seam, and the reason the whole feature is six lines: every source's tools have
   // already been merged into ONE name-unique list above, so a map keyed by name reaches native,
   // document, HTTP, MCP, toolpack and RAG at once. An agent with no preconditions gets the same
   // array back, untouched.
@@ -1254,7 +1254,7 @@ export async function buildToolset(
       ? ({ tool: name, cond }) =>
           emitFlowEvent(flow, {
             stage: "tool",
-            // INFO, deliberately. A precondition refusing a call is the system working as the
+            // NOTE: INFO, deliberately. A precondition refusing a call is the system working as the
             // operator configured it, and warn/error is what reaches the alert channels: a rule that
             // fires on every third conversation would otherwise page all day. It still has to be
             // VISIBLE, because "the agent never hands off any more" is exactly the report this
@@ -1265,7 +1265,7 @@ export async function buildToolset(
               tool: name,
               phase: "precondition",
               preconditionKind: cond.kind,
-              // The KEY, never the value: an attribute bag holds whatever the operator put in it,
+              // NOTE: The KEY, never the value: an attribute bag holds whatever the operator put in it,
               // and a flow-log detail is PII-free by contract (modules/flowlog).
               preconditionKey: cond.key,
               preconditionScope: cond.scope,

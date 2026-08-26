@@ -344,10 +344,10 @@ export function assertSettingsToolPreconditions(
 ): void {
   const next = invalidToolPreconditions(settings);
   if (next.length === 0) return;
-  // Compared by VALUE, not by name. A name that was already invalid and is now invalid DIFFERENTLY
+  // NOTE: Compared by VALUE, not by name. A name that was already invalid and is now invalid DIFFERENTLY
   // is an edit, and an edit is exactly what this refuses: comparing name membership would accept the
   // operator rewriting a broken rule into another broken rule and reading it as saved.
-  // The BAG itself being the wrong shape is not a per-name question — `invalidToolPreconditions`
+  // NOTE: The BAG itself being the wrong shape is not a per-name question — `invalidToolPreconditions`
   // answers it with a synthetic name that appears in neither value map, so a name-wise comparison
   // finds "unchanged" and lets an array or a string through. Compared as a whole, once.
   if (next.length === 1 && next[0] === "toolPreconditions") {

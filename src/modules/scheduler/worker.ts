@@ -144,13 +144,19 @@ async function dispatchDeadLetter(
     // Any status but DEAD suppresses, and a MISSING row suppresses too: for a kind with
     // JOB_DELETE_ON_DONE the row is gone precisely because the work completed, and no row is not
     // evidence that work was lost.
+    //
+    // And the row has to be DEAD for THIS claim. `claimSeq` is the token the claim handed out, and
+    // the module already treats a moved one as "this run was retired" (`isRetired`, ../scheduler
+    // /service.ts): a row re-armed, re-claimed by another drain and dead AGAIN reads as DEAD here
+    // while belonging to a later attempt — which announces its own death with its own error. Status
+    // alone would report the old error and let the new one report a second time.
     const row = await runScopedOn(base, sysCtx(job.tenantId), (db) =>
       db.schedulerJob.findUnique({
         where: { id: job.id },
-        select: { status: true },
+        select: { status: true, claimSeq: true },
       }),
     );
-    if (row?.status !== "DEAD") return;
+    if (row?.status !== "DEAD" || row.claimSeq !== job.claimSeq) return;
     // NOTE: the attempt count is deliberately absent, for the reason measured in
     // ../memory/compact.ts: the two roads to DEAD disagree about the number while meaning the same
     // thing (failJob hands the hook the claim it was given, the reaper increments in SQL). What

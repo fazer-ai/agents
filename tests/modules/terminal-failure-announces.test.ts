@@ -462,6 +462,44 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     expect(detail.jobId).toBe(String(reaped[1]?.id));
   });
 
+  test("a death that belongs to a later claim is not reported by the earlier one", async () => {
+    await clearRows();
+    const id = await enqueueJob({
+      rearm: "same-work",
+      tenantId,
+      kind: "INGEST_MESSAGE",
+      dedupeKey: "dk-356-generation",
+      runAt: past(),
+      base: appDb,
+    });
+    await suDb.schedulerJob.update({
+      where: { id },
+      data: {
+        status: "CLAIMED",
+        attempts: 4,
+        claimedAt: new Date(Date.now() - 600_000),
+      },
+    });
+    const reaped = await reapStaleJobs(
+      5 * 60_000,
+      appDb,
+      new Date(),
+      tenantId,
+      "INGEST_MESSAGE",
+    );
+    expect(reaped.find((r) => r.id === id)?.status).toBe("DEAD");
+    // The row is re-armed, taken by another drain and dies AGAIN before this announcement runs. It
+    // reads as DEAD, but the death belongs to a later attempt with its own error — which announces
+    // itself. Only the token tells the two apart; status cannot.
+    await suDb.schedulerJob.update({
+      where: { id },
+      data: { claimSeq: { increment: 1 } },
+    });
+    await announceReaped(reaped, appDb);
+    await Bun.sleep(400);
+    expect(await deadRows(0, 0)).toHaveLength(0);
+  });
+
   test("a kind that registers its own hook does not get the generic line as well", async () => {
     await clearRows();
     const { registerDebounceHandler } = await import(

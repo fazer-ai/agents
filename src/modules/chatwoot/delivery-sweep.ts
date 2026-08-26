@@ -5,7 +5,7 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
-import { armDeliveryRecovery } from "./recover-delivery";
+import { armDeliveryRecovery, isRecoverableStrand } from "./recover-delivery";
 import {
   classifyStrandedDelivery,
   type StrandedVerdict,
@@ -541,7 +541,8 @@ async function record(
   // Armed BEFORE the line rather than after, so the alert an operator receives is never newer than
   // the attempt to make it moot.
   try {
-    await armDeliveryRecovery(tenantId, row.id, base);
+    if (isRecoverableStrand(row))
+      await armDeliveryRecovery(tenantId, row.id, base);
   } catch (error) {
     logger.error(
       { error },

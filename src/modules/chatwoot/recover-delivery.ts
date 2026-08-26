@@ -33,12 +33,28 @@ import { processChatwootDelivery } from "./webhook";
 // sixth is the shape of defect this repo keeps paying for.
 //
 // Re-running the delivery path is correct by construction: every gate runs where it already runs.
-// What made that look unsafe was the fear of re-firing the side effects, and it does not hold —
-// MEASURED in the code that performs them: all three are idempotent through a watermark CAS
-// (`claimAwayMessage`, the test notice's `testNoticeSentAt`, the redirect's own claim), and the
-// comment on the first one names the reason it had to be: "The webhook dispatch is DETACHED, so a
-// customer who writes twice in a row lands two invocations that both read the same watermark before
-// either writes it". A recovery is a third invocation into a door that was already built for this.
+// What made that look unsafe was the fear of re-firing the side effects, and it does not hold — but
+// the reason is PER GATE rather than one shared property, which is what reading all three actually
+// showed:
+//
+//   - availability posts behind a real CAS. `claimAwayMessage` is an `updateMany` guarded on the
+//     watermark's previous value and it claims BEFORE it posts, so a second invocation claims
+//     nothing. The comment on it names why it had to be: "The webhook dispatch is DETACHED, so a
+//     customer who writes twice in a row lands two invocations that both read the same watermark
+//     before either writes it".
+//   - the test notice (`testNoticeSentAt`) and the redirect (`redirectSentAt`) are one-shot
+//     watermarks READ before the act and WRITTEN after it, which is not the same thing. They are
+//     safe for a recovery for a different reason: a recovery is serialized against a live turn by
+//     the in-flight fence below and against another recovery by the claim CAS, so its read of the
+//     watermark is current rather than racing one.
+//
+// THE RESIDUAL WINDOW, named rather than papered over: a process that died BETWEEN one of those two
+// acts and its watermark write leaves the watermark null, and the recovery repeats the act — a
+// duplicate private note for the test notice, and for the redirect the fixed link sent to the
+// customer a second time. Both are already reachable without any recovery, because the dispatch is
+// detached and two live deliveries interleave the same way; neither spends a model call or writes
+// conversation state. Closing it means a claim-then-act ordering inside three gates this does not
+// own, which is a change to their contract and not to this one.
 //
 // WHAT THIS DOES NOT DO, and it is a bound rather than an omission: it never runs a turn beside a
 // live one. The turn-in-flight fence is consulted first, and it is in-memory — safe under the
@@ -108,10 +124,10 @@ export async function recoverStrandedDelivery(
   if (row?.status !== "DEAD") return "superseded";
 
   // A row the sweep reported without ids is one an older build wrote, and there is nothing to
-  // rebuild a body from. It stays DEAD and stays in the worklist.
-  if (row.conversationId === null || row.inboundMessageId === null) {
-    return "unrecoverable";
-  }
+  // rebuild a body from. It stays DEAD and stays in the worklist. Re-asked here rather than trusted
+  // from the arming site: the row is only readable now, and a job armed against an older build's row
+  // could have been armed before this predicate existed.
+  if (!isRecoverableStrand(row)) return "unrecoverable";
   if (row.attempts >= MAX_RECOVERY_ATTEMPTS) return "unrecoverable";
 
   const instanceId = row.chatwootInstanceId;
@@ -285,6 +301,26 @@ function findRawMessage(
 
 export function deliveryRecoveryDedupeKey(deliveryRowId: bigint): string {
   return `delivery-recovery:${deliveryRowId}`;
+}
+
+// Whether a stranded row is worth arming a recovery FOR, asked of the row alone. A row that names no
+// conversation or no message is one an older build wrote, and there is nothing to rebuild a body
+// from — no pass will ever change that.
+//
+// ONE definition with two callers, and that is the point of it being here rather than a second
+// condition at the sweep: the recovery re-asks it after claiming (the row can only be read then),
+// and a copy at the arming site is the same question in one more place, which is the defect this
+// repo keeps paying for. What the arming site buys by asking is real, though — a job that can only
+// say "unrecoverable" still takes a claim, and these are armed for `now` on the traffic-proportional
+// share of the batch, so on an upgrade's backfill they would be the OLDEST rows and would push the
+// recoveries that can work behind them.
+// A type predicate rather than a plain boolean, so the caller that goes on to USE the two ids gets
+// them narrowed by the same statement that decided they are there — the alternative is a second
+// null check written only to satisfy the compiler, which is a check nobody can tell from a real one.
+export function isRecoverableStrand<
+  T extends { conversationId: number | null; inboundMessageId: number | null },
+>(row: T): row is T & { conversationId: number; inboundMessageId: number } {
+  return row.conversationId !== null && row.inboundMessageId !== null;
 }
 
 // Arms the recovery of ONE stranded row. Called by the sweep at the moment it declares the row DEAD,

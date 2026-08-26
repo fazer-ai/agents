@@ -539,6 +539,39 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     ).toBeNull();
   });
 
+  test("arms no recovery for a strand nothing could rebuild a body from", async () => {
+    // A legacy row: reported as a loss because its nulls are UNRECORDED rather than "nothing was
+    // there", and recoverable by nothing. Armed, the job could only ever say "unrecoverable" — and
+    // an upgrade's backfill produces these in bulk, armed for `now` on the traffic-proportional
+    // share of the batch, so they would be the oldest rows and would push the recoveries that can
+    // work behind them.
+    // The legacy shape exactly: PROCESSING with no claim stamp, which is what an older build's row
+    // looks like — this build stamps every row it works, so the missing stamp is what says the nulls
+    // are unrecorded rather than "nothing was there".
+    const rowId = await seedStrandedDelivery({
+      conversationId: null,
+      ageMs: STALE_MS * 2,
+      inboundMessageId: null,
+      status: "PROCESSING",
+    });
+
+    await sweepStrandedDeliveries({ tenantId, base: appDb });
+    expect((await statusOf(rowId)).status).toBe("DEAD");
+    expect(
+      await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "DELIVERY_RECOVERY",
+          dedupeKey: deliveryRecoveryDedupeKey(rowId),
+        },
+        select: { id: true },
+      }),
+    ).toBeNull();
+
+    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
+  });
+
   test("arms no recovery for a row that was already terminal", async () => {
     // The scan reads PENDING and PROCESSING only, so a row something else finished is never looked
     // at — and a recovery armed on one would run a turn over a message that already had its answer.
